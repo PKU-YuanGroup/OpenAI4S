@@ -64,7 +64,19 @@ const MDC0 = String.fromCharCode(0xe000);
 const MDC1 = String.fromCharCode(0xe001);
 const mdCodeRestore = new RegExp(MDC0 + "(\\d+)" + MDC1, "g");
 
-export function mdInline(t: string | null | undefined): string {
+/** Rendering options. Defaults keep every other markdown surface unchanged. */
+export type MdRenderOptions = {
+  /**
+   * `"none"` is the notebook-only mode (F7): the rendered markdown belongs to a
+   * file that must not make the preview load or execute anything. No `<img>`
+   * and no `<a>` is produced anywhere (including nested quotes/lists/tables):
+   * an image becomes its escaped alt text only, and a link becomes plain
+   * `text (url)`. `"default"` / omitted keeps today's behaviour byte for byte.
+   */
+  resources?: "default" | "none";
+};
+
+export function mdInline(t: string | null | undefined, options: MdRenderOptions = {}): string {
   t = String(t == null ? "" : t);
   const codes: string[] = [];
   t = t.replace(/`([^`]+)`/g, (_m, c: string) => {
@@ -78,21 +90,31 @@ export function mdInline(t: string | null | undefined): string {
   // Bracket text excludes `[` as well as `]`: with `[^\]]` every `[` of a
   // long run rescanned the rest of it looking for a `]` (quadratic: 20,000
   // `[` took ~170ms per render). An unbalanced `[` is not link text anyway.
-  t = t.replace(
-    /!\[([^[\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g,
-    (_m, alt: string, src: string) =>
-      '<img alt="' + escQuote(alt) + '" src="' + src + '">',
-  );
-  t = t.replace(
-    /!\[([^[\]]*)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_m, alt: string, src: string) =>
-      '<img alt="' + escQuote(alt) + '" src="' + escQuote(src) + '">',
-  );
-  t = t.replace(
-    /\[([^[\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g,
-    (_m, text: string, href: string) =>
-      '<a href="' + escQuote(mdHref(href)) + '" target="_blank" rel="noopener">' + text + "</a>",
-  );
+  if (options.resources === "none") {
+    // F7: an image is only its escaped alt text; a link is plain text plus the
+    // URL in parentheses. Nothing here can become an element or an attribute.
+    t = t.replace(/!\[([^[\]]*)\]\([^)]*\)/g, (_m, alt: string) => alt);
+    t = t.replace(
+      /\[([^[\]]+)\]\(([^)]*)\)/g,
+      (_m, text: string, href: string) => (href ? text + " (" + href + ")" : text),
+    );
+  } else {
+    t = t.replace(
+      /!\[([^[\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g,
+      (_m, alt: string, src: string) =>
+        '<img alt="' + escQuote(alt) + '" src="' + src + '">',
+    );
+    t = t.replace(
+      /!\[([^[\]]*)\]\((https?:\/\/[^\s)]+)\)/g,
+      (_m, alt: string, src: string) =>
+        '<img alt="' + escQuote(alt) + '" src="' + escQuote(src) + '">',
+    );
+    t = t.replace(
+      /\[([^[\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g,
+      (_m, text: string, href: string) =>
+        '<a href="' + escQuote(mdHref(href)) + '" target="_blank" rel="noopener">' + text + "</a>",
+    );
+  }
   t = t.replace(/\*\*\*([^*]+?)\*\*\*/g, "<strong><em>$1</em></strong>");
   t = t.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
   t = t.replace(/(^|[^\w*])__([^_]+?)__(?!\w)/g, "$1<strong>$2</strong>");
@@ -116,7 +138,12 @@ type MdListCursor = { v: number };
  */
 const MAX_NESTING = 32;
 
-function mdBuildList(items: MdListItem[], cur: MdListCursor, depth = 0): string {
+function mdBuildList(
+  items: MdListItem[],
+  cur: MdListCursor,
+  depth: number,
+  options: MdRenderOptions,
+): string {
   const start = items[cur.v];
   if (!start) return "<ul></ul>";
   const ordered = start.ordered;
@@ -131,8 +158,8 @@ function mdBuildList(items: MdListItem[], cur: MdListCursor, depth = 0): string 
     cur.v++;
     let nested = "";
     const next = items[cur.v];
-    if (next && next.indent > indent && nests) nested = mdBuildList(items, cur, depth + 1);
-    html += "<li>" + mdInline(text) + nested + "</li>";
+    if (next && next.indent > indent && nests) nested = mdBuildList(items, cur, depth + 1, options);
+    html += "<li>" + mdInline(text, options) + nested + "</li>";
   }
   return html + "</" + (ordered ? "ol" : "ul") + ">";
 }
@@ -141,6 +168,7 @@ function mdList(
   lines: string[],
   start: number,
   n: number,
+  options: MdRenderOptions,
 ): { html: string; next: number } {
   const itemRe = /^(\s*)([-*+]|\d+[.)])[ \t]+(.*)$/;
   const items: MdListItem[] = [];
@@ -169,17 +197,17 @@ function mdList(
       i++;
     } else break;
   }
-  return { html: mdBuildList(items, { v: 0 }), next: i };
+  return { html: mdBuildList(items, { v: 0 }, 0, options), next: i };
 }
 
-export function renderMd(src: string | null | undefined): string {
+export function renderMd(src: string | null | undefined, options: MdRenderOptions = {}): string {
   const lines = String(src == null ? "" : src)
     .replace(/\r\n?/g, "\n")
     .split("\n");
-  return renderLines(lines, 0);
+  return renderLines(lines, 0, options);
 }
 
-function renderLines(lines: string[], quoteDepth: number): string {
+function renderLines(lines: string[], quoteDepth: number, options: MdRenderOptions): string {
   const n = lines.length;
   let i = 0;
   let html = "";
@@ -244,7 +272,7 @@ function renderLines(lines: string[], quoteDepth: number): string {
     const hm = line.match(/^(#{1,6})[ \t]+(.*?)[ \t]*#*$/);
     if (hm) {
       const lv = (hm[1] || "").length;
-      html += "<h" + lv + ">" + mdInline(hm[2]) + "</h" + lv + ">";
+      html += "<h" + lv + ">" + mdInline(hm[2], options) + "</h" + lv + ">";
       i++;
       continue;
     }
@@ -259,7 +287,7 @@ function renderLines(lines: string[], quoteDepth: number): string {
         q.push((lines[i] || "").replace(/^\s*>\s?/, ""));
         i++;
       }
-      html += "<blockquote>" + renderLines(q, quoteDepth + 1) + "</blockquote>";
+      html += "<blockquote>" + renderLines(q, quoteDepth + 1, options) + "</blockquote>";
       continue;
     }
     if (looksTable(i)) {
@@ -273,13 +301,13 @@ function renderLines(lines: string[], quoteDepth: number): string {
       i += 2;
       let t =
         "<table><thead><tr>" +
-        head.map((c) => "<th>" + mdInline(c) + "</th>").join("") +
+        head.map((c) => "<th>" + mdInline(c, options) + "</th>").join("") +
         "</tr></thead><tbody>";
       while (i < n && (lines[i] || "").indexOf("|") !== -1 && (lines[i] || "").trim()) {
         const r = cells(lines[i] || "");
         t +=
           "<tr>" +
-          head.map((_c, ci) => "<td>" + mdInline(r[ci] || "") + "</td>").join("") +
+          head.map((_c, ci) => "<td>" + mdInline(r[ci] || "", options) + "</td>").join("") +
           "</tr>";
         i++;
       }
@@ -287,7 +315,7 @@ function renderLines(lines: string[], quoteDepth: number): string {
       continue;
     }
     if (listRe.test(line)) {
-      const lr = mdList(lines, i, n);
+      const lr = mdList(lines, i, n, options);
       html += lr.html;
       i = lr.next;
       continue;
@@ -306,7 +334,7 @@ function renderLines(lines: string[], quoteDepth: number): string {
       para.push(lines[i] || "");
       i++;
     }
-    html += "<p>" + mdInline(para.join(" ")) + "</p>";
+    html += "<p>" + mdInline(para.join(" "), options) + "</p>";
   }
   return html;
 }

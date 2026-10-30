@@ -2,6 +2,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { copyFailedText, copyText } from "../../features/chrome/clipboard";
+import { localClock } from "../../features/chrome/dom";
 import {
   standardReadinessStateText,
   type StandardReadiness,
@@ -123,10 +124,64 @@ function NetworkCard({
   );
 }
 
-export function ReadinessPanel({ status }: { status: OnboardingStatus }) {
+/**
+ * The first-run readiness step's own re-read of `GET /api/v1/onboarding`.
+ *
+ * `refreshing` is deliberately separate from the wizard's `busy`: this is a
+ * local read, and Skip/Continue must stay usable while it waits. The action
+ * doubles as the retry — a failed read keeps the previous snapshot on screen
+ * and reports "not refreshed: <reason>" until a new click succeeds.
+ * `refreshedAt` is the client time of the last *successful refresh*.
+ */
+export function ReadinessPanel({
+  status,
+  onRefresh,
+  refreshing = false,
+  refreshedAt = null,
+  refreshError = "",
+}: {
+  status: OnboardingStatus;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  refreshedAt?: number | null;
+  refreshError?: string;
+}) {
+  const control = onRefresh ? (
+    <button
+      type="button"
+      class="outline-btn small"
+      disabled={refreshing}
+      onClick={onRefresh}
+    >
+      {refreshing ? ot("onboarding.readiness.refreshing") : ot("onboarding.readiness.refresh")}
+    </button>
+  ) : undefined;
+  let readState: ComponentChildren = null;
+  if (refreshing) {
+    readState = <div class="onb-refresh-state">{ot("onboarding.readiness.refreshing")}</div>;
+  } else if (refreshError) {
+    readState = (
+      <div class="onb-refresh-state error" role="alert">
+        {ot("onboarding.readiness.refreshFailed", refreshError)}
+      </div>
+    );
+  } else if (refreshedAt != null) {
+    readState = (
+      <div class="onb-refresh-state">
+        {ot("onboarding.readiness.lastRead", localClock(refreshedAt))}
+      </div>
+    );
+  }
   return (
     <div class="onb-readiness">
-      {status.environment ? <EnvironmentCard readiness={status.environment} /> : null}
+      {status.environment ? (
+        <EnvironmentCard readiness={status.environment} action={control} />
+      ) : onRefresh ? (
+        // The daemon reported no environment projection at all. The refresh
+        // action must still exist: re-reading is how it can come back.
+        <div class="onb-refresh-row">{control}</div>
+      ) : null}
+      {readState}
       <NetworkCard
         network={status.network}
         platform={status.platform}

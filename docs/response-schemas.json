@@ -6623,6 +6623,72 @@
         "type": "object"
       }
     },
+    "DELETE /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /updates/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /uploads [error]": {
       "schema": {
         "properties": {
@@ -8118,6 +8184,12 @@
                 },
                 "retrieval_source": {
                   "properties": {
+                    "alias_conflicts": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
                     "database": {
                       "type": "string"
                     },
@@ -8165,12 +8237,29 @@
                         "record_id": {
                           "type": "string"
                         },
+                        "redacted_fields": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
                         "undisclosed_field_count": {
                           "type": "integer"
                         }
                       },
-                      "required": [],
+                      "required": [
+                        "file_verification"
+                      ],
                       "type": "object"
+                    },
+                    "legacy_normalized": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "query": {
+                      "type": "string"
                     },
                     "record_count": {
                       "type": "integer"
@@ -8178,8 +8267,17 @@
                     "request_url": {
                       "type": "string"
                     },
-                    "retrieved_at": {
+                    "response_sha256": {
                       "type": "string"
+                    },
+                    "response_sha256_state": {
+                      "type": "string"
+                    },
+                    "retrieved_at": {
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
                     },
                     "undisclosed_field_count": {
                       "type": "integer"
@@ -8842,41 +8940,6 @@
             "type": "object"
           },
           "hosts": {
-            "items": {
-              "properties": {
-                "alias": {
-                  "type": "string"
-                },
-                "capabilities": {
-                  "type": "array"
-                },
-                "gpu_count": {
-                  "type": "integer"
-                },
-                "gpus": {
-                  "type": "null"
-                },
-                "label": {
-                  "type": "string"
-                },
-                "provider": {
-                  "type": "string"
-                },
-                "reachable": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "alias",
-                "capabilities",
-                "gpu_count",
-                "gpus",
-                "label",
-                "provider",
-                "reachable"
-              ],
-              "type": "object"
-            },
             "type": "array"
           }
         },
@@ -13412,8 +13475,17 @@
     "GET /frames/([^/]+)/compute/tasks [ok]": {
       "schema": {
         "properties": {
+          "has_more": {
+            "type": "boolean"
+          },
           "live_count": {
             "type": "integer"
+          },
+          "next_cursor": {
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "polled": {
             "type": "boolean"
@@ -13477,12 +13549,18 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "total_live_count": {
+            "type": "integer"
           }
         },
         "required": [
+          "has_more",
           "live_count",
+          "next_cursor",
           "polled",
-          "tasks"
+          "tasks",
+          "total_live_count"
         ],
         "type": "object"
       }
@@ -17196,6 +17274,45 @@
                 "credential_source": {
                   "type": "string"
                 },
+                "effective_capabilities": {
+                  "properties": {
+                    "streaming": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "tool_calling": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "streaming",
+                    "tool_calling"
+                  ],
+                  "type": "object"
+                },
                 "has_api_key": {
                   "type": "boolean"
                 },
@@ -17238,6 +17355,7 @@
                 "base_url",
                 "capability_receipt",
                 "credential_source",
+                "effective_capabilities",
                 "has_api_key",
                 "id",
                 "model",
@@ -17819,6 +17937,45 @@
                 "credential_source": {
                   "type": "string"
                 },
+                "effective_capabilities": {
+                  "properties": {
+                    "streaming": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "tool_calling": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "streaming",
+                    "tool_calling"
+                  ],
+                  "type": "object"
+                },
                 "has_api_key": {
                   "type": "boolean"
                 },
@@ -17861,6 +18018,7 @@
                 "base_url",
                 "capability_receipt",
                 "credential_source",
+                "effective_capabilities",
                 "has_api_key",
                 "id",
                 "model",
@@ -18512,6 +18670,105 @@
             "type": "integer"
           },
           "groups": {
+            "items": {
+              "properties": {
+                "attempts": {
+                  "type": "array"
+                },
+                "branch_id": {
+                  "type": "string"
+                },
+                "cost": {
+                  "type": "null"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "events": {
+                  "type": "array"
+                },
+                "group_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "language": {
+                  "type": "null"
+                },
+                "model": {
+                  "type": "null"
+                },
+                "ordinal": {
+                  "type": "integer"
+                },
+                "owner": {
+                  "type": "string"
+                },
+                "permission": {
+                  "type": "null"
+                },
+                "provider": {
+                  "type": "null"
+                },
+                "replay_policy": {
+                  "type": "string"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "session": {
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "root_frame_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "root_frame_id"
+                  ],
+                  "type": "object"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "turn_id": {
+                  "type": "string"
+                },
+                "usage": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "attempts",
+                "branch_id",
+                "cost",
+                "created_at",
+                "events",
+                "group_id",
+                "kind",
+                "language",
+                "model",
+                "ordinal",
+                "owner",
+                "permission",
+                "provider",
+                "replay_policy",
+                "root_frame_id",
+                "session",
+                "status",
+                "title",
+                "turn_id",
+                "usage"
+              ],
+              "type": "object"
+            },
             "type": "array"
           },
           "project_id": {
@@ -19137,6 +19394,49 @@
             "type": "array"
           },
           "nodes": {
+            "items": {
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "filename": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "latest": {
+                  "type": "boolean"
+                },
+                "producing_cell_id": {
+                  "type": "null"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "version_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "artifact_id",
+                "created_at",
+                "filename",
+                "id",
+                "kind",
+                "latest",
+                "producing_cell_id",
+                "root_frame_id",
+                "version_id"
+              ],
+              "type": "object"
+            },
             "type": "array"
           },
           "project_id": {
@@ -21676,6 +21976,144 @@
         "required": [
           "enabled",
           "env_locked"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /updates/status [ok]": {
+      "schema": {
+        "properties": {
+          "apply_available": {
+            "type": "boolean"
+          },
+          "channel": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "refusal_command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "refusal_text_key": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "refusal_command",
+              "refusal_text_key"
+            ],
+            "type": "object"
+          },
+          "check": {
+            "properties": {
+              "age_s": {
+                "type": "integer"
+              },
+              "cached": {
+                "type": "boolean"
+              },
+              "checked_at_ms": {
+                "type": "integer"
+              },
+              "latest": {
+                "type": "string"
+              },
+              "previous": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "retry_after_at": {
+                "type": "integer"
+              },
+              "source": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "trust": {
+                "properties": {
+                  "authorship": {
+                    "type": "string"
+                  },
+                  "integrity": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "authorship",
+                  "integrity"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "age_s",
+              "cached",
+              "checked_at_ms",
+              "latest",
+              "previous",
+              "reason",
+              "retry_after_at",
+              "source",
+              "status",
+              "trust"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "running": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "apply_available",
+          "channel",
+          "check",
+          "running"
         ],
         "type": "object"
       }
@@ -27057,6 +27495,45 @@
           "credential_source": {
             "type": "string"
           },
+          "effective_capabilities": {
+            "properties": {
+              "streaming": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "tool_calling": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "streaming",
+              "tool_calling"
+            ],
+            "type": "object"
+          },
           "has_api_key": {
             "type": "boolean"
           },
@@ -27099,6 +27576,7 @@
           "base_url",
           "capability_receipt",
           "credential_source",
+          "effective_capabilities",
           "has_api_key",
           "id",
           "model",
@@ -29318,6 +29796,72 @@
           "code",
           "error",
           "received_type",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /updates/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -35897,6 +36441,67 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/compute/tasks/([^/]+)/refresh [ok]": {
+      "schema": {
+        "properties": {
+          "created_at": {
+            "type": "integer"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "outputs": {
+            "properties": {
+              "file_count": {
+                "type": "integer"
+              },
+              "total_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file_count",
+              "total_bytes"
+            ],
+            "type": "object"
+          },
+          "polled": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "job_id",
+          "live",
+          "outputs",
+          "polled",
+          "provider",
+          "reason",
+          "status",
+          "terminal",
+          "updated_at"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/context [error]": {
       "schema": {
         "properties": {
@@ -39370,6 +39975,45 @@
           "credential_source": {
             "type": "string"
           },
+          "effective_capabilities": {
+            "properties": {
+              "streaming": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "tool_calling": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "streaming",
+              "tool_calling"
+            ],
+            "type": "object"
+          },
           "has_api_key": {
             "type": "boolean"
           },
@@ -39412,6 +40056,7 @@
           "base_url",
           "capability_receipt",
           "credential_source",
+          "effective_capabilities",
           "has_api_key",
           "id",
           "model",
@@ -39613,6 +40258,45 @@
           "detail": {
             "type": "string"
           },
+          "effective_capabilities": {
+            "properties": {
+              "streaming": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "tool_calling": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "streaming",
+              "tool_calling"
+            ],
+            "type": "object"
+          },
           "outbound": {
             "type": "integer"
           },
@@ -39633,6 +40317,7 @@
           "capability_receipt",
           "contacted",
           "detail",
+          "effective_capabilities",
           "outbound",
           "reachable",
           "state",
@@ -43217,6 +43902,169 @@
           "code",
           "error",
           "received_type",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "retry_after_s": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /updates/check [ok]": {
+      "schema": {
+        "properties": {
+          "apply_available": {
+            "type": "boolean"
+          },
+          "channel": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "refusal_command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "refusal_text_key": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "refusal_command",
+              "refusal_text_key"
+            ],
+            "type": "object"
+          },
+          "check": {
+            "properties": {
+              "age_s": {
+                "type": "integer"
+              },
+              "cached": {
+                "type": "boolean"
+              },
+              "checked_at_ms": {
+                "type": "integer"
+              },
+              "latest": {
+                "type": "string"
+              },
+              "previous": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "retry_after_at": {
+                "type": "integer"
+              },
+              "source": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "trust": {
+                "properties": {
+                  "authorship": {
+                    "type": "string"
+                  },
+                  "integrity": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "authorship",
+                  "integrity"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "age_s",
+              "cached",
+              "checked_at_ms",
+              "latest",
+              "previous",
+              "reason",
+              "retry_after_at",
+              "source",
+              "status",
+              "trust"
+            ],
+            "type": "object"
+          },
+          "running": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "apply_available",
+          "channel",
+          "check",
+          "running"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /updates/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -50474,6 +51322,72 @@
         "required": [
           "enabled",
           "env_locked"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /updates/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }

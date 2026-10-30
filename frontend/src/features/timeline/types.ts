@@ -359,11 +359,50 @@ export type ComputeTask = {
   outputs: { file_count: number; total_bytes: number };
 };
 
+/** "live" is the `state=live` filter; "all" is the default latest-first view. */
+export type ComputeTaskFilter = "all" | "live";
+
 export type ComputeTasks = {
   polled: boolean;
+  /** Live tasks on this page — the pre-C1 semantics, kept as-is. */
   live_count: number;
+  /**
+   * Live tasks for the whole owner scope in the same read-only snapshot.
+   * `undefined` when the service predates the field: unknown is not zero, and
+   * the UI may then only speak about this page ("in flight on this page").
+   */
+  total_live_count?: number;
+  has_more: boolean;
+  /** Opaque, owner/filter-bound page cursor; `null` when there is no next page. */
+  next_cursor: string | null;
   tasks: ComputeTask[];
 };
+
+/**
+ * `S.computeTasks` (PLAN §6 C2 item 1): the panel's own read state.
+ * `null` means unknown/not loaded; a successful page is `ok`; a failed read is
+ * `error`, carrying the previous successful page as `stale` when there was one
+ * for the same session and filter. A view only renders for `fid === S.currentId`.
+ */
+export type ComputeTasksView =
+  | {
+      status: "ok";
+      fid: string;
+      state: ComputeTaskFilter;
+      data: ComputeTasks;
+      nextCursor: string | null;
+      /** Pages held: 1 for a first-page read, +1 per successful "load more". */
+      pages?: number;
+      /** Client time this view's last successful read completed (ms). */
+      at?: number;
+    }
+  | {
+      status: "error";
+      fid: string;
+      state: ComputeTaskFilter;
+      error: string;
+      stale?: { data: ComputeTasks; at: number };
+    };
 
 export type TimelineSpanSegment = {
   phase: string;

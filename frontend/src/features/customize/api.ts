@@ -358,3 +358,220 @@ export async function testJudgmentConnection(): Promise<JudgmentProbe> {
     model: typeof body.model === "string" ? body.model : null,
   };
 }
+
+/* --- U2 / §10 U2: explicit update checking (appendix B.2) -----------------
+ *
+ * Two routes, one feature. `GET /updates/status` is a read-only local
+ * projection; `POST /updates/check` is the only call that may contact the
+ * release index and only the user's explicit click issues it. This client
+ * validates appendix B.2 strictly and degrades to `null` (the caller then says
+ * it cannot confirm anything) rather than publishing a partially valid answer.
+ */
+
+export type UpdateCheckStatus = "update_available" | "up_to_date" | "unknown";
+export const UPDATE_CHECK_STATUSES: readonly UpdateCheckStatus[] = [
+  "update_available",
+  "up_to_date",
+  "unknown",
+];
+export type UpdateSource = "pypi" | "offline" | "none";
+export const UPDATE_SOURCES: readonly UpdateSource[] = ["pypi", "offline", "none"];
+export type UpdateIntegrity = "two_witnesses" | "single_witness" | "none";
+export const UPDATE_INTEGRITY: readonly UpdateIntegrity[] = [
+  "two_witnesses",
+  "single_witness",
+  "none",
+];
+export type UpdatePreviousKnown = {
+  status: UpdateCheckStatus;
+  latest: string;
+  checked_at_ms: number;
+};
+export type UpdateTrust = {
+  integrity: UpdateIntegrity;
+  /** Always `not_established`: digest agreement is not a release signature. */
+  authorship: "not_established";
+};
+export type UpdateCheck = {
+  status: UpdateCheckStatus;
+  reason: string;
+  latest: string;
+  source: UpdateSource;
+  checked_at_ms: number;
+  retry_after_at: number;
+  cached: boolean;
+  age_s: number;
+  previous: UpdatePreviousKnown | null;
+  trust: UpdateTrust;
+};
+export type UpdateChannel = {
+  id: string;
+  refusal_text_key: string;
+  refusal_command: string[];
+};
+export type UpdateStatus = {
+  running: string;
+  channel: UpdateChannel;
+  /** `null` is appendix B.2's "no cached answer yet". */
+  check: UpdateCheck | null;
+  apply_available: false;
+};
+
+function updateRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function updateText(value: unknown, limit: number): string | null {
+  return typeof value === "string" ? value.slice(0, limit) : null;
+}
+
+function updateInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : null;
+}
+
+function updateStatusOf(value: unknown): UpdateCheckStatus | null {
+  return (UPDATE_CHECK_STATUSES as readonly string[]).includes(String(value))
+    ? (value as UpdateCheckStatus)
+    : null;
+}
+
+function updateSourceOf(value: unknown): UpdateSource | null {
+  return (UPDATE_SOURCES as readonly string[]).includes(String(value))
+    ? (value as UpdateSource)
+    : null;
+}
+
+function updatePreviousOf(raw: unknown): UpdatePreviousKnown | null | undefined {
+  if (raw == null) return null;
+  const row = updateRecord(raw);
+  if (!row) return undefined;
+  // Appendix B.2 sends `{}` when there is nothing to carry forward.
+  if (!Object.keys(row).length) return null;
+  const status = updateStatusOf(row.status);
+  const latest = updateText(row.latest, 64);
+  const checked = updateInt(row.checked_at_ms);
+  if (!status || latest === null || checked === null) return undefined;
+  return { status, latest, checked_at_ms: checked };
+}
+
+function updateTrustOf(raw: unknown): UpdateTrust | undefined {
+  const row = updateRecord(raw);
+  if (!row) return undefined;
+  const integrity = (UPDATE_INTEGRITY as readonly string[]).includes(
+    String(row.integrity),
+  )
+    ? (row.integrity as UpdateIntegrity)
+    : null;
+  if (!integrity || row.authorship !== "not_established") return undefined;
+  return { integrity, authorship: "not_established" };
+}
+
+function updateCheckOf(raw: unknown): UpdateCheck | null | undefined {
+  if (raw === null) return null;
+  const row = updateRecord(raw);
+  if (!row) return undefined;
+  const status = updateStatusOf(row.status);
+  const reason = updateText(row.reason, 64);
+  const latest = updateText(row.latest, 64);
+  const source = updateSourceOf(row.source);
+  const checked = updateInt(row.checked_at_ms);
+  const retryAfter = updateInt(row.retry_after_at);
+  const age = updateInt(row.age_s);
+  const previous = updatePreviousOf(row.previous);
+  const trust = updateTrustOf(row.trust);
+  if (
+    !status ||
+    reason === null ||
+    latest === null ||
+    !source ||
+    checked === null ||
+    retryAfter === null ||
+    age === null ||
+    typeof row.cached !== "boolean" ||
+    previous === undefined ||
+    !trust
+  ) {
+    return undefined;
+  }
+  return {
+    status,
+    reason,
+    latest,
+    source,
+    checked_at_ms: checked,
+    retry_after_at: retryAfter,
+    cached: row.cached,
+    age_s: age,
+    previous,
+    trust,
+  };
+}
+
+/**
+ * Strict appendix B.2 projection. `null` means the payload is not the frozen
+ * shape; the caller reports that it cannot confirm anything instead of
+ * rendering whatever happened to parse.
+ */
+export function sanitizeUpdateStatus(raw: unknown): UpdateStatus | null {
+  const row = updateRecord(raw);
+  if (!row) return null;
+  const running = updateText(row.running, 64);
+  const channelRow = updateRecord(row.channel);
+  if (running === null || !channelRow) return null;
+  const id = updateText(channelRow.id, 64);
+  const refusalKey = updateText(channelRow.refusal_text_key, 160);
+  if (id === null || refusalKey === null) return null;
+  const commandsRaw = channelRow.refusal_command;
+  if (!Array.isArray(commandsRaw)) return null;
+  const refusalCommand: string[] = [];
+  for (const command of commandsRaw.slice(0, 8)) {
+    const text = updateText(command, 300);
+    if (text === null) return null;
+    if (text) refusalCommand.push(text);
+  }
+  if (row.apply_available !== false) return null;
+  const check = updateCheckOf(row.check);
+  if (check === undefined) return null;
+  return {
+    running,
+    channel: { id, refusal_text_key: refusalKey, refusal_command: refusalCommand },
+    check,
+    apply_available: false,
+  };
+}
+
+/** The local, read-only status. `null` means the payload was not B.2-shaped. */
+export async function getUpdateStatus(): Promise<UpdateStatus | null> {
+  return sanitizeUpdateStatus(await api("/updates/status"));
+}
+
+/** The explicit check. Only a user click reaches this call. */
+export async function checkForUpdates(
+  refresh: boolean,
+  signal?: AbortSignal,
+): Promise<UpdateStatus | null> {
+  return sanitizeUpdateStatus(
+    await api("/updates/check", {
+      method: "POST",
+      body: JSON.stringify({ refresh }),
+      signal,
+    }),
+  );
+}
+
+/** The bounded retry hint a 429 carries, for display only — never auto-retried. */
+export function updateRetryAfterSeconds(error: unknown): number | null {
+  const body = updateRecord((error as { body?: unknown } | null)?.body);
+  return body ? updateInt(body.retry_after_s) : null;
+}
+
+/** Team mode refuses members before the cache read or any network access. */
+export function isUpdateAdminOnly(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 403 && error.code === "admin_only"
+  );
+}

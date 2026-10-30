@@ -20,6 +20,7 @@ import { onEvent } from "../ws/registry";
 import {
   loadWorkbenchState,
   mergeDelegationChildEvent,
+  resetComputeTasks,
   scheduleWorkbenchRefresh,
   rememberExecutionState,
   renderActionTimeline,
@@ -507,6 +508,7 @@ function queued(executionId: string, preview = "follow-up") {
 
 beforeEach(() => {
   resetStoreFields();
+  resetComputeTasks();
 });
 
 afterEach(() => {
@@ -999,6 +1001,7 @@ describe("workbench refresh", () => {
     expect(doc.querySelector('.timeline-ledger-row[data-group-id="g-1"] .timeline-row-button')).toBe(button);
   });
 });
+
 
 describe("socket-driven repaint", () => {
   const checkpoints = (extra: string[] = []) => ({

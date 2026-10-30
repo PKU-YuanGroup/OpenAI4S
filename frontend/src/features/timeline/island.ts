@@ -48,6 +48,8 @@ import {
 } from "./model";
 import { renderQueueStrip } from "./queue";
 import { S } from "./s";
+import { ago, localDateTime } from "../chrome/dom";
+import { computeRecordsT } from "./copy";
 import {
   branchUndoFromProjection,
   carryRevertPreview,
@@ -56,10 +58,12 @@ import {
   RECOVERY_ACTION_IDS,
   sanitizeActionTimeline,
   sanitizeBranches,
-  sanitizeComputeTasks,
   sanitizeContext,
   sanitizeDelegations,
   sanitizeExecutionQueue,
+  mergeComputeTaskPages,
+  refreshFirstComputeTaskPage,
+  sanitizeComputeTasks,
   sanitizeRecovery,
   sanitizeRecoveryActions,
   sanitizeRevertMutationResult,
@@ -67,7 +71,15 @@ import {
   sanitizeSecurity,
   timelineOrdinal,
 } from "./sanitize";
-import type { ActionTimeline, DelegationState, TimelineGroup } from "./types";
+import type {
+  ActionTimeline,
+  ComputeTask,
+  ComputeTaskFilter,
+  ComputeTasks,
+  ComputeTasksView,
+  DelegationState,
+  TimelineGroup,
+} from "./types";
 
 type View = any;
 type Group = TimelineGroup & Record<string, any>;
@@ -299,6 +311,168 @@ export async function loadEarlierActionTimeline(): Promise<void> {
   }
 }
 
+/* --- C2: the remote-task list is its own read (PLAN §6 C2 / appendix B.1) --
+ *
+ * `optionalApi` turns a failed workbench read into `undefined`; for this part
+ * that used to render as "no tasks" and could keep another session's rows.
+ * `S.computeTasks` is the view state the plan names: `null` (unknown / not
+ * loaded), `{status:"ok", fid, state, data, nextCursor}` or
+ * `{status:"error", fid, state, error, stale?}`. The transient in-flight flags
+ * below are not part of that contract — they only pick the loading / load-more
+ * rendering.
+ */
+let computeTasksSeq = 0;
+let computeTasksLoading = false;
+let computeTasksLoadingMore = false;
+/** A failed "load more": page 1 is still a successful read, so it stays `ok`. */
+let computeTasksMoreError = "";
+
+function computeTasksPath(
+  fid: string,
+  state: ComputeTaskFilter,
+  cursor: string | null,
+): string {
+  const query = new URLSearchParams();
+  if (state === "live") query.set("state", "live");
+  if (cursor) query.set("cursor", cursor);
+  const suffix = query.toString();
+  return `/frames/${encodeURIComponent(fid)}/compute/tasks${suffix ? "?" + suffix : ""}`;
+}
+
+/** Only a view that belongs to the open session may render. */
+function computeTasksForCurrent(): ComputeTasksView | null {
+  const view = S.computeTasks as ComputeTasksView | null;
+  return view && view.fid === S.currentId ? view : null;
+}
+
+function computeTasksFilterFor(fid: string): ComputeTaskFilter {
+  const view = S.computeTasks as ComputeTasksView | null;
+  return view && view.fid === fid ? view.state : "all";
+}
+
+function scheduleComputeTasksRender(): void {
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
+}
+
+/** Session reset: drop the view and retire any in-flight read. */
+export function resetComputeTasks(): void {
+  computeTasksSeq += 1;
+  computeTasksLoading = false;
+  computeTasksLoadingMore = false;
+  computeTasksMoreError = "";
+  S.computeTasks = null;
+}
+
+function computeTasksSectionKey(): string {
+  const view = computeTasksForCurrent();
+  return [
+    String(S.currentId),
+    view ? view.fid : "",
+    view ? view.state : "",
+    view ? view.status : "",
+    view && view.status === "error" ? view.error : "",
+    view && view.status === "error" && view.stale ? "stale" : "",
+    view && view.status === "ok" ? identityKey(view.data) : "",
+    computeTasksLoading ? "loading" : "",
+    computeTasksLoadingMore ? "more" : "",
+    computeTasksMoreError,
+  ].join("|");
+}
+
+/**
+ * Read one page of the session's remote-task record. Never `optionalApi`: a
+ * 503, a network failure or any other non-2xx becomes `{status:"error"}`, and
+ * a previous success for the same session/filter is kept aside as `stale`
+ * instead of being replaced by "no tasks". `cursor` appends the next page;
+ * session, filter and a monotonic request token own the answer.
+ *
+ * A same-scope first-page reread (every workbench refresh) refreshes the rows
+ * it read and keeps the older rows a "load more" already appended, so a
+ * background refresh never takes the user back to page one.
+ */
+async function readComputeTasks(
+  fid: string,
+  state: ComputeTaskFilter,
+  cursor: string | null = null,
+): Promise<void> {
+  if (!fid || fid !== S.currentId) return;
+  const append = cursor != null;
+  const seq = ++computeTasksSeq;
+  const previous = S.computeTasks as ComputeTasksView | null;
+  const sameScope = !!previous && previous.fid === fid && previous.state === state;
+  // Switching session or filter starts from unknown; a same-scope reread keeps
+  // the held page visible until the answer arrives.
+  if (!append && !sameScope) S.computeTasks = null;
+  computeTasksMoreError = "";
+  if (append) computeTasksLoadingMore = true;
+  else computeTasksLoading = true;
+  scheduleComputeTasksRender();
+  try {
+    const payload = await api(computeTasksPath(fid, state, cursor));
+    if (seq !== computeTasksSeq || fid !== S.currentId) return;
+    const page = sanitizeComputeTasks(payload);
+    const held = S.computeTasks as ComputeTasksView | null;
+    const heldOk =
+      held && held.status === "ok" && held.fid === fid && held.state === state ? held : null;
+    const heldPages = heldOk?.pages ?? 1;
+    let data = page;
+    let pages = 1;
+    if (append && heldOk) {
+      data = mergeComputeTaskPages(heldOk.data, page);
+      pages = heldPages + 1;
+    } else if (!append && heldOk && heldPages > 1) {
+      data = refreshFirstComputeTaskPage(heldOk.data, page);
+      pages = heldPages;
+    }
+    S.computeTasks = {
+      status: "ok",
+      fid,
+      state,
+      data,
+      nextCursor: data.next_cursor,
+      pages,
+      at: Date.now(),
+    };
+  } catch (error) {
+    if (seq !== computeTasksSeq || fid !== S.currentId) return;
+    const held = S.computeTasks as ComputeTasksView | null;
+    const heldScope = !!held && held.fid === fid && held.state === state;
+    if (append && heldScope && held?.status === "ok") {
+      // The page already shown was read successfully; only the next one failed.
+      computeTasksMoreError = apiErrorText(error);
+      return;
+    }
+    // The last successful read survives repeated failures, with the time it
+    // was actually read rather than the time it stopped being refreshable.
+    const stale = !heldScope
+      ? undefined
+      : held?.status === "ok"
+        ? { data: held.data, at: held.at ?? 0 }
+        : held?.status === "error"
+          ? held.stale
+          : undefined;
+    S.computeTasks = {
+      status: "error",
+      fid,
+      state,
+      error: apiErrorText(error),
+      ...(stale ? { stale } : {}),
+    };
+  } finally {
+    if (seq === computeTasksSeq) {
+      computeTasksLoading = false;
+      computeTasksLoadingMore = false;
+    }
+    scheduleComputeTasksRender();
+  }
+}
+
+/** Workbench load / explicit refresh: first page of the current filter. */
+export function loadComputeTasks(fid: string): Promise<void> {
+  if (!fid) return Promise.resolve();
+  return readComputeTasks(fid, computeTasksFilterFor(fid));
+}
+
 /** The workbench projections, each read from its own endpoint. */
 export const WORKBENCH_PARTS = [
   "timeline",
@@ -342,7 +516,6 @@ export async function loadWorkbenchState(
       delegation,
       recovery,
       recoveryActions,
-      computeTasks,
     ] = await Promise.all([
       read("timeline", [base + `/action-timeline?limit=${ACTION_TIMELINE_PAGE_SIZE}`]),
       read("execution", [base + "/execution-queue", base + "/execution"]),
@@ -352,7 +525,9 @@ export async function loadWorkbenchState(
       read("delegations", [base + "/delegations"]),
       read("recovery", [base + "/recovery"]),
       read("recoveryActions", [base + "/recovery/actions"]),
-      read("computeTasks", [base + "/compute/tasks"]),
+      // A dedicated read, not `read()`: its failure is a visible "records
+      // unavailable", and its state lives in the controller above.
+      wanted.has("computeTasks") ? loadComputeTasks(id) : Promise.resolve(),
     ]);
     if (request !== S._workbenchReq || id !== S.currentId) return;
     if (full) S._workbenchLoading = null;
@@ -381,8 +556,6 @@ export async function loadWorkbenchState(
         S.recoveryActions,
         sanitizeRecoveryActions(recoveryActions),
       );
-    if (computeTasks)
-      S.computeTasks = keepUnchanged(S.computeTasks, sanitizeComputeTasks(computeTasks));
     if (S.activeTab === "timeline") scheduleActionTimelineRender();
     if (S.activeTab === "notebook") laneCall("renderNotebook");
   } finally {
@@ -3354,58 +3527,201 @@ async function cancelComputeTask(jobId: string, button: HTMLButtonElement): Prom
   }
 }
 
-export function renderComputeTasksPanel(): HTMLElement {
-  const panel = panelShell(t("timeline.panel.compute"), "compute-panel"),
-    state = S.computeTasks;
-  if (!state || !(state.tasks || []).length) {
-    panel.appendChild(el("div", "workbench-empty", t("compute.none")));
-    return panel;
-  }
-  const summary = el("div", "compute-summary");
-  summary.appendChild(el("span", "timeline-pill", t("compute.live", state.live_count)));
-  summary.appendChild(
-    el("span", "timeline-pill", state.polled ? t("compute.checked") : t("compute.fromRecord")),
+function computeTaskRow(task: ComputeTask): HTMLElement {
+  const row = el("div", "compute-task status-" + String(task.status).toLowerCase());
+  const head = el("div", "compute-task-head");
+  head.appendChild(el("span", "compute-task-id", shortRuntime(task.job_id) || task.job_id));
+  head.appendChild(
+    el(
+      "span",
+      "timeline-status " + String(task.status).toLowerCase(),
+      tOptional("compute.status." + task.status) || task.status,
+    ),
   );
-  panel.appendChild(summary);
-  state.tasks.forEach((task: any) => {
-    const row = el("div", "compute-task status-" + String(task.status).toLowerCase());
-    const head = el("div", "compute-task-head");
-    head.appendChild(el("span", "compute-task-id", shortRuntime(task.job_id) || task.job_id));
-    head.appendChild(
+  if (task.provider) head.appendChild(el("span", "timeline-pill", task.provider));
+  row.appendChild(head);
+  // The record's own update time, relative to now; never "just checked".
+  if (task.updated_at) {
+    row.appendChild(
       el(
-        "span",
-        "timeline-status " + String(task.status).toLowerCase(),
-        tOptional("compute.status." + task.status) || task.status,
+        "div",
+        "compute-task-updated",
+        computeRecordsT("compute.recordsUpdated", ago(new Date(task.updated_at).toISOString())),
       ),
     );
-    if (task.provider) head.appendChild(el("span", "timeline-pill", task.provider));
-    row.appendChild(head);
-    if (task.outputs.file_count)
-      row.appendChild(
+  }
+  if (task.outputs.file_count)
+    row.appendChild(
+      el(
+        "div",
+        "compute-task-outputs",
+        t("compute.outputs", task.outputs.file_count, bytes(task.outputs.total_bytes)),
+      ),
+    );
+  if (task.reason) row.appendChild(el("div", "compute-task-message", task.reason));
+  if (task.live) {
+    const refresh = focusKey(
+      ghostIconBtn("refresh", t("compute.refresh")),
+      "compute-refresh:" + task.job_id,
+    );
+    refresh.onclick = () => refreshComputeTask(task.job_id, refresh);
+    row.appendChild(refresh);
+    const cancel = focusKey(
+      ghostIconBtn("stop", tOptional("compute.cancel") || "Cancel remote job"),
+      "compute-cancel:" + task.job_id,
+    );
+    cancel.className += " compute-task-cancel";
+    cancel.onclick = () => cancelComputeTask(task.job_id, cancel);
+    row.appendChild(cancel);
+  }
+  return row;
+}
+
+/**
+ * Render one successful page (or the stale snapshot of a failed reread):
+ * summary counts, rows, and "load more" while the server says there is a next
+ * page. `allowMore` is false for a stale snapshot: appending onto a failed
+ * view would replace it with the second page.
+ */
+function appendComputeTaskPage(
+  panel: HTMLElement,
+  data: ComputeTasks,
+  state: ComputeTaskFilter,
+  allowMore: boolean,
+): void {
+  const legacyPage = data.total_live_count === undefined;
+  // An old service ignores `state=live`; filter its page here rather than show
+  // terminal rows as in-flight. Counts stay explicitly page-scoped below.
+  const visible =
+    state === "live" && legacyPage ? data.tasks.filter((task) => task.live) : data.tasks;
+  const summary = el("div", "compute-summary");
+  summary.appendChild(
+    el(
+      "span",
+      "timeline-pill",
+      legacyPage
+        ? computeRecordsT("compute.recordsPageLive", data.live_count)
+        : computeRecordsT("compute.recordsTotalLive", data.total_live_count),
+    ),
+  );
+  panel.appendChild(summary);
+  if (!visible.length) {
+    // Only a successful read may claim there is no remote task.
+    panel.appendChild(el("div", "workbench-empty", computeRecordsT("compute.recordsNone")));
+  }
+  visible.forEach((task) => panel.appendChild(computeTaskRow(task)));
+  if (allowMore && data.has_more && data.next_cursor) {
+    if (computeTasksMoreError) {
+      // The button below is the retry: the shown rows stay a successful read.
+      const failed = el(
+        "div",
+        "compute-task-message",
+        computeRecordsT("compute.recordsLoadMoreFailed") + ": " + computeTasksMoreError,
+      );
+      failed.title = computeTasksMoreError;
+      panel.appendChild(failed);
+    }
+    const more = el(
+      "button",
+      "outline-btn small",
+      computeTasksLoadingMore
+        ? computeRecordsT("compute.recordsLoadingMore")
+        : computeRecordsT("compute.recordsLoadMore"),
+    ) as HTMLButtonElement;
+    more.type = "button";
+    more.disabled = computeTasksLoadingMore;
+    more.dataset.action = "compute-load-more";
+    focusKey(more, "compute-load-more");
+    more.onclick = () => {
+      const id = S.currentId;
+      if (id) void readComputeTasks(id, state, data.next_cursor);
+    };
+    panel.appendChild(more);
+  }
+}
+
+export function renderComputeTasksPanel(): HTMLElement {
+  const panel = panelShell(t("timeline.panel.compute"), "compute-panel");
+  const view = computeTasksForCurrent();
+  const filter = view ? view.state : "all";
+
+  // The filter is always offered: after a failed read the user still needs it,
+  // and it is also how they learn which view they are looking at.
+  const controls = el("div", "workbench-controls compute-records-controls");
+  const filterButton = (value: ComputeTaskFilter, label: string): HTMLButtonElement => {
+    const button = el("button", "outline-btn small", label) as HTMLButtonElement;
+    button.type = "button";
+    button.dataset.action = "compute-filter-" + value;
+    button.setAttribute("aria-pressed", filter === value ? "true" : "false");
+    if (filter === value) button.classList.add("active");
+    focusKey(button, "compute-filter:" + value);
+    button.onclick = () => {
+      const id = S.currentId;
+      if (!id || filter === value) return;
+      // Switching the filter starts from unknown and reads the first page.
+      S.computeTasks = null;
+      void readComputeTasks(id, value);
+    };
+    return button;
+  };
+  controls.appendChild(filterButton("all", computeRecordsT("compute.recordsFilterAll")));
+  controls.appendChild(filterButton("live", computeRecordsT("compute.recordsFilterLive")));
+  panel.appendChild(controls);
+
+  const errorDetail = (message: string): HTMLElement => {
+    const node = el("div", "compute-task-message", message);
+    node.title = message;
+    return node;
+  };
+  const retryButton = (state: ComputeTaskFilter): HTMLButtonElement => {
+    const button = el(
+      "button",
+      "outline-btn small",
+      computeRecordsT("compute.recordsRetry"),
+    ) as HTMLButtonElement;
+    button.type = "button";
+    button.dataset.action = "compute-retry";
+    focusKey(button, "compute-retry");
+    button.onclick = () => {
+      const id = S.currentId;
+      if (id) void readComputeTasks(id, state);
+    };
+    return button;
+  };
+
+  if (!view) {
+    // Loading (a first-page read is in flight for this session) vs unknown
+    // (nothing was read yet / the session changed and has no answer).
+    panel.appendChild(
+      el(
+        "div",
+        "workbench-empty",
+        computeTasksLoading && S.currentId
+          ? computeRecordsT("compute.recordsLoading")
+          : computeRecordsT("compute.recordsUnknown"),
+      ),
+    );
+    return panel;
+  }
+  if (view.status === "error") {
+    panel.appendChild(
+      el("div", "timeline-error", computeRecordsT("compute.recordsUnavailable")),
+    );
+    if (view.error) panel.appendChild(errorDetail(view.error));
+    panel.appendChild(retryButton(view.state));
+    if (view.stale) {
+      panel.appendChild(
         el(
           "div",
-          "compute-task-outputs",
-          t("compute.outputs", task.outputs.file_count, bytes(task.outputs.total_bytes)),
+          "compute-task-message",
+          computeRecordsT("compute.recordsStale", localDateTime(view.stale.at) || "—"),
         ),
       );
-    if (task.reason) row.appendChild(el("div", "compute-task-message", task.reason));
-    if (task.live) {
-      const refresh = focusKey(
-        ghostIconBtn("refresh", t("compute.refresh")),
-        "compute-refresh:" + task.job_id,
-      );
-      refresh.onclick = () => refreshComputeTask(task.job_id, refresh);
-      row.appendChild(refresh);
-      const cancel = focusKey(
-        ghostIconBtn("stop", tOptional("compute.cancel") || "Cancel remote job"),
-        "compute-cancel:" + task.job_id,
-      );
-      cancel.className += " compute-task-cancel";
-      cancel.onclick = () => cancelComputeTask(task.job_id, cancel);
-      row.appendChild(cancel);
+      appendComputeTaskPage(panel, view.stale.data, view.state, false);
     }
-    panel.appendChild(row);
-  });
+    return panel;
+  }
+  appendComputeTaskPage(panel, view.data, view.state, true);
   return panel;
 }
 
@@ -4054,12 +4370,7 @@ export function renderActionTimeline(): void {
       lang + "|" + identityKey(S.delegationState),
       renderDelegationPanel,
     ),
-    timelineSection(
-      shell,
-      "compute",
-      lang + "|" + identityKey(S.computeTasks),
-      renderComputeTasksPanel,
-    ),
+    timelineSection(shell, "compute", lang + "|" + computeTasksSectionKey(), renderComputeTasksPanel),
     timelineSection(shell, "context", lang + "|" + identityKey(S.contextState), renderContextPanel),
     timelineSection(
       shell,

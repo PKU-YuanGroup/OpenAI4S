@@ -18,6 +18,6 @@ Does not edit `stores/`, does not rewrite generated i18n, does not edit `openai4
 | [`query.ts`](query.ts) | Profile/export query builders; `version_id` required. |
 | [`table.css`](table.css) | Schema / Distribution / Export chrome. |
 | [`types.ts`](types.ts) | Profile DTO, catalog posture, viewer plan. |
-| [`workbench.ts`](workbench.ts) | Flag-off sheet + workbench page + zone mount. |
+| [`workbench.ts`](workbench.ts) | Flag-off sheet + workbench page + zone mount. The legacy (flag-off) parser path reads its exact version under the strict A1 preview budget; a source fallback beyond 300,000 code units is cut through the shared `previewSlice` and shows a persistent partial-preview notice plus the exact-version download, while a complete fallback renders exactly as before; a failed read shows the classified reason, retry and same-version download. It never claims a total row count from a prefix. |
 | [`workbench.test.ts`](workbench.test.ts) | Three zones, approximate banner, histogram bounds, flag=0. |
 | [`zones.ts`](zones.ts) | Schema / Distribution / Export DOM. |

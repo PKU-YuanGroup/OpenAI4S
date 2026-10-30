@@ -1263,6 +1263,42 @@ class ComputeManager:
                 job[key] = record[key]
         return job
 
+    def adopt_record(self, record: dict) -> bool:
+        """Load one of this owner's live rows when rehydrate did not.
+
+        A restart builds a fresh map from live rows only. A row that failed to
+        load, or whose owner path spelling differs from the one the map was
+        built with, is still this session's job: adopting it lets ``result``
+        poll it. Another owner's row is refused. A terminal row is refused too
+        — putting one in the map would let a later poll treat a finished job
+        as a live handle.
+        """
+        job_id = str(record.get("job_id") or "")
+        if not job_id or not states.is_live(record.get("status")):
+            return False
+        if not self._same_owner(record.get("owner_key")):
+            return False
+        try:
+            job = self._from_record(record)
+        except Exception:  # noqa: BLE001 - one bad row must not become a handle
+            return False
+        with self._lock:
+            self._jobs.setdefault(job_id, job)
+        return True
+
+    def _same_owner(self, recorded: Any) -> bool:
+        """True when ``recorded`` is this manager's workspace, either spelling."""
+        if self._owner_key is None:
+            return recorded in (None, "")
+        if recorded == self._owner_key:
+            return True
+        if not isinstance(recorded, str) or not recorded:
+            return False
+        try:
+            return os.path.realpath(recorded) == os.path.realpath(self._owner_key)
+        except OSError:
+            return False
+
     def _persist(self, job_id: str, **fields: Any) -> None:
         """Non-terminal bookkeeping. Never used for an end state — see
         :meth:`_commit_terminal`, which must not swallow anything."""

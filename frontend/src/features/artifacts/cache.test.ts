@@ -12,7 +12,15 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { currentId } from "../../stores/session";
 import { openTabs } from "../../stores/ui";
 import { ApiError, setArtifactsFetch } from "./api";
-import { artifactCacheKey, artifactMetadataCacheKey, artifactMetadataTarget, artifactMetadataUrl, artUrl, syncArtifactVersion } from "./cache";
+import {
+  artifactCacheKey,
+  artifactMetadataCacheKey,
+  artifactMetadataTarget,
+  artifactMetadataUrl,
+  artUrl,
+  previewSlice,
+  syncArtifactVersion,
+} from "./cache";
 import { jsonResponse } from "./http-stub";
 import { loadArtifacts } from "./load";
 import type { ArtifactRow } from "./types";
@@ -195,4 +203,31 @@ it("legacy metadata without a known version cannot share an exact cache entry", 
   expect(artifactMetadataCacheKey(legacy)).not.toBe(artifactMetadataCacheKey(exact));
   expect(artifactMetadataTarget(legacy)._exactVersion).toBeUndefined();
   resetStoreFields();
+});
+
+
+describe("shared preview slice (F3)", () => {
+  afterEach(() => {
+    setArtifactsFetch(null);
+    resetStoreFields();
+  });
+
+  it("returns a complete slice at and below the limit without marking it truncated", () => {
+    expect(previewSlice("abcd", 4)).toEqual({ shown: "abcd", truncated: false });
+    expect(previewSlice("abc", 4)).toEqual({ shown: "abc", truncated: false });
+    expect(previewSlice("", 4)).toEqual({ shown: "", truncated: false });
+    expect(previewSlice(null, 4)).toEqual({ shown: "", truncated: false });
+  });
+
+  it("marks an over-limit slice truncated and keeps exactly the limit", () => {
+    expect(previewSlice("abcdef", 4)).toEqual({ shown: "abcd", truncated: true });
+    expect(previewSlice("中文报告", 2)).toEqual({ shown: "中文", truncated: true });
+  });
+
+  it("never splits a surrogate pair at the cut", () => {
+    const text = "a".repeat(3) + "🙂" + "tail";
+    // The high surrogate sits at index 3, i.e. at limit-1: take one fewer unit.
+    expect(previewSlice(text, 4)).toEqual({ shown: "aaa", truncated: true });
+    expect(previewSlice(text, 5)).toEqual({ shown: "aaa🙂", truncated: true });
+  });
 });

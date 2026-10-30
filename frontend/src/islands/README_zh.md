@@ -18,7 +18,7 @@ F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-
 | [`install.test.ts`](install.test.ts) | 安装后契约名字通过 `isReady`。 |
 | [`ketcher.ts`](ketcher.ts) | `openKetcher` iframe 打开 `/ketcher`（app.js:10834）。 |
 | [`locator.ts`](locator.ts) | PDF / HTML locator 评论（app.js:10835-10897）。 |
-| [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` 懒注入（app.js:9610-9673）。 |
-| [`mol.test.ts`](mol.test.ts) | 无 3Dmol 静态 import；无活 CDN URL；自带 src；只有最新且仍在页面上的结构创建 viewer，脚本只注入一次。 |
-| [`viewer.ts`](viewer.ts) | Dock Viewer 界面、编辑器、版本历史及记录来源面板，包括明确的核验未知状态（app.js:9430-9609）。 |
-| [`viewer.test.ts`](viewer.test.ts) | 文本编辑门禁、元数据/来源渲染及双语核验状态合同。 |
+| [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` 懒注入（app.js:9610-9673）。每个视图分别持有有界结构读取与场景，侧栏与全屏可以共存。关闭预览会取消其读取并清除其模型；共享的离屏 WebGL2 context 仅在最后一个视图关闭后释放。读取失败显示原因、重试与确切版本下载。 |
+| [`mol.test.ts`](mol.test.ts) | 无 3Dmol 静态 import；无活 CDN URL；自带 src；每个容器只有最新且仍在页面上的结构创建 viewer。覆盖独立的侧栏/全屏生命周期、按视图清理、延迟读取时稳定选择兼容桥、所有存活视图同步主题，以及共享脚本只加载一次。 |
+| [`viewer.ts`](viewer.ts) | Dock Viewer 界面、编辑器、版本历史及记录来源面板（app.js:9430-9609）。检索来源面板把被隐藏的响应摘要显示为“已隐藏”（并说明它与可核验的文件摘要不同），显式列出冲突字段与被规范化的旧别名，不再静默择值；记录来源面板同时显示明确的核验未知与元数据未提供状态。 |
+| [`viewer.test.ts`](viewer.test.ts) | 文本编辑门禁、元数据/来源渲染、双语核验状态合同，以及检索来源的隐藏摘要/别名/冲突合同。 |

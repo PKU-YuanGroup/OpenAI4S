@@ -14,6 +14,7 @@ import type {
   ActionTimeline,
   BranchState,
   BranchUndo,
+  ComputeTask,
   ComputeTasks,
   ContextState,
   ArtifactEvidence,
@@ -1059,31 +1060,126 @@ export function sanitizeDelegations(payload: unknown): DelegationState {
   };
 }
 
+const COMPUTE_TASK_PAGE_LIMIT = 200;
+/**
+ * The server mints the cursor as unpadded base64url. It is opaque and sent back
+ * verbatim, so it is validated rather than scrubbed: rewriting or clipping it
+ * (as display text would be) turns the next page into `400 invalid_cursor`.
+ */
+const COMPUTE_CURSOR = /^[A-Za-z0-9_-]{1,512}$/;
+
+/**
+ * A same-owner total is optional. `undefined` is "this service did not say",
+ * which is not the same as zero and must not become one downstream.
+ */
+function optionalCount(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.floor(value));
+}
+
+function sanitizeComputeTask(raw: unknown): ComputeTask {
+  const task = asRecord(raw);
+  const outputs = asRecord(task.outputs);
+  return {
+    job_id: publicText(task.job_id, 120),
+    provider: publicText(task.provider, 64),
+    status: publicText(task.status, 32) || "unknown",
+    reason: publicText(task.reason || task.termination_reason, 500),
+    live: !!task.live,
+    terminal: !!task.terminal,
+    updated_at: Number(task.updated_at) || 0,
+    outputs: {
+      file_count: Math.max(0, Number(outputs.file_count) || 0),
+      total_bytes: Math.max(0, Number(outputs.total_bytes) || 0),
+    },
+  };
+}
+
 export function sanitizeComputeTasks(payload: unknown): ComputeTasks {
   const wrapped = asRecord(payload);
   const source = asRecord(
     wrapped.tasks ? payload : wrapped.payload || payload || {},
   );
   const tasks = Array.isArray(source.tasks) ? source.tasks : [];
+  const cursor =
+    typeof source.next_cursor === "string" && COMPUTE_CURSOR.test(source.next_cursor)
+      ? source.next_cursor
+      : "";
   return {
     polled: !!source.polled,
-    live_count: Math.max(0, Number(source.live_count) || 0),
-    tasks: tasks.slice(0, 200).map((raw) => {
-      const task = asRecord(raw);
-      const outputs = asRecord(task.outputs);
-      return {
-        job_id: publicText(task && task.job_id, 120),
-        provider: publicText(task && task.provider, 64),
-        status: publicText(task && task.status, 32) || "unknown",
-        reason: publicText(task && (task.reason || task.termination_reason), 500),
-        live: !!(task && task.live),
-        terminal: !!(task && task.terminal),
-        updated_at: Number(task && task.updated_at) || 0,
-        outputs: {
-          file_count: Math.max(0, Number(outputs.file_count) || 0),
-          total_bytes: Math.max(0, Number(outputs.total_bytes) || 0),
-        },
-      };
-    }),
+    live_count: Math.max(0, Math.floor(Number(source.live_count) || 0)),
+    total_live_count: optionalCount(source.total_live_count),
+    has_more: source.has_more === true,
+    next_cursor: cursor || null,
+    tasks: tasks.slice(0, COMPUTE_TASK_PAGE_LIMIT).map(sanitizeComputeTask),
+  };
+}
+
+/**
+ * Append a next page to the page already held. The later page is the newer
+ * observation of a repeated job, so it replaces the earlier copy in place.
+ * The page-scoped `live_count` is recomputed over what is loaded, while the
+ * same-owner total and the cursor come from the newest response (falling back
+ * to the held total only when the newer page omitted it).
+ */
+export function mergeComputeTaskPages(
+  previous: ComputeTasks | null,
+  next: ComputeTasks,
+): ComputeTasks {
+  const tasks: ComputeTask[] = previous ? previous.tasks.slice() : [];
+  const index = new Map<string, number>();
+  tasks.forEach((task, position) => {
+    // A row with no job id cannot be a stable identity; do not collapse two
+    // malformed rows into one.
+    if (task.job_id) index.set(task.job_id, position);
+  });
+  for (const task of next.tasks) {
+    const at = task.job_id ? index.get(task.job_id) : undefined;
+    if (at == null) {
+      if (task.job_id) index.set(task.job_id, tasks.length);
+      tasks.push(task);
+    } else {
+      tasks[at] = task;
+    }
+  }
+  return {
+    polled: next.polled,
+    live_count: tasks.filter((task) => task.live).length,
+    total_live_count:
+      next.total_live_count !== undefined
+        ? next.total_live_count
+        : previous?.total_live_count,
+    has_more: next.has_more,
+    next_cursor: next.next_cursor,
+    tasks,
+  };
+}
+
+/**
+ * Re-read the first page under pages a "load more" already appended. The new
+ * first page leads (it is the newer observation of its rows and holds any job
+ * recorded since); the older appended rows follow in their held order. The
+ * position stays the deepest one already reached, so the next "load more"
+ * continues after the last row shown rather than repeating page two.
+ */
+export function refreshFirstComputeTaskPage(
+  held: ComputeTasks,
+  first: ComputeTasks,
+): ComputeTasks {
+  const seen = new Set(first.tasks.map((task) => task.job_id).filter(Boolean));
+  const tasks = [
+    ...first.tasks,
+    ...held.tasks.filter((task) => !task.job_id || !seen.has(task.job_id)),
+  ];
+  return {
+    polled: first.polled,
+    live_count: tasks.filter((task) => task.live).length,
+    total_live_count:
+      first.total_live_count !== undefined
+        ? first.total_live_count
+        : held.total_live_count,
+    has_more: held.has_more,
+    next_cursor: held.next_cursor,
+    tasks,
   };
 }

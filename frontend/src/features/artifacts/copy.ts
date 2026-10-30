@@ -1,4 +1,5 @@
 import { copyLookup, type CopyTable } from "../../i18n/copy";
+import { ApiError, ArtifactReadError, bytes } from "./api";
 
 /**
  * M-03 copy. Existing Files/viewer keys stay in the F-07 dictionaries.
@@ -53,6 +54,45 @@ const COPY: CopyTable = {
     "editor.observedMatch": "读取到版本 {0}，内容与草稿相同。这不能确认是哪一次请求写入的。",
     "editor.observedDifferent": "读取到版本 {0}，内容与草稿不同。",
     "editor.copyManually": "自动复制失败，已选中草稿；请使用系统复制快捷键。",
+    "science.tab.records": "检索记录",
+    "science.tab.json": "原始 JSON",
+    "science.responseHidden": "已隐藏",
+    "science.responseHiddenNote": "来源投影未公开响应摘要；这是权限/脱敏的结果，与可核验的文件摘要不同。",
+    "science.field.responseSha256": "检索响应摘要（来源记录）",
+    "science.aliasNote": "来源使用旧字段名（{0}），已按规范字段显示。",
+    "science.conflictNote": "来源字段冲突，已显示规范字段（{0}）。",
+    "science.records.empty": "此文件的检索结果为空。",
+    "science.records.saved": "本文件保存 {0} 条记录。",
+    "science.records.nextPage": "检索还有后续页，未包含在此文件中。",
+    "science.records.loadMore": "加载更多记录",
+    "science.records.limit": "记录清单最多显示 500 条，其余未加载；请下载原始 JSON 查看全部。",
+    "science.column.id": "ID",
+    "science.column.title": "标题",
+    "science.column.type": "类型",
+    "science.column.link": "链接",
+    "science.record.attributes": "属性（{0}）",
+    "notebook.readonly": "文件内保存的输出，未在本次查看时执行。",
+    "notebook.meta": "{0} 个 Cell · 语言 {1}",
+    "notebook.languageUnknown": "未知",
+    "notebook.empty": "此 Notebook 没有 Cell。",
+    "notebook.cellsOmitted": "另有 {0} 个 Cell 未显示（上限 200 个）。",
+    "notebook.outputsOmitted": "此 Cell 另有 {0} 个输出未显示（每 Cell 上限 20 个）。",
+    "notebook.textTruncated": "此文本超过 65,536 个字符，仅显示开头部分；完整内容请下载原文件。",
+    "notebook.imageOmitted": "图像已省略（超出预览上限）。",
+    "notebook.mimeUnsupported": "不支持的输出类型：{0}（未执行）。",
+    "notebook.pngAlt": "Notebook 中保存的图像输出",
+    "notebook.showMore": "显示更多（还有 {0} 个 Cell）",
+    "notebook.originalText": "原文件内容",
+    "notebook.problem.invalid": "无法预览（不是 nbformat 4）。",
+    "viewer.read.limit": "文件超出预览读取上限（{0}），已停止自动预览。可下载确切版本的原文件。",
+    "viewer.read.unbounded": "无法确认这次读取的大小上限，已停止自动预览。可下载原文件。",
+    "viewer.read.timeout": "读取超时，已停止自动预览。可重试或下载原文件。",
+    "viewer.read.failed": "读取失败。可重试或下载原文件。",
+    "viewer.read.failedStatus": "读取失败（HTTP {0}）。可重试或下载原文件。",
+    "viewer.read.retry": "重试读取",
+    "viewer.renderer.retry": "重试",
+    "viewer.preview.partial": "部分预览：仅显示前 {0} 个字符，完整内容请下载。",
+    "viewer.preview.latest": "最新版本（无固定版本标识）",
     "viewer.text.truncated": "预览已截断。可展开已读取的完整原文，或下载文件。",
     "viewer.text.expand": "展开完整原文",
     "viewer.text.complete": "已展示完整原文。",
@@ -79,6 +119,7 @@ const COPY: CopyTable = {
     "files.index.unavailable": "无法加载文件索引。",
     "files.read.failed": "无法读取此会话的文件。",
     "files.read.stale": "无法刷新此会话的文件，下面是上次确认的列表。",
+    "files.thumb.partial": "部分预览",
     "artifact.editPinned": "当前标签页显示的是固定版本；请打开最新版本后再编辑",
     "prov.env.noSnapshot": "此版本未记录生产时环境（上传文件，或早于环境捕获功能生成）；不会用守护进程的实时环境替代。",
     "prov.env.packagesUnknown": "未知",
@@ -134,6 +175,45 @@ const COPY: CopyTable = {
     "editor.observedMatch": "Read version {0}; its content matches the draft. This does not identify which request wrote it.",
     "editor.observedDifferent": "Read version {0}; its content differs from the draft.",
     "editor.copyManually": "Automatic copying failed. The draft is selected; use your system copy shortcut.",
+    "science.tab.records": "Retrieval records",
+    "science.tab.json": "Raw JSON",
+    "science.responseHidden": "hidden",
+    "science.responseHiddenNote": "The source projection does not publish the response digest; that is a permission/redaction fact, separate from the verifiable file digest.",
+    "science.field.responseSha256": "Retrieval response digest (source record)",
+    "science.aliasNote": "The source used legacy field names ({0}); the canonical fields are shown.",
+    "science.conflictNote": "Source fields conflict; the canonical fields are shown ({0}).",
+    "science.records.empty": "The retrieval result in this file is empty.",
+    "science.records.saved": "This file contains {0} records.",
+    "science.records.nextPage": "The search has later pages that are not included in this file.",
+    "science.records.loadMore": "Load more records",
+    "science.records.limit": "The record list shows at most 500 records; the rest are not loaded. Download the raw JSON to read them all.",
+    "science.column.id": "ID",
+    "science.column.title": "Title",
+    "science.column.type": "Type",
+    "science.column.link": "Link",
+    "science.record.attributes": "Attributes ({0})",
+    "notebook.readonly": "Outputs saved in the file; nothing was executed while viewing it.",
+    "notebook.meta": "{0} cells · language {1}",
+    "notebook.languageUnknown": "unknown",
+    "notebook.empty": "This notebook has no cells.",
+    "notebook.cellsOmitted": "{0} more cells are not shown (limit 200).",
+    "notebook.outputsOmitted": "{0} more outputs in this cell are not shown (limit 20 per cell).",
+    "notebook.textTruncated": "This text exceeds 65,536 characters; only the beginning is shown. Download the original file for the rest.",
+    "notebook.imageOmitted": "Image omitted (over the preview limit).",
+    "notebook.mimeUnsupported": "Unsupported output type: {0} (not executed).",
+    "notebook.pngAlt": "Image output saved in the notebook",
+    "notebook.showMore": "Show more ({0} more cells)",
+    "notebook.originalText": "Original file text",
+    "notebook.problem.invalid": "Cannot preview (not nbformat 4).",
+    "viewer.read.limit": "The file is over the preview read limit ({0}); automatic preview stopped. The exact version can still be downloaded.",
+    "viewer.read.unbounded": "The size of this read could not be bounded, so automatic preview stopped. The original file can still be downloaded.",
+    "viewer.read.timeout": "The read timed out and automatic preview stopped. Retry, or download the original file.",
+    "viewer.read.failed": "The read failed. Retry, or download the original file.",
+    "viewer.read.failedStatus": "The read failed (HTTP {0}). Retry, or download the original file.",
+    "viewer.read.retry": "Retry reading",
+    "viewer.renderer.retry": "Retry",
+    "viewer.preview.partial": "Partial preview: only the first {0} characters are shown; download the complete file.",
+    "viewer.preview.latest": "Latest version (no fixed version identifier)",
     "viewer.text.truncated": "Preview truncated. Expand the complete text already loaded, or download the file.",
     "viewer.text.expand": "Show complete text",
     "viewer.text.complete": "Showing complete text.",
@@ -160,6 +240,7 @@ const COPY: CopyTable = {
     "files.index.unavailable": "Could not load the file index.",
     "files.read.failed": "Could not read this session's files.",
     "files.read.stale": "Could not refresh this session's files; showing the last confirmed list.",
+    "files.thumb.partial": "Partial preview",
     "artifact.editPinned": "This tab shows a fixed version; open the latest version to edit the file",
     "prov.env.noSnapshot": "No environment was recorded for this version (uploaded file, or produced before environment capture existed); the live daemon environment is not substituted.",
     "prov.env.packagesUnknown": "unknown",
@@ -171,3 +252,19 @@ const COPY: CopyTable = {
 };
 
 export const filesT = copyLookup(COPY);
+
+/**
+ * The honest one-line reason a bounded preview read stopped: over the limit,
+ * unprovable size, timeout, or a plain read failure. Cancellation is not an
+ * error and is filtered by the caller.
+ */
+export function readFailureText(error: unknown): string {
+  if (error instanceof ArtifactReadError) {
+    if (error.kind === "too_large") return filesT("viewer.read.limit", bytes(error.maxBytes));
+    if (error.kind === "timeout") return filesT("viewer.read.timeout");
+  }
+  // HTTP failures keep their status: "read failed" alone hides whether the
+  // version is gone (404), forbidden (403) or transient (5xx).
+  if (error instanceof ApiError) return filesT("viewer.read.failedStatus", error.status);
+  return filesT("viewer.read.failed");
+}

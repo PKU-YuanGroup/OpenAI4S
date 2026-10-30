@@ -13,6 +13,8 @@
  */
 
 import { _molView, _molViewer } from "../stores/artifacts";
+import { fetchArtifactText, isArtifactReadAborted, previewReadSignal } from "../features/artifacts/api";
+import { filesT, readFailureText } from "../features/artifacts/copy";
 import { esc } from "../features/md/esc";
 import { themeIsDark } from "../features/theme/theme";
 import { el } from "./dom";
@@ -26,6 +28,7 @@ type MolModel = {
 
 type MolViewer = {
   clear?: () => void;
+  getRenderer?: () => { getContext?: () => WebGLRenderingContext | WebGL2RenderingContext | null };
   setBackgroundColor?: (color: string) => void;
   addModel: (data: string, fmt: string) => MolModel;
   removeAllSurfaces?: () => void;
@@ -49,13 +52,33 @@ function preFallback(view: HTMLElement, text: string): void {
   view.innerHTML = "<pre style='padding:16px'>" + esc(text.slice(0, 8000)) + "</pre>";
 }
 
-/**
- * The latest molecule() call. Only it may create the one live viewer: an
- * earlier call still fetching (or waiting on the script) used to finish
- * after it, overwrite `_molViewer`/`_molView` and leave a WebGL context
- * nothing would free.
- */
-let molRequest = 0;
+type MolSession = {
+  view: HTMLElement;
+  controller: AbortController;
+  viewer: MolViewer | null;
+  detach: () => void;
+};
+/** Dock and fullscreen own separate reads and scenes. */
+const molSessions = new Map<HTMLElement, MolSession>();
+
+function syncMolBridge(): void {
+  // Opening order, not asynchronous completion order, selects the bridge.
+  const latest = [...molSessions.values()].filter((session) => session.viewer).at(-1);
+  _molViewer.value = latest?.viewer ?? null;
+  _molView.value = latest?.view ?? null;
+}
+
+export function molRetheme(dark: boolean): void {
+  for (const session of molSessions.values()) {
+    if (!session.view.isConnected || session.controller.signal.aborted) continue;
+    try {
+      session.viewer?.setBackgroundColor?.(dark ? "#1c1c19" : "white");
+      session.viewer?.render();
+    } catch {
+      /* one disposed renderer must not prevent the other view updating */
+    }
+  }
+}
 /** The one in-flight load of the vendored script, shared by every caller. */
 let molScript: Promise<boolean> | null = null;
 
@@ -82,36 +105,46 @@ function loadMolScript(): Promise<boolean> {
   return molScript;
 }
 
-/* Free the previous 3Dmol WebGL context before creating a new one (browsers cap
-   live contexts at ~16; leaking one per structure viewed eventually blanks them). */
-export function molTeardown(): void {
-  try {
-    const viewer = _molViewer.value as MolViewer | null;
-    if (viewer && viewer.clear) viewer.clear();
-  } catch {
-    /* already gone */
-  }
-  try {
-    const host = _molView.value as HTMLElement | null;
-    const cvs = host && host.querySelector && host.querySelector("canvas");
-    if (cvs) {
-      const gl =
-        (cvs as HTMLCanvasElement).getContext("webgl") ||
-        (cvs as HTMLCanvasElement).getContext("experimental-webgl");
-      const ext = gl && (gl as WebGLRenderingContext).getExtension("WEBGL_lose_context");
-      if (ext) ext.loseContext();
+/* Release only the closing view's WebGL context. An omitted root closes all
+   viewers for the legacy session-switch hook; null means no matching view. */
+export function molTeardown(root?: Element | null): void {
+  if (root === null) return;
+  for (const [container, session] of molSessions) {
+    if (root && container.isConnected && root !== container && !root.contains(container)) continue;
+    molSessions.delete(container);
+    session.detach();
+    session.controller.abort();
+    try {
+      session.viewer?.clear?.();
+    } catch {
+      /* already gone */
     }
-  } catch {
-    /* canvas gone */
+    try {
+      const cvs = session.view.querySelector("canvas");
+      // Current 3Dmol can render through an OffscreenCanvas; its visible
+      // canvas then only has a bitmaprenderer, not the owning GL context.
+      const gl = session.viewer?.getRenderer?.().getContext?.() ||
+        cvs?.getContext("webgl2") || cvs?.getContext("webgl") || cvs?.getContext("experimental-webgl");
+      const ext = gl && (gl as WebGLRenderingContext).getExtension("WEBGL_lose_context");
+      // 3Dmol shares its offscreen context across renderers. Its remaining
+      // viewers still need that context even after this scene was cleared.
+      const shared = gl && [...molSessions.values()].some(
+        (other) => other.viewer?.getRenderer?.().getContext?.() === gl,
+      );
+      if (ext && !shared) ext.loseContext();
+    } catch {
+      /* canvas gone */
+    }
   }
-  _molViewer.value = null;
-  _molView.value = null;
+  // Keep the compatibility bridge pointed at a surviving viewer.
+  syncMolBridge();
 }
 
 /** app.js:9622-9673 — container-agnostic, style selector, atom count, download, label. */
 export function molecule(container: HTMLElement, url: string, nm: string): void {
-  molTeardown();
-  const request = ++molRequest;
+  molTeardown(container);
+  const controller = new AbortController();
+  const signal = controller.signal;
   container.innerHTML = "";
   const wrap = el("div", "mol-wrap");
   wrap.appendChild(el("div", "mol-tag", "Using 3Dmol.js viewer"));
@@ -146,6 +179,18 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
   wrap.appendChild(view);
   wrap.appendChild(foot);
   container.appendChild(wrap);
+  const parentSignal = previewReadSignal(container);
+  const onClose = () => molTeardown(container);
+  const session: MolSession = {
+    view, controller, viewer: null,
+    detach: () => parentSignal?.removeEventListener("abort", onClose),
+  };
+  molSessions.set(container, session);
+  parentSignal?.addEventListener("abort", onClose, { once: true });
+  if (parentSignal?.aborted) {
+    onClose();
+    return;
+  }
   const fmt = nm.split(".").pop() || "pdb";
   let viewer: MolViewer | null = null;
   let caOnly = false;
@@ -182,11 +227,29 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
     viewer.render();
   };
   // Superseded by a later structure, or its view was replaced meanwhile.
-  const stale = (): boolean => request !== molRequest || !view.isConnected;
+  const stale = (): boolean => signal.aborted || !view.isConnected;
+  /** The bounded read failed (over limit / timeout / HTTP): say so, keep download. */
+  const showFailure = (error: unknown): void => {
+    if (stale() || isArtifactReadAborted(error)) return;
+    view.innerHTML = "";
+    const card = el("div", "renderer-fallback");
+    const text = el("div", "renderer-fallback-text", readFailureText(error));
+    text.setAttribute("role", "alert");
+    card.appendChild(text);
+    const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
+    again.onclick = () => {
+      molecule(container, url, nm);
+    };
+    card.appendChild(again);
+    const download = el("a", "outline-btn small", translate("common.download"));
+    download.href = url;
+    download.setAttribute("download", nm || "artifact");
+    card.appendChild(download);
+    view.appendChild(card);
+  };
   const boot = (): Promise<void> => {
     if (stale()) return Promise.resolve();
-    return fetch(url)
-      .then((r) => r.text())
+    return fetchArtifactText(url, { signal })
       .then((data) => {
         if (stale()) return;
         try {
@@ -198,8 +261,8 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
           viewer = runtime.createViewer(view, {
             backgroundColor: themeIsDark() ? "#1c1c19" : "white",
           });
-          _molViewer.value = viewer;
-          _molView.value = view;
+          session.viewer = viewer;
+          syncMolBridge();
           const model = viewer.addModel(data, fmt);
           let atoms: Array<{ atom?: string; name?: string }> = [];
           try {
@@ -223,19 +286,17 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
           preFallback(view, data);
         }
       })
-      .catch(() => {
-        /* fetch failed; chrome still offers download */
-      });
+      .catch(showFailure);
   };
-  const fb = (): Promise<void> =>
-    fetch(url)
-      .then((r) => r.text())
+  const fb = (): Promise<void> => {
+    if (stale()) return Promise.resolve();
+    return fetchArtifactText(url, { signal })
       .then((text) => {
+        if (stale()) return;
         preFallback(view, text);
       })
-      .catch(() => {
-        /* nothing to show */
-      });
+      .catch(showFailure);
+  };
   if (molApi()) {
     void boot();
     return;

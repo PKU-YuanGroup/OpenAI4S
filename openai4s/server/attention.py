@@ -361,7 +361,9 @@ class AttentionService:
         except Exception:  # noqa: BLE001
             return []
         try:
-            listing = compute_tasks.owner_tasks(self.store, owner_key)
+            listing = compute_tasks.owner_tasks(
+                self.store, owner_key, frame_id=frame_id
+            )
         except Exception:  # noqa: BLE001
             return []
         items: list[dict[str, Any]] = []

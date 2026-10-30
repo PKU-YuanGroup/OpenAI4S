@@ -7,7 +7,16 @@
 
 import { artifacts as artifactsSignal, dockArtifact } from "../stores/artifacts";
 import { _annotDraft, annotations, currentId } from "../stores/session";
-import { api, apiErrorText } from "../features/artifacts/api";
+import {
+  api,
+  apiErrorText,
+  artifactMediaType,
+  isArtifactReadAborted,
+  previewObjectUrl,
+  previewReadSignal,
+  readArtifactBytes,
+} from "../features/artifacts/api";
+import { rendererFailure } from "../features/artifacts/renderers";
 import type { ArtifactRow } from "../features/artifacts/types";
 import { openViewer } from "../features/artifacts/ui";
 import { hint } from "../features/sessions/chrome";
@@ -449,7 +458,7 @@ export function renderAnnotatableImage(body: HTMLElement, a: ArtifactRow, url: s
   const stage = el("div", "annot-stage") as AnnotStage;
   stage._artId = a.id;
   const img = el("img", "annot-img");
-  img.src = url;
+  img.alt = a.filename || "artifact";
   img.draggable = false;
   const layer = el("div", "annot-layer");
   stage.appendChild(img);
@@ -457,6 +466,22 @@ export function renderAnnotatableImage(body: HTMLElement, a: ArtifactRow, url: s
   zoom.appendChild(stage);
   wrap.appendChild(zoom);
   body.appendChild(wrap);
+  readArtifactBytes(url, { signal: previewReadSignal(body) })
+    .then((bytes) => {
+      if (body.isConnected === false) return;
+      img.src = previewObjectUrl(
+        bytes,
+        artifactMediaType(a.filename, a.content_type, "application/octet-stream"),
+        body,
+      );
+    })
+    .catch((error: unknown) => {
+      if (body.isConnected === false || isArtifactReadAborted(error)) return;
+      // The island is the production image viewer, so a failed read has to
+      // say why and offer retry here. The glue's failure card never runs
+      // once this function has taken the container.
+      rendererFailure(body, a, url, error, () => renderAnnotatableImage(body, a, url));
+    });
 
   const zs = { z: 1, fitW: 0, max: 8 };
   // At z=1 the image is fitted to the pane by CSS alone (.annot-img max-width:100%

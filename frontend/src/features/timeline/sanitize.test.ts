@@ -13,6 +13,7 @@ import {
   RECOVERY_ACTION_IDS,
   sanitizeActionTimeline,
   sanitizeBranches,
+  mergeComputeTaskPages,
   sanitizeComputeTasks,
   sanitizeContext,
   sanitizeArtifactEvidence,
@@ -724,5 +725,167 @@ describe("sanitizeArtifactEvidence", () => {
       ],
     });
     expect(present.children[0]?.artifact_evidence?.items[0]?.version_id).toBe("v-kept");
+  });
+});
+
+// C2: the task list grows a same-owner total and a bounded page cursor. An old
+// service sends neither, and "absent" must stay unknown: a zero there would
+// be read as "no tasks in the whole session", which the page cannot support.
+describe("sanitizeComputeTasks paging", () => {
+  it("keeps absent paging fields unknown rather than zero", () => {
+    const page = sanitizeComputeTasks({ tasks: [], live_count: 0, polled: false });
+    expect(page.total_live_count).toBeUndefined();
+    expect(page.has_more).toBe(false);
+    expect(page.next_cursor).toBeNull();
+  });
+
+  it("reads the additive fields and bounds the opaque cursor", () => {
+    const page = sanitizeComputeTasks({
+      polled: false,
+      live_count: 2,
+      total_live_count: 17,
+      has_more: true,
+      next_cursor: "x".repeat(600),
+      tasks: [{ job_id: "j1", status: "running", live: true }],
+    });
+    expect(page.total_live_count).toBe(17);
+    expect(page.has_more).toBe(true);
+    // Refused, not clipped: a shortened cursor is a different (invalid) cursor.
+    expect(page.next_cursor).toBeNull();
+  });
+
+  it("passes a base64url cursor through byte for byte, credential-shaped runs included", () => {
+    const cursor = "eyJmcCI6IiJ9-sk_AbCdEfGhIjKl-ark-0123456789";
+    expect(sanitizeComputeTasks({ tasks: [], next_cursor: cursor }).next_cursor).toBe(cursor);
+    expect(sanitizeComputeTasks({ tasks: [], next_cursor: "a b" }).next_cursor).toBeNull();
+  });
+
+  it("does not turn malformed counts or cursors into a claim", () => {
+    const page = sanitizeComputeTasks({
+      live_count: -3,
+      total_live_count: "12",
+      has_more: "yes",
+      next_cursor: { op: "all" },
+      tasks: [],
+    });
+    expect(page.live_count).toBe(0);
+    expect(page.total_live_count).toBeUndefined();
+    expect(page.has_more).toBe(false);
+    expect(page.next_cursor).toBeNull();
+  });
+
+  it("merges the next page without repeating a task and keeps the newest state", () => {
+    const first = sanitizeComputeTasks({
+      live_count: 2,
+      total_live_count: 3,
+      has_more: true,
+      next_cursor: "c1",
+      tasks: [
+        { job_id: "a", live: true },
+        { job_id: "b", live: false },
+      ],
+    });
+    const second = sanitizeComputeTasks({
+      live_count: 1,
+      total_live_count: 3,
+      has_more: false,
+      next_cursor: null,
+      tasks: [
+        { job_id: "b", live: true },
+        { job_id: "c", live: false },
+      ],
+    });
+    const merged = mergeComputeTaskPages(first, second);
+    expect(merged.tasks.map((task) => task.job_id)).toEqual(["a", "b", "c"]);
+    // The later page is the newer observation of the task it repeats.
+    expect(merged.tasks[1]?.live).toBe(true);
+    expect(merged.has_more).toBe(false);
+    expect(merged.next_cursor).toBeNull();
+    expect(merged.total_live_count).toBe(3);
+    // `live_count` stays the page-scoped count over what is loaded.
+    expect(merged.live_count).toBe(2);
+  });
+
+  it("merges into a missing previous page", () => {
+    const merged = mergeComputeTaskPages(
+      null,
+      sanitizeComputeTasks({ tasks: [{ job_id: "a", live: true }], live_count: 1 }),
+    );
+    expect(merged.tasks).toHaveLength(1);
+    expect(merged.total_live_count).toBeUndefined();
+    expect(merged.next_cursor).toBeNull();
+  });
+});
+
+// Captured from the real C1 route (`compute_tasks.owner_tasks` over a
+// 201-job owner whose oldest job is still live, at C1 5d565c67) rather than
+// hand-written: the six top-level keys, the page-scoped `live_count` next to
+// the same-owner `total_live_count`, a non-empty cursor and the public task
+// fields are whatever the server actually produced.
+describe("C2 contract: a payload captured from the merged C1 route", () => {
+  const C1_PAGE = {
+    tasks: [
+      {
+        created_at: 5000,
+        job_id: "job-001",
+        live: false,
+        outputs: { file_count: 0, total_bytes: 0 },
+        provider: "byoc-test",
+        status: "succeeded",
+        terminal: true,
+        terminal_at: 1,
+        updated_at: 1792759716313,
+      },
+    ],
+    live_count: 0,
+    polled: false,
+    total_live_count: 1,
+    has_more: true,
+    next_cursor: "eyJqIjoiam9iLTAwMSIsInMiOiJhbGwiLCJ0Ijo1MDAwLCJ2IjoxfQ",
+  };
+
+  it("keeps every documented field and the opaque cursor as the server sent them", () => {
+    const page = sanitizeComputeTasks(C1_PAGE);
+    expect(page.has_more).toBe(true);
+    expect(page.next_cursor).toBe(C1_PAGE.next_cursor);
+    expect(page.polled).toBe(false);
+    // 200 newest rows contain no live job; the same-owner total still says 1.
+    expect(page.live_count).toBe(0);
+    expect(page.total_live_count).toBe(1);
+    expect(page.tasks[0]).toMatchObject({
+      job_id: "job-001",
+      provider: "byoc-test",
+      status: "succeeded",
+      live: false,
+      terminal: true,
+      updated_at: 1792759716313,
+      outputs: { file_count: 0, total_bytes: 0 },
+    });
+  });
+
+  it("appends the real next page without inventing another page", () => {
+    const first = sanitizeComputeTasks(C1_PAGE);
+    const second = sanitizeComputeTasks({
+      ...C1_PAGE,
+      tasks: [
+        {
+          ...C1_PAGE.tasks[0],
+          job_id: "job-000",
+          status: "running",
+          live: true,
+          terminal: false,
+          terminal_at: undefined,
+        },
+      ],
+      has_more: false,
+      next_cursor: null,
+      live_count: 1,
+    });
+    const merged = mergeComputeTaskPages(first, second);
+    expect(merged.tasks.map((task) => task.job_id)).toEqual(["job-001", "job-000"]);
+    expect(merged.has_more).toBe(false);
+    expect(merged.next_cursor).toBeNull();
+    expect(merged.total_live_count).toBe(1);
+    expect(merged.live_count).toBe(1);
   });
 });

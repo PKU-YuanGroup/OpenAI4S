@@ -1710,6 +1710,38 @@ def _desktop_launcher_argv(value: str) -> list[str]:
     return argv
 
 
+def test_a_bundle_missing_a_shipped_web_ui_asset_fails_the_verifier(tmp_path):
+    """Deleting a required interface resource is a release failure, not a warning.
+
+    The verifier's whole job is to judge what ships. The default shell names its
+    entrypoint through a content-hashed Vite path, so a bundle can keep a
+    plausible `dist/index.html` while the module it loads is gone; the daemon
+    then serves a blank workbench to every user of that release. The contract
+    reads the shell and resolves each same-origin asset it names.
+    """
+    contract = _load_script("bundle_contract")
+    src = tmp_path / "src"
+    web = src / "openai4s" / "server" / "webui"
+    (web / "dist" / "assets").mkdir(parents=True)
+    (web / "dist" / "index.html").write_text(
+        "<!doctype html><html><head>"
+        '<link rel="stylesheet" href="/static/dist/assets/app.css">'
+        "</head><body>"
+        '<script type="module" src="/static/dist/assets/app.js"></script>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+    (web / "dist" / "assets" / "app.css").write_text("body{}", encoding="utf-8")
+    (web / "dist" / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    contract.check_web_assets(src)
+
+    (web / "dist" / "assets" / "app.js").unlink()
+    with pytest.raises(
+        contract.BundleCheckError, match="default Web UI resource is missing"
+    ):
+        contract.check_web_assets(src)
+
+
 def _generated_linux_bundle(tmp_path, directory, themed_icon):
     """A bundle directory written by the shipped step-6 generator, not installed."""
     bash = shutil.which("bash")
@@ -1895,6 +1927,33 @@ def test_the_linux_verifier_runs_the_installer_it_ships(tmp_path):
     runtime.chmod(0o755)
     with pytest.raises(verifier.BundleCheckError, match="no isolated mode here"):
         verifier._check_installer_runs(app)
+
+
+def test_a_linux_receipt_without_runtime_smoke_is_refused(tmp_path):
+    """The release receipt gate treats executed evidence as part of the receipt.
+
+    A build receipt binds bytes to a commit; schema 3 additionally requires the
+    Linux artifact to carry the appendix-B.4 runtime-smoke report. A receipt
+    written without it is a claim about bytes nothing ran, so the builder must
+    refuse before such a document can reach staging.
+    """
+    receipts = _load_script("release_receipts")
+    linux = tmp_path / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
+    linux.write_bytes(b"linux-bundle")
+    with pytest.raises(receipts.ReceiptError, match="never executed"):
+        receipts.build_build_receipt(
+            "linux",
+            "a" * 40,
+            [linux],
+            workflow_run_id="7100",
+            workflow_inputs={
+                "tag": "v0.2.0",
+                "publish": False,
+                "pypi_only": False,
+                "macos_asset": "omit",
+            },
+            runtime_smoke=None,
+        )
 
 
 def test_the_windows_package_has_no_native_windows_execution_path():
@@ -2512,7 +2571,12 @@ def test_the_desktop_packages_are_built_and_verified_before_anything_publishes()
         ]
         needs = re.search(r"^    needs: (.+)$", section, re.MULTILINE)
         assert needs, f"{job} must declare what it waits for"
-        for required in ("linux-app", "windows-package", "windows-launcher"):
+        for required in (
+            "linux-app",
+            "linux-runtime-smoke",
+            "windows-package",
+            "windows-launcher",
+        ):
             assert required in needs.group(1), (
                 f"{job} must not run before {required!r}: a package that failed "
                 "to build or failed verification would only skip its own job"

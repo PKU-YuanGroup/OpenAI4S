@@ -3,7 +3,7 @@ import {
   rendererCatalog,
   rendererDescriptors,
 } from "../../stores/artifacts";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { artifactRendererVersion } from "./cache";
 import type { ArtifactRow, RendererCatalogItem, RendererDescriptor } from "./types";
 import { TEXT_EXT } from "./types";
@@ -73,32 +73,51 @@ export function scientificRenderers(): ScientificRenderersApi | null {
   return host.OpenAI4SScientificRenderers || null;
 }
 
-/** app.js:8580-8591 */
+/**
+ * app.js:8580-8591, plus R1 recovery.
+ *
+ * A failed catalog read is never cached as a successful empty directory: the
+ * in-flight promise is cleared and the request rejects, so the next call
+ * refetches. A 200 whose `renderers` field is missing or not an array is that
+ * same failure — caching it as `[]` made Retry a no-op until reload. An array,
+ * including an empty one, is a real catalog and stays cached. Descriptors
+ * resolved from a failed catalog are dropped with it, so a manual retry
+ * re-resolves the artifact instead of keeping a view-only fallback until the
+ * page reloads. The server's capability whitelist is not widened by a retry —
+ * a missing catalog entry still falls back conservatively.
+ */
 export function loadRendererCatalog(): Promise<RendererCatalogItem[]> {
   if (Array.isArray(rendererCatalog.value)) {
     return Promise.resolve(rendererCatalog.value as RendererCatalogItem[]);
   }
   const pending = _rendererCatalogPromise.value as Promise<RendererCatalogItem[]> | null;
   if (pending) return pending;
-  const request = api("/renderers")
-    .then((result) => {
-      const rec = result && typeof result === "object" ? (result as { renderers?: unknown }) : null;
-      const catalog = rec && Array.isArray(rec.renderers)
-        ? rec.renderers.filter(
-            (item): item is RendererCatalogItem =>
-              !!item &&
-              typeof item === "object" &&
-              typeof (item as RendererCatalogItem).renderer_id === "string",
-          )
-        : [];
-      rendererCatalog.value = catalog;
-      return catalog;
-    })
-    .catch(() => {
-      rendererCatalog.value = [];
-      return [] as RendererCatalogItem[];
-    });
+  const request = api("/renderers").then((result) => {
+    const rec = result && typeof result === "object" ? (result as { renderers?: unknown }) : null;
+    if (!rec || !Array.isArray(rec.renderers)) {
+      throw new ApiError(
+        { error: "renderer catalog has no renderers list", code: "malformed_catalog" },
+        502,
+      );
+    }
+    const catalog = rec.renderers.filter(
+      (item): item is RendererCatalogItem =>
+        !!item &&
+        typeof item === "object" &&
+        typeof (item as RendererCatalogItem).renderer_id === "string",
+    );
+    rendererCatalog.value = catalog;
+    return catalog;
+  });
   _rendererCatalogPromise.value = request;
+  const clearPending = (): void => {
+    if (_rendererCatalogPromise.value === request) _rendererCatalogPromise.value = null;
+  };
+  request.then(clearPending, () => {
+    clearPending();
+    const bag = rendererDescriptors.value as Record<string, unknown>;
+    for (const key of Object.keys(bag)) delete bag[key];
+  });
   return request;
 }
 
@@ -115,6 +134,10 @@ export function compatibilityRendererDescriptor(a: ArtifactRow): RendererDescrip
   else if (/\.(bed|bedgraph|gff3?|gtf|vcf)$/i.test(nm)) id = "genome-track";
   else if (/\.(aln|a2m|a3m|sto|stockholm)$/i.test(nm)) id = "msa";
   else if (/\.(fa|fasta|faa|fna|fastq|fq)$/i.test(nm)) id = "sequence";
+  // A saved notebook is its own container. It is recognised before the
+  // Markdown and generic text branches (and before any JSON source dump), by
+  // extension or by the notebook MIME the exporter records.
+  else if (/\.ipynb$/i.test(nm) || /x-ipynb\+json/.test(ct)) id = "notebook";
   else if (/\.(md|markdown|rst)$/i.test(nm)) id = "markdown";
   else if (/\.tex$/i.test(nm)) id = "latex";
   else if (/csv|tab-separated/.test(ct) || /\.(csv|tsv)$/i.test(nm)) id = "table";

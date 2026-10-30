@@ -928,6 +928,13 @@ jobs:
         # in this repository's CI either cannot execute a linux-x86_64 binary
         # or never builds the bundle at all.
         run: python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+      - name: Run the installed-runtime smoke against the bundle
+        # The release job runs the same scenario; nightly is what makes a
+        # packaging regression visible before release day instead of on it.
+        run: |
+          python3 scripts/installed_runtime_smoke.py \
+            --bundle dist/OpenAI4S-*-linux-x86_64.tar.gz \
+            --report dist/runtime-smoke-linux.json
       - name: Wrap it as the Windows package and verify that too
         run: |
           bash scripts/build_windows_zip.sh

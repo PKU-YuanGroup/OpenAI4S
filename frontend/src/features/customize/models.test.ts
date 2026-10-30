@@ -3,7 +3,13 @@ import { defaultModel, defaultModelName, models } from "../../stores/customize";
 import { resetStoreFields } from "../../stores/signal-field";
 import { loadModels } from "./host";
 import { currentId } from "../../stores/session";
-import { resetSessionModelState, sessionModelPin, watchSessionModelPin } from "./models";
+import {
+  readCapabilityReceipt,
+  readEffectiveCapabilities,
+  resetSessionModelState,
+  sessionModelPin,
+  watchSessionModelPin,
+} from "./models";
 import { bootCustomize } from "./index";
 
 const fetchMock = vi.fn();
@@ -178,5 +184,91 @@ describe("the open session's model pin", () => {
     bootCustomize({});
     await vi.waitFor(() => expect(calls()).toContainEqual(["/api/v1/frames/frame_9", "GET"]));
     await vi.waitFor(() => expect(sessionModelPin.value?.profileId).toBe("mp-claude"));
+  });
+});
+
+// M2 / P0-01: the badge shows two different facts -- what the last probe
+// observed, and what the next request will actually use. The projection is an
+// additive server field; without it the old display is unchanged.
+describe("effective capability projection", () => {
+  it("reads exactly the two B.3 fields with their provenance", () => {
+    const effective = readEffectiveCapabilities({
+      effective_capabilities: {
+        tool_calling: { value: true, source: "probe" },
+        streaming: { value: false, source: "catalog" },
+      },
+    });
+    expect(effective).toEqual({
+      tool_calling: { value: true, source: "probe" },
+      streaming: { value: false, source: "catalog" },
+    });
+  });
+
+  it("ignores the projection when an extra capability field appears", () => {
+    expect(
+      readEffectiveCapabilities({
+        effective_capabilities: {
+          tool_calling: { value: true, source: "probe" },
+          streaming: { value: true, source: "probe" },
+          vision: { value: true, source: "catalog" },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("ignores a projection that is not the B.3 top-level shape", () => {
+    expect(
+      readEffectiveCapabilities({
+        capability_receipt: {
+          native_tool_call: "true",
+          streaming: "unknown",
+          effective_capabilities: {
+            tool_calling: { value: true, source: "probe" },
+            streaming: { value: false, source: "catalog" },
+          },
+        },
+      }),
+    ).toBeNull();
+    // The receipt-era spelling is not the contract field name.
+    expect(
+      readEffectiveCapabilities({
+        effective_capabilities: {
+          native_tool_call: { value: true, source: "probe" },
+          streaming: { value: false, source: "catalog" },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for a missing field or an explicit null", () => {
+    expect(readEffectiveCapabilities(null)).toBeNull();
+    expect(readEffectiveCapabilities({})).toBeNull();
+    expect(readEffectiveCapabilities({ effective_capabilities: null })).toBeNull();
+  });
+
+  it("ignores the whole projection when one entry is malformed", () => {
+    const streaming = { value: false, source: "catalog" };
+    const cases: unknown[] = [
+      // extra key inside an entry
+      { tool_calling: { value: true, source: "probe", extra: 1 }, streaming },
+      // non-boolean value
+      { tool_calling: { value: "true", source: "probe" }, streaming },
+      // unknown source
+      { tool_calling: { value: true, source: "guessed" }, streaming },
+      // one of the two contract fields missing
+      { tool_calling: { value: true, source: "probe" } },
+    ];
+    for (const effective_capabilities of cases) {
+      expect(readEffectiveCapabilities({ effective_capabilities })).toBeNull();
+    }
+  });
+
+  it("keeps the probe observation time on the receipt", () => {
+    const receipt = readCapabilityReceipt({
+      native_tool_call: "true",
+      streaming: "unknown",
+      observed_at: 1761177600000,
+    });
+    expect(receipt?.observed_at).toBe(1761177600000);
   });
 });

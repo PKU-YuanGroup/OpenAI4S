@@ -306,6 +306,122 @@ class ComputeJobRepository:
             rows = self._connection.execute(sql, params).fetchall()
         return [self._decode(row) for row in rows if row is not None]
 
+    def page_for_owner(
+        self,
+        owner_key: str | None,
+        *,
+        limit: int,
+        state: str,
+        after: tuple[int, str] | None = None,
+    ) -> tuple[list[dict], int, bool]:
+        """One bounded page of one owner's jobs, plus that owner's live total.
+
+        `for_owner` returns the newest N and nothing else, so a task older than
+        the N most recent rows exists in the record and is invisible on the
+        page — including the one that is still running. Two things fix that
+        here, and they are one read:
+
+          * a **keyset** position ordered by ``(created_at, job_id)``. The
+            original ``ORDER BY created_at DESC LIMIT`` had no tiebreak, so two
+            jobs recorded in the same millisecond had no defined order and a
+            page boundary between them could repeat one and skip the other.
+          * an aggregate over the *same owner scope*, not over the page. The
+            count and the rows come from one critical section, so a job
+            finishing between them cannot make the response say "1 live" over a
+            page that shows none — or the reverse.
+
+        ``after`` is the last row of the previous page as ``(created_at,
+        job_id)``; the server has already vouched that it belongs to this owner
+        (see `owner_job_created_at`) and to the same state filter (the cursor's
+        fingerprint). It is ``None`` for the first page. ``state`` is ``"all"``
+        (the record) or ``"live"`` (states that may still be consuming a remote
+        resource); the live total is always over all states, which is what makes
+        "3 running elsewhere" sayable on a page that shows none of them.
+
+        Returns ``(rows, total_live_count, has_more)``. Both queries run inside
+        one ``with self._lock`` block, so a concurrent writer cannot finish a job
+        between the page and the count.
+        """
+        size = max(1, int(limit))
+        if owner_key is None:
+            owner_sql, owner_params = "owner_key IS NULL", []
+        else:
+            owner_sql, owner_params = "owner_key=?", [owner_key]
+
+        where = [owner_sql]
+        params: list[Any] = list(owner_params)
+        if state == "live":
+            placeholders = ",".join("?" for _ in LIVE_STATES)
+            where.append(f"status IN ({placeholders})")
+            params.extend(LIVE_STATES)
+        if after is not None:
+            where.append("(created_at < ? OR (created_at = ? AND job_id < ?))")
+            params.extend((after[0], after[0], after[1]))
+
+        with self._lock:
+            rows = self._connection.execute(
+                f"SELECT {','.join(_FIELDS)} FROM compute_jobs "
+                f"WHERE {' AND '.join(where)} "
+                f"ORDER BY created_at DESC, job_id DESC LIMIT ?",
+                (*params, size + 1),
+            ).fetchall()
+            live_placeholders = ",".join("?" for _ in LIVE_STATES)
+            live_row = self._connection.execute(
+                f"SELECT COUNT(*) FROM compute_jobs WHERE {owner_sql} "
+                f"AND status IN ({live_placeholders})",
+                (*owner_params, *LIVE_STATES),
+            ).fetchone()
+
+        has_more = len(rows) > size
+        rows = rows[:size]
+        tasks = [decoded for decoded in (self._decode(row) for row in rows) if decoded]
+        return tasks, int(live_row[0]) if live_row else 0, has_more
+
+    def owner_job_created_at(self, owner_key: str | None, job_id: str) -> int | None:
+        """The ``created_at`` of one job *if it belongs to this owner*, else None.
+
+        The page cursor names a position as ``(created_at, job_id)`` and carries
+        no owner: the owner is the authenticated session's workspace path, which
+        must never be encoded into a value a client sends back. This is what
+        makes the cursor owner-bound — the anchor row has to be in the caller's
+        scope, and its recorded ``created_at`` has to be the one the cursor
+        claims, or the cursor names a position in a listing the client is not
+        looking at.
+        """
+        if owner_key is None:
+            owner_sql, params = "owner_key IS NULL", (job_id,)
+        else:
+            owner_sql, params = "owner_key=?", (job_id, owner_key)
+        with self._lock:
+            row = self._connection.execute(
+                f"SELECT created_at FROM compute_jobs WHERE job_id=? AND {owner_sql}",
+                params,
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return int(row[0])
+
+    def get_for_owner(self, owner_key: str | None, job_id: str) -> dict | None:
+        """One job if it belongs to this owner, else None.
+
+        Same predicate as `owner_job_created_at`: the workspace path is not a
+        value a caller can supply to widen the query. A miss is indistinguishable
+        from a job that does not exist.
+        """
+        if not job_id:
+            return None
+        if owner_key is None:
+            owner_sql, params = "owner_key IS NULL", (job_id,)
+        else:
+            owner_sql, params = "owner_key=?", (job_id, owner_key)
+        with self._lock:
+            row = self._connection.execute(
+                f"SELECT {','.join(_FIELDS)} FROM compute_jobs "
+                f"WHERE job_id=? AND {owner_sql}",
+                params,
+            ).fetchone()
+        return self._decode(row)
+
     def list(self, limit: int = 200) -> list[dict]:
         with self._lock:
             rows = self._connection.execute(

@@ -44,6 +44,28 @@ export function ago(iso: string | null | undefined): string {
   return (d / 86400 | 0) + "d";
 }
 
+const pad2 = (value: number) => String(value).padStart(2, "0");
+
+/**
+ * Fixed-width local date and time (`2026-10-30 14:02`): a read or observation
+ * time is a fact to compare, not a locale string. A zero or missing time is "".
+ */
+export function localDateTime(ms: number | null | undefined): string {
+  if (!ms) return "";
+  const date = new Date(ms);
+  return (
+    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ` +
+    `${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+  );
+}
+
+/** Fixed-width local clock time (`14:02:07`), for a time read during this visit. */
+export function localClock(ms: number | null | undefined): string {
+  if (!ms) return "";
+  const date = new Date(ms);
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
 export function hint(message: string, err?: boolean, spin?: boolean): void {
   const h = $("#composer-hint");
   if (!h) return;

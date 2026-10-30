@@ -14,10 +14,10 @@ import json
 import threading
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields, replace
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 from urllib.parse import urlsplit
 
-from openai4s.endpoint_identity import endpoint_sha256
+from openai4s.endpoint_identity import endpoint_sha256, normalize_endpoint
 
 
 class CapabilityError(ValueError):
@@ -45,6 +45,27 @@ CAPABILITY_PROBE_TOOL = {
 EVIDENCE_TRUE = "true"
 EVIDENCE_FALSE = "false"
 EVIDENCE_UNKNOWN = "unknown"
+
+#: Where an effective boolean came from, in the read-only projection.
+#:
+#: ``catalog`` is the adapter/registry default (and is therefore *not* a
+#: measurement); ``explicit_override`` is a configured value that evidence must
+#: never silently rewrite; ``probe`` is positive exact-endpoint evidence.  A
+#: non-positive observation is not a source: it withdraws a ``probe`` promotion
+#: and the field falls back to whatever the catalogue or an override says.
+EFFECTIVE_SOURCE_CATALOG = "catalog"
+EFFECTIVE_SOURCE_OVERRIDE = "explicit_override"
+EFFECTIVE_SOURCE_PROBE = "probe"
+EFFECTIVE_SOURCES = frozenset(
+    {EFFECTIVE_SOURCE_CATALOG, EFFECTIVE_SOURCE_OVERRIDE, EFFECTIVE_SOURCE_PROBE}
+)
+
+#: The fields `explain_model_capabilities` reports (plan appendix B.3).
+#:
+#: Probe evidence in this version exists only for these two; everything else is
+#: a catalogue or an explicit-override decision and is deliberately not part of
+#: the published projection.
+EFFECTIVE_CAPABILITY_FIELDS = ("tool_calling", "streaming")
 
 #: Closed set of protocol-level "this wire cannot do that" codes.  Timeout,
 #: auth failure, and 5xx must not be listed here — those are unknown.
@@ -358,13 +379,23 @@ _LEGACY_REGISTRY: Mapping[str, Mapping[str, Any]] | None = None
 _PROVIDER_OVERRIDES: dict[str, dict[str, Any]] = {}
 _MODEL_OVERRIDES: dict[tuple[str, str], dict[str, Any]] = {}
 _PROVIDER_CACHE: dict[tuple[str, str, str], ProviderCapabilities] = {}
-_MODEL_CACHE: dict[tuple[str, str, str, int], ModelCapabilities] = {}
+_MODEL_CACHE: dict[
+    tuple[str, str, str, int, str, int], tuple[ModelCapabilities, dict[str, str]]
+] = {}
 _CACHE_HITS = 0
 _CACHE_MISSES = 0
 _CACHE_GENERATION = 0
-# In-process overlay of exact receipts.  Only positive evidence relaxes a
-# catalogue default.  Keyed by (endpoint_sha256, model, wire).
+# In-process overlay of adopted positive receipts.  Only positive evidence
+# relaxes a catalogue default; a non-positive observation withdraws it.  Keyed
+# by (endpoint_sha256, model, wire) -- the exact identity an adapter request
+# resolves to, not the profile that observed it.
 _RECEIPT_OVERLAYS: dict[tuple[str, str, str], dict[str, Any]] = {}
+# The latest observation seen for each exact identity, as (observed_at,
+# receipt_id).  F10 defines the effective evidence for a key as the valid
+# receipt with the largest observed_at, ties broken by the larger receipt_id;
+# keeping that same rank here lets ``replace_receipt_overlay`` reject a delayed
+# older observation and keeps the runtime order identical to a restart's.
+_RECEIPT_EVIDENCE_LATEST: dict[tuple[str, str, str], tuple[int, str]] = {}
 # Stack of temporary probe windows.  Lets a probe declare tools/streaming
 # without persisting an overlay or enabling native completion.
 _PROBE_WINDOWS: list[tuple[str, str, str, dict[str, Any]]] = []
@@ -509,39 +540,149 @@ def _overlay_key(endpoint: str, model: str, wire: str) -> tuple[str, str, str]:
     )
 
 
-def install_receipt_overlay(receipt: Mapping[str, Any]) -> bool:
-    """Adopt a current receipt as an endpoint-specific overlay.
+def receipt_evidence_key(
+    receipt: Mapping[str, Any],
+) -> tuple[str, str, str] | None:
+    """The exact ``(endpoint_sha256, model, wire)`` key a receipt is about.
 
-    Returns True only when at least one field is positive evidence.  Unknown
-    and false receipts stay in storage for display but are not adopted.
+    ``None`` when the receipt lacks an identity component; such a receipt can
+    never become effective evidence.
     """
-    native = str(receipt.get("native_tool_call") or "")
-    streaming = str(receipt.get("streaming") or "")
-    if native != EVIDENCE_TRUE and streaming != EVIDENCE_TRUE:
-        return False
     endpoint = str(receipt.get("endpoint") or "")
-    digest = str(receipt.get("endpoint_sha256") or "")
+    digest = str(receipt.get("endpoint_sha256") or "").strip().lower()
     if not digest:
         digest = endpoint_sha256(endpoint)
     model = str(receipt.get("model") or "").strip().lower()
     wire = str(receipt.get("wire") or "").strip().lower()
     if not digest or not model or not wire:
+        return None
+    return (digest, model, wire)
+
+
+def _receipt_observed_at(receipt: Mapping[str, Any]) -> int | None:
+    value = receipt.get("observed_at")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def receipt_evidence_rank(receipt: Mapping[str, Any]) -> tuple[int, str]:
+    """F10's total order over one key's receipts: observed_at, then receipt_id."""
+    observed_at = _receipt_observed_at(receipt)
+    return (
+        observed_at if observed_at is not None else -1,
+        str(receipt.get("receipt_id") or ""),
+    )
+
+
+def _positive_evidence(receipt: Mapping[str, Any] | None) -> bool:
+    if not receipt:
+        return False
+    return (
+        str(receipt.get("native_tool_call") or "") == EVIDENCE_TRUE
+        or str(receipt.get("streaming") or "") == EVIDENCE_TRUE
+    )
+
+
+def replace_receipt_overlay(receipt: Mapping[str, Any]) -> bool:
+    """Replace the adopted evidence of the receipt's exact key (F10).
+
+    ``_RECEIPT_OVERLAYS[key]`` holds the receipt that decides the next request
+    for that ``(endpoint_sha256, model, wire)``; the latest observation is
+    recorded separately so withdrawing evidence is as precise as adopting it.
+
+    The receipt applies only when it is not older than the record already held
+    for the key (F10: larger ``observed_at`` wins, ties broken by the larger
+    ``receipt_id``).  When it applies, any positive field installs it as the
+    adopted overlay, and a receipt with no positive field *removes* the adopted
+    overlay -- that withdrawal is the P0-01 fix: a second probe that observed
+    ``unknown``/``false`` must stop the next request from relying on the
+    earlier promotion.  ``unknown`` stays a withdrawal, never a permanent
+    "unsupported" claim: the catalogue default and explicit overrides remain
+    below this layer.
+
+    Returns whether the key holds adopted positive evidence afterwards.
+    """
+    key = receipt_evidence_key(receipt)
+    if key is None:
+        return False
+    rank = receipt_evidence_rank(receipt)
+    with _LOCK:
+        latest = _RECEIPT_EVIDENCE_LATEST.get(key)
+        if latest is not None and rank < latest:
+            return _positive_evidence(_RECEIPT_OVERLAYS.get(key))
+        _RECEIPT_EVIDENCE_LATEST[key] = rank if latest is None else max(latest, rank)
+        positive = _positive_evidence(receipt)
+        previous = _RECEIPT_OVERLAYS.get(key)
+        if positive:
+            _RECEIPT_OVERLAYS[key] = dict(receipt)
+        else:
+            _RECEIPT_OVERLAYS.pop(key, None)
+        if _positive_evidence(previous) != positive or (
+            str((previous or {}).get("receipt_sha256") or "")
+            != str(receipt.get("receipt_sha256") or "")
+        ):
+            _invalidate_cache_locked()
+        return positive
+
+
+def install_receipt_overlay(receipt: Mapping[str, Any]) -> bool:
+    """Adopt a positive receipt as an endpoint-specific overlay.
+
+    Signature and return semantics are unchanged (M1): only a receipt with at
+    least one positive field is adopted, a non-positive one returns ``False``
+    and does not touch an existing overlay, and a successful install returns
+    ``True``.  Production callers use :func:`replace_receipt_overlay`, which
+    also replaces non-positive evidence.
+    """
+    if not _positive_evidence(receipt):
+        return False
+    key = receipt_evidence_key(receipt)
+    if key is None:
         return False
     with _LOCK:
-        _RECEIPT_OVERLAYS[(digest, model, wire)] = dict(receipt)
+        _RECEIPT_OVERLAYS[key] = dict(receipt)
         _invalidate_cache_locked()
     return True
+
+
+def reset_receipt_overlay(key: tuple[str, str, str]) -> None:
+    """Forget one key's adopted overlay and observation record.
+
+    Used when the durable evidence set itself changed -- a profile was deleted
+    or reconfigured -- and the caller has already re-selected the surviving
+    evidence for that key with F10's rule.  Removing the record too is what lets
+    an older-but-still-valid receipt become effective again; the caller calls
+    :func:`replace_receipt_overlay` with the selected receipt afterwards.
+    """
+    with _LOCK:
+        removed = _RECEIPT_OVERLAYS.pop(key, None)
+        _RECEIPT_EVIDENCE_LATEST.pop(key, None)
+        if removed is not None:
+            _invalidate_cache_locked()
 
 
 def drop_receipt_overlays(
     profile_id: str | None = None, *, revision: int | None = None
 ) -> int:
-    """Drop adopted overlays.  All of them, or those of one profile/revision."""
+    """Drop adopted overlays.  All of them, or those of one profile/revision.
+
+    A global drop also clears the F10 observation record (restart/teardown
+    semantics).  A profile-scoped drop keeps the record so a delayed older
+    receipt still cannot replace evidence the process has already seen; the
+    caller that changed the configuration re-selects the surviving evidence for
+    the affected keys.
+    """
     removed = 0
+    cleared_all = profile_id is None
     with _LOCK:
-        if profile_id is None:
+        if cleared_all:
             removed = len(_RECEIPT_OVERLAYS)
             _RECEIPT_OVERLAYS.clear()
+            _RECEIPT_EVIDENCE_LATEST.clear()
         else:
             wanted = str(profile_id)
             for key, rec in list(_RECEIPT_OVERLAYS.items()):
@@ -553,7 +694,7 @@ def drop_receipt_overlays(
                     continue
                 del _RECEIPT_OVERLAYS[key]
                 removed += 1
-        if removed:
+        if removed or cleared_all:
             _invalidate_cache_locked()
     return removed
 
@@ -580,26 +721,36 @@ def _overlay_for_locked(
 
 
 def _apply_positive_overlay(
-    values: dict[str, Any], overlay: Mapping[str, Any] | None
+    values: dict[str, Any],
+    overlay: Mapping[str, Any] | None,
+    *,
+    skip: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
-    """Relax catalogue defaults with positive evidence only."""
+    """Relax catalogue defaults with positive evidence only.
+
+    F11 gives an explicit override priority over probe evidence, so a field the
+    caller configured explicitly is never relaxed here -- ``skip`` names the
+    overridden fields and the override is applied after this function returns.
+    """
     if not overlay:
         return values
     updated = dict(values)
-    if overlay.get("native_tool_call") == EVIDENCE_TRUE:
+    if overlay.get("native_tool_call") == EVIDENCE_TRUE and "tool_calling" not in skip:
         updated["tool_calling"] = True
-    if overlay.get("streaming") == EVIDENCE_TRUE:
+    if overlay.get("streaming") == EVIDENCE_TRUE and "streaming" not in skip:
         updated["streaming"] = True
     tokens = overlay.get("context_window_tokens")
     if (
-        updated.get("context_window_tokens") is None
+        "context_window_tokens" not in skip
+        and updated.get("context_window_tokens") is None
         and isinstance(tokens, int)
         and tokens > 0
     ):
         updated["context_window_tokens"] = tokens
     output = overlay.get("max_output_tokens")
     if (
-        updated.get("max_output_tokens") is None
+        "max_output_tokens" not in skip
+        and updated.get("max_output_tokens") is None
         and isinstance(output, int)
         and output > 0
     ):
@@ -906,13 +1057,30 @@ def get_provider_capabilities(
         return effective
 
 
-def get_model_capabilities(
+def _resolve_model_capabilities(
     provider: str,
     model: str | None = None,
     *,
     base_url: str | None = None,
-) -> ModelCapabilities:
-    """Resolve provider defaults plus exact-model and deployment overrides."""
+) -> tuple[ModelCapabilities, dict[str, str]]:
+    """Resolve once; return the effective record and each explained field's source.
+
+    One resolver feeds both the request decision (``client.chat``) and the
+    read-only ``explain_model_capabilities`` projection (M1/B.3), so what the UI
+    says the next request will use cannot disagree with the request itself.
+
+    F11 layer order, lowest first:
+
+    * the provider catalogue default;
+    * the built-in exact-model table;
+    * a positive probe overlay for this exact ``(endpoint, model, wire)``, which
+      may *relax* a conservative value but never restricts one, and only for
+      fields the caller has not explicitly overridden;
+    * explicit overrides (``set_capability_override``), which evidence never
+      silently rewrites;
+    * a transient probe window (``capability_probe_window``), unchanged: it only
+      lets a probe send the very feature it is testing and is not evidence.
+    """
     global _CACHE_HITS, _CACHE_MISSES
     provider_caps = get_provider_capabilities(provider, base_url=base_url)
     model_name = (model or provider_caps.default_model).strip()
@@ -939,16 +1107,32 @@ def get_model_capabilities(
         if cached is not None:
             _CACHE_HITS += 1
             return cached
-        values: dict[str, Any] = {
+        catalogue: dict[str, Any] = {
             field: getattr(provider_caps, field) for field in _CAPABILITY_FIELDS
         }
-        values.update(_BUILTIN_MODELS.get((provider_caps.provider, model_key), {}))
-        values.update(_MODEL_OVERRIDES.get((provider_caps.provider, model_key), {}))
+        catalogue.update(_BUILTIN_MODELS.get((provider_caps.provider, model_key), {}))
+        overrides = dict(_PROVIDER_OVERRIDES.get(provider_caps.provider, {}))
+        overrides.update(_MODEL_OVERRIDES.get((provider_caps.provider, model_key), {}))
+        values = _apply_positive_overlay(catalogue, overlay, skip=frozenset(overrides))
+        sources = {
+            field: EFFECTIVE_SOURCE_CATALOG for field in EFFECTIVE_CAPABILITY_FIELDS
+        }
+        for field in EFFECTIVE_CAPABILITY_FIELDS:
+            if field in overrides:
+                sources[field] = EFFECTIVE_SOURCE_OVERRIDE
+            elif values.get(field) is True and catalogue.get(field) is not True:
+                # The value the request will use exists only because of probe
+                # evidence; a catalogue value that already says True stays
+                # `catalog` and is not misreported as measured.
+                sources[field] = EFFECTIVE_SOURCE_PROBE
+        values.update(overrides)
         if window:
             values.update(
                 {key: window[key] for key in _CAPABILITY_FIELDS if key in window}
             )
-        values = _apply_positive_overlay(values, overlay)
+            for field in EFFECTIVE_CAPABILITY_FIELDS:
+                if field in window:
+                    sources[field] = EFFECTIVE_SOURCE_PROBE
         result = ModelCapabilities(
             provider=provider_caps.provider,
             model=model_name,
@@ -958,9 +1142,101 @@ def get_model_capabilities(
             local_endpoint=provider_caps.local_endpoint,
             **values,
         )
-        _MODEL_CACHE[cache_key] = result
+        resolved = (result, sources)
+        _MODEL_CACHE[cache_key] = resolved
         _CACHE_MISSES += 1
-        return result
+        return resolved
+
+
+def get_model_capabilities(
+    provider: str,
+    model: str | None = None,
+    *,
+    base_url: str | None = None,
+) -> ModelCapabilities:
+    """Resolve provider defaults plus exact-model and deployment overrides."""
+    return _resolve_model_capabilities(provider, model, base_url=base_url)[0]
+
+
+def explain_model_capabilities(
+    provider: str,
+    model: str | None = None,
+    *,
+    base_url: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Read-only next-request projection, exactly as appendix B.3 defines it.
+
+    Reports ``tool_calling`` and ``streaming`` only -- the two fields probe
+    evidence can change -- each as ``{"value": bool, "source": source}`` with
+    ``source`` in ``catalog`` / ``explicit_override`` / ``probe``:
+
+    * ``catalog`` is the provider catalogue default or the built-in model table
+      and is deliberately *not* a measurement;
+    * ``explicit_override`` is a configured value, which probe evidence never
+      rewrites;
+    * ``probe`` means the effective value exists because of positive evidence
+      for this exact endpoint/model/wire (a withdrawn promotion falls back and
+      is no longer labelled ``probe``).
+
+    Resolution is shared with :func:`get_model_capabilities`; nothing here
+    contacts a provider.  An undispatchable protocol raises
+    :class:`CapabilityError`, which the profile projection publishes as
+    ``effective_capabilities: null``.
+    """
+    capabilities, sources = _resolve_model_capabilities(
+        provider, model, base_url=base_url
+    )
+    return {
+        field: {
+            "value": bool(getattr(capabilities, field)),
+            "source": sources[field],
+        }
+        for field in EFFECTIVE_CAPABILITY_FIELDS
+    }
+
+
+def profile_receipt_identity(
+    profile: Mapping[str, Any], *, default_model: str | None = None
+) -> dict[str, Any]:
+    """The exact (endpoint, model, protocol) identity a profile resolves to.
+
+    One definition shared by profile probing, the Store's restart reload and the
+    configuration-change rebuild, so a persisted receipt cannot be attributed
+    to one identity by one caller and a different one by the next.  A protocol
+    the adapter layer cannot dispatch yields an empty ``wire``: such a profile
+    has no receipt identity at all, which callers treat as "not adoptable".
+    """
+    provider = str(profile.get("provider") or "")
+    explicit_model = str(profile.get("model") or "").strip()
+    base_url = str(profile.get("base_url") or "")
+    try:
+        adapter = get_provider_capabilities(provider, base_url=base_url or None)
+        wire = adapter.wire
+        endpoint = normalize_endpoint(base_url) or normalize_endpoint(
+            adapter.default_base_url
+        )
+        model = (
+            explicit_model
+            or adapter.default_model
+            or str(default_model or "")
+            or "default"
+        )
+        adapter_streaming = bool(adapter.streaming)
+    except Exception:  # noqa: BLE001 - an unsupported protocol has no wire
+        wire = ""
+        endpoint = normalize_endpoint(base_url)
+        model = explicit_model or str(default_model or "") or "default"
+        adapter_streaming = False
+    return {
+        "profile_id": str(profile.get("id") or ""),
+        "revision": int(profile.get("revision") or 0),
+        "model": model,
+        "wire": wire,
+        "endpoint": endpoint,
+        "endpoint_sha256": endpoint_sha256(endpoint),
+        "provider": provider,
+        "adapter_streaming": adapter_streaming,
+    }
 
 
 # Short lookup aliases make the public API pleasant while the explicit names

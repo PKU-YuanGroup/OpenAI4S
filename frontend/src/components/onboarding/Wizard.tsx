@@ -13,6 +13,7 @@ import {
   activateModelProfile,
   completeOnboarding,
   fetchOnboarding,
+  mergeReadinessRefresh,
   probeModelProfile,
   saveModelProfile,
   updateModelProfile,
@@ -40,6 +41,7 @@ import { SearchSetupCard } from "./SearchSetupCard";
 import "./onboarding.css";
 
 type Profile = Record<string, unknown>;
+
 
 // One mapping from a saved profile row to the path it selects. The reducer keys
 // receipt invalidation on these identity fields, so two hand-written copies that
@@ -333,6 +335,18 @@ export function WizardHost() {
   // coming back to the step left duplicates, and the one activated last could
   // be a copy without the key (the key field starts empty on a second visit).
   const savedProfiles = useRef<Partial<Record<PathKind, string>>>({});
+  // Readiness re-check: its own pending/error/time state (not the wizard's
+  // `busy`, which disables Skip), its own request sequence, and the visit it
+  // was started in.
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
+  const [refreshError, setRefreshError] = useState("");
+  const refreshRun = useRef(0);
+  const readinessEpoch = useRef(0);
+  const wasReadinessShown = useRef(false);
+  const readinessShown = state.surface === "wizard" && state.step === "readiness";
+  if (wasReadinessShown.current && !readinessShown) readinessEpoch.current += 1;
+  wasReadinessShown.current = readinessShown;
 
   useEffect(() => {
     alive.current = true;
@@ -377,6 +391,52 @@ export function WizardHost() {
   const leaveTest = () => {
     probeRun.current += 1;
     setTesting(false);
+  };
+
+  /**
+   * Re-read the local onboarding snapshot without re-initialising the wizard.
+   *
+   * `load()` calls `hydrate`, which resets the step and evidence; a refresh
+   * touches only `environment`, `network`, `platform` and
+   * `native_runtime_supported`. The answer is dropped after unmount, after the
+   * readiness step was left (the visit changed), or when a newer request has
+   * taken over — a double click may issue two local reads and only the newest
+   * one may shape the snapshot. A failed read keeps the old snapshot on screen
+   * and reports "not refreshed: <reason>"; the action stays available, so it
+   * is the retry.
+   */
+  const refreshReadiness = async () => {
+    const run = (refreshRun.current += 1);
+    const epoch = readinessEpoch.current;
+    setRefreshing(true);
+    setRefreshError("");
+    try {
+      const next = await fetchOnboarding();
+      if (!alive.current) return;
+      if (refreshRun.current !== run) return; // a newer refresh owns the state
+      if (readinessEpoch.current !== epoch) {
+        setRefreshing(false);
+        return;
+      }
+      setStatus((prev) => (prev ? mergeReadinessRefresh(prev, next) : next));
+      setRefreshedAt(Date.now());
+    } catch (error) {
+      if (!alive.current) return;
+      if (refreshRun.current !== run) return;
+      if (readinessEpoch.current !== epoch) {
+        setRefreshing(false);
+        return;
+      }
+      const fail = wizardErrorFromUnknown(error);
+      setRefreshError(
+        formatWizardError({ message: fail.message, requestId: fail.requestId }),
+      );
+    } finally {
+      // Only the newest request settles the pending state; an older answer
+      // (or one dropped because the user left) must not clear the spinner of
+      // a newer request.
+      if (alive.current && refreshRun.current === run) setRefreshing(false);
+    }
   };
 
   const choosePath = (path: PathChoice) => {
@@ -656,7 +716,13 @@ export function WizardHost() {
             ) : null}
             {state.step === "readiness" && status ? (
               <>
-                <ReadinessPanel status={status} />
+                <ReadinessPanel
+                  status={status}
+                  onRefresh={() => { void refreshReadiness(); }}
+                  refreshing={refreshing}
+                  refreshedAt={refreshedAt}
+                  refreshError={refreshError}
+                />
                 <SearchSetupCard />
               </>
             ) : null}

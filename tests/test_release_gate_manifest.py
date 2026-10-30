@@ -816,6 +816,114 @@ def test_the_finalize_job_refuses_when_its_attestation_is_absent(tmp_path):
 # without a timeout.
 
 
+def test_the_linux_job_runs_the_installed_runtime_smoke_before_the_receipt():
+    """A digest binds bytes; only an executed scenario binds behaviour.
+
+    The workflow is read as data, not as text. `linux-app` builds and verifies
+    the tarball from the frozen product commit. `linux-runtime-smoke` then
+    downloads that artifact and runs the smoke and the receipt. Those scripts
+    come from the workflow commit: the product checkout is a dispatch-selected
+    ref, and executing its package scripts there can write the default branch's
+    Actions cache. The receipt still names the frozen product commit, and it is
+    written only after the smoke report exists.
+    """
+    jobs = _workflow("release.yml")["jobs"]
+    build = jobs["linux-app"]
+    smoke = jobs["linux-runtime-smoke"]
+
+    build_names = [str(step.get("name") or "") for step in build["steps"]]
+    verify_index = build_names.index("Verify the bundle")
+    build_upload_index = next(
+        index
+        for index, name in enumerate(build_names)
+        if name.startswith("Upload the built bundle")
+    )
+    assert verify_index < build_upload_index
+    verify_run = str(build["steps"][verify_index].get("run") or "")
+    assert "scripts/verify_linux_bundle.py" in verify_run
+    build_runs = "\n".join(str(step.get("run") or "") for step in build["steps"])
+    assert "scripts/installed_runtime_smoke.py" not in build_runs
+    assert "npm ci" not in build_runs
+    build_upload = build["steps"][build_upload_index].get("with") or {}
+    assert build_upload.get("name") == "linux-app-tarball"
+    assert "runtime-smoke" not in str(build_upload.get("path") or "")
+    assert _checkout_refs(build) == ["${{ needs.freeze.outputs.source_sha }}"]
+
+    needs = smoke.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else needs
+    assert needs == ["freeze", "linux-app"]
+    assert _checkout_refs(smoke) == ["${{ github.sha }}"]
+    download = next(
+        step
+        for step in smoke["steps"]
+        if "actions/download-artifact@" in str(step.get("uses") or "")
+    )
+    assert (download.get("with") or {}).get("name") == "linux-app-tarball"
+
+    names = [str(step.get("name") or "") for step in smoke["steps"]]
+    smoke_index = names.index("Run the installed-runtime smoke")
+    receipt_index = next(
+        index
+        for index, name in enumerate(names)
+        if name.startswith("Receipt the bundle")
+    )
+    upload_index = next(
+        index
+        for index, name in enumerate(names)
+        if name.startswith("Upload the verified bundle")
+    )
+    assert smoke_index < receipt_index < upload_index
+
+    smoke_run = str(smoke["steps"][smoke_index].get("run") or "")
+    assert "scripts/installed_runtime_smoke.py" in smoke_run
+    assert "--bundle" in smoke_run
+    assert "--report dist/runtime-smoke-linux.json" in smoke_run
+    assert (
+        "--browser" in smoke_run
+    ), "the release job must exercise the packaged workbench in a real browser"
+
+    # The browser layer needs Node 22 and a Chromium driver in this job. It must
+    # reuse the PR browser job's pinned setup-node action and install commands,
+    # because release.yml is a privileged workflow and its action majors are an
+    # explicit decision (tests/test_governance.py).
+    earlier = smoke["steps"][:smoke_index]
+    setup_node = [
+        step for step in earlier if "actions/setup-node@" in str(step.get("uses") or "")
+    ]
+    assert len(setup_node) == 1, "the linux smoke job must set up Node exactly once"
+    # The YAML parser drops the trailing `# v7.0.0` comment, so pin the SHA the
+    # comment names -- the same value as the three ci.yml setup-node steps.
+    assert "820762786026740c76f36085b0efc47a31fe5020" in str(setup_node[0].get("uses"))
+    install_runs = "\n".join(str(step.get("run") or "") for step in earlier)
+    assert "npm ci --ignore-scripts" in install_runs
+    assert "playwright install --with-deps chromium" in install_runs
+
+    receipt = smoke["steps"][receipt_index]
+    receipt_run = str(receipt.get("run") or "")
+    assert "--kind linux" in receipt_run
+    assert (
+        "--runtime-smoke dist/runtime-smoke-linux.json" in receipt_run
+    ), "the receipt must bind the scenario report the smoke step just wrote"
+    assert (receipt.get("env") or {}).get(
+        "SHA"
+    ) == "${{ needs.freeze.outputs.source_sha }}"
+
+    upload = smoke["steps"][upload_index].get("with") or {}
+    assert upload.get("name") == "linux-app-bundle"
+    assert "dist/runtime-smoke-linux.json" in str(
+        upload.get("path") or ""
+    ), "the report travels with the bundle so staging failures can be diagnosed"
+
+
+def test_the_nightly_bundle_job_runs_the_same_installed_runtime_smoke():
+    """Nightly is where a packaging regression shows up before release day."""
+    job = _workflow("ci.yml")["jobs"]["linux-bundle-smoke"]
+    runs = "\n".join(str(step.get("run") or "") for step in job["steps"])
+    assert "scripts/installed_runtime_smoke.py" in runs
+    assert "--bundle dist/OpenAI4S-*-linux-x86_64.tar.gz" in runs
+    assert "--report dist/runtime-smoke-linux.json" in runs
+
+
 def _workflow(name):
     yaml = pytest.importorskip("yaml")
     return yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text())
@@ -842,7 +950,13 @@ def test_release_jobs_use_only_the_frozen_source_or_tooling_sha():
             if "actions/checkout" not in str(step.get("uses") or ""):
                 continue
             settings = step["with"]
-            tooling = name == "freeze" or settings.get("path") == "release-tools"
+            # `linux-runtime-smoke` executes release scripts against the built
+            # tarball. Its checkout is the workflow commit, same as `freeze`,
+            # because the product ref is not a trusted place to run them.
+            tooling = (
+                name in {"freeze", "linux-runtime-smoke"}
+                or settings.get("path") == "release-tools"
+            )
             expected = (
                 "${{ github.sha }}"
                 if tooling

@@ -96,6 +96,28 @@ export function artifactMetadataTarget(a: ArtifactRow): ArtifactRow {
   return version ? { ...a, version_id: version, _exactVersion: true } : { ...a };
 }
 
+export type PreviewSlice = {
+  /** The prefix a preview may display. */
+  shown: string;
+  /** True when the source continued past the limit. */
+  truncated: boolean;
+};
+
+/**
+ * Shared display-limit slice (F3): never splits a surrogate pair. When the
+ * code units before `limit` end on a high surrogate (the first half of an
+ * emoji or a CJK extension), one fewer unit is kept, so a partial preview
+ * cannot render a lone surrogate as a replacement glyph.
+ */
+export function previewSlice(text: string | null | undefined, limit: number): PreviewSlice {
+  const source = String(text == null ? "" : text);
+  if (limit <= 0) return { shown: "", truncated: source.length > 0 };
+  if (source.length <= limit) return { shown: source, truncated: false };
+  const last = source.charCodeAt(limit - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit;
+  return { shown: source.slice(0, Math.max(0, end)), truncated: true };
+}
+
 export function artifactMetadataCacheKey(a: ArtifactRow | null | undefined): string {
   if (!a || !a.id) return "_live";
   const target = artifactMetadataTarget(a);

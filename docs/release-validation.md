@@ -213,7 +213,10 @@ matching Linux host, rather than only reading them.
 
 ```bash
 bash scripts/build_linux_bundle.sh                               # native
-python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+python3 scripts/verify_linux_bundle.py \
+  --source-sha "$(git rev-parse HEAD)" \
+  --smoke-report /tmp/runtime-smoke.json \
+  dist/OpenAI4S-*-linux-x86_64.tar.gz
 ```
 
 Unlike the DMG this **can** be cross-built, because nothing in it is compiled:
@@ -221,9 +224,89 @@ Unlike the DMG this **can** be cross-built, because nothing in it is compiled:
 only, and bytecode magic tracks the CPython version rather than the machine.
 What a foreign host cannot do is *execute* the result, so the verifier reports
 two depths and names which one it reached — a static inspection anywhere, and on
-a matching Linux host the import probe that actually proves the science stack
-imports rather than merely being present on disk. The release job therefore runs
-on a Linux runner, and a cross-build says out loud that it has not been run.
+a matching Linux host the import probe that proves the science stack imports
+rather than merely being present on disk. The release build therefore runs on a
+Linux runner, and a cross-build says out loud that it has not been run.
+
+On that matching host the verifier also runs the shipped `install.sh`. The
+following `linux-runtime-smoke` job downloads that tarball and runs
+[`scripts/installed_runtime_smoke.py`](../scripts/installed_runtime_smoke.py)
+against the archive the release is about to publish. It checks out the
+workflow commit, not the product tree the dispatch selected: the smoke and
+receipt scripts are release tooling, and running the product tree's package
+scripts in that job would execute a dispatch-selected ref where it can write
+the default branch's Actions cache. The receipt still names the frozen product
+commit. Verification proves the bytes are well-formed; the smoke proves they
+execute. It unpacks the archive into a
+temporary directory whose name contains a space and starts the bundle's own
+daemon on an isolated data directory and a random loopback port, with the
+caller's `PYTHONPATH`, `PYTHONHOME`, `VIRTUAL_ENV`, `OPENAI4S_WEBUI`, model keys
+and `OPENAI4S_LLM_*` settings removed from the child environment; the Notebook
+REPL is enabled for that process only and the updater is kept offline. It then
+runs the frozen scenario version 1:
+
+* `serve` — `/health` answers `ok` within 90 s;
+* `auth` — the daemon's access token is required (2xx with it, 401 without it);
+* `kernel_origin` — the executing interpreter and the imported `openai4s` both
+  resolve inside the unpacked bundle;
+* `state_shared` — two Cells share one persistent kernel and the second reads
+  the first's variable (42); both `cell.status` are `ok` with an empty
+  `cell.error`, because HTTP success alone is not execution;
+* `artifact_capture` — a Cell writes `smoke.csv` through the production capture
+  path as an immutable version, and the bytes read back match their SHA-256;
+* `figure` — a Cell draws with the packaged matplotlib without calling
+  `savefig`; exactly one figure is captured and its bytes are a PNG;
+* `exact_version` — a same-name rewrite mints a new version while the first
+  version still returns its original bytes and remains listed;
+* `restart_readback` — the daemon is stopped, its process group is confirmed
+  gone, the same data directory is reopened, and both versions' bytes and
+  digests are unchanged. This proves durable records, not memory variables;
+* `clean_exit` — the final stop leaves no process in this run's process group
+  and removes the temporary data directory.
+
+Time budgets are F16's 90 s per service start, 60 s per Cell, 120 s for the
+browser layer, 30 s to clean up and 420 s overall; a timeout fails the run with
+a bounded diagnostic. The JSON report — scenario version, target, the input
+tarball's SHA-256, platform, arch, interpreter version, the ten check results,
+status, duration and at most one redacted failure — is written to
+`dist/runtime-smoke-linux.json` by `linux-runtime-smoke` after it downloads the
+tarball `linux-app` verified and before that job writes the build receipt.
+The nightly `linux-bundle-smoke` job runs the same command so a packaging
+regression shows up before release day. A host that
+cannot execute a linux-x86_64 bundle fails the check with the missing runner
+named rather than reporting a pass.
+
+The installed wheel is held to the same scenario. `release_pipeline.py`'s
+`smoke` step installs the wheel into a clean venv, runs the existing import and
+daemon smokes, then runs this script with `--python <venv interpreter> --artifact
+<wheel>`, recording the report in that step's facts. The wheel has no science
+extras, so its `figure` check is `not_applicable`; every other step — the Cells,
+capture, exact version and restart readback — still runs.
+
+With `--browser`, the scenario's last step is a browser layer
+([`tests/browser_bundle_smoke.mjs`](../tests/browser_bundle_smoke.mjs)) run
+against the daemon it just restarted. The caller owns the lifecycle, so the
+script reads everything from the environment: `OPENAI4S_BROWSER_URL` (the
+loopback origin), `OPENAI4S_DATA_DIR` (for the access token) and
+`OPENAI4S_SMOKE_EXPECT` (the session, its project, and for the CSV and PNG
+artifacts the artifact id, exact version id, SHA-256 and filename). Inside a
+120 s budget it authenticates through the same loopback-token hand-off as the
+other browser harnesses and skips the first-run wizard, opens the session in
+the workbench, opens the CSV's **first** version by its exact id and requires
+the rendered table to contain 42 and not the second revision's 84, checks the
+exact CSV bytes against the captured checksum, opens the PNG and requires the
+image to decode with a non-zero size, and requires every HTTP request the page
+made to be loopback. A failure prints a bounded, credential-redacted diagnostic
+and exits non-zero, which the scenario records as `browser_open: failed`; a host
+without a browser records `not_run`, never a pass.
+
+`linux-runtime-smoke` installs the driver for this layer by copying the PR
+browser job's `actions/setup-node` pin and its `npm ci --ignore-scripts` plus
+`playwright install --with-deps chromium` commands — no new action is
+introduced, because `release.yml` is a privileged workflow whose action majors
+are an explicit decision (`tests/test_governance.py`). The layer runs only in
+that job (the nightly bundle smoke exercises the HTTP scenario without it),
+and `browser_open` is part of the same report the receipt binds.
 
 ## Windows package
 
@@ -231,7 +314,7 @@ Not a native Windows build. `openai4s/platform_support.py` refuses to start a
 kernel on `win32`, so the Windows deliverable is a Windows launcher wrapped
 around the Linux bundle, which it installs into WSL2 on first run — see
 [`platforms.md`](platforms.md) for why that is the honest packaging rather than
-a workaround. The release job consumes the Linux job's artifact instead of
+a workaround. The Windows job consumes the receipted Linux artifact instead of
 rebuilding, which is what makes the payload byte-identical to the Linux tarball
 the same release publishes rather than a second build that ought to match.
 
@@ -303,15 +386,34 @@ matrix and in the quality-receipt check-suite gates. Container smoke is not a
 substitute for that matrix.
 
 A candidate SHA is not publishable on the strength of a `publish=true`
-dispatch. Schema-2 build receipts record the candidate commit, the workflow
+dispatch. Schema-3 build receipts record the candidate commit, the workflow
 run id, the dispatch inputs, the builder platform and artifact checksums (the
-macOS receipt also the notary/staple result). Check-run ids are recorded on
-the stage attestation only: they come from the quality receipt, and the
-`--check-runs-json` slot on a build receipt exists but the workflow does not
-fill it, so a build receipt's `check_runs` is `[]`. `publish=false` is a
-rehearsal: PyPI and the public GitHub Release must not change, and
-`macos_asset=omit` (or a missing notary success) means DMG count is zero.
-Old schema-1 receipts remain readable JSON and cannot satisfy this gate.
+macOS receipt also the notary/staple result). The Linux receipt additionally
+carries `runtime_smoke`: the appendix-B.4 report of the scenario that ran inside
+the packaged runtime, bound to that tarball's own SHA-256. The report names
+`linux`/`x86_64`, the interpreter version, and the ten frozen checks; every one
+of them must say `passed` — `figure` because the bundle pre-bakes the science
+stack, and `browser_open` because the release job runs the browser layer — so a
+skip, a `not_run` or a timeout is a refusal rather than an omission. The stored
+copy is canonicalised to those fields, so no log text or unbounded diagnostic
+enters the receipt.
+
+Staging re-validates the same report against the tarball it finds on disk, and
+so do the finalize-time checks: a receipt whose evidence is missing, `not_run`,
+failed, timed out, describes other bytes, was run on another platform, comes
+from an older scenario, or claims success while carrying a failure is refused.
+What this evidence does not prove is equally explicit: it is one Linux x86_64
+Python scenario, not macOS or Windows packaging, not the R channel, not a real
+model's scientific output, and not the full OS sandbox boundary — those have
+their own gates, and a green runtime smoke does not stand in for them.
+
+Check-run ids are recorded on the stage attestation only: they come from the
+quality receipt, and the `--check-runs-json` slot on a build receipt exists but
+the workflow does not fill it, so a build receipt's `check_runs` is `[]`.
+`publish=false` is a rehearsal: PyPI and the public GitHub Release must not
+change, and `macos_asset=omit` (or a missing notary success) means DMG count is
+zero. Older schema-1 and schema-2 receipts remain readable JSON and cannot
+satisfy this gate: they describe artifacts nothing executed.
 
 ## Trusted publication
 

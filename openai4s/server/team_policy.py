@@ -272,6 +272,14 @@ DAEMON_OPERATION_PREFIXES = (
     # rest of this table does not hide; a 403-vs-429-vs-Content-Length split
     # would tell a member whether an admin bundle is in flight.
     "/diagnostics/",
+    # Update checks (F14): the POST dials the release index *as the daemon* and
+    # writes the one shared check cache; the GET exposes this machine's install
+    # channel and last known version. There is no per-user variant of either
+    # answer, so both are admin-only on every verb, and the refusal comes before
+    # the cache is read or a socket is opened. Registered as a prefix so the
+    # gateway guard refuses ahead of dispatch; the route re-checks the same
+    # policy before it touches either.
+    "/updates/",
 )
 
 #: Instance-global mutations beyond configuration: registering a remote

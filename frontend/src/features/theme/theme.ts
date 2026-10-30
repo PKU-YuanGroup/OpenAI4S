@@ -12,6 +12,7 @@ type MolViewer = {
 
 type HostWindow = Window & {
   S?: { _molViewer?: MolViewer };
+  _molRetheme?: (dark: boolean) => void;
   t?: (key: string, interpolated?: string) => string;
   tOptional?: (key: string) => string | null;
   hint?: (message: string) => void;
@@ -59,6 +60,11 @@ export function themeIsDark(): boolean {
 
 function rethemeMolViewer(dark: boolean): void {
   try {
+    const retheme = hostWindow()._molRetheme;
+    if (isReady(retheme)) {
+      retheme(dark);
+      return;
+    }
     const viewer = hostWindow().S?._molViewer;
     if (viewer && viewer.setBackgroundColor) {
       viewer.setBackgroundColor(dark ? "#1c1c19" : "white");

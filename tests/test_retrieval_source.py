@@ -15,8 +15,12 @@ import json
 import pytest
 
 from openai4s.server.retrieval_source import (
+    ALIAS_CONFLICTS_KEY,
     ALLOWED_FIELDS,
+    LEGACY_FIELDS_KEY,
     MAX_VALUE_CHARS,
+    RESPONSE_HASH_SHOWN,
+    RESPONSE_HASH_STATE_KEY,
     public_source,
 )
 
@@ -138,8 +142,9 @@ def test_dataset_projection_preserves_unknowns_and_distinct_hash_scopes():
         },
         artifact_sha256=file_hash,
     )
-    # Generic metadata-response digests retain the existing privacy projection.
-    assert "redacted" in out["response_sha256"]
+    # The metadata-response digest is shown as written, and it stays a
+    # different hash from the downloaded file's own local SHA-256.
+    assert out["response_sha256"] == metadata_hash
     assert out["dataset"]["local_sha256"] == file_hash
     assert out["dataset"]["record_doi"] != out["dataset"]["concept_doi"]
     assert out["dataset"]["declared_license"] is None
@@ -944,3 +949,177 @@ def test_the_route_sends_provenance_and_never_the_credential(tmp_path):
         assert provenance["undisclosed_field_count"] == 1
     finally:
         runner.close()
+
+
+# --------------------------------------------------------------------------
+# historical names, and the response digest's public state
+# --------------------------------------------------------------------------
+
+
+def test_the_canonical_response_digest_says_whether_it_is_shown_or_hidden():
+    """A real SHA-256 is the hash of what came back and is shown as written.
+    Judged whole it is an opaque 64-hex run, so it used to project as
+    `<redacted:…>` with state "hidden" for every real search. Any other value
+    is text like the rest, and when it is hidden the client is told so instead
+    of having to guess from the redaction marker."""
+    import hashlib
+
+    digest = hashlib.sha256(b"upstream response bytes").hexdigest()
+    out = public_source({"response_sha256": digest})
+    assert out["response_sha256"] == digest
+    assert out[RESPONSE_HASH_STATE_KEY] == RESPONSE_HASH_SHOWN
+
+    # Not a digest: a credential-shaped value, or a digest with extra text.
+    for opaque in ("sk-live-" + SECRET, "sha256:" + digest, digest[:40] + "ZZZZ"):
+        out = public_source({"response_sha256": opaque})
+        assert opaque not in json.dumps(out)
+        assert "redacted" in out["response_sha256"]
+        assert out[RESPONSE_HASH_STATE_KEY] == "hidden"
+
+
+def test_a_legacy_science_search_source_is_readable():
+    """`write_search_artifact` used to record `endpoint` / `source_checksum`.
+    Those artifacts are immutable and still have to be readable, but only for
+    the one known kind that ever wrote them."""
+    out = public_source(
+        {
+            "kind": "science_search",
+            "database": "clinvar",
+            "query": "VCV000012345",
+            "endpoint": "https://eutils.ncbi.nlm.nih.gov/example",
+            "retrieved_at": 123456789,
+            "source_checksum": "ab" * 32,
+            "accessions": ["VCV000012345"],
+        }
+    )
+    assert out["request_url"] == "https://eutils.ncbi.nlm.nih.gov/example"
+    assert out["response_sha256"] == "ab" * 32
+    assert out[LEGACY_FIELDS_KEY] == ["request_url", "response_sha256"]
+    assert "endpoint" not in out and "source_checksum" not in out
+    # `kind` and `accessions` are still fields the projection does not render;
+    # the consumed aliases are not counted as unknown.
+    assert out["undisclosed_field_count"] == 2
+
+
+def test_a_legacy_response_checksum_is_judged_by_the_same_digest_grammar():
+    import hashlib
+
+    digest = hashlib.sha256(b"legacy response bytes").hexdigest()
+    out = public_source({"kind": "science_search", "source_checksum": digest})
+    assert out["response_sha256"] == digest
+    assert out[RESPONSE_HASH_STATE_KEY] == RESPONSE_HASH_SHOWN
+    assert out[LEGACY_FIELDS_KEY] == ["response_sha256"]
+
+    opaque = "sk-live-" + SECRET
+    out = public_source({"kind": "science_search", "source_checksum": opaque})
+    assert opaque not in json.dumps(out)
+    assert "redacted" in out["response_sha256"]
+    assert out[RESPONSE_HASH_STATE_KEY] == "hidden"
+    assert out[LEGACY_FIELDS_KEY] == ["response_sha256"]
+
+
+def test_alias_and_canonical_names_that_agree_merge_without_a_conflict():
+    url = "https://eutils.ncbi.nlm.nih.gov/example"
+    out = public_source(
+        {
+            "kind": "science_search",
+            "request_url": url,
+            "endpoint": url,
+            "response_sha256": "ab" * 32,
+            "source_checksum": "ab" * 32,
+        }
+    )
+    assert out["request_url"] == url
+    assert out["response_sha256"] == "ab" * 32
+    assert LEGACY_FIELDS_KEY not in out
+    assert ALIAS_CONFLICTS_KEY not in out
+    assert out["undisclosed_field_count"] == 1
+
+
+def test_conflicting_alias_and_canonical_names_keep_the_canonical_value():
+    canonical = "https://eutils.ncbi.nlm.nih.gov/canonical"
+    alias = "https://legacy.example.org/other"
+    out = public_source(
+        {
+            "kind": "science_search",
+            "request_url": canonical,
+            "endpoint": alias,
+            "response_sha256": "ab" * 32,
+            "source_checksum": "cd" * 32,
+        }
+    )
+    assert out["request_url"] == canonical
+    assert out["response_sha256"] == "ab" * 32
+    # F13's frozen field name; the pre-S1 `source_conflicts` spelling is gone.
+    assert out[ALIAS_CONFLICTS_KEY] == ["request_url", "response_sha256"]
+    assert "alias_conflicts" in out and "source_conflicts" not in out
+    assert LEGACY_FIELDS_KEY not in out
+    rendered = json.dumps(out)
+    assert alias not in rendered
+    assert "cd" * 32 not in rendered
+
+
+def test_a_conflicting_alias_value_is_not_rendered_even_if_it_carries_a_credential():
+    out = public_source(
+        {
+            "kind": "science_search",
+            "request_url": "https://eutils.ncbi.nlm.nih.gov/example",
+            "endpoint": f"https://legacy.example.org/search?api_key={SECRET}",
+        }
+    )
+    assert out[ALIAS_CONFLICTS_KEY] == ["request_url"]
+    assert SECRET not in json.dumps(out)
+
+
+def test_the_legacy_names_are_only_understood_on_the_known_kind():
+    alias_url = "https://legacy.example.org/data"
+    out = public_source(
+        {
+            "kind": "something_else",
+            "database": "RCSB",
+            "endpoint": alias_url,
+            "source_checksum": "ab" * 32,
+        }
+    )
+    assert "request_url" not in out
+    assert "response_sha256" not in out
+    assert LEGACY_FIELDS_KEY not in out
+    assert alias_url not in json.dumps(out)
+    # kind + both aliases are fields the projection does not render.
+    assert out["undisclosed_field_count"] == 3
+
+
+def test_a_legacy_request_url_is_still_redacted():
+    out = public_source(
+        {
+            "kind": "science_search",
+            "endpoint": f"https://api.example.org/search?q=NIF3&api_key={SECRET}",
+        }
+    )
+    assert out[LEGACY_FIELDS_KEY] == ["request_url"]
+    assert SECRET not in json.dumps(out)
+    assert "api_key" in out["request_url"]
+
+
+def test_a_legacy_value_is_clipped_like_the_canonical_one():
+    out = public_source(
+        {"kind": "science_search", "endpoint": "x" * (MAX_VALUE_CHARS * 2)}
+    )
+    assert len(out["request_url"]) == MAX_VALUE_CHARS
+    assert out["truncated_fields"] == ["request_url"]
+    assert out[LEGACY_FIELDS_KEY] == ["request_url"]
+
+
+def test_empty_results_and_empty_legacy_values_stay_absent():
+    assert public_source({"kind": "science_search"}) is None
+    assert (
+        public_source(
+            {
+                "kind": "science_search",
+                "endpoint": "",
+                "source_checksum": None,
+                "query": "",
+            }
+        )
+        is None
+    )

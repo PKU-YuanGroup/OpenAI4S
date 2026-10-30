@@ -2774,26 +2774,47 @@ class Store:
         )
 
     def _load_capability_receipt_overlays(self) -> None:
-        """Re-adopt current-revision positive receipts after a restart."""
+        """Rebuild the in-process probe evidence from the durable receipts.
+
+        Opening a Store is the restart path, so this must land on exactly the
+        capability a running probe sequence would have: walk the receipts that
+        are still valid evidence (profile not deleted, that profile's current
+        revision, current probe version) in *ascending* ``observed_at`` order --
+        ties by ``receipt_id`` -- and let ``replace_receipt_overlay`` apply each
+        one.  Later entries therefore win, which is F10's rule, and a
+        non-positive latest receipt withdraws an older positive promotion just
+        as it would at runtime.
+        """
         from openai4s.llm.capabilities import (
             PROBE_VERSION,
             drop_receipt_overlays,
-            install_receipt_overlay,
+            replace_receipt_overlay,
         )
 
-        drop_receipt_overlays()
-        current = {
-            str(profile.get("id") or ""): int(profile.get("revision") or 0)
-            for profile in self.list_model_profiles()
-            if not profile.get("deleted_at")
-        }
-        for receipt in self._model_capability_receipts.list_all():
-            profile_id = str(receipt.get("profile_id") or "")
-            if current.get(profile_id) != int(receipt.get("revision") or 0):
-                continue
-            if int(receipt.get("probe_version") or 0) != PROBE_VERSION:
-                continue
-            install_receipt_overlay(receipt)
+        # Reload uses the same lock as live receipt publication and profile
+        # mutations, including when called after a provider-alias migration.
+        with self._lock:
+            drop_receipt_overlays()
+            current = {
+                str(profile.get("id") or ""): int(profile.get("revision") or 0)
+                for profile in self.list_model_profiles()
+                if not profile.get("deleted_at")
+            }
+            receipts = [
+                receipt
+                for receipt in self._model_capability_receipts.list_all()
+                if int(receipt.get("probe_version") or 0) == PROBE_VERSION
+                and current.get(str(receipt.get("profile_id") or ""))
+                == int(receipt.get("revision") or 0)
+            ]
+            receipts.sort(
+                key=lambda receipt: (
+                    int(receipt.get("observed_at") or 0),
+                    str(receipt.get("receipt_id") or ""),
+                )
+            )
+            for receipt in receipts:
+                replace_receipt_overlay(receipt)
 
     # --- frames ----------------------------------------------------------
     def new_frame(
@@ -5757,6 +5778,35 @@ class Store:
     ) -> list[dict]:
         """One owner's remote jobs, live and finished. Never installation-wide."""
         return self._compute_jobs.for_owner(owner_key, limit)
+
+    def compute_jobs_page_for_owner(
+        self,
+        owner_key: str | None,
+        *,
+        limit: int,
+        state: str,
+        after: tuple[int, str] | None = None,
+    ) -> tuple[list[dict], int, bool]:
+        """One page of one owner's remote jobs plus that owner's live total.
+
+        A thin pass-through on purpose: the stable sort, the keyset predicate and
+        the aggregate all belong to the repository, and the route above it must
+        not be able to ask for a page and a count from two different snapshots.
+        Returns ``(rows, total_live_count, has_more)``.
+        """
+        return self._compute_jobs.page_for_owner(
+            owner_key, limit=limit, state=state, after=after
+        )
+
+    def compute_job_created_at_for_owner(
+        self, owner_key: str | None, job_id: str
+    ) -> int | None:
+        """A cursor anchor check: this owner's ``created_at`` for one job."""
+        return self._compute_jobs.owner_job_created_at(owner_key, job_id)
+
+    def compute_job_for_owner(self, owner_key: str | None, job_id: str) -> dict | None:
+        """This owner's job row, or None. Never another session's row."""
+        return self._compute_jobs.get_for_owner(owner_key, job_id)
 
     def append_compute_job_event(self, job_id: str, kind: str, payload=None) -> int:
         return self._compute_jobs.append_event(job_id, kind, payload)

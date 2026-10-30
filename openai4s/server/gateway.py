@@ -119,6 +119,7 @@ from openai4s.server import (
     sandbox_grants,
     team_policy,
     team_routes,
+    update_routes,
     ws_frames,
 )
 from openai4s.server.action_timeline import ActionTimelineService
@@ -3318,6 +3319,9 @@ class SessionRunner:
         session resolves to "no such job" through the manager's own
         owner-scoped `_jobs` map -- the same predicate `job_history` uses, and
         for the same reason: a distinct refusal would confirm the job exists.
+        A finished job this session owns is not in that map (only live work is
+        rehydrated). Refresh answers with the recorded row and does not probe:
+        "no such job" would deny a row the listing is showing.
         """
         workspace = self.active_workspace_for(root_frame_id)
         dispatcher = build_dispatcher(
@@ -3341,29 +3345,73 @@ class SessionRunner:
         before = self.artifacts.snapshot(workspace)
         self.artifacts.protect_latest(st)
         outcome: dict[str, Any] | None = None
+        recorded_row: dict[str, Any] | None = None
         harvest_evidence_error: Exception | None = None
+
+        def _missing(error: BaseException) -> bool:
+            # ComputeError stores the code on `error_kind`. `kind` / `code`
+            # are what other failures use. Checking only those two turned
+            # every missing job into a 502 that looked like a remote outage.
+            kind = (
+                getattr(error, "error_kind", "")
+                or getattr(error, "kind", "")
+                or getattr(error, "code", "")
+            )
+            return str(kind) == "not_found"
+
         try:
             outcome = manager.result({"job_id": job_id})
         except Exception as error:  # noqa: BLE001
             # `not_found` is a client error, not a server fault; anything else
             # is the remote or the transport failing, which the user can retry.
-            code = getattr(error, "kind", "") or getattr(error, "code", "")
-            if str(code) == "not_found":
-                raise GatewayError(404, f"no such job {job_id}", "not_found") from error
-            # The provider's own text does not go in. A remote SDK's error
-            # quotes the endpoint it called, the credential prefix it used and
-            # the *provider's* request id -- and that last one is the worst of
-            # the three, because it reads like the id to quote in a support
-            # ticket while naming a request neither the user nor this daemon
-            # can look up. `public_exception` answers with this daemon's local
-            # correlation id instead, and the original reaches the operator
-            # diagnostic only.
-            record_diagnostic(
-                error, surface="compute:refresh", request_id=correlation_id()
-            )
-            raise GatewayError(
-                502, "remote compute refresh failed", "refresh_failed"
-            ) from error
+            if _missing(error):
+                from openai4s.compute.manager import ComputeManager
+                from openai4s.compute.states import is_terminal
+
+                owned = self.store.compute_job_for_owner(str(workspace), job_id)
+                if isinstance(owned, dict) and is_terminal(owned.get("status")):
+                    recorded_row = owned
+                elif (
+                    isinstance(owned, dict)
+                    and isinstance(manager, ComputeManager)
+                    and manager.adopt_record(owned)
+                ):
+                    try:
+                        outcome = manager.result({"job_id": job_id})
+                    except Exception as retry_error:  # noqa: BLE001
+                        if _missing(retry_error):
+                            raise GatewayError(
+                                404, f"no such job {job_id}", "not_found"
+                            ) from retry_error
+                        record_diagnostic(
+                            retry_error,
+                            surface="compute:refresh",
+                            request_id=correlation_id(),
+                        )
+                        raise GatewayError(
+                            502,
+                            "remote compute refresh failed",
+                            "refresh_failed",
+                        ) from retry_error
+                else:
+                    raise GatewayError(
+                        404, f"no such job {job_id}", "not_found"
+                    ) from error
+            else:
+                # The provider's own text does not go in. A remote SDK's error
+                # quotes the endpoint it called, the credential prefix it used and
+                # the *provider's* request id -- and that last one is the worst of
+                # the three, because it reads like the id to quote in a support
+                # ticket while naming a request neither the user nor this daemon
+                # can look up. `public_exception` answers with this daemon's local
+                # correlation id instead, and the original reaches the operator
+                # diagnostic only.
+                record_diagnostic(
+                    error, surface="compute:refresh", request_id=correlation_id()
+                )
+                raise GatewayError(
+                    502, "remote compute refresh failed", "refresh_failed"
+                ) from error
         finally:
             # In `finally`, not after: a harvest that extracted some outputs and
             # then failed has still written real bytes into the workspace, and
@@ -3386,33 +3434,43 @@ class SessionRunner:
                         surface="compute:refresh_provenance",
                         request_id=correlation_id(),
                     )
-            try:
-                self.artifacts.capture(
-                    st,
-                    st.cell_index,
-                    None,
-                    before,
-                    emit,
-                    language="native",
-                    # The legacy remote-environment drain remains per capture;
-                    # exact harvest identity comes only from the scoped receipts
-                    # below, never from a later post-event row update.
-                    drain_remote_provenance=self._remote_provenance_drain(st),
-                    artifact_receipts=artifact_receipt_map(artifact_receipts),
-                )
-            except Exception as error:  # noqa: BLE001
-                # Capture must not convert a successful harvest into an error;
-                # the files remain on disk and the next capture will see them.
-                record_diagnostic(
-                    error,
-                    surface="compute:refresh_capture",
-                    request_id=correlation_id(),
-                )
-                if artifact_receipts:
-                    # A verified Stage 11 receipt is a promise that this
-                    # refresh durably bound those exact bytes. Returning success
-                    # after that binding failed would be the old fail-open gap.
-                    harvest_evidence_error = error
+            # A finished job answered from its recorded row contacted no
+            # provider and harvested nothing: there is nothing to capture, and
+            # a capture here would attribute unrelated workspace writes to it.
+            if recorded_row is None:
+                try:
+                    self.artifacts.capture(
+                        st,
+                        st.cell_index,
+                        None,
+                        before,
+                        emit,
+                        language="native",
+                        # The legacy remote-environment drain remains per capture;
+                        # exact harvest identity comes only from the scoped receipts
+                        # below, never from a later post-event row update.
+                        drain_remote_provenance=self._remote_provenance_drain(st),
+                        artifact_receipts=artifact_receipt_map(artifact_receipts),
+                    )
+                except Exception as error:  # noqa: BLE001
+                    # Capture must not convert a successful harvest into an error;
+                    # the files remain on disk and the next capture will see them.
+                    record_diagnostic(
+                        error,
+                        surface="compute:refresh_capture",
+                        request_id=correlation_id(),
+                    )
+                    if artifact_receipts:
+                        # A verified Stage 11 receipt is a promise that this
+                        # refresh durably bound those exact bytes. Returning success
+                        # after that binding failed would be the old fail-open gap.
+                        harvest_evidence_error = error
+        if recorded_row is not None:
+            task = compute_tasks.public_task(recorded_row)
+            # The map does not hold finished jobs, so this did not probe. The
+            # listing's `polled: false` means the same thing.
+            task["polled"] = False
+            return task
         if harvest_evidence_error is not None:
             # The bytes have still been registered above, but a successful
             # Stage 11 response must not claim a harvest whose manifest cannot
@@ -16510,6 +16568,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if diagnostics_routes.handle(self, method, sub, cfg=cfg):
                 return
+            # Explicit update check: a read-only status and an operator-pressed
+            # check. Admin-only on both verbs (team_policy), no-store, and the
+            # GET never reaches the network or writes the cache.
+            if update_routes.handle(self, method, sub, cfg=cfg):
+                return
             if artifact_index_routes.handle(self, method, sub, q, store):
                 return
             # ---- identity / meta (local identity; behind the token gate) ----
@@ -19892,14 +19955,42 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # -- `result()` pulls files back and closes the job -- so a
                 # self-refreshing page would harvest into a session nobody was
                 # watching, on a schedule nobody chose.
+                #
+                # `limit`/`cursor`/`state` walk the record a page at a time;
+                # the response carries the same-owner live total and whether
+                # another page exists. An unreadable record answers 503 with a
+                # stable code: a blank 200 would read as "nothing is running"
+                # for a session whose GPU job may still be billing.
                 fid = m.group(1)
-                if store.get_frame(fid) is None:
+                try:
+                    frame_row = store.get_frame(fid)
+                except (
+                    Exception
+                ) as error:  # noqa: BLE001 - the same record is unreadable
+                    raise GatewayError(
+                        503,
+                        "compute task records are temporarily unavailable",
+                        "compute_record_unavailable",
+                    ) from error
+                if frame_row is None:
                     raise GatewayError(404, "session not found")
-                self._json(
-                    compute_tasks.owner_tasks(
-                        store, str(runner.active_workspace_for(fid))
+                try:
+                    options = compute_tasks.parse_options(q)
+                    payload = compute_tasks.owner_tasks(
+                        store,
+                        str(runner.active_workspace_for(fid)),
+                        frame_id=fid,
+                        **options,
                     )
-                )
+                except compute_tasks.InvalidTaskQuery as error:
+                    raise GatewayError(400, str(error), error.code) from error
+                except compute_tasks.ComputeRecordsUnavailable as error:
+                    raise GatewayError(
+                        503,
+                        "compute task records are temporarily unavailable",
+                        "compute_record_unavailable",
+                    ) from error
+                self._json(payload)
                 return
             m = re.fullmatch(r"/frames/([^/]+)/compute/tasks/([^/]+)/refresh", sub)
             if m and method == "POST":

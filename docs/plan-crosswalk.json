@@ -81,7 +81,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "84073d6671ba7a7a5e0b8f109e99604935b8f4b4d4b3426c46461dc9fe2c1e55"
+      "evidence_digest": "f6c704a84f0173cd2e4dd15b35e78e15c810916ffa9c7cf26a8584a53b0d93e5"
     },
     {
       "source": "R1",
@@ -227,11 +227,11 @@
       "integrated": "P1-A",
       "plan_conclusion": "提前为只读 P1，依赖 scoped source",
       "status": "closed",
-      "status_note": "the Artifact version retrieval-source panel remains allowlisted, length-capped, redacted and bound to its version; the route omits credentials. frontend/src/islands/viewer.ts renders recorded dataset identity; a matched verification check requires a local Host-owned receipt for that exact version, while unattested historical or imported sources show an unknown check. The previous `open` label predated the work.",
+      "status_note": "the Artifact version retrieval-source panel remains allowlisted, length-capped, redacted and bound to its version; the route omits credentials. frontend/src/islands/viewer.ts renders recorded dataset identity and verification fields as source information, not as an attestation. The previous `open` label predated the work.",
       "tests": "tests/test_retrieval_source.py,tests/test_retrieval_provenance.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "c5e05638baf8c275e2c756f842377026760f1732f9b3e97155b08997d91b4309"
+      "evidence_digest": "6381786fe20e6d1a8fda4c479c5feba21eb56aa3e3f79fd11462c86d3788a260"
     },
     {
       "source": "R3",
@@ -314,7 +314,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "83a05fdfe088278a205a5c6b0ef425e65f5002c6de3ca598ec4ee5203e0b7e47"
+      "evidence_digest": "073098454eafe220d118a4759aa0c2a234a57492d1e14cb72f439f3c778cdcde"
     },
     {
       "source": "R3",
@@ -453,7 +453,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "84073d6671ba7a7a5e0b8f109e99604935b8f4b4d4b3426c46461dc9fe2c1e55"
+      "evidence_digest": "f6c704a84f0173cd2e4dd15b35e78e15c810916ffa9c7cf26a8584a53b0d93e5"
     },
     {
       "source": "R5",
@@ -564,7 +564,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "84073d6671ba7a7a5e0b8f109e99604935b8f4b4d4b3426c46461dc9fe2c1e55"
+      "evidence_digest": "f6c704a84f0173cd2e4dd15b35e78e15c810916ffa9c7cf26a8584a53b0d93e5"
     },
     {
       "source": "R6",
@@ -662,7 +662,7 @@
       "tests": "tests/test_renderer_capability_honesty.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4bf2944794c004eecda3f9c5a690cb0f867baa87c178a7fc775701f45b6e6e09"
+      "evidence_digest": "37a51252d0b3309e5622a9676935f6d2be8c07d26b843047389bd60a35c494b7"
     },
     {
       "source": "R6",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "ed160a902a4fb5ecc9ff72e6d929c91221252d9bd066fcaeac5a26d72a6bebfa"
+      "evidence_digest": "f90bc3dffb7146884233e67990c555b853f06e28a4b0b89f0a45dfa81e16fa4d"
     },
     {
       "source": "R7",

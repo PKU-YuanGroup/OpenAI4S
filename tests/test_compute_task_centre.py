@@ -22,8 +22,11 @@ running and billing.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import json
+import sqlite3
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -288,6 +291,53 @@ def test_refresh_is_a_post_because_it_harvests(client):
     assert any("compute/tasks" in route and "refresh" in route for route in routes)
     status, _body = client.get(f"/frames/{frame}/compute/tasks/job-x/refresh")
     assert status in (404, 405), "the harvesting action answered a GET"
+
+
+def test_refresh_of_an_owned_terminal_job_returns_the_record_without_a_probe(
+    client, monkeypatch
+):
+    """The listing shows finished jobs. The manager map does not: only live
+    work is rehydrated, and ``ComputeError`` stores the miss on ``error_kind``.
+
+    Refresh used to treat that miss as a remote failure (502), or, when the
+    code was read off the wrong attribute, as "no such job". The recorded row
+    is the answer, and it does not contact a provider. Another session's id
+    stays indistinguishable from one that does not exist.
+    """
+    mine, theirs = client.session(), client.session()
+    client.seed(mine, job_id="job-done", status=SUCCEEDED, reason="finished cleanly")
+    client.seed(theirs, job_id="job-theirs", status=SUCCEEDED)
+
+    def boom(*_a, **_k):
+        raise AssertionError("a recorded terminal job must not contact a provider")
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", boom)
+    captures: list[object] = []
+    monkeypatch.setattr(
+        "openai4s.server.artifacts.ArtifactManager.capture",
+        lambda *a, **k: captures.append(a),
+    )
+
+    status, body = client.post(f"/frames/{mine}/compute/tasks/job-done/refresh")
+    assert status == 200, body
+    assert body["polled"] is False
+    # Nothing was harvested, so nothing may be captured and attributed to it.
+    assert captures == []
+    assert body["job_id"] == "job-done"
+    assert body["status"] == SUCCEEDED
+    assert body.get("reason") == "finished cleanly"
+
+    foreign_status, foreign = client.post(
+        f"/frames/{mine}/compute/tasks/job-theirs/refresh"
+    )
+    unknown_status, unknown = client.post(
+        f"/frames/{mine}/compute/tasks/job-missing/refresh"
+    )
+    assert foreign_status == unknown_status == 404
+    assert foreign.get("code") == unknown.get("code") == "not_found"
+    assert foreign["error"].replace("job-theirs", "<job>") == unknown["error"].replace(
+        "job-missing", "<job>"
+    )
 
 
 def test_a_session_that_does_not_exist_is_not_a_blank_page(client):
@@ -575,13 +625,27 @@ def test_page_load_and_ordinary_stop_never_post_cancel():
         encoding="utf-8"
     )
     deletion = Path("openai4s/server/session_deletion.py").read_text(encoding="utf-8")
-    # Page load fetches the listing. The cancel POST lives only in the
-    # confirm-gated helper, which the load path never calls.
+    # Page load fetches the listing. C2 keeps that read in `island.ts` and
+    # routes it through the dedicated `loadComputeTasks`; the endpoint string
+    # lives only in the `computeTasksPath` builder beside it. The cancel POST
+    # lives only in the confirm-gated helper, which neither the load path nor
+    # the listing read calls.
     load_fn = island.split("export async function loadWorkbenchState", 1)[1].split(
         "export function scheduleWorkbenchRefresh", 1
     )[0]
-    assert "/compute/tasks" in load_fn
+    assert "loadComputeTasks" in load_fn
+    # One builder names the endpoint, and it is the one the load reaches.
+    assert "function computeTasksPath" in island
+    read_fn = island.split("function computeTasksPath", 1)[1].split("\n}\n", 1)[0]
+    assert "/compute/tasks" in read_fn
+    # The load path itself does not build the URL, and the template that names
+    # the listing endpoint exists exactly once — inside that read builder. The
+    # cancel/refresh helpers build their own per-job sub-paths.
+    assert "/compute/tasks" not in load_fn
+    assert island.count("/compute/tasks${") == 1
+    assert read_fn.count("/compute/tasks${") == 1
     assert "/cancel" not in load_fn
+    assert "/cancel" not in read_fn
     assert "confirm: true" not in load_fn
     # The cancel helper itself is the only POST, and it is behind confirm().
     assert "function cancelComputeTask" in island
@@ -650,3 +714,370 @@ def test_a_confirmed_cancel_clears_the_earlier_unconfirmed_note(client, monkeypa
     assert row["status"] == CANCELLED
     assert not row.get("reason"), row.get("reason")
     assert "billing" not in str(body["task"].get("reason") or "")
+
+
+# --------------------------------------------------------------------------
+# paging: the live job the newest-200 view could not reach
+# --------------------------------------------------------------------------
+
+
+def _seed_many(client, frame, count, *, live_ids=frozenset(), prefix="job"):
+    """Create ``count`` jobs owned by ``frame``, optionally pinning the order.
+
+    Seeded through the repository's state machine (``create`` then ``update``),
+    because a row that jumped straight to a terminal state is one the system
+    never produces and a test that used one would prove nothing about the real
+    listing.
+    """
+    owner = client.owner_key(frame)
+    for index in range(count):
+        job_id = f"{prefix}-{index:03d}"
+        client.store.create_compute_job(
+            job_id=job_id, provider="byoc-test", status="queued", owner_key=owner
+        )
+        client.store.update_compute_job(job_id, status="staging")
+        if job_id in live_ids:
+            client.store.update_compute_job(job_id, status="running")
+        else:
+            client.store.update_compute_job(job_id, status="succeeded", terminal_at=1)
+        # Pin the ordering key so the tie-break is exercised deterministically:
+        # all 201 rows land in the same millisecond, which is exactly the case
+        # the old `ORDER BY created_at DESC` left undefined.
+        client.store.update_compute_job(job_id, created_at=5000)
+
+
+def _tasks_path(frame, **query):
+    path = f"/frames/{frame}/compute/tasks"
+    if query:
+        from urllib.parse import urlencode
+
+        path += "?" + urlencode(query)
+    return path
+
+
+def _page_ids(body):
+    return [task["job_id"] for task in body["tasks"]]
+
+
+def test_the_old_response_keys_keep_their_meaning_and_the_new_ones_are_added(client):
+    """`live_count` still counts live jobs on *this page*, `polled` is still
+    false, and the three new fields are always present — a client that only
+    knows the old shape reads what it always did."""
+    frame = client.session()
+    client.seed(frame, job_id="job-a", status="running")
+    client.seed(frame, job_id="job-b", status="succeeded", terminal_at=1)
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+    assert body["polled"] is False
+    assert body["live_count"] == 1
+    assert body["total_live_count"] == 1
+    assert body["has_more"] is False
+    assert body["next_cursor"] is None
+    assert set(_page_ids(body)) == {"job-a", "job-b"}
+
+
+@pytest.mark.stubbed_backend
+def test_an_empty_page_is_a_success_and_a_failure_is_not_an_empty_page(client):
+    """A session with no remote work and an unreadable record must not look the
+    same. The first is "nothing is running"; the second cannot say that."""
+    frame = client.session()
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+    assert body["tasks"] == []
+    assert body["live_count"] == 0
+    assert body["total_live_count"] == 0
+    assert body["has_more"] is False
+
+    def unreadable(*_args, **_kwargs):
+        raise sqlite3.OperationalError(
+            "no such table: compute_jobs at /private/lab/secret.db"
+        )
+
+    client.store.compute_jobs_page_for_owner = unreadable
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 503
+    assert body["code"] == "compute_record_unavailable"
+    assert body["status"] == 503
+    assert body["error"] == "compute task records are temporarily unavailable"
+    assert "tasks" not in body and "live_count" not in body
+    rendered = json.dumps(body)
+    for leak in (
+        "no such table",
+        "/private/lab",
+        "secret.db",
+        "sqlite",
+        "Traceback",
+        str(client.cfg.data_dir),
+    ):
+        assert leak not in rendered
+
+
+def test_an_unreadable_session_lookup_is_also_503_rather_than_404(client):
+    """The frame read comes from the same database. It cannot answer "unknown
+    session" when it cannot read at all — and a 404 would tell the client the
+    session is gone."""
+    frame = client.session()
+
+    def unreadable(_frame_id):
+        raise sqlite3.OperationalError("database is locked: /private/lab/secret.db")
+
+    client.store.get_frame = unreadable
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 503
+    assert body["code"] == "compute_record_unavailable"
+    assert body["error"] == "compute task records are temporarily unavailable"
+    assert "/private/lab" not in json.dumps(body)
+    assert str(client.cfg.data_dir) not in json.dumps(body)
+
+
+def test_the_total_reaches_a_live_job_pushed_out_of_the_newest_page(client):
+    """The failure the paging exists for: 201 jobs, only the oldest still
+    running. The newest-200 view cannot contain it, and `live_count` over that
+    page is 0. `total_live_count` is 1, and the "live" filter locates it."""
+    frame = client.session()
+    _seed_many(client, frame, 201, live_ids={"job-000"})
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+    assert len(body["tasks"]) == 200
+    assert body["total_live_count"] == 1
+    assert body["live_count"] == 0, "the legacy field counts this page only"
+    assert body["has_more"] is True
+    assert body["next_cursor"]
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks?state=live")
+    assert status == 200
+    assert _page_ids(body) == ["job-000"]
+    assert body["live_count"] == 1
+    assert body["total_live_count"] == 1
+    assert body["has_more"] is False
+    assert body["next_cursor"] is None
+
+
+def test_the_limit_is_defaulted_capped_and_validated(client):
+    frame = client.session()
+    _seed_many(client, frame, 201, live_ids={"job-000"})
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks?limit=500")
+    assert status == 200
+    assert (
+        len(body["tasks"]) == 200
+    ), "a limit above the ceiling is clamped, not honoured"
+    assert body["has_more"] is True
+
+    for bad in ("0", "-1", "many"):
+        status, body = client.get(f"/frames/{frame}/compute/tasks?limit={bad}")
+        assert status == 400
+        assert body["code"] == "invalid_limit"
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks?state=done")
+    assert status == 400
+    assert body["code"] == "invalid_state"
+
+
+def test_paging_is_stable_and_never_repeats_or_skips_a_job(client):
+    """All 201 rows share a `created_at`. A keyset ordering without a tiebreak
+    had no defined position between them, so a page boundary could repeat one
+    and skip another while both pages looked complete."""
+    frame = client.session()
+    _seed_many(client, frame, 201, live_ids={"job-000"})
+    seen: list[str] = []
+    cursor = None
+    pages = 0
+    while True:
+        query = {"limit": 7}
+        if cursor:
+            query["cursor"] = cursor
+        status, body = client.get(_tasks_path(frame, **query))
+        assert status == 200
+        ids = _page_ids(body)
+        assert ids == sorted(ids, reverse=True), "a page is not a stable slice"
+        assert not (set(ids) & set(seen)), f"repeated across pages: {ids}"
+        seen.extend(ids)
+        assert body["total_live_count"] == 1
+        pages += 1
+        if not body["has_more"]:
+            assert body["next_cursor"] is None
+            break
+        cursor = body["next_cursor"]
+        assert cursor
+    assert pages == 29, (pages, len(seen))
+    assert len(seen) == 201
+    assert len(set(seen)) == 201
+    assert seen == sorted(seen, reverse=True)
+
+
+def test_a_cursor_is_opaque_and_carries_no_owner_path(client):
+    """The cursor carries the sort key and the filter. It must not carry
+    `owner_key`: that is the session's workspace path, which is a leak and,
+    worse, would tempt a server to trust it as authorization."""
+    frame = client.session()
+    _seed_many(client, frame, 3)
+    _status, body = client.get(f"/frames/{frame}/compute/tasks?limit=1")
+    cursor = body["next_cursor"]
+    assert cursor
+    padded = cursor + "=" * (-len(cursor) % 4)
+    raw = base64.urlsafe_b64decode(padded).decode("utf-8")
+    assert client.owner_key(frame) not in raw
+    assert "owner_key" not in raw
+    assert "/" not in raw
+    payload = json.loads(raw)
+    assert set(payload) == {"fp", "id", "t"}
+    assert len(payload["fp"]) == 64
+    assert all(c in "0123456789abcdef" for c in payload["fp"])
+
+
+def test_a_malformed_or_cross_filter_cursor_is_refused(client):
+    frame = client.session()
+    _seed_many(client, frame, 3)
+
+    for bad in ("not-a-cursor", "e30", base64.urlsafe_b64encode(b"[1,2]").decode()):
+        status, body = client.get(f"/frames/{frame}/compute/tasks?cursor={bad}")
+        assert status == 400
+        assert body["code"] == "invalid_cursor"
+
+    _status, body = client.get(f"/frames/{frame}/compute/tasks?limit=1")
+    cursor = body["next_cursor"]
+    status, body = client.get(
+        f"/frames/{frame}/compute/tasks?limit=1&state=live&cursor={cursor}"
+    )
+    assert status == 400
+    assert body["code"] == "invalid_cursor", "a page cursor is bound to its filter"
+
+
+def test_another_owners_cursor_is_refused_and_their_jobs_are_never_counted(client):
+    mine, theirs = client.session(), client.session()
+    _seed_many(client, mine, 3, prefix="mine")
+    _seed_many(client, theirs, 2, live_ids={"theirs-000"}, prefix="theirs")
+    _status, body = client.get(f"/frames/{mine}/compute/tasks?limit=1")
+    foreign_cursor = body["next_cursor"]
+
+    status, body = client.get(
+        f"/frames/{theirs}/compute/tasks?limit=1&cursor={foreign_cursor}"
+    )
+    assert status == 400
+    assert body["code"] == "invalid_cursor"
+
+    status, body = client.get(f"/frames/{mine}/compute/tasks")
+    assert status == 200
+    assert body["total_live_count"] == 0, "their live job is not my total"
+    assert all(job_id.startswith("mine-") for job_id in _page_ids(body))
+    assert "hidden" not in json.dumps(body)
+
+
+def test_unknown_is_counted_as_live_in_the_same_owner_total(client):
+    """`unknown` means the remote could not be reached, and the job may still
+    be billing. It is live for the total exactly as it is for the row."""
+    frame = client.session()
+    client.seed(frame, job_id="job-maybe", status="unknown")
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+    assert body["tasks"][0]["status"] == "unknown"
+    assert body["tasks"][0]["live"] is True
+    assert body["live_count"] == 1
+    assert body["total_live_count"] == 1
+
+
+def test_reading_a_page_does_not_advance_or_rewrite_a_job(client):
+    """The page reads the durable record. It does not reconcile it, stamp it,
+    or append an event — that is the explicit refresh/cancel POST."""
+    frame = client.session()
+    client.seed(frame, job_id="job-live", status="running")
+    before = client.store.get_compute_job("job-live")
+    events_before = client.store.compute_job_events("job-live")
+
+    status, _body = client.get(f"/frames/{frame}/compute/tasks?limit=1&state=live")
+    assert status == 200
+    status, _body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+
+    assert client.store.get_compute_job("job-live") == before
+    assert client.store.compute_job_events("job-live") == events_before
+
+
+def test_the_new_fields_survive_a_restart(client, tmp_path):
+    frame = client.session()
+    _seed_many(client, frame, 3, live_ids={"job-000"})
+    client.store.close()
+
+    revived = _Client.__new__(_Client)
+    revived.__init__(tmp_path)
+    status, body = revived.get(f"/frames/{frame}/compute/tasks?limit=1")
+    assert status == 200
+    assert body["total_live_count"] == 1
+    assert body["has_more"] is True
+    assert body["next_cursor"]
+
+
+def test_a_cursor_anchored_to_another_owners_job_is_refused(client):
+    """The frame/state fingerprint is computable by a client; owner binding is
+    the server-side anchor check, not secrecy. A cursor naming somebody else's
+    job is refused even with a correct-looking fingerprint."""
+    mine, theirs = client.session(), client.session()
+    _seed_many(client, mine, 2, prefix="mine")
+    _seed_many(client, theirs, 2, prefix="theirs")
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {"frame_id": theirs, "state": "all"},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    forged = (
+        base64.urlsafe_b64encode(
+            json.dumps(
+                {"fp": fingerprint, "id": "mine-000", "t": 5000},
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        .decode("ascii")
+        .rstrip("=")
+    )
+
+    status, body = client.get(f"/frames/{theirs}/compute/tasks?cursor={forged}")
+    assert status == 400
+    assert body["code"] == "invalid_cursor"
+
+
+def test_a_cursor_whose_created_at_no_longer_matches_is_refused(client):
+    """The anchor has to carry the recorded creation time the cursor claims; a
+    tampered one would resume the ordering at a position the row does not
+    occupy."""
+    frame = client.session()
+    _seed_many(client, frame, 3)
+    _status, body = client.get(f"/frames/{frame}/compute/tasks?limit=1")
+    cursor = body["next_cursor"]
+    padded = cursor + "=" * (-len(cursor) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    assert payload["t"] == 5000
+    payload["t"] = 4000
+    tampered = (
+        base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        )
+        .decode("ascii")
+        .rstrip("=")
+    )
+    status, body = client.get(f"/frames/{frame}/compute/tasks?cursor={tampered}")
+    assert status == 400
+    assert body["code"] == "invalid_cursor"
+
+
+def test_reading_the_listing_cannot_reach_the_manager(client, monkeypatch):
+    """The read path holds a Store, never a manager. Making the manager's remote
+    calls raise proves that nothing on this path reaches them: a GET still
+    answers with the durable record."""
+    frame = client.session()
+    client.seed(frame, job_id="job-live", status="running")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("the listing contacted a remote compute manager")
+
+    monkeypatch.setattr(ComputeManager, "result", boom, raising=True)
+    monkeypatch.setattr(ComputeManager, "cancel", boom, raising=True)
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks?state=live")
+    assert status == 200
+    assert body["live_count"] == 1
+    assert body["total_live_count"] == 1

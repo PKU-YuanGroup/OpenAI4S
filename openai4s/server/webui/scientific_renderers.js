@@ -16,8 +16,8 @@
 
   const LOCAL_RENDERER_IDS = new Set([
     "molecule-3d", "chemistry-2d", "genome-track", "sequence", "msa",
-    "table", "image", "pdf", "html-preview", "latex", "markdown", "text",
-    "download",
+    "table", "image", "pdf", "html-preview", "latex", "markdown", "notebook",
+    "text", "download",
   ]);
 
   function normalizeLines(text) {

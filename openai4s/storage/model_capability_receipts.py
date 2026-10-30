@@ -17,7 +17,8 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from typing import Any, Callable, Mapping
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Mapping
 
 from openai4s.storage.migrations import apply_ddl_script
 
@@ -133,6 +134,16 @@ class ModelCapabilityReceiptRepository:
         self._clock_ms = clock_ms
         self._id_factory = id_factory or (lambda: "mcr-" + uuid.uuid4().hex)
 
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Keep profile validity, durable evidence and overlay updates together.
+
+        This is the Store's reentrant lock, also held by profile mutations.
+        Callers must only hold it for local bookkeeping, never a probe request.
+        """
+        with self._lock:
+            yield
+
     def put(
         self,
         *,
@@ -175,7 +186,7 @@ class ModelCapabilityReceiptRepository:
         receipt_id = self._id_factory()
         with self._lock:
             existing = self._conn.execute(
-                "SELECT receipt_id FROM model_capability_receipts "
+                "SELECT receipt_id, observed_at FROM model_capability_receipts "
                 "WHERE profile_id=? AND revision=? AND endpoint_sha256=? "
                 "AND model=? AND wire=? AND probe_version=?",
                 (
@@ -189,6 +200,15 @@ class ModelCapabilityReceiptRepository:
             ).fetchone()
             if existing:
                 receipt_id = str(existing[0])
+                if observed_at is not None and int(existing[1] or 0) > now:
+                    # This exact identity already holds a *newer* observation
+                    # (a probe that started later finished first).  Letting the
+                    # delayed one overwrite it would let an old probe delete
+                    # newer evidence -- and a restart would then read the
+                    # overwritten row as the latest observation.
+                    current = self.get(receipt_id)
+                    if current is not None:
+                        return current
                 self._conn.execute(
                     "UPDATE model_capability_receipts SET reachable=?,"
                     "native_tool_call=?, streaming=?, context_window_tokens=?,"

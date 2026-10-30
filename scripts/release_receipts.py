@@ -22,18 +22,58 @@ finalize job compares the draft against a record the draft cannot reach.
 
 Neither document is signed, and neither claims to establish *who* produced it.
 They establish that a set of bytes, a commit and a builder go together.
+
+**Executed runtime evidence** — schema 3 adds `runtime_smoke` to the Linux build
+receipt. A digest proves the artifact bytes did not change; it says nothing
+about whether those bytes can start a daemon, spawn a kernel, execute a Cell,
+capture the resulting Artifact, read it back after a restart, or open it in a
+browser. The Linux receipt therefore carries the appendix-B.4 report of
+`scripts/installed_runtime_smoke.py`, which ran exactly that scenario inside the
+packaged runtime and is bound to the tarball's own digest. `verify_build_receipts`
+refuses a Linux receipt whose evidence is missing, was recorded as `not_run`,
+failed, timed out, describes other bytes, or comes from an older scenario.
+Without this a release could publish a package nothing ever executed.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 BUILD_RECEIPT_FORMAT = "openai4s-build-receipt"
-BUILD_RECEIPT_SCHEMA_VERSION = 2
+#: Schema 3 adds the executed-runtime evidence (`runtime_smoke`).
+#: An older receipt stays readable JSON but cannot satisfy this pipeline: it
+#: would describe a package whose bytes nothing ever ran.
+BUILD_RECEIPT_SCHEMA_VERSION = 3
+
+#: Appendix B.4, scenario version 1. Every one of these checks must say
+#: `passed` for a Linux receipt: `figure` because the bundle pre-bakes the
+#: science stack, and `browser_open` because the release job runs the browser
+#: layer, so a `not_run` there means the evidence was not collected.
+RUNTIME_SMOKE_SCENARIO_VERSION = 1
+RUNTIME_SMOKE_CHECKS = (
+    "serve",
+    "auth",
+    "kernel_origin",
+    "state_shared",
+    "artifact_capture",
+    "figure",
+    "exact_version",
+    "restart_readback",
+    "browser_open",
+    "clean_exit",
+)
+#: The only platform a Linux package receipt's runtime evidence may describe.
+RUNTIME_SMOKE_PLATFORM = ("linux", "x86_64")
+
+#: The archive suffix that names the tarball a Linux receipt describes.
+_LINUX_TARBALL = re.compile(r"-linux-(?P<arch>x86_64|aarch64)\.tar\.gz$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 STAGE_ATTESTATION_FORMAT = "openai4s-stage-attestation"
 STAGE_ATTESTATION_SCHEMA_VERSION = 2
@@ -223,6 +263,127 @@ def _artifact_rows(artifacts: Iterable[Path]) -> list[dict[str, Any]]:
     return rows
 
 
+# --------------------------------------------------------------------------- #
+# Executed-runtime evidence (appendix B.4, schema 3)
+# --------------------------------------------------------------------------- #
+def normalize_runtime_smoke(
+    raw: Any,
+    *,
+    artifact_sha256: str,
+) -> dict[str, Any]:
+    """The appendix-B.4 runtime-smoke report, bound to the tarball being released.
+
+    A digest proves the bytes did not change; this report is the executed
+    evidence for them. Every frozen check must say ``passed`` — including
+    ``figure`` (the Linux bundle pre-bakes the science stack) and
+    ``browser_open`` (the release job runs the browser layer) — so a skip, a
+    ``not_run`` or a timed-out run cannot pass. The report is canonicalised
+    before storage: only the B.4 fields and the frozen check names survive, so a
+    probe addition cannot smuggle an unbounded diagnostic into a receipt.
+    """
+    if not isinstance(raw, Mapping):
+        raise ReceiptError("runtime smoke evidence is not an object")
+    scenario_version = raw.get("scenario_version")
+    if scenario_version != RUNTIME_SMOKE_SCENARIO_VERSION:
+        raise ReceiptError(
+            "runtime smoke evidence has scenario_version "
+            f"{scenario_version!r}, this gate requires "
+            f"{RUNTIME_SMOKE_SCENARIO_VERSION}; rerun the installed-runtime smoke"
+        )
+    status = str(raw.get("status") or "")
+    if status == "not_run":
+        raise ReceiptError(
+            "runtime smoke evidence was not run; a Linux package receipt needs an "
+            "executed run, not a skip"
+        )
+    if status != "passed":
+        failure = raw.get("failure") if isinstance(raw.get("failure"), Mapping) else {}
+        raise ReceiptError(
+            "runtime smoke evidence did not pass: "
+            f"{failure.get('check', 'scenario')}: {failure.get('detail', '')}"
+        )
+    if str(raw.get("target") or "") != "bundle":
+        raise ReceiptError(
+            "runtime smoke evidence was run against a "
+            f"{raw.get('target')!r} runtime; a Linux package receipt requires the "
+            "bundle run"
+        )
+    recorded = str(raw.get("artifact_sha256") or "").lower()
+    if not _SHA256.match(recorded):
+        raise ReceiptError("runtime smoke evidence records no artifact SHA-256")
+    if recorded != str(artifact_sha256).lower():
+        raise ReceiptError(
+            "runtime smoke evidence is bound to artifact "
+            f"{recorded[:12]}, not the tarball being released "
+            f"({str(artifact_sha256).lower()[:12]})"
+        )
+    platform_name = str(raw.get("platform") or "").lower()
+    arch = str(raw.get("arch") or "").lower()
+    if (platform_name, arch) != RUNTIME_SMOKE_PLATFORM:
+        raise ReceiptError(
+            "runtime smoke evidence describes "
+            f"{platform_name or '<none>'}/{arch or '<none>'}, not "
+            f"{RUNTIME_SMOKE_PLATFORM[0]}/{RUNTIME_SMOKE_PLATFORM[1]}"
+        )
+    python = str(raw.get("python") or "")
+    if not python:
+        raise ReceiptError("runtime smoke evidence records no interpreter version")
+    try:
+        duration = float(raw.get("duration_s"))
+    except (TypeError, ValueError):
+        raise ReceiptError("runtime smoke evidence records no duration") from None
+    if not math.isfinite(duration) or duration < 0:
+        # NaN/Infinity would be written into the receipt as non-standard JSON
+        # that strict verifiers refuse to parse.
+        raise ReceiptError(
+            f"runtime smoke evidence records no duration (got {duration!r})"
+        )
+    checks = raw.get("checks")
+    if not isinstance(checks, Mapping):
+        raise ReceiptError("runtime smoke evidence records no checks")
+    canonical_checks: dict[str, str] = {}
+    for name in RUNTIME_SMOKE_CHECKS:
+        value = str(checks.get(name) or "missing")
+        if value != "passed":
+            raise ReceiptError(
+                f"runtime smoke check {name!r} is {value!r}, not 'passed'"
+            )
+        canonical_checks[name] = "passed"
+    if raw.get("failure") is not None:
+        raise ReceiptError(
+            "runtime smoke evidence reports a failure while status is passed"
+        )
+    return {
+        "scenario_version": RUNTIME_SMOKE_SCENARIO_VERSION,
+        "target": "bundle",
+        "artifact_sha256": recorded,
+        "platform": RUNTIME_SMOKE_PLATFORM[0],
+        "arch": RUNTIME_SMOKE_PLATFORM[1],
+        "python": python,
+        "checks": canonical_checks,
+        "status": "passed",
+        "duration_s": round(duration, 3),
+        "failure": None,
+    }
+
+
+def _require_smoke_arch(name: str) -> None:
+    """The tarball must be the architecture its runtime evidence is pinned to.
+
+    `normalize_runtime_smoke` checks what the *report* says it ran on; this
+    checks what the *tarball* is, so an aarch64 bundle cannot borrow an x86_64
+    run's evidence through a digest that merely happens to be the one listed.
+    """
+    matched = _LINUX_TARBALL.search(name)
+    arch = matched.group("arch") if matched else ""
+    if arch != RUNTIME_SMOKE_PLATFORM[1]:
+        raise ReceiptError(
+            f"{name} is a linux-{arch or '<unknown>'} tarball; runtime smoke "
+            f"evidence is pinned to {RUNTIME_SMOKE_PLATFORM[0]}/"
+            f"{RUNTIME_SMOKE_PLATFORM[1]}"
+        )
+
+
 def build_receipt_name(kind: str) -> str:
     return f"{BUILD_RECEIPT_PREFIX}{kind}.json"
 
@@ -236,6 +397,7 @@ def build_build_receipt(
     workflow_inputs: Mapping[str, Any] | None = None,
     check_runs: Sequence[Mapping[str, Any]] = (),
     notary: Mapping[str, Any] | None = None,
+    runtime_smoke: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """What one build job produced, and from what.
 
@@ -247,8 +409,11 @@ def build_build_receipt(
 
     Schema 2 also binds the candidate commit, the workflow run, the dispatch
     inputs, optional check-run ids, and — for a macOS image — the notary
-    and staple result. Old schema-1 receipts remain readable JSON but cannot
-    satisfy this pipeline.
+    and staple result. Schema 3 additionally requires the `linux` receipt to
+    carry the appendix-B.4 runtime-smoke report (`runtime_smoke`), bound to the
+    tarball's own digest, because "the bytes did not change" is not "the bytes
+    run". Old receipts remain readable JSON but cannot satisfy this pipeline:
+    they describe a package nothing executed.
     """
     from scripts import release_gates
 
@@ -275,7 +440,77 @@ def build_build_receipt(
         recorded = normalize_notary(notary, required=False)
         if recorded is not None:
             document["notary"] = recorded
+    if str(kind) == "linux":
+        linux_artifacts = [
+            Path(artifact)
+            for artifact in artifacts
+            if _LINUX_TARBALL.search(Path(artifact).name)
+        ]
+        if not linux_artifacts:
+            raise ReceiptError(
+                "a linux build receipt must describe the linux-x86_64/aarch64 "
+                "tarball it was written for"
+            )
+        if len(linux_artifacts) != 1:
+            # Verification requires exactly one; binding the evidence to
+            # whichever tarball happened to be listed first would not be.
+            raise ReceiptError(
+                f"a linux build receipt describes {len(linux_artifacts)} Linux "
+                "tarballs; it must describe exactly the one its runtime smoke ran"
+            )
+        linux_artifact = linux_artifacts[0]
+        _require_smoke_arch(linux_artifact.name)
+        if runtime_smoke is None:
+            raise ReceiptError(
+                f"a linux build receipt for {linux_artifact.name} must carry the "
+                "installed-runtime smoke report (runtime_smoke); a package whose "
+                "bytes were never executed cannot be released"
+            )
+        document["runtime_smoke"] = normalize_runtime_smoke(
+            runtime_smoke, artifact_sha256=_digest(linux_artifact)
+        )
+    elif runtime_smoke is not None:
+        raise ReceiptError(
+            f"a {kind} build receipt cannot carry runtime smoke evidence; it "
+            "describes no Linux desktop package"
+        )
     return document
+
+
+def _verify_linux_smoke(
+    document: Mapping[str, Any],
+    receipt_path: Path,
+    *,
+    assets_dir: Path,
+    digests: Mapping[str, str] | None,
+) -> None:
+    """A Linux receipt must carry executed-runtime evidence for *these* bytes.
+
+    The receipt is not itself hashed, so this re-checks the embedded report
+    against the artifact row the outer loop already matched to a file on disk:
+    the same tarball digest the report claims to describe.
+    """
+    rows = [
+        row for row in (document.get("artifacts") or []) if isinstance(row, Mapping)
+    ]
+    linux_rows = [
+        row for row in rows if _LINUX_TARBALL.search(str(row.get("name") or ""))
+    ]
+    if len(linux_rows) != 1:
+        raise ReceiptError(
+            f"build receipt {receipt_path.name} describes {len(linux_rows)} Linux "
+            "tarball(s), expected exactly one"
+        )
+    name = str(linux_rows[0].get("name") or "")
+    _require_smoke_arch(name)
+    digest = (digests or {}).get(name) or _digest(Path(assets_dir) / name)
+    if not isinstance(document.get("runtime_smoke"), Mapping):
+        raise ReceiptError(
+            f"build receipt {receipt_path.name} is for {name} but carries no "
+            "runtime smoke evidence; the package bytes being published were never "
+            "executed"
+        )
+    normalize_runtime_smoke(document.get("runtime_smoke"), artifact_sha256=digest)
 
 
 def verify_build_receipts(
@@ -376,6 +611,13 @@ def verify_build_receipts(
                     f"({actual[:12]} != {str(row.get('sha256'))[:12]}); the bytes "
                     f"changed after they were built"
                 )
+        if kind == "linux":
+            _verify_linux_smoke(
+                document,
+                Path(path),
+                assets_dir=Path(assets_dir),
+                digests=digests,
+            )
         seen[kind] = dict(document)
 
     missing = sorted(set(required_kinds) - set(seen))
@@ -515,7 +757,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.path.insert(0, str(root))
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--kind", required=True, help="dist | macos | linux | windows")
+    parser.add_argument(
+        "--kind",
+        required=True,
+        help=(
+            "dist | macos | linux | windows. A linux receipt also needs "
+            "--runtime-smoke <report.json>"
+        ),
+    )
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--workflow-run-id", default="")
     parser.add_argument(
@@ -532,6 +781,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--check-runs-json",
         default="",
         help="check-run identifiers as a JSON list",
+    )
+    parser.add_argument(
+        "--runtime-smoke",
+        type=Path,
+        default=None,
+        help=(
+            "the appendix-B.4 runtime smoke report (required for --kind linux); "
+            "see scripts/installed_runtime_smoke.py"
+        ),
     )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("artifacts", nargs="+", type=Path)
@@ -573,6 +831,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("::error::check-runs-json must be a list", file=sys.stderr)
             return 2
         check_runs = loaded
+    runtime_smoke = None
+    if args.runtime_smoke is not None:
+        try:
+            runtime_smoke = json.loads(Path(args.runtime_smoke).read_text("utf-8"))
+        except (OSError, ValueError) as error:
+            print(
+                f"::error::the runtime smoke report is unreadable: {error}",
+                file=sys.stderr,
+            )
+            return 2
 
     try:
         document = build_build_receipt(
@@ -583,6 +851,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             workflow_inputs=inputs,
             check_runs=check_runs,
             notary=notary,
+            runtime_smoke=runtime_smoke,
         )
     except ReceiptError as error:
         print(f"::error::{error}", file=sys.stderr)

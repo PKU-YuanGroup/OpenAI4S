@@ -69,6 +69,7 @@ vi.mock("../../features/customize/layout", () => ({
 
 import { GeneralTab } from "./GeneralTab";
 import { Seg } from "./ui";
+import { UpdateCheck } from "./UpdateCheck";
 
 type Node = {
   type?: unknown;
@@ -144,5 +145,29 @@ describe("General language", () => {
     language!.props!.onPick!("system");
     expect(mocks.setLang).toHaveBeenLastCalledWith("system");
     expect(segments(render())[2]!.props!.value).toBe("system");
+  });
+});
+
+describe("General update card", () => {
+  it("shows the check-for-updates card and opening settings issues no check", async () => {
+    const tree = render();
+    const found: unknown[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== "object") return;
+      const current = node as Node;
+      if (current.type === UpdateCheck) found.push(current);
+      walk(current.props?.children);
+    };
+    walk(tree);
+    expect(found).toHaveLength(1);
+
+    effects.splice(0).forEach((effect) => effect());
+    await vi.waitFor(() => expect(mocks.fetch).toHaveBeenCalled());
+    // Only the tab's own local config read happens on open; the update card
+    // does not contact the release index until its button is pressed.
+    expect(
+      mocks.fetch.mock.calls.every(([, init]) => (init?.method || "GET") === "GET"),
+    ).toBe(true);
   });
 });

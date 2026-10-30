@@ -21,8 +21,10 @@ What these pin, in order of how much they would cost to get wrong:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -52,6 +54,9 @@ from scripts.release_pipeline import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+from tests._runtime_smoke import mutated_report as _mutated_smoke  # noqa: E402
+from tests._runtime_smoke import passing_report as _runtime_smoke_report  # noqa: E402
 
 
 def _completed(returncode=0, stdout=b"", stderr=b""):
@@ -155,6 +160,14 @@ def _write_build_receipt(directory, kind, artifacts, *, source_sha=FAKE_HEAD, **
                 "spctl_returncode": 0,
                 "post_staple_sha256": sha256_file(artifacts[0]) if artifacts else "",
             },
+        )
+    if kind == "linux":
+        # Schema 3: the receipt carries the appendix-B.4 runtime-smoke report,
+        # bound to the tarball's own digest. A receipt written without it is a
+        # claim about bytes nothing ran, which is exactly what staging refuses.
+        kwargs.setdefault(
+            "runtime_smoke",
+            _runtime_smoke_report(artifact_sha256=sha256_file(artifacts[0])),
         )
     document = release_receipts.build_build_receipt(
         kind, source_sha, artifacts, **kwargs
@@ -470,7 +483,6 @@ def _installed_cli_reports(monkeypatch, url):
 
 def _shipped_entrypoints():
     """The dist assets the committed default shell names, read from its bytes."""
-    import re
 
     shell = (ROOT / "openai4s" / "server" / "webui" / "dist" / "index.html").read_text(
         "utf-8"
@@ -3136,7 +3148,6 @@ def test_the_manifest_vouches_for_itself(tmp_path):
     payload = b'{"version": "9.9.9", "ok": true}'
     manifest = json.loads(contents["manifest.json"])
     # The consistent forgery: rewrite the file AND its recorded digest.
-    import hashlib
 
     for entry in manifest["files"]:
         if entry["path"] == "release-report.json":
@@ -3286,3 +3297,317 @@ def test_the_evidence_bundle_actually_carries_the_sbom(assets):
     with zipfile.ZipFile(bundles[0]) as archive:
         names = archive.namelist()
     assert any(name.endswith(SBOM_NAME) for name in names), names
+
+
+# --------------------------------------------------------------------------
+# schema 3: a Linux release must carry executed-runtime evidence
+#
+# A digest proves the bytes did not change. It says nothing about whether they
+# start a daemon, spawn a kernel, execute Cells that share state, capture an
+# Artifact version, read it back after a restart, open it in a browser, or leave
+# no process behind. These cases are the ways a receipt can look like it has
+# that evidence without having it.
+# --------------------------------------------------------------------------
+
+
+def _linux_tarball(assets: Path, *, payload: bytes = b"linux-bundle") -> Path:
+    linux = assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
+    linux.write_bytes(payload)
+    return linux
+
+
+def _linux_receipt_inputs(linux: Path, **overrides):
+    """The build receipt inputs a linux job would use, with a passing report."""
+    kwargs = {
+        "workflow_run_id": "7100",
+        "workflow_inputs": {
+            "tag": "v0.2.0",
+            "publish": False,
+            "pypi_only": False,
+            "macos_asset": "omit",
+        },
+        "runtime_smoke": _runtime_smoke_report(artifact_sha256=sha256_file(linux)),
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_a_linux_receipt_without_the_runtime_smoke_is_refused(assets):
+    """The tarball's digest binds bytes; only the smoke binds *execution*."""
+    from scripts import release_receipts
+
+    linux = _linux_tarball(assets)
+    with pytest.raises(release_receipts.ReceiptError, match="never executed"):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [linux],
+            **_linux_receipt_inputs(linux, runtime_smoke=None),
+        )
+
+
+def test_the_runtime_smoke_must_describe_the_tarball_being_released(assets):
+    from scripts import release_receipts
+
+    linux = _linux_tarball(assets)
+    other_build = _runtime_smoke_report(artifact_sha256="f" * 64)
+    with pytest.raises(release_receipts.ReceiptError, match="not the tarball"):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [linux],
+            **_linux_receipt_inputs(linux, runtime_smoke=other_build),
+        )
+
+
+def test_a_not_run_smoke_report_cannot_stand_in_for_a_linux_release(assets):
+    from scripts import release_receipts
+
+    linux = _linux_tarball(assets)
+    not_run = _mutated_smoke(status="not_run")
+    not_run["artifact_sha256"] = sha256_file(linux)
+    with pytest.raises(release_receipts.ReceiptError, match="not run"):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [linux],
+            **_linux_receipt_inputs(linux, runtime_smoke=not_run),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutations", "message"),
+    [
+        pytest.param({"scenario_version": 0}, "scenario_version", id="old-scenario"),
+        pytest.param({"status": "failed"}, "did not pass", id="failed-run"),
+        pytest.param(
+            {"checks.state_shared": "failed"}, "state_shared", id="cell-state-lost"
+        ),
+        pytest.param(
+            {"checks.artifact_capture": "not_run"},
+            "artifact_capture",
+            id="capture-skipped",
+        ),
+        pytest.param(
+            {"checks.figure": "not_applicable"},
+            "figure",
+            id="figure-not-applicable",
+        ),
+        pytest.param(
+            {"checks.browser_open": "not_run"},
+            "browser_open",
+            id="browser-not-run",
+        ),
+        pytest.param(
+            {"checks.clean_exit": "failed"}, "clean_exit", id="leaked-process"
+        ),
+        pytest.param(
+            {"artifact_sha256": "e" * 64}, "not the tarball", id="other-artifact"
+        ),
+        pytest.param({"platform": "darwin"}, "linux/x86_64", id="other-platform"),
+        pytest.param({"arch": "aarch64"}, "linux/x86_64", id="other-architecture"),
+        pytest.param({"target": "wheel"}, "bundle run", id="wheel-report"),
+        pytest.param({"artifact_sha256": ""}, "no artifact SHA-256", id="no-digest"),
+        pytest.param({"duration_s": None}, "no duration", id="no-duration"),
+        pytest.param(
+            {"duration_s": float("nan")}, "no duration", id="non-finite-duration"
+        ),
+        pytest.param({"duration_s": -1.0}, "no duration", id="negative-duration"),
+        pytest.param(
+            {"failure": {"check": "serve", "detail": "x"}},
+            "reports a failure",
+            id="failed-while-passed",
+        ),
+    ],
+)
+def test_runtime_smoke_evidence_that_proves_nothing_is_refused(
+    assets, mutations, message
+):
+    from scripts import release_receipts
+
+    linux = _linux_tarball(assets)
+    report = _mutated_smoke(**mutations)
+    if "artifact_sha256" not in mutations:
+        report["artifact_sha256"] = sha256_file(linux)
+    with pytest.raises(release_receipts.ReceiptError, match=message):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [linux],
+            **_linux_receipt_inputs(linux, runtime_smoke=report),
+        )
+
+
+def test_runtime_smoke_binds_exactly_one_tarball_of_the_pinned_architecture(assets):
+    from scripts import release_receipts
+
+    linux = _linux_tarball(assets)
+    report = _runtime_smoke_report(artifact_sha256=sha256_file(linux))
+    arm = assets / "OpenAI4S-0.2.0-linux-aarch64.tar.gz"
+    arm.write_bytes(b"arm-bundle")
+    # Two tarballs: the evidence must not bind to whichever is listed first.
+    with pytest.raises(release_receipts.ReceiptError, match="exactly the one"):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [arm, linux],
+            **_linux_receipt_inputs(linux, runtime_smoke=report),
+        )
+    # An aarch64 tarball cannot carry x86_64-pinned evidence, whatever digest
+    # the report names.
+    arm_report = _runtime_smoke_report(artifact_sha256=sha256_file(arm))
+    with pytest.raises(release_receipts.ReceiptError, match="linux-aarch64 tarball"):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [arm],
+            **_linux_receipt_inputs(arm, runtime_smoke=arm_report),
+        )
+
+
+def test_runtime_smoke_cannot_be_attached_to_a_python_only_receipt(assets):
+    from scripts import release_receipts
+
+    wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
+    with pytest.raises(
+        release_receipts.ReceiptError, match="cannot carry runtime smoke"
+    ):
+        release_receipts.build_build_receipt(
+            "dist",
+            FAKE_HEAD,
+            [wheel],
+            runtime_smoke=_runtime_smoke_report(artifact_sha256=sha256_file(wheel)),
+        )
+
+
+def test_a_staged_linux_receipt_that_dropped_its_smoke_is_refused(assets):
+    """The receipt is uploaded bytes; staging cannot take its word for it."""
+    _desktop_release_assets(assets)
+    receipt = assets / "build-receipt-linux.json"
+    document = json.loads(receipt.read_text("utf-8"))
+    assert document["schema_version"] == 3
+    assert document["runtime_smoke"]["status"] == "passed"
+    document.pop("runtime_smoke")
+    receipt.write_text(json.dumps(document), encoding="utf-8")
+
+    report = _pipeline(assets, from_artifacts=True, stop_after="verify").run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    failed = next(step for step in report["steps"] if step["step"] == "verify")
+    assert "never executed" in failed["detail"], failed["detail"]
+
+
+def test_a_staged_linux_receipt_whose_smoke_is_for_other_bytes_is_refused(assets):
+    _desktop_release_assets(assets)
+    receipt = assets / "build-receipt-linux.json"
+    document = json.loads(receipt.read_text("utf-8"))
+    document["runtime_smoke"]["artifact_sha256"] = "f" * 64
+    receipt.write_text(json.dumps(document), encoding="utf-8")
+
+    report = _pipeline(assets, from_artifacts=True, stop_after="verify").run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    failed = next(step for step in report["steps"] if step["step"] == "verify")
+    assert "not the tarball" in failed["detail"], failed["detail"]
+
+
+def test_an_older_build_receipt_schema_cannot_satisfy_the_linux_gate(assets):
+    """Schema 2 is still readable JSON; it is not release evidence."""
+    _desktop_release_assets(assets)
+    receipt = assets / "build-receipt-linux.json"
+    document = json.loads(receipt.read_text("utf-8"))
+    document["schema_version"] = 2
+    receipt.write_text(json.dumps(document), encoding="utf-8")
+
+    report = _pipeline(assets, from_artifacts=True, stop_after="verify").run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    failed = next(step for step in report["steps"] if step["step"] == "verify")
+    assert "schema_version 2" in failed["detail"], failed["detail"]
+    assert "3" in failed["detail"], failed["detail"]
+
+
+def test_a_python_only_release_needs_no_executed_runtime_evidence(assets):
+    """PyPI-only does not demand Linux assets, so it does not demand this either."""
+    from scripts import release_receipts
+
+    receipt = _receipt_dist(assets)
+    verified = release_receipts.verify_build_receipts(
+        [receipt],
+        expected_sha=FAKE_HEAD,
+        assets_dir=assets,
+        required_kinds=("dist",),
+    )
+    assert set(verified) == {"dist"}
+
+    report = _pipeline(assets, from_artifacts=True, stop_after="verify").run()
+    assert report["ok"], report["steps"][-1]
+
+
+def test_the_receipt_cli_binds_a_runtime_smoke_report_file(assets, tmp_path):
+    from scripts import release_receipts
+
+    linux = _linux_tarball(assets)
+    report_path = tmp_path / "runtime-smoke-linux.json"
+    report_path.write_text(
+        json.dumps(_runtime_smoke_report(artifact_sha256=sha256_file(linux))),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    code = release_receipts.main(
+        [
+            "--kind",
+            "linux",
+            "--source-sha",
+            FAKE_HEAD,
+            "--workflow-run-id",
+            "7100",
+            "--runtime-smoke",
+            str(report_path),
+            "--output-dir",
+            str(out),
+            str(linux),
+        ]
+    )
+    assert code == 0
+    document = json.loads(
+        (out / "build-receipt-linux.json").read_text(encoding="utf-8")
+    )
+    assert document["schema_version"] == 3
+    smoke = document["runtime_smoke"]
+    assert smoke["status"] == "passed"
+    assert smoke["artifact_sha256"] == sha256_file(linux)
+    assert set(smoke["checks"]) == set(release_receipts.RUNTIME_SMOKE_CHECKS)
+    assert set(smoke) == {
+        "scenario_version",
+        "target",
+        "artifact_sha256",
+        "platform",
+        "arch",
+        "python",
+        "checks",
+        "status",
+        "duration_s",
+        "failure",
+    }
+    # The stored copy is canonical: no log text or unknown probe fields ride in.
+    assert smoke["failure"] is None
+
+
+def test_the_verify_step_records_the_runtime_smoke_in_its_facts(assets):
+    from scripts import release_receipts
+
+    _desktop_release_assets(assets)
+    report = _pipeline(assets, from_artifacts=True, stop_after="verify").run()
+    assert report["ok"], report["steps"][-1]
+    step = next(step for step in report["steps"] if step["step"] == "verify")
+    summary = step["facts"]["runtime_smoke"]["linux"]
+    linux = assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
+    assert summary["status"] == "passed"
+    assert summary["artifact_sha256"] == sha256_file(linux)
+    assert (
+        summary["scenario_version"] == release_receipts.RUNTIME_SMOKE_SCENARIO_VERSION
+    )

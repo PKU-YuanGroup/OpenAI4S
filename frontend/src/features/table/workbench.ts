@@ -4,9 +4,15 @@ import {
   apiErrorText,
   el,
   fetchArtifactText,
+  isArtifactReadAborted,
+  LEGACY_TABLE_PREVIEW_CHARACTERS,
   looksBinary,
+  previewReadSignal,
   translate,
 } from "../artifacts/api";
+import { filesT, readFailureText } from "../artifacts/copy";
+import { previewSlice } from "../artifacts/cache";
+import { partialNotice, previewDownload } from "../artifacts/partial";
 import { parseTable } from "../csv/csv";
 import { renderSheet } from "../artifacts/sheet";
 import { planTableViewer, tableCatalogPosture } from "./catalog";
@@ -44,10 +50,27 @@ export function payloadFilters(text: string, a: ArtifactRow): Record<string, str
   return { [((a && a.filename) || "col").replace(/\.[^.]+$/, "")]: value };
 }
 
-function renderLegacyFailure(container: HTMLElement, a: ArtifactRow, url: string): void {
+function renderLegacyFailure(
+  container: HTMLElement,
+  a: ArtifactRow,
+  url: string,
+  error?: unknown,
+): void {
   container.innerHTML = "";
   const card = el("div", "renderer-fallback");
-  card.appendChild(el("div", "renderer-fallback-text", translate("viewer.renderer.error")));
+  const text = el(
+    "div",
+    "renderer-fallback-text",
+    error === undefined ? translate("viewer.renderer.error") : readFailureText(error),
+  );
+  text.setAttribute("role", "alert");
+  card.appendChild(text);
+  const retry = el("button", "outline-btn small", filesT("viewer.read.retry"));
+  retry.onclick = () => {
+    container.innerHTML = "";
+    renderLegacyTable(container, a, url);
+  };
+  card.appendChild(retry);
   const download = el("a", "outline-btn small", translate("common.download"));
   download.setAttribute("href", url);
   download.setAttribute("download", a.filename || "artifact");
@@ -55,9 +78,24 @@ function renderLegacyFailure(container: HTMLElement, a: ArtifactRow, url: string
   container.appendChild(card);
 }
 
+/**
+ * The partial-preview notice for the legacy (flag-off) table fallback (F3): the
+ * shown prefix is named, the full exact version stays one click away, and a
+ * complete source fallback adds nothing to the baseline rendering.
+ */
+function legacySourceStatus(
+  container: HTMLElement,
+  a: ArtifactRow,
+  url: string,
+  shown: number,
+): void {
+  partialNotice(container, shown);
+  previewDownload(container, a, url);
+}
+
 /** Flag-off path: client parse + capped sheet. Never hits /table/profile or /export.csv. */
 export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url)
+  fetchArtifactText(url, { signal: previewReadSignal(container) })
     .then((text) => {
       if (!container.isConnected) return;
       if (looksBinary(text)) {
@@ -73,12 +111,17 @@ export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: s
       const rows = parseTable(text, a);
       if (rows && rows.length) renderSheet(container, rows);
       else {
+        const slice = previewSlice(text, LEGACY_TABLE_PREVIEW_CHARACTERS);
         const pre = el("pre", "renderer-source");
-        pre.textContent = text.slice(0, 300000);
+        pre.textContent = slice.shown;
         container.appendChild(pre);
+        if (slice.truncated) legacySourceStatus(container, a, url, slice.shown.length);
       }
     })
-    .catch(() => renderLegacyFailure(container, a, url));
+    .catch((error: unknown) => {
+      if (isArtifactReadAborted(error) || !container.isConnected) return;
+      renderLegacyFailure(container, a, url, error);
+    });
 }
 
 export function renderWorkbenchTable(

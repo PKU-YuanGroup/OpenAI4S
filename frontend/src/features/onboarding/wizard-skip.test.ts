@@ -41,6 +41,7 @@ const hooks = vi.hoisted(() => {
 const api = vi.hoisted(() => ({
   probeModelProfile: vi.fn(),
   completeOnboarding: vi.fn(),
+  fetchOnboarding: vi.fn(),
 }));
 
 vi.mock("preact/hooks", () => ({
@@ -55,6 +56,7 @@ vi.mock("./api", async (importOriginal) => {
   return { ...original, ...api };
 });
 
+import { ReadinessPanel } from "../../components/onboarding/ReadinessPanel";
 import { WizardHost } from "../../components/onboarding/Wizard";
 import { t } from "../../i18n";
 import { ot } from "./copy";
@@ -99,7 +101,8 @@ function button(label: string): Button {
   return match!;
 }
 
-// Slot order in WizardHost: reducer, status, busy, testing, probeRun, alive.
+// Slot order in WizardHost: reducer, status, busy, testing, probeRun, alive,
+// savedProfiles, readiness-refresh state/refs (O1).
 const REDUCER = 0;
 
 function wizard(): WizardState {
@@ -338,5 +341,77 @@ describe("first-run wizard: skipping while a connection test is waiting", () => 
     expect(wizard().error?.requestId).toBe("req-late");
     // The probe is over, so the button is usable again.
     expect(button(t("cust.models.test")).disabled).toBe(false);
+  });
+});
+
+describe("first-run wizard: skipping while a readiness refresh is waiting", () => {
+  const READINESS_STATUS = {
+    provider: "chatgpt",
+    model: "gpt-test",
+    base_url: "",
+    has_api_key: true,
+    complete: false,
+    platform: "linux",
+    native_runtime_supported: true,
+    outbound: 0,
+    contacted: false,
+    network: { allow_network: false, egress: "off", contacted: false },
+    profiles: [],
+    active_id: "",
+    protocols: [],
+    local_model_catalog: { endpoints: [] },
+    environment: {
+      schema_version: 1,
+      enabled: true,
+      ready: false,
+      state: "needs_setup",
+      reason: "",
+      requirements_digest: "",
+      missing_environments: ["python"],
+      missing_packages: {},
+      remediation: null,
+    },
+  };
+
+  beforeEach(() => {
+    hooks.reset();
+    Object.values(api).forEach((spy) => spy.mockReset());
+    render();
+    hooks.slots[REDUCER] = {
+      ...INITIAL_WIZARD,
+      surface: "wizard",
+      step: "readiness",
+      decided: ["path", "test"],
+      path: {
+        kind: "cloud",
+        profileId: "mp-1",
+        provider: "chatgpt",
+        model: "gpt-test",
+        baseUrl: "https://api.example/v1",
+        name: "Saved",
+      },
+    } satisfies WizardState;
+    hooks.slots[1] = READINESS_STATUS;
+    render();
+  });
+
+  it("keeps Skip and Continue enabled while the local re-read is waiting", async () => {
+    const gate = deferred<Record<string, unknown>>();
+    api.fetchOnboarding.mockReturnValueOnce(gate.promise);
+    // `render()` in this file returns button records; the panel vnode needs
+    // the actual tree, rendered through the same hook cursor.
+    hooks.begin();
+    const panel = findVNode(WizardHost(), (node) => node.type === ReadinessPanel)!;
+    expect(panel).toBeTruthy();
+    (panel.props!.onRefresh as () => void)();
+
+    // A local read is not the wizard's `busy`: the way out stays usable.
+    expect(button(ot("onboarding.skip")).disabled).toBe(false);
+    expect(button(ot("onboarding.next")).disabled).toBe(false);
+
+    gate.resolve({});
+    await gate.promise;
+    await Promise.resolve();
+    expect(wizard().step).toBe("readiness");
   });
 });

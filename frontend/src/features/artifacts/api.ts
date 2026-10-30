@@ -318,11 +318,442 @@ export function translate(key: string, ...args: unknown[]): string {
   return t(key, ...args);
 }
 
-export function fetchArtifactText(url: string): Promise<string> {
-  return artifactsFetch(url).then((response) => {
-    if (!response.ok) throw new ApiError(null, response.status);
-    return response.text();
-  });
+/** F1: frozen preview read numbers. */
+export const PREVIEW_READ_MAX_BYTES = 8 * 1024 * 1024;
+export const THUMB_READ_MAX_BYTES = 256 * 1024;
+export const THUMB_READ_CONCURRENCY = 4;
+export const PREVIEW_READ_TIMEOUT_MS = 15_000;
+
+/** Display limits stay frozen; A3 owns their truncation semantics. */
+export const MARKDOWN_PREVIEW_CHARACTERS = 1_000_000;
+export const CHEMISTRY_SOURCE_PREVIEW_CHARACTERS = 300_000;
+export const LATEX_SOURCE_PREVIEW_CHARACTERS = 500_000;
+export const MOLECULE_FALLBACK_PREVIEW_CHARACTERS = 8_000;
+export const LEGACY_TABLE_PREVIEW_CHARACTERS = 300_000;
+export const TEXT_SOURCE_PREVIEW_CHARACTERS = 300_000;
+
+/** Why a bounded read stopped. HTTP and network failures are not read-budget failures. */
+export type ArtifactReadKind = "too_large" | "timeout" | "aborted";
+
+/** A read that the preview budget, its deadline, or its owner stopped. */
+export class ArtifactReadError extends Error {
+  kind: ArtifactReadKind;
+  /** Byte budget the read was enforcing. */
+  maxBytes: number;
+  /** Bytes actually read from the response body before stopping. */
+  bytes: number;
+  constructor(
+    kind: ArtifactReadKind,
+    message: string,
+    context: { maxBytes: number; bytes?: number },
+  ) {
+    super(message);
+    this.name = "ArtifactReadError";
+    this.kind = kind;
+    this.maxBytes = context.maxBytes;
+    this.bytes = context.bytes || 0;
+  }
+}
+
+export type ArtifactReadOptions = {
+  /** Byte budget; defaults to the main preview budget. */
+  maxBytes?: number;
+  /** Time from actually starting the request; defaults to PREVIEW_READ_TIMEOUT_MS. */
+  timeoutMs?: number;
+  /** Cancels the read when its view goes away or is replaced. */
+  signal?: AbortSignal | null;
+};
+
+export type ArtifactPrefixRead = { text: string; truncated: boolean };
+
+function isAbortError(error: unknown): boolean {
+  const e = error as { name?: unknown } | null;
+  if (e && e.name === "AbortError") return true;
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function parseContentLength(response: Response): number | null {
+  const raw = response.headers.get("content-length");
+  if (raw == null || raw === "") return null;
+  const value = Number(raw.trim());
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+}
+
+function identityEncoding(response: Response): boolean {
+  const encoding = (response.headers.get("content-encoding") || "").trim().toLowerCase();
+  return encoding === "" || encoding === "identity";
+}
+
+async function cancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array> | null,
+): Promise<void> {
+  if (!reader) return;
+  try {
+    await reader.cancel();
+  } catch {
+    /* already closed */
+  }
+}
+
+/**
+ * One streaming reader behind the text and byte entry points. The budget is
+ * enforced on the bytes that actually arrive (after HTTP content decoding,
+ * before UTF-8 decoding), so a missing, wrong or compressed Content-Length
+ * cannot bypass it.
+ *
+ * Strict text (`prefix: false`, `binary: false`) returns only a complete file:
+ * a parse result can never be a half document. Prefix mode stops at `maxBytes`,
+ * cancels the transport and returns the prefix; an incomplete trailing UTF-8
+ * sequence is dropped instead of decoded into U+FFFD. Strict bytes is the same
+ * complete-or-reject rule for image and PDF previews, which cannot be decoded
+ * from a cut-off prefix and must not be loaded through an unbounded element URL.
+ */
+function concatBytes(parts: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+async function readArtifactText(
+  url: string,
+  options: ArtifactReadOptions,
+  prefix: boolean,
+  binary = false,
+): Promise<{ text: string; bytes: number; truncated: boolean; raw?: Uint8Array }> {
+  const requestedMax = options.maxBytes;
+  const maxBytes =
+    requestedMax != null && Number.isFinite(requestedMax) && requestedMax > 0
+      ? Math.floor(requestedMax)
+      : PREVIEW_READ_MAX_BYTES;
+  const timeoutMs =
+    options.timeoutMs != null && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? Math.floor(options.timeoutMs)
+      : PREVIEW_READ_TIMEOUT_MS;
+  const external = options.signal || null;
+  const controller = new AbortController();
+  let timedOut = false;
+  const onAbort = (): void => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener("abort", onAbort, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const finish = (): void => {
+    clearTimeout(timer);
+    if (external) external.removeEventListener("abort", onAbort);
+  };
+  const stopReason = (): ArtifactReadError =>
+    timedOut
+      ? new ArtifactReadError("timeout", `artifact read timed out after ${timeoutMs} ms`, {
+          maxBytes,
+        })
+      : new ArtifactReadError("aborted", "artifact read was aborted", { maxBytes });
+  try {
+    let response: Response;
+    try {
+      response = await artifactsFetch(url, { signal: controller.signal });
+    } catch (error) {
+      if (timedOut || controller.signal.aborted || isAbortError(error)) throw stopReason();
+      // A transport failure is not a budget decision: let the caller report it
+      // as a failed read with whatever detail it has.
+      throw error;
+    }
+    // The HTTP status is checked before any body byte is interpreted.
+    if (!response.ok) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* already closed */
+      }
+      throw new ApiError(null, response.status);
+    }
+    const declared = parseContentLength(response);
+    if (!prefix && declared !== null && declared > maxBytes) {
+      // Trusted headers may only reject early; the streamed count below still
+      // decides when they lie or are missing.
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* already closed */
+      }
+      throw new ArtifactReadError(
+        "too_large",
+        `artifact is ${declared} bytes, over the ${maxBytes}-byte preview limit`,
+        { maxBytes, bytes: 0 },
+      );
+    }
+    const body = response.body;
+    if (!body || typeof body.getReader !== "function") {
+      // No readable stream: only a response whose size can be proven bounded
+      // may fall back to Response.text(); otherwise automatic preview is refused.
+      if (!prefix && identityEncoding(response) && declared !== null && declared <= maxBytes) {
+        if (binary) {
+          const raw = new Uint8Array(await response.arrayBuffer());
+          if (raw.byteLength > maxBytes) {
+            throw new ArtifactReadError(
+              "too_large",
+              `artifact exceeds the ${maxBytes}-byte preview limit`,
+              { maxBytes, bytes: raw.byteLength },
+            );
+          }
+          return { text: "", bytes: raw.byteLength, truncated: false, raw };
+        }
+        const text = await response.text();
+        return { text, bytes: declared, truncated: false };
+      }
+      throw new ArtifactReadError(
+        "too_large",
+        "response size cannot be proven bounded; automatic preview refused",
+        { maxBytes },
+      );
+    }
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    const parts: Uint8Array[] = [];
+    let bytes = 0;
+    let text = "";
+    // A body read may stay pending forever on a stalled transport; racing the
+    // abort signal turns the deadline/cancellation into a real stop even for a
+    // stream that is not wired to the fetch's own abort handling.
+    const stop = new Promise<"aborted">((resolve) => {
+      if (controller.signal.aborted) resolve("aborted");
+      else controller.signal.addEventListener("abort", () => resolve("aborted"), { once: true });
+    });
+    try {
+      for (;;) {
+        const pending = reader.read();
+        pending.catch(() => {
+          /* an aborted stream may reject after this read was abandoned */
+        });
+        const step = await Promise.race([pending, stop]);
+        if (step === "aborted") {
+          await cancelReader(reader);
+          throw stopReason();
+        }
+        const { done, value } = step;
+        if (done) {
+          if (binary) return { text: "", bytes, truncated: false, raw: concatBytes(parts, bytes) };
+          break;
+        }
+        if (!value || !value.byteLength) continue;
+        if (binary) {
+          const remaining = maxBytes - bytes;
+          if (value.byteLength > remaining) {
+            await cancelReader(reader);
+            throw new ArtifactReadError(
+              "too_large",
+              `artifact exceeds the ${maxBytes}-byte preview limit`,
+              { maxBytes, bytes: maxBytes },
+            );
+          }
+          // Copy: the stream may reuse this buffer on the next pull.
+          parts.push(value.slice());
+          bytes += value.byteLength;
+          continue;
+        }
+        const remaining = maxBytes - bytes;
+        if (value.byteLength > remaining) {
+          if (prefix) {
+            if (remaining > 0) {
+              text += decoder.decode(value.subarray(0, remaining), { stream: true });
+              bytes += remaining;
+            }
+            // No final flush: an incomplete UTF-8 sequence at the cut is
+            // dropped instead of becoming U+FFFD.
+            await cancelReader(reader);
+            return { text, bytes, truncated: true };
+          }
+          await cancelReader(reader);
+          throw new ArtifactReadError(
+            "too_large",
+            `artifact exceeds the ${maxBytes}-byte preview limit`,
+            { maxBytes, bytes: maxBytes },
+          );
+        }
+        bytes += value.byteLength;
+        text += decoder.decode(value, { stream: true });
+        if (prefix && bytes >= maxBytes) {
+          // Read exactly to the budget: stop and cancel without waiting for the
+          // next chunk (which might be the rest of the file or a stall). An
+          // identity body whose declared length is exactly what arrived is the
+          // whole file, not a prefix of it.
+          await cancelReader(reader);
+          const whole = declared !== null && identityEncoding(response) && declared === bytes;
+          return whole
+            ? { text: text + decoder.decode(), bytes, truncated: false }
+            : { text, bytes, truncated: true };
+        }
+      }
+      text += decoder.decode();
+      return { text, bytes, truncated: false };
+    } catch (error) {
+      if (error instanceof ArtifactReadError) throw error;
+      await cancelReader(reader);
+      if (timedOut || controller.signal.aborted || isAbortError(error)) throw stopReason();
+      throw error;
+    }
+  } finally {
+    finish();
+  }
+}
+
+/**
+ * Strict mode: the complete file inside the preview budget, or a rejection.
+ * Structure parsers, Notebooks and result lists must use this so they can never
+ * claim a half document is complete.
+ */
+export function fetchArtifactText(url: string, options: ArtifactReadOptions = {}): Promise<string> {
+  return readArtifactText(url, options, false).then((read) => read.text);
+}
+
+/**
+ * Strict bytes: the complete file inside the preview budget, or a rejection.
+ * Image and PDF previews use this. A cut-off image is not a preview, and an
+ * element `src` pointed at the artifact URL would download the whole file
+ * with no budget and no cancel.
+ */
+export function readArtifactBytes(
+  url: string,
+  options: ArtifactReadOptions = {},
+): Promise<Uint8Array> {
+  return readArtifactText(url, options, false, true).then((read) => read.raw ?? new Uint8Array());
+}
+
+const previewObjectUrls = new Map<Element, Set<string>>();
+
+function dropPreviewUrl(url: string): void {
+  try {
+    URL.revokeObjectURL(url);
+  } catch {
+    /* already revoked or unsupported */
+  }
+}
+
+/** Forget every blob URL registered to `owner`. */
+function revokePreviewOwner(owner: Element): void {
+  const urls = previewObjectUrls.get(owner);
+  if (!urls) return;
+  for (const url of urls) dropPreviewUrl(url);
+  previewObjectUrls.delete(owner);
+}
+
+/**
+ * A repaint of `root` replaces the bytes it was showing. Blob URLs that belong
+ * to another still-mounted preview (the dock while the modal opens, or the
+ * reverse) stay valid.
+ */
+function revokePreviewUrlsWithin(root: Element): void {
+  for (const owner of [...previewObjectUrls.keys()]) {
+    if (owner === root || (typeof root.contains === "function" && root.contains(owner))) {
+      revokePreviewOwner(owner);
+    }
+  }
+}
+
+/** A view that has left the document no longer needs the bytes it decoded. */
+function revokeDetachedPreviewUrls(): void {
+  for (const owner of [...previewObjectUrls.keys()]) {
+    if (owner.isConnected === false) revokePreviewOwner(owner);
+  }
+}
+
+/**
+ * A blob URL for bytes this preview already bounded. `owner` is the element
+ * that displays them; revoking is scoped to that element, not to every preview
+ * on the page.
+ */
+export function previewObjectUrl(bytes: Uint8Array, type: string, owner: Element): string {
+  const blob = new Blob([bytes], { type });
+  const url = URL.createObjectURL(blob);
+  const urls = previewObjectUrls.get(owner) ?? new Set<string>();
+  urls.add(url);
+  previewObjectUrls.set(owner, urls);
+  return url;
+}
+
+/** image/* or application/pdf from the row, else a filename guess, else fallback. */
+export function artifactMediaType(
+  filename: string | null | undefined,
+  contentType: string | null | undefined,
+  fallback: string,
+): string {
+  const declared = String(contentType || "").split(";", 1)[0]?.trim().toLowerCase() || "";
+  if (declared.startsWith("image/") || declared === "application/pdf") return declared;
+  const name = String(filename || "").toLowerCase();
+  if (name.endsWith(".svg")) return "image/svg+xml";
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  if (name.endsWith(".gif")) return "image/gif";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".pdf")) return "application/pdf";
+  return fallback;
+}
+
+/**
+ * Prefix mode: the first `maxBytes` bytes (UTF-8 boundary respected) plus the
+ * fact that the file continues. Only thumbnail previews may use this.
+ */
+export function readArtifactPrefix(
+  url: string,
+  options: { maxBytes: number; timeoutMs?: number; signal?: AbortSignal | null },
+): Promise<ArtifactPrefixRead> {
+  return readArtifactText(url, options, true).then(({ text, truncated }) => ({ text, truncated }));
+}
+
+/** True when a read stopped only because its view went away. */
+export function isArtifactReadAborted(error: unknown): boolean {
+  return error instanceof ArtifactReadError && error.kind === "aborted";
+}
+
+// The dock and fullscreen modal may both be mounted and loading. A controller
+// belongs to one render root, never to whichever preview happened to open last.
+const previewReads = new Map<Element, AbortController>();
+
+/** Replace this container's read while keeping other mounted previews alive. */
+export function beginPreviewRead(container: Element): AbortSignal {
+  abortPreviewReads(container);
+  abortDetachedPreviews();
+  const controller = new AbortController();
+  previewReads.set(container, controller);
+  return controller.signal;
+}
+
+/** The signal of the render containing this renderer or island. */
+export function previewReadSignal(container: Element): AbortSignal | undefined {
+  for (const [root, controller] of previewReads) {
+    if (root === container || root.contains?.(container)) return controller.signal;
+  }
+  return undefined;
+}
+
+/** Abort the read whose container has left the document (viewer closed/replaced). */
+export function abortDetachedPreviews(): void {
+  for (const [container, controller] of previewReads) {
+    if (container.isConnected !== false) continue;
+    controller.abort();
+    previewReads.delete(container);
+  }
+  revokeDetachedPreviewUrls();
+}
+
+/** Close one view's reads/URLs. Omitting the root cleans up every preview. */
+export function abortPreviewReads(root?: Element | null): void {
+  if (root === null) return;
+  for (const [container, controller] of previewReads) {
+    if (root && root !== container && !root.contains?.(container)) continue;
+    controller.abort();
+    previewReads.delete(container);
+  }
+  if (root) revokePreviewUrlsWithin(root);
+  else for (const owner of [...previewObjectUrls.keys()]) revokePreviewOwner(owner);
+  revokeDetachedPreviewUrls();
 }
 
 export function isApiStatus(e: unknown, status: number, code?: string): boolean {

@@ -246,18 +246,105 @@ it("does not link to a truncated record URL or infer a successful download", () 
   expect(nodes.map((node) => node.textContent)).not.toContain(filesT("versions.datasetChecksMatched"));
 });
 
-it.each(["en", "zh"] as const)("distinguishes unknown verification from unreported metadata in %s", async (locale) => {
-  const previousLanguage = LANG;
-  await setLang(locale);
-  try {
-    const rows = sourcePanelNodes({ dataset: { declared_license: null, file_verification: null } })
-      .filter((node) => node.className === "ver-src-row");
-    const valueFor = (label: string) => rows.find((node) => node.children[0]?.textContent === label)?.children[1]?.textContent;
-    expect(valueFor(filesT("versions.datasetRecordedCheck")))
-      .toBe(locale === "en" ? "Verification status unknown" : "核验状态未知");
-    expect(valueFor(filesT("versions.datasetLicense")))
-      .toBe(locale === "en" ? "Not reported" : "未提供");
-  } finally { await setLang(previousLanguage); }
+it("shows a withheld response digest as hidden instead of the marker text", () => {
+  const digest = "a".repeat(64);
+  const hidden = sourcePanelNodes({ database: "uniprot", response_sha256: "<redacted:credential>" });
+  const hiddenValues = hidden.map((node) => node.textContent);
+  expect(hiddenValues).toContain(filesT("science.responseHidden"));
+  expect(hiddenValues).toContain(filesT("science.responseHiddenNote"));
+  expect(hiddenValues.some((value) => value.includes("<redacted"))).toBe(false);
+
+  const marked = sourcePanelNodes({ database: "uniprot", hidden_fields: ["response_sha256"] });
+  expect(marked.map((node) => node.textContent)).toContain(filesT("science.responseHidden"));
+
+  // A published digest is still shown verbatim.
+  const shown = sourcePanelNodes({ database: "uniprot", response_sha256: digest });
+  expect(shown.map((node) => node.textContent)).toContain(digest);
+});
+
+it("names conflicting source fields and normalized legacy aliases", () => {
+  const values = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "a".repeat(64),
+    conflict_fields: ["request_url"],
+    normalized_fields: ["endpoint"],
+  }).map((node) => node.textContent);
+  expect(values).toContain(filesT("science.conflictNote", "request_url"));
+  expect(values).toContain(filesT("science.aliasNote", "endpoint"));
+});
+
+it("reads the S1 projection keys for hidden digests, aliases and conflicts", () => {
+  const hidden = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "<redacted:credential>",
+    response_sha256_state: "hidden",
+  }).map((node) => node.textContent);
+  expect(hidden).toContain(filesT("science.responseHidden"));
+  expect(hidden.some((value) => value.includes("<redacted"))).toBe(false);
+
+  const shown = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "a".repeat(64),
+    response_sha256_state: "shown",
+    legacy_normalized: ["request_url"],
+    alias_conflicts: ["request_url"],
+  }).map((node) => node.textContent);
+  expect(shown).toContain("a".repeat(64));
+  expect(shown).toContain(filesT("science.aliasNote", "request_url"));
+  expect(shown).toContain(filesT("science.conflictNote", "request_url"));
+
+  // The pre-S1 spelling is still understood by an upgraded client.
+  const legacy = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "a".repeat(64),
+    source_conflicts: ["request_url"],
+  }).map((node) => node.textContent);
+  expect(legacy).toContain(filesT("science.conflictNote", "request_url"));
+});
+
+it.each(["en", "zh"] as const)(
+  "labels the retrieval response digest and names a conflict, in %s",
+  async (locale) => {
+    const previousLanguage = LANG;
+    await setLang(locale);
+    try {
+      const values = sourcePanelNodes({
+        kind: "science_search",
+        database: "clinvar",
+        request_url: "https://eutils.ncbi.nlm.nih.gov/example",
+        response_sha256: "a".repeat(64),
+        alias_conflicts: ["request_url"],
+      }).map((node) => node.textContent);
+      // The label says which digest this is: the recorded retrieval response,
+      // separate from the Artifact file's own checksum.
+      expect(values).toContain(filesT("science.field.responseSha256"));
+      expect(filesT("science.field.responseSha256")).not.toBe(
+        filesT("versions.datasetRecordedHash"),
+      );
+      if (locale === "zh") {
+        expect(values).toContain("检索响应摘要（来源记录）");
+        expect(values).toContain("来源字段冲突，已显示规范字段（request_url）。");
+      } else {
+        expect(values).toContain("Retrieval response digest (source record)");
+        expect(values).toContain(
+          "Source fields conflict; the canonical fields are shown (request_url).",
+        );
+      }
+    } finally {
+      await setLang(previousLanguage);
+    }
+  },
+);
+
+it("shows a hidden response digest as the explicit 已隐藏 state, not a verified value", () => {
+  const values = sourcePanelNodes({
+    kind: "science_search",
+    database: "clinvar",
+    response_sha256: "<redacted:credential>",
+    response_sha256_state: "hidden",
+  }).map((node) => node.textContent);
+  expect(values).toContain(filesT("science.responseHidden"));
+  expect(values).not.toContain("<redacted:credential>");
 });
 
 it.each(["en", "zh"] as const)("names a clipped dataset field by its %s row label", async (locale) => {
@@ -443,4 +530,18 @@ describe("versions modal ownership (AUDIT A29)", () => {
       for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0));
     } finally { setArtifactsFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
   });
+});
+
+it.each(["en", "zh"] as const)("distinguishes unknown verification from unreported metadata in %s", async (locale) => {
+  const previousLanguage = LANG;
+  await setLang(locale);
+  try {
+    const rows = sourcePanelNodes({ dataset: { declared_license: null, file_verification: null } })
+      .filter((node) => node.className === "ver-src-row");
+    const valueFor = (label: string) => rows.find((node) => node.children[0]?.textContent === label)?.children[1]?.textContent;
+    expect(valueFor(filesT("versions.datasetRecordedCheck")))
+      .toBe(locale === "en" ? "Verification status unknown" : "核验状态未知");
+    expect(valueFor(filesT("versions.datasetLicense")))
+      .toBe(locale === "en" ? "Not reported" : "未提供");
+  } finally { await setLang(previousLanguage); }
 });

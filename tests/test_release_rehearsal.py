@@ -364,3 +364,96 @@ def test_stage_attestation_without_a_workflow_run_id_is_refused(tmp_path, monkey
     target.write_text(json.dumps(document), "utf-8")
     with pytest.raises(release_receipts.ReceiptError, match="workflow run id"):
         release_receipts.verify_stage_attestation(target, version="0.2.0")
+
+
+# --------------------------------------------------------------------------
+# executed-runtime evidence is a receipt-level claim too
+#
+# A rehearsal may publish nothing, but the documents it leaves must still say
+# the truth. The Linux receipt carries one appendix-B.4 runtime-smoke report;
+# it is bound to one tarball digest and one platform, every frozen check must
+# have passed, and a report from another build or an older scenario cannot be
+# borrowed.
+# --------------------------------------------------------------------------
+
+_TARBALL_SHA = "c" * 64
+
+
+def _probe_report(**mutations):
+    from tests._runtime_smoke import mutated_report
+
+    return mutated_report(**mutations)
+
+
+def test_a_passing_runtime_smoke_binds_to_the_tarball():
+    document = release_receipts.normalize_runtime_smoke(
+        _probe_report(), artifact_sha256=_TARBALL_SHA
+    )
+    assert document["scenario_version"] == 1
+    assert document["target"] == "bundle"
+    assert document["platform"] == "linux"
+    assert document["arch"] == "x86_64"
+    assert set(document["checks"]) == set(release_receipts.RUNTIME_SMOKE_CHECKS)
+    assert document["failure"] is None
+
+
+def test_a_report_from_an_older_scenario_cannot_be_borrowed():
+    report = _probe_report()
+    report["scenario_version"] = 0
+    with pytest.raises(ReceiptError, match="scenario_version"):
+        release_receipts.normalize_runtime_smoke(report, artifact_sha256=_TARBALL_SHA)
+
+
+def test_a_runtime_smoke_for_another_platform_cannot_be_borrowed():
+    report = _probe_report(arch="aarch64")
+    with pytest.raises(ReceiptError, match="linux/x86_64"):
+        release_receipts.normalize_runtime_smoke(report, artifact_sha256=_TARBALL_SHA)
+
+
+def test_a_runtime_smoke_for_another_tarball_cannot_be_borrowed():
+    report = _probe_report()
+    report["artifact_sha256"] = "d" * 64
+    with pytest.raises(ReceiptError, match="not the tarball"):
+        release_receipts.normalize_runtime_smoke(report, artifact_sha256=_TARBALL_SHA)
+
+
+def test_a_wheel_or_not_run_report_cannot_stand_in_for_the_linux_run():
+    wheel = _probe_report()
+    wheel["target"] = "wheel"
+    wheel["checks"]["figure"] = "not_applicable"
+    with pytest.raises(ReceiptError, match="bundle run"):
+        release_receipts.normalize_runtime_smoke(wheel, artifact_sha256=_TARBALL_SHA)
+    not_run = _probe_report()
+    not_run["status"] = "not_run"
+    with pytest.raises(ReceiptError, match="not run"):
+        release_receipts.normalize_runtime_smoke(not_run, artifact_sha256=_TARBALL_SHA)
+
+
+@pytest.mark.parametrize(
+    "check", ["serve", "auth", "kernel_origin", "state_shared", "artifact_capture"]
+)
+def test_a_failed_check_is_refused(check):
+    report = _probe_report()
+    report["checks"][check] = "failed"
+    with pytest.raises(ReceiptError, match=check):
+        release_receipts.normalize_runtime_smoke(report, artifact_sha256=_TARBALL_SHA)
+
+
+@pytest.mark.parametrize(
+    "check",
+    ["figure", "exact_version", "restart_readback", "browser_open", "clean_exit"],
+)
+def test_a_skipped_check_is_not_a_pass(check):
+    """`figure`/`browser_open` may be not_applicable/not_run for a wheel report;
+    a Linux package receipt must have actually run every check."""
+    report = _probe_report()
+    report["checks"][check] = "not_run"
+    with pytest.raises(ReceiptError, match=check):
+        release_receipts.normalize_runtime_smoke(report, artifact_sha256=_TARBALL_SHA)
+
+
+def test_a_report_that_says_it_failed_while_status_is_passed_is_refused():
+    report = _probe_report()
+    report["failure"] = {"check": "serve", "detail": "x"}
+    with pytest.raises(ReceiptError, match="reports a failure"):
+        release_receipts.normalize_runtime_smoke(report, artifact_sha256=_TARBALL_SHA)

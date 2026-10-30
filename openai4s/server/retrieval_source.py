@@ -114,6 +114,83 @@ _MAX_IDENTIFIER_CHARS = 512
 MAX_VALUE_CHARS = 2000
 
 
+# --------------------------------------------------------------------------- #
+#  read compatibility for the one kind that ever wrote the old names
+# --------------------------------------------------------------------------- #
+
+#: The retrieval kind `write_search_artifact` writes. Only this known kind has
+#: historical aliases, and only this kind's are interpreted: an envelope of any
+#: other shape is free-form JSON written by unaudited retrieval code, and
+#: reading a key of it as a provenance field would let that code name a field
+#: this projection then renders.
+_SCIENCE_SEARCH_KIND = "science_search"
+
+#: Historical field name -> the canonical name it became. Artifacts written
+#: before the names were promoted carry the alias; they are not migrated (the
+#: bytes are immutable) and have to stay readable.
+LEGACY_SEARCH_ALIASES: dict[str, str] = {
+    "endpoint": "request_url",
+    "source_checksum": "response_sha256",
+}
+
+#: The plan's frozen compatibility field (F13): the canonical field names whose
+#: historical alias disagreed, sorted. The canonical value is shown and the alias
+#: value is never rendered, so no value is picked silently.
+ALIAS_CONFLICTS_KEY = "alias_conflicts"
+
+#: Optional projection keys beyond the plan's frozen field. Additive and
+#: documented rather than implied: a client that shows a canonical value without
+#: knowing it came from an alias, or shows the canonical value while the alias
+#: disagreed, is describing a record it did not read. `alias_conflicts` is the
+#: contract; these two only make the same facts legible in the panel and never
+#: change which values are released.
+LEGACY_FIELDS_KEY = "legacy_normalized"
+
+#: The response digest's public state, spelled separately from the artifact's
+#: own file checksum: hiding one must not read as "the retrieval was verified".
+RESPONSE_HASH_FIELD = "response_sha256"
+RESPONSE_HASH_STATE_KEY = "response_sha256_state"
+RESPONSE_HASH_SHOWN = "shown"
+RESPONSE_HASH_HIDDEN = "hidden"
+
+
+def _has_value(value: Any) -> bool:
+    return value is not None and value != ""
+
+
+def _normalize_legacy_search(
+    envelope: dict[str, Any],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Merge the historical ``science_search`` names into the canonical ones.
+
+    The canonical field always wins a disagreement; the alias value is not
+    rendered, and the conflict is named in `alias_conflicts` (F13), because
+    silently picking one of two recorded request URLs would make the panel
+    describe a request that may not be the one that produced the data. An alias that agrees is simply merged —
+    one fact under two names, so it is neither a conflict nor an unknown field.
+    Both the canonical value and a promoted alias value then go through the same
+    redaction, clipping and unknown-field counting as everything else; nothing
+    is exempt because of its name or its shape.
+    """
+    normalized = dict(envelope)
+    legacy: list[str] = []
+    conflicts: list[str] = []
+    for alias, canonical in LEGACY_SEARCH_ALIASES.items():
+        if alias not in envelope:
+            continue
+        alias_value = envelope[alias]
+        normalized.pop(alias, None)
+        canonical_value = envelope.get(canonical)
+        if _has_value(canonical_value):
+            if _has_value(alias_value) and alias_value != canonical_value:
+                conflicts.append(canonical)
+            continue
+        if _has_value(alias_value):
+            normalized[canonical] = alias_value
+            legacy.append(canonical)
+    return normalized, sorted(legacy), sorted(conflicts)
+
+
 def _clip(value: str) -> tuple[str, bool]:
     if len(value) <= MAX_VALUE_CHARS:
         return value, False
@@ -131,6 +208,11 @@ def _is_public_identifier(field: str, value: str) -> bool:
         return doi is not None and not _looks_opaque(doi.group(1))
     if field == "file_key":
         return _FILE_NAME.fullmatch(value) is not None
+    if field == RESPONSE_HASH_FIELD:
+        # The hash of what came back is the point of the panel. Judged whole,
+        # every real SHA-256 is an opaque 64-hex run and rendered as
+        # `<redacted:…>`, so the digest could never be shown at all.
+        return _SHA256_HEX.fullmatch(value) is not None
     return False
 
 
@@ -222,13 +304,23 @@ def public_source(
     if not isinstance(envelope, dict) or not envelope:
         return None
 
+    # Read compatibility only for the one known kind that ever wrote the old
+    # names. Everything below sees canonical fields and one envelope whose
+    # unknown-field count no longer includes a legacy key that was consumed.
+    working = envelope
+    legacy: list[str] = []
+    conflicts: list[str] = []
+    if envelope.get("kind") == _SCIENCE_SEARCH_KIND:
+        working, legacy, conflicts = _normalize_legacy_search(envelope)
+
     out: dict[str, Any] = {}
     truncated: list[str] = []
     unprojected = 0
+    hash_state: str | None = None
     for field in ALLOWED_FIELDS:
-        if field not in envelope:
+        if field not in working:
             continue
-        value = envelope[field]
+        value = working[field]
         if field == "dataset":
             dataset = _public_dataset(
                 value, artifact_sha256, dataset_verified=dataset_verified
@@ -246,15 +338,33 @@ def public_source(
         if isinstance(value, (int, float, bool)):
             out[field] = value
             continue
-        text = value if isinstance(value, str) else json.dumps(value, default=str)
-        text = _redact_url(text) if field == "request_url" else redact_text(text)
-        text, was_clipped = _clip(text)
+        raw_text = value if isinstance(value, str) else json.dumps(value, default=str)
+        if field == RESPONSE_HASH_FIELD and _is_public_identifier(field, raw_text):
+            safe = raw_text
+        elif field == "request_url":
+            safe = _redact_url(raw_text)
+        else:
+            safe = redact_text(raw_text)
+        text, was_clipped = _clip(safe)
         if was_clipped:
             truncated.append(field)
         out[field] = text
+        if field == RESPONSE_HASH_FIELD:
+            # A bare SHA-256 is shown as written; any other value is treated as
+            # text like every other value, and its public state is said out
+            # loud so "hidden" cannot be mistaken for "verified".
+            hash_state = (
+                RESPONSE_HASH_HIDDEN if safe != raw_text else RESPONSE_HASH_SHOWN
+            )
 
     if not out:
         return None
+    if hash_state is not None:
+        out[RESPONSE_HASH_STATE_KEY] = hash_state
+    if legacy:
+        out[LEGACY_FIELDS_KEY] = legacy
+    if conflicts:
+        out[ALIAS_CONFLICTS_KEY] = conflicts
     # Named, not implied. A field silently cut at 2000 characters reads as the
     # whole value, and a provenance panel that shows a shortened URL as if it
     # were the request is worse than showing nothing.
@@ -262,15 +372,22 @@ def public_source(
         out["truncated_fields"] = sorted(truncated)
     # What was dropped, counted rather than listed: the names themselves come
     # from unaudited retrieval code and are not safe to render.
-    dropped = len([k for k in envelope if k not in ALLOWED_FIELDS]) + unprojected
+    dropped = len([k for k in working if k not in ALLOWED_FIELDS]) + unprojected
     if dropped:
         out["undisclosed_field_count"] = dropped
     return out
 
 
 __all__ = [
+    "ALIAS_CONFLICTS_KEY",
     "ALLOWED_FIELDS",
     "CREDENTIAL_PARAMS",
+    "LEGACY_FIELDS_KEY",
+    "LEGACY_SEARCH_ALIASES",
     "MAX_VALUE_CHARS",
+    "RESPONSE_HASH_FIELD",
+    "RESPONSE_HASH_HIDDEN",
+    "RESPONSE_HASH_SHOWN",
+    "RESPONSE_HASH_STATE_KEY",
     "public_source",
 ]

@@ -535,6 +535,77 @@ jobs:
         # stack, a missing Web UI / R worker, a desktop entry that launches
         # nothing, or any credential material swept into the archive.
         run: python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+      - name: Upload the built bundle
+        # The tarball and its digest only. The smoke and the receipt run in
+        # `linux-runtime-smoke`, which checks out the release tooling commit
+        # rather than this product tree: this job's checkout is the ref
+        # `workflow_dispatch` selected, and executing that tree's package
+        # scripts would run in the default branch's Actions cache scope.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-app-tarball
+          path: |
+            dist/OpenAI4S-*-linux-x86_64.tar.gz
+            dist/OpenAI4S-*-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  linux-runtime-smoke:
+    name: Exercise the Linux bundle and receipt it
+    # The product tree was checked out in `linux-app` to build the tarball.
+    # This job does not check that tree out again. `github.sha` is the
+    # workflow commit `freeze` already required to be on `main`; the smoke
+    # and receipt scripts are release tooling, and they run from that commit
+    # against the tarball artifact. Executing `needs.freeze.outputs.source_sha`
+    # here would be code from a dispatch-selected ref running where it can
+    # write the default branch's Actions cache.
+    needs: [freeze, linux-app]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout the release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download the built Linux bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-app-tarball
+          path: dist/
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: false
+      # The scenario's last step opens the packaged workbench in a real browser
+      # against the artifacts the previous steps captured, so the browser driver
+      # is installed here. Same setup-node pin and same install commands as the
+      # PR browser job (ci.yml); no new action is introduced.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Install the browser driver
+        # `playwright install --with-deps` runs apt-get with no timeout of its
+        # own; the bound is the PR browser job's, so a stalled mirror fails this
+        # step rather than the job.
+        timeout-minutes: 20
+        run: |
+          npm ci --ignore-scripts
+          ./node_modules/.bin/playwright install --with-deps chromium
+      - name: Run the installed-runtime smoke
+        # Verification proves the bytes are well-formed; this proves they
+        # execute and that a browser can read the captured versions. The
+        # packaged daemon serves and authenticates, the packaged kernel runs
+        # Cells that share state, an Artifact version is captured and read back
+        # after a same-name rewrite, the daemon restarts and the same bytes and
+        # history come back, the exact CSV/PNG versions open in a real browser,
+        # and no process is left behind. The report is what the receipt step
+        # binds to this tarball's digest.
+        run: |
+          python3 scripts/installed_runtime_smoke.py \
+            --bundle dist/OpenAI4S-*-linux-x86_64.tar.gz \
+            --report dist/runtime-smoke-linux.json \
+            --browser
       # Same binding the wheel and the DMG get. Without it the tarball was
       # staged with no document tying its bytes to the frozen commit -- covered
       # only by the in-run `incoming` digests, which say "these are the bytes
@@ -547,18 +618,21 @@ jobs:
           uv run --locked python scripts/release_receipts.py \
             --kind linux --source-sha "$SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
+            --runtime-smoke dist/runtime-smoke-linux.json \
             dist/OpenAI4S-*-linux-x86_64.tar.gz
       - name: Upload the verified bundle
         # The .sha256 sidecar travels because `windows-package` embeds it in the
-        # zip, so the digest the Windows launcher checks against is the one this
-        # job produced. It is not a release asset: `release_pipeline.py` collects
-        # only distribution suffixes and publishes one SHA256SUMS covering them.
+        # zip, so the digest the Windows launcher checks against is the one the
+        # build job produced. It is not a release asset: `release_pipeline.py`
+        # collects only distribution suffixes and publishes one SHA256SUMS
+        # covering them.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-app-bundle
           path: |
             dist/OpenAI4S-*-linux-x86_64.tar.gz
             dist/OpenAI4S-*-linux-x86_64.tar.gz.sha256
+            dist/runtime-smoke-linux.json
             dist/build-receipt-*.json
           if-no-files-found: error
           retention-days: 90
@@ -570,11 +644,12 @@ jobs:
     # around the Linux bundle, which it installs into WSL2. See the header of
     # scripts/build_windows_zip.sh.
     #
-    # It consumes `linux-app`'s artifact rather than rebuilding: that is what
+    # It consumes the tarball `linux-app` built, after `linux-runtime-smoke`
+    # has executed and receipted it, rather than rebuilding. That is what
     # makes the payload byte-identical to the Linux bundle this same release
     # publishes, instead of a second build that merely ought to match.
-    # `freeze` for the ref, `linux-app` for the payload: same reason as above.
-    needs: [freeze, linux-app]
+    # `freeze` for the ref, `linux-runtime-smoke` for the payload.
+    needs: [freeze, linux-runtime-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -693,7 +768,7 @@ jobs:
     # Staging only. This job never makes anything public: the flip lives in
     # `finalize`, after PyPI.
     if: ${{ !failure() && !cancelled() && !inputs.pypi_only }}
-    needs: [freeze, guard, quality, build, macos-app, linux-app, windows-package, windows-launcher]
+    needs: [freeze, guard, quality, build, macos-app, linux-app, linux-runtime-smoke, windows-package, windows-launcher]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -826,7 +901,7 @@ jobs:
       !failure() && !cancelled() &&
       (inputs.publish || inputs.pypi_only) &&
       (needs.attach.result == 'success' || (inputs.pypi_only && needs.attach.result == 'skipped'))
-    needs: [freeze, guard, quality, build, macos-app, linux-app, windows-package, windows-launcher, attach]
+    needs: [freeze, guard, quality, build, macos-app, linux-app, linux-runtime-smoke, windows-package, windows-launcher, attach]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:

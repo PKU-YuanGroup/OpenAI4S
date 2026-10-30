@@ -18,6 +18,7 @@ class FakeEl {
     contains: (name: string) => this.className.split(" ").includes(name),
   };
   style: Record<string, string> = {};
+  attrs = new Map<string, string>();
   children: FakeEl[] = [];
   parentNode: FakeEl | null = null;
   onclick: (() => void) | null = null;
@@ -48,6 +49,15 @@ class FakeEl {
     else this.children.splice(at, 0, child);
     return child;
   }
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value);
+  }
+  getAttribute(name: string): string | null {
+    return this.attrs.has(name) ? this.attrs.get(name)! : null;
+  }
+  removeAttribute(name: string): void {
+    this.attrs.delete(name);
+  }
   remove(): void {
     if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((node) => node !== this);
     this.parentNode = null;
@@ -74,7 +84,25 @@ let modal: FakeEl;
 let modalBody: FakeEl;
 const byId = (id: string) => conv.find((node) => node.id === id);
 
-vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: String }));
+vi.mock("./api", () => {
+  // The same envelope the real helper throws: `compute.ts` classifies a failed
+  // read by HTTP status and code, so the mock has to keep both.
+  class MockApiError extends Error {
+    name = "ApiError";
+    code: string;
+    status: number;
+    requestId = "";
+    body: unknown;
+    constructor(body: unknown, httpStatus: number) {
+      const rec = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+      super(String((rec && (rec.error || rec.detail)) || "HTTP " + httpStatus));
+      this.code = rec && rec.code != null ? String(rec.code) : "";
+      this.status = Number((rec && rec.status) || httpStatus);
+      this.body = body;
+    }
+  }
+  return { ApiError: MockApiError, api: vi.fn(), apiErrorText: String };
+});
 vi.mock("./chrome", () => ({ hint: vi.fn() }));
 vi.mock("./icon", () => ({ iconEl: () => new FakeEl("svg") }));
 vi.mock("./dom", () => ({
@@ -94,7 +122,7 @@ import { _openGen, currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { computeStatus } from "../../stores/timeline";
 import { _modalMode } from "../../stores/ui";
-import { api } from "./api";
+import { ApiError, api } from "./api";
 import { hint } from "./chrome";
 import { computeT as t, openRunLocationDialog, refreshComputeStatus } from "./compute";
 import { closeModalEl, openModalEl } from "./dom";
@@ -220,7 +248,7 @@ describe("truthful compute read ownership", () => {
   ])("treats malformed status %j as unavailable", async (status) => {
     daemon(status);
     await refreshComputeStatus("f");
-    expect(computeStatus.value?.phase).toBe("error");
+    expect(computeStatus.value?.phase).toBe("unavailable");
     expect(byId("compute-badge")?.texts()).toContain(t("compute.status.unavailable"));
     await openRunLocationDialog("f");
     expect(modalBody.find((node) => node.className.includes("current"))).toBeNull();
@@ -254,7 +282,7 @@ describe("truthful compute read ownership", () => {
     await reading;
     expect(byId("compute-lost")).not.toBeNull();
     expect(byId("compute-badge")?.texts().join(" ")).toContain("gpu");
-    expect(computeStatus.value?.phase).toBe("error");
+    expect(computeStatus.value?.phase).toBe("unavailable");
   });
 
   it("keeps dismissal effective through failure and raises a new loss", async () => {
@@ -276,7 +304,7 @@ describe("truthful compute read ownership", () => {
     await refreshComputeStatus("f");
     older.resolve({ location: "local" });
     await first;
-    expect(computeStatus.value?.phase).toBe("error");
+    expect(computeStatus.value?.phase).toBe("unavailable");
     expect(byId("compute-badge")?.texts()).toContain(t("compute.status.unavailable"));
   });
 
@@ -383,7 +411,7 @@ it("keeps confirmed same-session evidence when reopening starts a new navigation
   await refreshComputeStatus("f");
   expect(byId("compute-lost")).not.toBeNull();
   expect(byId("compute-badge")?.texts().join(" ")).toContain("gpu");
-  expect(computeStatus.value?.phase).toBe("error");
+  expect(computeStatus.value?.phase).toBe("unavailable");
 });
 
 it.each(["error", "loading"] as const)("does not revive an earlier dialog status after a newer %s while catalog is pending", async (phase) => {
@@ -456,5 +484,355 @@ describe("run-location modal ownership", () => {
     pending.resolve(null);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(hint).not.toHaveBeenCalled();
+  });
+});
+
+// A failed *read* and an absent *feature* are different facts. A 5xx, an auth
+// refusal or a dropped connection says "ask again later"; only a routing answer
+// says this daemon has no run-location surface at all. Neither may be dressed
+// up as `local`, because that is a claim about where the kernel runs.
+function failingApi(status: number, body: unknown = { error: "unavailable" }) {
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path === "/orchestration/profiles") return { profiles: [] };
+    throw new ApiError(body, status);
+  });
+}
+
+function option(label: string): FakeEl {
+  const button = modalBody.find((node) => node.text === label)?.parentNode;
+  expect(button, `no run-location option labelled ${label}`).toBeTruthy();
+  return button!;
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe("run-location read tri-state", () => {
+  it.each([
+    [401, "unauthorized", ""],
+    [403, "admin only", "admin_only"],
+    [500, "internal error", ""],
+    [503, "compute unavailable", "compute_record_unavailable"],
+  ])("treats HTTP %i as temporarily unavailable, never as a missing feature", async (status, message, code) => {
+    failingApi(status, { error: message, code });
+    await refreshComputeStatus("f");
+    expect(computeStatus.value?.phase).toBe("unavailable");
+    const badge = byId("compute-badge")?.texts().join(" ") || "";
+    expect(badge).toContain(t("compute.status.unavailable"));
+    expect(badge).not.toContain(t("compute.status.unsupported"));
+  });
+
+  it("treats a dropped connection as temporarily unavailable", async () => {
+    vi.mocked(api).mockRejectedValue(new TypeError("Failed to fetch"));
+    await refreshComputeStatus("f");
+    expect(computeStatus.value?.phase).toBe("unavailable");
+  });
+
+  it.each([
+    [404, { error: "not found", path: "/sessions/f/compute", method: "GET" }],
+    [405, { error: "method not allowed" }],
+    [501, { error: "not implemented" }],
+  ])("treats HTTP %i route absence as explicitly unsupported", async (status, body) => {
+    failingApi(status, body);
+    await refreshComputeStatus("f");
+    expect(computeStatus.value?.phase).toBe("unsupported");
+    expect(byId("compute-badge")?.texts().join(" ")).toContain(t("compute.status.unsupported"));
+  });
+
+  it("does not read a missing session as a daemon without the feature", async () => {
+    failingApi(404, { error: "session not found" });
+    await refreshComputeStatus("f");
+    expect(computeStatus.value?.phase).toBe("unavailable");
+  });
+
+  it("keeps a malformed 200 payload as a failed read, not a capability answer", async () => {
+    daemon({ location: "elsewhere" });
+    await refreshComputeStatus("f");
+    expect(computeStatus.value?.phase).toBe("unavailable");
+  });
+
+  it("does not mark Local current and offers a retry when the read is temporarily unavailable", async () => {
+    failingApi(503);
+    await openRunLocationDialog("f");
+    expect(modalBody.texts()).toContain(t("compute.status.unavailable"));
+    expect(modalBody.find((node) => node.className.includes("current"))).toBeNull();
+    expect(modalBody.find((node) => node.className === "rl-retry")).not.toBeNull();
+  });
+
+  it("says the daemon does not provide run-location control instead of claiming this machine", async () => {
+    vi.mocked(api).mockImplementation(async (path: string) => {
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      throw new ApiError({ error: "not found", path: "/sessions/f/compute", method: "GET" }, 404);
+    });
+    await openRunLocationDialog("f");
+    expect(modalBody.texts()).toContain(t("compute.status.unsupported"));
+    expect(modalBody.texts()).not.toContain(t("compute.location.local"));
+    // A profile list is not an invitation to switch when the current
+    // location cannot be read: offering it would be a blind mutation.
+    expect(modalBody.texts()).not.toContain("gpu");
+    expect(modalBody.find((node) => node.className === "rl-retry")).toBeNull();
+  });
+});
+
+describe("run-location submission ownership", () => {
+  it("sends one POST when the in-flight option is clicked again", async () => {
+    const gate = deferred<unknown>();
+    let posts = 0;
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") {
+        posts += 1;
+        return gate.promise;
+      }
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }, { name: "cpu" }] };
+      return { location: "local" };
+    });
+    await openRunLocationDialog("f");
+    option("gpu").onclick!();
+    option("gpu").onclick!();
+    option("cpu").onclick!();
+    expect(posts).toBe(1);
+    // Every action in this window is disabled until this one settles.
+    expect(option("gpu").disabled).toBe(true);
+    expect(option("cpu").disabled).toBe(true);
+    gate.resolve({ ok: true });
+    await vi.waitFor(() => expect(closeModalEl).toHaveBeenCalled());
+    expect(posts).toBe(1);
+    await vi.waitFor(() => expect(computeStatus.value?.phase).toBe("available"));
+  });
+
+  it("announces the dialog busy while a POST is in flight and clears it when it fails", async () => {
+    // Cluster, not local: a local opening renders no release action, so the
+    // "release button disabled while in flight" requirement would be untested.
+    daemon(
+      { location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } },
+      [{ name: "gpu" }, { name: "cpu" }],
+    );
+    await openRunLocationDialog("f");
+    const busy = () => modalBody.firstChild!.getAttribute("aria-busy");
+    const release = () => modalBody.find((node) => node.className === "rl-release")!;
+    expect(busy()).toBe("false");
+    expect(release()).toBeTruthy();
+
+    const gate = deferred<unknown>();
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") {
+        return gate.promise.then(() => {
+          throw new ApiError({ error: "gateway down" }, 503);
+        });
+      }
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }, { name: "cpu" }] };
+      return { location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } };
+    });
+    option("cpu").onclick!();
+    expect(busy()).toBe("true");
+    // Every choice and the release action in this window is unavailable while
+    // the POST runs.
+    expect(option("gpu").disabled).toBe(true);
+    expect(option("cpu").disabled).toBe(true);
+    expect(option(t("compute.location.local")).disabled).toBe(true);
+    expect(release().disabled).toBe(true);
+
+    gate.resolve({ ok: true });
+    await vi.waitFor(() => expect(hint).toHaveBeenCalled());
+    // The same window stays open and usable for an explicit retry.
+    expect(busy()).toBe("false");
+    expect(option("gpu").disabled).toBe(false);
+    expect(option("cpu").disabled).toBe(false);
+    expect(release().disabled).toBe(false);
+  });
+
+  it("keeps the last confirmed location, marks it unconfirmed and allows an explicit retry", async () => {
+    daemon({ location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } }, [{ name: "gpu" }, { name: "cpu" }]);
+    await refreshComputeStatus("f");
+    let posts = 0;
+    let refuse = true;
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") {
+        posts += 1;
+        if (refuse) throw new ApiError({ error: "gateway down" }, 503);
+        return { ok: true };
+      }
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }, { name: "cpu" }] };
+      return { location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } };
+    });
+    await openRunLocationDialog("f");
+    option("cpu").onclick!();
+    await vi.waitFor(() => expect(hint).toHaveBeenCalled());
+    expect(closeModalEl).not.toHaveBeenCalled();
+    // The old location is kept; it is not silently reported as confirmed.
+    expect(computeStatus.value?.status?.location).toBe("cluster");
+    expect(computeStatus.value?.unconfirmed).toBe(true);
+    expect(byId("compute-badge")?.texts().join(" ")).toContain("gpu");
+    expect(byId("compute-badge")?.texts().join(" ")).toContain(t("compute.status.unconfirmed"));
+    expect(modalBody.texts()).toContain(t("compute.status.unconfirmed"));
+    expect(option("cpu").disabled).toBe(false);
+    // A retry is the user's explicit action, not an automatic re-submission.
+    refuse = false;
+    option("cpu").onclick!();
+    await vi.waitFor(() => expect(posts).toBe(2));
+    await vi.waitFor(() => expect(closeModalEl).toHaveBeenCalled());
+    // The mark clears when the confirming read lands, not when the POST
+    // answers: until then the position is still "not confirmed".
+    await vi.waitFor(() => expect(computeStatus.value?.phase).toBe("available"));
+    expect(computeStatus.value?.unconfirmed).toBeUndefined();
+  });
+
+  it("keeps the unconfirmed mark through a failed reread and clears it only on success", async () => {
+    daemon({ location: "cluster", workload: { profile: "gpu" } }, [{ name: "gpu" }]);
+    await refreshComputeStatus("f");
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") {
+        throw new ApiError({ error: "gateway down" }, 503);
+      }
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      return { location: "cluster", workload: { profile: "gpu" } };
+    });
+    await openRunLocationDialog("f");
+    option("gpu").onclick!();
+    await vi.waitFor(() => expect(computeStatus.value?.unconfirmed).toBe(true));
+
+    // A failed reread is not evidence that the mutation was confirmed: the
+    // unconfirmed mark must survive it (the badge shows both facts).
+    failingApi(503);
+    await refreshComputeStatus("f");
+    expect(computeStatus.value?.unconfirmed).toBe(true);
+    expect(computeStatus.value?.phase).toBe("unavailable");
+    expect(byId("compute-badge")?.texts().join(" ")).toContain(t("compute.status.unconfirmed"));
+    expect(byId("compute-badge")?.texts().join(" ")).toContain("gpu");
+
+    daemon({ location: "local" });
+    await refreshComputeStatus("f");
+    expect(computeStatus.value?.unconfirmed).toBeUndefined();
+    expect(computeStatus.value?.status?.location).toBe("local");
+  });
+
+  it("does not mark a confirmed location unconfirmed when the daemon definitively refuses", async () => {
+    daemon({ location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } }, [{ name: "gpu" }]);
+    await refreshComputeStatus("f");
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path.startsWith("/sessions/f/compute") && options?.method === "POST") {
+        throw new ApiError({ ok: false, code: "not_configured", error: "no worker listener" }, 409);
+      }
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      return { location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } };
+    });
+    await openRunLocationDialog("f");
+    option(t("compute.location.local")).onclick!();
+    await vi.waitFor(() => expect(hint).toHaveBeenCalled());
+    // A refusal never applied the change, so the confirmed location is still
+    // confirmed. There is nothing to walk back.
+    expect(computeStatus.value?.unconfirmed).toBeUndefined();
+    expect(computeStatus.value?.status?.location).toBe("cluster");
+    expect(modalBody.texts()).not.toContain(t("compute.status.unconfirmed"));
+  });
+
+  it("does not close or reopen the modal when a submitted change answers after dismissal", async () => {
+    const gate = deferred<unknown>();
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") return gate.promise;
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      return { location: "local" };
+    });
+    await openRunLocationDialog("f");
+    option("gpu").onclick!();
+    modal.className = "hidden";
+    gate.resolve({ ok: true });
+    await tick();
+    expect(closeModalEl).not.toHaveBeenCalled();
+    expect(openModalEl).toHaveBeenCalledTimes(1);
+    expect(modal.className).toBe("hidden");
+  });
+
+  it("does not publish a finished switch onto another session", async () => {
+    const gate = deferred<unknown>();
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") return gate.promise;
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      return { location: "local" };
+    });
+    await openRunLocationDialog("f");
+    option("gpu").onclick!();
+    currentId.value = "g";
+    _openGen.value += 1;
+    computeStatus.value = null;
+    gate.resolve({ ok: true });
+    await tick();
+    expect(closeModalEl).not.toHaveBeenCalled();
+    expect(computeStatus.value).toBeNull();
+    expect(vi.mocked(api).mock.calls.some(([path]) => path === "/sessions/g/compute")).toBe(false);
+  });
+
+  it("does not close or replace a viewer opened while a submitted change is in flight", async () => {
+    daemon({ location: "local" }, [{ name: "gpu" }]);
+    await openRunLocationDialog("f");
+    const gate = deferred<unknown>();
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") return gate.promise;
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      return { location: "local" };
+    });
+    option("gpu").onclick!();
+    // An artifact viewer takes the shared modal without writing _modalMode.
+    modalBody.innerHTML = "";
+    modalBody.appendChild(new FakeEl("iframe"));
+    gate.resolve({ ok: true });
+    await tick();
+    expect(closeModalEl).not.toHaveBeenCalled();
+    expect(openModalEl).toHaveBeenCalledTimes(1);
+    expect(modalBody.firstChild?.tag).toBe("iframe");
+  });
+
+  it("says that a choice is still submitting instead of silently ignoring a repeat", async () => {
+    daemon({ location: "local" }, [{ name: "gpu" }]);
+    await openRunLocationDialog("f");
+    let posts = 0;
+    const gate = deferred<unknown>();
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") {
+        posts += 1;
+        return gate.promise;
+      }
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      return { location: "local" };
+    });
+    option("gpu").onclick!();
+    // Close the dialog and open a new one while the accepted POST is still in
+    // flight: the replacement's buttons are enabled again, so a repeat click
+    // must explain itself and must not queue a second scheduler request.
+    modal.className = "hidden";
+    await openRunLocationDialog("f");
+    option("gpu").onclick!();
+    expect(posts).toBe(1);
+    expect(hint).toHaveBeenCalledWith(t("compute.status.submitting"));
+    gate.resolve({ ok: true });
+    await vi.waitFor(() => expect(computeStatus.value?.phase).toBe("available"));
+    // The accepted POST belongs to the first window: it refreshes the badge
+    // but does not close the window the user has open now.
+    expect(closeModalEl).not.toHaveBeenCalled();
+    expect(openModalEl).toHaveBeenCalledTimes(2);
+    expect(modalBody.firstChild?.tag).not.toBe("iframe");
+    expect(posts).toBe(1);
+  });
+
+  it("keeps a reopened dialog open when an earlier submission answers", async () => {
+    const gate = deferred<unknown>();
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") return gate.promise;
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      return { location: "local" };
+    });
+    await openRunLocationDialog("f");
+    option("gpu").onclick!();
+    currentId.value = "g";
+    _openGen.value += 1;
+    currentId.value = "f";
+    _openGen.value += 1;
+    computeStatus.value = null;
+    await openRunLocationDialog("f");
+    gate.resolve({ ok: true });
+    await tick();
+    expect(closeModalEl).not.toHaveBeenCalled();
+    expect(modalBody.find((node) => node.text === t("compute.location.local"))).not.toBeNull();
   });
 });

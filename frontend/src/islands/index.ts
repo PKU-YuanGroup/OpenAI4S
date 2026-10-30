@@ -23,7 +23,7 @@ import {
 } from "./annot";
 import { openKetcher } from "./ketcher";
 import { renderLocatorComments } from "./locator";
-import { molTeardown, molecule } from "./mol";
+import { molRetheme, molTeardown, molecule } from "./mol";
 import { isTextEditable, openArtifact, renderViewer, showVersions } from "./viewer";
 
 export {
@@ -66,6 +66,7 @@ export function installIslands(target?: Target): void {
   if (!host) return;
   host.molecule = molecule;
   host._molTeardown = molTeardown;
+  host._molRetheme = molRetheme;
   host.renderAnnotatableImage = renderAnnotatableImage;
   host.renderPins = renderPins;
   host.openPinPop = openPinPop;

@@ -14,7 +14,7 @@ import { _computeLostSeen } from "../../stores/artifacts";
 import { _openGen, currentId } from "../../stores/session";
 import { computeStatus } from "../../stores/timeline";
 import { _modalMode } from "../../stores/ui";
-import { api, apiErrorText } from "./api";
+import { ApiError, api, apiErrorText } from "./api";
 import { hint } from "./chrome";
 import { $, closeModalEl, el, openModalEl } from "./dom";
 import { iconEl } from "./icon";
@@ -23,7 +23,10 @@ export const computeT = copyLookup({
   en: {
     "compute.status.loading": "Checking run location…",
     "compute.status.unavailable": "Run location unavailable",
+    "compute.status.unsupported": "Run-location control is not available on this daemon",
     "compute.status.stale": "last confirmed; may be out of date",
+    "compute.status.unconfirmed": "change not confirmed",
+    "compute.status.submitting": "that change is still being submitted",
     "compute.status.retry": "Retry",
     "compute.status.invalid": "Invalid run-location response",
     "compute.profiles.unavailable": "Could not load cluster profiles",
@@ -34,7 +37,10 @@ export const computeT = copyLookup({
   zh: {
     "compute.status.loading": "正在查询运行位置…",
     "compute.status.unavailable": "无法确认运行位置",
+    "compute.status.unsupported": "本 daemon 不提供运行位置切换",
     "compute.status.stale": "上次确认；可能已过期",
+    "compute.status.unconfirmed": "变更未确认",
+    "compute.status.submitting": "该变更仍在提交中",
     "compute.status.retry": "重试",
     "compute.status.invalid": "运行位置响应无效",
     "compute.profiles.unavailable": "无法加载集群配置",
@@ -71,12 +77,20 @@ const COMPUTE_BLOCKED_LABEL: Record<string, string> = {
 export type ComputeReadState = {
   fid: string;
   generation: number;
-  phase: "loading" | "available" | "error";
+  phase: "loading" | "available" | "unsupported" | "unavailable";
   status: ComputeStatus | null;
   error?: string;
+  /**
+   * The last confirmed position is kept, but a mutation left for this session
+   * may or may not have been applied. Never rendered as a confirmed position.
+   */
+  unconfirmed?: boolean;
 };
 
-type ComputeResult = { phase: "available"; status: ComputeStatus } | { phase: "error"; error: string };
+export type ComputeResult =
+  | { phase: "available"; status: ComputeStatus }
+  | { phase: "unsupported"; error: string }
+  | { phase: "unavailable"; error: string };
 
 // Validate the fields the UI reads. A 200 with an HTML body or an incomplete
 // status is unknown, never evidence that the session is running locally.
@@ -102,13 +116,47 @@ function validStatus(value: unknown): value is ComputeStatus {
     && value.state_lost_epochs.every((epoch) => Number.isSafeInteger(epoch) && epoch >= 0));
 }
 
+/**
+ * Whether a failed read is the daemon saying "this surface does not exist"
+ * rather than "I cannot answer right now". Only an explicit routing answer
+ * counts: an auth refusal, a network failure or a 5xx is retryable in
+ * principle, and treating any of them as absence is how a 503 became "local".
+ */
+function unsupportedRead(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.status === 405 || error.status === 501) return true;
+  if (error.code === "not_implemented") return true;
+  // The gateway's unknown-route envelope names the path it could not route.
+  // "404 session not found" names a missing session instead, which is not a
+  // capability answer and must stay retryable after navigating away.
+  const body = isRecord(error.body) ? error.body : null;
+  return error.status === 404 && typeof body?.path === "string";
+}
+
+/**
+ * A failed mutation is ambiguous unless the daemon refused it: transport
+ * errors and 5xx may have been applied before the answer was lost, while a
+ * 4xx (barring the retry-later codes) applied nothing. Only the ambiguous ones
+ * invalidate the last confirmed position.
+ */
+function submitOutcomeUnknown(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return true;
+  if (error.status >= 400 && error.status < 500) {
+    return error.status === 408 || error.status === 425 || error.status === 429;
+  }
+  return true;
+}
+
 export async function loadComputeStatus(fid: string): Promise<ComputeResult> {
   try {
     const status = await api(`/sessions/${encodeURIComponent(fid)}/compute`);
     if (!validStatus(status)) throw new Error(t("compute.status.invalid"));
     return { phase: "available", status };
   } catch (error) {
-    return { phase: "error", error: apiErrorText(error) };
+    return {
+      phase: unsupportedRead(error) ? "unsupported" : "unavailable",
+      error: apiErrorText(error),
+    };
   }
 }
 
@@ -123,9 +171,15 @@ async function readComputeStatus(fid: string): Promise<ComputeResult> {
   if (fid !== currentId.value) return loadComputeStatus(fid);
   const generation = _openGen.value;
   const previous = computeStatus.value;
+  const held = previous?.fid === fid ? previous : null;
   const loading: ComputeReadState = {
-    fid, generation, phase: "loading",
-    status: previous?.fid === fid ? previous.status : null,
+    fid,
+    generation,
+    phase: "loading",
+    status: held?.status ?? null,
+    // A failed reread is not evidence that an earlier ambiguous mutation was
+    // confirmed; only a successful payload may clear this.
+    ...(held?.unconfirmed ? { unconfirmed: true } : {}),
   };
   computeStatus.value = loading;
   renderComputeBadge();
@@ -146,9 +200,12 @@ function renderComputeBadge(): void {
   let badge = $("#compute-badge");
   const state = computeStatus.value;
   const status = state?.status;
+  const unconfirmed = state?.unconfirmed === true;
   // A local session gets no badge at all: a chip reading "local" on every
-  // session of an install with no cluster is pure noise.
-  if (!state || (state.phase === "available" && status?.location === "local")) {
+  // session of an install with no cluster is pure noise. The exception is a
+  // local position whose last mutation is unconfirmed -- silence there would
+  // present it as settled.
+  if (!state || (state.phase === "available" && status?.location === "local" && !unconfirmed)) {
     badge?.remove();
     return;
   }
@@ -166,9 +223,15 @@ function renderComputeBadge(): void {
     const previous = status?.location === "cluster"
       ? status.workload?.profile || t("compute.status.cluster")
       : status ? t("compute.location.local") : "";
-    const label = t(state.phase === "loading" ? "compute.status.loading" : "compute.status.unavailable");
-    // Lead with uncertainty: long profile names must not truncate the warning.
-    const text = previous ? `${label} · ${previous} (${t("compute.status.stale")})` : label;
+    // Lead with the fact we can state: a failed read is never a claim that the
+    // feature is missing, and an absent route is never "this machine".
+    const key = state.phase === "loading" ? "compute.status.loading"
+      : state.phase === "unsupported" ? "compute.status.unsupported"
+      : "compute.status.unavailable";
+    const notes = state.unconfirmed
+      ? `${t("compute.status.stale")}; ${t("compute.status.unconfirmed")}`
+      : t("compute.status.stale");
+    const text = previous ? `${t(key)} · ${previous} (${notes})` : t(key);
     badge.appendChild(el("span", "cb-label", text));
     badge.className = "compute-badge waiting";
     badge.title = [text, state.error].filter(Boolean).join("\n");
@@ -185,8 +248,12 @@ function renderComputeBadge(): void {
   const label = ready
     ? `${workload.profile || t("compute.badge.ready")}`
     : blockedKey ? t(blockedKey) : (allocation.phase || workload.phase || "").toLowerCase();
-  badge.appendChild(el("span", "cb-label", label));
-  badge.className = "compute-badge" + (ready ? " ready" : " waiting");
+  const position = status.location === "local" ? t("compute.location.local") : label;
+  const text = unconfirmed
+    ? [position, t("compute.status.unconfirmed")].filter(Boolean).join(" · ")
+    : label;
+  badge.appendChild(el("span", "cb-label", text));
+  badge.className = "compute-badge" + (ready && !unconfirmed ? " ready" : " waiting");
   // The phase is the tooltip rather than the label: an allocation id and a
   // phase name are what a support conversation needs.
   badge.title = [
@@ -194,6 +261,7 @@ function renderComputeBadge(): void {
     allocation.allocation_id ? `allocation: ${allocation.allocation_id}` : "",
     allocation.phase ? `phase: ${allocation.phase}` : "",
     workload.reason ? `reason: ${workload.reason}` : "",
+    unconfirmed ? t("compute.status.unconfirmed") : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -231,6 +299,21 @@ function renderComputeLostBanner(): void {
 }
 
 let dialogRead = 0;
+/** In-flight mutations keyed by (session, chosen profile or release). */
+const pendingSubmits = new Set<string>();
+
+/**
+ * Keep the last confirmed position but stop presenting it as confirmed. Only
+ * for an ambiguous failure: a refusal never applied the change, and a failed
+ * read (which never wrote the state) is already displayed as stale.
+ */
+function markUnconfirmed(fid: string, generation: number): void {
+  const state = computeStatus.value;
+  if (!state || state.fid !== fid || state.phase !== "available"
+    || fid !== currentId.value || generation !== _openGen.value) return;
+  computeStatus.value = { ...state, unconfirmed: true };
+  renderComputeBadge();
+}
 
 /** The session menu's "Run location", and the badge's click. */
 export async function openRunLocationDialog(fid: string | null | undefined): Promise<void> {
@@ -272,32 +355,80 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
   if (latest?.fid === target && latest.generation === generation) {
     result = latest.phase === "available" && latest.status
       ? { phase: "available", status: latest.status }
-      : latest.phase === "error"
-        ? { phase: "error", error: latest.error || t("compute.status.unavailable") }
-        : { phase: "loading" };
+      : latest.phase === "unsupported"
+        ? { phase: "unsupported", error: latest.error || t("compute.status.unsupported") }
+        : latest.phase === "unavailable"
+          ? { phase: "unavailable", error: latest.error || t("compute.status.unavailable") }
+          : { phase: "loading" };
   }
   wrap.innerHTML = "";
+  // Busy is announced on the region whose actions change, not on the shared
+  // modal: a viewer that reuses #modal must not inherit this dialog's state.
+  wrap.setAttribute("aria-busy", "false");
   const status = result.phase === "available" ? result.status : null;
   const current = status?.location;
   if (result.phase !== "available") {
-    wrap.appendChild(el("div", "rl-error", t(result.phase === "loading"
-      ? "compute.status.loading" : "compute.status.unavailable")));
-    if (result.phase === "error") wrap.appendChild(el("div", "rl-hint", result.error));
+    // Three different facts, three different sentences: still checking, this
+    // daemon cannot answer now, this daemon has no such surface. Only the last
+    // is a capability answer, and none of them is "local".
+    const key = result.phase === "loading" ? "compute.status.loading"
+      : result.phase === "unsupported" ? "compute.status.unsupported"
+      : "compute.status.unavailable";
+    wrap.appendChild(el("div", "rl-error", t(key)));
+    if (result.phase !== "loading") wrap.appendChild(el("div", "rl-hint", result.error));
     const previous = computeStatus.value;
     if (previous?.fid === target && previous.generation === generation && previous.status) {
       const last = previous.status.location === "cluster"
         ? previous.status.workload?.profile || t("compute.status.cluster") : t("compute.location.local");
-      wrap.appendChild(el("div", "rl-hint", `${last} · ${t("compute.status.stale")}`));
+      const note = previous.unconfirmed ? t("compute.status.unconfirmed") : t("compute.status.stale");
+      wrap.appendChild(el("div", "rl-hint", `${last} · ${note}`));
     }
   }
-  if (result.phase !== "available" || catalog.phase === "error") {
+  // Neither a pending read nor a failed one is a capability answer: Retry
+  // re-reads. An absent surface is not retryable and offers no options.
+  if ((result.phase !== "available" && result.phase !== "unsupported") || catalog.phase === "error") {
     const retry = el("button", "rl-retry", t("compute.status.retry"));
     retry.type = "button";
     retry.onclick = () => { if (ownsDialog()) void openRunLocationDialog(target); };
     wrap.appendChild(retry);
   }
+  // An absent surface has nothing to choose. Offering "This machine" here
+  // would be exactly the false Local the read just refused to state.
+  if (result.phase === "unsupported") return;
+
+  const actions: HTMLButtonElement[] = [];
+  let submitting = false;
+  let note: HTMLElement | null = null;
+  const setActionsDisabled = (disabled: boolean) => {
+    for (const button of actions) button.disabled = disabled || result.phase !== "available";
+  };
+  const showUnconfirmedNote = () => {
+    if (note) {
+      note.textContent = t("compute.status.unconfirmed");
+      return;
+    }
+    note = el("div", "rl-hint", t("compute.status.unconfirmed"));
+    wrap.appendChild(note);
+  };
+  const submitKey = (profile: string | null) =>
+    target + "\u0000" + (profile === null ? "\u0000release" : profile);
   const choose = async (profile: string | null) => {
-    if (!ownsDialog()) return;
+    // A button belongs to this window: a click that arrives after the body was
+    // replaced or the modal closed must not mutate anything.
+    if (!ownsDialog() || result.phase !== "available" || submitting) return;
+    const key = submitKey(profile);
+    // One mutation per (session, choice) at a time -- also across a reopened
+    // window, because the first POST is still an accepted request in flight.
+    // That window's copy of the button is enabled again, so a click must say
+    // why nothing happens rather than silently doing nothing.
+    if (pendingSubmits.has(key)) {
+      if (ownsDialog()) hint(t("compute.status.submitting"));
+      return;
+    }
+    submitting = true;
+    pendingSubmits.add(key);
+    setActionsDisabled(true);
+    wrap.setAttribute("aria-busy", "true");
     try {
       if (profile === null) {
         await api(`/sessions/${encodeURIComponent(target)}/compute/release`, { method: "POST", body: "{}" });
@@ -307,12 +438,27 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
           body: JSON.stringify({ profile }),
         });
       }
+      // Accepted: never cancelled or re-sent because the user looked away. A
+      // window owned by this call may close; a replacement may not be touched.
       if (ownsDialog()) closeModalEl(modal);
       await refreshComputeStatus(target);
     } catch (error) {
       // The 409 that means "this daemon has no listener" is the one a user
       // will actually hit, and its body already explains itself.
-      if (ownsDialog()) hint(apiErrorText(error), true);
+      const ambiguous = submitOutcomeUnknown(error);
+      if (ambiguous) markUnconfirmed(target, generation);
+      if (ownsDialog()) {
+        hint(apiErrorText(error), true);
+        if (ambiguous) showUnconfirmedNote();
+        setActionsDisabled(false);
+      }
+    } finally {
+      pendingSubmits.delete(key);
+      submitting = false;
+      // Failure restores clickability above; success has closed this window,
+      // where a detached flag is harmless. Either way the region stops being
+      // busy exactly when the request settles.
+      wrap.setAttribute("aria-busy", "false");
     }
   };
 
@@ -322,10 +468,11 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
   local.appendChild(el("div", "rl-name", t("compute.location.local")));
   local.appendChild(el("div", "rl-hint", t("compute.location.localHint")));
   local.onclick = () => {
-    if (!ownsDialog()) return;
+    if (!ownsDialog() || submitting) return;
     if (current === "local") closeModalEl(modal);
     else void choose(null);
   };
+  actions.push(local);
   wrap.appendChild(local);
 
   const profiles = catalog.phase === "available" ? catalog.profiles : [];
@@ -350,6 +497,7 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
     option.onclick = () => {
       void choose(profile.name);
     };
+    actions.push(option);
     wrap.appendChild(option);
   });
 
@@ -359,6 +507,7 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
     release.onclick = () => {
       void choose(null);
     };
+    actions.push(release);
     wrap.appendChild(release);
   }
 }

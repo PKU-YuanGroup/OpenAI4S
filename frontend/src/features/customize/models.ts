@@ -135,7 +135,85 @@ export type CapabilityReceipt = {
   native_completion: boolean;
   reachable: boolean;
   detail?: string;
+  /** When the probe behind this receipt ran, ms since epoch; 0/absent when unknown. */
+  observed_at?: number;
 };
+
+/** Where the next request's effective decision comes from (M1 additive field). */
+export const CAPABILITY_SOURCES = [
+  "catalog",
+  "explicit_override",
+  "probe",
+] as const;
+export type CapabilitySource = (typeof CAPABILITY_SOURCES)[number];
+
+export type EffectiveCapability = {
+  /** What the next request will actually use. */
+  value: boolean;
+  source: CapabilitySource;
+};
+
+/**
+ * Appendix B.3: the projection reports exactly the two fields probe evidence
+ * can change, each as `{value: boolean, source: "catalog" | "explicit_override"
+ * | "probe"}`. Any other shape is ignored as a whole — a half-read projection
+ * would let the UI describe a request the daemon will not send.
+ */
+export const EFFECTIVE_CAPABILITY_FIELDS = [
+  "tool_calling",
+  "streaming",
+] as const;
+export type EffectiveCapabilityField =
+  (typeof EFFECTIVE_CAPABILITY_FIELDS)[number];
+
+export type EffectiveCapabilities = Partial<
+  Record<EffectiveCapabilityField, EffectiveCapability>
+>;
+
+function projectionRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+/**
+ * The server's read-only next-request projection, or `null` when the service
+ * does not send the B.3 shape. `effective_capabilities: null` (a protocol this
+ * build cannot dispatch) and a missing field both degrade to the observation
+ * display. Malformed entries, unknown sources and extra keys reject the whole
+ * projection instead of publishing a partially believed decision.
+ */
+export function readEffectiveCapabilities(
+  raw: unknown,
+): EffectiveCapabilities | null {
+  const row = projectionRecord(raw);
+  if (!row || !("effective_capabilities" in row)) return null;
+  const projection = projectionRecord(row.effective_capabilities);
+  if (!projection) return null;
+  const keys = Object.keys(projection).sort();
+  const contract = [...EFFECTIVE_CAPABILITY_FIELDS].sort();
+  if (keys.length !== contract.length || keys.some((key, index) => key !== contract[index])) {
+    return null;
+  }
+  const out: EffectiveCapabilities = {};
+  for (const field of EFFECTIVE_CAPABILITY_FIELDS) {
+    const entry = projectionRecord(projection[field]);
+    if (!entry) return null;
+    const entryKeys = Object.keys(entry).sort();
+    if (entryKeys.length !== 2 || entryKeys[0] !== "source" || entryKeys[1] !== "value") {
+      return null;
+    }
+    const { value, source } = entry;
+    if (typeof value !== "boolean") return null;
+    if (
+      typeof source !== "string" ||
+      !(CAPABILITY_SOURCES as readonly string[]).includes(source)
+    ) {
+      return null;
+    }
+    out[field] = { value, source: source as CapabilitySource };
+  }
+  return out;
+}
 
 function asEvidence(value: unknown): Evidence {
   if (value === true || value === "true") return "true";
@@ -147,12 +225,14 @@ export function readCapabilityReceipt(raw: unknown): CapabilityReceipt | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Record<string, unknown>;
   if (row.native_tool_call == null && row.streaming == null) return null;
+  const observedAt = Math.max(0, Math.floor(Number(row.observed_at) || 0));
   return {
     native_tool_call: asEvidence(row.native_tool_call),
     streaming: asEvidence(row.streaming),
     stale: row.stale === true,
     native_completion: row.native_completion === true,
     reachable: row.reachable === true,
+    observed_at: observedAt || undefined,
   };
 }
 
@@ -417,6 +497,13 @@ const MODEL_COPY: CopyTable = {
     "model.ollama": "Ollama (cloud or local)",
     "model.session.unavailable": "Model no longer available",
     "model.session.earlier": "{0} (earlier configuration)",
+    "model.effective.label": "Next request uses",
+    "model.effective.on": "on",
+    "model.effective.off": "off",
+    "model.effective.value": "{0} ({1})",
+    "model.effective.source.catalog": "catalogue default",
+    "model.effective.source.explicit_override": "explicit config",
+    "model.effective.source.probe": "measured",
     "model.session.switched": "This session now uses {0}",
     "model.session.switchedNextTurn":
       "This session uses {0} from your next message; the turn already running keeps its model",
@@ -428,6 +515,13 @@ const MODEL_COPY: CopyTable = {
     "model.ollama": "Ollama（云端或本地）",
     "model.session.unavailable": "原模型已不可用",
     "model.session.earlier": "{0}（旧配置）",
+    "model.effective.label": "下一次请求采用",
+    "model.effective.on": "开启",
+    "model.effective.off": "关闭",
+    "model.effective.value": "{0}（{1}）",
+    "model.effective.source.catalog": "目录默认",
+    "model.effective.source.explicit_override": "显式配置",
+    "model.effective.source.probe": "实测",
     "model.session.switched": "该会话已切换到 {0}",
     "model.session.switchedNextTurn": "该会话将从你的下一条消息起使用 {0}；正在运行的这一轮保持原模型",
     "model.session.switchFailed": "未能切换该会话的模型：{0}",

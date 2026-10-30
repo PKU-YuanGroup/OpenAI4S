@@ -87,7 +87,11 @@ import { invalidateKernelCache } from "../notebook/kernel";
 import { renderPlanCard } from "../send/plan";
 import { closeTurnTicket, resumeWatch } from "../send/ticket";
 import { failureHint, lastTerminalFailure } from "../send/turn";
-import { destroyActionTimelineView, renderActionTimeline } from "../timeline/island";
+import {
+  destroyActionTimelineView,
+  renderActionTimeline,
+  resetComputeTasks,
+} from "../timeline/island";
 import { hint } from "../sessions/chrome";
 import { refreshComputeStatus } from "../sessions/compute";
 import { showWorkspace } from "../sessions/dashboard";
@@ -145,6 +149,8 @@ function resetSessionScoped(): void {
   dockArtifact.value = null;
   kernelFilter.value = null;
   actionTimeline.value = null;
+  // C2: a session switch must not keep the previous session's remote tasks.
+  resetComputeTasks();
   actionTimelineSelectedGroupId.value = null;
   actionTimelineSelectedBranchId.value = null;
   executionQueue.value = null;

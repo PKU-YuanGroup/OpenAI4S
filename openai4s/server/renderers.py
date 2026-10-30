@@ -139,6 +139,23 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         capabilities=("view", "search", "copy"),
     ),
     Renderer(
+        "notebook",
+        "Jupyter notebook (read-only)",
+        # A saved `.ipynb` is a container whose extension is authoritative.
+        # ``_match`` checks that extension before the generic ``kind`` loop,
+        # because a saved notebook captured by a tool that stamped kind
+        # ``text``/``code`` (or content type ``application/json``) would
+        # otherwise render as a source dump and never reach this preview.
+        # Read-only by construction: the viewer renders saved sources/outputs
+        # and never executes a cell, loads a widget/HTML/SVG output or requests
+        # another resource; ``copy`` is the code-cell copy button.
+        kinds=("notebook", "jupyter_notebook"),
+        content_types=("application/x-ipynb+json",),
+        extensions=(".ipynb",),
+        interactive=False,
+        capabilities=("view", "copy"),
+    ),
+    Renderer(
         "text",
         "Plain text",
         kinds=("text", "log", "code"),
@@ -287,6 +304,18 @@ class RendererRegistry:
         ).lower()
         content_type = str(artifact.get("content_type") or "").lower().split(";", 1)[0]
         extension = PurePosixPath(str(artifact.get("filename") or "")).suffix.lower()
+        # A saved `.ipynb` is identified by its extension before the generic
+        # ``kind`` loop: a capturing tool may have stamped kind ``text``/``code``
+        # (or content type ``application/json``), which would otherwise route
+        # the file to the plain-text renderer and never reach the notebook
+        # preview. Only the notebook renderer declares ``.ipynb``, so this
+        # narrow pre-pass cannot capture a non-notebook artifact.
+        notebook = next(
+            (item for item in self._renderers if item.renderer_id == "notebook"),
+            None,
+        )
+        if notebook is not None and extension and extension in notebook.extensions:
+            return notebook, "extension"
         for renderer in self._renderers:
             if kind and kind in renderer.kinds:
                 return renderer, "kind"

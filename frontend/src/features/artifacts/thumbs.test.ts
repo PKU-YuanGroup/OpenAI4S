@@ -1,16 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _thumbCache } from "../../stores/artifacts";
 import { resetStoreFields } from "../../stores/signal-field";
-import { setArtifactsFetch } from "./api";
-import { THUMB_CACHE_LIMIT, tileThumb } from "./thumbs";
+import {
+  setArtifactsFetch,
+  PREVIEW_READ_MAX_BYTES,
+  THUMB_READ_CONCURRENCY,
+  THUMB_READ_MAX_BYTES,
+} from "./api";
+import { filesT } from "./copy";
+import { pruneThumbReads, THUMB_CACHE_LIMIT, THUMB_IMAGE_EDGE, tileThumb } from "./thumbs";
 import type { ArtifactRow } from "./types";
 
 class Node {
   children: Node[] = [];
   className = "";
   textContent = "";
+  title = "";
   src = "";
   html = "";
+  isConnected = true;
   get innerHTML(): string {
     return this.html;
   }
@@ -25,10 +33,14 @@ class Node {
 }
 
 const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
-const texts = (tile: HTMLElement) => walk(tile as unknown as Node).map((node) => node.textContent).filter(Boolean);
-const settle = async () => {
-  for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+const texts = (tile: HTMLElement) =>
+  walk(tile as unknown as Node)
+    .map((node) => node.textContent)
+    .filter(Boolean);
+const settle = async (rounds = 6) => {
+  for (let i = 0; i < rounds; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
 };
+const firstChild = (tile: HTMLElement): Node => (tile as unknown as Node).children[0]!;
 
 describe("Files tile previews (AUDIT P06)", () => {
   let reads: string[];
@@ -45,12 +57,19 @@ describe("Files tile previews (AUDIT P06)", () => {
     });
   });
   afterEach(() => {
+    pruneThumbReads();
     setArtifactsFetch(null);
     vi.unstubAllGlobals();
     resetStoreFields();
   });
 
-  const table: ArtifactRow = { id: "t", filename: "de.csv", content_type: "text/csv", version_id: "v1", size_bytes: 33 };
+  const table: ArtifactRow = {
+    id: "t",
+    filename: "de.csv",
+    content_type: "text/csv",
+    version_id: "v1",
+    size_bytes: 33,
+  };
 
   it("reads a data tile once per version, however often the grid repaints", async () => {
     const first = tileThumb(table);
@@ -68,7 +87,12 @@ describe("Files tile previews (AUDIT P06)", () => {
   });
 
   it("neither shows nor keeps an error page or a failed read", async () => {
-    const notes: ArtifactRow = { id: "n", filename: "notes.txt", content_type: "text/plain", version_id: "v1" };
+    const notes: ArtifactRow = {
+      id: "n",
+      filename: "notes.txt",
+      content_type: "text/plain",
+      version_id: "v1",
+    };
     reply = () => new Response("Internal Server Error", { status: 500 });
     const failed = tileThumb(notes);
     await settle();
@@ -91,5 +115,322 @@ describe("Files tile previews (AUDIT P06)", () => {
     expect(keys).toHaveLength(THUMB_CACHE_LIMIT);
     expect(keys.some((key) => key.includes("kept:"))).toBe(true);
     expect(keys.some((key) => key.includes("|t0:"))).toBe(false);
+  });
+});
+
+describe("thumbnail read budget, concurrency and consumers (A1)", () => {
+  const row = (id: string, filename = "log.txt"): ArtifactRow => ({
+    id,
+    filename,
+    content_type: "text/plain",
+    version_id: "v1",
+  });
+
+  beforeEach(() => {
+    resetStoreFields();
+    vi.stubGlobal("document", { createElement: () => new Node() });
+  });
+  afterEach(() => {
+    pruneThumbReads();
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    resetStoreFields();
+  });
+
+  it("keeps at most four reads in flight across fifty cards", async () => {
+    let active = 0;
+    let peak = 0;
+    let reads = 0;
+    setArtifactsFetch(async () => {
+      reads += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      active -= 1;
+      return new Response("first line\nsecond line\n");
+    });
+    const tiles = Array.from({ length: 50 }, (_, i) => tileThumb(row(`t${i}`)));
+    await vi.waitFor(() => expect(reads).toBe(50), { timeout: 5000 });
+    expect(peak).toBeLessThanOrEqual(THUMB_READ_CONCURRENCY);
+    expect(tiles.length).toBe(50);
+  });
+
+  it("drops a queued read that nobody shows any more without issuing a request", async () => {
+    let started = 0;
+    setArtifactsFetch((_url, init) => {
+      started += 1;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    });
+    const tiles = Array.from({ length: THUMB_READ_CONCURRENCY + 2 }, (_, i) =>
+      tileThumb(row(`q${i}`)),
+    );
+    await settle(2);
+    expect(started).toBe(THUMB_READ_CONCURRENCY);
+    for (const tile of tiles) firstChild(tile).isConnected = false;
+    pruneThumbReads();
+    await settle();
+    // The two queued reads never reached the network.
+    expect(started).toBe(THUMB_READ_CONCURRENCY);
+  });
+
+  it("aborts an in-flight read whose only consumer left, and retries on the next paint", async () => {
+    let aborted = 0;
+    let reads = 0;
+    let reply: "pending" | "ok" = "pending";
+    setArtifactsFetch((_url, init) => {
+      reads += 1;
+      if (reply === "ok") return Promise.resolve(new Response("first line\nsecond line\n"));
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          aborted += 1;
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    });
+    const first = tileThumb(row("pruned"));
+    const consumer = firstChild(first);
+    await settle(2);
+    expect(reads).toBe(1);
+    consumer.isConnected = false;
+    pruneThumbReads();
+    await settle();
+    expect(aborted).toBe(1);
+    // A cancelled read is evicted, and the detached tile was never written.
+    expect(consumer.textContent).toBe("");
+    reply = "ok";
+    const retried = tileThumb(row("pruned"));
+    await settle();
+    expect(reads).toBe(2);
+    expect(texts(retried)).toContain("first line\nsecond line");
+  });
+
+  it("keeps a shared read alive while one consumer is still mounted", async () => {
+    let aborted = 0;
+    setArtifactsFetch((_url, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          aborted += 1;
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    });
+    const first = tileThumb(row("shared"));
+    const second = tileThumb(row("shared"));
+    const firstConsumer = firstChild(first);
+    const secondConsumer = firstChild(second);
+    await settle(2);
+    firstConsumer.isConnected = false;
+    pruneThumbReads();
+    await settle();
+    expect(aborted).toBe(0);
+    secondConsumer.isConnected = false;
+    pruneThumbReads();
+    await settle();
+    expect(aborted).toBe(1);
+  });
+
+  it("marks a prefix-only text tile as a partial preview", async () => {
+    const body = ("row,value\n" + "x".repeat(64) + "\n").repeat(5000);
+    setArtifactsFetch(async () => new Response(body));
+    const tile = tileThumb(row("big", "notes.txt"));
+    const d = firstChild(tile);
+    await vi.waitFor(
+      () => expect(d.textContent.startsWith(filesT("files.thumb.partial"))).toBe(true),
+      { timeout: 2000 },
+    );
+    expect(d.className).toBe("txt");
+    expect(d.textContent.length).toBeLessThan(THUMB_READ_MAX_BYTES);
+  });
+
+  it("shows only columns and a partial mark for a truncated data tile, never a row count", async () => {
+    const body = "gene,logFC\n" + "TP53,1.0\n".repeat(40000);
+    setArtifactsFetch(async () => new Response(body));
+    const tile = tileThumb({
+      id: "csv",
+      filename: "big.csv",
+      content_type: "text/csv",
+      version_id: "v1",
+    });
+    await vi.waitFor(() => expect(texts(tile)).toContain(filesT("files.thumb.partial")), {
+      timeout: 2000,
+    });
+    expect(texts(tile)).toContain("gene");
+    expect(texts(tile)).toContain("logFC");
+    expect(texts(tile).some((text) => / row|rows/.test(text))).toBe(false);
+  });
+
+  it("marks a truncated molecule tile as a partial preview", async () => {
+    const atoms = Array.from({ length: 12000 }, (_, i) =>
+      `ATOM  ${String(i).padStart(5)}  CA  ALA A${String(i).padStart(4)}      ${(i * 0.1).toFixed(3)}   1.000   2.000  1.00  0.00           C`,
+    ).join("\n");
+    setArtifactsFetch(async () => new Response(atoms));
+    const tile = tileThumb({
+      id: "mol",
+      filename: "big.pdb",
+      content_type: "chemical/x-pdb",
+      version_id: "v1",
+    });
+    await vi.waitFor(
+      () => expect(texts(tile)).toContain(filesT("files.thumb.partial")),
+      { timeout: 2000 },
+    );
+  });
+
+  it("loads an image tile through the byte budget and never assigns the artifact URL", async () => {
+    const created: string[] = [];
+    vi.stubGlobal("URL", {
+      createObjectURL: (blob: Blob) => {
+        created.push(blob.type);
+        return "blob:preview";
+      },
+      revokeObjectURL: () => undefined,
+    });
+    const fetched: string[] = [];
+    setArtifactsFetch(async (url) => {
+      fetched.push(url);
+      return new Response(new Uint8Array([1, 2, 3, 4]));
+    });
+    const tile = tileThumb({
+      id: "pic",
+      filename: "plot.png",
+      content_type: "image/png",
+      version_id: "v1",
+    });
+    await vi.waitFor(() => expect(created).toEqual(["image/png"]));
+    const sources = walk(tile as unknown as Node)
+      .map((node) => node.src)
+      .filter(Boolean);
+    expect(sources).toEqual(["blob:preview"]);
+    expect(fetched.some((url) => url.includes("/api/v1/artifacts"))).toBe(true);
+    expect(sources.some((src) => src.includes("/api/"))).toBe(false);
+    (tile as unknown as Node).isConnected = false;
+  });
+
+  it("keeps a live image tile's blob after eviction and revokes it only once every tile has left", async () => {
+    const revoked: string[] = [];
+    let n = 0;
+    vi.stubGlobal("URL", {
+      createObjectURL: () => `blob:${++n}`,
+      revokeObjectURL: (url: string) => {
+        revoked.push(url);
+      },
+    });
+    setArtifactsFetch(async () => new Response(new Uint8Array([1, 2, 3, 4])));
+    const image = {
+      id: "pic2",
+      filename: "plot.png",
+      content_type: "image/png",
+      version_id: "v1",
+    };
+    const srcOf = (tile: HTMLElement) =>
+      walk(tile as unknown as Node)
+        .map((node) => node.src)
+        .find(Boolean);
+    const mount = (tile: HTMLElement) => {
+      (tile as unknown as Node).isConnected = true;
+    };
+    vi.stubGlobal("document", {
+      createElement: () => {
+        const node = new Node();
+        node.isConnected = false;
+        return node;
+      },
+    });
+    const first = tileThumb(image);
+    mount(first);
+    await vi.waitFor(() => expect(srcOf(first)).toBe("blob:1"));
+    const cache = _thumbCache.value as Record<string, unknown>;
+    for (const key of Object.keys(cache)) delete cache[key];
+    const second = tileThumb(image);
+    expect(srcOf(second)).toBeUndefined();
+    mount(second);
+    await vi.waitFor(() => expect(srcOf(second)).toBe("blob:1"));
+    expect(revoked).toEqual([]);
+    expect(n).toBe(1);
+    expect(srcOf(first)).toBe("blob:1");
+    (first as unknown as Node).isConnected = false;
+    (second as unknown as Node).isConnected = false;
+    for (const key of Object.keys(cache)) delete cache[key];
+    const third = tileThumb(image);
+    expect(revoked).toEqual(["blob:1"]);
+    mount(third);
+    await vi.waitFor(() => expect(srcOf(third)).toBe("blob:2"));
+    (third as unknown as Node).isConnected = false;
+  });
+
+  it("keeps a tile-sized copy of a large raster image, never the whole file", async () => {
+    const kept: Blob[] = [];
+    vi.stubGlobal("URL", {
+      createObjectURL: (blob: Blob) => {
+        kept.push(blob);
+        return "blob:small";
+      },
+      revokeObjectURL: () => undefined,
+    });
+    const closed: boolean[] = [];
+    vi.stubGlobal("createImageBitmap", async () => ({
+      width: 4000,
+      height: 2000,
+      close: () => closed.push(true),
+    }));
+    const drawn: number[][] = [];
+    const small = new Blob([new Uint8Array(1024)], { type: "image/png" });
+    vi.stubGlobal("document", {
+      createElement: (tag: string) =>
+        tag !== "canvas"
+          ? new Node()
+          : {
+              width: 0,
+              height: 0,
+              getContext: () => ({
+                drawImage: (_image: unknown, x: number, y: number, w: number, h: number) =>
+                  drawn.push([x, y, w, h]),
+              }),
+              toBlob: (resolve: (blob: Blob | null) => void) => resolve(small),
+            },
+    });
+    setArtifactsFetch(async () => new Response(new Uint8Array(THUMB_READ_MAX_BYTES + 1)));
+    const tile = tileThumb({ id: "fig", filename: "fig.png", content_type: "image/png", version_id: "v1" });
+    await vi.waitFor(() => expect(kept).toHaveLength(1));
+    expect(kept[0]).toBe(small);
+    expect(drawn).toEqual([[0, 0, THUMB_IMAGE_EDGE, THUMB_IMAGE_EDGE / 2]]);
+    expect(closed).toEqual([true]);
+    (tile as unknown as Node).isConnected = false;
+  });
+
+  it("does not fall back to the artifact URL when an image is over the preview cap", async () => {
+    vi.stubGlobal("URL", {
+      createObjectURL: () => {
+        throw new Error("must not build a URL for an over-cap image");
+      },
+      revokeObjectURL: () => undefined,
+    });
+    setArtifactsFetch(
+      async () =>
+        new Response(new Uint8Array([1]), {
+          headers: { "content-length": String(PREVIEW_READ_MAX_BYTES + 1) },
+        }),
+    );
+    const tile = tileThumb({
+      id: "huge",
+      filename: "huge.png",
+      content_type: "image/png",
+      version_id: "v1",
+    });
+    await vi.waitFor(() =>
+      expect(walk(tile as unknown as Node).some((node) => node.className === "big")).toBe(true),
+    );
+    const sources = walk(tile as unknown as Node)
+      .map((node) => node.src)
+      .filter(Boolean);
+    expect(sources).toEqual([]);
+    (tile as unknown as Node).isConnected = false;
   });
 });
