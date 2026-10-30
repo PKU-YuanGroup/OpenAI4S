@@ -1053,6 +1053,17 @@ describe("every preview entry fails visibly and retries (A1)", () => {
       this.children.push(child);
       return child;
     }
+    insertBefore(child: PreviewNode, before: PreviewNode | null): PreviewNode {
+      child.parent = this;
+      const at = before ? this.children.indexOf(before) : -1;
+      if (at < 0) this.children.push(child);
+      else this.children.splice(at, 0, child);
+      return child;
+    }
+    remove(): void {
+      if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
+      this.parent = null;
+    }
     setAttribute(name: string, value: string): void {
       this.attrs[name] = value;
     }
@@ -1211,6 +1222,37 @@ describe("every preview entry fails visibly and retries (A1)", () => {
     retry!.onclick?.();
     await flush();
     expect(successNode(root, success), `${id} did not recover`).toBe(true);
+  });
+
+  it("pdf fails beside the frame, keeps sibling panels, and opens at the page chosen meanwhile", async () => {
+    setArtifactsFetch(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-length": String(9 * 1024 * 1024) }),
+          body: { cancel: async () => {}, getReader: () => { throw new Error("unread"); } },
+        }) as unknown as Response,
+    );
+    const root = mount("pdf");
+    const frame = walk(root).find((node) => node.tagName === "IFRAME")!;
+    const content = frame.parent!;
+    // Stands in for the locator-comments panel the workbench appends here.
+    const sibling = content.appendChild(new PreviewNode("div"));
+    sibling.className = "wb-locator";
+    await flush();
+    expect(card(root)).toBeTruthy();
+    expect(walk(root)).toContain(sibling);
+    expect((frame as unknown as { hidden?: boolean }).hidden).toBe(true);
+
+    frame.dataset.currentPage = "3";
+    setArtifactsFetch(async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46])));
+    retryButton(root)!.onclick?.();
+    await flush();
+    expect(card(root)).toBeFalsy();
+    expect((frame as unknown as { hidden?: boolean }).hidden).toBe(false);
+    expect(String((frame as unknown as { src?: string }).src)).toMatch(/^blob:.*#page=3$/);
+    expect(walk(root)).toContain(sibling);
   });
 });
 

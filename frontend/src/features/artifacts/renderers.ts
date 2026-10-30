@@ -679,12 +679,31 @@ function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void 
   applyArtifactIframeSandbox(frame, "pdf");
   frame.dataset.currentPage = "1";
   content.appendChild(frame);
-  readArtifactBytes(url, { signal: previewReadSignal(content) })
-    .then((bytes) => {
-      if (!content.isConnected) return;
-      frame.src = previewObjectUrl(bytes, "application/pdf", content);
-    })
-    .catch(readFailure(content, a, url, () => renderPdfGlue(content, a, url)));
+  const load = (): void => {
+    readArtifactBytes(url, { signal: previewReadSignal(content) })
+      .then((bytes) => {
+        if (!content.isConnected) return;
+        // A page chosen in the locator while the bytes were still arriving is
+        // recorded on the frame; open the blob at that page, not page one.
+        const page = frame.dataset.currentPage || "1";
+        frame.src =
+          previewObjectUrl(bytes, "application/pdf", content) + "#page=" + encodeURIComponent(page);
+      })
+      .catch((error: unknown) => {
+        if (isArtifactReadAborted(error) || !content.isConnected) return;
+        // Fail into a sibling of the frame: the locator-comments panel shares
+        // `content` and must survive a preview that could not be read.
+        const failure = el("div", "renderer-pdf-failure");
+        content.insertBefore(failure, frame);
+        frame.hidden = true;
+        rendererFailure(failure, a, url, error, () => {
+          failure.remove();
+          frame.hidden = false;
+          load();
+        });
+      });
+  };
+  load();
   if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "pdf", frame);
 }
 

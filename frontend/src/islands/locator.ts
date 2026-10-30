@@ -4,7 +4,6 @@
 
 import { currentId } from "../stores/session";
 import { api, apiErrorText } from "../features/artifacts/api";
-import { artUrl } from "../features/artifacts/cache";
 import type { ArtifactRow } from "../features/artifacts/types";
 import { hint } from "../features/sessions/chrome";
 import { el } from "./dom";
@@ -36,9 +35,13 @@ export function renderLocatorComments(
     const page = Math.max(1, Math.floor(Number(value) || 1));
     pdfPage.value = String(page);
     if (viewer && viewer.dataset.currentPage !== String(page)) {
-      const base = String(viewer.src || artUrl(a)).split("#", 1)[0];
       viewer.dataset.currentPage = String(page);
-      viewer.src = base + "#page=" + encodeURIComponent(String(page));
+      // No src yet means the bounded preview read is still in flight. Never
+      // fall back to the raw artifact URL (an unbudgeted, uncancellable read);
+      // the PDF glue opens its blob at `currentPage` when the bytes arrive.
+      if (viewer.src) {
+        viewer.src = viewer.src.split("#", 1)[0] + "#page=" + encodeURIComponent(String(page));
+      }
     }
     const extracted = pdfPages.find((item) => Number(item && item.page) === page);
     preview.textContent = extracted ? String(extracted.text || "").slice(0, 4000) : "";
