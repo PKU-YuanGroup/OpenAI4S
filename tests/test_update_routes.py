@@ -932,3 +932,21 @@ def test_the_gateway_dispatches_both_routes_with_no_store(tmp_path, monkeypatch)
         assert sent["code"] in (404, 405)
     finally:
         close()
+
+
+def test_the_forced_check_cooldown_map_keeps_only_live_stamps():
+    """A stamp older than the cooldown decides nothing, so it is not retained:
+    a long-running team server must not accumulate one entry per principal that
+    ever forced a check."""
+    gate = update_routes._CheckGate(cooldown_s=60.0)
+    now = [1000.0]
+    gate.clock = lambda: now[0]
+    for index in range(5):
+        assert gate.try_begin(f"user:{index}", force=True) == ("ok", 0)
+        gate.end()
+    now[0] += 61.0
+    assert gate.try_begin("user:late", force=True) == ("ok", 0)
+    gate.end()
+    assert set(gate._last_forced) == {"user:late"}
+    # A live stamp still rate-limits its own principal.
+    assert gate.try_begin("user:late", force=True)[0] == "rate"

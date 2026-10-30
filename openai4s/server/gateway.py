@@ -3434,33 +3434,37 @@ class SessionRunner:
                         surface="compute:refresh_provenance",
                         request_id=correlation_id(),
                     )
-            try:
-                self.artifacts.capture(
-                    st,
-                    st.cell_index,
-                    None,
-                    before,
-                    emit,
-                    language="native",
-                    # The legacy remote-environment drain remains per capture;
-                    # exact harvest identity comes only from the scoped receipts
-                    # below, never from a later post-event row update.
-                    drain_remote_provenance=self._remote_provenance_drain(st),
-                    artifact_receipts=artifact_receipt_map(artifact_receipts),
-                )
-            except Exception as error:  # noqa: BLE001
-                # Capture must not convert a successful harvest into an error;
-                # the files remain on disk and the next capture will see them.
-                record_diagnostic(
-                    error,
-                    surface="compute:refresh_capture",
-                    request_id=correlation_id(),
-                )
-                if artifact_receipts:
-                    # A verified Stage 11 receipt is a promise that this
-                    # refresh durably bound those exact bytes. Returning success
-                    # after that binding failed would be the old fail-open gap.
-                    harvest_evidence_error = error
+            # A finished job answered from its recorded row contacted no
+            # provider and harvested nothing: there is nothing to capture, and
+            # a capture here would attribute unrelated workspace writes to it.
+            if recorded_row is None:
+                try:
+                    self.artifacts.capture(
+                        st,
+                        st.cell_index,
+                        None,
+                        before,
+                        emit,
+                        language="native",
+                        # The legacy remote-environment drain remains per capture;
+                        # exact harvest identity comes only from the scoped receipts
+                        # below, never from a later post-event row update.
+                        drain_remote_provenance=self._remote_provenance_drain(st),
+                        artifact_receipts=artifact_receipt_map(artifact_receipts),
+                    )
+                except Exception as error:  # noqa: BLE001
+                    # Capture must not convert a successful harvest into an error;
+                    # the files remain on disk and the next capture will see them.
+                    record_diagnostic(
+                        error,
+                        surface="compute:refresh_capture",
+                        request_id=correlation_id(),
+                    )
+                    if artifact_receipts:
+                        # A verified Stage 11 receipt is a promise that this
+                        # refresh durably bound those exact bytes. Returning success
+                        # after that binding failed would be the old fail-open gap.
+                        harvest_evidence_error = error
         if recorded_row is not None:
             task = compute_tasks.public_task(recorded_row)
             # The map does not hold finished jobs, so this did not probe. The

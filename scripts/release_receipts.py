@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -331,6 +332,12 @@ def normalize_runtime_smoke(
         duration = float(raw.get("duration_s"))
     except (TypeError, ValueError):
         raise ReceiptError("runtime smoke evidence records no duration") from None
+    if not math.isfinite(duration) or duration < 0:
+        # NaN/Infinity would be written into the receipt as non-standard JSON
+        # that strict verifiers refuse to parse.
+        raise ReceiptError(
+            f"runtime smoke evidence records no duration (got {duration!r})"
+        )
     checks = raw.get("checks")
     if not isinstance(checks, Mapping):
         raise ReceiptError("runtime smoke evidence records no checks")
@@ -358,6 +365,23 @@ def normalize_runtime_smoke(
         "duration_s": round(duration, 3),
         "failure": None,
     }
+
+
+def _require_smoke_arch(name: str) -> None:
+    """The tarball must be the architecture its runtime evidence is pinned to.
+
+    `normalize_runtime_smoke` checks what the *report* says it ran on; this
+    checks what the *tarball* is, so an aarch64 bundle cannot borrow an x86_64
+    run's evidence through a digest that merely happens to be the one listed.
+    """
+    matched = _LINUX_TARBALL.search(name)
+    arch = matched.group("arch") if matched else ""
+    if arch != RUNTIME_SMOKE_PLATFORM[1]:
+        raise ReceiptError(
+            f"{name} is a linux-{arch or '<unknown>'} tarball; runtime smoke "
+            f"evidence is pinned to {RUNTIME_SMOKE_PLATFORM[0]}/"
+            f"{RUNTIME_SMOKE_PLATFORM[1]}"
+        )
 
 
 def build_receipt_name(kind: str) -> str:
@@ -417,19 +441,25 @@ def build_build_receipt(
         if recorded is not None:
             document["notary"] = recorded
     if str(kind) == "linux":
-        linux_artifact = next(
-            (
-                Path(artifact)
-                for artifact in artifacts
-                if _LINUX_TARBALL.search(Path(artifact).name)
-            ),
-            None,
-        )
-        if linux_artifact is None:
+        linux_artifacts = [
+            Path(artifact)
+            for artifact in artifacts
+            if _LINUX_TARBALL.search(Path(artifact).name)
+        ]
+        if not linux_artifacts:
             raise ReceiptError(
                 "a linux build receipt must describe the linux-x86_64/aarch64 "
                 "tarball it was written for"
             )
+        if len(linux_artifacts) != 1:
+            # Verification requires exactly one; binding the evidence to
+            # whichever tarball happened to be listed first would not be.
+            raise ReceiptError(
+                f"a linux build receipt describes {len(linux_artifacts)} Linux "
+                "tarballs; it must describe exactly the one its runtime smoke ran"
+            )
+        linux_artifact = linux_artifacts[0]
+        _require_smoke_arch(linux_artifact.name)
         if runtime_smoke is None:
             raise ReceiptError(
                 f"a linux build receipt for {linux_artifact.name} must carry the "
@@ -472,6 +502,7 @@ def _verify_linux_smoke(
             "tarball(s), expected exactly one"
         )
     name = str(linux_rows[0].get("name") or "")
+    _require_smoke_arch(name)
     digest = (digests or {}).get(name) or _digest(Path(assets_dir) / name)
     if not isinstance(document.get("runtime_smoke"), Mapping):
         raise ReceiptError(

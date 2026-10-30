@@ -1284,7 +1284,7 @@ class ComputeManager:
             return False
         with self._lock:
             self._jobs.setdefault(job_id, job)
-            return job_id in self._jobs
+        return True
 
     def _same_owner(self, recorded: Any) -> bool:
         """True when ``recorded`` is this manager's workspace, either spelling."""

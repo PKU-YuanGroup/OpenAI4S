@@ -3410,6 +3410,10 @@ def test_a_not_run_smoke_report_cannot_stand_in_for_a_linux_release(assets):
         pytest.param({"artifact_sha256": ""}, "no artifact SHA-256", id="no-digest"),
         pytest.param({"duration_s": None}, "no duration", id="no-duration"),
         pytest.param(
+            {"duration_s": float("nan")}, "no duration", id="non-finite-duration"
+        ),
+        pytest.param({"duration_s": -1.0}, "no duration", id="negative-duration"),
+        pytest.param(
             {"failure": {"check": "serve", "detail": "x"}},
             "reports a failure",
             id="failed-while-passed",
@@ -3431,6 +3435,33 @@ def test_runtime_smoke_evidence_that_proves_nothing_is_refused(
             FAKE_HEAD,
             [linux],
             **_linux_receipt_inputs(linux, runtime_smoke=report),
+        )
+
+
+def test_runtime_smoke_binds_exactly_one_tarball_of_the_pinned_architecture(assets):
+    from scripts import release_receipts
+
+    linux = _linux_tarball(assets)
+    report = _runtime_smoke_report(artifact_sha256=sha256_file(linux))
+    arm = assets / "OpenAI4S-0.2.0-linux-aarch64.tar.gz"
+    arm.write_bytes(b"arm-bundle")
+    # Two tarballs: the evidence must not bind to whichever is listed first.
+    with pytest.raises(release_receipts.ReceiptError, match="exactly the one"):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [arm, linux],
+            **_linux_receipt_inputs(linux, runtime_smoke=report),
+        )
+    # An aarch64 tarball cannot carry x86_64-pinned evidence, whatever digest
+    # the report names.
+    arm_report = _runtime_smoke_report(artifact_sha256=sha256_file(arm))
+    with pytest.raises(release_receipts.ReceiptError, match="linux-aarch64 tarball"):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [arm],
+            **_linux_receipt_inputs(arm, runtime_smoke=arm_report),
         )
 
 

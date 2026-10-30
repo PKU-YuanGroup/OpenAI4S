@@ -152,13 +152,13 @@ def _first(q: Mapping[str, Any], name: str) -> str | None:
 
 
 def parse_options(q: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate the three paging parameters into keyword arguments.
+    """Parse the three paging parameters into `owner_tasks` keyword arguments.
 
-    Strict where strictness is free: a non-numeric ``limit``, a limit below 1
-    and an unknown ``state`` are refused with a stable code rather than
-    silently defaulted, because a page whose filter was ignored looks like a
-    complete answer. ``limit`` above the ceiling is clamped instead — asking
-    for more is not an attack on an endpoint that refuses it.
+    Strict where strictness is free: a non-numeric ``limit`` is refused here
+    with a stable code rather than silently defaulted, because a page whose
+    filter was ignored looks like a complete answer. The range and filter rules
+    (a limit below 1 or an unknown ``state`` is refused, a limit above the
+    ceiling is clamped) are enforced once, in `owner_tasks`, for every caller.
     """
     raw_limit = _first(q, "limit")
     limit = MAX_TASKS
@@ -167,13 +167,8 @@ def parse_options(q: Mapping[str, Any]) -> dict[str, Any]:
             limit = int(raw_limit)
         except (TypeError, ValueError) as exc:
             raise InvalidTaskQuery("limit must be an integer", "invalid_limit") from exc
-        if limit < 1:
-            raise InvalidTaskQuery("limit must be at least 1", "invalid_limit")
-        limit = min(limit, MAX_TASKS)
     raw_state = _first(q, "state")
     state = (raw_state or STATE_ALL).strip().lower()
-    if state not in TASK_STATES:
-        raise InvalidTaskQuery("state must be all or live", "invalid_state")
     raw_cursor = _first(q, "cursor")
     return {
         "limit": limit,

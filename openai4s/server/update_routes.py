@@ -88,6 +88,13 @@ class _CheckGate:
                 if last is not None and (now - last) < self._cooldown_s:
                     remaining = int(math.ceil(self._cooldown_s - (now - last)))
                     return ("rate", max(1, min(remaining, int(self._cooldown_s))))
+                # Stamps past the cooldown decide nothing; keep only live ones
+                # so the map stays bounded by recent principals.
+                self._last_forced = {
+                    key: stamp
+                    for key, stamp in self._last_forced.items()
+                    if (now - stamp) < self._cooldown_s
+                }
                 self._last_forced[principal] = now
             self._in_flight = True
             return ("ok", 0)

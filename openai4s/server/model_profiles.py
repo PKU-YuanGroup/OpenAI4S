@@ -1365,6 +1365,9 @@ class ModelProfileService:
         self, profile_id: str, body: Mapping[str, Any]
     ) -> tuple[dict[str, Any], str | None]:
         protocol = self._protocol(body["provider"]) if "provider" in body else None
+        # Whether this edit sealed a new revision; receipt validity cannot change
+        # otherwise (a rename or a key rotation keeps the same revision).
+        revision_moved: list[bool] = []
 
         def mutate(profiles: list[dict[str, Any]]) -> dict[str, Any] | None:
             profile = next(
@@ -1406,7 +1409,9 @@ class ModelProfileService:
             # a rename or a key rotation, a new revision when the configuration
             # actually moved. Also backfills revision 1 for a profile written
             # before revisions existed, which is what lets an old session bind.
+            revision_before = int(profile.get("revision") or 0)
             self._seal_revision(profile, now_ms=self._clock_ms())
+            revision_moved.append(int(profile.get("revision") or 0) != revision_before)
             return dict(profile)
 
         profile = self.store.mutate_model_profiles(mutate)
@@ -1417,7 +1422,8 @@ class ModelProfileService:
         # evidence for the same key.  Re-select each affected key from the
         # repository with F10's rule so the in-process decision equals what a
         # restart would adopt from the same rows.
-        self._recompute_receipt_evidence(self._receipt_keys_for_profile(profile_id))
+        if not revision_moved or revision_moved[-1]:
+            self._recompute_receipt_evidence(self._receipt_keys_for_profile(profile_id))
         selected_model: str | None = None
         if self.store.get_setting("active_model_profile") == profile["id"]:
             for field, setting in (

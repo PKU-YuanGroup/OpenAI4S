@@ -312,10 +312,17 @@ def test_refresh_of_an_owned_terminal_job_returns_the_record_without_a_probe(
         raise AssertionError("a recorded terminal job must not contact a provider")
 
     monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", boom)
+    captures: list[object] = []
+    monkeypatch.setattr(
+        "openai4s.server.artifacts.ArtifactManager.capture",
+        lambda *a, **k: captures.append(a),
+    )
 
     status, body = client.post(f"/frames/{mine}/compute/tasks/job-done/refresh")
     assert status == 200, body
     assert body["polled"] is False
+    # Nothing was harvested, so nothing may be captured and attributed to it.
+    assert captures == []
     assert body["job_id"] == "job-done"
     assert body["status"] == SUCCEEDED
     assert body.get("reason") == "finished cleanly"
