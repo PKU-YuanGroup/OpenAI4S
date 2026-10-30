@@ -25,7 +25,10 @@ import { useAlive } from "./use-timer-lease";
  * last known answer with the time it was actually checked. Trust is digest
  * agreement only — the authorship line is always "not verified".
  */
-const UPDATE_CHECK_TIMEOUT_MS = 30_000;
+// Above the daemon's own worst case: `discovery.check` may make three
+// sequential 10 s release-index reads, so a 30 s client deadline could call a
+// check "timed out" that the daemon was still legitimately finishing.
+const UPDATE_CHECK_TIMEOUT_MS = 45_000;
 
 type Failure = "none" | "read" | "check" | "admin" | "rate" | "timeout";
 
@@ -78,8 +81,8 @@ function clockText(ms: number): string {
 function ageText(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds));
   if (value < 60) return updateT("update.seconds", value);
-  if (value < 3600) return `${Math.floor(value / 60)}m`;
-  return `${Math.floor(value / 3600)}h`;
+  if (value < 3600) return updateT("update.minutes", Math.floor(value / 60));
+  return updateT("update.hours", Math.floor(value / 3600));
 }
 
 function channelLabel(id: string): string {
@@ -242,8 +245,10 @@ export function UpdateCheck() {
         previous.checked_at_ms ? clockText(previous.checked_at_ms) : updateT("update.unknown"),
       )
     : "";
+  // The trust summary belongs to the answer it came with; a failed attempt
+  // must not keep showing an earlier attempt's digest agreement.
   const trustLine =
-    check?.trust
+    !failed && check?.trust
       ? `${updateT("update.trust." + check.trust.integrity)} · ${updateT("update.authorship")}`
       : "";
   const channelId = status?.channel.id || "unknown";

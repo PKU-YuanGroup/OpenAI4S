@@ -36,6 +36,8 @@ const COPY: CopyTable = {
       "Only an administrator can check for updates on this instance",
     "update.rateLimited": "Too many checks; try again in {0}",
     "update.seconds": "{0}s",
+    "update.minutes": "{0}m",
+    "update.hours": "{0}h",
     "update.timedOut":
       "The check timed out, so whether a newer version exists is unknown",
     "update.checkFailed": "The check failed: {0}",
@@ -116,6 +118,8 @@ const COPY: CopyTable = {
     "update.adminOnly": "本实例仅管理员可检查更新",
     "update.rateLimited": "检查过于频繁；请在 {0} 后重试",
     "update.seconds": "{0} 秒",
+    "update.minutes": "{0} 分钟",
+    "update.hours": "{0} 小时",
     "update.timedOut": "检查超时，因此无法确认是否有新版本",
     "update.checkFailed": "检查失败：{0}",
     "update.readFailed": "无法读取本地更新状态：{0}",

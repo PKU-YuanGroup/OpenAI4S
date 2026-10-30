@@ -572,7 +572,6 @@ export function renderNotebookArtifact(container: HTMLElement, a: ArtifactRow, u
       if (!parsed.ok) {
         container.innerHTML = "";
         problemCard(container, filesT("notebook.problem.invalid"), text, url, a);
-        void retry;
         return;
       }
       renderParsedNotebook(container, a, url, parsed.notebook, session);

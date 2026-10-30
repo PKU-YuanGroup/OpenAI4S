@@ -64,15 +64,10 @@ export function retrievalSourcePanel(src: Record<string, unknown>): HTMLElement 
   // A withheld digest says so instead of rendering marker text a reader cannot
   // interpret; conflicts and normalized legacy aliases are named explicitly
   // rather than silently resolved.
+  // F13/S1: `scienceSourceStatus` reads the projection's `alias_conflicts`
+  // (sorted canonical field names) and its earlier spellings.
   const status = scienceSourceStatus(src);
-  // F13/S1: the projection names a disagreement in `alias_conflicts` (sorted
-  // canonical field names). The shared projection helper still reads the
-  // pre-S1 spelling, so merge the contract field here — this panel keeps
-  // showing the conflict row without editing that module's contract.
-  const contractConflicts = Array.isArray(src.alias_conflicts)
-    ? src.alias_conflicts.filter((field): field is string => typeof field === "string")
-    : [];
-  const conflicts = [...new Set([...contractConflicts, ...status.conflicts])].slice(0, 8);
+  const conflicts = status.conflicts;
   RETRIEVAL_FIELD_ORDER.forEach((field) => {
     if (field === "response_sha256") {
       // Say which digest this is: the retrieval response recorded in the

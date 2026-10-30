@@ -142,6 +142,10 @@ function hasValue(value: unknown): boolean {
  * mistaken for a retrieval result list.
  */
 export function readScienceSearchEnvelope(text: string): ScienceSearch | null {
+  // Every JSON preview passes through here before the generic table parse.
+  // A document with no `"result":` key cannot be this envelope, so it is
+  // rejected without paying for a second full parse of up to 8 MiB.
+  if (!/"result"\s*:/.test(text)) return null;
   let root: unknown;
   try {
     root = JSON.parse(text);

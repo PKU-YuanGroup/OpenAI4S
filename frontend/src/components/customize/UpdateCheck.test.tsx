@@ -305,6 +305,23 @@ describe("update card: explicit check", () => {
     expect(checkButton(tree, "update-check").disabled).toBe(false);
   });
 
+  it("drops the earlier answer's trust line once a check fails", async () => {
+    stubFetch((call) =>
+      call.method === "POST"
+        ? { status: 502, body: { error: "upstream failed", code: "bad_gateway" } }
+        : { body: STATUS() },
+    );
+    let tree = await mounted();
+    expect(textOf(tree)).toContain(updateT("update.trust.two_witnesses"));
+    checkButton(tree, "update-check").onClick();
+    await flush();
+    await flush();
+    tree = render();
+    const text = textOf(tree);
+    expect(text).toContain(updateT("update.checkFailed", "").trim());
+    expect(text).not.toContain(updateT("update.trust.two_witnesses"));
+  });
+
   it("shows previous and never claims the latest version for an unknown answer", async () => {
     stubFetch((call) =>
       call.method === "POST"

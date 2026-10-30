@@ -247,6 +247,16 @@ describe("readArtifactPrefix: prefix mode (F2)", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("a file whose declared length is exactly the budget is complete, not partial", async () => {
+    const chunk = encoded("0123456789");
+    setArtifactsFetch(
+      async () =>
+        new Response(streamed([chunk]), { headers: { "content-length": "10" } }),
+    );
+    const read = await readArtifactPrefix("/api/v1/artifacts/p", { maxBytes: 10 });
+    expect(read).toEqual({ text: "0123456789", truncated: false });
+  });
+
   it("drops an incomplete trailing UTF-8 sequence instead of emitting a replacement character", async () => {
     const text = "AAAAAAAAA" + "é" + "Z";
     setArtifactsFetch(async () => responseOf([encoded(text)]));

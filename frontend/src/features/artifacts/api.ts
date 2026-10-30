@@ -581,9 +581,14 @@ async function readArtifactText(
         text += decoder.decode(value, { stream: true });
         if (prefix && bytes >= maxBytes) {
           // Read exactly to the budget: stop and cancel without waiting for the
-          // next chunk (which might be the rest of the file or a stall).
+          // next chunk (which might be the rest of the file or a stall). An
+          // identity body whose declared length is exactly what arrived is the
+          // whole file, not a prefix of it.
           await cancelReader(reader);
-          return { text, bytes, truncated: true };
+          const whole = declared !== null && identityEncoding(response) && declared === bytes;
+          return whole
+            ? { text: text + decoder.decode(), bytes, truncated: false }
+            : { text, bytes, truncated: true };
         }
       }
       text += decoder.decode();
