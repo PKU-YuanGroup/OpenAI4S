@@ -1061,7 +1061,12 @@ export function sanitizeDelegations(payload: unknown): DelegationState {
 }
 
 const COMPUTE_TASK_PAGE_LIMIT = 200;
-const COMPUTE_CURSOR_LIMIT = 300;
+/**
+ * The server mints the cursor as unpadded base64url. It is opaque and sent back
+ * verbatim, so it is validated rather than scrubbed: rewriting or clipping it
+ * (as display text would be) turns the next page into `400 invalid_cursor`.
+ */
+const COMPUTE_CURSOR = /^[A-Za-z0-9_-]{1,512}$/;
 
 /**
  * A same-owner total is optional. `undefined` is "this service did not say",
@@ -1097,8 +1102,8 @@ export function sanitizeComputeTasks(payload: unknown): ComputeTasks {
   );
   const tasks = Array.isArray(source.tasks) ? source.tasks : [];
   const cursor =
-    typeof source.next_cursor === "string"
-      ? publicText(source.next_cursor, COMPUTE_CURSOR_LIMIT)
+    typeof source.next_cursor === "string" && COMPUTE_CURSOR.test(source.next_cursor)
+      ? source.next_cursor
       : "";
   return {
     polled: !!source.polled,
@@ -1146,6 +1151,35 @@ export function mergeComputeTaskPages(
         : previous?.total_live_count,
     has_more: next.has_more,
     next_cursor: next.next_cursor,
+    tasks,
+  };
+}
+
+/**
+ * Re-read the first page under pages a "load more" already appended. The new
+ * first page leads (it is the newer observation of its rows and holds any job
+ * recorded since); the older appended rows follow in their held order. The
+ * position stays the deepest one already reached, so the next "load more"
+ * continues after the last row shown rather than repeating page two.
+ */
+export function refreshFirstComputeTaskPage(
+  held: ComputeTasks,
+  first: ComputeTasks,
+): ComputeTasks {
+  const seen = new Set(first.tasks.map((task) => task.job_id).filter(Boolean));
+  const tasks = [
+    ...first.tasks,
+    ...held.tasks.filter((task) => !task.job_id || !seen.has(task.job_id)),
+  ];
+  return {
+    polled: first.polled,
+    live_count: tasks.filter((task) => task.live).length,
+    total_live_count:
+      first.total_live_count !== undefined
+        ? first.total_live_count
+        : held.total_live_count,
+    has_more: held.has_more,
+    next_cursor: held.next_cursor,
     tasks,
   };
 }

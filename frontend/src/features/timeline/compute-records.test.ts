@@ -376,6 +376,73 @@ describe("compute task read states", () => {
     expect(text).not.toContain("just now");
   });
 
+  it("keeps the last good page across repeated failures, stamped with its own read time", async () => {
+    stubFetch(() => ({ body: page([task("job-a")], { total_live_count: 1 }) }));
+    const before = Date.now();
+    await loadComputeTasks("f");
+    const readAt = (S.computeTasks as ComputeTasksView & { at?: number }).at!;
+    expect(readAt).toBeGreaterThanOrEqual(before);
+
+    stubFetch(() => ({ status: 503, body: { error: "unavailable" } }));
+    await loadComputeTasks("f");
+    await loadComputeTasks("f");
+    const view = S.computeTasks as ComputeTasksView;
+    expect(view.status).toBe("error");
+    if (view.status === "error") {
+      expect(view.stale?.data.tasks[0]?.job_id).toBe("job-a");
+      expect(view.stale?.at).toBe(readAt);
+    }
+    expect(textOf(renderComputeTasksPanel())).toContain("job-a");
+  });
+
+  it("a workbench refresh keeps the rows a load-more already appended", async () => {
+    let refreshed = false;
+    stubFetch((path) =>
+      path.includes("cursor=c1")
+        ? { body: page([task("job-old")], { has_more: true, next_cursor: "c2" }) }
+        : {
+            body: page(refreshed ? [task("job-new"), task("job-a")] : [task("job-a")], {
+              has_more: true,
+              next_cursor: "c1",
+            }),
+          },
+    );
+    await loadComputeTasks("f");
+    findAction(renderComputeTasksPanel() as unknown as FakeEl, "compute-load-more")!.onclick!();
+    await flush();
+    await flush();
+    refreshed = true;
+    await loadComputeTasks("f");
+
+    const view = S.computeTasks as ComputeTasksView;
+    expect(view.status).toBe("ok");
+    if (view.status === "ok") {
+      expect(view.data.tasks.map((row) => row.job_id)).toEqual(["job-new", "job-a", "job-old"]);
+      // Continue after the deepest row shown, not from page two again.
+      expect(view.data.next_cursor).toBe("c2");
+    }
+  });
+
+  it("a failed load-more keeps the shown page as a successful read and offers it again", async () => {
+    stubFetch((path) =>
+      path.includes("cursor=c1")
+        ? { status: 502, body: { error: "bad gateway" } }
+        : { body: page([task("job-a")], { has_more: true, next_cursor: "c1" }) },
+    );
+    await loadComputeTasks("f");
+    findAction(renderComputeTasksPanel() as unknown as FakeEl, "compute-load-more")!.onclick!();
+    await flush();
+    await flush();
+
+    expect((S.computeTasks as ComputeTasksView).status).toBe("ok");
+    const panel = renderComputeTasksPanel();
+    const text = textOf(panel);
+    expect(text).toContain("job-a");
+    expect(text).toContain(computeRecordsT("compute.recordsLoadMoreFailed"));
+    expect(text).not.toContain(computeRecordsT("compute.recordsUnavailable"));
+    expect(findAction(panel as unknown as FakeEl, "compute-load-more")).not.toBeNull();
+  });
+
   it("drops an in-flight answer after the session-reset hook", async () => {
     const gate = deferredReply();
     vi.stubGlobal("fetch", vi.fn(() => gate.promise));

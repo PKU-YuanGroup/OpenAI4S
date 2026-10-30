@@ -62,6 +62,7 @@ import {
   sanitizeDelegations,
   sanitizeExecutionQueue,
   mergeComputeTaskPages,
+  refreshFirstComputeTaskPage,
   sanitizeComputeTasks,
   sanitizeRecovery,
   sanitizeRecoveryActions,
@@ -323,6 +324,8 @@ export async function loadEarlierActionTimeline(): Promise<void> {
 let computeTasksSeq = 0;
 let computeTasksLoading = false;
 let computeTasksLoadingMore = false;
+/** A failed "load more": page 1 is still a successful read, so it stays `ok`. */
+let computeTasksMoreError = "";
 
 function computeTasksPath(
   fid: string,
@@ -356,6 +359,7 @@ export function resetComputeTasks(): void {
   computeTasksSeq += 1;
   computeTasksLoading = false;
   computeTasksLoadingMore = false;
+  computeTasksMoreError = "";
   S.computeTasks = null;
 }
 
@@ -371,6 +375,7 @@ function computeTasksSectionKey(): string {
     view && view.status === "ok" ? identityKey(view.data) : "",
     computeTasksLoading ? "loading" : "",
     computeTasksLoadingMore ? "more" : "",
+    computeTasksMoreError,
   ].join("|");
 }
 
@@ -398,6 +403,10 @@ export function computeTasksTime(ms: number): string {
  * a previous success for the same session/filter is kept aside as `stale`
  * instead of being replaced by "no tasks". `cursor` appends the next page;
  * session, filter and a monotonic request token own the answer.
+ *
+ * A same-scope first-page reread (every workbench refresh) refreshes the rows
+ * it read and keeps the older rows a "load more" already appended, so a
+ * background refresh never takes the user back to page one.
  */
 async function readComputeTasks(
   fid: string,
@@ -412,6 +421,7 @@ async function readComputeTasks(
   // Switching session or filter starts from unknown; a same-scope reread keeps
   // the held page visible until the answer arrives.
   if (!append && !sameScope) S.computeTasks = null;
+  computeTasksMoreError = "";
   if (append) computeTasksLoadingMore = true;
   else computeTasksLoading = true;
   scheduleComputeTasksRender();
@@ -420,19 +430,45 @@ async function readComputeTasks(
     if (seq !== computeTasksSeq || fid !== S.currentId) return;
     const page = sanitizeComputeTasks(payload);
     const held = S.computeTasks as ComputeTasksView | null;
-    const base =
-      append && held && held.status === "ok" && held.fid === fid && held.state === state
-        ? held.data
-        : null;
-    const data = base ? mergeComputeTaskPages(base, page) : page;
-    S.computeTasks = { status: "ok", fid, state, data, nextCursor: data.next_cursor };
+    const heldOk =
+      held && held.status === "ok" && held.fid === fid && held.state === state ? held : null;
+    const heldPages = heldOk?.pages ?? 1;
+    let data = page;
+    let pages = 1;
+    if (append && heldOk) {
+      data = mergeComputeTaskPages(heldOk.data, page);
+      pages = heldPages + 1;
+    } else if (!append && heldOk && heldPages > 1) {
+      data = refreshFirstComputeTaskPage(heldOk.data, page);
+      pages = heldPages;
+    }
+    S.computeTasks = {
+      status: "ok",
+      fid,
+      state,
+      data,
+      nextCursor: data.next_cursor,
+      pages,
+      at: Date.now(),
+    };
   } catch (error) {
     if (seq !== computeTasksSeq || fid !== S.currentId) return;
     const held = S.computeTasks as ComputeTasksView | null;
-    const stale =
-      held && held.status === "ok" && held.fid === fid && held.state === state
-        ? { data: held.data, at: Date.now() }
-        : undefined;
+    const heldScope = !!held && held.fid === fid && held.state === state;
+    if (append && heldScope && held?.status === "ok") {
+      // The page already shown was read successfully; only the next one failed.
+      computeTasksMoreError = apiErrorText(error);
+      return;
+    }
+    // The last successful read survives repeated failures, with the time it
+    // was actually read rather than the time it stopped being refreshable.
+    const stale = !heldScope
+      ? undefined
+      : held?.status === "ok"
+        ? { data: held.data, at: held.at ?? 0 }
+        : held?.status === "error"
+          ? held.stale
+          : undefined;
     S.computeTasks = {
       status: "error",
       fid,
@@ -3593,6 +3629,16 @@ function appendComputeTaskPage(
   }
   visible.forEach((task) => panel.appendChild(computeTaskRow(task)));
   if (allowMore && data.has_more && data.next_cursor) {
+    if (computeTasksMoreError) {
+      // The button below is the retry: the shown rows stay a successful read.
+      const failed = el(
+        "div",
+        "compute-task-message",
+        computeRecordsT("compute.recordsLoadMoreFailed") + ": " + computeTasksMoreError,
+      );
+      failed.title = computeTasksMoreError;
+      panel.appendChild(failed);
+    }
     const more = el(
       "button",
       "outline-btn small",

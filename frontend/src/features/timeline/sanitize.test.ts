@@ -750,7 +750,14 @@ describe("sanitizeComputeTasks paging", () => {
     });
     expect(page.total_live_count).toBe(17);
     expect(page.has_more).toBe(true);
-    expect(page.next_cursor?.length).toBeLessThanOrEqual(300);
+    // Refused, not clipped: a shortened cursor is a different (invalid) cursor.
+    expect(page.next_cursor).toBeNull();
+  });
+
+  it("passes a base64url cursor through byte for byte, credential-shaped runs included", () => {
+    const cursor = "eyJmcCI6IiJ9-sk_AbCdEfGhIjKl-ark-0123456789";
+    expect(sanitizeComputeTasks({ tasks: [], next_cursor: cursor }).next_cursor).toBe(cursor);
+    expect(sanitizeComputeTasks({ tasks: [], next_cursor: "a b" }).next_cursor).toBeNull();
   });
 
   it("does not turn malformed counts or cursors into a claim", () => {

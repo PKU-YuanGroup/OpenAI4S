@@ -391,6 +391,10 @@ export type ComputeTasksView =
       state: ComputeTaskFilter;
       data: ComputeTasks;
       nextCursor: string | null;
+      /** Pages held: 1 for a first-page read, +1 per successful "load more". */
+      pages?: number;
+      /** Client time this view's last successful read completed (ms). */
+      at?: number;
     }
   | {
       status: "error";
