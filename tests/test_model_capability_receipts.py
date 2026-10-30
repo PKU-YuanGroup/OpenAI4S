@@ -1104,6 +1104,42 @@ def test_explain_and_public_profile_share_the_request_resolver(tmp_path):
     assert projection["tool_calling"] == {"value": True, "source": "catalog"}
 
 
+def test_a_modelless_profile_keys_its_receipt_on_the_model_the_next_request_names(
+    tmp_path, monkeypatch
+):
+    """The receipt identity took a modelless profile's model from the adapter's
+    default while `effective_capabilities` read `provider_specs`. The two tables
+    agree today only by coincidence; when they differ, positive evidence must
+    still reach the projection the next request decides from."""
+    specs = {name: dict(spec) for name, spec in provider_specs().items()}
+    specs["chatgpt"]["model"] = "spec-default-model"
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    store = get_store(cfg.db_path)
+    service = ModelProfileService(store, cfg, providers=lambda: specs)
+    created = _create_profile(
+        service, provider="chatgpt", model="", base_url=LOCAL_BASE
+    )
+    assert created["effective_capabilities"]["tool_calling"]["value"] is False
+
+    def _chat(messages, cfg, **kwargs):
+        if kwargs.get("on_delta") is not None:
+            return _stream_reply(kwargs["on_delta"])
+        return _valid_tool_reply()
+
+    monkeypatch.setattr("openai4s.llm.chat", _chat)
+    result = service.probe(created["id"])
+    assert result["capability_receipt"]["native_tool_call"] == EVIDENCE_TRUE
+    assert result["capability_receipt"]["stale"] is False
+    profile = service._current_profile(created["id"])
+    assert service.effective_capabilities(profile)["tool_calling"] == {
+        "value": True,
+        "source": "probe",
+    }
+
+
 def test_public_profile_publishes_null_for_an_undispatchable_protocol(tmp_path):
     store, service = _service(tmp_path)
 

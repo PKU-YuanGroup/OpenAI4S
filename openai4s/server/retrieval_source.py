@@ -208,6 +208,11 @@ def _is_public_identifier(field: str, value: str) -> bool:
         return doi is not None and not _looks_opaque(doi.group(1))
     if field == "file_key":
         return _FILE_NAME.fullmatch(value) is not None
+    if field == RESPONSE_HASH_FIELD:
+        # The hash of what came back is the point of the panel. Judged whole,
+        # every real SHA-256 is an opaque 64-hex run and rendered as
+        # `<redacted:…>`, so the digest could never be shown at all.
+        return _SHA256_HEX.fullmatch(value) is not None
     return False
 
 
@@ -334,17 +339,20 @@ def public_source(
             out[field] = value
             continue
         raw_text = value if isinstance(value, str) else json.dumps(value, default=str)
-        safe = (
-            _redact_url(raw_text) if field == "request_url" else redact_text(raw_text)
-        )
+        if field == RESPONSE_HASH_FIELD and _is_public_identifier(field, raw_text):
+            safe = raw_text
+        elif field == "request_url":
+            safe = _redact_url(raw_text)
+        else:
+            safe = redact_text(raw_text)
         text, was_clipped = _clip(safe)
         if was_clipped:
             truncated.append(field)
         out[field] = text
         if field == RESPONSE_HASH_FIELD:
-            # The digest is not released because it is 64 hex characters: it is
-            # treated as text like every other value, and its public state is
-            # said out loud so "hidden" cannot be mistaken for "verified".
+            # A bare SHA-256 is shown as written; any other value is treated as
+            # text like every other value, and its public state is said out
+            # loud so "hidden" cannot be mistaken for "verified".
             hash_state = (
                 RESPONSE_HASH_HIDDEN if safe != raw_text else RESPONSE_HASH_SHOWN
             )

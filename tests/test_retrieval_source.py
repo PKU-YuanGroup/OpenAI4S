@@ -142,8 +142,9 @@ def test_dataset_projection_preserves_unknowns_and_distinct_hash_scopes():
         },
         artifact_sha256=file_hash,
     )
-    # Generic metadata-response digests retain the existing privacy projection.
-    assert "redacted" in out["response_sha256"]
+    # The metadata-response digest is shown as written, and it stays a
+    # different hash from the downloaded file's own local SHA-256.
+    assert out["response_sha256"] == metadata_hash
     assert out["dataset"]["local_sha256"] == file_hash
     assert out["dataset"]["record_doi"] != out["dataset"]["concept_doi"]
     assert out["dataset"]["declared_license"] is None
@@ -956,21 +957,24 @@ def test_the_route_sends_provenance_and_never_the_credential(tmp_path):
 
 
 def test_the_canonical_response_digest_says_whether_it_is_shown_or_hidden():
-    """A digest is text like any other value: it is not released because it is
-    64 hex characters, and when it is hidden the client is told so instead of
-    having to guess from the redaction marker."""
+    """A real SHA-256 is the hash of what came back and is shown as written.
+    Judged whole it is an opaque 64-hex run, so it used to project as
+    `<redacted:…>` with state "hidden" for every real search. Any other value
+    is text like the rest, and when it is hidden the client is told so instead
+    of having to guess from the redaction marker."""
     import hashlib
 
-    opaque = hashlib.sha256(b"untrusted response bytes").hexdigest()
-    out = public_source({"response_sha256": opaque})
-    assert opaque not in json.dumps(out)
-    assert "redacted" in out["response_sha256"]
-    assert out[RESPONSE_HASH_STATE_KEY] == "hidden"
-
-    shown = "ab" * 32
-    out = public_source({"response_sha256": shown})
-    assert out["response_sha256"] == shown
+    digest = hashlib.sha256(b"upstream response bytes").hexdigest()
+    out = public_source({"response_sha256": digest})
+    assert out["response_sha256"] == digest
     assert out[RESPONSE_HASH_STATE_KEY] == RESPONSE_HASH_SHOWN
+
+    # Not a digest: a credential-shaped value, or a digest with extra text.
+    for opaque in ("sk-live-" + SECRET, "sha256:" + digest, digest[:40] + "ZZZZ"):
+        out = public_source({"response_sha256": opaque})
+        assert opaque not in json.dumps(out)
+        assert "redacted" in out["response_sha256"]
+        assert out[RESPONSE_HASH_STATE_KEY] == "hidden"
 
 
 def test_a_legacy_science_search_source_is_readable():
@@ -997,10 +1001,16 @@ def test_a_legacy_science_search_source_is_readable():
     assert out["undisclosed_field_count"] == 2
 
 
-def test_a_legacy_response_checksum_is_judged_as_text_not_as_a_hash():
+def test_a_legacy_response_checksum_is_judged_by_the_same_digest_grammar():
     import hashlib
 
-    opaque = hashlib.sha256(b"untrusted legacy response bytes").hexdigest()
+    digest = hashlib.sha256(b"legacy response bytes").hexdigest()
+    out = public_source({"kind": "science_search", "source_checksum": digest})
+    assert out["response_sha256"] == digest
+    assert out[RESPONSE_HASH_STATE_KEY] == RESPONSE_HASH_SHOWN
+    assert out[LEGACY_FIELDS_KEY] == ["response_sha256"]
+
+    opaque = "sk-live-" + SECRET
     out = public_source({"kind": "science_search", "source_checksum": opaque})
     assert opaque not in json.dumps(out)
     assert "redacted" in out["response_sha256"]

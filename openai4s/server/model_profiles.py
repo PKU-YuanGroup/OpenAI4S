@@ -577,8 +577,18 @@ class ModelProfileService:
         return getattr(self.store, "model_capability_receipts", None)
 
     def _receipt_identity(self, profile: Mapping[str, Any]) -> dict[str, Any]:
-        """See :func:`openai4s.llm.capabilities.profile_receipt_identity`."""
-        return profile_receipt_identity(profile, default_model=self.cfg.llm.model)
+        """See :func:`openai4s.llm.capabilities.profile_receipt_identity`.
+
+        The model is resolved by `effective_model_id`, the rule the probe and
+        `effective_capabilities` use. Left to the adapter's own default, a
+        modelless profile's receipt was keyed on a model the next request might
+        not name, and its evidence was stored but never applied.
+        """
+        resolved = dict(profile)
+        resolved["model"] = self.effective_model_id(
+            profile.get("provider"), profile.get("model")
+        )
+        return profile_receipt_identity(resolved, default_model=self.cfg.llm.model)
 
     def _current_profile(self, profile_id: str) -> Mapping[str, Any] | None:
         wanted = str(profile_id or "")
