@@ -44,7 +44,6 @@ describe("strict saved-search envelope reader (A5)", () => {
   it("accepts the canonical and historical envelopes", () => {
     const canonical = readScienceSearchEnvelope(envelope());
     expect(canonical).not.toBeNull();
-    expect(canonical!.query).toBe("tp53");
     expect(canonical!.records).toHaveLength(2);
     expect(canonical!.records[0]).toMatchObject({
       id: "P04637",
@@ -64,7 +63,6 @@ describe("strict saved-search envelope reader (A5)", () => {
     );
     expect(legacy).not.toBeNull();
     expect(legacy!.records).toEqual([]);
-    expect(legacy!.requestUrl).toContain("brca1");
   });
 
   it("rejects every document that is not exactly this shape", () => {

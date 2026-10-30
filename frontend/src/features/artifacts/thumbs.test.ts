@@ -8,7 +8,7 @@ import {
   THUMB_READ_MAX_BYTES,
 } from "./api";
 import { filesT } from "./copy";
-import { pruneThumbReads, THUMB_CACHE_LIMIT, tileThumb } from "./thumbs";
+import { pruneThumbReads, THUMB_CACHE_LIMIT, THUMB_IMAGE_EDGE, tileThumb } from "./thumbs";
 import type { ArtifactRow } from "./types";
 
 class Node {
@@ -363,6 +363,46 @@ describe("thumbnail read budget, concurrency and consumers (A1)", () => {
     mount(third);
     await vi.waitFor(() => expect(srcOf(third)).toBe("blob:2"));
     (third as unknown as Node).isConnected = false;
+  });
+
+  it("keeps a tile-sized copy of a large raster image, never the whole file", async () => {
+    const kept: Blob[] = [];
+    vi.stubGlobal("URL", {
+      createObjectURL: (blob: Blob) => {
+        kept.push(blob);
+        return "blob:small";
+      },
+      revokeObjectURL: () => undefined,
+    });
+    const closed: boolean[] = [];
+    vi.stubGlobal("createImageBitmap", async () => ({
+      width: 4000,
+      height: 2000,
+      close: () => closed.push(true),
+    }));
+    const drawn: number[][] = [];
+    const small = new Blob([new Uint8Array(1024)], { type: "image/png" });
+    vi.stubGlobal("document", {
+      createElement: (tag: string) =>
+        tag !== "canvas"
+          ? new Node()
+          : {
+              width: 0,
+              height: 0,
+              getContext: () => ({
+                drawImage: (_image: unknown, x: number, y: number, w: number, h: number) =>
+                  drawn.push([x, y, w, h]),
+              }),
+              toBlob: (resolve: (blob: Blob | null) => void) => resolve(small),
+            },
+    });
+    setArtifactsFetch(async () => new Response(new Uint8Array(THUMB_READ_MAX_BYTES + 1)));
+    const tile = tileThumb({ id: "fig", filename: "fig.png", content_type: "image/png", version_id: "v1" });
+    await vi.waitFor(() => expect(kept).toHaveLength(1));
+    expect(kept[0]).toBe(small);
+    expect(drawn).toEqual([[0, 0, THUMB_IMAGE_EDGE, THUMB_IMAGE_EDGE / 2]]);
+    expect(closed).toEqual([true]);
+    (tile as unknown as Node).isConnected = false;
   });
 
   it("does not fall back to the artifact URL when an image is over the preview cap", async () => {

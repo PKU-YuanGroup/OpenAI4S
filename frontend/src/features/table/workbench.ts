@@ -12,6 +12,7 @@ import {
 } from "../artifacts/api";
 import { filesT, readFailureText } from "../artifacts/copy";
 import { previewSlice } from "../artifacts/cache";
+import { partialNotice, previewDownload } from "../artifacts/partial";
 import { parseTable } from "../csv/csv";
 import { renderSheet } from "../artifacts/sheet";
 import { planTableViewer, tableCatalogPosture } from "./catalog";
@@ -88,18 +89,8 @@ function legacySourceStatus(
   url: string,
   shown: number,
 ): void {
-  const note = el(
-    "div",
-    "renderer-note renderer-completeness",
-    filesT("viewer.preview.partial", shown.toLocaleString()),
-  );
-  note.setAttribute("data-state", "partial");
-  note.setAttribute("role", "status");
-  container.appendChild(note);
-  const download = el("a", "outline-btn small", translate("common.download"));
-  download.setAttribute("href", url);
-  download.setAttribute("download", a.filename || "artifact");
-  container.appendChild(download);
+  partialNotice(container, shown);
+  previewDownload(container, a, url);
 }
 
 /** Flag-off path: client parse + capped sheet. Never hits /table/profile or /export.csv. */

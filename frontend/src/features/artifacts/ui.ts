@@ -17,7 +17,6 @@ import { browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, 
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
 import { abortPreviewReads } from "./api";
-import { closeNotebookPreview } from "./notebook";
 import { pruneThumbReads, tileThumb, tileThumbBig } from "./thumbs";
 import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
 
@@ -131,11 +130,11 @@ export function dockOpen(): void {
 }
 
 export function dockClose(): void {
-  // Closing the dock leaves both preview kinds: cancel the artifact read, the
-  // tile reads no card shows any more, and the notebook's image URLs.
+  // Closing the dock leaves both preview kinds: cancel the artifact read (and
+  // release its blob URLs, a notebook's images included) and the tile reads no
+  // card shows any more.
   abortPreviewReads(viewerEl());
   pruneThumbReads();
-  closeNotebookPreview(viewerEl());
   const d = dock.value as { open: boolean; tab: string };
   dock.value = { ...d, open: false, tab: d.tab };
   dockEl()?.classList.add("collapsed");
@@ -159,10 +158,7 @@ export function setActiveTab(tab: string, selectArtifact = true): void {
   renderDockTabs();
   const pane =
     tab === "notebook" ? "notebook" : tab === "timeline" ? "timeline" : tab === "files" ? "files" : "viewer";
-  if (pane !== "viewer") {
-    abortPreviewReads(viewerEl());
-    closeNotebookPreview(viewerEl());
-  }
+  if (pane !== "viewer") abortPreviewReads(viewerEl());
   showDockPane(pane);
   if (tab === "notebook") callWindow("renderNotebook");
   else if (tab === "timeline") {

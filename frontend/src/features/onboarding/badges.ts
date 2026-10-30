@@ -25,6 +25,7 @@ import {
   readCapabilityReceipt,
   readEffectiveCapabilities,
 } from "../customize/models";
+import { localDateTime } from "../chrome/dom";
 import { publicText } from "../scrub/scrub";
 import { ot } from "./copy";
 
@@ -77,23 +78,6 @@ export function capabilityUnknownReason(
   const fromReceipt = receipt && receipt.detail ? publicText(receipt.detail, 240) : "";
   const fromProbe = publicText(probeDetail, 240);
   return fromReceipt || fromProbe;
-}
-
-/** Absolute local time of the probe; the observation is a fact, not "just now". */
-export function capabilityObservedTime(ms: number): string {
-  const date = new Date(ms);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return (
-    date.getFullYear() +
-    "-" +
-    pad(date.getMonth() + 1) +
-    "-" +
-    pad(date.getDate()) +
-    " " +
-    pad(date.getHours()) +
-    ":" +
-    pad(date.getMinutes())
-  );
 }
 
 export function capabilityBadgeRows(
@@ -158,7 +142,7 @@ export function capabilityBadgeText(row: BadgeRow): string {
   if (row.observedAt) {
     text += ` · ${ot(
       "onboarding.badge.observedAt",
-      capabilityObservedTime(row.observedAt),
+      localDateTime(row.observedAt),
     )}`;
   }
   return text;

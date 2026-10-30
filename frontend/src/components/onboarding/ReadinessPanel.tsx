@@ -2,6 +2,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { copyFailedText, copyText } from "../../features/chrome/clipboard";
+import { localClock } from "../../features/chrome/dom";
 import {
   standardReadinessStateText,
   type StandardReadiness,
@@ -132,13 +133,6 @@ function NetworkCard({
  * and reports "not refreshed: <reason>" until a new click succeeds.
  * `refreshedAt` is the client time of the last *successful refresh*.
  */
-/** Local clock, fixed-width: the read time is a fact, not a locale string. */
-function clockText(ms: number): string {
-  const date = new Date(ms);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
 export function ReadinessPanel({
   status,
   onRefresh,
@@ -174,7 +168,7 @@ export function ReadinessPanel({
   } else if (refreshedAt != null) {
     readState = (
       <div class="onb-refresh-state">
-        {ot("onboarding.readiness.lastRead", clockText(refreshedAt))}
+        {ot("onboarding.readiness.lastRead", localClock(refreshedAt))}
       </div>
     );
   }

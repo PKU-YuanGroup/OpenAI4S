@@ -16,7 +16,6 @@ import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
 import { loadArtifacts } from "../features/artifacts/load";
 import { renderArtifactBody } from "../features/artifacts/renderers";
-import { closeNotebookPreview } from "../features/artifacts/notebook";
 import { scienceSourceStatus } from "../features/artifacts/science-results";
 import { publicText } from "../features/scrub/scrub";
 import { viewerVersionState } from "../features/artifacts/state";
@@ -507,7 +506,6 @@ export function renderViewer(): void {
   if (!v) return;
   abortPreviewReads(v);
   molTeardown(v);
-  closeNotebookPreview(v);
   edacTeardown();
   detachArtifactEditor();
   v.innerHTML = "";

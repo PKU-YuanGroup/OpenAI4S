@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { copyText } from "../../features/chrome/clipboard";
+import { localDateTime } from "../../features/chrome/dom";
 import {
   apiErrorText,
   checkForUpdates,
@@ -60,23 +61,6 @@ const CHANNELS = new Set([
   "container",
   "unknown",
 ]);
-
-function clockText(ms: number): string {
-  if (!ms) return "";
-  const date = new Date(ms);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return (
-    date.getFullYear() +
-    "-" +
-    pad(date.getMonth() + 1) +
-    "-" +
-    pad(date.getDate()) +
-    " " +
-    pad(date.getHours()) +
-    ":" +
-    pad(date.getMinutes())
-  );
-}
 
 function ageText(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds));
@@ -242,7 +226,7 @@ export function UpdateCheck() {
     ? updateT(
         "update.previous",
         previous.latest || updateT("update.unknown"),
-        previous.checked_at_ms ? clockText(previous.checked_at_ms) : updateT("update.unknown"),
+        previous.checked_at_ms ? localDateTime(previous.checked_at_ms) : updateT("update.unknown"),
       )
     : "";
   // The trust summary belongs to the answer it came with; a failed attempt
@@ -255,7 +239,7 @@ export function UpdateCheck() {
   const current = status?.running || "—";
   const latest = check?.latest || "—";
   const checkedLine = check?.checked_at_ms
-    ? clockText(check.checked_at_ms)
+    ? localDateTime(check.checked_at_ms)
     : updateT("update.notChecked");
   const cacheLine = check
     ? check.cached

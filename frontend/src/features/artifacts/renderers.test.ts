@@ -18,7 +18,6 @@ import {
 import { artUrl } from "./cache";
 import { compatibilityRendererDescriptor } from "./catalog";
 import { filesT } from "./copy";
-import { closeNotebookPreview } from "./notebook";
 import {
   renderArtifactBody,
   renderArtifactDescriptor,
@@ -839,7 +838,7 @@ describe("notebook artifact routing (A3)", () => {
     vi.stubGlobal("document", { createElement: (tag: string) => new Dom3(tag) });
   });
   afterEach(() => {
-    closeNotebookPreview();
+    abortPreviewReads();
     setArtifactsFetch(null);
     vi.unstubAllGlobals();
     resetStoreFields();

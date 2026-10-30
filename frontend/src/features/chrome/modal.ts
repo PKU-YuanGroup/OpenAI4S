@@ -9,7 +9,6 @@
 import { $ } from "./dom";
 import { chromeHost } from "./host";
 import { abortPreviewReads } from "../artifacts/api";
-import { closeNotebookPreview } from "../artifacts/notebook";
 
 export type ModalFocusEntry = { el: HTMLElement; prev: Element | null };
 
@@ -109,7 +108,6 @@ export function closeModalEl(modal: HTMLElement | null): void {
   if (!modal || modal.classList.contains("hidden")) return;
   modal.classList.add("hidden");
   abortPreviewReads(modal);
-  closeNotebookPreview(modal);
   // Pop matching stack entry (or top if this is the topmost)
   let entry: ModalFocusEntry | null = null;
   for (let i = _modalFocus.stack.length - 1; i >= 0; i--) {

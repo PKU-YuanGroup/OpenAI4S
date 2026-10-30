@@ -12,7 +12,7 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`chrome.css`](chrome.css) | 本车道样式：palette / team / resizer 类名。 |
 | [`clipboard.test.ts`](clipboard.test.ts) | 异步 API 以方法形式调用；被拒时退回选区复制；两条路都不可用时返回 false。 |
 | [`clipboard.ts`](clipboard.ts) | `copyText()`：所有复制按钮共用的剪贴板写入，只有确认写入成功才返回 `true`。 |
-| [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `hint` / `grow`。`icon` 取自共享的 `icons/paths.ts` 表。 |
+| [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `localDateTime` / `localClock` / `hint` / `grow`。`icon` 取自共享的 `icons/paths.ts` 表。 |
 | [`host.ts`](host.ts) | 用 `isReady` 查 window 能力。不 import `window-exports`。 |
 | [`index.ts`](index.ts) | `bootChrome()`：window 赋值、快捷键、绑定、`bootTeam`。每一步相互隔离，某一步抛错不会让其余绑定落空。 |
 | [`layout.test.ts`](layout.test.ts) | `os-layout` 持久化、compact/wide 类、列宽钳制、站点存储被禁用，以及某一步抛错后 `bootChrome()` 仍绑定其后各步，且不再重复绑定归 artifacts 所有的 `#files-btn`。 |

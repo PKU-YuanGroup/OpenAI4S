@@ -48,7 +48,7 @@ import {
 } from "./model";
 import { renderQueueStrip } from "./queue";
 import { S } from "./s";
-import { ago } from "../chrome/dom";
+import { ago, localDateTime } from "../chrome/dom";
 import { computeRecordsT } from "./copy";
 import {
   branchUndoFromProjection,
@@ -377,24 +377,6 @@ function computeTasksSectionKey(): string {
     computeTasksLoadingMore ? "more" : "",
     computeTasksMoreError,
   ].join("|");
-}
-
-/** Absolute local time for the stale snapshot note. */
-export function computeTasksTime(ms: number): string {
-  if (!ms) return "";
-  const date = new Date(ms);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return (
-    date.getFullYear() +
-    "-" +
-    pad(date.getMonth() + 1) +
-    "-" +
-    pad(date.getDate()) +
-    " " +
-    pad(date.getHours()) +
-    ":" +
-    pad(date.getMinutes())
-  );
 }
 
 /**
@@ -3732,7 +3714,7 @@ export function renderComputeTasksPanel(): HTMLElement {
         el(
           "div",
           "compute-task-message",
-          computeRecordsT("compute.recordsStale", computeTasksTime(view.stale.at) || "—"),
+          computeRecordsT("compute.recordsStale", localDateTime(view.stale.at) || "—"),
         ),
       );
       appendComputeTaskPage(panel, view.stale.data, view.state, false);

@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
-import { setArtifactsFetch } from "./api";
+import { abortPreviewReads, beginPreviewRead, setArtifactsFetch } from "./api";
 import { filesT } from "./copy";
 import {
-  closeNotebookPreview,
   inspectPng,
   NOTEBOOK_CELL_BATCH,
   NOTEBOOK_MAX_CELLS,
@@ -127,6 +126,10 @@ class FakeNode {
   remove(): void {
     if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
     this.parent = null;
+  }
+  contains(node: FakeNode | null): boolean {
+    for (let at = node; at; at = at.parent) if (at === this) return true;
+    return false;
   }
   decode(): Promise<void> {
     decodeCalls += 1;
@@ -326,7 +329,7 @@ describe("read-only notebook rendering (A4)", () => {
     revokeObjectURL.mockClear();
   });
   afterEach(() => {
-    closeNotebookPreview();
+    abortPreviewReads();
     setArtifactsFetch(null);
     vi.unstubAllGlobals();
     resetStoreFields();
@@ -374,11 +377,10 @@ describe("read-only notebook rendering (A4)", () => {
     await vi.waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(2));
     expect(texts(dock)).toContain(filesT("notebook.readonly"));
     expect(revokeObjectURL).not.toHaveBeenCalled();
-    closeNotebookPreview(host(modal));
-    expect(modal.children).toHaveLength(0);
+    abortPreviewReads(host(modal));
     expect(texts(dock)).toContain(filesT("notebook.readonly"));
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
-    closeNotebookPreview(host(dock));
+    abortPreviewReads(host(dock));
     expect(revokeObjectURL).toHaveBeenCalledTimes(2);
   });
 
@@ -556,7 +558,7 @@ describe("read-only notebook rendering (A4)", () => {
     expect(attempts).toBe(2);
   });
 
-  it("aborts the read, revokes image URLs and clears the container on close", async () => {
+  it("aborts the read and revokes image URLs when only the render root is closed", async () => {
     let aborted = false;
     setArtifactsFetch(
       (_url, init) =>
@@ -567,24 +569,26 @@ describe("read-only notebook rendering (A4)", () => {
           });
         }),
     );
+    // The close paths only know the render root (`renderArtifactBody`'s body),
+    // never the notebook's own container: one `abortPreviewReads` must do.
     const root = new FakeNode("div");
     root.page = true;
-    renderNotebookArtifact(host(root), notebook, url);
+    beginPreviewRead(host(root));
+    renderNotebookArtifact(host(root.appendChild(new FakeNode("div"))), notebook, url);
     await settle();
     expect(aborted).toBe(false);
-    closeNotebookPreview();
+    abortPreviewReads(host(root));
     await settle();
     expect(aborted).toBe(true);
-    expect(root.children).toHaveLength(0);
 
-    // A painted preview releases its object URLs and is cleared on close.
+    // A painted preview's image URLs are released by the same call.
     setArtifactsFetch(async () => new Response(notebookDoc([codeCell("plot()", [pngOutput(10, 10)])])));
     const painted = new FakeNode("div");
     painted.page = true;
-    renderNotebookArtifact(host(painted), notebook, url);
+    beginPreviewRead(host(painted));
+    renderNotebookArtifact(host(painted.appendChild(new FakeNode("div"))), notebook, url);
     await vi.waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
-    closeNotebookPreview();
+    abortPreviewReads(host(painted));
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
-    expect(painted.children).toHaveLength(0);
   });
 });

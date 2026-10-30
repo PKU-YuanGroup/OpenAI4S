@@ -19,9 +19,18 @@
  * read under the 8 MiB main preview budget (F1).
  */
 
-import { el, fetchArtifactText, iconEl, isArtifactReadAborted, translate } from "./api";
+import {
+  beginPreviewRead,
+  el,
+  fetchArtifactText,
+  iconEl,
+  isArtifactReadAborted,
+  previewObjectUrl,
+  previewReadSignal,
+} from "./api";
 import { previewSlice } from "./cache";
 import { filesT, readFailureText } from "./copy";
+import { downloadLink } from "./partial";
 import type { ArtifactRow } from "./types";
 import { mdCodeBlock, renderMd } from "../md";
 
@@ -257,51 +266,10 @@ export function inspectPng(base64: string): PngInspection {
   return { ok: true, width, height, bytes };
 }
 
-type NotebookSession = {
-  controller: AbortController;
-  urls: Set<string>;
-  container: HTMLElement | null;
-};
-
-const activeSessions = new Set<NotebookSession>();
-
-/**
- * Leaving the notebook (closing the dock, opening another artifact, or a new
- * render) cancels its read, releases every image object URL it created and
- * clears the rendered cells.
- */
-export function closeNotebookPreview(root?: Element | null): void {
-  if (root === null) return;
-  for (const session of activeSessions) {
-    const container = session.container;
-    if (root && container && container.isConnected !== false &&
-        root !== container && !root.contains?.(container)) continue;
-    session.controller.abort();
-    for (const url of session.urls) {
-      try {
-        URL.revokeObjectURL(url);
-      } catch {
-        /* already released or unsupported */
-      }
-    }
-    session.urls.clear();
-    if (container) container.innerHTML = "";
-    session.container = null;
-    activeSessions.delete(session);
-  }
-}
-
 function note(text: string): HTMLElement {
   const node = el("div", "renderer-note", text);
   node.setAttribute("role", "status");
   return node;
-}
-
-function downloadLink(url: string, a: ArtifactRow): HTMLAnchorElement {
-  const link = el("a", "outline-btn small", translate("common.download"));
-  link.href = url;
-  link.setAttribute("download", a.filename || "artifact");
-  return link;
 }
 
 function problemCard(container: HTMLElement, message: string, text: string, url: string, a: ArtifactRow): void {
@@ -325,7 +293,10 @@ function problemCard(container: HTMLElement, message: string, text: string, url:
 }
 
 type PngQueue = {
-  session: NotebookSession;
+  /** The render's read signal: once aborted, no further image is created. */
+  signal: AbortSignal;
+  /** Owns the image URLs, so closing the preview that contains it revokes them. */
+  owner: HTMLElement;
   pixels: number;
   active: number;
   queue: Array<() => Promise<void>>;
@@ -383,9 +354,7 @@ async function materializePng(
     return;
   }
   try {
-    const blob = new Blob([checked.bytes], { type: "image/png" });
-    const objectUrl = URL.createObjectURL(blob);
-    queue.session.urls.add(objectUrl);
+    const objectUrl = previewObjectUrl(checked.bytes, "image/png", queue.owner);
     const img = el("img", "notebook-png");
     img.alt = filesT("notebook.pngAlt");
     img.src = objectUrl;
@@ -406,8 +375,8 @@ function schedulePng(
   queue.queue.push(async () => {
     // The preview may have been closed between scheduling and this microtask
     // (dock closed, another artifact opened). Creating an object URL then would
-    // leak an image the session no longer tracks.
-    if (queue.session.controller.signal.aborted) return;
+    // keep an image alive that the close already released.
+    if (queue.signal.aborted) return;
     const checked = inspectPng(base64);
     if (!checked.ok) {
       omittedImage(holder, a, url);
@@ -503,7 +472,7 @@ function renderParsedNotebook(
   a: ArtifactRow,
   url: string,
   notebook: ParsedNotebook,
-  session: NotebookSession,
+  signal: AbortSignal,
 ): void {
   const shell = el("div", "notebook-preview");
   const banner = el("div", "renderer-note notebook-readonly", filesT("notebook.readonly"));
@@ -526,7 +495,7 @@ function renderParsedNotebook(
   const more = el("button", "outline-btn small notebook-more", "");
   more.hidden = true;
   shell.appendChild(more);
-  const queue: PngQueue = { session, pixels: 0, active: 0, queue: [] };
+  const queue: PngQueue = { signal, owner: container, pixels: 0, active: 0, queue: [] };
   let rendered = 0;
   const paintBatch = (): void => {
     const end = Math.min(rendered + NOTEBOOK_CELL_BATCH, notebook.cells.length);
@@ -555,29 +524,27 @@ function renderParsedNotebook(
  * "cannot preview (not nbformat 4)" with the original text and download.
  */
 export function renderNotebookArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  closeNotebookPreview(container);
-  const session: NotebookSession = {
-    controller: new AbortController(),
-    urls: new Set<string>(),
-    container,
-  };
-  activeSessions.add(session);
+  // The read belongs to the render root (`beginPreviewRead` in
+  // `renderArtifactBody`) and the image URLs to this container, so the
+  // `abortPreviewReads` every close path already calls cancels both. A direct
+  // caller with no root gets one of its own.
+  const signal = previewReadSignal(container) ?? beginPreviewRead(container);
   const retry = (): void => {
     renderNotebookArtifact(container, a, url);
   };
-  fetchArtifactText(url, { signal: session.controller.signal })
+  fetchArtifactText(url, { signal })
     .then((text) => {
-      if (!container.isConnected || session.controller.signal.aborted) return;
+      if (!container.isConnected || signal.aborted) return;
       const parsed = parseNotebook(text);
       if (!parsed.ok) {
         container.innerHTML = "";
         problemCard(container, filesT("notebook.problem.invalid"), text, url, a);
         return;
       }
-      renderParsedNotebook(container, a, url, parsed.notebook, session);
+      renderParsedNotebook(container, a, url, parsed.notebook, signal);
     })
     .catch((error: unknown) => {
-      if (isArtifactReadAborted(error) || session.controller.signal.aborted) return;
+      if (isArtifactReadAborted(error) || signal.aborted) return;
       if (!container.isConnected) return;
       container.innerHTML = "";
       const card = el("div", "renderer-fallback");

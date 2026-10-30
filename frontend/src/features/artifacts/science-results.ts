@@ -26,8 +26,9 @@
  */
 
 import { publicText as scrubbedText } from "../scrub/scrub";
-import { el, translate } from "./api";
+import { el } from "./api";
 import { filesT } from "./copy";
+import { downloadLink } from "./partial";
 import type { ArtifactRow } from "./types";
 
 /** One page of the saved-record list. */
@@ -62,10 +63,6 @@ export type ScienceRecord = {
 };
 
 export type ScienceSearch = {
-  query: string;
-  requestUrl: string;
-  retrievedAt: string;
-  responseSha256: string;
   /** Non-empty when the file records that the search has later pages. */
   nextCursor: string;
   /** Canonical/legacy field pairs whose recorded values disagree. */
@@ -212,15 +209,9 @@ export function readScienceSearchEnvelope(text: string): ScienceSearch | null {
       ? ["response_sha256 ↔ source_checksum"]
       : []),
   ];
+  // The query, request URL, time and digest are not repeated here: the version
+  // panel already shows them from the server's redacted source projection.
   return {
-    query: textField(top.query) || textField(result.query),
-    requestUrl:
-      textField(top.request_url) ||
-      textField(result.request_url) ||
-      textField(top.endpoint) ||
-      textField(result.endpoint),
-    retrievedAt: textField(top.retrieved_at) || textField(result.retrieved_at),
-    responseSha256: textField(top.response_sha256) || textField(result.response_sha256),
     nextCursor: typeof result.next_cursor === "string" ? result.next_cursor.trim() : "",
     conflicts,
     records,
@@ -305,13 +296,6 @@ function noteBox(message: string): HTMLElement {
   const node = el("div", "renderer-note science-note", message);
   node.setAttribute("role", "status");
   return node;
-}
-
-function downloadLink(url: string, a: ArtifactRow): HTMLAnchorElement {
-  const link = el("a", "outline-btn small", translate("common.download"));
-  link.href = url;
-  link.setAttribute("download", a.filename || "artifact");
-  return link;
 }
 
 function scalarAttributes(attributes: Record<string, unknown>): Array<[string, string]> {

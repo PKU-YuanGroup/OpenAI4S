@@ -39,35 +39,11 @@ import {
 } from "./catalog";
 import { renderSheet } from "./sheet";
 import { renderHtmlPreview } from "./preview";
-import { closeNotebookPreview, renderNotebookArtifact } from "./notebook";
+import { renderNotebookArtifact } from "./notebook";
+import { partialNotice, previewDownload } from "./partial";
 import { readScienceSearchEnvelope, renderScienceResults } from "./science-results";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
-
-/**
- * The persistent notice every `partial` preview carries (F3): how much was
- * shown and where to get the complete file. Complete previews add nothing, so
- * short content renders exactly as it did before the truncation work; a failed
- * read is the third state, rendered by `rendererFailure`.
- */
-function partialNotice(container: HTMLElement, shown: number): void {
-  const note = el(
-    "div",
-    "renderer-note renderer-completeness",
-    filesT("viewer.preview.partial", shown.toLocaleString()),
-  );
-  note.setAttribute("data-state", "partial");
-  note.setAttribute("role", "status");
-  container.appendChild(note);
-}
-
-/** The exact-version download that must accompany every partial preview. */
-function previewDownload(container: HTMLElement, a: ArtifactRow, url: string): void {
-  const download = el("a", "outline-btn small", translate("common.download"));
-  download.href = url;
-  download.setAttribute("download", a.filename || "artifact");
-  container.appendChild(download);
-}
 
 /** Partial notice plus the full-file entry, for previews with one display limit. */
 function partialPreview(container: HTMLElement, a: ArtifactRow, url: string, shown: number): void {
@@ -205,10 +181,7 @@ export function renderStructuredText(
       if (hasDownload) return;
       // A complete raw source has no truncation entry of its own; the raw
       // JSON tab still promises the exact-version download (A5).
-      const download = el("a", "outline-btn small", translate("common.download"));
-      download.href = url;
-      download.setAttribute("download", a.filename || "artifact");
-      target.appendChild(download);
+      previewDownload(target, a, url);
     });
     return;
   }
@@ -808,10 +781,10 @@ export function renderArtifactDescriptor(
  */
 export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
   // A new artifact (or a repaint) owns the viewer: anything the previous view
-  // was still reading is no longer needed, and a notebook releases the image
-  // URLs it created. The new read is bound to this body, so replacing the body
-  // (or closing the viewer) aborts exactly that read.
-  closeNotebookPreview(body);
+  // was still reading is no longer needed, and its blob URLs (a notebook's
+  // images included) are released by `beginPreviewRead` below. The new read is
+  // bound to this body, so replacing the body (or closing the viewer) aborts
+  // exactly that read.
   // The molecule island keeps its own abort controller. Replacing the view
   // has to cancel that read here: the next renderer may not be a structure,
   // so waiting for `molecule()` would leave the previous bytes downloading.

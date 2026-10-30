@@ -388,11 +388,46 @@ function fillMolPreview(d: HTMLElement, a: ArtifactRow): void {
 }
 
 /**
+ * The longest edge a raster tile keeps: tiles are at most ~240 CSS px wide,
+ * and this covers that on a 2× display.
+ */
+export const THUMB_IMAGE_EDGE = 480;
+
+/**
+ * Shrink a raster image to tile size before a tile holds on to it. A grid of
+ * figures otherwise kept every file whole (up to 8 MiB each) for as long as any
+ * tile showed it. SVG and an image already within the tile budget are kept as
+ * read; so is anything this engine cannot decode or re-encode, and the tile then
+ * behaves as before.
+ */
+async function tileImageBlob(full: Blob): Promise<Blob> {
+  if (full.size <= THUMB_READ_MAX_BYTES || full.type === "image/svg+xml") return full;
+  if (typeof createImageBitmap !== "function" || typeof document === "undefined") return full;
+  let bitmap: ImageBitmap | null = null;
+  try {
+    bitmap = await createImageBitmap(full);
+    const scale = Math.min(1, THUMB_IMAGE_EDGE / Math.max(bitmap.width, bitmap.height, 1));
+    const canvas = document.createElement("canvas") as HTMLCanvasElement;
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext?.("2d");
+    if (!context || typeof canvas.toBlob !== "function") return full;
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const small = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    return small && small.size < full.size ? small : full;
+  } catch {
+    return full;
+  } finally {
+    bitmap?.close();
+  }
+}
+
+/**
  * Image tiles cannot use a 256 KiB prefix: a cut-off PNG does not decode.
  * They still share the four-wide queue and the 15 s deadline, and they stop
  * at the main preview cap (8 MiB). Over that, the tile is the file glyph and
  * the download remains the way to get the bytes. The artifact URL is never
- * assigned to `img.src`.
+ * assigned to `img.src`, and what a tile keeps is `tileImageBlob`'s copy.
  */
 function fillImageThumb(tile: HTMLElement, a: ArtifactRow): void {
   const cache = _thumbCache.value as Record<string, Promise<unknown>>;
@@ -471,15 +506,19 @@ function fillImageThumb(tile: HTMLElement, a: ArtifactRow): void {
         signal: controller.signal,
       });
     })
-    .then((bytes) => {
-      if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
-        throw new Error("object URLs are unavailable");
-      }
-      const objectUrl = URL.createObjectURL(
+    .then((bytes) =>
+      // Still inside the thumb slot, so at most four full images decode at once.
+      tileImageBlob(
         new Blob([bytes], {
           type: artifactMediaType(a.filename, a.content_type, "application/octet-stream"),
         }),
-      );
+      ),
+    )
+    .then((blob) => {
+      if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+        throw new Error("object URLs are unavailable");
+      }
+      const objectUrl = URL.createObjectURL(blob);
       read.objectUrl = objectUrl;
       return objectUrl;
     })
