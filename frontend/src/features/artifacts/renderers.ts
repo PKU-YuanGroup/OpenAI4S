@@ -796,7 +796,7 @@ export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
   // The molecule island keeps its own abort controller. Replacing the view
   // has to cancel that read here: the next renderer may not be a structure,
   // so waiting for `molecule()` would leave the previous bytes downloading.
-  molTeardown();
+  molTeardown(body);
   const signal = beginPreviewRead(body);
   body.innerHTML = "";
   const loading = el("div", "renderer-loading");

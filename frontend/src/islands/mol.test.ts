@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { _molView } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
 import { filesT, readFailureText } from "../features/artifacts/copy";
+import { abortPreviewReads, beginPreviewRead } from "../features/artifacts/api";
 import { MOL_VENDOR_SRC, molTeardown, molecule } from "./mol";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -66,7 +67,7 @@ describe("3Dmol lazy injection (app.js:9665-9672)", () => {
   });
 });
 
-describe("one live 3Dmol viewer (AUDIT A37)", () => {
+describe("3Dmol viewer lifetimes (AUDIT A37)", () => {
   class FakeEl {
     children: FakeEl[] = [];
     parent: FakeEl | null = null;
@@ -100,14 +101,17 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
       if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
       this.parent = null;
     }
-    querySelector(): null {
-      return null;
+    contains(other: FakeEl): boolean {
+      return this === other || this.children.some((child) => child.contains(other));
+    }
+    querySelector(): FakeEl | null {
+      return this.children.find((node) => node.tagName === "canvas") ?? null;
     }
   }
   const walk = (node: FakeEl): FakeEl[] => [node, ...node.children.flatMap(walk)];
   const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-  function setup() {
+  function setup(sharedContext = false) {
     resetStoreFields();
     const head = new FakeEl("head");
     head.page = true;
@@ -115,10 +119,20 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
     const page = new FakeEl();
     page.page = true;
     const views: FakeEl[] = [];
+    const sharedLoseContext = vi.fn();
+    const sharedGl = { getExtension: () => ({ loseContext: sharedLoseContext }) };
     const runtime = {
       createViewer: vi.fn((view: FakeEl) => {
         views.push(view);
-        return { addModel: () => ({ selectedAtoms: () => [] }), setStyle() {}, zoomTo() {}, render() {}, clear() {} };
+        const loseContext = sharedContext ? sharedLoseContext : vi.fn();
+        const gl = sharedContext ? sharedGl : { getExtension: () => ({ loseContext }) };
+        view.appendChild(Object.assign(new FakeEl("canvas"), {
+          getContext: () => null, // 3Dmol may own an offscreen WebGL2 context.
+        }));
+        return {
+          addModel: () => ({ selectedAtoms: () => [] }), setStyle() {}, zoomTo() {}, render() {}, clear: vi.fn(), loseContext,
+          getRenderer: () => ({ getContext: () => gl }),
+        };
       }),
     };
     let releaseA!: () => void;
@@ -133,15 +147,18 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
   }
 
   afterEach(() => {
+    abortPreviewReads();
+    molTeardown();
     vi.unstubAllGlobals();
     resetStoreFields();
   });
 
-  it("lets only the latest structure create the viewer", async () => {
+  it("lets only the latest structure in a container create its viewer", async () => {
     const { page, views, runtime, releaseA, host } = setup();
     vi.stubGlobal("$3Dmol", runtime);
     const first = page.appendChild(new FakeEl());
-    const second = page.appendChild(new FakeEl());
+    const second = first;
+    beginPreviewRead(host(first));
     molecule(host(first), "/a.pdb", "a.pdb");
     molecule(host(second), "/b.pdb", "b.pdb");
     await vi.waitFor(() => expect(views).toHaveLength(1));
@@ -150,6 +167,34 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
     expect(views).toHaveLength(1);
     expect(walk(second)).toContain(views[0]);
     expect(_molView.value).toBe(views[0]);
+  });
+
+  it.each([false, true])("keeps dock and fullscreen alive with shared context = %s", async (shared) => {
+    const { page, views, runtime, releaseA, host } = setup(shared);
+    vi.stubGlobal("$3Dmol", runtime);
+    const dock = page.appendChild(new FakeEl());
+    const modal = page.appendChild(new FakeEl());
+    const modalBody = modal.appendChild(new FakeEl());
+    beginPreviewRead(host(modal));
+    molecule(host(dock), "/a.pdb", "a.pdb");
+    molecule(host(modalBody), "/b.pdb", "b.pdb");
+    await vi.waitFor(() => expect(views).toHaveLength(1));
+    releaseA();
+    await vi.waitFor(() => expect(views).toHaveLength(2));
+    const modalViewer = runtime.createViewer.mock.results[0]!.value;
+    const dockViewer = runtime.createViewer.mock.results[1]!.value;
+    expect(modalViewer.clear).not.toHaveBeenCalled();
+    expect(dockViewer.clear).not.toHaveBeenCalled();
+    abortPreviewReads(host(modal));
+    expect(modalViewer.clear).toHaveBeenCalledTimes(1);
+    expect(modalViewer.loseContext).toHaveBeenCalledTimes(shared ? 0 : 1);
+    expect(dockViewer.clear).not.toHaveBeenCalled();
+    expect(dockViewer.loseContext).not.toHaveBeenCalled();
+    expect(_molView.value).toBe(views[1]);
+    molTeardown(host(dock));
+    expect(dockViewer.clear).toHaveBeenCalledTimes(1);
+    expect(dockViewer.loseContext).toHaveBeenCalledTimes(1);
+    expect(_molView.value).toBeNull();
   });
 
   it("creates no viewer for a structure whose view was replaced", async () => {
@@ -228,7 +273,7 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
     await vi.waitFor(() => expect(createViewer).toHaveBeenCalledTimes(1));
   });
 
-  it("aborts the previous structure's read when a new structure opens", async () => {
+  it("aborts the previous structure's read when its container opens a new structure", async () => {
     const { page, runtime, host } = setup();
     vi.stubGlobal("$3Dmol", runtime);
     let aborted = 0;
@@ -252,7 +297,7 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
       ),
     );
     const first = page.appendChild(new FakeEl());
-    const second = page.appendChild(new FakeEl());
+    const second = first;
     molecule(host(first), "/a.pdb", "a.pdb");
     await vi.waitFor(() => expect(signals.length).toBe(1));
     molecule(host(second), "/b.pdb", "b.pdb");
@@ -274,10 +319,11 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
     vi.stubGlobal("$3Dmol", runtime);
     scripts[0]!.onload?.();
     releaseA();
-    await vi.waitFor(() => expect(views).toHaveLength(1));
+    await vi.waitFor(() => expect(views).toHaveLength(2));
     for (let i = 0; i < 3; i++) await settle();
-    expect(views).toHaveLength(1);
-    expect(walk(second)).toContain(views[0]);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(views).toHaveLength(2);
+    expect(views.filter((view) => walk(second).includes(view))).toHaveLength(1);
+    expect(views.filter((view) => walk(first).includes(view))).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

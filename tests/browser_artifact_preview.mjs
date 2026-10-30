@@ -361,6 +361,49 @@ async function main() {
         .waitFor({ timeout: 30000 });
     });
 
+    await runCase(page, "fullscreen molecule preserves the dock WebGL context", async () => {
+      await open(molecule, "peptide.pdb");
+      const dockCanvas = page.locator("#dock-viewer .mol-wrap canvas").first();
+      await dockCanvas.waitFor({ timeout: 30000 });
+      // The visible canvas may only be a bitmaprenderer. Read the actual
+      // (possibly offscreen WebGL2) context through 3Dmol's renderer API.
+      const currentContext = () => window.S?._molViewer?.getRenderer?.().getContext?.();
+      const currentViewer = () => window.S?._molViewer;
+      const contextAlive = (gl) => Boolean(gl && !gl.isContextLost());
+      const atomCount = (viewer) => viewer.selectedAtoms({}).length;
+      const dockModel = await page.evaluateHandle(currentViewer);
+      const dockContext = await page.evaluateHandle(currentContext);
+      assertion(await dockContext.evaluate(contextAlive), "dock did not create a live WebGL context");
+      assertion(await dockModel.evaluate(atomCount) > 0, "dock molecule has no atoms");
+      await page.locator("#dock-viewer").getByTitle(/Full.?screen|全屏/i).click();
+      const modalCanvas = page.locator("#modal .mol-wrap canvas").first();
+      let modalContext;
+      let modalModel;
+      try {
+        await modalCanvas.waitFor({ timeout: 30000 });
+        modalContext = await page.evaluateHandle(currentContext);
+        modalModel = await page.evaluateHandle(currentViewer);
+        assertion(await dockContext.evaluate(contextAlive), "fullscreen destroyed the dock WebGL context");
+        assertion(await modalContext.evaluate(contextAlive), "fullscreen did not create a live WebGL context");
+        assertion(await dockModel.evaluate(atomCount) > 0, "fullscreen cleared the dock molecule");
+        assertion(await modalModel.evaluate(atomCount) > 0, "fullscreen molecule has no atoms");
+      } finally {
+        await page.locator("#modal-close").click();
+      }
+      assertion(await dockContext.evaluate(contextAlive), "closing fullscreen destroyed the dock WebGL context");
+      assertion(await dockModel.evaluate(atomCount) > 0, "closing fullscreen cleared the dock molecule");
+      assertion(await modalModel.evaluate(atomCount) === 0, "closing fullscreen retained its model");
+      // Some 3Dmol renderers share an offscreen context; release it only when
+      // the final viewer closes, which this dock transition exercises.
+      await open(csv, "counts.csv");
+      await waitUntil("last molecule WebGL cleanup", async () => !(await dockContext.evaluate(contextAlive)), 5000, 50);
+      assertion(!(await modalContext.evaluate(contextAlive)), "fullscreen context leaked");
+      await dockContext.dispose();
+      await modalContext.dispose();
+      await dockModel.dispose();
+      await modalModel.dispose();
+    });
+
     await runCase(page, "csv renders as a table", async () => {
       await open(csv, "counts.csv");
       await page.locator("#dock-viewer table.sheet").waitFor({ timeout: 30000 });

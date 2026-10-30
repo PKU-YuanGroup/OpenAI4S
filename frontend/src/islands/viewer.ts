@@ -511,6 +511,7 @@ export function renderViewer(): void {
   const v = document.getElementById("dock-viewer");
   if (!v) return;
   abortPreviewReads(v);
+  molTeardown(v);
   closeNotebookPreview(v);
   edacTeardown();
   detachArtifactEditor();
@@ -570,7 +571,6 @@ export function renderViewer(): void {
     decorateViewerWithProvenance();
     return;
   }
-  molTeardown();
   const body = el("div", "viewer-body");
   v.appendChild(body);
   if (_editing.value === a.id && !a._exactVersion) {
