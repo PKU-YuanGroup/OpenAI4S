@@ -147,8 +147,8 @@ def _fragment_index(fragment: dict, calls: dict[int, dict]) -> int:
     name overwrote the last and the arguments concatenated into
     ``{"a":1}{"b":2}`` -- so the whole batch reached the engine as one
     malformed call, and two such replies stopped the turn. Without an index,
-    a fragment carrying a new call ``id`` opens the next call and any other
-    fragment continues the latest one.
+    a known call ``id`` rejoins that call, a new ``id`` opens the next call,
+    and an unidentified fragment continues the latest one.
     """
     raw = fragment.get("index")
     if raw is not None:
@@ -160,6 +160,10 @@ def _fragment_index(fragment: dict, calls: dict[int, dict]) -> int:
         return 0
     latest = max(calls)
     call_id = fragment.get("id")
+    if call_id:
+        for index, call in calls.items():
+            if call.get("id") == call_id:
+                return index
     if call_id and calls[latest].get("id") not in (None, call_id):
         return latest + 1
     return latest

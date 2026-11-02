@@ -739,3 +739,95 @@ def test_streamed_parallel_calls_without_index_stay_separate(monkeypatch):
             meta={"type": "function", "index": 1},
         ),
     ]
+
+
+@pytest.mark.parametrize("indexed_start", [False, True])
+def test_streamed_interleaved_calls_without_index_rejoin_by_id(
+    monkeypatch, indexed_start
+):
+    fragments = [
+        {
+            "id": "call-a",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"query":'},
+        },
+        {
+            "id": "call-b",
+            "type": "function",
+            "function": {"name": "calculate", "arguments": '{"value":'},
+        },
+        {"id": "call-a", "function": {"arguments": '"ATP synthase"}'}},
+        {"id": "call-b", "function": {"arguments": "2}"}},
+    ]
+    if indexed_start:
+        for index, fragment in enumerate(fragments[:2]):
+            fragment["index"] = index
+
+    def relay(url, payload, headers, timeout, on_event):
+        for fragment in fragments:
+            on_event({"choices": [{"delta": {"tool_calls": [fragment]}}]})
+        on_event({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+
+    monkeypatch.setattr(llm.transport, "post_sse", relay)
+    monkeypatch.setenv("OPENAI4S_LLM_STREAM", "1")
+    result = llm.chat(
+        [{"role": "user", "content": "Use both tools."}],
+        _cfg(),
+        tools=[_LOOKUP, _CALCULATE],
+        on_delta=lambda _text: None,
+    )
+
+    calls = [
+        _call(
+            "call-a",
+            '{"query":"ATP synthase"}',
+            {"query": "ATP synthase"},
+            meta={"type": "function", "index": 0},
+        ),
+        _call(
+            "call-b",
+            '{"value":2}',
+            {"value": 2},
+            name="calculate",
+            ordinal=1,
+            meta={"type": "function", "index": 1},
+        ),
+    ]
+    assert result["tool_calls"] == calls
+
+    cap = _install(monkeypatch, _text_body())
+    llm.chat(
+        [
+            {"role": "user", "content": "Use both tools."},
+            result["assistant_message"],
+            *[
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "wire_id": call["wire_id"],
+                    "name": call["name"],
+                    "content": "ok",
+                }
+                for call in calls
+            ],
+        ],
+        _cfg(),
+        tools=[_LOOKUP, _CALCULATE],
+    )
+    replayed = cap.payload["messages"][1]["tool_calls"]
+    assert [call["id"] for call in replayed] == ["call-a", "call-b"]
+    assert [call["function"]["arguments"] for call in replayed] == [
+        '{"query":"ATP synthase"}',
+        '{"value":2}',
+    ]
+
+
+def test_streamed_explicit_index_takes_precedence_over_repeated_id():
+    from openai4s.llm.providers.openai import _fragment_index
+
+    assert (
+        _fragment_index(
+            {"index": 0, "id": "call-b"}, {0: {"id": "call-a"}, 1: {"id": "call-b"}}
+        )
+        == 0
+    )
