@@ -1153,9 +1153,9 @@ class KernelRecoveryOrchestrator:
                 tuple(skipped),
             )
         except RecoveryCancelled as error:
-            record("restore", "cancelled", {"error": str(error)})
             if candidate is not None and not published:
                 self._shutdown(candidate)
+            record("restore", "cancelled", {"error": str(error)})
             return RecoveryResult(
                 recovery_id,
                 "cancelled",
@@ -1167,13 +1167,14 @@ class KernelRecoveryOrchestrator:
                 tuple(skipped),
             )
         except Exception as error:  # noqa: BLE001 — failure is durable state
+            # Cleanup must not depend on a successful write to a failing journal.
+            if candidate is not None and not published:
+                self._shutdown(candidate)
             record(
                 "restore",
                 "failed",
                 {"error": str(error), "error_type": type(error).__name__},
             )
-            if candidate is not None and not published:
-                self._shutdown(candidate)
             return RecoveryResult(
                 recovery_id,
                 "active" if published else "failed",

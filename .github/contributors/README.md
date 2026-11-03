@@ -28,6 +28,7 @@ each replacement is atomic, but the batch is not an all-or-nothing transaction.
 | `EQSTLab.png` | Render-ready avatar for contributor `EQSTLab`. |
 | `Grace-xyx.png` | Render-ready avatar for contributor `Grace-xyx`. |
 | `HowardLi1984.png` | Render-ready avatar for contributor `HowardLi1984`. |
+| `JunkaiWang-TheoPhy.png` | Render-ready avatar for contributor `JunkaiWang-TheoPhy`. |
 | `Linmj-Judy.png` | Render-ready avatar for contributor `Linmj-Judy`. |
 | `Lyu6PosHao.png` | Render-ready avatar for contributor `Lyu6PosHao`. |
 | `Nobody-Zhang.png` | Render-ready avatar for contributor `Nobody-Zhang`. |
