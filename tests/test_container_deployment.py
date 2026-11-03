@@ -105,7 +105,7 @@ def test_container_base_and_python_inputs_are_integrity_locked():
     requirements = SCIENCE_REQUIREMENTS.read_text(encoding="utf-8")
     build_requirements = BUILD_REQUIREMENTS.read_text(encoding="utf-8")
     assert "--hash=sha256:" in requirements
-    assert "setuptools==84.0.0" in build_requirements
+    assert "setuptools==84.2.1" in build_requirements
     assert "--hash=sha256:" in build_requirements
     assert "--no-build-isolation" in dockerfile
     assert dockerfile.count("--only-binary=:all:") == 2

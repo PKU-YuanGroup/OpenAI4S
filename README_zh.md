@@ -334,7 +334,7 @@ uv run pytest                       # 离线测试套件(LLM 被 mock)
 uv run pre-commit run --all-files   # 全量格式化 + lint
 ```
 
-代码风格由 **pre-commit** 强制执行 —— `black`、`isort`(`--profile black`)、`ruff`(版本锁定在 [`.pre-commit-config.yaml`](.pre-commit-config.yaml))。运行时依赖:核心**零依赖**(纯标准库);可选 `science` extra 锁定 `numpy>=1.24 · pandas>=2.0 · matplotlib>=3.7`。
+代码风格由 **pre-commit** 强制执行 —— `black`、`isort`(`--profile black`)、`ruff`(版本锁定在 [`.pre-commit-config.yaml`](.pre-commit-config.yaml))。运行时依赖:核心**零依赖**(纯标准库);可选 `science` extra 锁定 `numpy>=1.24 · pandas>=2.0 · matplotlib>=3.7`（matplotlib 需要 Python 3.11 及以上，因为当前 Pillow 安全版本不支持 3.10）。
 
 ### 欢迎的贡献
 

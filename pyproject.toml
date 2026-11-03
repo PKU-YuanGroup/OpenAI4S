@@ -34,10 +34,13 @@ Source = "https://github.com/PKU-YuanGroup/OpenAI4S"
 # visible to agent cells. These libs are OPTIONAL: the core runs stdlib-only and
 # every numpy/pandas/matplotlib import in-tree is guarded by try/except ImportError.
 # Install with: uv sync --extra science
+# matplotlib is Python >=3.11 only. It depends on Pillow, Pillow 13 is the
+# first release that closes the current Pillow advisories, and Pillow 13 does
+# not support 3.10. Leaving matplotlib on 3.10 would lock Pillow 12.3.0.
 science = [
     "numpy>=1.24",
     "pandas>=2.0",
-    "matplotlib>=3.7",
+    "matplotlib>=3.7; python_version >= '3.11'",
     "scikit-learn>=1.3",
 ]
 # CPU-first single-cell workflows require Python 3.11 because PyDESeq2 0.5.4
@@ -59,9 +62,11 @@ singlecell = [
 ]
 # Optional cheminformatics support is kept separate because RDKit does not
 # publish wheels for every platform supported by the core/science environment.
+# RDKit depends on Pillow, so it takes the same Python >=3.11 floor as
+# matplotlib — a 3.10 resolve would keep Pillow 12.3.0 in the lock.
 # Install where available with: uv sync --extra chemistry
 chemistry = [
-    "rdkit>=2024.9",
+    "rdkit>=2024.9; python_version >= '3.11'",
 ]
 # Coverage-guided parser fuzzing is a separate Linux-only gate. Keeping Atheris
 # out of dev preserves ordinary macOS/Windows setup and the dependency-free
@@ -94,15 +99,36 @@ dev = [
     # >=3.2 because the pre-commit-hooks and isort hooks pinned in
     # .pre-commit-config.yaml declare `minimum_pre_commit_version: 3.2.0`,
     # which pre-commit validates at manifest load -- a hard error, not a skip.
-    "pre-commit>=3.2",
+    # Python >=3.11 because pre-commit depends on virtualenv, which depends on
+    # filelock, and the filelock releases that close the current advisories
+    # (4.2.1 and newer) require 3.11. Installing the CLI on 3.10 would lock a
+    # still-vulnerable filelock next to the patched one.
+    "pre-commit>=3.2; python_version >= '3.11'",
+    # Workflow tests parse Actions YAML on every interpreter. Pre-commit used
+    # to bring PyYAML along; on 3.10 that CLI is absent, so the tests name it.
+    "pyyaml>=6.0.3",
 ]
 
 [project.scripts]
 openai4s = "openai4s.cli:main"
 
 [build-system]
-requires = ["setuptools==84.0.0"]
+requires = ["setuptools==84.2.1"]
 build-backend = "setuptools.build_meta"
+
+# Transitive floors for published advisories that are not direct dependencies.
+# `uv lock` fails if a parent cannot accept one, so a resolved Pillow 12 or
+# filelock 3 cannot reappear in uv.lock beside the patched release.
+[tool.uv]
+constraint-dependencies = [
+    "certifi>=2026.10.18",
+    "filelock>=4.2.1",
+    "msgpack>=1.2.3",
+    "pillow>=13",
+    "setuptools>=84.1.0",
+    "urllib3>=2.8.0",
+    "virtualenv>=21.14.9",
+]
 
 [tool.setuptools]
 include-package-data = true
