@@ -96,9 +96,16 @@ export function handleIncomingMessage(data: unknown): void {
   } catch {
     return;
   }
-  onEvent(m);
   const rid = m && m.root_frame_id,
     sq = m && m.seq;
+  // Reconnects can replay an already applied event. An older terminal must
+  // not overwrite the outcome the client has already processed.
+  if (
+    rid && typeof sq === "number" && Number.isFinite(sq) && sq > 0 &&
+    sq <= (_seqSeen.value[rid] || 0) &&
+    m.type !== "replay_begin" && m.type !== "replay_end"
+  ) return;
+  onEvent(m);
   // Written in place on purpose. `_seqSeen` is a resume cursor, not state
   // anything renders: its readers (`sub`, a history read comparing before and
   // after) sample it, none subscribes, and this runs for every event, where a

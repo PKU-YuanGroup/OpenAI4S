@@ -121,4 +121,33 @@ describe("connectWS", () => {
     order.push(`cursor:${String(_seqSeen.value.fid)}`);
     expect(order).toEqual(["handler:undefined", "cursor:2"]);
   });
+
+  it("drops duplicate and older data events before applying side effects", () => {
+    const applied: string[] = [];
+    registerWsHandler("frame_update", (m) => applied.push(String(m.status)));
+    connectWS();
+    const socket = FakeWebSocket.instances[0]!;
+    for (const [seq, status] of [[100, "processing"], [102, "failed"], [102, "failed"], [101, "completed"], [100, "processing"]]) {
+      socket.emit(JSON.stringify({ type: "frame_update", root_frame_id: "fid", seq, status }));
+    }
+    expect(applied).toEqual(["processing", "failed"]);
+    expect(_seqSeen.value.fid).toBe(102);
+  });
+
+  it("keeps cursors per root and lets replay controls reset the epoch", () => {
+    const applied: string[] = [];
+    registerWsHandler("ok", (m) => applied.push(String(m.root_frame_id)));
+    registerWsHandler("replay_begin", () => { _seqSeen.value = {}; _streamEpoch.value = "new"; });
+    registerWsHandler("replay_end", () => applied.push("end"));
+    _seqSeen.value.fid = 20;
+    connectWS();
+    const socket = FakeWebSocket.instances[0]!;
+    socket.emit(JSON.stringify({ type: "ok", root_frame_id: "other", seq: 1 }));
+    socket.emit(JSON.stringify({ type: "replay_begin", root_frame_id: "fid", seq: 1 }));
+    socket.emit(JSON.stringify({ type: "replay_end", root_frame_id: "fid", seq: 1 }));
+    socket.emit(JSON.stringify({ type: "ok", root_frame_id: "fid", seq: 2 }));
+    expect(applied).toEqual(["other", "end", "fid"]);
+    expect(_streamEpoch.value).toBe("new");
+    expect(_seqSeen.value.fid).toBe(2);
+  });
 });
