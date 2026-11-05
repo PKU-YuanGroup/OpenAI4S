@@ -9,7 +9,7 @@ export { copyLookup, type CopyTable };
 const COPY: CopyTable = {
   zh: {
     "onboarding.title": "首次设置",
-    "onboarding.subtitle": "四个必需步骤。在你按下「测试连接」之前，不会向模型供应商发请求。",
+    "onboarding.subtitle": "四个必需步骤。除非你主动获取模型列表，否则在「测试连接」之前不会向模型供应商发请求。",
     "onboarding.skip": "暂时跳过",
     "onboarding.checklist": "清单",
     "onboarding.checklist.title": "首次设置清单",
@@ -27,6 +27,10 @@ const COPY: CopyTable = {
     "onboarding.path.empty": "还没有配置。选一个协议或本机端点。",
     "onboarding.path.choose": "请先选择一条模型路径。",
     "onboarding.path.localModel": "本机模型 id（目录不探测，需手填）",
+    "onboarding.path.modelPlaceholder": "先获取模型列表，或手动填写 model id",
+    "onboarding.path.fetchModels": "从端点获取模型",
+    "onboarding.path.fetchingModels": "正在获取模型…",
+    "onboarding.path.noModels": "端点没有返回可用的模型 id，请手动填写。",
     "onboarding.test.warning":
       "按下「测试连接」会向你的模型供应商发出 1–2 个极小、无副作用的请求。在此之前，供应商请求数为 0。",
     "onboarding.test.idle": "尚未向供应商发出任何请求。",
@@ -57,7 +61,7 @@ const COPY: CopyTable = {
   en: {
     "onboarding.title": "First-run setup",
     "onboarding.subtitle":
-      "Four required steps. No provider request is made until you press Test.",
+      "Four required steps. No provider request is made before Test unless you explicitly fetch model ids.",
     "onboarding.skip": "Skip for now",
     "onboarding.checklist": "Checklist",
     "onboarding.checklist.title": "First-run checklist",
@@ -76,6 +80,10 @@ const COPY: CopyTable = {
     "onboarding.path.empty": "No profile yet. Pick a protocol or a local endpoint.",
     "onboarding.path.choose": "Choose a model path first.",
     "onboarding.path.localModel": "Local model id (the catalogue does not probe; type it)",
+    "onboarding.path.modelPlaceholder": "Fetch model ids, or enter a model id manually",
+    "onboarding.path.fetchModels": "Fetch models from endpoint",
+    "onboarding.path.fetchingModels": "Fetching models…",
+    "onboarding.path.noModels": "The endpoint returned no usable model id; enter one manually.",
     "onboarding.test.warning":
       "Pressing Test sends 1–2 tiny, side-effect-free requests to your model provider. Until then, provider requests stay at 0.",
     "onboarding.test.idle": "No provider request has been made yet.",

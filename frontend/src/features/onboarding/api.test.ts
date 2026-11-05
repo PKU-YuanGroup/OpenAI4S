@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { activateExistingModelProfile, mergeReadinessRefresh } from "./api";
+import { activateExistingModelProfile, discoverModelProfile, mergeReadinessRefresh } from "./api";
 import { sanitizeOnboardingStatus } from "./status";
 
 function snapshot(overrides: Record<string, unknown> = {}) {
@@ -69,6 +69,29 @@ describe("existing-profile onboarding", () => {
       { url: "/api/v1/onboarding", method: "GET" },
     ]);
     expect(status.active_id).toBe("profile/selected");
+  });
+});
+
+describe("endpoint model discovery", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns model ids without exposing the submitted key to callers", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ models: ["gpt-test", "gpt-other"] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(discoverModelProfile({
+      provider: "chatgpt",
+      base_url: "https://api.example/v1",
+      api_key: "secret-not-returned",
+    })).resolves.toEqual(["gpt-test", "gpt-other"]);
+    expect(JSON.stringify(fetchMock.mock.calls[0])).toContain("secret-not-returned");
   });
 });
 

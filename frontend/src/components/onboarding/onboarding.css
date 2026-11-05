@@ -217,6 +217,20 @@
 .prof-cap[data-stale="true"] {
   opacity: 0.65;
 }
+#onboarding .onb-model-discovery {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: -2px;
+  margin-bottom: 8px;
+}
+
+#onboarding .onb-model-discovery-error {
+  color: var(--danger, #b42318);
+  font-size: 12px;
+}
+
 #onboarding .onb-warn {
   border: 0;
   border-radius: var(--radius, 8px);

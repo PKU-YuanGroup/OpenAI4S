@@ -176,6 +176,31 @@ def test_readiness_costs_no_network(api, monkeypatch):
     assert call("GET", "/model-profiles")["code"] == 200
 
 
+def test_endpoint_model_discovery_route_is_explicit_and_read_only(api, monkeypatch):
+    runner, call = api
+    monkeypatch.setattr(
+        "openai4s.server.endpoint_models.EndpointModelFetcher.fetch",
+        lambda self, **kwargs: {
+            "models": ["gpt-discovered"],
+            "default_model": "gpt-discovered",
+            "count": 1,
+            "source": "https://example/v1/models",
+        },
+    )
+    result = call(
+        "POST",
+        "/model-profiles/discover",
+        {
+            "provider": "chatgpt",
+            "base_url": "https://example/v1",
+            "api_key": "never-persisted",
+        },
+    )
+    assert result["code"] == 200
+    assert result["body"]["models"] == ["gpt-discovered"]
+    assert call("GET", "/model-profiles")["body"]["profiles"] == []
+
+
 def test_the_probe_route_answers(api, monkeypatch):
     """The route existed and was reachable; nothing called it."""
     runner, call = api

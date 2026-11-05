@@ -39,6 +39,7 @@ from openai4s.llm.capabilities import (
 from openai4s.llm.catalog import ModelPreset, model_presets
 from openai4s.llm.resolve import keyless_endpoint
 from openai4s.security.secret_broker import is_ref
+from openai4s.server.endpoint_models import EndpointModelError, EndpointModelFetcher
 from openai4s.storage.model_capability_receipts import (
     EVIDENCE_FALSE,
     EVIDENCE_TRUE,
@@ -286,6 +287,20 @@ class ModelProfileService:
         provider_id = str(provider or "").strip().lower()
         spec = self._providers().get(provider_id, {})
         return str(spec.get("model") or self.cfg.llm.model or "default")
+
+    def discover_models(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Fetch model ids for a protocol/endpoint without saving the profile."""
+        provider = self._protocol(body.get("provider"))
+        spec = self._providers().get(provider, {})
+        base_url = str(body.get("base_url") or spec.get("base_url") or "").strip()
+        try:
+            return EndpointModelFetcher().fetch(
+                provider=provider,
+                base_url=base_url,
+                api_key=clean_api_key(body.get("api_key")),
+            )
+        except EndpointModelError as error:
+            raise ModelProfileError(str(error), error.status_code) from None
 
     # --- credentials -----------------------------------------------------
     PROFILE_SCOPE = "model_profile"

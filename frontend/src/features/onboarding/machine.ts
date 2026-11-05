@@ -1,7 +1,7 @@
 /**
  * M-01 first-run wizard state machine.
  * Four required decision steps; skip and checklist are first-class.
- * Provider requests stay 0 until the explicit Test action.
+ * Provider requests stay 0 until Test or an explicit model-list fetch.
  */
 
 export const REQUIRED_STEPS = ["path", "test", "readiness", "project"] as const;

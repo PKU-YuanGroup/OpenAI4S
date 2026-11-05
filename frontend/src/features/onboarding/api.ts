@@ -45,6 +45,23 @@ export async function completeOnboarding(
   );
 }
 
+export async function discoverModelProfile(
+  body: Record<string, unknown>,
+): Promise<string[]> {
+  const result = await api("/model-profiles/discover", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (result && typeof result === "object" && "error" in result) {
+    throw new Error(String((result as Record<string, unknown>).error || "model discovery failed"));
+  }
+  const models = result && typeof result === "object"
+    ? (result as Record<string, unknown>).models
+    : null;
+  if (!Array.isArray(models)) return [];
+  return models.map((value) => String(value || "").trim()).filter(Boolean);
+}
+
 export async function saveModelProfile(
   body: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
