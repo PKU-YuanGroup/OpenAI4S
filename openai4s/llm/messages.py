@@ -190,6 +190,12 @@ def _anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
     return "\n\n".join(system_parts), conv
 
 
+# Tool-call ``provider_meta`` keys the other wires write: OpenAI Chat (and the
+# legacy OpenAI-shaped history) ``type``/``index``, Anthropic ``block``, and
+# Responses ``item_id`` plus the item's own ``status``.
+_FOREIGN_CALL_META = frozenset({"type", "index", "block", "item_id", "status"})
+
+
 def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
     system_parts: list[str] = []
     contents: list[dict] = []
@@ -270,8 +276,14 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
                     function_call["id"] = call["wire_id"]
                 meta = call.get("provider_meta") or {}
                 # Opaque Gemini Part metadata (notably thoughtSignature) must
-                # remain on the exact part where the provider emitted it.
-                part = {k: v for k, v in meta.items() if k != "functionCall"}
+                # remain on the exact part where the provider emitted it. A call
+                # another wire recorded carries that wire's keys instead, which
+                # are not Part fields: Gemini 400s on them, on every later turn.
+                part = {
+                    k: v
+                    for k, v in meta.items()
+                    if k != "functionCall" and k not in _FOREIGN_CALL_META
+                }
                 part["functionCall"] = function_call
                 parts.append(part)
             contents.append({"role": "model", "parts": parts})

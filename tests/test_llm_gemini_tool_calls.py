@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from openai4s import llm
 from openai4s.config import LLMConfig
 from openai4s.tools.native import ToolSpec
@@ -360,3 +362,130 @@ def test_gemini_parallel_calls_replay_signatures_on_original_parts(monkeypatch):
         )
     llm.chat(history, _cfg(), tools=[_LOOKUP, _CALCULATE])
     assert cap.calls[-1]["payload"]["contents"][1] == raw_content
+
+
+_LEGACY_OPENAI_CALL = {
+    "id": "call_1",
+    "type": "function",
+    "function": {"name": "lookup", "arguments": '{"query":"ATP"}'},
+}
+
+
+def _foreign_cfg(provider: str, base_url: str) -> LLMConfig:
+    return LLMConfig(
+        provider=provider, api_key="test-key", base_url=base_url, model="test-model"
+    )
+
+
+def _foreign_tool_turn(monkeypatch, source: str) -> dict:
+    """The assistant turn another wire records for one `lookup` call."""
+    question = [{"role": "user", "content": "Find a fact."}]
+    if source == "legacy-openai-history":
+        return {"role": "assistant", "content": "", "tool_calls": [_LEGACY_OPENAI_CALL]}
+    if source == "chatgpt":
+        reply = {
+            "choices": [
+                {
+                    "message": {"content": None, "tool_calls": [_LEGACY_OPENAI_CALL]},
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {},
+        }
+        monkeypatch.setattr(llm.transport, "post_json", lambda *a: reply)
+        cfg = _foreign_cfg("chatgpt", "https://openai.invalid/v1")
+        return llm.chat(question, cfg, tools=[_LOOKUP])["assistant_message"]
+    if source == "chatgpt-stream":
+
+        def openai_sse(url, payload, headers, timeout, on_event):
+            fragment = {"index": 0, **_LEGACY_OPENAI_CALL}
+            on_event({"choices": [{"delta": {"tool_calls": [fragment]}}]})
+            on_event({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+
+        monkeypatch.setattr(llm.transport, "post_sse", openai_sse)
+        cfg = _foreign_cfg("chatgpt", "https://openai.invalid/v1")
+        reply = llm.chat(question, cfg, tools=[_LOOKUP], on_delta=lambda _: None)
+        return reply["assistant_message"]
+    if source == "claude":
+        block = {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "lookup",
+            "input": {"query": "ATP"},
+        }
+        reply = {"content": [block], "stop_reason": "tool_use", "usage": {}}
+        monkeypatch.setattr(llm.transport, "post_json", lambda *a: reply)
+        cfg = _foreign_cfg("claude", "https://anthropic.invalid")
+        return llm.chat(question, cfg, tools=[_LOOKUP])["assistant_message"]
+    if source == "openai_responses":
+        item = {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "lookup",
+            "arguments": '{"query":"ATP"}',
+            "status": "completed",
+        }
+
+        def responses_sse(url, payload, headers, timeout, on_event):
+            on_event(
+                {"type": "response.output_item.done", "output_index": 0, "item": item}
+            )
+            on_event(
+                {
+                    "type": "response.completed",
+                    "response": {"status": "completed", "output": [item]},
+                }
+            )
+
+        monkeypatch.setattr(llm.transport, "post_sse", responses_sse)
+        cfg = _foreign_cfg("openai_responses", "https://responses.invalid/v1")
+        return llm.chat(question, cfg, tools=[_LOOKUP])["assistant_message"]
+    raise AssertionError(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "chatgpt",
+        "chatgpt-stream",
+        "claude",
+        "openai_responses",
+        "legacy-openai-history",
+    ],
+)
+def test_gemini_does_not_replay_other_wires_call_metadata_as_part_fields(
+    monkeypatch, source
+):
+    # A session switched to a Gemini profile after another wire's tool call:
+    # that wire's provider_meta is not a Gemini Part field, and generateContent
+    # rejects the request -- and every later one, since the turn stays in history.
+    assistant = _foreign_tool_turn(monkeypatch, source)
+    cap = _install(monkeypatch, _text_response())
+    llm.chat(
+        [
+            {"role": "user", "content": "Find a fact."},
+            assistant,
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "wire_id": "call_1",
+                "name": "lookup",
+                "content": "x,y",
+            },
+        ],
+        _cfg(),
+        tools=[_LOOKUP],
+    )
+    assert cap.payload["contents"][1] == {
+        "role": "model",
+        "parts": [
+            {
+                "functionCall": {
+                    "id": "call_1",
+                    "name": "lookup",
+                    "args": {"query": "ATP"},
+                }
+            }
+        ],
+    }

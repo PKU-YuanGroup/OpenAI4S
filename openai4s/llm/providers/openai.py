@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from ..messages import _openai_messages
@@ -33,9 +34,15 @@ def _chat_openai(
     payload: dict[str, Any] = {
         "model": model,
         "messages": _openai_messages(messages),
-        "max_tokens": max_tokens or cfg.max_tokens,
-        "temperature": cfg.temperature if temperature is None else temperature,
     }
+    limit = max_tokens or cfg.max_tokens
+    if _openai_reasoning_model(model):
+        # OpenAI reasoning models reject `max_tokens` in favour of
+        # `max_completion_tokens`, and reject every temperature but the default.
+        payload["max_completion_tokens"] = limit
+    else:
+        payload["max_tokens"] = limit
+        payload["temperature"] = cfg.temperature if temperature is None else temperature
     if stop:
         payload["stop"] = stop
     # Some OpenAI-compatible proxies (e.g. apiany.org, behind Cloudflare) reject
@@ -113,6 +120,15 @@ def _chat_openai(
         "wire_state": wire_state,
         "raw": body,
     }
+
+
+# o-series and gpt-5 family ids (gpt-5, gpt-5-mini, gpt-5.1, o3-mini, ...),
+# except gpt-5-chat, which is a non-reasoning chat model.
+_OPENAI_REASONING_MODEL = re.compile(r"(?:o\d+|gpt-5(?!-chat))(?:$|[-.])")
+
+
+def _openai_reasoning_model(model: Any) -> bool:
+    return bool(_OPENAI_REASONING_MODEL.match(str(model or "").strip().lower()))
 
 
 class _StreamStartError(Exception):
