@@ -329,3 +329,64 @@ def test_a_zero_cursor_without_an_epoch_is_still_not_a_gap():
     hub.subscribe("f1", conn, since_seq=0)
     begin = next(e for e in conn.sent if e.get("type") == "replay_begin")
     assert begin["gap"] is False
+
+
+# --------------------------------------------------------------------------
+# every sequenced event names the stream its seq counts
+# --------------------------------------------------------------------------
+
+
+def _client_cursor(conn, root):
+    """The browser's cursor rule (`frontend/src/features/ws/connect.ts`,
+    `handleIncomingMessage`): the highest `seq` among the events that name
+    `root` as their `root_frame_id`. An event without the field is applied
+    but never advances the cursor."""
+    return max(
+        (
+            e["seq"]
+            for e in conn.sent
+            if e.get("root_frame_id") == root and isinstance(e.get("seq"), int)
+        ),
+        default=0,
+    )
+
+
+def test_a_direct_broadcast_names_the_root_its_seq_counts():
+    """`emitter` attaches `root_frame_id`; a direct `broadcast` did not. The
+    PATCH rename, the auto-title and a post-restart approval resolution all go
+    straight to `broadcast` with only a `frame_id`."""
+    hub = WSHub()
+    conn = _Conn()
+    hub.add(conn)
+    hub.subscribe("f1", conn)
+    hub.broadcast("f1", {"type": "frame_update", "frame_id": "f1", "status": "updated"})
+
+    event = conn.sent[-1]
+    assert event["seq"] == 1
+    assert event["root_frame_id"] == "f1"
+
+
+def test_an_idle_resubscribe_after_direct_broadcasts_is_not_a_gap():
+    """The cost of the missing field. The hub numbered these events but the
+    client could not file them, so its cursor lagged the counter and every
+    idle resubscribe was declared `gap: true` -- a full history refetch on
+    each reconnect of a session that had missed nothing."""
+    hub = WSHub()
+    first = _Conn()
+    hub.add(first)
+    hub.subscribe("f1", first)
+    for event in (
+        {"type": "frame_update", "frame_id": "f1", "status": "updated"},
+        {"type": "frame_update", "frame_id": "f1", "status": "titled"},
+        {"type": "permission_resolved", "frame_id": "f1", "decision_id": "perm-1"},
+    ):
+        hub.broadcast("f1", event)
+
+    cursor = _client_cursor(first, "f1")
+    assert cursor == 3, "every numbered event must advance the client's cursor"
+
+    again = _Conn()
+    hub.add(again)
+    hub.subscribe("f1", again, since_seq=cursor, epoch=_epoch_of(first))
+    begin = next(e for e in again.sent if e.get("type") == "replay_begin")
+    assert begin["gap"] is False
