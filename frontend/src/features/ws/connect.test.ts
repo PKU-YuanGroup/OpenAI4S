@@ -12,6 +12,7 @@ import {
   wsUrl,
   type WsSocket,
 } from "./connect";
+import { registerBuiltinHandlers } from "./handlers";
 import { registerWsHandler, resetWsHandlers } from "./registry";
 
 class FakeWebSocket implements WsSocket {
@@ -120,5 +121,63 @@ describe("connectWS", () => {
     socket.emit(JSON.stringify({ type: "ok", root_frame_id: "fid", seq: 2 }));
     order.push(`cursor:${String(_seqSeen.value.fid)}`);
     expect(order).toEqual(["handler:undefined", "cursor:2"]);
+  });
+
+  it("drops duplicate and older data events before applying side effects", () => {
+    const applied: string[] = [];
+    registerWsHandler("frame_update", (m) => applied.push(String(m.status)));
+    connectWS();
+    const socket = FakeWebSocket.instances[0]!;
+    for (const [seq, status] of [[100, "processing"], [102, "failed"], [102, "failed"], [101, "completed"], [100, "processing"]]) {
+      socket.emit(JSON.stringify({ type: "frame_update", root_frame_id: "fid", seq, status }));
+    }
+    expect(applied).toEqual(["processing", "failed"]);
+    expect(_seqSeen.value.fid).toBe(102);
+  });
+
+  it("keeps cursors per root and lets a new daemon epoch reset them", () => {
+    const applied: string[] = [];
+    registerBuiltinHandlers();
+    registerWsHandler("ok", (m) => applied.push(`${String(m.root_frame_id)}:${String(m.seq)}`));
+    _streamEpoch.value = "old";
+    _seqSeen.value.fid = 20;
+    connectWS();
+    const socket = FakeWebSocket.instances[0]!;
+    socket.emit(JSON.stringify({ type: "ok", root_frame_id: "other", seq: 1 }));
+    socket.emit(JSON.stringify({ type: "ok", root_frame_id: "fid", seq: 20 }));
+    // What a restarted daemon sends for a cursor from the old epoch: control
+    // frames without `seq`, then its own stream numbered from 1 again.
+    socket.emit(JSON.stringify({ type: "replay_begin", root_frame_id: "fid", from_seq: 20, to_seq: 20, epoch: "new", gap: true }));
+    socket.emit(JSON.stringify({ type: "replay_end", root_frame_id: "fid", to_seq: 20 }));
+    socket.emit(JSON.stringify({ type: "ok", root_frame_id: "fid", seq: 2 }));
+    expect(applied).toEqual(["other:1", "fid:2"]);
+    expect(_streamEpoch.value).toBe("new");
+    expect(_seqSeen.value.fid).toBe(2);
+  });
+
+  it("applies a pending approval re-sent with the seq of its first broadcast", () => {
+    const applied: string[] = [];
+    registerWsHandler("await_permission", (m) => applied.push(String(m.decision_id)));
+    registerWsHandler("text_chunk", () => {});
+    connectWS();
+    const socket = FakeWebSocket.instances[0]!;
+    // The broker keeps the payload the hub stamped, and `view_session` re-sends it.
+    const card = { type: "await_permission", frame_id: "fid", root_frame_id: "fid", decision_id: "perm-1", seq: 2 };
+    socket.emit(JSON.stringify(card));
+    socket.emit(JSON.stringify({ type: "text_chunk", root_frame_id: "fid", seq: 3 }));
+    socket.emit(JSON.stringify(card));
+    expect(applied).toEqual(["perm-1", "perm-1"]);
+    expect(_seqSeen.value.fid).toBe(3);
+  });
+
+  it("never records a non-finite seq that would drop every later event", () => {
+    const applied: string[] = [];
+    registerWsHandler("ok", (m) => applied.push(String(m.seq)));
+    connectWS();
+    const socket = FakeWebSocket.instances[0]!;
+    socket.emit('{"type":"ok","root_frame_id":"fid","seq":1e999}');
+    socket.emit(JSON.stringify({ type: "ok", root_frame_id: "fid", seq: 5 }));
+    expect(applied).toEqual(["Infinity", "5"]);
+    expect(_seqSeen.value.fid).toBe(5);
   });
 });
