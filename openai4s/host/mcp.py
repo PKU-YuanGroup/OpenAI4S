@@ -2,13 +2,17 @@
 
 The service deliberately keeps the connector lookup and error boundary used by
 the legacy dispatcher.  Policy such as permission gating and untrusted-output
-screening remains outside this class.
+screening remains outside this class.  The one integration hook is the optional
+governed-MHS route below: it wraps the same manager call for an MHS connector
+row and applies that integration's connector/endpoint/device policy; every
+non-MHS row keeps the original behaviour.
 """
 
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Callable, Protocol
+import shlex
+from typing import Any, Callable, Mapping, Protocol
 
 #: Bundled stdio servers that confine every user-supplied path to one root and
 #: gate formal model calls behind a live-process canary. Both properties are
@@ -114,6 +118,29 @@ def _datapro_narrow_error() -> dict[str, str]:
     return {"error": "volcengine-datapro only permits dataPro_search"}
 
 
+def _looks_like_mhs_connector(connector: Mapping[str, Any]) -> bool:
+    """Cheap row check before importing the optional MHS integration.
+
+    The authoritative resolution (settings document, endpoint/device binding)
+    lives in ``openai4s_mhs.hostroute``; this only decides whether that module
+    is worth consulting for this row.
+    """
+    command = connector.get("command")
+    if isinstance(command, (list, tuple)):
+        parts = [str(part) for part in command]
+    elif isinstance(command, str):
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = command.split()
+    else:
+        parts = []
+    args = connector.get("args")
+    if isinstance(args, (list, tuple)):
+        parts.extend(str(part) for part in args)
+    return any(str(part).replace("\\", "/").endswith("mhs.mcp") for part in parts)
+
+
 class MCPService:
     """Resolve configured MCP servers and dispatch MCP control operations."""
 
@@ -177,6 +204,91 @@ class MCPService:
         from openai4s.mcp_client import manager
 
         return manager
+
+    def _mhs_hostroute(self) -> Any:
+        """The optional governed-MHS adapter, imported only for an MHS row.
+
+        Kept optional on purpose: OpenAI4S must remain importable and runnable
+        without the integration package.  The dispatcher's trusted-stop bypass
+        uses the same lookup, so the bypass and the route cannot disagree.
+        """
+        try:
+            from openai4s_mhs import hostroute  # type: ignore[import-not-found]
+
+            return hostroute
+        except ModuleNotFoundError as exc:
+            if exc.name != "openai4s_mhs":
+                raise
+            return None
+
+    def is_trusted_estop(self, spec: dict) -> bool:
+        """Whether ``spec`` names the narrow trusted e-stop for this host.
+
+        Used *only* to decide whether the ordinary approval prompt may be
+        skipped.  It is not the authorization decision: the adapter still
+        re-checks connector enablement, MHS identity, endpoint/device binding
+        and the hardware-only refusal before a stop is attempted.
+        """
+        if not isinstance(spec, dict):
+            return False
+        if str(spec.get("tool") or "") != "mhs__estop":
+            return False
+        arguments = spec.get("args")
+        arguments = arguments if isinstance(arguments, Mapping) else {}
+        if not str(spec.get("device_id") or arguments.get("device_id") or "").strip():
+            return False
+        server = str(spec.get("server") or "")
+        if not server:
+            return False
+        try:
+            connector = self.connector(server)
+        except Exception:  # noqa: BLE001 - an unreadable store is not consent
+            return False
+        if not connector or not connector.get("enabled"):
+            return False
+        if not _looks_like_mhs_connector(connector):
+            return False
+        return self._mhs_hostroute() is not None
+
+    def emergency_stop(self, spec: dict) -> Any:
+        """The named trusted e-stop action for an enabled MHS connector.
+
+        Policy (connector enablement, MHS row, endpoint/device allow-list,
+        hardware-only refusal, ledger audit) lives in the integration adapter;
+        this method is the host entry point that the dispatcher's named action
+        and the ``mcp_call`` e-stop exemption both reach.  Ordinary approval is
+        deliberately not consulted here.
+        """
+        server = spec.get("server")
+        connector = self.connector(server)
+        if not connector:
+            return {"error": f"connector {server!r} not found"}
+        if not connector.get("enabled"):
+            return {"error": _disabled(server)}
+        if not _looks_like_mhs_connector(connector):
+            return {
+                "error": f"connector {server!r} is not a governed MHS connector; "
+                "the trusted e-stop action only applies to MHS connectors"
+            }
+        hostroute = self._mhs_hostroute()
+        if hostroute is None:
+            return {
+                "error": "the MHS integration is not importable; the trusted "
+                "e-stop route is unavailable"
+            }
+        try:
+            manager = self._resolve_manager_factory()()
+        except Exception as exc:  # noqa: BLE001 - preserve host soft-fail contract
+            return {"error": f"mcp manager unavailable for the trusted stop: {exc}"}
+        try:
+            return hostroute.trusted_emergency_stop(
+                connector,
+                self._config(connector),
+                dict(spec or {}),
+                call_tool=manager.call_tool,
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve host soft-fail contract
+            return {"error": f"mcp trusted stop failed: {exc}"}
 
     def connector(self, server: str) -> dict | None:
         """Resolve by connector id first, then by exact display name.
@@ -288,10 +400,41 @@ class MCPService:
                 return {"error": str(error)}
         config = self._config(connector)
         try:
+            manager = manager_factory()
+            if _looks_like_mhs_connector(connector):
+                # The MHS route is governed at the same seam the generic path
+                # uses: the transport below is this connector's real manager
+                # call, not a second connector.  Non-MHS connectors and the
+                # non-capability MHS tools fall through unchanged.
+                hostroute = self._mhs_hostroute()
+                if hostroute is None:
+                    # An MHS row without its integration cannot be governed.
+                    # Running it as an ordinary connector would silently drop
+                    # the journal/ledger contract, so fail closed instead.
+                    return {
+                        "error": "the MHS integration is not importable; refusing "
+                        f"to run MHS connector {server!r} ungoverned"
+                    }
+                if tool == "mhs__estop":
+                    return hostroute.trusted_emergency_stop(
+                        connector,
+                        config,
+                        spec,
+                        call_tool=manager.call_tool,
+                    )
+                governed = hostroute.governed_call(
+                    connector,
+                    config,
+                    spec,
+                    call_tool=manager.call_tool,
+                    list_tools=manager.list_tools,
+                )
+                if governed is not None:
+                    return governed
             secret_before = ""
             if connector["connector_id"] == "volcengine-datapro":
                 secret_before = datapro.resolve_agent_plan_key(self.store)
-            result = manager_factory().call_tool(
+            result = manager.call_tool(
                 connector["connector_id"],
                 config,
                 tool,

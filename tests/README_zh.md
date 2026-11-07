@@ -249,6 +249,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_host_endpoint_service.py`](test_host_endpoint_service.py) | 托管 endpoint 的 create、status、request 与 close。把一个已有的本地注册重新指到新端口需要审批；空闲端口扫描会关掉它开的每一个 socket；投影里不带秘密。 |
 | [`test_host_llm_service.py`](test_host_llm_service.py) | 内核里的 `host.llm`。批量调用保序，并把并发压在请求的上限内；其中一项失败仍然是硬失败，不会被软化成一个空回复。 |
 | [`test_host_mcp_service.py`](test_host_mcp_service.py) | Host 上的 MCP：先按 ID 再按精确名字查 connector、Tool 发现与调用路由、资源与 prompt 读取，以及它们各自使用的软错误契约。被停用的 connector 在每一个入口都会被拒，而不只是在列表里不出现。 |
+| [`test_host_openmhs.py`](test_host_openmhs.py) | 可选 OpenMHS 路由：复用原传输、适配器缺失时拒绝调用、connector 与子代理限制、可信停止的狭窄审批例外、审计和输出筛查，以及没有外部 SDK 时的导入钩子。适配器使用测试桩。 |
 | [`test_host_progress_service.py`](test_host_progress_service.py) | 会话 todo，以及针对已批准 plan 的进度推进。plan 的改动先提交，事件 sink 才跑；sink 失败是尽力而为，它撤不回一个已经推进过的步骤。 |
 | [`test_host_remote_capability_service.py`](test_host_remote_capability_service.py) | 远程 capability 探针。校验在 SSH 启动之前就软失败；传输失败绝不写注册表；只有探测真的成功了，注册表才会更新。 |
 | [`test_host_remote_science_service.py`](test_host_remote_science_service.py) | 远程折叠与突变打分，禁止编造结果的策略就是这里的全部要点。远端结果不完整或解析不了时，给出的是精确的诊断信息，绝不是一个看起来像模像样的数字。溯源信息按尽力而为解析，并按身份逐条排空。 |

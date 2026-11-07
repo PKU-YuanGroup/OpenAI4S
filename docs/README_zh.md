@@ -16,6 +16,7 @@
 | `windows-wsl-shell-inventory.json` | 基线逐文件脚本清单、Ubuntu Bash 语法结果、生成模板及可识别的 Python 进程调用。 |
 | `skill-development.md` / `skill-development_zh.md` | 实证分析 Skill 开发记录、已实现 API 与验证边界。 |
 | `architecture.md` | 当前的双循环架构与 Host API 概览，也是贡献者使用的兼容入口。 |
+| `openmhs.md` / `openmhs_zh.md` | 默认关闭的实验性 OpenMHS 集成：独立 SDK 与参考宿主的源码安装、操作者启停、受治理 MCP 调用与可信停止边界。 |
 | `ark-agent-plan-9.9.png` | 源码仓库根 README 展示的火山方舟 Agent 套餐价格截图。 |
 | `auto-mode.md` | 冻结的 Stage 0 Auto Mode 产品契约与当前 Stage 1–12 实现契约：无矛盾预设与优先级、有限预算上限、候选/终态真值、持久证据、恢复、投影规则，以及各阶段互相独立且默认关闭的渐进开启边界。 |
 | `auto-mode-stage12-evidence.md` | Stage 12 证据表：Stage 0–12 对应的集成实现、定向验证、回滚条件与可复现的完整门禁。 |
