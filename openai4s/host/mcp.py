@@ -216,7 +216,9 @@ class MCPService:
             from openai4s_mhs import hostroute  # type: ignore[import-not-found]
 
             return hostroute
-        except Exception:  # noqa: BLE001 - absent integration is a supported mode
+        except ModuleNotFoundError as exc:
+            if exc.name != "openai4s_mhs":
+                raise
             return None
 
     def is_trusted_estop(self, spec: dict) -> bool:

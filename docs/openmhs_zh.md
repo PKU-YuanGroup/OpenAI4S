@@ -1,10 +1,9 @@
-# OpenMHS 集成（实验性）
+# OpenMHS 集成
 
 [English](openmhs.md)
 
-[OpenMHS](https://github.com/PKU-YuanGroup/OpenMHS) 是独立的开源项目，
-与 Anthropic 无关联，也未获其背书。它的 OpenAI4S 参考宿主通过 MCP
-连接科研设备和模拟器。本集成**处于实验阶段，默认关闭**。
+[OpenMHS](https://mhs.openai4s.org) 是开源的 Model Hardware Standard。
+OpenAI4S 参考宿主通过 MCP 连接科研设备和模拟器，配置端点后即可启用。
 
 OpenAI4S 只包含可选路由钩子，不包含 OpenMHS SDK 或参考宿主。它们保留在
 OpenMHS 仓库的 `MHS/sdk`（发行包 `openmhs`，导入名 `mhs`）和

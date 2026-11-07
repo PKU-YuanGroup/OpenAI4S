@@ -6,12 +6,11 @@ persistent kernel. Linux daemon form-factor.
 
 __version__ = "0.3.1"
 
-# Optional OpenMHS developer overlay (integration/openai4s).  Importing it
-# registers the mhs_* tools and HostDispatcher methods while the MHS integration
-# is enabled; a missing overlay or SDK must never make `import openai4s` fail.
+# OpenMHS is optional. Report a broken installed host instead of silently disabling it.
 try:
     import openai4s_mhs
-
+except ModuleNotFoundError as exc:
+    if exc.name != "openai4s_mhs":
+        raise
+else:
     openai4s_mhs.install()
-except Exception:
-    pass

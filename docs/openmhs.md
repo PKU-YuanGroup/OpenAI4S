@@ -1,11 +1,10 @@
-# OpenMHS integration (experimental)
+# OpenMHS integration
 
 [中文说明](openmhs_zh.md)
 
-[OpenMHS](https://github.com/PKU-YuanGroup/OpenMHS) is an independent
-open-source project, not affiliated with or endorsed by Anthropic. Its
+[OpenMHS](https://mhs.openai4s.org) is the open-source Model Hardware Standard. Its
 OpenAI4S reference host connects scientific devices and simulators through
-MCP. This integration is **experimental and disabled by default**.
+MCP. Enable the integration when you configure an endpoint.
 
 OpenAI4S contains the optional routing hooks, not the OpenMHS SDK or reference
 host. Those remain in the OpenMHS repository: `MHS/sdk` (distribution

@@ -117,6 +117,22 @@ def test_optional_adapter_import_is_absent_or_broken_without_breaking_core(
     assert MCPService._mhs_hostroute(service) is None
 
 
+def test_broken_installed_adapter_reports_its_import_error(route, monkeypatch):
+    import builtins
+
+    service = route[1]
+    original = builtins.__import__
+
+    def importing(name, *args, **kwargs):
+        if name == "openai4s_mhs":
+            raise ModuleNotFoundError("missing installed SDK dependency", name="mhs")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", importing)
+    with pytest.raises(ModuleNotFoundError, match="missing installed SDK dependency"):
+        MCPService._mhs_hostroute(service)
+
+
 @pytest.mark.parametrize("method", ["call", "emergency_stop"])
 @pytest.mark.parametrize("restriction", ["disabled", "allowlist", "missing"])
 def test_disabled_or_unavailable_connectors_never_reach_adapter_or_manager(
@@ -215,8 +231,10 @@ def test_named_stop_returns_adapter_failures_as_soft_errors(route):
     }
 
 
-@pytest.mark.parametrize("mode", ["absent", "broken", "disabled", "enabled"])
-def test_optional_import_hook_keeps_core_importable(tmp_path, mode):
+@pytest.mark.parametrize(
+    "mode", ["absent", "broken", "dependency_missing", "disabled", "enabled"]
+)
+def test_optional_import_hook_reports_broken_installed_hosts(tmp_path, mode):
     script = """
 import sys
 from types import ModuleType
@@ -230,6 +248,8 @@ else:
         calls.append('install')
         if mode == 'broken':
             raise RuntimeError('optional SDK unavailable')
+        if mode == 'dependency_missing':
+            raise ModuleNotFoundError('SDK dependency unavailable', name='mhs')
         return mode == 'enabled'
     adapter.install = install
     sys.modules['openai4s_mhs'] = adapter
@@ -252,4 +272,8 @@ if mode != 'absent':
         text=True,
         timeout=20,
     )
-    assert result.returncode == 0, result.stderr
+    if mode in {"broken", "dependency_missing"}:
+        assert result.returncode != 0
+        assert "unavailable" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
