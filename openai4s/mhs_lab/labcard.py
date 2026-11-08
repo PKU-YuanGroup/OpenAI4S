@@ -188,7 +188,14 @@ def _installed_sections(
         out += [
             f"### `{ep['id']}` -- {ep['title']} -- {surface}",
             "",
-            f"Market package `{ep.get('package')}` ({ep.get('category') or 'device'}, risk {ep.get('risk')}).",
+            f"Market package `{ep.get('package')}` ({ep.get('category') or 'device'}, risk {ep.get('risk')})."
+            + (
+                " Limits that only an operator can state come from the package's example site limits; "
+                "a value outside them is refused (MHS.SAFETY.ENVELOPE_VIOLATION)."
+                if ep.get("site_limits")
+                else " A write whose limit only an operator can state is refused (MHS.SAFETY.LIMITS_UNSET); "
+                "report it, do not retry."
+            ),
             "",
         ]
         if index >= _LIVE_LISTING_LIMIT:

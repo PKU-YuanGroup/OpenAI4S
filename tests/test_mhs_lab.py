@@ -217,6 +217,10 @@ def test_add_and_remove_market_devices_on_both_surfaces(lab_dir, monkeypatch):
         "--stdio" in connectors[-1]["command"]
         and "--backend" in connectors[-1]["command"]
     )
+    # julabo's setpoint range is operator-stated: the fake backend gets the package's example overlay.
+    command = connectors[-1]["command"]
+    limits = command[command.index("--site-limits") + 1]
+    assert limits.endswith("labs/tiagocoutinho__julabo/site-limits.example.json")
     native_ids = [e["id"] for e in supervisor.native_settings()["endpoints"]]
     assert native_ids == ["reactor", "gym-pusht"]
     rules = supervisor.allow_rules()

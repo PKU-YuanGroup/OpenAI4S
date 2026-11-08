@@ -293,7 +293,26 @@ def _device_argv(
         "--state-dir",
         str(state / device["id"]),
     ]
+    limits = example_limits(device)
+    if limits:
+        argv += ["--site-limits", limits]
     return argv + (["--stdio"] if stdio else ["--port", str(device["port"])])
+
+
+def example_limits(device: dict[str, Any]) -> str | None:
+    """The package's ``site-limits.example.json``, if it ships one.
+
+    A driver whose limits only an operator can state (``operator_required``)
+    refuses those writes with ``MHS.SAFETY.LIMITS_UNSET`` until a site overlay
+    supplies them. On the fake backend the lab uses the package's example
+    overlay, so the device is usable and its envelope still refuses values
+    outside it. Real hardware needs the operator's own overlay.
+    """
+    drivers = drivers_root()
+    if drivers is None:
+        return None
+    path = drivers / device["package"] / "site-limits.example.json"
+    return str(path) if path.is_file() else None
 
 
 def _device_endpoint(device: dict[str, Any], state: Path) -> dict[str, Any]:
@@ -307,6 +326,7 @@ def _device_endpoint(device: dict[str, Any], state: Path) -> dict[str, Any]:
         "builtin": False,
         "driver": str(drivers / device["package"]) if drivers else None,
         "backend": "fake",
+        "site_limits": "package example" if example_limits(device) else None,
         "state_dir": str(state / device["id"]),
         "provenance": f"OpenMHS market package {device['package']} (fake backend)",
     }
@@ -598,6 +618,13 @@ def register_connectors(connector_settings_path: str) -> dict[str, Any]:
             c.get("id") or c.get("connector_id")
             for c in (enabled.get("connectors") or [])
         ]
+        wanted = len(connector_settings().get("endpoints") or [])
+        if len(result["connectors"]) < wanted:
+            # sync_connectors stops at the first row the store refuses and does not say why.
+            result["connector_error"] = (
+                f"only {len(result['connectors'])} of {wanted} MCP connector rows were stored; "
+                "the MCP devices are unreachable until this is fixed (see the daemon log)"
+            )
     except Exception as exc:  # noqa: BLE001 - reported, never hidden
         result["connector_error"] = f"{type(exc).__name__}: {exc}"
     try:
