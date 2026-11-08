@@ -324,7 +324,7 @@ OpenAI4S 是一个让 **Code-as-Action** 范式保持开源的社区项目。
 
 ### 开发环境配置
 
-需要 **Python ≥ 3.10** 与 [**uv**](https://docs.astral.sh/uv/)。
+贡献者工具需要 **Python ≥ 3.11** 与 [**uv**](https://docs.astral.sh/uv/)。核心与数值计算科学包仍支持 Python 3.10；matplotlib、RDKit 和 pre-commit 仅在 Python 3.11 及以上版本安装。
 
 ```bash
 git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S

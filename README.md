@@ -343,7 +343,7 @@ Before opening a PR, please read [`.github/CONTRIBUTING.md`](.github/CONTRIBUTIN
 
 ### Development setup
 
-Requires **Python ≥ 3.10** and [**uv**](https://docs.astral.sh/uv/).
+Contributor tooling requires **Python ≥ 3.11** and [**uv**](https://docs.astral.sh/uv/). The core and numeric science packages still support Python 3.10; matplotlib, RDKit, and pre-commit are installed only on Python 3.11+.
 
 ```bash
 git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
