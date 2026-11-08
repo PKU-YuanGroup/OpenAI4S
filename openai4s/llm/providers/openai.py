@@ -36,7 +36,7 @@ def _chat_openai(
         "messages": _openai_messages(messages),
     }
     limit = max_tokens or cfg.max_tokens
-    # Resolve effort before sampling: GPT-5.1/5.2 default to `none`, which
+    # Resolve effort before sampling: GPT-5.1/5.2/5.4 default to `none`, which
     # accepts temperature even though their token limit uses the newer key.
     effort = os.environ.get("OPENAI4S_LLM_REASONING_EFFORT")
     if _openai_reasoning_model(model):
@@ -136,12 +136,18 @@ def _openai_reasoning_model(model: Any) -> bool:
 def _openai_temperature_supported(model: Any, effort: str | None) -> bool:
     if not _openai_reasoning_model(model):
         return True
-    # The base GPT-5.1/5.2 models and their dated snapshots support sampling
-    # with default/explicit `none`. Do not extend this to Codex or Pro variants.
-    # https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.2
-    return (effort or "none") == "none" and bool(
-        re.fullmatch(r"gpt-5\.[12](?:-\d{4}-\d{2}-\d{2})?", str(model).strip().lower())
-    )
+    model_id = str(model).strip().lower()
+    # Versioned GPT-5 models allow sampling with explicit `none`; Codex and
+    # Pro variants do not support that mode. Only the base 5.1/5.2/5.4 models
+    # default to `none`; newer versions default to enabled reasoning.
+    # https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.4
+    if effort:
+        return (
+            effort == "none"
+            and bool(re.match(r"gpt-5\.[1-9]\d*(?:$|-)", model_id))
+            and not re.search(r"-(?:codex|pro)(?:$|-)", model_id)
+        )
+    return bool(re.fullmatch(r"gpt-5\.[124](?:-\d{4}-\d{2}-\d{2})?", model_id))
 
 
 class _StreamStartError(Exception):

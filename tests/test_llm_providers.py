@@ -334,14 +334,23 @@ def test_openai_reasoning_models_drop_max_tokens_and_temperature(cap, model):
 
 
 @pytest.mark.parametrize(
-    "model",
-    ["gpt-5.1", "gpt-5.1-2025-11-13", "gpt-5.2", "gpt-5.2-2025-12-11"],
+    "model,default_effort",
+    [
+        ("gpt-5.1", "none"),
+        ("gpt-5.1-2025-11-13", "none"),
+        ("gpt-5.2", "none"),
+        ("gpt-5.2-2025-12-11", "none"),
+        ("gpt-5.4", "none"),
+        ("gpt-5.4-2026-03-05", "none"),
+        ("gpt-5.5", "medium"),
+        ("gpt-5.6-sol", "medium"),
+    ],
 )
 @pytest.mark.parametrize("effort", [None, "none", "low", "high"])
 @pytest.mark.parametrize("temperature", [None, 0.0])
 @pytest.mark.parametrize("stream", [False, True])
 def test_openai_optional_reasoning_preserves_supported_sampling(
-    cap, monkeypatch, model, effort, temperature, stream
+    cap, monkeypatch, model, default_effort, effort, temperature, stream
 ):
     if effort is not None:
         monkeypatch.setenv("OPENAI4S_LLM_REASONING_EFFORT", effort)
@@ -366,12 +375,20 @@ def test_openai_optional_reasoning_preserves_supported_sampling(
     assert cap.payload["max_completion_tokens"] == 1234
     assert "max_tokens" not in cap.payload
     assert cap.payload.get("reasoning_effort") == effort
-    if effort in (None, "none"):
+    if (effort or default_effort) == "none":
         assert cap.payload["temperature"] == (
             cfg.temperature if temperature is None else temperature
         )
     else:
         assert "temperature" not in cap.payload
+
+
+@pytest.mark.parametrize("model", ["gpt-5", "o3", "gpt-5.1-codex", "gpt-5.2-pro"])
+def test_unsupported_none_effort_does_not_enable_sampling(cap, monkeypatch, model):
+    monkeypatch.setenv("OPENAI4S_LLM_REASONING_EFFORT", "none")
+    llm.chat([{"role": "user", "content": "hi"}], _cfg("chatgpt", model=model))
+    assert "temperature" not in cap.payload
+    assert cap.payload["reasoning_effort"] == "none"
 
 
 @pytest.mark.parametrize(
