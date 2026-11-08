@@ -36,18 +36,20 @@ def _chat_openai(
         "messages": _openai_messages(messages),
     }
     limit = max_tokens or cfg.max_tokens
+    # Resolve effort before sampling: GPT-5.1/5.2 default to `none`, which
+    # accepts temperature even though their token limit uses the newer key.
+    effort = os.environ.get("OPENAI4S_LLM_REASONING_EFFORT")
     if _openai_reasoning_model(model):
-        # OpenAI reasoning models reject `max_tokens` in favour of
-        # `max_completion_tokens`, and reject every temperature but the default.
+        # OpenAI reasoning models reject `max_tokens`.
         payload["max_completion_tokens"] = limit
     else:
         payload["max_tokens"] = limit
+    if _openai_temperature_supported(model, effort):
         payload["temperature"] = cfg.temperature if temperature is None else temperature
     if stop:
         payload["stop"] = stop
     # Some OpenAI-compatible proxies (e.g. apiany.org, behind Cloudflare) reject
     # urllib's default UA and expose reasoning models — allow env overrides.
-    effort = os.environ.get("OPENAI4S_LLM_REASONING_EFFORT")
     if effort:
         payload["reasoning_effort"] = effort
     if cfg.provider == "ollama":
@@ -129,6 +131,17 @@ _OPENAI_REASONING_MODEL = re.compile(r"(?:o\d+|gpt-5(?!-chat))(?:$|[-.])")
 
 def _openai_reasoning_model(model: Any) -> bool:
     return bool(_OPENAI_REASONING_MODEL.match(str(model or "").strip().lower()))
+
+
+def _openai_temperature_supported(model: Any, effort: str | None) -> bool:
+    if not _openai_reasoning_model(model):
+        return True
+    # The base GPT-5.1/5.2 models and their dated snapshots support sampling
+    # with default/explicit `none`. Do not extend this to Codex or Pro variants.
+    # https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.2
+    return (effort or "none") == "none" and bool(
+        re.fullmatch(r"gpt-5\.[12](?:-\d{4}-\d{2}-\d{2})?", str(model).strip().lower())
+    )
 
 
 class _StreamStartError(Exception):

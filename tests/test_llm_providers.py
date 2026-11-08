@@ -314,8 +314,8 @@ def test_chatgpt_default_model_sends_max_completion_tokens_without_temperature(c
     [
         "gpt-5-mini",
         "gpt-5-2025-08-07",
-        "gpt-5.1",
         "gpt-5.1-codex",
+        "gpt-5.2-pro",
         "o1",
         "o3-mini",
         "o4-mini-2025-04-16",
@@ -331,6 +331,47 @@ def test_openai_reasoning_models_drop_max_tokens_and_temperature(cap, model):
     assert cap.payload["max_completion_tokens"] == 1234
     assert "max_tokens" not in cap.payload
     assert "temperature" not in cap.payload
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-5.1", "gpt-5.1-2025-11-13", "gpt-5.2", "gpt-5.2-2025-12-11"],
+)
+@pytest.mark.parametrize("effort", [None, "none", "low", "high"])
+@pytest.mark.parametrize("temperature", [None, 0.0])
+@pytest.mark.parametrize("stream", [False, True])
+def test_openai_optional_reasoning_preserves_supported_sampling(
+    cap, monkeypatch, model, effort, temperature, stream
+):
+    if effort is not None:
+        monkeypatch.setenv("OPENAI4S_LLM_REASONING_EFFORT", effort)
+
+    def post_sse(url, payload, headers, timeout, on_event):
+        cap(url, payload, headers, timeout)
+        on_event({"choices": [{"delta": {"content": "ok"}}]})
+        on_event({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+
+    monkeypatch.setattr(llm.transport, "post_sse", post_sse)
+    monkeypatch.setenv("OPENAI4S_LLM_STREAM", "1")
+    cfg = _cfg("chatgpt", model=model, temperature=0.3)
+    result = llm.chat(
+        [{"role": "user", "content": "hi"}],
+        cfg,
+        max_tokens=1234,
+        temperature=temperature,
+        on_delta=(lambda _: None) if stream else None,
+    )
+
+    assert result["content"] == "ok"
+    assert cap.payload["max_completion_tokens"] == 1234
+    assert "max_tokens" not in cap.payload
+    assert cap.payload.get("reasoning_effort") == effort
+    if effort in (None, "none"):
+        assert cap.payload["temperature"] == (
+            cfg.temperature if temperature is None else temperature
+        )
+    else:
+        assert "temperature" not in cap.payload
 
 
 @pytest.mark.parametrize(

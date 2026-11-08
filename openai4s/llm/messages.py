@@ -196,7 +196,9 @@ def _anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
 _FOREIGN_CALL_META = frozenset({"type", "index", "block", "item_id", "status"})
 
 
-def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
+def _gemini_contents(
+    messages: list[dict], *, model: str = ""
+) -> tuple[str, list[dict]]:
     system_parts: list[str] = []
     contents: list[dict] = []
     pending_results: list[dict] = []
@@ -284,6 +286,15 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
                     for k, v in meta.items()
                     if k != "functionCall" and k not in _FOREIGN_CALL_META
                 }
+                if (
+                    model.lower().startswith(("gemini-3-", "gemini-3."))
+                    and _FOREIGN_CALL_META.intersection(meta)
+                    and not part.get("thoughtSignature")
+                ):
+                    # Google's documented migration marker for calls created
+                    # by another model. Native Gemini parts stay untouched.
+                    # https://ai.google.dev/gemini-api/docs/thought-signatures
+                    part["thoughtSignature"] = "skip_thought_signature_validator"
                 part["functionCall"] = function_call
                 parts.append(part)
             contents.append({"role": "model", "parts": parts})

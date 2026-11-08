@@ -40,12 +40,12 @@ _CALCULATE = ToolSpec(
 )
 
 
-def _cfg() -> LLMConfig:
+def _cfg(model="test-model") -> LLMConfig:
     return LLMConfig(
         provider="gemini",
         api_key="test-key",
         base_url="https://gemini.invalid",
-        model="test-model",
+        model=model,
     )
 
 
@@ -274,7 +274,8 @@ def test_gemini_missing_wire_id_uses_stable_local_id_but_never_replays_it(
     assert "id" not in response
 
 
-def test_gemini_canonical_fallback_replays_all_opaque_part_metadata(monkeypatch):
+@pytest.mark.parametrize("model", ["gemini-2.5-flash", "gemini-3-pro-preview"])
+def test_gemini_canonical_fallback_replays_all_opaque_part_metadata(monkeypatch, model):
     cap = _install(monkeypatch, _text_response())
     call = _call(
         "call-gemini-meta",
@@ -298,7 +299,7 @@ def test_gemini_canonical_fallback_replays_all_opaque_part_metadata(monkeypatch)
                 "content": "ok",
             },
         ],
-        _cfg(),
+        _cfg(model),
         tools=[_LOOKUP],
     )
     assert cap.payload["contents"][1]["parts"][0] == {
@@ -313,7 +314,8 @@ def test_gemini_canonical_fallback_replays_all_opaque_part_metadata(monkeypatch)
     }
 
 
-def test_gemini_parallel_calls_replay_signatures_on_original_parts(monkeypatch):
+@pytest.mark.parametrize("model", ["gemini-2.5-flash", "gemini-3-pro-preview"])
+def test_gemini_parallel_calls_replay_signatures_on_original_parts(monkeypatch, model):
     raw_content = {
         "role": "model",
         "parts": [
@@ -344,7 +346,7 @@ def test_gemini_parallel_calls_replay_signatures_on_original_parts(monkeypatch):
     )
     first = llm.chat(
         [{"role": "user", "content": "Use both."}],
-        _cfg(),
+        _cfg(model),
         tools=[_LOOKUP, _CALCULATE],
     )
     history = [{"role": "user", "content": "Use both."}, first["assistant_message"]]
@@ -360,8 +362,10 @@ def test_gemini_parallel_calls_replay_signatures_on_original_parts(monkeypatch):
                 "content": content,
             }
         )
-    llm.chat(history, _cfg(), tools=[_LOOKUP, _CALCULATE])
+    original = copy.deepcopy(history)
+    llm.chat(history, _cfg(model), tools=[_LOOKUP, _CALCULATE])
     assert cap.calls[-1]["payload"]["contents"][1] == raw_content
+    assert history == original
 
 
 _LEGACY_OPENAI_CALL = {
@@ -445,6 +449,10 @@ def _foreign_tool_turn(monkeypatch, source: str) -> dict:
 
 
 @pytest.mark.parametrize(
+    "model",
+    ["gemini-2.5-flash", "gemini-3-pro-preview", "gemini-3.1-pro-preview"],
+)
+@pytest.mark.parametrize(
     "source",
     [
         "chatgpt",
@@ -455,37 +463,46 @@ def _foreign_tool_turn(monkeypatch, source: str) -> dict:
     ],
 )
 def test_gemini_does_not_replay_other_wires_call_metadata_as_part_fields(
-    monkeypatch, source
+    monkeypatch, source, model
 ):
     # A session switched to a Gemini profile after another wire's tool call:
     # that wire's provider_meta is not a Gemini Part field, and generateContent
     # rejects the request -- and every later one, since the turn stays in history.
     assistant = _foreign_tool_turn(monkeypatch, source)
     cap = _install(monkeypatch, _text_response())
+    history = [
+        {"role": "user", "content": "Find a fact."},
+        assistant,
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "wire_id": "call_1",
+            "name": "lookup",
+            "content": "x,y",
+        },
+    ]
+    original = copy.deepcopy(history)
     llm.chat(
-        [
-            {"role": "user", "content": "Find a fact."},
-            assistant,
-            {
-                "role": "tool",
-                "tool_call_id": "call_1",
-                "wire_id": "call_1",
-                "name": "lookup",
-                "content": "x,y",
-            },
-        ],
-        _cfg(),
+        history,
+        _cfg(model),
         tools=[_LOOKUP],
+    )
+    signature = (
+        {"thoughtSignature": "skip_thought_signature_validator"}
+        if model != "gemini-2.5-flash"
+        else {}
     )
     assert cap.payload["contents"][1] == {
         "role": "model",
         "parts": [
             {
+                **signature,
                 "functionCall": {
                     "id": "call_1",
                     "name": "lookup",
                     "args": {"query": "ATP"},
-                }
+                },
             }
         ],
     }
+    assert history == original
