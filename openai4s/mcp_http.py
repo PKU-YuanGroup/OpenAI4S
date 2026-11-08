@@ -397,7 +397,9 @@ class MCPHTTPConnection:
             ),
         )
 
-        if sse_id is not None:
+        # A finite response still owes its full declared body. Only open-ended
+        # SSE streams can finish as soon as the requested event arrives.
+        if sse_id is not None and response.headers.get("Content-Length") is None:
             return _read_sse_response(chunks, sse_id)
         return b"".join(chunks)
 
