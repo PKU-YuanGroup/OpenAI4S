@@ -1030,9 +1030,12 @@ def _you_search(query: str, num_results: int, timeout: float) -> list[dict]:
 #: the keyless scraper chain (DuckDuckGo → Bing → DuckDuckGo lite → Mojeek).
 #: `openai4s.search_settings` stores the user's order and on/off choices.
 SEARCH_ENGINES = ("tavily", "you", "builtin")
+# Available in settings, but opt-in so working keyless defaults stay unchanged.
+AVAILABLE_SEARCH_ENGINES = SEARCH_ENGINES + ("parallel",)
 _ENGINE_LABELS = {
     "tavily": "Tavily",
     "you": "You.com",
+    "parallel": "Parallel",
     "builtin": "DuckDuckGo/Bing/Mojeek",
 }
 
@@ -1092,6 +1095,11 @@ def web_search(
         elif engine == "you":
             results = _dedupe(_you_search(query, num_results, _req_timeout(deadline)))
             source = "you.com"
+        elif engine == "parallel":
+            from openai4s.parallel_search import search
+
+            results = _dedupe(search(query, num_results, _time_left(deadline)))
+            source = "parallel"
         elif engine == "builtin":
             results, source, note = _builtin_search(query, num_results, deadline)
         else:

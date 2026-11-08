@@ -87,6 +87,7 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             # order. `search_settings.py` stores the user's order of exactly
             # these ids; a second copy of the list there would drift.
             "SEARCH_ENGINES",
+            "AVAILABLE_SEARCH_ENGINES",
         }
     ),
     "openai4s.mcp_client": frozenset({"disconnect_if_initialized", "manager"}),

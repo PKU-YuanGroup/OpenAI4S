@@ -23,6 +23,7 @@ FALLBACK_PERMISSION = "web_search_fallback"
 ENGINE_LABELS = {
     "tavily": "Tavily",
     "you": "You.com",
+    "parallel": "Parallel",
     "builtin": "DuckDuckGo / Bing / Mojeek",
 }
 

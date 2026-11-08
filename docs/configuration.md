@@ -275,6 +275,29 @@ for what the gate stands in front of.
 
 **Web search engines.** With an Agent Plan key configured, Doubao Search always answers first. Behind it, `web_search` tries the backup engines in the order set in Settings → Network: Tavily (only with a key), You.com and the built-in keyless engines (DuckDuckGo → Bing → DuckDuckGo lite → Mojeek). All three are on by default; each can be reordered or switched off, but at least one usable engine stays on. You.com without a key uses the free tier at `api.you.com` (100 searches a day per IP); with a key (`YDC_API_KEY`, the Network tab, or `OPENAI4S_SECRET_SEARCH_YOU_API_KEY` through the env broker) it uses `ydc-index.io`. Both hosts are on the built-in egress allowlist, `ydc-index.io` as an exact host because it receives the key (as is `api.tavily.com`; both keyed engines POST through the same egress, SSRF and no-redirect guards as `web_fetch`). After a 429 from You.com it is skipped for the server's `Retry-After` or an hour, and one You.com request is capped at 5 s. When Doubao's quota or rate limit is spent, the user is asked on an approval card whether to fall back and to which switched-on engine; a remembered answer applies later without asking, and with nobody to ask (a delegated child, a run with no UI, an active Auto Mode run) the search returns the quota error. A rejected Agent Plan key never falls back.
 
+**Parallel (opt-in, keyless).** Enable Parallel in Settings → Network and move
+it before the other backup engines, or run `openai4s init --search parallel`.
+Then try `host.web_search("Python asyncio TaskGroup documentation")` or ask the
+agent to search for that topic. Existing defaults and saved engine switches
+stay unchanged; Parallel starts off. Configured Ollama and Doubao still take
+priority, including their credential errors and the Doubao quota approval.
+Queries go anonymously to `https://mcp.parallel.ai/mcp` using its `web_search`
+tool, with an OpenAI4S User-Agent on initialization, notification, discovery
+and search requests. The service documents Fast as its anonymous default;
+OpenAI4S does not set paid API search options or expose Parallel fetch tools.
+Returned excerpts become ordinary search snippets. Parallel errors surface as
+normal tool errors; they do not silently switch provider. The network switch,
+SSRF checks and egress fence apply to every request; the exact MCP host is in
+the built-in Web search allowlist. Existing clients submitting the legacy
+engine list remain supported and preserve the saved Parallel on/off choice.
+
+**Parallel（可选、免 key）。** 在设置 → 网络中启用 Parallel 并将其移到其他备用引擎之前，
+或运行 `openai4s init --search parallel`。已有默认顺序和保存的开关不变，Parallel 默认关闭；
+已配置的 Ollama 和 Doubao 仍优先使用，凭证错误与额度回退审批规则不变。
+查询通过 `https://mcp.parallel.ai/mcp` 匿名发送，使用服务默认的 Fast 模式；
+返回的摘录作为搜索摘要。网络开关、SSRF 检查和精确主机出口限制适用于每次请求，
+请求标明来自 OpenAI4S。服务错误按普通工具错误返回，不会静默切换提供商。
+
 `OPENAI4S_KERNEL_SANDBOX` (`auto`) — `enforce` fails closed when Seatbelt or bubblewrap cannot prove the boundary; `auto` warns and continues unsandboxed; `off` disables the OS boundary. Under `OPENAI4S_EGRESS=allowlist`, Cell admission needs the enforced, self-tested, `network_policy=blocked` posture. `OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1` reports `raw_allowed` and is refused while allowlist is on.
 
 `OPENAI4S_WEBUI` — unset (the default) serves the committed Vite workbench (`openai4s/server/webui/dist/index.html`) as the SPA shell at `/` and at deep links such as `/projects/{pid}/frames/{fid}`. Set to exactly `legacy` to serve the frozen `webui/index.html` + `app.js` escape hatch. Any other value (including `1` / `next` / `true`) keeps the new UI, so a typo cannot silently fall back. `/static/dist/` is ordinary static files under `WEBUI_DIR` either way. The retired `OPENAI4S_WEBUI_NEXT` name is ignored.
@@ -480,7 +503,7 @@ is never accepted as a command-line value or returned by `--json`, keeping it
 out of shell history and structured command output.
 
 The same command makes one web-search choice. Interactively it asks after the
-model; `--search doubao|tavily|you|builtin` makes it non-interactively, with
+model; `--search doubao|tavily|you|builtin|parallel` makes it non-interactively, with
 `--search-key-stdin` supplying the Agent Plan, Tavily or You.com key (stdin
 carries one key per run, so not together with `--api-key-stdin`). `doubao`
 stores the Agent Plan key; any other choice moves that engine to the front of

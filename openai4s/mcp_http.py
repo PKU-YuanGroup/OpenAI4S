@@ -200,6 +200,44 @@ def _select_response(
     raise MCPError("MCP server response did not contain the requested JSON-RPC id")
 
 
+def _read_sse_response(
+    response: Any, exchange: HTTPExchangeDeadline, expected_id: int
+) -> bytes:
+    """Stop at the matching event, even when the peer keeps its stream open."""
+    pending = b""
+    event: list[bytes] = []
+    total = 0
+    skip_lf = False
+    read = getattr(response, "read1", None) or (lambda size: response.read(1))
+    while True:
+        exchange.remaining()
+        chunk = read(65536)
+        total += len(chunk)
+        if total > _MAX_FRAME_BYTES:
+            raise MCPOversizedResponse("MCP HTTP response exceeded the 4 MiB limit")
+        if not chunk:
+            raise MCPError("MCP event stream ended before the requested JSON-RPC id")
+        if skip_lf:
+            chunk = chunk[1:] if chunk.startswith(b"\n") else chunk
+            skip_lf = False
+        pending += chunk
+        while True:
+            boundary = re.search(rb"\r\n|\r|\n", pending)
+            if boundary is None:
+                break
+            skip_lf = boundary.group() == b"\r" and boundary.end() == len(pending)
+            line, pending = pending[: boundary.start()], pending[boundary.end() :]
+            if line:
+                event.append(line)
+                continue
+            body = b"\n".join(event) + b"\n\n"
+            event.clear()
+            for message in _sse_messages(body):
+                mid = message.get("id")
+                if type(mid) is int and mid == expected_id:
+                    return body
+
+
 def _redact_reflection(value: Any, secret: str) -> Any:
     """Remove an outbound secret reflected by an untrusted MCP response."""
 
@@ -424,7 +462,16 @@ class MCPHTTPConnection:
                     if session is not None:
                         self._session = _session_id(session)
                     content_type = response.headers.get("Content-Type", "")
-                    response_body = self._read_body(response, exchange)
+                    if (
+                        expected_id is not None
+                        and content_type.partition(";")[0].strip().lower()
+                        == "text/event-stream"
+                    ):
+                        response_body = _read_sse_response(
+                            response, exchange, expected_id
+                        )
+                    else:
+                        response_body = self._read_body(response, exchange)
                     if expected_id is None:
                         return None
         except urllib.error.HTTPError as exc:

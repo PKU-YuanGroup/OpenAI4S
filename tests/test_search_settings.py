@@ -46,8 +46,8 @@ def _store(tmp_path):
 def test_a_fresh_install_keeps_the_pre_setting_chain(tmp_path):
     st = _store(tmp_path)
     assert search_settings.load(st) == {
-        "order": ["tavily", "you", "builtin"],
-        "enabled": {"tavily": True, "you": True, "builtin": True},
+        "order": ["tavily", "you", "builtin", "parallel"],
+        "enabled": {"tavily": True, "you": True, "builtin": True, "parallel": False},
     }
     assert search_settings.engine_chain(st) == webtools.SEARCH_ENGINES
 
@@ -69,8 +69,8 @@ def test_a_row_from_another_version_is_repaired(tmp_path):
         json.dumps({"order": ["gone", "you", "you"], "enabled": {"you": False}}),
     )
     assert search_settings.load(st) == {
-        "order": ["you", "tavily", "builtin"],
-        "enabled": {"tavily": True, "you": False, "builtin": True},
+        "order": ["you", "tavily", "builtin", "parallel"],
+        "enabled": {"tavily": True, "you": False, "builtin": True, "parallel": False},
     }
 
 
@@ -444,8 +444,13 @@ def test_route_reports_the_list_and_keeps_the_tavily_fields(route):
     assert status == 200
     assert body["endpoint"] == "https://api.tavily.com/search"
     assert body["api_key_configured"] is False
-    assert body["order"] == ["tavily", "you", "builtin"]
-    assert [e["id"] for e in body["engines"]] == ["tavily", "you", "builtin"]
+    assert body["order"] == ["tavily", "you", "builtin", "parallel"]
+    assert [e["id"] for e in body["engines"]] == [
+        "tavily",
+        "you",
+        "builtin",
+        "parallel",
+    ]
     assert body["doubao_configured"] is False
 
 
@@ -457,7 +462,7 @@ def test_route_saves_order_switches_and_a_you_key(route):
             "enabled": {"tavily": False, "you": True, "builtin": True},
         },
     )
-    assert status == 200 and body["order"] == ["you", "builtin", "tavily"]
+    assert status == 200 and body["order"] == ["you", "builtin", "tavily", "parallel"]
     status, body = route("POST", {"engine": "you", "api_key": "ydc-route-secret"})
     assert status == 200
     you = next(e for e in body["engines"] if e["id"] == "you")
