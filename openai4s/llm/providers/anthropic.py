@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from ..messages import _anthropic_messages
@@ -38,8 +39,9 @@ def _chat_anthropic(
         "model": model,
         "messages": conv,
         "max_tokens": max_tokens or cfg.max_tokens,
-        "temperature": cfg.temperature if temperature is None else temperature,
     }
+    if not _sampling_removed(model):
+        payload["temperature"] = cfg.temperature if temperature is None else temperature
     if system_txt:
         payload["system"] = system_txt
     if stop:
@@ -91,6 +93,21 @@ def _chat_anthropic(
         "wire_state": wire_state,
         "raw": body,
     }
+
+
+# `claude-<family>-<major>[-<minor>]`, anywhere in the id so platform prefixes
+# (`anthropic.claude-opus-5-5`) still match. The minor is one or two digits so
+# a date suffix (`claude-sonnet-4-20250514`) is not read as a version.
+_CLAUDE_MODEL = re.compile(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)")
+
+
+def _sampling_removed(model: Any) -> bool:
+    """Opus 4.7+ and Claude 5-generation models 400 on any `temperature`."""
+    match = _CLAUDE_MODEL.search(str(model or "").lower())
+    if match is None:
+        return False
+    family, major, minor = match[1], int(match[2]), int(match[3] or 0)
+    return major >= 5 or (family == "opus" and major == 4 and minor >= 7)
 
 
 class _StreamStartError(Exception):

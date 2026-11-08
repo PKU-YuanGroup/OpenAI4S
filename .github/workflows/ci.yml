@@ -367,7 +367,15 @@ jobs:
       # landed, or a lockfile/extras drift turns this job green while it
       # validates nothing the .dmg ships.
       - name: Assert the science stack actually installed
-        run: uv run python -c "import matplotlib, pandas"
+        # matplotlib is Python >=3.11. It depends on Pillow, and Pillow 13 is
+        # the first release that closes the current Pillow advisories; Pillow
+        # 13 does not support 3.10, so that row installs numpy/pandas/sklearn
+        # only. 3.12 and newer still fail here when matplotlib is missing,
+        # which is what keeps their plotting tests from silently skipping.
+        run: |
+          uv run python -c 'import numpy, pandas, sklearn, sys
+          if sys.version_info >= (3, 11):
+              import matplotlib'
 
   singlecell-skill:
     name: Single-cell workflow (Python 3.11)

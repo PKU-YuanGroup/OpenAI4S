@@ -343,7 +343,7 @@ Before opening a PR, please read [`.github/CONTRIBUTING.md`](.github/CONTRIBUTIN
 
 ### Development setup
 
-Requires **Python ≥ 3.10** and [**uv**](https://docs.astral.sh/uv/).
+Contributor tooling requires **Python ≥ 3.11** and [**uv**](https://docs.astral.sh/uv/). The core and numeric science packages still support Python 3.10; matplotlib, RDKit, and pre-commit are installed only on Python 3.11+.
 
 ```bash
 git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
@@ -353,7 +353,7 @@ uv run pytest                       # offline test suite (LLM mocked)
 uv run pre-commit run --all-files   # format + lint everything
 ```
 
-Style is enforced by **pre-commit** — `black`, `isort` (`--profile black`), and `ruff`, pinned in [`.pre-commit-config.yaml`](.pre-commit-config.yaml). Runtime deps: the core is **zero-dependency** (pure stdlib); the optional `science` extra pins `numpy>=1.24 · pandas>=2.0 · matplotlib>=3.7`.
+Style is enforced by **pre-commit** — `black`, `isort` (`--profile black`), and `ruff`, pinned in [`.pre-commit-config.yaml`](.pre-commit-config.yaml). Runtime deps: the core is **zero-dependency** (pure stdlib); the optional `science` extra pins `numpy>=1.24 · pandas>=2.0 · matplotlib>=3.7` (matplotlib on Python 3.11+, because current Pillow security releases require it).
 
 ### What we welcome
 

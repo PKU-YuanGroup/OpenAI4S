@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
+from packaging.version import Version
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -579,3 +581,88 @@ def test_dependabot_covers_every_npm_manifest():
             configured_directories - manifest_directories
         ),
     }
+
+
+# Minimum releases that close the advisories Scorecard reported against the
+# dependency graph. A later lock may go past these; it may not go back.
+_PYTHON_SECURITY_FLOORS = {
+    "certifi": "2026.10.18",
+    "filelock": "4.2.1",
+    "msgpack": "1.2.3",
+    "pillow": "13.0.0",
+    "setuptools": "84.1.0",
+    "urllib3": "2.8.0",
+    "virtualenv": "21.14.9",
+}
+_NPM_SECURITY_FLOORS = {
+    "vite": "6.4.4",
+    "@vitest/mocker": "5.0.3",
+    "launch-editor": "2.14.2",
+}
+_NPM_REQUIRED = ("vite", "@vitest/mocker")
+
+
+def _locked_python_versions() -> dict[str, set[str]]:
+    found: dict[str, set[str]] = {}
+    name: str | None = None
+    version: str | None = None
+
+    def flush() -> None:
+        if name and version:
+            found.setdefault(name, set()).add(version)
+
+    for line in (ROOT / "uv.lock").read_text(encoding="utf-8").splitlines():
+        if line == "[[package]]":
+            flush()
+            name = None
+            version = None
+            continue
+        if name is None and line.startswith("name = "):
+            name = line.split("=", 1)[1].strip().strip('"')
+        elif version is None and name and line.startswith("version = "):
+            version = line.split("=", 1)[1].strip().strip('"')
+    flush()
+    return found
+
+
+def test_locked_dependencies_meet_security_floors():
+    """The dependency graph stays on the patched side of the current advisories.
+
+    These packages are transitive. A parent that still accepts the vulnerable
+    release will not move them unless the lock is forced, and Scorecard counts
+    every copy, including one kept for an older interpreter.
+    """
+    locked = _locked_python_versions()
+    below = {
+        name: sorted(locked.get(name, ()))
+        for name, floor in _PYTHON_SECURITY_FLOORS.items()
+        if name not in locked
+        or any(Version(found) < Version(floor) for found in locked[name])
+    }
+    assert below == {}
+
+    present: dict[str, set[str]] = {}
+    for manifest in (
+        ROOT / "package-lock.json",
+        ROOT / "frontend" / "package-lock.json",
+    ):
+        packages = json.loads(manifest.read_text(encoding="utf-8")).get("packages", {})
+        for path, meta in packages.items():
+            name = meta.get("name")
+            if not name:
+                parts = [part for part in path.split("node_modules/") if part]
+                name = parts[-1] if parts else ""
+            version = meta.get("version")
+            if name in _NPM_SECURITY_FLOORS and version:
+                present.setdefault(name, set()).add(version)
+    missing = [name for name in _NPM_REQUIRED if name not in present]
+    assert missing == []
+    npm_below = {
+        name: sorted(versions)
+        for name, versions in present.items()
+        if any(
+            Version(version) < Version(_NPM_SECURITY_FLOORS[name])
+            for version in versions
+        )
+    }
+    assert npm_below == {}

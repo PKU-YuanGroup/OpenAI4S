@@ -192,6 +192,7 @@ def test_generation_summary_matches_generation_log():
 
 
 def test_build_example_uses_temporary_outputs(tmp_path):
+    pytest.importorskip("matplotlib")
     builder = _load_builder()
     committed_dashboard = (_example_root() / "optimization_dashboard.html").read_bytes()
     committed_candidates = (_example_root() / "candidates_final.csv").read_bytes()

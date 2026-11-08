@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from ..messages import _openai_messages
@@ -33,14 +34,22 @@ def _chat_openai(
     payload: dict[str, Any] = {
         "model": model,
         "messages": _openai_messages(messages),
-        "max_tokens": max_tokens or cfg.max_tokens,
-        "temperature": cfg.temperature if temperature is None else temperature,
     }
+    limit = max_tokens or cfg.max_tokens
+    # Resolve effort before sampling: GPT-5.1/5.2/5.4 default to `none`, which
+    # accepts temperature even though their token limit uses the newer key.
+    effort = os.environ.get("OPENAI4S_LLM_REASONING_EFFORT")
+    if _openai_reasoning_model(model):
+        # OpenAI reasoning models reject `max_tokens`.
+        payload["max_completion_tokens"] = limit
+    else:
+        payload["max_tokens"] = limit
+    if _openai_temperature_supported(model, effort):
+        payload["temperature"] = cfg.temperature if temperature is None else temperature
     if stop:
         payload["stop"] = stop
     # Some OpenAI-compatible proxies (e.g. apiany.org, behind Cloudflare) reject
     # urllib's default UA and expose reasoning models — allow env overrides.
-    effort = os.environ.get("OPENAI4S_LLM_REASONING_EFFORT")
     if effort:
         payload["reasoning_effort"] = effort
     if cfg.provider == "ollama":
@@ -113,6 +122,32 @@ def _chat_openai(
         "wire_state": wire_state,
         "raw": body,
     }
+
+
+# o-series and gpt-5 family ids (gpt-5, gpt-5-mini, gpt-5.1, o3-mini, ...),
+# except gpt-5-chat, which is a non-reasoning chat model.
+_OPENAI_REASONING_MODEL = re.compile(r"(?:o\d+|gpt-5(?!-chat))(?:$|[-.])")
+
+
+def _openai_reasoning_model(model: Any) -> bool:
+    return bool(_OPENAI_REASONING_MODEL.match(str(model or "").strip().lower()))
+
+
+def _openai_temperature_supported(model: Any, effort: str | None) -> bool:
+    if not _openai_reasoning_model(model):
+        return True
+    model_id = str(model).strip().lower()
+    # Versioned GPT-5 models allow sampling with explicit `none`; Codex and
+    # Pro variants do not support that mode. Only the base 5.1/5.2/5.4 models
+    # default to `none`; newer versions default to enabled reasoning.
+    # https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.4
+    if effort:
+        return (
+            effort == "none"
+            and bool(re.match(r"gpt-5\.[1-9]\d*(?:$|-)", model_id))
+            and not re.search(r"-(?:codex|pro)(?:$|-)", model_id)
+        )
+    return bool(re.fullmatch(r"gpt-5\.[124](?:-\d{4}-\d{2}-\d{2})?", model_id))
 
 
 class _StreamStartError(Exception):

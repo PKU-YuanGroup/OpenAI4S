@@ -1808,6 +1808,13 @@ class WSHub:
                             int(since),
                             require_complete=True,
                         )
+                # A number is only a cursor position together with the stream
+                # it counts, and the client keys its cursor on `root_frame_id`.
+                # Events broadcast directly (not through `emitter`) used to be
+                # numbered without it, so the hub's counter moved and the
+                # client's did not -- and every later resubscribe of an idle
+                # session was declared a gap and refetched history.
+                obj.setdefault("root_frame_id", root_frame_id)
                 obj["seq"] = self._next_seq_locked(root_frame_id)
                 self._record(root_frame_id, obj)
                 # ``send_json`` only performs JSON encoding + a non-blocking
