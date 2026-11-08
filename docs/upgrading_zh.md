@@ -2,7 +2,28 @@
 
 [English](upgrading.md)
 
-已经装了 0.3.0、要升到 0.3.1 的，先读下一节。数据库仍在 0.2.x 的，0.3.1 会在一次打开里把它一直迁到 schema 35：到 schema 32 为止的步骤读后面那一节，33 到 35 读下一节。
+已经装了 0.3.1、要升到 1.0.0 的，先读下一节。已经装了 0.3.0、要升到 0.3.1 的，读再下一节。数据库仍在 0.2.x 的，0.3.1 会在一次打开里把它一直迁到 schema 35：到 schema 32 为止的步骤读后面那一节，33 到 35 读下一节。
+
+## 升级到 1.0.0（schema 35 → 36）
+
+先停守护进程（`openai4s stop`，再用 `openai4s status` 确认），在没有任何进程运行时复制整个数据目录，
+包括 `openai4s.db` 旁边的 `openai4s.db-wal` 或 `openai4s.db-journal`：
+
+```bash
+cp -a ~/.openai4s ~/.openai4s-before-1.0.0
+```
+
+已有的 PyPI 安装：激活原来的环境后运行 `python -m pip install --upgrade "openai4s[science]==1.0.0"`。
+源码检出：`git fetch --tags && git checkout v1.0.0 && git submodule update --init third_party/OpenMHS`，
+然后运行 `./setup.sh`。
+
+第一个打开数据库的命令会把它从 schema 35 迁到 36。schema 36 新增 `dataset_verification_receipts` 表：
+只有绑定到确切版本、来源和字节的 Host 回执，才会显示为数据集已校验。历史制品来源保持不变，也不会为它们
+推断回执，所以它们的校验状态显示为未知。`doctor` 和 `diagnostics` 只检查 schema，不会升级它。不支持降级：
+0.3.1 会拒绝 schema 36，你自己复制的那份数据目录才是退路。
+
+OpenMHS 实验室需要主动启用。从不运行 `openai4s lab` 的安装不会有其他变化；`OPENAI4S_OPENMHS=off` 可以关闭
+OpenMHS 查找。详见 [openmhs_zh.md](openmhs_zh.md)。
 
 ## 升级到 0.3.1（schema 32 → 35）
 

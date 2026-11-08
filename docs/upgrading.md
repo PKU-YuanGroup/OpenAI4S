@@ -2,10 +2,39 @@
 
 [中文说明](upgrading_zh.md)
 
-An install that is already on 0.3.0 reads the next section before the first
-start of 0.3.1. A database still on 0.2.x is migrated by 0.3.1
+An install that is already on 0.3.1 reads the next section before the first
+start of 1.0.0. An install that is already on 0.3.0 reads the section after it
+before the first start of 0.3.1. A database still on 0.2.x is migrated by 0.3.1
 straight to schema 35 in one open: read the later section for the
 steps up to schema 32 and the next section for 33 through 35.
+
+## Upgrading to 1.0.0 (schema 35 → 36)
+
+Stop the daemon (`openai4s stop`, then check `openai4s status`) and copy the
+whole data directory while nothing is running, including any
+`openai4s.db-wal` or `openai4s.db-journal` file:
+
+```bash
+cp -a ~/.openai4s ~/.openai4s-before-1.0.0
+```
+
+For an existing PyPI installation, activate its environment and run
+`python -m pip install --upgrade "openai4s[science]==1.0.0"`. For a source
+checkout, `git fetch --tags && git checkout v1.0.0 && git submodule update --init third_party/OpenMHS`,
+then `./setup.sh`.
+
+The first command that opens the database migrates it from schema 35 to 36.
+Schema 36 adds the `dataset_verification_receipts` table: a dataset's
+verification is shown only with a Host-owned receipt bound to the exact
+version, source and bytes. Historical artifact sources are kept unchanged and
+no receipt is inferred for them, so their verification status reads as
+unknown. `doctor` and `diagnostics` inspect the schema without upgrading it.
+Downgrade is unsupported: 0.3.1 refuses schema 36, and the copy you made is the
+way back.
+
+The OpenMHS lab is opt-in. An installation that never runs `openai4s lab`
+changes nothing else; `OPENAI4S_OPENMHS=off` turns OpenMHS discovery off. See
+[openmhs.md](openmhs.md).
 
 ## Upgrading to 0.3.1 (schema 32 → 35)
 

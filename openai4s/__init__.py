@@ -4,7 +4,7 @@ A pure-Python agent whose action space is Turing-complete code running in a
 persistent kernel. Linux daemon form-factor.
 """
 
-__version__ = "0.3.1"
+__version__ = "1.0.0"
 
 # OpenMHS is optional. Find its checkout (the third_party/OpenMHS submodule or
 # `openai4s lab setup`) so no PYTHONPATH is needed, then report a broken

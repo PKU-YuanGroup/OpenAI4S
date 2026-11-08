@@ -665,7 +665,7 @@ into this one (D3) when the turn is sent — not when the reference is typed, so
 an inserted-then-deleted reference leaves no Artifact and no lineage edge
 behind. Cross-project is refused with the same answer as absent.
 
-The bare `@name` spelling is deprecated: it still works, and is removed in 0.4.0
+The bare `@name` spelling is deprecated: it still works, and is removed in 1.1.0
 (`artifact_refs.LEGACY_REF_REMOVED_IN`, which a test fails on). Until then it
 resolves inside the calling session only, through the artifact's latest
 *version* rather than its live path, and says in the injected block that it is
