@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-WebSocket transport for the workbench. Port of `connectWS` / `onEvent` from `openai4s/server/webui/app.js` (5157-5357). The if/else chain becomes a Map registry: exactly one handler per event type, duplicate register throws. The cursor (`_seqSeen`) advances only after `onEvent` returns. Later F-series lanes register their own types via `registerWsHandler`; they must not re-register `replay_begin` / `replay_end` / `frame_update` / `artifact_created`.
+WebSocket transport for the workbench. Port of `connectWS` / `onEvent` from `openai4s/server/webui/app.js` (5157-5357). The if/else chain becomes a Map registry: exactly one handler per event type, duplicate register throws. The cursor (`_seqSeen`) advances only after `onEvent` returns, and a sequenced event at or below its root's cursor is dropped before dispatch (replay control frames and re-sent pending approvals excepted). Later F-series lanes register their own types via `registerWsHandler`; they must not re-register `replay_begin` / `replay_end` / `frame_update` / `artifact_created`.
 
 ## Files
 
@@ -11,9 +11,9 @@ WebSocket transport for the workbench. Port of `connectWS` / `onEvent` from `ope
 | [`types.ts`](types.ts) | `WsMessage` / `WsHandler`. |
 | [`registry.ts`](registry.ts) | Map registry, `registerWsHandler`, inner `onEvent`. |
 | [`guards.ts`](guards.ts) | `mine`, `isStaleTurnEvent`, `eventFrameId`, `tryLane`. |
-| [`connect.ts`](connect.ts) | `connectWS`, `sub`/`unsub`, ping, reconnect, `handleIncomingMessage` (cursor, written in place: sampled, never subscribed). |
+| [`connect.ts`](connect.ts) | `connectWS`, `sub`/`unsub`, ping, reconnect, `handleIncomingMessage` (duplicate gate + cursor, written in place: sampled, never subscribed). |
 | [`handlers.ts`](handlers.ts) | `replay_begin`/`replay_end`; `frame_update` in-place patch + 300ms trailing load; `artifact_created` upsert (new list, `_artBust` and `_tbl` values, so subscribers see it) + 150ms trailing load. |
 | [`index.ts`](index.ts) | `installWs` / `bootWs` and public re-exports. |
 | [`registry.test.ts`](registry.test.ts) | Duplicate register throws; handler throw does not advance the cursor. |
 | [`handlers.test.ts`](handlers.test.ts) | Epoch mismatch, gap reload, mine / isStaleTurnEvent, session patch, artifact upsert, debounce. |
-| [`connect.test.ts`](connect.test.ts) | URL, subscribe-on-open, ping, reconnect, onmessage cursor order. |
+| [`connect.test.ts`](connect.test.ts) | URL, subscribe-on-open, ping, reconnect, onmessage cursor order, duplicate/older drop, epoch reset, re-sent approval, non-finite seq. |

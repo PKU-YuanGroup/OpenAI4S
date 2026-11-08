@@ -83,7 +83,21 @@ export function unsub(f: string): void {
 }
 
 /**
+ * Messages that are handed over as state rather than read as stream
+ * positions, so a `seq` on one never marks it as already applied. Replay
+ * control frames are unsequenced by contract. A pending approval card is
+ * re-sent on every `view_session` with the `seq` its first broadcast stamped
+ * into the broker's stored payload, which is always at or below the cursor;
+ * the card renderer is idempotent per `decision_id`.
+ */
+const UNSEQUENCED_TYPES = new Set(["replay_begin", "replay_end", "await_permission"]);
+
+/**
  * Apply one parsed event, then record the cursor. Port of app.js:5162-5169.
+ *
+ * A sequenced event at or below its root's cursor was already applied, so it
+ * is dropped before dispatch: a reconnect replay must not let an older event
+ * overwrite an outcome the client has already processed.
  *
  * Record the cursor only AFTER onEvent has applied it: advancing first
  * would let a handler that throws leave the client claiming an event it
@@ -96,16 +110,21 @@ export function handleIncomingMessage(data: unknown): void {
   } catch {
     return;
   }
+  const rid = m && m.root_frame_id;
+  const raw = m && m.seq;
+  // One definition of a usable position for the gate and the writer alike: a
+  // non-finite seq recorded as the cursor would drop every later event.
+  const sq = typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 0;
+  if (rid && sq && !UNSEQUENCED_TYPES.has(String(m.type)) && sq <= (_seqSeen.value[rid] || 0)) return;
   onEvent(m);
-  const rid = m && m.root_frame_id,
-    sq = m && m.seq;
-  // Written in place on purpose. `_seqSeen` is a resume cursor, not state
-  // anything renders: its readers (`sub`, a history read comparing before and
-  // after) sample it, none subscribes, and this runs for every event, where a
-  // copy per event would be pure churn. The E2E contract relies on the same
-  // object staying in `S._seqSeen` across nested writes.
+  // Written in place on purpose. `_seqSeen` is a resume cursor and duplicate
+  // gate, not state anything renders: its readers (`sub`, the gate above, a
+  // history read comparing before and after) sample it, none subscribes, and
+  // this runs for every event, where a copy per event would be pure churn.
+  // The E2E contract relies on the same object staying in `S._seqSeen` across
+  // nested writes.
   const seen = _seqSeen.value;
-  if (rid && typeof sq === "number" && sq > (seen[rid] || 0)) seen[rid] = sq;
+  if (rid && sq > (seen[rid] || 0)) seen[rid] = sq;
 }
 
 export const connectWS: ConnectWS = () => {

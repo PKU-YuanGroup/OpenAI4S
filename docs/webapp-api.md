@@ -206,7 +206,10 @@ contract.
   stale cursor look already-satisfied and skip the new turn's first events.
   Only `broadcast` events are sequenced; point-to-point snapshots delivered on
   subscribe (`execution_queue`, pending approval cards) and the replay control
-  frames deliberately carry no `seq`.
+  frames deliberately carry no `seq`. A re-sent approval card is a copy with
+  the `seq` its first broadcast was stamped with removed. Every sequenced event
+  names the `root_frame_id` its `seq` counts, since that is the key the client
+  files its cursor under.
 - The frontend is a single-page app. `/`, `/index.html`, and any unknown
   non-API `GET` serve the SPA shell (`webui/dist/index.html` by default;
   `webui/index.html` when `OPENAI4S_WEBUI=legacy`) so deep links such as
@@ -1108,7 +1111,7 @@ gateway does not currently emit any).
 
 ### Server → client events
 
-Every event has `type` and (via the hub emitter) a `root_frame_id`; most also
+Every event has `type` and (stamped by the hub) a `root_frame_id`; most also
 carry a redundant `frame_id`. The frontend keys off `m.root_frame_id ||
 m.frame_id`.
 
