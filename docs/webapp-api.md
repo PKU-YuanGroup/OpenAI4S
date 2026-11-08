@@ -370,6 +370,31 @@ All three are admin-only in team mode on every verb (`403 admin_only`, never
 | `POST /diagnostics/checks` | The full `doctor.report()` — the same probes the CLI `doctor` runs, side effects included (a temp sandbox self-test, environment root walks). `{"status","checks":[…],"request_id"}`. |
 | `POST /diagnostics/bundle` | Streams the redacted support zip (`application/zip`, `Content-Disposition: attachment`). The body is ignored — the client cannot name the output path. One generation in flight per process and one per principal per 60 s (`429 rate_limited`; a 413 or a failed generation does not spend the cooldown); `413 payload_too_large` above 32 MiB. |
 
+### OpenMHS simulated lab (Lab panel)
+
+Served only when OpenMHS (the SDK `mhs`, found in the `third_party/OpenMHS`
+submodule or a downloaded copy) is importable; otherwise `GET /mhs-lab/status`
+answers `{"available": false, "reason": …}`, `POST /mhs-lab/setup` can download
+it, and the other routes answer `404 mhs_lab_unavailable`.
+The data comes from each lab endpoint's persisted evidence chain (`--state-dir`),
+so receipts from every access path (MCP connector, native `mhs_*` tools, stdio)
+appear in one stream. See [openmhs.md](openmhs.md#simulated-lab-and-the-lab-panel).
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /mhs-lab/status` | `{available, format, lab_dir, simulated, endpoints:[{id,title,device_id?,group:"mhs"\|"mcp",builtin,package?,category?,risk?,connector?,access,surface,wire,url?,running,latch:{latched,reason?,since?},state,provenance,…}], lims:[vial…]}`. HTTP endpoints report their live `main` resource state; stdio devices report their last pose and receipt count from receipts. Without OpenMHS: `{available:false, reason, setup, openmhs:{pinned_ref,checkout,searched,…}}`. A lab the operator left running is restarted in the background. |
+| `GET /mhs-lab/activity?limit=` | `{items:[{endpoint,access,seq,ts,capability,capability_id,status,code,message,summary,principal,receipt_id,digest}], total, counts:{endpoint:{completed,rejected,failed,other}}}`, oldest first, the newest `limit` (default 300, at most 2000). A non-integer `limit` is `400 invalid_limit`. |
+| `GET /mhs-lab/results` | Chart data derived from receipt outputs: `{dose_response:[…current plate…], reactor_runs, reactor_best, vials, arm_path}`. |
+| `GET /mhs-lab/verify` | Offline verification of every endpoint chain (`mhs.evidence.verify_chain`) and the host ledger: `{chains:{id:{valid,checked,head_digest,errors,schema}}, host_ledger:{…}, verified_at}`. |
+| `GET /mhs-lab/card` | `{card}`: the device card given to the agent as project context. |
+| `GET /mhs-lab/market?q=&track=&mode=&category=&limit=&offset=` | Search the OpenMHS market: `{total, offset, limit, count, categories:{name:n}, website, packages:[{id,name,category,topic,mode,risk,track,intro,tags,upstream,stars,measures,adjusts,install,installed:{id,via}\|null}]}` (`limit` 1–200, default 40). A non-integer `limit`/`offset` is `400 invalid_limit`. |
+| `POST /mhs-lab/devices` | Install a market device on its fake backend and start the lab. Body `{package, via?:"mcp"\|"mhs"}` → `{added, device:{id,package,via,name,category,mode,risk,device_id,port?,added_at}, started, not_ready, …}`. Missing `package` is `400 invalid_package`, a bad `via` `400 invalid_via`, an unknown package `404 unknown_package`. Admin only in team mode. |
+| `DELETE /mhs-lab/devices/<id>` | Uninstall a device the operator added: stops its endpoint, deletes its connector row and allow rules → `{removed, connectors, …}`. A built-in device is `409 builtin_device`; an unknown one `404 unknown_device`. Admin only in team mode. |
+| `POST /mhs-lab/start` · `POST /mhs-lab/stop` | Start the lab's endpoints and register its connectors (`{started, not_ready, connectors, lab_card, …}`), or stop them (`{stopped}`). Admin only in team mode. |
+| `POST /mhs-lab/setup` | Body `{confirm:true}`: download the pinned OpenMHS release into `<data dir>/openmhs` when no checkout exists → `{ok, openmhs}`; without `confirm` `400 confirm_required`; a failed download `502 mhs_lab_setup_failed`. Admin only in team mode. |
+| `POST /mhs-lab/estop` | Operator e-stop. Body `{endpoint:<lab device id>\|"all", reason?}` → `{action, operator, results:{id:{status,code,receipt_id}\|{error}}}`. Admin only in team mode (`403 admin_only`); an unknown endpoint is `400 invalid_endpoint`. |
+| `POST /mhs-lab/reset` | Operator reset of one latched endpoint. Body `{endpoint, operator?}`; `all` is `400`. A reset releases the latch only; the device's declared re-enable restores motion. Every action is appended to `<lab>/operator-actions.jsonl`. |
+
 ### Update check
 
 Two routes, one feature (F14/F15; the response shape is appendix B.2). Both are

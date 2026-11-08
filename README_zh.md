@@ -74,6 +74,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## 📣 更新
 
+- **`2026-11-08`** 🔬 **`v0.4.0-rc.1` 预发布 —— OpenMHS 实验室** —— OpenAI4S 以 git 子模块的形式内置 [OpenMHS](https://mhs.openai4s.org)（开源的 Model Hardware Standard）。Notebook 旁新增 **实验室** 标签页：模拟仪器在端点强制的限值、急停与哈希链回执下运行；[OpenMHS 市场](https://mhs.openai4s.org/market/) 的 **746 台设备** 一键（或一条命令 `openai4s lab add <id>`）即可安装，可选原生 MHS 工具或 MCP 连接器接入。→ [OpenMHS 指南](docs/openmhs_zh.md)
 - **`2026-10-18`** 📁 **[`v0.3.1`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1) —— 本地项目文件夹与可携带的历史记录** —— 绑定源文件夹、浏览已保存的会话历史、导入带校验的科学数据集，并使用 **611 个内置 Skill**。Linux 与 Windows/WSL2 安装包通过 GitHub 发布，Python 包通过 PyPI 发布，公开容器镜像通过 GHCR 发布。macOS 签名与公证暂缓，当前请使用 PyPI。数据库 schema 从 32 升到 35，首次启动前请阅读 **[升级到 0.3.1](docs/upgrading_zh.md)**。
 - **`2026-09`** 🧭 **`v0.3.0` —— 新工作台，以及第一个 Windows 安装包** —— Preact/TypeScript 工作台取代 `app.js` 单体成为默认 UI，本次 release 也在 Linux tarball 之外首次发布 **Windows/WSL2 zip**。每个本地守护进程现在都要求访问令牌：`OPENAI4S_REQUIRE_TOKEN=0` 这个 loopback 豁免已被移除。交互式 HTML 报告运行在独立的沙箱源上；Notebook cell 保留自己产出的精确 Artifact 版本；长上下文压缩真正落地，并能在重启后恢复；委派的子代理继承父会话的环境，并留下持久、可导出的 cell 记录；Auto Mode 以原子方式准入预算，并会停下没有进展的运行。单细胞 RNA 分析 Skill 让总数达到 604。Apple Silicon 的 **macOS 镜像**是 ad-hoc 签名的预览版，未经公证。数据库 schema 从 27 升到 32，首次启动前请先阅读 **[从 0.2.x 升级](docs/upgrading_zh.md)**。
 - **`2026-08-24`** 🚀 **`v0.2.0` —— 多平台发布** —— 一个 release，两个桌面安装包：Apple Silicon **`.dmg`** 与内嵌同一套 Python 与科学栈的可移动 **Linux `x86_64` tarball**（Windows/WSL2 zip 已构建、正在稳定化，将随后续版本发布）。底层新增：带 Guardian 审查边界的 **Auto Mode**、诚实的**完成证据对账**（崩溃的 cell 不再可能渲染成干净的成功）、**MCP Streamable HTTP** 传输（含火山引擎 DataPro 连接器与豆包联网搜索）、**Anthropic Messages SSE 流式**、锁定的 **561 个 bioSkills 配方集合**（共 603 个 Skill，可用 `npx` 装到任何地方）、工作台的轨迹账本视图、Docker/Kubernetes 部署、`openai4s --version`，以及让运行中的 R cell 在每个平台都能可靠中断的信号修复系列。
@@ -215,6 +216,18 @@ cd OpenAI4S-0.3.1-linux-x86_64
 - 冷启动性能。未经修改的完整浏览器 smoke 未通过：它超过了 20 秒的排队准入等待。并发负载下还出现过 WSL 服务连接超时。
 
 **原生 Windows 不受支持，而且程序会直接拒绝在那里启动内核**，不是「先警告再照跑」——内核要拉起 POSIX 子进程，R 通道靠 shell 重定向走文件描述符 3 和 4，沙箱也没有 Windows 后端。WSL2 报告自己是 Linux，所以这个包跑的就是其他平台跑的同一个构建。如果你还没有 WSL2，启动器会停下来并给出那条确切的命令（管理员 PowerShell 里的 `wsl --install`）。详见：**[平台支持矩阵](docs/platforms.md)**。
+
+### 🔬 OpenMHS 实验室：746 台模拟设备
+
+```bash
+git clone --recursive https://github.com/PKU-YuanGroup/OpenAI4S.git && cd OpenAI4S
+./setup.sh && source .venv/bin/activate
+openai4s lab add labs/tiagocoutinho__julabo   # 任意设备 id，见 https://mhs.openai4s.org/market/
+openai4s serve                               # 实验室 → 设备市场 → 安装
+```
+
+`third_party/OpenMHS` 子模块会被自动发现（无需 `PYTHONPATH`）。设备运行在模拟器或 fake 后端上；
+驱动真实硬件仍需操作员明确决定。详见 [OpenMHS 指南](docs/openmhs_zh.md)。
 
 ### 🐳 Docker 与 Kubernetes
 
