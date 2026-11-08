@@ -37,8 +37,8 @@ def confirm_quota_fallback(
     delegated: bool,
     action_context: dict[str, Any],
     permission_broker=None,
-) -> str | None:
-    """The backup engine to use after a Doubao quota error, or None for none.
+) -> list[str] | None:
+    """Return the allowed backup chain starting at the chosen engine.
 
     ``engines`` is the switched-on chain in the user's order; Tavily without a
     key is left out because it cannot answer. Engines are checked against
@@ -57,18 +57,19 @@ def confirm_quota_fallback(
     scope = store.resolve_frame_scope(frame_id)
     root = scope.get("root_frame_id")
     project = scope.get("project_id") or "default"
-    offered: list[str] = []
-    for engine in candidates:
-        decision = store.resolve_permission(
+    decisions = {
+        engine: store.resolve_permission(
             root_frame_id=root,
             project_id=project,
             tool=FALLBACK_PERMISSION,
             pattern_input=engine,
         )
-        if decision == "allow":
-            return engine
-        if decision != "deny":
-            offered.append(engine)
+        for engine in candidates
+    }
+    offered = [engine for engine in candidates if decisions[engine] != "deny"]
+    for index, engine in enumerate(offered):
+        if decisions[engine] == "allow":
+            return offered[index:]
     if not offered or delegated:
         return None
     if permission_broker is None:
@@ -98,4 +99,4 @@ def confirm_quota_fallback(
     if not gate.get("allow"):
         return None
     choice = gate.get("choice") or offered[0]
-    return choice if choice in offered else None
+    return offered[offered.index(choice) :] if choice in offered else None

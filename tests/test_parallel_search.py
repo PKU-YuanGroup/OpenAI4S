@@ -461,3 +461,69 @@ def test_documented_cli_choice_survives_config_reload(tmp_path, monkeypatch):
         assert search_settings.project(host.store)["engines"][0]["accepts_key"] is False
     finally:
         host.store.close()
+
+
+@pytest.mark.parametrize(
+    "deny_parallel,builtin_hits,expected",
+    [(True, True, "fixture-builtin"), (True, False, None), (False, True, "parallel")],
+)
+def test_quota_fallback_honors_provider_denials_on_the_wire(
+    tmp_path, monkeypatch, peer, deny_parallel, builtin_hits, expected
+):
+    from openai4s.doubao_search import DoubaoSearchQuotaError
+    from openai4s.host.search import FALLBACK_PERMISSION
+
+    root, requests, _ = peer
+    monkeypatch.setattr(parallel_search, "ENDPOINT", root + "/success")
+    monkeypatch.setattr(webtools, "guard_url", lambda url: None)
+    tried = []
+
+    def quota(*args, **kwargs):
+        raise DoubaoSearchQuotaError("spent quota")
+
+    def you(*args):
+        tried.append("you")
+        return []
+
+    def builtin(*args):
+        tried.append("builtin")
+        rows = [SOURCE] if builtin_hits else []
+        return rows, "fixture-builtin", None
+
+    monkeypatch.setattr(webtools, "_you_search", you)
+    monkeypatch.setattr(webtools, "_builtin_search", builtin)
+    host = HostDispatcher(Config(data_dir=tmp_path), frame_id="quota-fallback")
+    try:
+        monkeypatch.setattr(host._doubao_search_service, "search_primary", quota)
+        host.store.seed_default_permission_rules()
+        order = ["you", "parallel", "builtin", "tavily"]
+        search_settings.save(
+            host.store, order=order, enabled={e: e != "tavily" for e in order}
+        )
+        host.store.set_permission_rule(
+            scope="global",
+            scope_id="",
+            tool=FALLBACK_PERMISSION,
+            pattern="you",
+            decision="allow",
+        )
+        if deny_parallel:
+            host.store.set_permission_rule(
+                scope="global",
+                scope_id="",
+                tool=FALLBACK_PERMISSION,
+                pattern="parallel",
+                decision="deny",
+            )
+        result = host("web_search", [{"query": "fixture query", "timeout": 2}])
+        if deny_parallel:
+            assert not requests
+            assert tried == ["you", "builtin"]
+        else:
+            assert [body["method"] for body, _ in requests][-1] == "tools/call"
+            assert tried == ["you"]
+        assert result.get("source") == expected
+        if expected is None:
+            assert result["count"] == 0 and "no results" in result["note"]
+    finally:
+        host.store.close()

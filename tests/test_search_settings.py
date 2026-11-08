@@ -189,7 +189,7 @@ def _rule(st, engine, decision):
 def test_the_user_picks_from_the_usable_switched_on_engines(tmp_path):
     st = _store(tmp_path)
     broker = _Broker(answer={"allow": True, "decision_id": "d", "choice": "builtin"})
-    assert _confirm(st, broker) == "builtin"
+    assert _confirm(st, broker) == ["builtin"]
     (gate,) = broker.gates
     assert gate["method"] == FALLBACK_PERMISSION
     assert gate["approvals_reviewer"] == "user"
@@ -206,16 +206,19 @@ def test_a_remembered_allow_decides_without_asking_even_unattended(tmp_path):
     st = _store(tmp_path)
     _rule(st, "builtin", "allow")
     broker = _Broker(reachable=False)
-    assert _confirm(st, broker, delegated=True) == "builtin"
+    assert _confirm(st, broker, delegated=True) == ["builtin"]
     assert broker.gates == []
 
 
 def test_a_remembered_deny_removes_that_engine_from_the_offer(tmp_path):
     st = _store(tmp_path)
     _rule(st, "you", "deny")
-    broker = _Broker()
-    _confirm(st, broker)
-    assert [c["id"] for c in broker.gates[0]["choices"]] == ["builtin"]
+    broker = _Broker(answer={"allow": True, "choice": "builtin"})
+    assert _confirm(st, broker, engines=("builtin", "you", "parallel")) == [
+        "builtin",
+        "parallel",
+    ]
+    assert [c["id"] for c in broker.gates[0]["choices"]] == ["builtin", "parallel"]
 
 
 @pytest.mark.parametrize("delegated, reachable", [(True, True), (False, False)])
@@ -375,7 +378,7 @@ def test_an_approved_fallback_starts_at_the_picked_engine(tmp_path, monkeypatch)
 
     def confirm(**kwargs):
         seen.update(kwargs)
-        return "you"
+        return ["you", "builtin"]
 
     monkeypatch.setattr(host_search, "confirm_quota_fallback", confirm)
     dispatcher = _dispatcher(tmp_path)
