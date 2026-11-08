@@ -210,7 +210,9 @@ def describe() -> dict[str, Any]:
         "checkout": str(located[1]) if located else None,
         "source": located[0] if located else None,
         # Discovery off means unavailable, whatever this process happens to import.
-        "importable": not disabled() and _importable("mhs") and _importable("openai4s_mhs"),
+        "importable": not disabled()
+        and _importable("mhs")
+        and _importable("openai4s_mhs"),
         "searched": [str(p) for _s, p in candidates()],
     }
     if info["importable"]:
