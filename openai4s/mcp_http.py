@@ -17,14 +17,15 @@ import math
 import re
 import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any, Callable
 
 from openai4s import egress, webtools
-from openai4s.http_deadline import HTTPExchangeDeadline, read_body_capped
+from openai4s.http_deadline import HTTPExchangeDeadline, iter_body_capped
 from openai4s.mcp_protocol import (
     MAX_FRAME_BYTES,
     MCPError,
@@ -200,35 +201,22 @@ def _select_response(
     raise MCPError("MCP server response did not contain the requested JSON-RPC id")
 
 
-def _read_sse_response(
-    response: Any, exchange: HTTPExchangeDeadline, expected_id: int
-) -> bytes:
+def _read_sse_response(chunks: Iterable[bytes], expected_id: int) -> bytes:
     """Stop at the matching event, even when the peer keeps its stream open."""
-    pending = b""
+    line_parts: list[bytes] = []
     event: list[bytes] = []
-    total = 0
     skip_lf = False
-    read = getattr(response, "read1", None) or (lambda size: response.read(1))
-    while True:
-        exchange.remaining()
-        chunk = read(65536)
-        total += len(chunk)
-        if total > _MAX_FRAME_BYTES:
-            raise MCPOversizedResponse("MCP HTTP response exceeded the 4 MiB limit")
-        if not chunk:
-            raise MCPError("MCP event stream ended before the requested JSON-RPC id")
-        if skip_lf:
-            chunk = chunk[1:] if chunk.startswith(b"\n") else chunk
-            skip_lf = False
-        pending += chunk
-        while True:
-            boundary = re.search(rb"\r\n|\r|\n", pending)
-            if boundary is None:
-                break
-            skip_lf = boundary.group() == b"\r" and boundary.end() == len(pending)
-            line, pending = pending[: boundary.start()], pending[boundary.end() :]
-            if line:
-                event.append(line)
+    for chunk in chunks:
+        if skip_lf and chunk.startswith(b"\n"):
+            chunk = chunk[1:]
+        skip_lf = chunk.endswith(b"\r")
+        lines = re.split(rb"\r\n|[\r\n]", chunk)
+        for line in lines[:-1]:
+            line_parts.append(line)
+            complete = b"".join(line_parts)
+            line_parts.clear()
+            if complete:
+                event.append(complete)
                 continue
             body = b"\n".join(event) + b"\n\n"
             event.clear()
@@ -236,6 +224,9 @@ def _read_sse_response(
                 mid = message.get("id")
                 if type(mid) is int and mid == expected_id:
                     return body
+        if lines[-1]:
+            line_parts.append(lines[-1])
+    raise MCPError("MCP event stream ended before the requested JSON-RPC id")
 
 
 def _redact_reflection(value: Any, secret: str) -> Any:
@@ -292,6 +283,7 @@ class MCPHTTPConnection:
         *,
         headers_provider: Callable[[], Mapping[str, Any] | None] | None = None,
         timeout: float | None = None,
+        deadline: float | None = None,
     ) -> None:
         self.command = ["streamable_http"]
         self._url = _validated_url(url)
@@ -312,6 +304,7 @@ class MCPHTTPConnection:
         if not math.isfinite(chosen_timeout) or chosen_timeout <= 0:
             raise MCPError("streamable HTTP connector timeout must be positive")
         self._timeout = chosen_timeout
+        self._deadline = deadline
         self._id = 0
         self._lock = threading.RLock()
         self._session: str | None = None
@@ -374,6 +367,7 @@ class MCPHTTPConnection:
         self,
         response: Any,
         exchange: HTTPExchangeDeadline,
+        sse_id: int | None = None,
     ) -> bytes:
         """This transport's failure vocabulary over the shared bounded reader.
 
@@ -387,7 +381,7 @@ class MCPHTTPConnection:
         def _oversize() -> BaseException:
             return MCPOversizedResponse("MCP HTTP response exceeded the 4 MiB limit")
 
-        return read_body_capped(
+        chunks = iter_body_capped(
             response,
             limit=_MAX_FRAME_BYTES,
             exchange=exchange,
@@ -403,6 +397,10 @@ class MCPHTTPConnection:
             ),
         )
 
+        if sse_id is not None:
+            return _read_sse_response(chunks, sse_id)
+        return b"".join(chunks)
+
     def _post(
         self,
         payload: dict[str, Any],
@@ -411,6 +409,12 @@ class MCPHTTPConnection:
     ) -> dict[str, Any] | None:
         if self._closed:
             raise MCPError(self._failure or "MCP HTTP connection is closed")
+        operation_exchange = None
+        if self._deadline is not None:
+            remaining = self._deadline - time.monotonic()
+            if remaining <= 0:
+                raise MCPTimeout("MCP HTTP operation exceeded its deadline")
+            operation_exchange = HTTPExchangeDeadline(min(remaining, self._timeout))
         self._check_network_policy()
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         if len(body) > _MAX_FRAME_BYTES:
@@ -446,7 +450,7 @@ class MCPHTTPConnection:
             # redacting a multi-megabyte reply is local CPU work; charging it to
             # the wire budget let a complete, correct response be thrown away as
             # a timeout.  ``doubao_search`` already splits it this way.
-            with HTTPExchangeDeadline(self._timeout) as exchange:
+            with operation_exchange or HTTPExchangeDeadline(self._timeout) as exchange:
                 opener = exchange.build_opener(_NoRedirect)
                 with exchange.open(opener, request) as response:
                     status = getattr(response, "status", None) or response.getcode()
@@ -462,16 +466,13 @@ class MCPHTTPConnection:
                     if session is not None:
                         self._session = _session_id(session)
                     content_type = response.headers.get("Content-Type", "")
-                    if (
-                        expected_id is not None
-                        and content_type.partition(";")[0].strip().lower()
+                    is_sse = (
+                        content_type.partition(";")[0].strip().lower()
                         == "text/event-stream"
-                    ):
-                        response_body = _read_sse_response(
-                            response, exchange, expected_id
-                        )
-                    else:
-                        response_body = self._read_body(response, exchange)
+                    )
+                    response_body = self._read_body(
+                        response, exchange, expected_id if is_sse else None
+                    )
                     if expected_id is None:
                         return None
         except urllib.error.HTTPError as exc:

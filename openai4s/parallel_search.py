@@ -25,14 +25,12 @@ def search(query: str, num_results: int, timeout: float) -> list[dict]:
         return []
     deadline = time.monotonic() + timeout
     connection = MCPHTTPConnection(
-        ENDPOINT, headers={"User-Agent": USER_AGENT}, timeout=timeout
+        ENDPOINT, headers={"User-Agent": USER_AGENT}, timeout=timeout, deadline=deadline
     )
     try:
-        connection._timeout = max(0.001, deadline - time.monotonic())
         tools = connection.list_tools()
         if not any(tool.get("name") == "web_search" for tool in tools):
             raise MCPError("Parallel MCP does not expose web_search")
-        connection._timeout = max(0.001, deadline - time.monotonic())
         reply = connection.call_tool(
             "web_search", {"objective": query, "search_queries": [query]}
         )

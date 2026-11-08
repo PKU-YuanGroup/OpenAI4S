@@ -41,6 +41,22 @@ def peer():
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((body, dict(self.headers)))
             method = body["method"]
+            if self.path == "/slow-handshake" and method in {
+                "initialize",
+                "notifications/initialized",
+            }:
+                time.sleep(0.9)
+            if self.path == "/slow-recovery":
+                if (
+                    method == "tools/call"
+                    and sum(req["method"] == method for req, _ in requests) == 1
+                ):
+                    time.sleep(0.9)
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                if method == "initialize" and len(requests) > 1:
+                    time.sleep(0.9)
             if "id" not in body:
                 self.send_response(202)
                 self.send_header("Content-Length", "0")
@@ -61,6 +77,8 @@ def peer():
                 reply["result"] = {"structuredContent": {"results": [SOURCE]}}
             encoded = json.dumps(reply, ensure_ascii=False).encode()
             self.send_response(200)
+            if self.path == "/slow-recovery" and method == "initialize":
+                self.send_header("Mcp-Session-Id", "fixture-session")
             if method != "tools/call":
                 self.send_header("Content-Type", "Application/JSON")
                 self.send_header("Content-Length", str(len(encoded)))
@@ -152,18 +170,44 @@ def test_native_host_returns_before_stream_eof(tmp_path, monkeypatch, peer, path
         host.store.close()
 
 
+@pytest.mark.parametrize("path", ["/slow-handshake", "/slow-recovery"])
+def test_search_deadline_spans_handshake_and_session_recovery(
+    tmp_path, monkeypatch, peer, path
+):
+    root, requests, _ = peer
+    monkeypatch.setattr(parallel_search, "ENDPOINT", root + path)
+    monkeypatch.setattr(webtools, "guard_url", lambda url: None)
+    host = HostDispatcher(Config(data_dir=tmp_path), frame_id="deadline")
+    try:
+        host.store.seed_default_permission_rules()
+        search_settings.apply_setup_choice(host.store, "parallel")
+        start = time.monotonic()
+        reply = host("web_search", [{"query": "fixture query", "timeout": 1.2}])
+        elapsed = time.monotonic() - start
+        assert elapsed < 1.6, (elapsed, [req["method"] for req, _ in requests])
+        assert "error" in reply
+        methods = [req["method"] for req, _ in requests]
+        if path == "/slow-handshake":
+            assert methods == ["initialize", "notifications/initialized"]
+        else:
+            assert methods == [
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "tools/call",
+                "initialize",
+            ]
+    finally:
+        host.store.close()
+
+
 @pytest.mark.parametrize("separator", [b"\r", b"\n", b"\r\n"])
 def test_sse_line_boundaries_and_unicode(separator):
     body = json.dumps({"id": 7, "result": PASSAGE}, ensure_ascii=False).encode()
     stream = io.BytesIO(b"data: " + body + separator + separator)
 
-    # Single-byte reads force CRLF and UTF-8 sequences across read boundaries.
-    class Reader:
-        def read1(self, size):
-            return stream.read(1)
-
-    with HTTPExchangeDeadline(2) as exchange:
-        response = _read_sse_response(Reader(), exchange, 7)
+    # Single-byte chunks split CRLF and UTF-8 sequences across reads.
+    response = _read_sse_response(iter(lambda: stream.read(1), b""), 7)
     assert PASSAGE in response.decode()
 
 
@@ -341,7 +385,8 @@ def test_redirect_never_forwards_query_session_or_credentials(
 
 
 @pytest.mark.parametrize("media_type", ["application/json", "text/event-stream"])
-def test_actual_http_client_caps_response(monkeypatch, media_type):
+@pytest.mark.parametrize("early_reply", [False, True])
+def test_actual_http_client_caps_response(monkeypatch, media_type, early_reply):
     from openai4s import mcp_http
     from openai4s.mcp_protocol import MCPOversizedResponse
 
@@ -351,12 +396,22 @@ def test_actual_http_client_caps_response(monkeypatch, media_type):
 
         def do_POST(self):
             self.rfile.read(int(self.headers["Content-Length"]))
-            body = b" " * 2048
             self.send_response(200)
             self.send_header("Content-Type", media_type)
-            self.send_header("Content-Length", str(len(body)))
+            if early_reply:
+                self.send_header("Content-Length", "2048")
             self.end_headers()
-            self.wfile.write(body)
+            if early_reply:
+                prefix = b'data: {"id":1,"result":{}}\n\n'
+                self.wfile.write(prefix)
+                self.wfile.flush()
+                time.sleep(0.05)
+                try:
+                    self.wfile.write(b" " * (2048 - len(prefix)))
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # A client rejecting the declared size may already be gone.
+            else:
+                self.wfile.write(b" " * 2048)
 
     monkeypatch.setattr(webtools, "guard_url", lambda url: None)
     monkeypatch.setattr(mcp_http, "_MAX_FRAME_BYTES", 1024)
