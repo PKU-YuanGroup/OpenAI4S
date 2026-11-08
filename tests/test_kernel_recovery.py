@@ -972,3 +972,44 @@ def test_recovery_journal_is_append_only_and_survives_repository_reopen(tmp_path
     assert rows[1]["entry_id"] == second["entry_id"]
     assert rows[1]["detail"] == {"missing": ["model"]}
     connection.close()
+
+
+@pytest.mark.parametrize("failure_phase", ["build", "cancel", "publish"])
+def test_journal_failure_does_not_skip_unpublished_candidate_cleanup(failure_phase):
+    candidate = _Candidate()
+    published = []
+    events = []
+    orchestrator = _orchestrator(candidate, [], published, [])
+    journal_error = sqlite3.OperationalError("database or disk is full")
+
+    def journal(event):
+        phase, status = event["phase"], event["status"]
+        events.append((phase, status))
+        if (
+            (failure_phase == "build" and phase == "build")
+            or (failure_phase == "cancel" and status == "cancelled")
+            or (failure_phase == "publish" and phase == "publish")
+        ):
+            raise journal_error
+        if phase == "restore" and status == "failed":
+            raise journal_error
+
+    orchestrator._journal = journal
+    orchestrator._cancelled = (
+        lambda: failure_phase == "cancel" and ("build", "completed") in events
+    )
+
+    with pytest.raises(sqlite3.OperationalError) as raised:
+        orchestrator.restore(
+            root_frame_id="root",
+            branch_id=None,
+            manifest=_manifest(),
+            recipe=RecoveryRecipe(),
+            source_generation_id="old",
+        )
+
+    assert raised.value is journal_error
+    assert candidate.shutdown_calls == (0 if failure_phase == "publish" else 1)
+    assert published == (
+        [candidate.generation_id] if failure_phase == "publish" else []
+    )

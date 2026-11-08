@@ -25,6 +25,7 @@ README；单次替换是原子的，但整批替换不是全部成功或全部�
 | `EQSTLab.png` | 贡献者 `EQSTLab` 的可直接渲染头像。 |
 | `Grace-xyx.png` | 贡献者 `Grace-xyx` 的可直接渲染头像。 |
 | `HowardLi1984.png` | 贡献者 `HowardLi1984` 的可直接渲染头像。 |
+| `JunkaiWang-TheoPhy.png` | 贡献者 `JunkaiWang-TheoPhy` 的可直接渲染头像。 |
 | `Linmj-Judy.png` | 贡献者 `Linmj-Judy` 的可直接渲染头像。 |
 | `Lyu6PosHao.png` | 贡献者 `Lyu6PosHao` 的可直接渲染头像。 |
 | `Nobody-Zhang.png` | 贡献者 `Nobody-Zhang` 的可直接渲染头像。 |
