@@ -33,6 +33,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+# Capture the surface as CI sees it: without the optional OpenMHS checkout (the
+# third_party/OpenMHS submodule is not fetched there), and without starting lab
+# endpoints on a developer machine that has it.
+os.environ["OPENAI4S_OPENMHS"] = "off"
 
 from openai4s.config import Config, LLMConfig  # noqa: E402
 from openai4s.server import contract  # noqa: E402

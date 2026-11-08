@@ -109,6 +109,7 @@ from openai4s.server import (
     governance_routes,
     kernel_routes,
     local_auth,
+    mhs_lab_routes,
     onboarding_routes,
     orchestration_routes,
     package_runtime,
@@ -16574,6 +16575,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             ):
                 return
             if diagnostics_routes.handle(self, method, sub, cfg=cfg):
+                return
+            # The optional OpenMHS simulated lab (Lab panel beside the Notebook).
+            if mhs_lab_routes.handle(self, method, sub, q):
                 return
             # Explicit update check: a read-only status and an operator-pressed
             # check. Admin-only on both verbs (team_policy), no-store, and the

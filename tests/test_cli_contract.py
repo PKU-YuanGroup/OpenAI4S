@@ -178,7 +178,7 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
     assert proc.returncode == 0, proc.stderr
     assert (
         "{serve,status,doctor,verify-package,inspect-package,diagnostics,stop,url,"
-        "run,init,setup,benchmark,env,jupyter,share,cluster,user,relay}" in proc.stdout
+        "run,init,setup,benchmark,env,jupyter,share,cluster,user,lab,relay}" in proc.stdout
     )
     for command in (
         "serve",
@@ -188,6 +188,8 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
         "env",
         # A benchmark nobody can run is a directory of fixtures.
         "benchmark",
+        # The simulated OpenMHS lab: installing a market device is one command.
+        "lab",
         # The command for someone whose daemon will not start: if it is not in
         # --help, it does not exist to the person who needs it.
         "doctor",
