@@ -67,10 +67,10 @@ def test_capabilities_use_the_governed_adapter_and_original_transport(
     assert config["command"] == command
     assert config["args"] == args
     assert forwarded == spec
-    assert adapter.governed_call.call_args.kwargs == {
-        "call_tool": manager.call_tool,
-        "list_tools": manager.list_tools,
-    }
+    callbacks = adapter.governed_call.call_args.kwargs
+    assert callbacks["call_tool"] == manager.call_tool
+    assert callbacks["list_tools"]("mhs-lab", config) is manager.list_tools.return_value
+    manager.list_tools.assert_called_once_with("mhs-lab", config)
     manager.call_tool.assert_not_called()
 
 
@@ -87,6 +87,25 @@ def test_non_capability_fallback_and_adapter_errors_do_not_retry_commands(route)
     assert service.call(spec) is refused
     adapter.governed_call.side_effect = RuntimeError("journal unavailable")
     assert "journal unavailable" in service.call(spec)["error"]
+    manager.call_tool.assert_not_called()
+
+
+def test_discovery_failure_never_falls_through_to_an_ungoverned_command(route):
+    _dispatcher, service, manager, adapter, _steps = route
+    manager.list_tools.side_effect = RuntimeError("discovery unavailable")
+
+    def governed_call(connector, config, spec, *, call_tool, list_tools):
+        # The reference host returns None when discovery fails, as well as
+        # when a successfully discovered tool does not need governance.
+        try:
+            list_tools(connector["connector_id"], config)
+        except Exception:
+            return None
+        return {"text": "governed"}
+
+    adapter.governed_call.side_effect = governed_call
+    result = service.call({"server": "mhs-lab", "tool": "mhs__arm__move"})
+    assert "discovery unavailable" in result["error"]
     manager.call_tool.assert_not_called()
 
 
@@ -184,6 +203,7 @@ def test_trusted_stop_skips_denied_approval_but_is_audited_and_screened(
     adapter.trusted_emergency_stop.assert_called_once()
     assert adapter.trusted_emergency_stop.call_args.args[2]["server"] == "mhs-lab"
     manager.call_tool.assert_not_called()
+    manager.list_tools.assert_not_called()
     row = dispatcher.store._conn.execute(
         "SELECT method, ok, side_effect_class FROM host_call_log WHERE method=?",
         (method,),
@@ -201,6 +221,39 @@ def test_ordinary_mhs_call_still_requires_approval(route, monkeypatch):
     assert "Permission denied" in result["error"]
     gate.assert_called_once()
     adapter.governed_call.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["mcp_call", "mhs_emergency_stop"])
+@pytest.mark.parametrize("server", ["mhs-lab", "MHS Lab"])
+@pytest.mark.parametrize("scope", ["global", "project", "conversation"])
+def test_trusted_stop_respects_persisted_mcp_denies(
+    route, monkeypatch, method, server, scope
+):
+    dispatcher, _service, manager, adapter, steps = route
+    root = dispatcher.store.new_frame(project_id="mhs-project")
+    dispatcher.frame_id = dispatcher.store.new_frame(parent_id=root)
+    dispatcher.store.set_permission_rule(
+        scope=scope,
+        scope_id={"global": "", "project": "mhs-project", "conversation": root}[scope],
+        tool="mcp_call",
+        pattern="mhs-lab/*",
+        decision="deny",
+    )
+    gate = Mock(side_effect=AssertionError("a standing deny must not prompt"))
+    monkeypatch.setattr(broker(), "gate", gate)
+    spec = {"server": server, "device_id": "arm"}
+    if method == "mcp_call":
+        spec = {"server": server, "tool": "mhs__estop", "args": {"device_id": "arm"}}
+    result = dispatcher(method, [spec])
+    assert "Permission denied" in result["error"]
+    gate.assert_not_called()
+    adapter.trusted_emergency_stop.assert_not_called()
+    manager.call_tool.assert_not_called()
+    row = dispatcher.store._conn.execute(
+        "SELECT ok FROM host_call_log WHERE method=?", (method,)
+    ).fetchone()
+    assert row["ok"] == 0
+    assert steps[-1]["status"] == "error"
 
 
 @pytest.mark.parametrize("method", ["mcp_call", "mhs_emergency_stop"])

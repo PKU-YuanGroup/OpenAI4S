@@ -2272,6 +2272,26 @@ class HostDispatcher:
                 # Older injected MCP services have no trusted-stop capability.
                 check_stop = getattr(self._mcp_service, "is_trusted_estop", None)
                 trusted_stop = callable(check_stop) and check_stop(stop_spec)
+                if trusted_stop:
+                    # Exempt the prompt, never a standing deny. Both stop
+                    # spellings share the canonical MCP permission identity,
+                    # including the root conversation's project for children.
+                    scope = self.store.resolve_frame_scope(self.frame_id)
+                    stop_target = _gate_target("mcp_call", [stop_spec])
+                    if (
+                        self.store.resolve_permission(
+                            root_frame_id=scope.get("root_frame_id"),
+                            project_id=scope.get("project_id") or "default",
+                            tool="mcp_call",
+                            pattern_input=stop_target,
+                        )
+                        == "deny"
+                    ):
+                        result = {
+                            "error": f"Permission denied: mcp_call to {stop_target} is denied"
+                        }
+                        ok = False
+                        return result
             requires_approval = (
                 (
                     control_tool.requires_approval

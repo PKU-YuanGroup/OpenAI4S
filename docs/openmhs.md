@@ -109,10 +109,13 @@ feature off, it registers no tools and opens no endpoint connection.
   host journals command intent before sending it, appends outcomes to its host
   ledger, and records verified endpoint evidence over the same MCP transport.
   UNKNOWN and in-flight outcomes require reconciliation before retrying.
+  Tool discovery must succeed before an ordinary call can proceed; a discovery
+  failure never falls back to an unjournaled command.
 - Only an explicit, device-bound `mhs__estop` (or the Host action
   `mhs_emergency_stop`) skips the ordinary approval prompt. Connector
-  enablement, delegated child restrictions, endpoint/device binding and the
-  reference host's safety policy still apply. The stop is audited as an
+  enablement, persisted MCP deny rules, delegated child restrictions,
+  endpoint/device binding and the reference host's safety policy still apply.
+  The stop is audited as an
   external write; its returned content is screened like other MCP output.
 - Resets and permits belong to the separate human operator route, never the
   agent connector. Hardware access is separately disabled by default. A

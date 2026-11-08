@@ -422,12 +422,17 @@ class MCPService:
                         spec,
                         call_tool=manager.call_tool,
                     )
+                # The adapter also returns None when its discovery fails.
+                # Resolve descriptors here so that failure cannot fall through
+                # to a command without its journal and ledger. The adapter
+                # consumes the same successful snapshot without a second RPC.
+                tools = manager.list_tools(connector["connector_id"], config)
                 governed = hostroute.governed_call(
                     connector,
                     config,
                     spec,
                     call_tool=manager.call_tool,
-                    list_tools=manager.list_tools,
+                    list_tools=lambda _server, _config: tools,
                 )
                 if governed is not None:
                     return governed
