@@ -67,12 +67,18 @@ def _evidence(ep: dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str,
 
 def _latched(ep: dict[str, Any]) -> dict[str, Any]:
     try:
-        doc = json.loads((Path(ep["state_dir"]) / "latch.json").read_text(encoding="utf-8"))
+        doc = json.loads(
+            (Path(ep["state_dir"]) / "latch.json").read_text(encoding="utf-8")
+        )
     except (OSError, ValueError):
         return {"latched": False}
     for value in (doc.get("devices") or {}).values():
         if value.get("latched"):
-            return {"latched": True, "reason": value.get("reason"), "since": value.get("since")}
+            return {
+                "latched": True,
+                "reason": value.get("reason"),
+                "since": value.get("since"),
+            }
     return {"latched": False}
 
 
@@ -92,20 +98,28 @@ def _summary(short: str, out: dict[str, Any]) -> str:
         return f"rows {','.join(out.get('rows') or [])} · S={_fmt(out.get('substrate_uM'))} µM · {_fmt(out.get('temperature_C'))} °C"
     if short == "read_kinetics":
         rows = out.get("rows") or {}
-        return f"{out.get('read_id')} · " + ", ".join(f"{r}:{v.get('compound_id')}" for r, v in rows.items())
+        return f"{out.get('read_id')} · " + ", ".join(
+            f"{r}:{v.get('compound_id')}" for r, v in rows.items()
+        )
     if short == "load_sample":
         return f"{out.get('vial_id')} → {out.get('compound_id')} · {_fmt(out.get('stock_mM'))} mM · purity {_fmt(out.get('purity'))}"
     if short == "run_condition":
-        return (f"{out.get('reagent_b')} · {_fmt(out.get('temperature_C'))} °C · {_fmt(out.get('residence_time_min'))} min · "
-                f"{_fmt(out.get('equiv_b'))} eq → yield {_fmt(out.get('yield_pct'), 4)} %")
+        return (
+            f"{out.get('reagent_b')} · {_fmt(out.get('temperature_C'))} °C · {_fmt(out.get('residence_time_min'))} min · "
+            f"{_fmt(out.get('equiv_b'))} eq → yield {_fmt(out.get('yield_pct'), 4)} %"
+        )
     if short == "collect_product":
-        return (f"{out.get('vial_id')} · {out.get('product_id')} · {_fmt(out.get('volume_mL'))} mL · "
-                f"purity {_fmt(out.get('hplc_purity_pct'), 4)} %")
+        return (
+            f"{out.get('vial_id')} · {out.get('product_id')} · {_fmt(out.get('volume_mL'))} mL · "
+            f"purity {_fmt(out.get('hplc_purity_pct'), 4)} %"
+        )
     if short == "move_pose":
         p = out.get("position") or {}
         return f"→ ({_fmt(p.get('x'), 4)}, {_fmt(p.get('y'), 4)}, {_fmt(p.get('z'), 4)}) mm"
     if short == "move_joints":
-        return "joints → " + ", ".join(_fmt(v, 2) for v in (out.get("joint_positions") or []))
+        return "joints → " + ", ".join(
+            _fmt(v, 2) for v in (out.get("joint_positions") or [])
+        )
     if short == "E-STOP":
         return f"latched{' · ' + str(out.get('reason')) if out.get('reason') else ''}"
     if short == "new_plate":
@@ -124,31 +138,53 @@ def activity(limit: int = 300) -> dict[str, Any]:
         _genesis, records = _evidence(ep)
         for rec in records:
             cap = str(rec.get("capability_id") or "")
-            short = _SHORT.get(cap, cap.rsplit(".", 2)[-2] if cap.count(".") >= 2 else cap)
+            short = _SHORT.get(
+                cap, cap.rsplit(".", 2)[-2] if cap.count(".") >= 2 else cap
+            )
             out = rec.get("output") if isinstance(rec.get("output"), dict) else {}
             err = rec.get("error") if isinstance(rec.get("error"), dict) else {}
-            items.append({
-                "endpoint": ep["id"],
-                "access": ep["access"],
-                "seq": (rec.get("evidence") or {}).get("seq"),
-                "ts": rec.get("ended_at") or rec.get("accepted_at"),
-                "capability": short,
-                "capability_id": cap,
-                "status": rec.get("status"),
-                "code": err.get("mhs_code"),
-                "message": err.get("message"),
-                "summary": _summary(short, out) if rec.get("status") == "completed" else "",
-                "principal": _principal(rec),
-                "receipt_id": rec.get("receipt_id"),
-                "digest": (rec.get("evidence") or {}).get("digest"),
-            })
-    items.sort(key=lambda item: (str(item.get("ts") or ""), item["endpoint"], item.get("seq") or 0))
+            items.append(
+                {
+                    "endpoint": ep["id"],
+                    "access": ep["access"],
+                    "seq": (rec.get("evidence") or {}).get("seq"),
+                    "ts": rec.get("ended_at") or rec.get("accepted_at"),
+                    "capability": short,
+                    "capability_id": cap,
+                    "status": rec.get("status"),
+                    "code": err.get("mhs_code"),
+                    "message": err.get("message"),
+                    "summary": (
+                        _summary(short, out) if rec.get("status") == "completed" else ""
+                    ),
+                    "principal": _principal(rec),
+                    "receipt_id": rec.get("receipt_id"),
+                    "digest": (rec.get("evidence") or {}).get("digest"),
+                }
+            )
+    items.sort(
+        key=lambda item: (
+            str(item.get("ts") or ""),
+            item["endpoint"],
+            item.get("seq") or 0,
+        )
+    )
     counts: dict[str, dict[str, int]] = {}
     for item in items:
-        bucket = counts.setdefault(item["endpoint"], {"completed": 0, "rejected": 0, "failed": 0, "other": 0})
-        key = item["status"] if item["status"] in ("completed", "rejected", "failed") else "other"
+        bucket = counts.setdefault(
+            item["endpoint"], {"completed": 0, "rejected": 0, "failed": 0, "other": 0}
+        )
+        key = (
+            item["status"]
+            if item["status"] in ("completed", "rejected", "failed")
+            else "other"
+        )
         bucket[key] += 1
-    return {"items": items[-max(1, min(int(limit), 2000)):], "total": len(items), "counts": counts}
+    return {
+        "items": items[-max(1, min(int(limit), 2000)) :],
+        "total": len(items),
+        "counts": counts,
+    }
 
 
 def _activity_curve(data: dict[str, Any]) -> list[float]:
@@ -157,7 +193,10 @@ def _activity_curve(data: dict[str, Any]) -> list[float]:
     span = vehicle - blank
     if abs(span) < 1e-9:
         return []
-    return [round(100.0 * (float(v) - blank) / span, 2) for v in data.get("rate_mOD_per_min") or []]
+    return [
+        round(100.0 * (float(v) - blank) / span, 2)
+        for v in data.get("rate_mOD_per_min") or []
+    ]
 
 
 def _ic50_estimate(conc: list[float], act: list[float]) -> float | None:
@@ -166,7 +205,9 @@ def _ic50_estimate(conc: list[float], act: list[float]) -> float | None:
     for (c1, a1), (c2, a2) in zip(pairs, pairs[1:]):
         if c1 > 0 and c2 > 0 and (a1 - 50.0) * (a2 - 50.0) <= 0 and a1 != a2:
             t = (a1 - 50.0) / (a1 - a2)
-            return round(10 ** (math.log10(c1) + t * (math.log10(c2) - math.log10(c1))), 4)
+            return round(
+                10 ** (math.log10(c1) + t * (math.log10(c2) - math.log10(c1))), 4
+            )
     return None
 
 
@@ -176,15 +217,26 @@ def results() -> dict[str, Any]:
     curves = []
     _g, assay = _evidence(eps["assay"])
     for rec in assay:
-        if rec.get("capability_id") == "x-cap.openai4s-lab.read_kinetics.v1" and rec.get("status") == "completed":
+        if (
+            rec.get("capability_id") == "x-cap.openai4s-lab.read_kinetics.v1"
+            and rec.get("status") == "completed"
+        ):
             out = rec.get("output") or {}
             for row, data in (out.get("rows") or {}).items():
                 conc = [float(c) for c in data.get("concentrations_uM") or []]
                 act = _activity_curve(data)
-                curves.append({"read_id": out.get("read_id"), "plate_id": out.get("plate_id"), "row": row,
-                               "compound_id": data.get("compound_id"),
-                               "concentrations_uM": conc, "activity_pct": act,
-                               "ic50_estimate_uM": _ic50_estimate(conc, act), "ts": rec.get("ended_at")})
+                curves.append(
+                    {
+                        "read_id": out.get("read_id"),
+                        "plate_id": out.get("plate_id"),
+                        "row": row,
+                        "compound_id": data.get("compound_id"),
+                        "concentrations_uM": conc,
+                        "activity_pct": act,
+                        "ic50_estimate_uM": _ic50_estimate(conc, act),
+                        "ts": rec.get("ended_at"),
+                    }
+                )
     if curves:  # the panel shows the current plate; older plates stay in the evidence
         latest = curves[-1].get("plate_id")
         curves = [c for c in curves if c.get("plate_id") == latest]
@@ -196,10 +248,25 @@ def results() -> dict[str, Any]:
         if rec.get("status") != "completed":
             continue
         if rec.get("capability_id") == "x-cap.openai4s-lab.run_condition.v1":
-            runs.append({k: out.get(k) for k in ("experiment_id", "reagent_b", "product_id", "temperature_C",
-                                                  "residence_time_min", "equiv_b", "concentration_M", "yield_pct",
-                                                  "conversion_pct", "selectivity_pct", "hplc_purity_pct")}
-                        | {"ts": rec.get("ended_at")})
+            runs.append(
+                {
+                    k: out.get(k)
+                    for k in (
+                        "experiment_id",
+                        "reagent_b",
+                        "product_id",
+                        "temperature_C",
+                        "residence_time_min",
+                        "equiv_b",
+                        "concentration_M",
+                        "yield_pct",
+                        "conversion_pct",
+                        "selectivity_pct",
+                        "hplc_purity_pct",
+                    )
+                }
+                | {"ts": rec.get("ended_at")}
+            )
         elif rec.get("capability_id") == "x-cap.openai4s-lab.collect_product.v1":
             vials.append(dict(out, ts=rec.get("ended_at")))
     path = []
@@ -207,14 +274,30 @@ def results() -> dict[str, Any]:
     for rec in arm:
         if rec.get("capability_id") == "cap.motion.cartesian_pose.v1":
             pos = (rec.get("output") or {}).get("position") or {}
-            path.append({"x": pos.get("x"), "y": pos.get("y"), "z": pos.get("z"), "status": rec.get("status"),
-                         "code": (rec.get("error") or {}).get("mhs_code"), "ts": rec.get("ended_at")})
+            path.append(
+                {
+                    "x": pos.get("x"),
+                    "y": pos.get("y"),
+                    "z": pos.get("z"),
+                    "status": rec.get("status"),
+                    "code": (rec.get("error") or {}).get("mhs_code"),
+                    "ts": rec.get("ended_at"),
+                }
+            )
     best: dict[str, Any] = {}
     for run in runs:
         key = str(run.get("reagent_b"))
-        if run.get("yield_pct") is not None and (key not in best or run["yield_pct"] > best[key]["yield_pct"]):
+        if run.get("yield_pct") is not None and (
+            key not in best or run["yield_pct"] > best[key]["yield_pct"]
+        ):
             best[key] = run
-    return {"dose_response": curves, "reactor_runs": runs, "reactor_best": best, "vials": vials, "arm_path": path}
+    return {
+        "dose_response": curves,
+        "reactor_runs": runs,
+        "reactor_best": best,
+        "vials": vials,
+        "arm_path": path,
+    }
 
 
 def verify() -> dict[str, Any]:
@@ -225,12 +308,23 @@ def verify() -> dict[str, Any]:
     for ep in _lab()["endpoints"]:
         genesis, records = _evidence(ep)
         if genesis is None:
-            chains[ep["id"]] = {"valid": None, "checked": 0, "head_digest": None, "note": "no evidence yet"}
+            chains[ep["id"]] = {
+                "valid": None,
+                "checked": 0,
+                "head_digest": None,
+                "note": "no evidence yet",
+            }
             continue
-        report = verify_chain(genesis["genesis_document"], records, genesis_digest=genesis["digest"])
-        chains[ep["id"]] = {"valid": bool(report.valid), "checked": int(report.checked),
-                            "head_digest": report.head_digest, "errors": list(report.errors)[:5],
-                            "schema": getattr(report, "schema", None)}
+        report = verify_chain(
+            genesis["genesis_document"], records, genesis_digest=genesis["digest"]
+        )
+        chains[ep["id"]] = {
+            "valid": bool(report.valid),
+            "checked": int(report.checked),
+            "head_digest": report.head_digest,
+            "errors": list(report.errors)[:5],
+            "schema": getattr(report, "schema", None),
+        }
     ledger_path = lab_dir() / "mhs-host-ledger.jsonl"
     ledger: dict[str, Any] = {"path": str(ledger_path), "records": 0}
     try:
@@ -248,11 +342,20 @@ def _http_state(url: str) -> dict[str, Any] | None:
     try:
         from mhs.client import connect  # type: ignore
 
-        client = connect(url, timeout=2.0) if "timeout" in connect.__code__.co_varnames else connect(url)
+        client = (
+            connect(url, timeout=2.0)
+            if "timeout" in connect.__code__.co_varnames
+            else connect(url)
+        )
         try:
             device_id = client.devices()[0]["device_id"]
             session = client.open_session(device_ids=[device_id])["session_id"]
-            return dict(client.read(device_id=device_id, resource_id="main", session_id=session).get("state") or {})
+            return dict(
+                client.read(
+                    device_id=device_id, resource_id="main", session_id=session
+                ).get("state")
+                or {}
+            )
         finally:
             client.close()
     except Exception:  # noqa: BLE001 - a stopped endpoint is shown as offline
@@ -318,7 +421,9 @@ def _disconnect_connector(connector_id: str) -> None:
     time.sleep(0.5)
 
 
-def operator_action(action: str, endpoint: str, *, operator: str = "human:operator", reason: str = "") -> dict[str, Any]:
+def operator_action(
+    action: str, endpoint: str, *, operator: str = "human:operator", reason: str = ""
+) -> dict[str, Any]:
     """E-stop or reset one endpoint (``all`` for an e-stop of every device)."""
     if action not in ("estop", "reset"):
         raise ValueError("action must be estop or reset")
@@ -341,8 +446,11 @@ def operator_action(action: str, endpoint: str, *, operator: str = "human:operat
                 try:
                     device_id = client.devices()[0]["device_id"]
                     session = client.open_session(device_ids=[device_id])["session_id"]
-                    receipt = (client.estop(note, device_id=device_id, session_id=session) if action == "estop"
-                               else client.reset(device_id=device_id, session_id=session))
+                    receipt = (
+                        client.estop(note, device_id=device_id, session_id=session)
+                        if action == "estop"
+                        else client.reset(device_id=device_id, session_id=session)
+                    )
                 finally:
                     client.close()
             else:
@@ -350,11 +458,22 @@ def operator_action(action: str, endpoint: str, *, operator: str = "human:operat
                 # connection (its child exits), then act on the persisted state dir.
                 _disconnect_connector(ep.get("connector") or "")
                 receipt = _stdio_once(ep, action, note)
-            results_[name] = {"status": receipt.get("status"), "code": (receipt.get("error") or {}).get("mhs_code"),
-                              "receipt_id": receipt.get("receipt_id")}
+            results_[name] = {
+                "status": receipt.get("status"),
+                "code": (receipt.get("error") or {}).get("mhs_code"),
+                "receipt_id": receipt.get("receipt_id"),
+            }
         except Exception as exc:  # noqa: BLE001 - shown to the operator
             results_[name] = {"error": f"{type(exc).__name__}: {exc}"}
-    _audit({"action": action, "endpoint": endpoint, "operator": operator, "reason": note, "results": results_})
+    _audit(
+        {
+            "action": action,
+            "endpoint": endpoint,
+            "operator": operator,
+            "reason": note,
+            "results": results_,
+        }
+    )
     return {"action": action, "operator": operator, "results": results_}
 
 
@@ -379,6 +498,8 @@ if __name__ == "__main__":  # pragma: no cover - manual inspection
     import sys
 
     verb = sys.argv[1] if len(sys.argv) > 1 else "status"
-    fn = {"status": status, "activity": activity, "results": results, "verify": verify}[verb]
+    fn = {"status": status, "activity": activity, "results": results, "verify": verify}[
+        verb
+    ]
     print(json.dumps(fn(), indent=1, ensure_ascii=False, default=str)[:6000])
     _ = subprocess  # keep the import for the stdio helpers' type checkers

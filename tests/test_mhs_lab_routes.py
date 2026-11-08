@@ -35,7 +35,11 @@ class _Hub:
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI4S_OPENMHS", "off")
-    cfg = Config(data_dir=tmp_path, llm=LLMConfig(provider="deepseek", api_key="test-key"), max_turns=1)
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=1,
+    )
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_class = gateway_mod.make_handler(cfg, _Hub(), runner)
     token = local_auth.read_token(tmp_path) or ""
@@ -44,11 +48,15 @@ def api(tmp_path, monkeypatch):
         handler = object.__new__(handler_class)
         handler._correlation_id = "req-lab"
         sent: dict = {}
-        handler._send = lambda code, payload, ctype, extra=None, security=None: sent.update(
-            code=code, body=json.loads(payload.decode("utf-8")) if payload else None
+        handler._send = (
+            lambda code, payload, ctype, extra=None, security=None: sent.update(
+                code=code, body=json.loads(payload.decode("utf-8")) if payload else None
+            )
         )
-        handler._send_static_bytes = lambda code, payload, ctype, extra, security: sent.update(
-            code=code, body=json.loads(payload.decode("utf-8"))
+        handler._send_static_bytes = (
+            lambda code, payload, ctype, extra, security: sent.update(
+                code=code, body=json.loads(payload.decode("utf-8"))
+            )
         )
         handler.command = method
         handler.path = f"/api/v1{path}"

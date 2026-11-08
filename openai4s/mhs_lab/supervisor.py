@@ -96,14 +96,24 @@ def installed_devices() -> list[dict[str, Any]]:
         doc = json.loads(_devices_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    return [d for d in doc.get("devices") or [] if isinstance(d, dict) and d.get("id") and d.get("package")]
+    return [
+        d
+        for d in doc.get("devices") or []
+        if isinstance(d, dict) and d.get("id") and d.get("package")
+    ]
 
 
 def _save_devices(devices: list[dict[str, Any]]) -> None:
     path = _devices_path()
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"format": "openai4s.mhs-lab.devices/1", "devices": devices}, indent=2,
-                              ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(
+        json.dumps(
+            {"format": "openai4s.mhs-lab.devices/1", "devices": devices},
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     os.replace(tmp, path)
 
 
@@ -119,7 +129,9 @@ def _market():
 def _slug(package: str, taken: set[str]) -> str:
     folder = package.split("/", 1)[-1]
     repo = folder.split("__", 1)[-1]
-    base = re.sub(r"[^a-z0-9]+", "-", repo.lower()).strip("-")[:24].strip("-") or "device"
+    base = (
+        re.sub(r"[^a-z0-9]+", "-", repo.lower()).strip("-")[:24].strip("-") or "device"
+    )
     candidate, n = base, 2
     while candidate in taken or candidate in BUILTIN_IDS:
         candidate, n = f"{base}-{n}", n + 1
@@ -137,14 +149,19 @@ def _port_free(port: int) -> bool:
 
 
 def _next_port(devices: list[dict[str, Any]]) -> int:
-    used = {int(d["port"]) for d in devices if d.get("port")} | {ASSAY_PORT, REACTOR_PORT}
+    used = {int(d["port"]) for d in devices if d.get("port")} | {
+        ASSAY_PORT,
+        REACTOR_PORT,
+    }
     port = FIRST_DEVICE_PORT
     while port in used or not _port_free(port):
         port += 1
     return port
 
 
-def add_device(package: str, via: str = "mcp", *, start_now: bool = True) -> dict[str, Any]:
+def add_device(
+    package: str, via: str = "mcp", *, start_now: bool = True
+) -> dict[str, Any]:
     """Install one market package into the lab (fake backend) and, by default, start it.
 
     ``package`` is a market id (``labs/owner__repo``) or any unique name
@@ -164,7 +181,12 @@ def add_device(package: str, via: str = "mcp", *, start_now: bool = True) -> dic
         if existing["package"] == entry["id"]:
             if existing.get("via") == via:
                 result = start() if start_now else {}
-                return {"added": False, "device": existing, "note": "already installed", **_brief(result)}
+                return {
+                    "added": False,
+                    "device": existing,
+                    "note": "already installed",
+                    **_brief(result),
+                }
             devices = [d for d in devices if d is not existing]
             remove_device(existing["id"], _quiet=True)
             break
@@ -193,7 +215,9 @@ def remove_device(device_id: str, *, _quiet: bool = False) -> dict[str, Any]:
     target = next((d for d in devices if d["id"] == device_id), None)
     if target is None:
         if device_id in BUILTIN_IDS:
-            raise ValueError(f"{device_id} is a built-in lab device and cannot be removed")
+            raise ValueError(
+                f"{device_id} is a built-in lab device and cannot be removed"
+            )
         raise LookupError(f"no installed device {device_id!r}")
     pids = _read_pids()
     pid = pids.pop(device_id, None)
@@ -209,7 +233,11 @@ def remove_device(device_id: str, *, _quiet: bool = False) -> dict[str, Any]:
     from openai4s.mhs_lab.labcard import write_lab_card
 
     sync_project(write_lab_card())
-    return {"removed": device_id, **cleanup, "connectors": registration.get("connectors")}
+    return {
+        "removed": device_id,
+        **cleanup,
+        "connectors": registration.get("connectors"),
+    }
 
 
 def _forget_device(device: dict[str, Any]) -> dict[str, Any]:
@@ -224,7 +252,10 @@ def _forget_device(device: dict[str, Any]) -> dict[str, Any]:
             out["connector_deleted"] = f"mhs-{device['id']}"
         owned = set(_device_rules(device))
         for rule in store.get_permission_rules(scope="global"):
-            if rule.get("decision") == "allow" and (rule.get("tool"), rule.get("pattern")) in owned:
+            if (
+                rule.get("decision") == "allow"
+                and (rule.get("tool"), rule.get("pattern")) in owned
+            ):
                 store.delete_permission_rule(rule["rule_id"])
     except Exception as exc:  # noqa: BLE001 - reported, never hidden
         out["cleanup_error"] = f"{type(exc).__name__}: {exc}"
@@ -232,17 +263,36 @@ def _forget_device(device: dict[str, Any]) -> dict[str, Any]:
 
 
 def _brief(result: dict[str, Any]) -> dict[str, Any]:
-    keys = ("started", "not_ready", "connector_error", "permission_error", "lab_card", "project_id", "project_name",
-            "project_error")
+    keys = (
+        "started",
+        "not_ready",
+        "connector_error",
+        "permission_error",
+        "lab_card",
+        "project_id",
+        "project_name",
+        "project_error",
+    )
     return {k: result[k] for k in keys if k in result}
 
 
-def _device_argv(device: dict[str, Any], state: Path, *, stdio: bool) -> list[str] | None:
+def _device_argv(
+    device: dict[str, Any], state: Path, *, stdio: bool
+) -> list[str] | None:
     drivers = drivers_root()
     if drivers is None:
         return None
-    argv = [_python(), "-m", "mhs", "serve", str(drivers / device["package"]), "--backend", "fake",
-            "--state-dir", str(state / device["id"])]
+    argv = [
+        _python(),
+        "-m",
+        "mhs",
+        "serve",
+        str(drivers / device["package"]),
+        "--backend",
+        "fake",
+        "--state-dir",
+        str(state / device["id"]),
+    ]
     return argv + (["--stdio"] if stdio else ["--port", str(device["port"])])
 
 
@@ -261,13 +311,24 @@ def _device_endpoint(device: dict[str, Any], state: Path) -> dict[str, Any]:
         "provenance": f"OpenMHS market package {device['package']} (fake backend)",
     }
     if device.get("via") == "mhs":
-        return {**common, "group": "mhs", "access": "native-http",
-                "surface": "native OpenAI4S tools mhs_* (MHSHost in the daemon, no MCP)",
-                "wire": "HTTP JSON-RPC", "url": f"http://127.0.0.1:{device['port']}", "port": device["port"]}
-    return {**common, "group": "mcp", "access": "mcp-stdio", "connector": f"mhs-{device['id']}",
-            "surface": f"MCP connector mhs-{device['id']} (call_mcp_tool, governed host route)",
-            "wire": "stdio JSON-RPC (driver process spawned by mhs.mcp)",
-            "argv": _device_argv(device, state, stdio=True)}
+        return {
+            **common,
+            "group": "mhs",
+            "access": "native-http",
+            "surface": "native OpenAI4S tools mhs_* (MHSHost in the daemon, no MCP)",
+            "wire": "HTTP JSON-RPC",
+            "url": f"http://127.0.0.1:{device['port']}",
+            "port": device["port"],
+        }
+    return {
+        **common,
+        "group": "mcp",
+        "access": "mcp-stdio",
+        "connector": f"mhs-{device['id']}",
+        "surface": f"MCP connector mhs-{device['id']} (call_mcp_tool, governed host route)",
+        "wire": "stdio JSON-RPC (driver process spawned by mhs.mcp)",
+        "argv": _device_argv(device, state, stdio=True),
+    }
 
 
 def _python() -> str:
@@ -278,8 +339,18 @@ def _xarm_argv(state: Path) -> list[str] | None:
     drivers = drivers_root()
     if drivers is None:
         return None
-    return [_python(), "-m", "mhs", "serve", str(drivers / XARM_PACKAGE), "--backend", "fake", "--stdio",
-            "--state-dir", str(state / "xarm")]
+    return [
+        _python(),
+        "-m",
+        "mhs",
+        "serve",
+        str(drivers / XARM_PACKAGE),
+        "--backend",
+        "fake",
+        "--stdio",
+        "--state-dir",
+        str(state / "xarm"),
+    ]
 
 
 def lab_document() -> dict[str, Any]:
@@ -373,7 +444,11 @@ def _probe(url: str, timeout: float = 1.5) -> bool:
     try:
         from mhs.client import connect  # type: ignore
 
-        client = connect(url, timeout=timeout) if "timeout" in connect.__code__.co_varnames else connect(url)
+        client = (
+            connect(url, timeout=timeout)
+            if "timeout" in connect.__code__.co_varnames
+            else connect(url)
+        )
         try:
             client.hello()
             return True
@@ -397,10 +472,27 @@ def _common_settings() -> dict[str, Any]:
 
 def native_settings() -> dict[str, Any]:
     """``MHS_CONFIG`` of the daemon: the native ``mhs_*`` tools reach the reactor and the devices added via MHS."""
-    endpoints = [{"id": "reactor", "url": f"http://127.0.0.1:{REACTOR_PORT}", "label": "FR-10 flow reactor (simulated)"}]
-    endpoints += [{"id": d["id"], "url": f"http://127.0.0.1:{d['port']}", "label": f"{d.get('name')} (fake backend)"}
-                  for d in installed_devices() if d.get("via") == "mhs" and d.get("port")]
-    return {**_common_settings(), "endpoints": endpoints, "auto_permit_risk": ["R0", "R1"]}
+    endpoints = [
+        {
+            "id": "reactor",
+            "url": f"http://127.0.0.1:{REACTOR_PORT}",
+            "label": "FR-10 flow reactor (simulated)",
+        }
+    ]
+    endpoints += [
+        {
+            "id": d["id"],
+            "url": f"http://127.0.0.1:{d['port']}",
+            "label": f"{d.get('name')} (fake backend)",
+        }
+        for d in installed_devices()
+        if d.get("via") == "mhs" and d.get("port")
+    ]
+    return {
+        **_common_settings(),
+        "endpoints": endpoints,
+        "auto_permit_risk": ["R0", "R1"],
+    }
 
 
 def connector_settings() -> dict[str, Any]:
@@ -412,23 +504,50 @@ def connector_settings() -> dict[str, Any]:
     """
     xarm_argv = _xarm_argv(lab_dir() / "state")
     endpoints: list[dict[str, Any]] = [
-        {"id": "assay", "url": f"http://127.0.0.1:{ASSAY_PORT}", "label": "AS-96 assay workstation (simulated)"},
+        {
+            "id": "assay",
+            "url": f"http://127.0.0.1:{ASSAY_PORT}",
+            "label": "AS-96 assay workstation (simulated)",
+        },
     ]
     if xarm_argv:
-        endpoints.append({"id": "xarm", "command": xarm_argv, "label": "xArm 7 registry driver (fake backend)"})
+        endpoints.append(
+            {
+                "id": "xarm",
+                "command": xarm_argv,
+                "label": "xArm 7 registry driver (fake backend)",
+            }
+        )
     state = lab_dir() / "state"
     for device in installed_devices():
-        argv = _device_argv(device, state, stdio=True) if device.get("via") == "mcp" else None
+        argv = (
+            _device_argv(device, state, stdio=True)
+            if device.get("via") == "mcp"
+            else None
+        )
         if argv:
-            endpoints.append({"id": device["id"], "command": argv, "label": f"{device.get('name')} (fake backend)"})
-    return {**_common_settings(), "endpoints": endpoints, "auto_permit_risk": ["R0", "R1", "R2"]}
+            endpoints.append(
+                {
+                    "id": device["id"],
+                    "command": argv,
+                    "label": f"{device.get('name')} (fake backend)",
+                }
+            )
+    return {
+        **_common_settings(),
+        "endpoints": endpoints,
+        "auto_permit_risk": ["R0", "R1", "R2"],
+    }
 
 
 def write_documents() -> dict[str, str]:
     base = lab_dir()
     out = {}
-    for name, doc in (("mhs.json", native_settings()), ("mhs-connectors.json", connector_settings()),
-                      ("lab.json", lab_document())):
+    for name, doc in (
+        ("mhs.json", native_settings()),
+        ("mhs-connectors.json", connector_settings()),
+        ("lab.json", lab_document()),
+    ):
         path = base / name
         path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         if name != "lab.json":
@@ -452,7 +571,12 @@ def _device_rules(device: dict[str, Any]) -> list[tuple[str, str]]:
     if device.get("via") == "mhs":
         # mhs_command's permission target is "<device id>/<capability>"; a fake backend
         # serves "<declared id>/fake", which the trailing wildcard covers.
-        return [("mhs_command", f"{device.get('device_id') or 'mhs://localhost/' + device['id']}*")]
+        return [
+            (
+                "mhs_command",
+                f"{device.get('device_id') or 'mhs://localhost/' + device['id']}*",
+            )
+        ]
     return [("mcp_call", f"mhs-{device['id']}/*")]
 
 
@@ -470,7 +594,10 @@ def register_connectors(connector_settings_path: str) -> dict[str, Any]:
         import openai4s_mhs  # type: ignore
 
         enabled = openai4s_mhs.enable(connector_settings_path)
-        result["connectors"] = [c.get("id") or c.get("connector_id") for c in (enabled.get("connectors") or [])]
+        result["connectors"] = [
+            c.get("id") or c.get("connector_id")
+            for c in (enabled.get("connectors") or [])
+        ]
     except Exception as exc:  # noqa: BLE001 - reported, never hidden
         result["connector_error"] = f"{type(exc).__name__}: {exc}"
     try:
@@ -479,7 +606,9 @@ def register_connectors(connector_settings_path: str) -> dict[str, Any]:
 
         store = get_store(get_config().db_path)
         result["permission_rules"] = [
-            store.set_permission_rule(scope="global", tool=tool, pattern=pattern, decision="allow")
+            store.set_permission_rule(
+                scope="global", tool=tool, pattern=pattern, decision="allow"
+            )
             for tool, pattern in allow_rules()
         ]
     except Exception as exc:  # noqa: BLE001
@@ -498,11 +627,28 @@ def start(*, wait_s: float = 30.0) -> dict[str, Any]:
         Path(ep["state_dir"]).mkdir(parents=True, exist_ok=True)
         if not ep.get("url") or ep["id"] in pids or not ep.get("driver"):
             continue
-        argv = [_python(), "-m", "mhs", "serve", ep["driver"], "--backend", ep["backend"],
-                "--port", str(ep["port"]), "--state-dir", ep["state_dir"]]
+        argv = [
+            _python(),
+            "-m",
+            "mhs",
+            "serve",
+            ep["driver"],
+            "--backend",
+            ep["backend"],
+            "--port",
+            str(ep["port"]),
+            "--state-dir",
+            ep["state_dir"],
+        ]
         with open(logs / f"{ep['id']}.log", "ab") as log:
-            proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, env=env,  # noqa: S603
-                                    start_new_session=True, cwd=str(base))
+            proc = subprocess.Popen(
+                argv,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,  # noqa: S603
+                start_new_session=True,
+                cwd=str(base),
+            )
         pids[ep["id"]] = proc.pid
     _pids_path().write_text(json.dumps(pids), encoding="utf-8")
     deadline = time.monotonic() + wait_s
@@ -518,8 +664,14 @@ def start(*, wait_s: float = 30.0) -> dict[str, Any]:
     card = write_lab_card()
     project = sync_project(card)
     _mark_running(True)
-    return {"started": sorted(pids), "not_ready": [ep["id"] for ep in pending], **paths, **registration,
-            "lab_card": card, **project}
+    return {
+        "started": sorted(pids),
+        "not_ready": [ep["id"] for ep in pending],
+        **paths,
+        **registration,
+        "lab_card": card,
+        **project,
+    }
 
 
 PROJECT_NAME = "OpenMHS Lab"
@@ -536,7 +688,9 @@ def sync_project(card_path: str) -> dict[str, Any]:
         marker = lab_dir() / "project.json"
         project_id = None
         try:
-            project_id = json.loads(marker.read_text(encoding="utf-8")).get("project_id")
+            project_id = json.loads(marker.read_text(encoding="utf-8")).get(
+                "project_id"
+            )
         except (OSError, ValueError):
             pass
         if project_id and store.get_project(project_id):
@@ -545,7 +699,7 @@ def sync_project(card_path: str) -> dict[str, Any]:
             project_id = store.create_project(
                 name=PROJECT_NAME,
                 description="Simulated OpenMHS lab. Its agent context is the lab's device card, kept current by "
-                            "`openai4s lab`; start a conversation here to use the lab devices.",
+                "`openai4s lab`; start a conversation here to use the lab devices.",
                 context=context,
             )["project_id"]
             marker.write_text(json.dumps({"project_id": project_id}), encoding="utf-8")
@@ -558,7 +712,9 @@ def _mark_running(running: bool) -> None:
     """Remember whether the operator wants the lab up (the daemon restarts it on boot when true)."""
     marker = lab_dir() / "lab-up"
     if running:
-        marker.write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), encoding="utf-8")
+        marker.write_text(
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), encoding="utf-8"
+        )
     else:
         marker.unlink(missing_ok=True)
 
@@ -600,7 +756,13 @@ def reset() -> dict[str, Any]:
     base = lab_dir()
     for name in ("state", "operator"):
         shutil.rmtree(base / name, ignore_errors=True)
-    for name in ("lims.json", "lims.lock", "mhs-host-ledger.jsonl", "mhs-commands.jsonl", "mhs-evidence.jsonl"):
+    for name in (
+        "lims.json",
+        "lims.lock",
+        "mhs-host-ledger.jsonl",
+        "mhs-commands.jsonl",
+        "mhs-evidence.jsonl",
+    ):
         for path in base.glob(name + "*"):
             path.unlink(missing_ok=True)
     return {"reset": True, **stopped}
@@ -629,8 +791,11 @@ def main(argv: list[str] | None = None) -> int:
     verb = args[0] if args else "status"
     actions = {"start": start, "stop": stop, "status": status, "reset": reset}
     if verb not in actions:
-        print("usage: python3 -m openai4s.mhs_lab.supervisor start|stop|status|reset "
-              "(friendlier: openai4s lab --help)", file=sys.stderr)
+        print(
+            "usage: python3 -m openai4s.mhs_lab.supervisor start|stop|status|reset "
+            "(friendlier: openai4s lab --help)",
+            file=sys.stderr,
+        )
         return 2
     print(json.dumps(actions[verb](), indent=2, ensure_ascii=False))
     return 0

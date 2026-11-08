@@ -51,19 +51,39 @@ def test_assay_recovers_cheng_prusoff_and_enforces_limits(lab_dir):
     server = build_server(_load("assay_station"))
     try:
         _client, _dev, _ses, call = _session(server)
-        ok = call("x-cap.openai4s-lab.prepare_dose_series.v1",
-                  {"row": "A", "compound_id": "CPD-102", "top_concentration_uM": 100, "dilution_factor": 3,
-                   "points": 10})
+        ok = call(
+            "x-cap.openai4s-lab.prepare_dose_series.v1",
+            {
+                "row": "A",
+                "compound_id": "CPD-102",
+                "top_concentration_uM": 100,
+                "dilution_factor": 3,
+                "points": 10,
+            },
+        )
         assert ok["status"] == "completed"
-        hot = call("x-cap.openai4s-lab.start_reaction.v1", {"rows": ["A"], "substrate_uM": 50, "temperature_C": 55})
+        hot = call(
+            "x-cap.openai4s-lab.start_reaction.v1",
+            {"rows": ["A"], "substrate_uM": 50, "temperature_C": 55},
+        )
         assert hot["error"]["mhs_code"] == "MHS.SAFETY.ENVELOPE_VIOLATION"
-        assert call("x-cap.openai4s-lab.start_reaction.v1",
-                    {"rows": ["A"], "substrate_uM": 50, "temperature_C": 30})["status"] == "completed"
-        read = call("x-cap.openai4s-lab.read_kinetics.v1",
-                    {"rows": ["A"], "wavelength_nm": 405, "duration_s": 600, "interval_s": 30})
+        assert (
+            call(
+                "x-cap.openai4s-lab.start_reaction.v1",
+                {"rows": ["A"], "substrate_uM": 50, "temperature_C": 30},
+            )["status"]
+            == "completed"
+        )
+        read = call(
+            "x-cap.openai4s-lab.read_kinetics.v1",
+            {"rows": ["A"], "wavelength_nm": 405, "duration_s": 600, "interval_s": 30},
+        )
         row = read["output"]["rows"]["A"]
         span = row["vehicle_rate_mOD_per_min"] - row["blank_rate_mOD_per_min"]
-        act = [100 * (v - row["blank_rate_mOD_per_min"]) / span for v in row["rate_mOD_per_min"]]
+        act = [
+            100 * (v - row["blank_rate_mOD_per_min"]) / span
+            for v in row["rate_mOD_per_min"]
+        ]
         # IC50 = Ki (1 + S/Km) = 0.62 * 2 = 1.24 uM: activity crosses 50 % between the bracketing doses.
         pairs = list(zip(row["concentrations_uM"], act))
         above = [c for c, a in pairs if a > 50]
@@ -77,12 +97,21 @@ def test_assay_recovers_cheng_prusoff_and_enforces_limits(lab_dir):
 def test_assay_refuses_a_vial_the_arm_never_delivered(lab_dir):
     from openai4s.mhs_lab import lims
 
-    vial = lims.register_vial({"compound_id": "FR-2", "concentration_mM": 300.0, "volume_mL": 10.0,
-                               "purity": 0.9, "location": "reactor_outlet"})
+    vial = lims.register_vial(
+        {
+            "compound_id": "FR-2",
+            "concentration_mM": 300.0,
+            "volume_mL": 10.0,
+            "purity": 0.9,
+            "location": "reactor_outlet",
+        }
+    )
     server = build_server(_load("assay_station"))
     try:
         _client, _dev, _ses, call = _session(server)
-        refused = call("x-cap.openai4s-lab.load_sample.v1", {"vial_id": vial["vial_id"]})
+        refused = call(
+            "x-cap.openai4s-lab.load_sample.v1", {"vial_id": vial["vial_id"]}
+        )
         assert refused["status"] == "failed"
         assert "reactor outlet" in refused["error"]["message"]
     finally:
@@ -92,13 +121,15 @@ def test_assay_refuses_a_vial_the_arm_never_delivered(lab_dir):
 def test_reactor_has_an_interior_time_temperature_ridge():
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("fr_sim", INSTRUMENTS_DIR / "flow_reactor" / "sim.py")
+    spec = importlib.util.spec_from_file_location(
+        "fr_sim", INSTRUMENTS_DIR / "flow_reactor" / "sim.py"
+    )
     sim = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(sim)
     y = lambda t, tau: 100 * sim.integrate(t, tau, 2.0, 0.5)["P"] / 0.5  # noqa: E731
-    assert y(90, 2) > y(60, 2) and y(90, 2) > y(140, 2)       # interior in temperature
-    assert y(90, 2) > y(90, 0.5) and y(90, 2) > y(90, 20)     # interior in residence time
+    assert y(90, 2) > y(60, 2) and y(90, 2) > y(140, 2)  # interior in temperature
+    assert y(90, 2) > y(90, 0.5) and y(90, 2) > y(90, 20)  # interior in residence time
     assert all(math.isfinite(y(150, tau)) for tau in (0.5, 5, 20))  # stable when stiff
 
 
@@ -108,16 +139,35 @@ def test_activity_reads_persisted_chains_and_verifies(lab_dir, monkeypatch):
     state = Path(lab_dir) / "state" / "reactor"
     state.mkdir(parents=True)
     driver = _load("flow_reactor")
-    server = build_server(driver, state_dir=str(state)) if "state_dir" in build_server.__code__.co_varnames \
+    server = (
+        build_server(driver, state_dir=str(state))
+        if "state_dir" in build_server.__code__.co_varnames
         else None
+    )
     if server is None:
         pytest.skip("this SDK's build_server has no state_dir")
     try:
         _client, _dev, _ses, call = _session(server)
-        call("x-cap.openai4s-lab.run_condition.v1", {"temperature_C": 90, "residence_time_min": 2, "equiv_b": 2.0,
-                                                     "concentration_M": 0.5, "reagent_b": "B1"})
-        call("x-cap.openai4s-lab.run_condition.v1", {"temperature_C": 180, "residence_time_min": 2, "equiv_b": 2.0,
-                                                     "concentration_M": 0.5, "reagent_b": "B1"})
+        call(
+            "x-cap.openai4s-lab.run_condition.v1",
+            {
+                "temperature_C": 90,
+                "residence_time_min": 2,
+                "equiv_b": 2.0,
+                "concentration_M": 0.5,
+                "reagent_b": "B1",
+            },
+        )
+        call(
+            "x-cap.openai4s-lab.run_condition.v1",
+            {
+                "temperature_C": 180,
+                "residence_time_min": 2,
+                "equiv_b": 2.0,
+                "concentration_M": 0.5,
+                "reagent_b": "B1",
+            },
+        )
     finally:
         close_server(server)
     items = [i for i in activity.activity()["items"] if i["endpoint"] == "reactor"]
@@ -154,17 +204,28 @@ def test_add_and_remove_market_devices_on_both_surfaces(lab_dir, monkeypatch):
     assert native["device"]["port"] >= 7790
     doc = supervisor.lab_document()
     groups = {ep["id"]: ep["group"] for ep in doc["endpoints"]}
-    assert groups == {"assay": "mcp", "reactor": "mhs", "xarm": "mcp", "julabo": "mcp", "gym-pusht": "mhs"}
+    assert groups == {
+        "assay": "mcp",
+        "reactor": "mhs",
+        "xarm": "mcp",
+        "julabo": "mcp",
+        "gym-pusht": "mhs",
+    }
     connectors = supervisor.connector_settings()["endpoints"]
     assert [e["id"] for e in connectors][-1] == "julabo"
-    assert "--stdio" in connectors[-1]["command"] and "--backend" in connectors[-1]["command"]
+    assert (
+        "--stdio" in connectors[-1]["command"]
+        and "--backend" in connectors[-1]["command"]
+    )
     native_ids = [e["id"] for e in supervisor.native_settings()["endpoints"]]
     assert native_ids == ["reactor", "gym-pusht"]
     rules = supervisor.allow_rules()
     assert ("mcp_call", "mhs-julabo/*") in rules
     assert ("mhs_command", "mhs://localhost/pusht*") in rules
     # Installing the same package on the other surface moves it; installing it again is a no-op.
-    again = supervisor.add_device("labs/tiagocoutinho__julabo", via="mcp", start_now=False)
+    again = supervisor.add_device(
+        "labs/tiagocoutinho__julabo", via="mcp", start_now=False
+    )
     assert again["added"] is False
     supervisor.remove_device("gym-pusht")
     assert [d["id"] for d in supervisor.installed_devices()] == ["julabo"]
@@ -189,7 +250,9 @@ def test_bootstrap_finds_an_explicit_checkout(monkeypatch, tmp_path):
     assert located is None or located[0] != "OPENAI4S_OPENMHS"
 
 
-def test_bootstrap_selects_the_lab_settings_only_without_an_operator_document(monkeypatch, tmp_path):
+def test_bootstrap_selects_the_lab_settings_only_without_an_operator_document(
+    monkeypatch, tmp_path
+):
     from openai4s.mhs_lab import openmhs
 
     data = tmp_path / "data"

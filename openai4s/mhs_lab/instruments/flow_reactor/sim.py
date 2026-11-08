@@ -35,8 +35,16 @@ REAGENTS: dict[str, tuple[str, float, str]] = {
     "B3": ("FR-3", 1.9, "4-methoxyaniline"),
 }
 # Hidden kinetic constants (A in L/mol/s or 1/s, Ea in J/mol).
-_K = {"A1": 3.0e7, "E1": 62000.0, "A2": 1.0e10, "E2": 95000.0,
-      "A3": 1.0e3, "E3": 40000.0, "A4": 2.0e7, "E4": 70000.0}
+_K = {
+    "A1": 3.0e7,
+    "E1": 62000.0,
+    "A2": 1.0e10,
+    "E2": 95000.0,
+    "A3": 1.0e3,
+    "E3": 40000.0,
+    "A4": 2.0e7,
+    "E4": 70000.0,
+}
 
 
 def _rates(temp_c: float, mult: float) -> tuple[float, float, float, float]:
@@ -48,7 +56,9 @@ def _rates(temp_c: float, mult: float) -> tuple[float, float, float, float]:
     return k1, k2, k3, k4
 
 
-def integrate(temp_c: float, tau_min: float, equiv: float, conc: float, mult: float = 1.0) -> dict[str, float]:
+def integrate(
+    temp_c: float, tau_min: float, equiv: float, conc: float, mult: float = 1.0
+) -> dict[str, float]:
     """Outlet composition (mol/L) after ``tau_min`` minutes in the coil."""
     k1, k2, k3, k4 = _rates(temp_c, mult)
     a, b, p, d, s, x = conc, conc * equiv, 0.0, 0.0, 0.0, 0.0
@@ -57,7 +67,9 @@ def integrate(temp_c: float, tau_min: float, equiv: float, conc: float, mult: fl
     steps = int(min(20000, max(200, math.ceil(total * stiff / 0.1))))
     dt = total / steps
 
-    def f(a: float, b: float, p: float) -> tuple[float, float, float, float, float, float]:
+    def f(
+        a: float, b: float, p: float
+    ) -> tuple[float, float, float, float, float, float]:
         r1, r2, r3, r4 = k1 * a * b, k2 * p, k3 * a, k4 * p * b
         return (-r1 - r3, -r1 - r4, r1 - r2 - r4, r2, r3, r4)
 
@@ -89,7 +101,9 @@ class FlowReactor:
 
     def _check(self) -> None:
         if self.halted:
-            raise RuntimeError("reactor halted by emergency stop: pumps off, heater off")
+            raise RuntimeError(
+                "reactor halted by emergency stop: pumps off, heater off"
+            )
 
     @staticmethod
     def _pressure(temp_c: float, tau_min: float) -> float:
@@ -97,11 +111,20 @@ class FlowReactor:
         viscosity = math.exp(-0.015 * (temp_c - 25.0))
         return round(BPR_BAR + 0.45 * flow * viscosity, 2)
 
-    def _run(self, temp_c: float, tau_min: float, equiv: float, conc: float, reagent: str,
-             volume_ml: float) -> tuple[dict[str, float], dict[str, Any]]:
+    def _run(
+        self,
+        temp_c: float,
+        tau_min: float,
+        equiv: float,
+        conc: float,
+        reagent: str,
+        volume_ml: float,
+    ) -> tuple[dict[str, float], dict[str, Any]]:
         self._check()
         if reagent not in REAGENTS:
-            raise LookupError(f"reagent {reagent!r} is not loaded; loaded: {sorted(REAGENTS)}")
+            raise LookupError(
+                f"reagent {reagent!r} is not loaded; loaded: {sorted(REAGENTS)}"
+            )
         product, mult, _name = REAGENTS[reagent]
         flow = REACTOR_ML / tau_min
         a_ml = volume_ml / (1.0 + equiv)
@@ -124,7 +147,9 @@ class FlowReactor:
         deg = max(0.0, 100.0 * comp["D"] / conc + noise(0.2))
         bis = max(0.0, 100.0 * comp["X"] / conc + noise(0.2))
         area = comp["P"] + comp["D"] + comp["S"] + comp["X"] + comp["A"]
-        purity = max(0.0, min(1.0, comp["P"] / area if area > 0 else 0.0) + noise(0.004))
+        purity = max(
+            0.0, min(1.0, comp["P"] / area if area > 0 else 0.0) + noise(0.004)
+        )
         return {
             "yield_pct": round(y, 2),
             "conversion_pct": round(conv, 2),
@@ -135,13 +160,28 @@ class FlowReactor:
             "hplc_purity_pct": round(100.0 * purity, 2),
         }
 
-    def run_condition(self, temperature_c: float, residence_time_min: float, equiv_b: float,
-                      concentration_m: float, reagent_b: str) -> dict[str, Any]:
+    def run_condition(
+        self,
+        temperature_c: float,
+        residence_time_min: float,
+        equiv_b: float,
+        concentration_m: float,
+        reagent_b: str,
+    ) -> dict[str, Any]:
         volume = 3.0 * REACTOR_ML  # three reactor volumes to reach steady state
-        comp, meta = self._run(temperature_c, residence_time_min, equiv_b, concentration_m, reagent_b, volume)
+        comp, meta = self._run(
+            temperature_c,
+            residence_time_min,
+            equiv_b,
+            concentration_m,
+            reagent_b,
+            volume,
+        )
         self.experiments += 1
         hplc = self._hplc(comp, concentration_m, f"run:{self.experiments}")
-        sty = hplc["yield_pct"] / 100.0 * concentration_m * 60.0 / residence_time_min  # mol/L/h
+        sty = (
+            hplc["yield_pct"] / 100.0 * concentration_m * 60.0 / residence_time_min
+        )  # mol/L/h
         result = {
             "experiment_id": f"EXP-{self.experiments:03d}",
             "reagent_b": reagent_b,
@@ -160,26 +200,47 @@ class FlowReactor:
         time.sleep(0.2)
         return result
 
-    def collect_product(self, temperature_c: float, residence_time_min: float, equiv_b: float,
-                        concentration_m: float, reagent_b: str, volume_ml: float) -> dict[str, Any]:
-        comp, meta = self._run(temperature_c, residence_time_min, equiv_b, concentration_m, reagent_b,
-                               volume_ml + 2.0 * REACTOR_ML)
+    def collect_product(
+        self,
+        temperature_c: float,
+        residence_time_min: float,
+        equiv_b: float,
+        concentration_m: float,
+        reagent_b: str,
+        volume_ml: float,
+    ) -> dict[str, Any]:
+        comp, meta = self._run(
+            temperature_c,
+            residence_time_min,
+            equiv_b,
+            concentration_m,
+            reagent_b,
+            volume_ml + 2.0 * REACTOR_ML,
+        )
         self.collections += 1
         hplc = self._hplc(comp, concentration_m, f"collect:{self.collections}")
-        conc_mm = concentration_m * hplc["yield_pct"] / 100.0 * 1000.0  # product in the outlet stream
+        conc_mm = (
+            concentration_m * hplc["yield_pct"] / 100.0 * 1000.0
+        )  # product in the outlet stream
         from openai4s.mhs_lab import lims
 
-        vial = lims.register_vial({
-            "compound_id": meta["product"],
-            "reagent_b": reagent_b,
-            "concentration_mM": round(conc_mm, 3),
-            "volume_mL": float(volume_ml),
-            "purity": round(hplc["hplc_purity_pct"] / 100.0, 4),
-            "yield_pct": hplc["yield_pct"],
-            "conditions": {"temperature_C": temperature_c, "residence_time_min": residence_time_min,
-                           "equiv_b": equiv_b, "concentration_M": concentration_m},
-            "location": "reactor_outlet",
-        })
+        vial = lims.register_vial(
+            {
+                "compound_id": meta["product"],
+                "reagent_b": reagent_b,
+                "concentration_mM": round(conc_mm, 3),
+                "volume_mL": float(volume_ml),
+                "purity": round(hplc["hplc_purity_pct"] / 100.0, 4),
+                "yield_pct": hplc["yield_pct"],
+                "conditions": {
+                    "temperature_C": temperature_c,
+                    "residence_time_min": residence_time_min,
+                    "equiv_b": equiv_b,
+                    "concentration_M": concentration_m,
+                },
+                "location": "reactor_outlet",
+            }
+        )
         time.sleep(0.2)
         return {
             "vial_id": vial["vial_id"],

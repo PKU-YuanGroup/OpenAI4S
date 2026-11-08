@@ -47,12 +47,19 @@ def repo_root() -> Path:
 
 
 def is_checkout(path: Path) -> bool:
-    return (path / _SDK / "mhs" / "__init__.py").is_file() and (path / _HOST / "openai4s_mhs" / "__init__.py").is_file()
+    return (path / _SDK / "mhs" / "__init__.py").is_file() and (
+        path / _HOST / "openai4s_mhs" / "__init__.py"
+    ).is_file()
 
 
 def disabled() -> bool:
     """``OPENAI4S_OPENMHS=off`` turns discovery off (the core then runs exactly as without OpenMHS)."""
-    return os.environ.get("OPENAI4S_OPENMHS", "").strip().lower() in ("off", "0", "none", "false")
+    return os.environ.get("OPENAI4S_OPENMHS", "").strip().lower() in (
+        "off",
+        "0",
+        "none",
+        "false",
+    )
 
 
 def candidates() -> list[tuple[str, Path]]:
@@ -111,8 +118,12 @@ def bootstrap() -> Path | None:
             for entry in paths:
                 if entry not in sys.path:
                     sys.path.append(entry)
-            current = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
-            os.environ["PYTHONPATH"] = os.pathsep.join(paths + [p for p in current if p not in paths])
+            current = [
+                p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p
+            ]
+            os.environ["PYTHONPATH"] = os.pathsep.join(
+                paths + [p for p in current if p not in paths]
+            )
             importlib.invalidate_caches()
     if not os.environ.get("MHS_CONFIG"):
         own = _data_base() / "mhs.json"
@@ -126,13 +137,17 @@ def _git() -> str | None:
     return shutil.which("git")
 
 
-def fetch(ref: str = PINNED_REF, dest: Path | None = None, *, quiet: bool = False) -> Path:
+def fetch(
+    ref: str = PINNED_REF, dest: Path | None = None, *, quiet: bool = False
+) -> Path:
     """Clone the pinned OpenMHS release into ``<data dir>/openmhs`` with git (shallow, one tag)."""
     target = Path(dest) if dest is not None else _data_base() / "openmhs"
     if is_checkout(target):
         return target
     if target.exists() and any(target.iterdir()):
-        raise RuntimeError(f"{target} exists but is not an OpenMHS checkout; move it away and retry")
+        raise RuntimeError(
+            f"{target} exists but is not an OpenMHS checkout; move it away and retry"
+        )
     git = _git()
     if git is None:
         raise RuntimeError(
@@ -141,14 +156,32 @@ def fetch(ref: str = PINNED_REF, dest: Path | None = None, *, quiet: bool = Fals
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     if not quiet:
-        print(f"· downloading OpenMHS {ref} (about 35 MB) into {target} …", file=sys.stderr, flush=True)
+        print(
+            f"· downloading OpenMHS {ref} (about 35 MB) into {target} …",
+            file=sys.stderr,
+            flush=True,
+        )
     result = subprocess.run(  # noqa: S603 - fixed public repository, pinned ref
-        [git, "clone", "--quiet", "--depth", "1", "--branch", ref, REPO_URL + ".git", str(target)],
-        capture_output=True, text=True, check=False,
+        [
+            git,
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            "--branch",
+            ref,
+            REPO_URL + ".git",
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0 or not is_checkout(target):
         shutil.rmtree(target, ignore_errors=True)
-        raise RuntimeError(f"could not download OpenMHS {ref}: {result.stderr.strip()[:300] or 'git clone failed'}")
+        raise RuntimeError(
+            f"could not download OpenMHS {ref}: {result.stderr.strip()[:300] or 'git clone failed'}"
+        )
     return target
 
 
@@ -164,7 +197,9 @@ def ensure(*, download: bool = True, quiet: bool = False) -> Path:
         fetch(quiet=quiet)
     checkout = bootstrap() or (find_checkout() or ("", None))[1]
     if not (_importable("mhs") and _importable("openai4s_mhs")):
-        raise RuntimeError("OpenMHS was found but its packages are not importable; see `openai4s lab setup`")
+        raise RuntimeError(
+            "OpenMHS was found but its packages are not importable; see `openai4s lab setup`"
+        )
     return Path(checkout) if checkout else Path(".")
 
 
@@ -188,4 +223,13 @@ def describe() -> dict[str, Any]:
     return info
 
 
-__all__ = ["PINNED_REF", "REPO_URL", "bootstrap", "describe", "ensure", "fetch", "find_checkout", "is_checkout"]
+__all__ = [
+    "PINNED_REF",
+    "REPO_URL",
+    "bootstrap",
+    "describe",
+    "ensure",
+    "fetch",
+    "find_checkout",
+    "is_checkout",
+]
