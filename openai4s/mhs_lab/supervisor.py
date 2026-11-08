@@ -57,7 +57,6 @@ import socket
 import subprocess
 import sys
 import time
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -370,14 +369,17 @@ def _alive(pid: int) -> bool:
 
 
 def _probe(url: str, timeout: float = 1.5) -> bool:
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "mhs.hello",
-                       "params": {"mhs_version": "1.0", "client": {"name": "openai4s-lab-probe"}}}).encode()
-    request = urllib.request.Request(url.rstrip("/") + "/mhs/v1/rpc", data=body,
-                                     headers={"Content-Type": "application/json"})
+    """True when the lab endpoint at ``url`` (loopback) answers ``mhs.hello``; via the OpenMHS client."""
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - loopback
-            return response.status == 200
-    except Exception:  # noqa: BLE001
+        from mhs.client import connect  # type: ignore
+
+        client = connect(url, timeout=timeout) if "timeout" in connect.__code__.co_varnames else connect(url)
+        try:
+            client.hello()
+            return True
+        finally:
+            client.close()
+    except Exception:  # noqa: BLE001 - a stopped endpoint is simply not ready
         return False
 
 

@@ -55,8 +55,10 @@ _SETUP_LOCK = threading.Lock()
 
 def _lab():
     try:
-        from openai4s.mhs_lab.openmhs import bootstrap
+        from openai4s.mhs_lab.openmhs import bootstrap, disabled
 
+        if disabled():  # OPENAI4S_OPENMHS=off: the lab is unavailable, whatever is importable
+            return None
         bootstrap()
         from openai4s.mhs_lab import activity
         import mhs  # noqa: F401  # type: ignore
@@ -169,6 +171,12 @@ def handle(self: Any, method: str, sub: str, q: dict) -> bool:
         return True
     if _SETUP.match(method, path):
         if _refuse_member(self):
+            return True
+        from openai4s.mhs_lab.openmhs import disabled
+
+        if disabled():
+            self._json({"error": "OpenMHS discovery is turned off (OPENAI4S_OPENMHS=off)",
+                        "code": "mhs_lab_disabled"}, 409)
             return True
         if self._body().get("confirm") is not True:
             # A download is an explicit operator choice: the UI sends {"confirm": true}.

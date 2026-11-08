@@ -8,8 +8,8 @@ SDK ``mhs`` (``MHS/sdk/src``) and the reference host ``openai4s_mhs``
 1. ``$OPENAI4S_OPENMHS`` (an explicit checkout; ``off`` disables discovery);
 2. the ``third_party/OpenMHS`` git submodule of an OpenAI4S source checkout
    (``git clone --recursive`` or ``git submodule update --init``);
-3. ``<data dir>/openmhs``, where :func:`fetch` puts a pinned copy for
-   installations without the submodule (``openai4s lab setup``).
+3. ``<data dir>/openmhs``, where :func:`fetch` clones the pinned release with
+   git for installations without the submodule (``openai4s lab setup``).
 
 :func:`bootstrap` puts the checkout's two source directories on ``sys.path``
 and on ``PYTHONPATH`` (so connector and endpoint child processes see them too).
@@ -25,9 +25,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tarfile
-import tempfile
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -130,44 +127,28 @@ def _git() -> str | None:
 
 
 def fetch(ref: str = PINNED_REF, dest: Path | None = None, *, quiet: bool = False) -> Path:
-    """Download the pinned OpenMHS release into ``<data dir>/openmhs`` (git, else a release tarball)."""
+    """Clone the pinned OpenMHS release into ``<data dir>/openmhs`` with git (shallow, one tag)."""
     target = Path(dest) if dest is not None else _data_base() / "openmhs"
     if is_checkout(target):
         return target
     if target.exists() and any(target.iterdir()):
         raise RuntimeError(f"{target} exists but is not an OpenMHS checkout; move it away and retry")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    say = (lambda *_a: None) if quiet else (lambda msg: print(msg, file=sys.stderr, flush=True))
     git = _git()
-    if git:
-        say(f"· downloading OpenMHS {ref} (about 35 MB) into {target} …")
-        result = subprocess.run(  # noqa: S603 - fixed public repository, pinned ref
-            [git, "clone", "--quiet", "--depth", "1", "--branch", ref, REPO_URL + ".git", str(target)],
-            capture_output=True, text=True, check=False,
+    if git is None:
+        raise RuntimeError(
+            f"git is needed to download OpenMHS {ref}. Install git, or download {REPO_URL}/archive/refs/tags/"
+            f"{ref}.tar.gz, unpack it and set OPENAI4S_OPENMHS to that directory."
         )
-        if result.returncode == 0 and is_checkout(target):
-            return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not quiet:
+        print(f"· downloading OpenMHS {ref} (about 35 MB) into {target} …", file=sys.stderr, flush=True)
+    result = subprocess.run(  # noqa: S603 - fixed public repository, pinned ref
+        [git, "clone", "--quiet", "--depth", "1", "--branch", ref, REPO_URL + ".git", str(target)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0 or not is_checkout(target):
         shutil.rmtree(target, ignore_errors=True)
-        say(f"  git clone failed ({result.stderr.strip()[:200]}); trying the release tarball")
-    url = f"{REPO_URL}/archive/refs/tags/{ref}.tar.gz"
-    say(f"· downloading {url} …")
-    with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
-        archive = Path(tmp) / "openmhs.tar.gz"
-        with urllib.request.urlopen(url, timeout=120) as response, open(archive, "wb") as out:  # noqa: S310
-            shutil.copyfileobj(response, out)
-        with tarfile.open(archive) as tar:
-            for member in tar.getmembers():
-                name = Path(member.name)
-                if name.is_absolute() or ".." in name.parts:
-                    raise RuntimeError(f"unsafe path in the OpenMHS archive: {member.name}")
-            if sys.version_info >= (3, 12):
-                tar.extractall(tmp, filter="data")  # noqa: S202 - paths checked above
-            else:
-                tar.extractall(tmp)  # noqa: S202 - paths checked above
-        roots = [p for p in Path(tmp).iterdir() if p.is_dir() and is_checkout(p)]
-        if not roots:
-            raise RuntimeError(f"the archive at {url} does not contain an OpenMHS checkout")
-        roots[0].rename(target)
+        raise RuntimeError(f"could not download OpenMHS {ref}: {result.stderr.strip()[:300] or 'git clone failed'}")
     return target
 
 
