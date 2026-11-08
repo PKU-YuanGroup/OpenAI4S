@@ -17805,12 +17805,6 @@
               "pinned_ref": {
                 "type": "string"
               },
-              "sdk_path": {
-                "type": "string"
-              },
-              "sdk_version": {
-                "type": "string"
-              },
               "searched": {
                 "type": "array"
               },
