@@ -9,3 +9,7 @@ idempotent writes and deterministic JSON/JSONL export. Reward annotations and
 costs are separate records, so a verifier or training snapshot never rewrites
 execution facts. Training algorithms and provider-specific policy clients stay
 outside the harness.
+
+`__init__.py` exports the public records and adapters. `agent_sink.py` bridges
+the existing `AgentEngine` event stream into these records without replacing
+the Action Ledger.

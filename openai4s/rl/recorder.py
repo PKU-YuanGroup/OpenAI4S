@@ -117,6 +117,18 @@ class TrajectoryRecorder:
         if episode_id != self.episode.episode_id:
             raise ValueError("record belongs to a different episode")
 
+    def finish(self, status: str) -> Episode:
+        """Set the episode lifecycle projection exactly once."""
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError("status must be a non-empty string")
+        with self._lock:
+            if self.episode.status != "running" and self.episode.status != status:
+                raise ValueError("episode is already terminal")
+            self.episode = type(self.episode)(
+                **{**self.episode.to_dict(), "status": status}
+            )
+            return self.episode
+
     def snapshot(self) -> Trajectory:
         with self._lock:
             return Trajectory(

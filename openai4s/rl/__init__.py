@@ -6,6 +6,7 @@ trainer can consume :class:`Trajectory` JSON while the existing agent engine
 continues to own execution and permissions.
 """
 
+from .agent_sink import TrajectoryEventSink
 from .models import (
     CostRecord,
     Episode,
@@ -30,4 +31,5 @@ __all__ = [
     "Segment",
     "Trajectory",
     "TrajectoryRecorder",
+    "TrajectoryEventSink",
 ]

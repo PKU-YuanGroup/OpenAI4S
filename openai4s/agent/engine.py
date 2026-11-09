@@ -165,6 +165,9 @@ class AgentEngine:
             )
         )
         state.messages[:] = [dict(message) for message in prepared]
+        decision_hook = getattr(self.event_sink, "propose", None)
+        if callable(decision_hook):
+            decision_hook(turn, prepared)
 
         def on_delta(text: str) -> None:
             self.event_sink.emit(TextDelta(text, turn))

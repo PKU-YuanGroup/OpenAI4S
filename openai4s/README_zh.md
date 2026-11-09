@@ -55,6 +55,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | --- | --- |
 | [`adapters/`](./adapters/) | 位于标准库运行时核心之外的可选生态适配器。 |
 | [`agent/`](./agent/) | 供应商中立的外层循环。它路由动作并收尾，在超过 token 阈值时压缩上下文，把活儿分发给子 Agent，也负责组合本地运行时。 |
+| [`rl/`](./rl/) | 无第三方依赖的 RL Runtime 合约和 AgentEngine 事件适配器。它导出版本化 Science Trajectory 记录，不在核心中嵌入 Trainer，也不改变 Action Ledger。 |
 | [`cli/`](./cli/) | 命令行生命周期与一次性任务入口，以及环境、支持面、benchmark 和分享相关的命令。 |
 | [`compute/`](./compute/) | Host 侧的 BYOC/远程计算注册表与任务编排；通用远程计算仍是 Prototype 能力面。 |
 | [`execution/`](./execution/) | 科学 Cell 在内核之外要经过的环节：准入、取消、依赖投影、结果值和超时恢复。 |
