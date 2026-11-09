@@ -50,3 +50,7 @@ Provider 成本。
 `cost.py` 只接受明确声明已认证、且绑定到精确 compute job 与 receipt 的 Provider
 成本证据。缺失的 Provider 测量保持未知；持久化 job 的耗时只作为 metadata 保存，
 不会被改称为 GPU 时间或账单金额。
+
+`admission.py` 提供与 Provider 无关的资源请求和幂等 allocation 边界。它要求在
+启动前绑定 Provider receipt，并分别报告准入等待时间和实际计算时间；它不替换
+持久化 Compute job 仓储。

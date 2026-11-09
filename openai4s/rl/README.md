@@ -66,3 +66,8 @@ head, copies source rows, or estimates GPU/provider cost.
 the exact compute job and receipt. Missing provider measurements remain
 unknown; durable job elapsed time is metadata and is never relabeled as GPU
 time or a billing amount.
+
+`admission.py` supplies a provider-neutral resource request and idempotent
+allocation boundary. It binds a provider receipt before start and reports
+admission wait separately from actual compute time; it does not replace the
+durable Compute job repository.

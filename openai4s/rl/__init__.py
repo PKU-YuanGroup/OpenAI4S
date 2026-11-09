@@ -50,6 +50,11 @@ _LAZY_EXPORTS = {
     "WorkerFormat": (".worker", "WorkerFormat"),
     "ProviderCostEvidence": (".cost", "ProviderCostEvidence"),
     "provider_cost_record": (".cost", "provider_cost_record"),
+    "AdmissionRecord": (".admission", "AdmissionRecord"),
+    "AdmissionResult": (".admission", "AdmissionResult"),
+    "ResourceAdmission": (".admission", "ResourceAdmission"),
+    "ResourceCapacity": (".admission", "ResourceCapacity"),
+    "ResourceRequest": (".admission", "ResourceRequest"),
 }
 
 
@@ -104,4 +109,9 @@ __all__ = [
     "WorkerFormat",
     "ProviderCostEvidence",
     "provider_cost_record",
+    "AdmissionRecord",
+    "AdmissionResult",
+    "ResourceAdmission",
+    "ResourceCapacity",
+    "ResourceRequest",
 ]
