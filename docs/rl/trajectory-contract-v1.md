@@ -1,7 +1,7 @@
 # OpenAI4S science trajectory contract v1
 
-Status: **implemented for the records listed here; external verifier and
-trainer interfaces remain separate work**.
+Status: **implemented for the records listed here; verifier and trainer
+implementations remain separate work**.
 
 This document is normative for the JSON emitted by
 `TrajectoryRecorder` when `Trajectory.schema_version` is
