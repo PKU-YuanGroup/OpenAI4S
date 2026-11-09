@@ -258,7 +258,7 @@ jobs:
       matrix:
         include:
           - platform: macos
-            runner: macos-14
+            runner: macos-15
             module: harness.smoke.macos_sandbox
           # No linux leg. The former hosted `harness.smoke.linux_sandbox` run
           # failed, and the complete boundary has not been re-evaluated with
@@ -347,7 +347,7 @@ jobs:
     needs: [freeze, quality, platform-checks]
     # The DMG embeds a relocatable CPython plus the native science wheels, so it
     # cannot be cross-built: this must run on an Apple Silicon runner.
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     # The `secrets` context is not available in a step-level `if`, so the
     # certificate's presence is surfaced here, at job level, where secrets are
