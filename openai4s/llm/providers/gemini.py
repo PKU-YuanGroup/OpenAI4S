@@ -25,7 +25,7 @@ def _chat_gemini(
     post_json,
 ) -> dict:
     url = f"{base.rstrip('/')}/v1beta/models/{model}:generateContent"
-    system_txt, contents = _gemini_contents(messages)
+    system_txt, contents = _gemini_contents(messages, model=model)
     payload: dict[str, Any] = {
         "contents": contents,
         "generationConfig": {

@@ -109,6 +109,7 @@ from openai4s.server import (
     governance_routes,
     kernel_routes,
     local_auth,
+    mhs_lab_routes,
     onboarding_routes,
     orchestration_routes,
     package_runtime,
@@ -1808,6 +1809,13 @@ class WSHub:
                             int(since),
                             require_complete=True,
                         )
+                # A number is only a cursor position together with the stream
+                # it counts, and the client keys its cursor on `root_frame_id`.
+                # Events broadcast directly (not through `emitter`) used to be
+                # numbered without it, so the hub's counter moved and the
+                # client's did not -- and every later resubscribe of an idle
+                # session was declared a gap and refetched history.
+                obj.setdefault("root_frame_id", root_frame_id)
                 obj["seq"] = self._next_seq_locked(root_frame_id)
                 self._record(root_frame_id, obj)
                 # ``send_json`` only performs JSON encoding + a non-blocking
@@ -16567,6 +16575,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             ):
                 return
             if diagnostics_routes.handle(self, method, sub, cfg=cfg):
+                return
+            # The optional OpenMHS simulated lab (Lab panel beside the Notebook).
+            if mhs_lab_routes.handle(self, method, sub, q):
                 return
             # Explicit update check: a read-only status and an operator-pressed
             # check. Admin-only on both verbs (team_policy), no-store, and the

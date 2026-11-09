@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-The `openai4s` command lives here: daemon lifecycle (`serve`, `status`, `stop`, `url`), one-shot local task execution (`run`), first-run model configuration (`init`), scientific environment creation (`setup`) and the transactional `env` generations beside it, the support surfaces (`doctor`, `diagnostics`, `verify-package`), the workflow `benchmark`, read-only session sharing (`share`) with the public `relay` that fronts it, batch-job submission (`cluster`), team-mode account administration (`user`), and the optional Jupyter adapter commands. `-V`/`--version` answers with the package version.
+The `openai4s` command lives here: daemon lifecycle (`serve`, `status`, `stop`, `url`), one-shot local task execution (`run`), first-run model configuration (`init`), scientific environment creation (`setup`) and the transactional `env` generations beside it, the support surfaces (`doctor`, `diagnostics`, `verify-package`), the workflow `benchmark`, read-only session sharing (`share`) with the public `relay` that fronts it, batch-job submission (`cluster`), team-mode account administration (`user`), the simulated OpenMHS lab (`lab`: install market devices, start, stop; implemented in `openai4s/mhs_lab/cli.py`), and the optional Jupyter adapter commands. `-V`/`--version` answers with the package version.
 
 ## Where this fits
 

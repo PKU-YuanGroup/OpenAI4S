@@ -478,6 +478,16 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
                 "args": a.get("args", {}),
             },
         )
+    if method == "mhs_emergency_stop":
+        return (
+            "mcp",
+            f"Emergency stop {a.get('device_id')}",
+            {
+                "server": a.get("server"),
+                "device_id": a.get("device_id"),
+                "reason": a.get("reason"),
+            },
+        )
     if method == "fold":
         seq = "".join(str(a.get("sequence") or "").split())
         name = a.get("name") or "protein"
@@ -548,6 +558,7 @@ GATEABLE_TOOLS = frozenset(
 _MCP_SERVER_METHODS = frozenset(
     {
         "mcp_call",
+        "mhs_emergency_stop",
         "mcp_tools",
         "mcp_resources",
         "mcp_resource_read",
@@ -2100,6 +2111,10 @@ class HostDispatcher:
                 else "runtime_mutation"
             )
         )
+        if method == "mhs_emergency_stop":
+            # The named trusted action reaches an external endpoint; its audit
+            # row must say so even though it is not a registry control tool.
+            audit_side_effect = "external_write"
         # ``dangerous`` was declared on ten control tools and asserted by the
         # policy tests, and then read by nothing: it reached no gate, no audit
         # record, and no prompt. So restoring an Artifact over the workspace and
@@ -2144,7 +2159,14 @@ class HostDispatcher:
             project_files = None
             project_permission_asks = []
             if self._child_execution_policy is not None:
-                if not self._child_execution_policy.allows(method, control_tool):
+                # The named stop shares MCP capability and permission ceilings.
+                policy_method = "mcp_call" if method == "mhs_emergency_stop" else method
+                policy_tool = (
+                    get_tool_by_host_method(policy_method)
+                    if method == "mhs_emergency_stop"
+                    else control_tool
+                )
+                if not self._child_execution_policy.allows(policy_method, policy_tool):
                     result = {
                         "error": "Capability denied by delegated child policy: "
                         f"{method}"
@@ -2152,7 +2174,7 @@ class HostDispatcher:
                     ok = False
                     return result
                 child_decision = self._child_execution_policy.decision(
-                    method, control_tool
+                    policy_method, policy_tool
                 )
                 if child_decision == "deny":
                     result = {
@@ -2235,11 +2257,49 @@ class HostDispatcher:
             # nested/delegated dispatchers too. Headless runs (no UI channel)
             # pass through. Deny returns the single-key {"error": …} soft-fail
             # shape so the model sees a RuntimeError it can recover from.
+            # The ONE narrow approval exception (HOST-002): an explicitly
+            # named, device-bound MHS e-stop on an operator-enabled MHS
+            # connector.  ``is_trusted_estop`` only settles the *prompt*; the
+            # adapter still enforces connector enablement, the MHS row identity,
+            # the endpoint/device allow-list, the hardware-only refusal and the
+            # ledger audit.  Every other call -- including non-MHS connectors
+            # and every ordinary MHS command -- keeps its gate.
+            trusted_stop = False
+            if method in {"mcp_call", "mhs_emergency_stop"}:
+                stop_spec = args[0] if args and isinstance(args[0], dict) else {}
+                if method == "mhs_emergency_stop":
+                    stop_spec = {**stop_spec, "tool": "mhs__estop"}
+                # Older injected MCP services have no trusted-stop capability.
+                check_stop = getattr(self._mcp_service, "is_trusted_estop", None)
+                trusted_stop = callable(check_stop) and check_stop(stop_spec)
+                if trusted_stop:
+                    # Exempt the prompt, never a standing deny. Both stop
+                    # spellings share the canonical MCP permission identity,
+                    # including the root conversation's project for children.
+                    scope = self.store.resolve_frame_scope(self.frame_id)
+                    stop_target = _gate_target("mcp_call", [stop_spec])
+                    if (
+                        self.store.resolve_permission(
+                            root_frame_id=scope.get("root_frame_id"),
+                            project_id=scope.get("project_id") or "default",
+                            tool="mcp_call",
+                            pattern_input=stop_target,
+                        )
+                        == "deny"
+                    ):
+                        result = {
+                            "error": f"Permission denied: mcp_call to {stop_target} is denied"
+                        }
+                        ok = False
+                        return result
             requires_approval = (
-                control_tool.requires_approval
-                if control_tool is not None
-                else method in GATEABLE_TOOLS
-            ) or child_decision == "ask"
+                (
+                    control_tool.requires_approval
+                    if control_tool is not None
+                    else method in GATEABLE_TOOLS
+                )
+                or child_decision == "ask"
+            ) and not trusted_stop
             secret_target = (
                 control_tool.secret_path(args[0] if args else {})
                 if control_tool is not None
@@ -2458,7 +2518,7 @@ class HostDispatcher:
     # attempt, PREPEND a warning banner to the primary text field — never drop
     # the content (the agent may still need the legitimate part).
     _SCREENED_METHODS = frozenset(
-        {"web_download", "web_fetch", "web_search", "mcp_call"}
+        {"web_download", "web_fetch", "web_search", "mcp_call", "mhs_emergency_stop"}
     )
 
     def _screen_tool_result(
@@ -2522,7 +2582,7 @@ class HostDispatcher:
                 )
             primary_text = None
             src = "web_search"
-        elif method == "mcp_call":
+        elif method in {"mcp_call", "mhs_emergency_stop"}:
             key = "content" if isinstance(result.get("content"), str) else None
             # Scan the whole bounded MCP envelope even when it has a primary
             # content field: structuredContent and future provider fields are
@@ -3443,6 +3503,19 @@ class HostDispatcher:
 
     def _m_mcp_call(self, spec: dict) -> Any:
         return self._mcp_service.call(spec)
+
+    def _m_mhs_emergency_stop(self, spec: dict) -> Any:
+        """Named trusted e-stop action for an enabled MHS connector.
+
+        Like ``_m_mcp_call`` this is reached through the real dispatcher
+        envelope (audit, child policy, result screening), but it is not in
+        ``GATEABLE_TOOLS`` and has no approval-requiring control tool.  That is
+        the deliberate, narrow exception from HOST-002; the policy that still
+        applies is enforced by ``MCPService.emergency_stop`` and the MHS
+        adapter (connector enablement, MHS row identity, endpoint/device
+        allow-list, hardware-only refusal, host ledger).
+        """
+        return self._mcp_service.emergency_stop(spec)
 
     # --- background exec: peek / interrupt -----------------------
     def _new_background_kernel(self) -> Any:

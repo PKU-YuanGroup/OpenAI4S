@@ -13,6 +13,7 @@ import {
   resolveArtifactVersion,
   versionResolveMessage,
 } from "./deeplink";
+import { labTabLabel, mountLab } from "../lab";
 import { browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
@@ -90,6 +91,12 @@ export function renderDockTabs(): void {
   if (activeTab.value === "notebook") notebook.classList.add("active");
   notebook.onclick = () => setActiveTab("notebook");
   bar.appendChild(notebook);
+  // The OpenMHS Lab sits beside the Notebook: devices, live receipts, results, evidence.
+  const lab = tabBtn("button", "server", labTabLabel());
+  if (lab.dataset) lab.dataset.dockTab = "lab";
+  if (activeTab.value === "lab") lab.classList.add("active");
+  lab.onclick = () => setActiveTab("lab");
+  bar.appendChild(lab);
   const timeline = tabBtn("button", "clock", translate("dock.tab.timeline"));
   if (activeTab.value === "timeline") timeline.classList.add("active");
   timeline.onclick = () => setActiveTab("timeline");
@@ -103,7 +110,7 @@ export function renderDockTabs(): void {
 
 export function showDockPane(pane: string): void {
   if (typeof document === "undefined") return;
-  ["viewer", "notebook", "timeline", "files"].forEach((p) => {
+  ["viewer", "notebook", "lab", "timeline", "files"].forEach((p) => {
     const n = document.getElementById("dock-" + p);
     if (n) n.classList.toggle("hidden", p !== pane);
   });
@@ -157,10 +164,19 @@ export function setActiveTab(tab: string, selectArtifact = true): void {
   dockOpen();
   renderDockTabs();
   const pane =
-    tab === "notebook" ? "notebook" : tab === "timeline" ? "timeline" : tab === "files" ? "files" : "viewer";
+    tab === "notebook"
+      ? "notebook"
+      : tab === "lab"
+        ? "lab"
+        : tab === "timeline"
+          ? "timeline"
+          : tab === "files"
+            ? "files"
+            : "viewer";
   if (pane !== "viewer") abortPreviewReads(viewerEl());
   showDockPane(pane);
   if (tab === "notebook") callWindow("renderNotebook");
+  else if (tab === "lab") mountLab();
   else if (tab === "timeline") {
     callWindow("loadWorkbenchState", currentId.value);
     callWindow("renderActionTimeline");

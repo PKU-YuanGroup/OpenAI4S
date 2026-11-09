@@ -25,6 +25,7 @@ and the internal plans in this directory are not published by that site.
 | `backend-refactor-architecture.md` | Historical backend-refactor design record. It says what was agreed, so it is not proof of current end-to-end behavior. |
 | `compute.md` | Remote compute, the BYOC providers, and `host.fold`: how they behave and where their limits are. |
 | `configuration.md` | How the provider, environment, daemon, kernel, and data directory are configured. |
+| `openmhs.md` / `openmhs_zh.md` | Experimental, default-off OpenMHS integration: separate SDK/reference host source installation, operator enable/disable, governed MCP calls, and trusted-stop boundaries. |
 | `docker.md` | Bilingual container guide: the public GHCR 0.3.1 image, pinned pull/run commands, `compose.yaml`, the Kubernetes manifests, and what a wildcard bind actually changes. It states the trade a container makes with the kernel sandbox rather than implying the container replaces it, names the derived `OPENAI4S_SECRET_<SCOPE>_<NAME>` variables the image expects, and lists the limitations that are real today — no R, no IPv6, and no access logs. Startup logs do not include the access token; `docker exec … openai4s url` prints the sign-in link. |
 | `jupyter.md` | The optional Jupyter adapter: what it exposes, the execution boundaries it keeps, and the compatibility notes. |
 | `model-backend-bringup.md` | Framework-level accelerator routing, checkpoint staging, real-inference canary admission, connector portability, and the extension contract for checkpoint-backed model tools. |

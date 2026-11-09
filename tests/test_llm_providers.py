@@ -294,3 +294,173 @@ def test_normalized_return_shape(cap, provider):
     out = llm.chat([{"role": "user", "content": "hi"}], _cfg(provider))
     assert set(out) >= {"content", "reasoning", "usage", "finish_reason", "raw"}
     assert out["content"] == "ok"
+
+
+# --- per-model request parameters -----------------------------------------
+
+
+def test_chatgpt_default_model_sends_max_completion_tokens_without_temperature(cap):
+    # The default `gpt-5` 400s on `max_tokens` and on any non-default temperature.
+    c = _cfg("chatgpt")
+    llm.chat([{"role": "user", "content": "hi"}], c)
+    assert cap.payload["model"] == "gpt-5"
+    assert cap.payload["max_completion_tokens"] == c.max_tokens
+    assert "max_tokens" not in cap.payload
+    assert "temperature" not in cap.payload
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5-mini",
+        "gpt-5-2025-08-07",
+        "gpt-5.1-codex",
+        "gpt-5.2-pro",
+        "o1",
+        "o3-mini",
+        "o4-mini-2025-04-16",
+    ],
+)
+def test_openai_reasoning_models_drop_max_tokens_and_temperature(cap, model):
+    llm.chat(
+        [{"role": "user", "content": "hi"}],
+        _cfg("chatgpt", model=model),
+        max_tokens=1234,
+        temperature=0.2,
+    )
+    assert cap.payload["max_completion_tokens"] == 1234
+    assert "max_tokens" not in cap.payload
+    assert "temperature" not in cap.payload
+
+
+@pytest.mark.parametrize(
+    "model,default_effort",
+    [
+        ("gpt-5.1", "none"),
+        ("gpt-5.1-2025-11-13", "none"),
+        ("gpt-5.2", "none"),
+        ("gpt-5.2-2025-12-11", "none"),
+        ("gpt-5.4", "none"),
+        ("gpt-5.4-2026-03-05", "none"),
+        ("gpt-5.5", "medium"),
+        ("gpt-5.6-sol", "medium"),
+    ],
+)
+@pytest.mark.parametrize("effort", [None, "none", "low", "high"])
+@pytest.mark.parametrize("temperature", [None, 0.0])
+@pytest.mark.parametrize("stream", [False, True])
+def test_openai_optional_reasoning_preserves_supported_sampling(
+    cap, monkeypatch, model, default_effort, effort, temperature, stream
+):
+    if effort is not None:
+        monkeypatch.setenv("OPENAI4S_LLM_REASONING_EFFORT", effort)
+
+    def post_sse(url, payload, headers, timeout, on_event):
+        cap(url, payload, headers, timeout)
+        on_event({"choices": [{"delta": {"content": "ok"}}]})
+        on_event({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+
+    monkeypatch.setattr(llm.transport, "post_sse", post_sse)
+    monkeypatch.setenv("OPENAI4S_LLM_STREAM", "1")
+    cfg = _cfg("chatgpt", model=model, temperature=0.3)
+    result = llm.chat(
+        [{"role": "user", "content": "hi"}],
+        cfg,
+        max_tokens=1234,
+        temperature=temperature,
+        on_delta=(lambda _: None) if stream else None,
+    )
+
+    assert result["content"] == "ok"
+    assert cap.payload["max_completion_tokens"] == 1234
+    assert "max_tokens" not in cap.payload
+    assert cap.payload.get("reasoning_effort") == effort
+    if (effort or default_effort) == "none":
+        assert cap.payload["temperature"] == (
+            cfg.temperature if temperature is None else temperature
+        )
+    else:
+        assert "temperature" not in cap.payload
+
+
+@pytest.mark.parametrize("model", ["gpt-5", "o3", "gpt-5.1-codex", "gpt-5.2-pro"])
+def test_unsupported_none_effort_does_not_enable_sampling(cap, monkeypatch, model):
+    monkeypatch.setenv("OPENAI4S_LLM_REASONING_EFFORT", "none")
+    llm.chat([{"role": "user", "content": "hi"}], _cfg("chatgpt", model=model))
+    assert "temperature" not in cap.payload
+    assert cap.payload["reasoning_effort"] == "none"
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("chatgpt", "gpt-5-chat-latest"),
+        ("chatgpt", "gpt-4o"),
+        ("chatgpt", "gpt-4.1-mini"),
+        ("ark", "doubao-seed-2.0-pro"),
+        ("ollama", "gpt-oss:20b"),
+    ],
+)
+def test_openai_wire_chat_models_keep_max_tokens_and_temperature(cap, provider, model):
+    llm.chat(
+        [{"role": "user", "content": "hi"}],
+        _cfg(provider, model=model),
+        max_tokens=1234,
+        temperature=0.2,
+    )
+    assert cap.payload["max_tokens"] == 1234
+    assert cap.payload["temperature"] == 0.2
+    assert "max_completion_tokens" not in cap.payload
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-sonnet-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "claude-fable-5-1",
+        "anthropic.claude-opus-5-5",
+    ],
+)
+def test_anthropic_models_without_sampling_get_no_temperature(cap, model):
+    # These models return 400 for any `temperature`, even an explicit one.
+    llm.chat(
+        [{"role": "user", "content": "hi"}],
+        _cfg("claude", model=model),
+        temperature=0.2,
+    )
+    assert "temperature" not in cap.payload
+    assert cap.payload["max_tokens"]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        "claude-sonnet-4-20250514",
+        "claude-opus-4-1-20250805",
+        "claude-opus-4-5@20251101",
+        "claude-3-5-sonnet-20241022",
+    ],
+)
+def test_anthropic_models_with_sampling_keep_temperature(cap, model):
+    llm.chat(
+        [{"role": "user", "content": "hi"}],
+        _cfg("claude", model=model),
+        temperature=0.2,
+    )
+    assert cap.payload["temperature"] == 0.2
+
+
+def test_anthropic_default_model_keeps_configured_temperature(cap):
+    c = _cfg("claude")
+    llm.chat([{"role": "user", "content": "hi"}], c)
+    assert cap.payload["model"] == "claude-sonnet-4-5"
+    assert cap.payload["temperature"] == c.temperature

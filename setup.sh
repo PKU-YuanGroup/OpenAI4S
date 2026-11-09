@@ -60,7 +60,13 @@ echo "· environment ready → .venv/"
 # 3) enable the git pre-commit hook (black · isort · ruff) for contributors.
 #    Runs before the optional conda step below: a failed env solve must not cost
 #    a contributor their git hook — the control .venv is already complete here.
-uv run pre-commit install >/dev/null 2>&1 && echo "· pre-commit hook installed" || true
+if uv run pre-commit install >/dev/null 2>&1; then
+  echo "· pre-commit hook installed"
+else
+  echo "warn: pre-commit hook was not installed." >&2
+  echo "      contributor tooling requires Python 3.11+; in that environment, retry:" >&2
+  echo "        uv run pre-commit install" >&2
+fi
 
 # 4) optionally build the comprehensive, persistent Python + R kernel envs
 if [ "$kernel_envs_mode" != "none" ]; then

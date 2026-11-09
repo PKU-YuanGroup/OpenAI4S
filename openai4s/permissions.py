@@ -482,6 +482,18 @@ def suggest_patterns(method: str, target: str) -> list[str]:
     return uniq
 
 
+def _snapshot_event(payload: dict) -> dict:
+    """A copy of an emitted event, minus the stream position it was given.
+
+    ``dict(...)`` rather than a comprehension: the hub may be stamping ``seq``
+    onto the live dict on another thread, and a C-level copy cannot observe it
+    half-way through the way iterating its items could.
+    """
+    snapshot = dict(payload)
+    snapshot.pop("seq", None)
+    return snapshot
+
+
 class _Pending:
     __slots__ = (
         "event",
@@ -581,10 +593,18 @@ class PermissionBroker:
 
     def pending_events(self, root_frame_id: str, *, store=None) -> list[dict]:
         """Outstanding await_permission payloads for a conversation (for a
-        client reconnecting mid-pause)."""
+        client reconnecting mid-pause).
+
+        Each one is a point-to-point snapshot, so it is returned as a copy
+        with no stream ``seq``. The in-memory payload is the very dict the
+        channel emitted, and the WebSocket hub stamps its sequence onto that
+        dict in place. Handing it back unchanged told a reconnecting client
+        the card was a stream position it had already passed, so a receiver
+        that drops anything at or below its cursor dropped the card.
+        """
         with self._lock:
             memory = [
-                self._pending[d].payload
+                _snapshot_event(self._pending[d].payload)
                 for d in self._by_root.get(root_frame_id, ())
                 if d in self._pending
             ]
@@ -595,7 +615,7 @@ class PermissionBroker:
         seen = {item.get("decision_id") for item in memory}
         try:
             durable = [
-                row.get("payload") or {}
+                _snapshot_event(row.get("payload") or {})
                 for row in store.list_permission_requests(
                     root_frame_id=root_frame_id,
                     state="pending",

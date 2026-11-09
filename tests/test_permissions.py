@@ -715,6 +715,99 @@ def test_durable_pending_request_survives_broker_restart_and_can_be_resolved(tmp
     assert "did not execute" in history[-1]["content"]
 
 
+class _HubConn:
+    """A subscriber that keeps the very dicts the hub hands it, so a test can
+    see whether something later mutated what was delivered."""
+
+    def __init__(self):
+        self.subs = set()
+        self.alive = True
+        self.sent = []
+
+    def send_json(self, obj):
+        self.sent.append(obj)
+
+    def refresh_visibility(self, root_frame_id):
+        return None
+
+    def may_receive(self, root_frame_id):
+        return True
+
+
+def test_resent_pending_card_is_an_unsequenced_copy(tmp_path):
+    """The card a reconnecting client is re-sent is a snapshot, not a stream
+    position.
+
+    The broker keeps the dict it emitted, and the hub stamps `seq` onto that
+    dict in place. Re-sending it unchanged told the client the card was a
+    position it had already passed, so a receiver that drops everything at or
+    below its cursor dropped a card that was still waiting for an answer.
+    """
+    from openai4s.server.gateway import WSHub
+
+    st = _store(tmp_path)
+    hub = WSHub()
+    viewer = _HubConn()
+    hub.add(viewer)
+    hub.subscribe("root-seq", viewer)
+    b = PermissionBroker()
+    b.register_channel("root-seq", hub.emitter("root-seq"), store=st)
+    out = {}
+
+    def run():
+        out["res"] = b.gate(
+            store=st, frame_id="root-seq", method="bash", target="sleep 999"
+        )
+
+    t = threading.Thread(target=run)
+    t.start()
+    try:
+        live = []
+        for _ in range(200):
+            live = [e for e in viewer.sent if e.get("type") == "await_permission"]
+            if live:
+                break
+            time.sleep(0.01)
+        assert live, "the gate never emitted its approval card"
+        assert isinstance(live[0].get("seq"), int), "the live card is sequenced"
+
+        snapshots = b.pending_events("root-seq")
+        assert [s["decision_id"] for s in snapshots] == [live[0]["decision_id"]]
+        assert all("seq" not in s for s in snapshots)
+        # A copy: what the stream delivered still carries its number.
+        assert isinstance(live[0].get("seq"), int)
+    finally:
+        b.cancel_root("root-seq")
+        t.join(timeout=5)
+    assert out["res"]["allow"] is False
+
+
+def test_durable_pending_card_is_resent_without_a_stream_seq(tmp_path):
+    """The same contract for the card a restarted daemon re-sends from SQLite.
+    Today the payload is stored before it is first emitted, so a row holds no
+    `seq`; this pins that the snapshot does not depend on that ordering."""
+    st = _store(tmp_path)
+    payload = {
+        "type": "await_permission",
+        "frame_id": "root-durable-seq",
+        "decision_id": "perm-durable-seq",
+        "tool": "mcp_call",
+        "target": "server/send",
+    }
+    st.create_permission_request(
+        decision_id="perm-durable-seq",
+        root_frame_id="root-durable-seq",
+        frame_id="root-durable-seq",
+        project_id="default",
+        tool="mcp_call",
+        target="server/send",
+        payload={**payload, "seq": 7},
+    )
+
+    restarted = PermissionBroker()
+    assert restarted.pending_events("root-durable-seq", store=st) == [payload]
+
+
 @pytest.mark.parametrize("invalid_allow", ["false", 0, 1, [], {}, None])
 def test_broker_rejects_non_boolean_allow_without_resolving(tmp_path, invalid_allow):
     st = _store(tmp_path)

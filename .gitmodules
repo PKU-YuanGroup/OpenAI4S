@@ -1,0 +1,4 @@
+[submodule "third_party/OpenMHS"]
+	path = third_party/OpenMHS
+	url = https://github.com/PKU-YuanGroup/OpenMHS.git
+	shallow = true
