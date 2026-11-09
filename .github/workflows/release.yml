@@ -563,8 +563,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      # Install and launch from one cache even after the smoke isolates HOME.
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/openai4s-playwright
+      # Use Playwright's hermetic cache for install and launch despite isolated HOME.
+      PLAYWRIGHT_BROWSERS_PATH: "0"
     steps:
       - name: Checkout the release tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
