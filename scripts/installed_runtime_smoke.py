@@ -48,6 +48,11 @@ into no shipped configuration; ``OPENAI4S_UPDATE_SOURCE=offline`` keeps the
 updater off the network. No model is called and nothing but loopback is
 contacted.
 
+With ``--browser``, install Playwright's browser using an explicit
+``PLAYWRIGHT_BROWSERS_PATH`` and pass the same value to this script. The browser
+driver inherits that cache path while HOME remains isolated; the release job
+sets one job-scoped path for both installation and execution.
+
 The bundle mode unpacks the tarball into a temporary directory whose name
 contains a space and launches the bundle's own ``bin/openai4s``; the wheel mode
 runs ``<python> -I -m openai4s``. Both stop through the same entry point's
@@ -1451,6 +1456,7 @@ class Scenario:
                 "TMPDIR",
                 "LANG",
                 "LC_ALL",
+                "PLAYWRIGHT_BROWSERS_PATH",
                 "OPENAI4S_DATA_DIR",
                 "OPENAI4S_HOST",
                 "OPENAI4S_PORT",
