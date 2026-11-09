@@ -2,10 +2,12 @@
 
 [中文说明](README_zh.md)
 
-Everything CI does to this repository is in these five files: the default gate
+Everything CI does to this repository is in these workflow files: the default gate
 every pull request has to pass, plus release publication, container-image
 publication, bounded protocol fuzzing, and Scorecard. They run
 against the code but are not shipped as part of the Python package.
+
+`platform-validation.yml` validates the public v1.0.0 Windows ZIP on a real Windows 2025 + Ubuntu 24.04 WSL2 installation. It checks the shipped launcher, Windows browser, installed science runtime and enforced bubblewrap isolation. It runs on the dedicated validation branch or manual dispatch; it does not publish artifacts to the release.
 
 Credential scanning lives in `ci.yml`'s source-credential-scan job
 ([`scripts/source_secret_scan.py`](../../scripts/source_secret_scan.py)), which

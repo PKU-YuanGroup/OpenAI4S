@@ -1,14 +1,21 @@
 """Run the existing installed-runtime scenario on a macOS app or WSL install."""
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
-from pathlib import Path
 import platform
 import tempfile
+from pathlib import Path
 
-from installed_runtime_smoke import Runtime, Scenario, interpreter_version, normalized_arch, sha256_file
+from installed_runtime_smoke import (
+    Runtime,
+    Scenario,
+    interpreter_version,
+    normalized_arch,
+    sha256_file,
+)
 
 
 def main() -> int:
@@ -38,15 +45,35 @@ def main() -> int:
     assert python.is_file() and cli.is_file() and Path(serve[0]).is_file()
     root = Path(tempfile.mkdtemp(prefix="openai4s platform smoke "))
     runtime = Runtime(
-        target="bundle", artifact_sha256=sha256_file(args.artifact),
-        platform_name=platform.system().lower(), arch=normalized_arch(platform.machine()),
-        python_version=interpreter_version(python), origin_root=app,
-        serve_argv=serve, stop_argv=[str(cli), "stop"], cwd=root,
+        target="bundle",
+        artifact_sha256=sha256_file(args.artifact),
+        platform_name=platform.system().lower(),
+        arch=normalized_arch(platform.machine()),
+        python_version=interpreter_version(python),
+        origin_root=app,
+        serve_argv=serve,
+        stop_argv=[str(cli), "stop"],
+        cwd=root,
     )
-    env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH") if k in os.environ}
-    env.update(OPENAI4S_NO_OPEN="1", OPENAI4S_OPENMHS="off", OPENAI4S_SKIP_DOTENV="1", OPENAI4S_KERNEL_SANDBOX="enforce")
-    report = Scenario(runtime=runtime, work_root=root, browser=args.browser, env_base=env).run()
-    report.update(launch_path=kind, tested_installation=str(app), host_os_release=platform.release())
+    env = {
+        k: os.environ[k]
+        for k in ("PATH", "LANG", "LC_ALL", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH")
+        if k in os.environ
+    }
+    env.update(
+        OPENAI4S_NO_OPEN="1",
+        OPENAI4S_OPENMHS="off",
+        OPENAI4S_SKIP_DOTENV="1",
+        OPENAI4S_KERNEL_SANDBOX="enforce",
+    )
+    report = Scenario(
+        runtime=runtime, work_root=root, browser=args.browser, env_base=env
+    ).run()
+    report.update(
+        launch_path=kind,
+        tested_installation=str(app),
+        host_os_release=platform.release(),
+    )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))

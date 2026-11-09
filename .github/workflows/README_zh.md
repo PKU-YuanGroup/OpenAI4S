@@ -2,8 +2,10 @@
 
 [English](README.md)
 
-仓库的 CI 全在这五个文件里：每个 PR 都要过的默认检查门，加上 release 发布、
+仓库的 CI 由这些工作流文件定义：每个 PR 都要过的默认检查门，加上 release 发布、
 容器镜像发布、有界协议模糊测试和 Scorecard。它们只用来跑这个仓库的代码，不会随 Python 包一起发布。
+
+`platform-validation.yml` 在真实 Windows 2025 + Ubuntu 24.04 WSL2 环境验证公开的 v1.0.0 Windows ZIP，包括正式启动器、Windows 浏览器、安装后的科学计算运行时和强制 bubblewrap 隔离。它由专用验证分支或手动触发，不向 release 发布文件。
 
 凭据扫描在 `ci.yml` 的源码凭据扫描任务里，由
 [`scripts/source_secret_scan.py`](../../scripts/source_secret_scan.py) 用具名的
