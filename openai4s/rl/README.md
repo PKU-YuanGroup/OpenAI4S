@@ -10,6 +10,10 @@ costs are separate records, so a verifier or training snapshot never rewrites
 execution facts. Training algorithms and provider-specific policy clients stay
 outside the harness.
 
+Host segment APIs record observations and artifact evidence only. Reward
+annotations are written by a trusted verifier or trainer; the Agent has no
+self-scoring Host API.
+
 `__init__.py` exports the public records and adapters. `agent_sink.py` bridges
 the existing `AgentEngine` event stream into these records without replacing
 the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing

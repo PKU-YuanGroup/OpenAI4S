@@ -54,3 +54,24 @@ def test_rl_receipt_conflict_is_rejected_atomically(tmp_path) -> None:
         assert store.rl.get_receipt("request-1").fingerprint == "fp-1"
     finally:
         store.close()
+
+
+def test_rl_segments_reuse_episode_identity_and_event_sequence(tmp_path) -> None:
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    try:
+        first = Episode("ep-segments", "task", "session", 100)
+        second = Episode("ep-segments", "task", "session", 200)
+        assert store.rl.ensure_episode(first) == first
+        assert store.rl.ensure_episode(second) == first
+
+        event_one = store.rl.append_execution_event(
+            ExecutionEvent("event-one", "ep-segments", "segment.started", 101)
+        )
+        event_two = store.rl.append_execution_event(
+            ExecutionEvent("event-two", "ep-segments", "segment.closed", 102)
+        )
+        assert (event_one.sequence, event_two.sequence) == (1, 2)
+        # A retry without a sequence receives the original durable sequence.
+        assert store.rl.append_execution_event(event_one) == event_one
+    finally:
+        store.close()

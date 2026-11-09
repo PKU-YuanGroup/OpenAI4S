@@ -92,6 +92,24 @@ def _same_payload(existing: str, value: Any) -> bool:
         return False
 
 
+def _episode_from_row(row: sqlite3.Row) -> Episode:
+    """Decode the indexed episode projection without exposing SQL rows."""
+    metadata = json.loads(row["metadata"])
+    if not isinstance(metadata, Mapping):
+        raise ValueError("stored RL episode metadata is not an object")
+    return Episode(
+        episode_id=row["episode_id"],
+        task=row["task"],
+        session_id=row["session_id"],
+        created_at=row["created_at"],
+        policy_name=row["policy_name"],
+        policy_version=row["policy_version"],
+        parent_episode_id=row["parent_episode_id"],
+        status=row["status"],
+        metadata=metadata,
+    )
+
+
 class RLRepository:
     """Store-owned append-only RL records and idempotent run receipts."""
 
@@ -145,6 +163,64 @@ class RLRepository:
                 ),
             )
             self._connection.execute("COMMIT")
+
+    def ensure_episode(self, episode: Episode) -> Episode:
+        """Return the durable Episode, creating it atomically when absent.
+
+        Segment boundaries can be opened by separate host calls.  Those calls
+        intentionally carry their own wall-clock timestamp, so an existing
+        episode must be reused rather than treated as a conflicting rewrite of
+        its immutable creation time.  The identity and caller supplied
+        metadata still have to agree; the first persisted lifecycle projection
+        remains authoritative.
+        """
+        data = episode.to_dict()
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                current = self._connection.execute(
+                    "SELECT * FROM rl_episodes WHERE episode_id=?",
+                    (episode.episode_id,),
+                ).fetchone()
+                if current is not None:
+                    same = all(
+                        current[key] == data[key]
+                        for key in (
+                            "task",
+                            "session_id",
+                            "policy_name",
+                            "policy_version",
+                            "parent_episode_id",
+                            "status",
+                        )
+                    ) and _same_payload(current["metadata"], episode.metadata)
+                    if not same:
+                        raise ValueError(
+                            f"episode {episode.episode_id!r} conflicts with stored content"
+                        )
+                    result = _episode_from_row(current)
+                    self._connection.execute("COMMIT")
+                    return result
+                self._connection.execute(
+                    "INSERT INTO rl_episodes(episode_id,task,session_id,policy_name,policy_version,parent_episode_id,status,created_at,updated_at,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        episode.episode_id,
+                        episode.task,
+                        episode.session_id,
+                        episode.policy_name,
+                        episode.policy_version,
+                        episode.parent_episode_id,
+                        episode.status,
+                        episode.created_at,
+                        self._clock_ms(),
+                        _payload(episode.metadata),
+                    ),
+                )
+                self._connection.execute("COMMIT")
+                return episode
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
 
     def update_episode_status(self, episode_id: str, status: str) -> None:
         with self._lock:
@@ -241,26 +317,69 @@ class RLRepository:
         )
 
     def append_execution_event(self, value: ExecutionEvent) -> ExecutionEvent:
-        if value.sequence is None:
-            with self._lock:
-                row = self._connection.execute(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence "
-                    "FROM rl_execution_events WHERE episode_id=?",
-                    (value.episode_id,),
+        """Append an event while allocating its episode sequence atomically.
+
+        The sequence is part of the event's durable identity.  Reading the
+        current maximum before entering the write transaction lets concurrent
+        callers choose the same number, so this method owns the complete
+        idempotency check, allocation, and insert transaction.
+        """
+        data = value.to_dict()
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                current = self._connection.execute(
+                    "SELECT sequence, payload FROM rl_execution_events "
+                    "WHERE event_id=?",
+                    (value.event_id,),
                 ).fetchone()
-            value = replace(value, sequence=int(row["sequence"]))
-        self._append(
-            "rl_execution_events",
-            "event_id",
-            value,
-            {
-                "episode_id": value.episode_id,
-                "sequence": value.sequence,
-                "kind": value.kind,
-                "created_at": value.created_at,
-            },
-        )
-        return value
+                if current is not None:
+                    # A retry may omit the sequence because the first call
+                    # allocated it.  Compare against the stored allocation,
+                    # then return the durable value to the caller.
+                    if value.sequence is None:
+                        data["sequence"] = int(current["sequence"])
+                        value = replace(value, sequence=int(current["sequence"]))
+                    if not _same_payload(current["payload"], data):
+                        raise ValueError(
+                            f"record {value.event_id!r} conflicts with stored content"
+                        )
+                    self._connection.execute("COMMIT")
+                    return value
+
+                if value.sequence is None:
+                    row = self._connection.execute(
+                        "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence "
+                        "FROM rl_execution_events WHERE episode_id=?",
+                        (value.episode_id,),
+                    ).fetchone()
+                    value = replace(value, sequence=int(row["sequence"]))
+                    data = value.to_dict()
+                names = [
+                    "event_id",
+                    "episode_id",
+                    "sequence",
+                    "kind",
+                    "created_at",
+                    "payload",
+                ]
+                self._connection.execute(
+                    f"INSERT INTO rl_execution_events({','.join(names)}) "
+                    f"VALUES({','.join('?' for _ in names)})",
+                    (
+                        data["event_id"],
+                        data["episode_id"],
+                        data["sequence"],
+                        data["kind"],
+                        data["created_at"],
+                        _payload(data),
+                    ),
+                )
+                self._connection.execute("COMMIT")
+                return value
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
 
     def append_reward(self, value: RewardAnnotation) -> None:
         self._append(

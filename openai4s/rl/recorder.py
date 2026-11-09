@@ -105,15 +105,14 @@ class TrajectoryRecorder:
                         f"record {value.event_id!r} was already stored with different content"
                     )
                 return current
-            self._event_sequence += 1
-            if value.sequence is None:
-                value = replace(value, sequence=self._event_sequence)
-            elif value.sequence <= self._event_sequence:
+            if value.sequence is None and self.repository is None:
+                value = replace(value, sequence=self._event_sequence + 1)
+            elif value.sequence is not None and value.sequence <= self._event_sequence:
                 raise ValueError("event sequence must increase for new events")
+            if self.repository is not None:
+                value = self.repository.append_execution_event(value)
             assert value.sequence is not None
             self._event_sequence = value.sequence
-            if self.repository is not None:
-                self.repository.append_execution_event(value)
             self._events[value.event_id] = value
             return value
 

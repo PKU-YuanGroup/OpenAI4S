@@ -3441,7 +3441,10 @@ class HostDispatcher:
             metadata={"source": "host.segment"},
         )
         try:
-            self.store.rl.append_episode(episode)
+            # Segment calls share one Episode.  The repository returns the
+            # existing immutable identity when a later segment opens with a
+            # fresh wall-clock timestamp.
+            self.store.rl.ensure_episode(episode)
             segment = Segment(
                 segment_id=str(
                     spec.get("segment_id") or "seg-" + uuid.uuid4().hex[:16]

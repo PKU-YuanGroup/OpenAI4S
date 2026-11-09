@@ -49,3 +49,28 @@ def test_host_segment_marks_exception_as_failed() -> None:
         assert status == "failed"
     finally:
         dispatcher.store.close()
+
+
+def test_host_can_open_two_segments_in_one_episode() -> None:
+    dispatcher = build_dispatcher(get_config(), frame_id="frame-two-segments")
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with host.segment("first"):
+            pass
+        with host.segment("second"):
+            pass
+
+        rows = dispatcher.store._conn.execute(
+            "SELECT kind, sequence FROM rl_execution_events "
+            "WHERE episode_id=? ORDER BY sequence",
+            ("frame-two-segments",),
+        ).fetchall()
+        assert [row[0] for row in rows] == [
+            "segment.started",
+            "segment.closed",
+            "segment.started",
+            "segment.closed",
+        ]
+        assert [row[1] for row in rows] == [1, 2, 3, 4]
+    finally:
+        dispatcher.store.close()
