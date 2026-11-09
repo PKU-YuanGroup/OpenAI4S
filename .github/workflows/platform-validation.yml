@@ -51,7 +51,9 @@ jobs:
       - name: Download and check the public Windows package
         shell: pwsh
         run: |
-          Invoke-WebRequest 'https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip' -OutFile windows.zip
+          $url = "https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip?validation=$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          curl.exe --fail --location --retry 4 --retry-delay 5 --connect-timeout 30 --max-time 600 --output windows.zip $url
+          if ($LASTEXITCODE) { throw 'Public Windows package download failed' }
           $digest = (Get-FileHash windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($digest -ne '5f259afe0bf9c3365df3220371f6103e8b85db39c67bc941a9b9fb2202a0bdbb') { throw 'Public ZIP digest mismatch' }
           Expand-Archive windows.zip -DestinationPath 'Downloaded Package'
