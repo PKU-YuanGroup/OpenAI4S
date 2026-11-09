@@ -115,3 +115,28 @@ def test_setup_needs_discovery_on_and_an_explicit_confirmation(api, monkeypatch)
     sent = api("POST", "/mhs-lab/setup", {})
     assert sent["code"] == 400
     assert sent["body"]["code"] == "confirm_required"
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/mhs-lab/start", {}),
+        ("/mhs-lab/devices", {"package": "julabo"}),
+    ],
+)
+def test_a_superseded_start_returns_conflict(api, monkeypatch, path, body):
+    from openai4s.mhs_lab import supervisor
+    from openai4s.server import mhs_lab_routes
+
+    monkeypatch.setattr(mhs_lab_routes, "_lab", lambda: object())
+
+    def superseded(*args, **kwargs):
+        raise supervisor.LabStartSuperseded(
+            "Lab start was superseded by a later stop or restart"
+        )
+
+    monkeypatch.setattr(supervisor, "start", superseded)
+    monkeypatch.setattr(supervisor, "add_device", superseded)
+    sent = api("POST", path, body)
+    assert sent["code"] == 409
+    assert sent["body"]["code"] == "lab_start_superseded"

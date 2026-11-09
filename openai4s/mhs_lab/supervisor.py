@@ -57,11 +57,12 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 from openai4s.mhs_lab import INSTRUMENTS_DIR, lab_dir
-from openai4s.mhs_lab.runtime import child_environment, serialized
+from openai4s.mhs_lab.runtime import child_environment, mutation_lock, serialized
 
 ASSAY_PORT = int(os.environ.get("OPENAI4S_MHS_ASSAY_PORT", "7411"))
 REACTOR_PORT = int(os.environ.get("OPENAI4S_MHS_REACTOR_PORT", "7412"))
@@ -660,28 +661,45 @@ def register_connectors(connector_settings_path: str) -> dict[str, Any]:
     return result
 
 
-def start(*, wait_s: float = 30.0) -> dict[str, Any]:
-    result, doc = _start_endpoints()
+class LabStartSuperseded(RuntimeError):
+    """A later stop or restart took ownership of the lab lifecycle."""
+
+
+def start(
+    *, wait_s: float = 30.0, expected_generation: str | None = None
+) -> dict[str, Any]:
+    result, doc, generation = _start_endpoints(expected_generation)
+    if generation is None:
+        return {"started": [], "not_ready": []}
     deadline = time.monotonic() + wait_s
     pending = [ep for ep in doc["endpoints"] if ep.get("url")]
     while pending and time.monotonic() < deadline:
+        _require_generation(generation)
         pending = [ep for ep in pending if not _probe(ep["url"])]
         if pending:
             time.sleep(0.3)
     from openai4s.mhs_lab.labcard import write_lab_card
 
+    _require_generation(generation)
     card = write_lab_card()
-    return {
-        **result,
-        "not_ready": [ep["id"] for ep in pending],
-        "lab_card": card,
-        **sync_project(card),
-    }
+    with mutation_lock():
+        _require_generation(generation)
+        result["started"] = sorted(k for k, pid in _read_pids().items() if _alive(pid))
+        return {
+            **result,
+            "not_ready": [ep["id"] for ep in pending],
+            "lab_card": card,
+            **sync_project(card),
+        }
 
 
 @serialized
-def _start_endpoints() -> tuple[dict[str, Any], dict[str, Any]]:
+def _start_endpoints(
+    expected_generation: str | None,
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
     """Commit process/configuration changes before waiting on device I/O."""
+    if expected_generation is not None and running_generation() != expected_generation:
+        return {}, {}, None
     base = lab_dir()
     doc = lab_document()
     pids = {k: v for k, v in _read_pids().items() if _alive(v)}
@@ -723,12 +741,16 @@ def _start_endpoints() -> tuple[dict[str, Any], dict[str, Any]]:
     _pids_path().write_text(json.dumps(pids), encoding="utf-8")
     paths = write_documents()
     registration = register_connectors(paths["mhs_connectors"])
-    _mark_running(True)
-    return {
-        "started": sorted(pids),
-        **paths,
-        **registration,
-    }, doc
+    generation = _mark_running(True)
+    return (
+        {
+            "started": sorted(pids),
+            **paths,
+            **registration,
+        },
+        doc,
+        generation,
+    )
 
 
 PROJECT_NAME = "OpenMHS Lab"
@@ -773,15 +795,30 @@ def sync_project(card_path: str) -> dict[str, Any]:
         return {"project_error": f"{type(exc).__name__}: {exc}"}
 
 
-def _mark_running(running: bool) -> None:
+def _mark_running(running: bool) -> str | None:
     """Remember whether the operator wants the lab up (the daemon restarts it on boot when true)."""
     marker = lab_dir() / "lab-up"
     if running:
-        marker.write_text(
-            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), encoding="utf-8"
-        )
+        generation = running_generation() or uuid.uuid4().hex
+        marker.write_text(generation, encoding="utf-8")
+        return generation
     else:
         marker.unlink(missing_ok=True)
+    return None
+
+
+@serialized
+def running_generation() -> str | None:
+    try:
+        return (lab_dir() / "lab-up").read_text(encoding="utf-8") or None
+    except FileNotFoundError:
+        return None
+
+
+@serialized
+def _require_generation(generation: str) -> None:
+    if running_generation() != generation:
+        raise LabStartSuperseded("Lab start was superseded by a later stop or restart")
 
 
 def wants_running() -> bool:

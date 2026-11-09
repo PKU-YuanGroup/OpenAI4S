@@ -65,7 +65,7 @@ for line in sys.stdin:
     assert env["OPENAI4S_LAB_LIMS"] == str(tmp_path / "custom-lims.json")
 
 
-@pytest.mark.parametrize("operation", ["start", "install", "remove"])
+@pytest.mark.parametrize("operation", ["start", "install", "remove", "restart"])
 def test_slow_card_generation_does_not_block_stop(monkeypatch, operation):
     market = SimpleNamespace(
         find=lambda name: {"id": "labs/owner__" + name, "name": name}
@@ -80,15 +80,20 @@ def test_slow_card_generation_does_not_block_stop(monkeypatch, operation):
     monkeypatch.setattr(supervisor, "sync_project", lambda _: {})
     monkeypatch.setattr(supervisor, "_forget_device", lambda _: {})
     entered, release = threading.Event(), threading.Event()
+    card_calls = 0
 
     def slow_card():
-        entered.set()
-        assert release.wait(5)
+        nonlocal card_calls
+        card_calls += 1
+        if card_calls == 1:
+            entered.set()
+            assert release.wait(5)
         return "unused"
 
     monkeypatch.setattr(labcard, "write_lab_card", slow_card)
     actions = {
         "start": lambda: supervisor.start(wait_s=0),
+        "restart": lambda: supervisor.start(wait_s=0),
         "install": lambda: supervisor.add_device("new"),
         "remove": lambda: supervisor.remove_device(installed["device"]["id"]),
     }
@@ -97,11 +102,70 @@ def test_slow_card_generation_does_not_block_stop(monkeypatch, operation):
         try:
             assert entered.wait(2)
             pool.submit(supervisor.stop).result(timeout=2)
+            if operation == "restart":
+                supervisor.start(wait_s=0)
         finally:
             release.set()
-        changing.result(timeout=3)
+        if operation == "remove":
+            changing.result(timeout=3)
+        else:
+            with pytest.raises(supervisor.LabStartSuperseded):
+                changing.result(timeout=3)
     # An earlier start must not restore the running marker after this stop.
+    assert supervisor.wants_running() == (operation == "restart")
+
+
+def test_queued_revive_cannot_undo_a_later_stop(monkeypatch):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_status():
+        entered.set()
+        assert release.wait(5)
+        return {"endpoints": [{"url": "http://127.0.0.1:1", "running": False}]}
+
+    monkeypatch.setattr(supervisor, "status", slow_status)
+    monkeypatch.setattr(supervisor, "lab_document", lambda: {"endpoints": []})
+    monkeypatch.setattr(mhs_lab_routes, "_REVIVE_LOCK", threading.Lock())
+    monkeypatch.setattr(mhs_lab_routes, "_ensure_native_tools", finished.set)
+    spawn = Mock()
+    monkeypatch.setattr(supervisor.subprocess, "Popen", spawn)
+    with runtime.mutation_lock():
+        supervisor._mark_running(True)
+    mhs_lab_routes._revive_if_wanted()
+    try:
+        assert entered.wait(2)
+        supervisor.stop()
+    finally:
+        release.set()
+    assert finished.wait(3)
+    spawn.assert_not_called()
     assert not supervisor.wants_running()
+
+
+def test_old_card_cannot_replace_a_newer_device_snapshot(monkeypatch):
+    document = {"endpoints": [], "revision": "old"}
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(supervisor, "lab_document", lambda: dict(document))
+
+    def build(snapshot):
+        if snapshot["revision"] == "old":
+            entered.set()
+            assert release.wait(5)
+        return snapshot["revision"]
+
+    monkeypatch.setattr(labcard, "build_card", build)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        old = pool.submit(labcard.write_lab_card)
+        try:
+            assert entered.wait(2)
+            with runtime.mutation_lock():
+                document["revision"] = "new"
+            current = Path(labcard.write_lab_card())
+        finally:
+            release.set()
+        old.result(timeout=3)
+    assert current.read_text() == "new"
+    assert not list(current.parent.glob("*.tmp"))
 
 
 def test_simultaneous_installs_keep_all_devices_and_distinct_ports(monkeypatch):

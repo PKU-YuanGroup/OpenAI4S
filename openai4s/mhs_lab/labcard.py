@@ -10,6 +10,8 @@ manifest, so the names are always the ones the endpoints serve.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -167,10 +169,11 @@ def _installed_sections(
     return out
 
 
-def build_card() -> str:
+def build_card(doc: dict[str, Any] | None = None) -> str:
     from openai4s.mhs_lab import supervisor
 
-    doc = supervisor.lab_document()
+    if doc is None:
+        doc = supervisor.lab_document()
     eps = {ep["id"]: ep for ep in doc["endpoints"]}
     out = [
         "# OpenMHS simulated lab -- device card",
@@ -319,7 +322,25 @@ def build_card() -> str:
 
 
 def write_lab_card() -> str:
-    card = build_card()
+    from openai4s.mhs_lab import supervisor
+    from openai4s.mhs_lab.runtime import mutation_lock
+
     path = lab_dir() / "LAB-CARD.md"
-    path.write_text(card, encoding="utf-8")
+    with mutation_lock():
+        snapshot = supervisor.lab_document()
+    card = build_card(snapshot)
+    with mutation_lock():
+        # A newer install/remove owns the replacement card for its snapshot.
+        if snapshot != supervisor.lab_document():
+            return str(path)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(card)
+                stream.close()
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
     return str(path)

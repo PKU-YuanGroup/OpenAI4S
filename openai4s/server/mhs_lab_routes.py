@@ -112,14 +112,15 @@ def _revive_if_wanted() -> None:
     """After a reboot, restart a lab the operator left running (once, in the background)."""
     from openai4s.mhs_lab import supervisor
 
-    if not supervisor.wants_running() or not _REVIVE_LOCK.acquire(blocking=False):
+    generation = supervisor.running_generation()
+    if generation is None or not _REVIVE_LOCK.acquire(blocking=False):
         return
 
     def run() -> None:
         try:
             doc = supervisor.status()
             if any(ep.get("url") and not ep.get("running") for ep in doc["endpoints"]):
-                supervisor.start()
+                supervisor.start(expected_generation=generation)
             _ensure_native_tools()
         except Exception:  # noqa: BLE001 - status shows what is down
             pass
@@ -325,6 +326,9 @@ def handle(self: Any, method: str, sub: str, q: dict) -> bool:
         except LookupError as exc:
             self._json({"error": str(exc), "code": "unknown_package"}, 404)
             return True
+        except supervisor.LabStartSuperseded as exc:
+            self._json({"error": str(exc), "code": "lab_start_superseded"}, 409)
+            return True
         _ensure_native_tools()
         self._json(result)
         return True
@@ -338,7 +342,11 @@ def handle(self: Any, method: str, sub: str, q: dict) -> bool:
             self._json({"error": str(exc), "code": "unknown_device"}, 404)
         return True
     if _START.match(method, path):
-        result = supervisor.start()
+        try:
+            result = supervisor.start()
+        except supervisor.LabStartSuperseded as exc:
+            self._json({"error": str(exc), "code": "lab_start_superseded"}, 409)
+            return True
         _ensure_native_tools()
         self._json(result)
         return True
