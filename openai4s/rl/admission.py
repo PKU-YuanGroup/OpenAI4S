@@ -14,7 +14,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Mapping
 
 AdmissionState = Literal["reserved", "running", "completed", "released", "unknown"]
 AdmissionStatus = Literal["admitted", "already_admitted", "waiting"]
@@ -174,6 +174,23 @@ class ResourceAdmission:
         self._lock = threading.RLock()
         self._records: dict[str, AdmissionRecord] = {}
 
+    @classmethod
+    def from_snapshot(
+        cls,
+        capacity: ResourceCapacity,
+        records: tuple[AdmissionRecord, ...] | list[AdmissionRecord] = (),
+        *,
+        clock_ms: Callable[[], int] | None = None,
+    ) -> "ResourceAdmission":
+        admission = cls(capacity, clock_ms=clock_ms)
+        for item in records:
+            if not isinstance(item, AdmissionRecord):
+                raise TypeError("records must contain AdmissionRecord values")
+            if item.allocation_id in admission._records:
+                raise ValueError("stored admissions contain duplicate allocation IDs")
+            admission._records[item.allocation_id] = item
+        return admission
+
     def admit(
         self,
         allocation_id: str,
@@ -288,6 +305,12 @@ class ResourceAdmission:
         with self._lock:
             return self._records.get(allocation_id)
 
+    def state(self) -> tuple[AdmissionRecord, ...]:
+        with self._lock:
+            return tuple(
+                sorted(self._records.values(), key=lambda item: item.allocation_id)
+            )
+
     def _fits(self, request: ResourceRequest) -> bool:
         active = [
             item
@@ -315,11 +338,136 @@ class ResourceAdmission:
         return _integer("timestamp", self._clock_ms() if value is None else value)
 
 
+class DurableResourceAdmission:
+    """Store-backed resource admission with revision-checked snapshots."""
+
+    def __init__(
+        self,
+        repository: Any,
+        admission_id: str,
+        capacity: ResourceCapacity,
+        *,
+        clock_ms: Callable[[], int] | None = None,
+    ) -> None:
+        self.repository = repository
+        self.admission_id = _text("admission_id", admission_id)
+        persisted = repository.load_resource_admission(self.admission_id)
+        if persisted is None:
+            self._admission = ResourceAdmission(capacity, clock_ms=clock_ms)
+            self._revision = self._persist(expected_revision=0)
+            return
+        persisted_capacity = persisted.get("capacity")
+        if not isinstance(persisted_capacity, Mapping):
+            raise ValueError("stored resource admission has invalid capacity")
+        stored = ResourceCapacity(**persisted_capacity)
+        if stored != capacity:
+            raise ValueError(
+                "resource admission capacity conflicts with stored content"
+            )
+        raw_records = persisted.get("records", ())
+        if not isinstance(raw_records, (list, tuple)):
+            raise ValueError("stored resource admission records are invalid")
+        records: list[AdmissionRecord] = []
+        for item in raw_records:
+            if isinstance(item, AdmissionRecord):
+                records.append(item)
+            elif isinstance(item, Mapping):
+                raw_request = item.get("request")
+                if not isinstance(raw_request, Mapping):
+                    raise ValueError("stored resource admission request is invalid")
+                records.append(
+                    AdmissionRecord(
+                        allocation_id=item["allocation_id"],
+                        request=ResourceRequest(**raw_request),
+                        reserved_at=item["reserved_at"],
+                        provider_receipt=item.get("provider_receipt"),
+                        state=item.get("state", "reserved"),
+                        started_at=item.get("started_at"),
+                        terminal_at=item.get("terminal_at"),
+                        admission_wait_ms=item.get("admission_wait_ms"),
+                        actual_compute_time_ms=item.get("actual_compute_time_ms"),
+                    )
+                )
+            else:
+                raise ValueError("stored resource admission contains invalid record")
+        self._admission = ResourceAdmission.from_snapshot(
+            stored, records, clock_ms=clock_ms
+        )
+        revision = persisted.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ValueError("stored resource admission has an invalid revision")
+        self._revision = revision
+
+    @property
+    def capacity(self) -> ResourceCapacity:
+        return self._admission.capacity
+
+    def admit(
+        self,
+        allocation_id: str,
+        request: ResourceRequest,
+        *,
+        reserved_at: int | None = None,
+    ) -> AdmissionResult:
+        result = self._admission.admit(allocation_id, request, reserved_at=reserved_at)
+        if result.status == "admitted":
+            self._revision = self._persist()
+        return result
+
+    def bind_receipt(
+        self, allocation_id: str, provider_receipt: str
+    ) -> AdmissionRecord:
+        result = self._admission.bind_receipt(allocation_id, provider_receipt)
+        self._revision = self._persist()
+        return result
+
+    def start(
+        self, allocation_id: str, *, started_at: int | None = None
+    ) -> AdmissionRecord:
+        result = self._admission.start(allocation_id, started_at=started_at)
+        self._revision = self._persist()
+        return result
+
+    def finish(
+        self,
+        allocation_id: str,
+        *,
+        terminal_at: int | None = None,
+        state: Literal["completed", "unknown"] = "completed",
+    ) -> AdmissionRecord:
+        result = self._admission.finish(
+            allocation_id, terminal_at=terminal_at, state=state
+        )
+        self._revision = self._persist()
+        return result
+
+    def release(self, allocation_id: str) -> AdmissionRecord:
+        result = self._admission.release(allocation_id)
+        self._revision = self._persist()
+        return result
+
+    def get(self, allocation_id: str) -> AdmissionRecord | None:
+        return self._admission.get(allocation_id)
+
+    def state(self) -> tuple[AdmissionRecord, ...]:
+        return self._admission.state()
+
+    def _persist(self, *, expected_revision: int | None = None) -> int:
+        expected = self._revision if expected_revision is None else expected_revision
+        return self.repository.save_resource_admission(
+            self.admission_id,
+            self.capacity,
+            self._admission.state(),
+            expected_revision=expected,
+        )
+
+
 __all__ = [
     "AdmissionRecord",
     "AdmissionResult",
     "AdmissionState",
     "AdmissionStatus",
+    "DurableResourceAdmission",
     "ResourceAdmission",
     "ResourceCapacity",
     "ResourceRequest",

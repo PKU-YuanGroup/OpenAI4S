@@ -72,6 +72,10 @@ allocation boundary. It binds a provider receipt before start and reports
 admission wait separately from actual compute time; it does not replace the
 durable Compute job repository.
 
+`DurableResourceAdmission` persists the capacity reservation and lifecycle
+through the Store with revision checks, so an unknown remote allocation still
+occupies capacity after a daemon restart.
+
 `budget.py` keeps estimated reservations separate from actual usage and makes
 hard versus soft limits explicit. Receipt-bound allocations cannot be released
 after provider work may have started; an unknown terminal state stays reserved

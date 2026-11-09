@@ -55,6 +55,9 @@ Provider 成本。
 启动前绑定 Provider receipt，并分别报告准入等待时间和实际计算时间；它不替换
 持久化 Compute job 仓储。
 
+`DurableResourceAdmission` 通过 Store 和 revision 检查持久化容量预留及生命周期，
+因此守护进程重启后未知的远端 allocation 仍会占用容量。
+
 `budget.py` 将预计预留与实际用量分开，并明确 hard/soft 限制。绑定 receipt 的
 allocation 在可能启动 Provider 工作后不能乐观释放；未知终态会保持预留，直到
 显式 reconcile。

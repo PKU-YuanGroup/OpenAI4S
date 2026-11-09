@@ -1133,6 +1133,8 @@ _TEAM_VIEW_ONLY_TABLES = frozenset(
         "rl_dataset_snapshots",
         "rl_budget_ledgers",
         "rl_budget_allocations",
+        "rl_resource_admissions",
+        "rl_resource_allocations",
     }
 )
 

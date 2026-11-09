@@ -12,6 +12,7 @@ import sqlite3
 from dataclasses import replace
 from typing import Any, Callable, Literal, Mapping
 
+from openai4s.rl.admission import AdmissionRecord, ResourceCapacity
 from openai4s.rl.budget import BudgetReservation, BudgetState
 from openai4s.rl.models import (
     CostRecord,
@@ -110,6 +111,21 @@ CREATE TABLE IF NOT EXISTS rl_budget_allocations (
 );
 CREATE INDEX IF NOT EXISTS ix_rl_budget_allocations_state
     ON rl_budget_allocations(budget_id, state);
+CREATE TABLE IF NOT EXISTS rl_resource_admissions (
+    admission_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL CHECK(revision >= 1),
+    capacity TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rl_resource_allocations (
+    admission_id TEXT NOT NULL,
+    allocation_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (admission_id, allocation_id),
+    FOREIGN KEY (admission_id) REFERENCES rl_resource_admissions(admission_id)
+);
+CREATE INDEX IF NOT EXISTS ix_rl_resource_allocations_state
+    ON rl_resource_allocations(admission_id);
 """
 
 
@@ -210,6 +226,21 @@ class RLRepository:
             budget_id,
             limits,
             modes=modes,
+            clock_ms=self._clock_ms,
+        )
+
+    def resource_admission(
+        self,
+        admission_id: str,
+        capacity: ResourceCapacity,
+    ) -> Any:
+        """Return a Store-backed resource admission controller."""
+        from openai4s.rl.admission import DurableResourceAdmission
+
+        return DurableResourceAdmission(
+            self,
+            admission_id,
+            capacity,
             clock_ms=self._clock_ms,
         )
 
@@ -824,6 +855,94 @@ class RLRepository:
                             item.state,
                             _payload(item.actual),
                         ),
+                    )
+                self._connection.execute("COMMIT")
+                return revision
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+
+    def load_resource_admission(self, admission_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT admission_id,revision,capacity FROM rl_resource_admissions "
+            "WHERE admission_id=?",
+            (admission_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        rows = self._connection.execute(
+            "SELECT payload FROM rl_resource_allocations WHERE admission_id=? "
+            "ORDER BY allocation_id",
+            (admission_id,),
+        ).fetchall()
+        return {
+            "admission_id": str(row["admission_id"]),
+            "revision": int(row["revision"]),
+            "capacity": json.loads(row["capacity"]),
+            "records": [json.loads(item["payload"]) for item in rows],
+        }
+
+    def save_resource_admission(
+        self,
+        admission_id: str,
+        capacity: ResourceCapacity,
+        records: tuple[AdmissionRecord, ...],
+        *,
+        expected_revision: int | None = None,
+    ) -> int:
+        if not isinstance(admission_id, str) or not admission_id.strip():
+            raise ValueError("admission_id must be a non-empty string")
+        if not isinstance(capacity, ResourceCapacity):
+            raise TypeError("capacity must be ResourceCapacity")
+        payload = capacity.__dict__.copy()
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT revision FROM rl_resource_admissions WHERE admission_id=?",
+                    (admission_id,),
+                ).fetchone()
+                if row is None:
+                    if expected_revision not in (None, 0):
+                        raise ValueError("resource admission revision conflict")
+                    revision = 1
+                    self._connection.execute(
+                        "INSERT INTO rl_resource_admissions(admission_id,revision,capacity,updated_at) VALUES(?,?,?,?)",
+                        (
+                            admission_id,
+                            revision,
+                            _payload(payload),
+                            self._clock_ms(),
+                        ),
+                    )
+                else:
+                    current = int(row["revision"])
+                    if expected_revision is not None and current != expected_revision:
+                        raise ValueError("resource admission revision conflict")
+                    revision = current + 1
+                    self._connection.execute(
+                        "UPDATE rl_resource_admissions SET revision=?,capacity=?,updated_at=? "
+                        "WHERE admission_id=? AND revision=?",
+                        (
+                            revision,
+                            _payload(payload),
+                            self._clock_ms(),
+                            admission_id,
+                            current,
+                        ),
+                    )
+                    if self._connection.execute("SELECT changes()").fetchone()[0] != 1:
+                        raise ValueError("resource admission revision conflict")
+                self._connection.execute(
+                    "DELETE FROM rl_resource_allocations WHERE admission_id=?",
+                    (admission_id,),
+                )
+                for item in records:
+                    if not isinstance(item, AdmissionRecord):
+                        raise TypeError("records must contain AdmissionRecord values")
+                    self._connection.execute(
+                        "INSERT INTO rl_resource_allocations(admission_id,allocation_id,payload) VALUES(?,?,?)",
+                        (admission_id, item.allocation_id, _payload(item.to_dict())),
                     )
                 self._connection.execute("COMMIT")
                 return revision
