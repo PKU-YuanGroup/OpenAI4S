@@ -30,7 +30,7 @@ jobs:
       OPENAI4S_KERNEL_SANDBOX: enforce
       WSLENV: OPENAI4S_SECRET_STORE:OPENAI4S_SECRET_ENV:OPENAI4S_SKIP_DOTENV:OPENAI4S_UPDATE_SOURCE:OPENAI4S_OPENMHS:OPENAI4S_KERNEL_SANDBOX
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install a real WSL2 distribution
@@ -113,7 +113,7 @@ jobs:
         if: always()
         shell: pwsh
         run: wsl --terminate Ubuntu-24.04
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: windows-wsl2-validation
