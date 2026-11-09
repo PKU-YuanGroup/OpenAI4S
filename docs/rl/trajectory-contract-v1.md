@@ -95,6 +95,11 @@ optional known `cost_usd`, optional `decision_id`, `source`, and JSON metadata.
 Unknown pricing remains unknown; a missing counter is not serialized as a
 fabricated zero.
 
+The Agent and Rollout adapters may enable the wall-time meter. It measures the
+TurnStarted-to-OutcomeProduced interval with a monotonic clock and appends a
+`source: "turn_wall"` record. GPU time and provider pricing remain absent until
+authenticated measurements exist.
+
 ## Action Ledger join
 
 The Action Ledger remains the execution source of truth. When the local Agent

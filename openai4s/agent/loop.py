@@ -1060,6 +1060,7 @@ class Agent:
                                 ledger, "current_group_id", None
                             )
                         ),
+                        capture_wall_time=True,
                     )
                 if self._owns_frame:
                     event_sink = _FrameUsageEventSink(

@@ -54,6 +54,7 @@ class RolloutSession:
         self.sink = TrajectoryEventSink(
             recorder,
             delegate=delegate_sink if delegate_sink is not None else engine.event_sink,
+            capture_wall_time=True,
         )
         self.engine.event_sink = self.sink
         self.state: RunState | None = None

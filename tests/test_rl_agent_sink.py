@@ -66,6 +66,22 @@ def test_agent_sink_records_authenticated_reply_token_cost_without_pricing() -> 
     assert cost.metadata["cache_read"] == 2
 
 
+def test_agent_sink_can_record_measured_turn_wall_time() -> None:
+    recorder = TrajectoryRecorder(Episode("ep-wall", "task", "session", 1))
+    ticks = iter((10, 3_010_000))
+    sink = TrajectoryEventSink(
+        recorder, capture_wall_time=True, clock_ns=lambda: next(ticks)
+    )
+    engine = AgentEngine(_Model(), _Executor(), event_sink=sink, max_turns=1)
+
+    engine.run(RunState([{"role": "user", "content": "go"}], max_turns=1))
+
+    wall = [item for item in recorder.snapshot().costs if item.source == "turn_wall"]
+    assert len(wall) == 1
+    assert wall[0].wall_time_ms == 3
+    assert wall[0].decision_id == "decision-0"
+
+
 def test_delegated_worker_trajectory_keeps_parent_episode_and_decision(
     tmp_path: Path,
 ) -> None:

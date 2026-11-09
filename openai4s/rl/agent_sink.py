@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import asdict
 from typing import Any, Callable, Iterable, Mapping
 
@@ -19,6 +20,7 @@ from openai4s.agent.events import (
     OutcomeProduced,
     ReplyReceived,
     RunFinished,
+    TurnStarted,
 )
 from openai4s.agent.models import ModelReply
 
@@ -110,6 +112,8 @@ class TrajectoryEventSink:
         frame_id: str | None = None,
         id_prefix: str | None = None,
         action_group_id_provider: Callable[[], str | None] | None = None,
+        capture_wall_time: bool = False,
+        clock_ns: Callable[[], int] | None = None,
     ) -> None:
         self.recorder = recorder
         self.delegate = delegate
@@ -121,8 +125,11 @@ class TrajectoryEventSink:
         self.frame_id = frame_id
         self.id_prefix = str(id_prefix or "").strip()
         self.action_group_id_provider = action_group_id_provider
+        self.capture_wall_time = capture_wall_time
+        self.clock_ns = clock_ns or time.monotonic_ns
         self._observations: dict[int, Observation] = {}
         self._replies: dict[int, ModelReply] = {}
+        self._turn_started_ns: dict[int, int] = {}
 
     def decision_id(self, turn: int) -> str:
         base = f"decision-{turn}"
@@ -157,6 +164,9 @@ class TrajectoryEventSink:
             )
             if cost is not None:
                 self.recorder.add_cost(cost)
+        elif isinstance(event, TurnStarted):
+            if self.capture_wall_time:
+                self._turn_started_ns[event.turn] = self.clock_ns()
         elif isinstance(event, ActionRouted):
             self._record_decision(event.turn, event.action)
             self.recorder.add_event(
@@ -171,6 +181,19 @@ class TrajectoryEventSink:
             )
         elif isinstance(event, OutcomeProduced):
             outcome = event.outcome
+            started = self._turn_started_ns.pop(event.turn, None)
+            if started is not None:
+                elapsed_ns = max(0, self.clock_ns() - started)
+                self.recorder.add_cost(
+                    CostRecord(
+                        cost_id=self._record_id("wall-cost", event.turn),
+                        episode_id=self.recorder.episode.episode_id,
+                        created_at=self.recorder.now_ms(),
+                        wall_time_ms=elapsed_ns // 1_000_000,
+                        source="turn_wall",
+                        decision_id=self.decision_id(event.turn),
+                    )
+                )
             self.recorder.add_event(
                 ExecutionEvent(
                     event_id=self._record_id("outcome", event.turn),

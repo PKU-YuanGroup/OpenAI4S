@@ -53,6 +53,10 @@ verifier 版本。`apply_verifier()` 校验 verifier 身份与 Episode 范围，
 `CostRecord` 保存测得的 token、wall/GPU 时间及可选价格。未知价格保持未知，不把缺失计数
 伪造为零。
 
+Agent 和 Rollout adapter 可以启用 wall-time meter。它用 monotonic clock 测量
+TurnStarted 到 OutcomeProduced 的间隔，并追加 `source: "turn_wall"` 记录。GPU 时间与
+provider 价格在有可信测量前保持为空。
+
 ## Action Ledger 关联
 
 Action Ledger 仍是执行事实源。若本地 Agent runtime 有 `RuntimeActionLedger`，它在处理
