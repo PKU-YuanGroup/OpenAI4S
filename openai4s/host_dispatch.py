@@ -3530,6 +3530,10 @@ class HostDispatcher:
 
     def _m_rl_segment_start(self, spec: dict) -> dict:
         episode_id = self._rl_episode(spec.get("episode_id"))
+        context = self._current_rl_context()
+        decision_id = (
+            str(context["decision_id"]) if context.get("decision_id") else None
+        )
         now = int(time.time() * 1000)
         episode = Episode(
             episode_id=episode_id,
@@ -3552,6 +3556,7 @@ class HostDispatcher:
                 name=str(spec.get("name") or "segment"),
                 objective=spec.get("objective"),
                 created_at=now,
+                decision_id=decision_id,
                 metadata=spec.get("metadata") or {},
             )
             self.store.rl.append_segment(segment)
@@ -3561,6 +3566,10 @@ class HostDispatcher:
                     episode_id=episode_id,
                     kind="segment.started",
                     created_at=now,
+                    decision_id=decision_id,
+                    source_id=(
+                        str(context["source_id"]) if context.get("source_id") else None
+                    ),
                     segment_id=segment.segment_id,
                     payload=segment.to_dict(),
                 )
@@ -3589,6 +3598,7 @@ class HostDispatcher:
 
     def _m_rl_segment_event(self, spec: dict, kind: str, value: Any) -> dict:
         try:
+            context = self._current_rl_context()
             event = self.store.rl.append_execution_event(
                 ExecutionEvent(
                     event_id=str(
@@ -3597,6 +3607,14 @@ class HostDispatcher:
                     episode_id=self._rl_episode(spec.get("episode_id")),
                     kind=kind,
                     created_at=int(time.time() * 1000),
+                    decision_id=(
+                        str(context["decision_id"])
+                        if context.get("decision_id")
+                        else None
+                    ),
+                    source_id=(
+                        str(context["source_id"]) if context.get("source_id") else None
+                    ),
                     segment_id=str(spec.get("segment_id") or ""),
                     payload={"kind": spec.get("kind"), "value": value},
                 )
@@ -3610,12 +3628,21 @@ class HostDispatcher:
         episode_id = self._rl_episode(spec.get("episode_id"))
         segment_id = str(spec.get("segment_id") or "")
         try:
+            context = self._current_rl_context()
             event = self.store.rl.append_execution_event(
                 ExecutionEvent(
                     event_id=f"{segment_id}:closed",
                     episode_id=episode_id,
                     kind="segment.closed",
                     created_at=int(time.time() * 1000),
+                    decision_id=(
+                        str(context["decision_id"])
+                        if context.get("decision_id")
+                        else None
+                    ),
+                    source_id=(
+                        str(context["source_id"]) if context.get("source_id") else None
+                    ),
                     segment_id=segment_id,
                     payload={"status": status, "error": spec.get("error")},
                 )

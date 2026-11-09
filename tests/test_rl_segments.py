@@ -36,6 +36,26 @@ def test_host_segment_context_records_lifecycle_events_and_output() -> None:
         dispatcher.store.close()
 
 
+def test_segment_events_keep_parent_decision_context(tmp_path) -> None:
+    dispatcher = build_dispatcher(Config(data_dir=tmp_path), frame_id="frame-parent")
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with dispatcher.bind_rl_context(
+            {"episode_id": "frame-parent", "decision_id": "decision-2"}
+        ):
+            with host.segment("analysis") as segment:
+                segment.observe({"ready": True})
+                segment.set_output({"value": 3})
+        rows = dispatcher.store._conn.execute(
+            "SELECT kind, payload FROM rl_execution_events "
+            "WHERE episode_id=? ORDER BY sequence",
+            ("frame-parent",),
+        ).fetchall()
+        assert all(json.loads(row[1])["decision_id"] == "decision-2" for row in rows)
+    finally:
+        dispatcher.store.close()
+
+
 def test_host_segment_marks_exception_as_failed() -> None:
     dispatcher = build_dispatcher(get_config(), frame_id="frame-failed")
     try:
