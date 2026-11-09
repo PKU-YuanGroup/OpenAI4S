@@ -13,6 +13,9 @@ try {
   assert(await authenticate(page, base, token));
   await skipFirstRunWizard(page, base);
   await page.locator('#dashboard').waitFor({ state: 'visible', timeout: 30000 });
+  await page.locator('#dash-projects .dash-empty, #dash-projects .d-row:not(.skeleton-row)').first().waitFor({ state: 'visible' });
+  await page.locator('#dashboard .skeleton-row').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#dash-projects-retry').count(), 0);
   assert.equal((await page.request.get(base + 'api/v1/projects')).status(), 200);
   await page.screenshot({ path: 'platform-evidence/windows-workbench.png', fullPage: true });
   assert.deepEqual(errors, []);
