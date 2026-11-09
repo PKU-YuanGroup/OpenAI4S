@@ -9,6 +9,7 @@ from openai4s.rl import (
     RewardAnnotation,
     Segment,
     TrajectoryRecorder,
+    apply_verifier,
 )
 from openai4s.rl.models import RunReceipt
 from openai4s.store import get_store
@@ -130,3 +131,70 @@ def test_dataset_snapshot_metadata_is_durable_and_idempotent(tmp_path) -> None:
             store.rl.get_snapshot("missing")
     finally:
         store.close()
+
+
+def test_versioned_verifiers_and_snapshots_survive_reopen(tmp_path) -> None:
+    db = Config(data_dir=tmp_path).db_path
+    store = get_store(db)
+    recorder = TrajectoryRecorder(
+        Episode("ep-verifiers", "task", "session", 1), repository=store.rl
+    )
+    recorder.add_segment(
+        Segment("seg-verifiers", "ep-verifiers", "analysis", 2, status="completed")
+    )
+    recorder.add_event(
+        ExecutionEvent("event-verifiers", "ep-verifiers", "cell.completed", 3)
+    )
+    recorder.finish("success")
+
+    class _VerifierV1:
+        name = "science-check"
+        version = "v1"
+
+        def verify(self, trajectory):
+            return [
+                RewardAnnotation(
+                    "reward-v1",
+                    trajectory.episode.episode_id,
+                    0.4,
+                    self.name,
+                    self.version,
+                    4,
+                )
+            ]
+
+    class _VerifierV2:
+        name = "science-check"
+        version = "v2"
+
+        def verify(self, trajectory):
+            return [
+                RewardAnnotation(
+                    "reward-v2",
+                    trajectory.episode.episode_id,
+                    0.9,
+                    self.name,
+                    self.version,
+                    5,
+                )
+            ]
+
+    try:
+        apply_verifier(recorder, _VerifierV1())
+        snapshot_v1 = recorder.create_snapshot("snapshot-v1", created_at=6)
+        apply_verifier(recorder, _VerifierV2())
+        snapshot_v2 = recorder.create_snapshot("snapshot-v2", created_at=7)
+        assert snapshot_v1.matches(store.rl.load_trajectory("ep-verifiers")) is False
+        assert snapshot_v2.matches(store.rl.load_trajectory("ep-verifiers"))
+    finally:
+        store.close()
+
+    reopened = get_store(db)
+    try:
+        trajectory = reopened.rl.load_trajectory("ep-verifiers")
+        assert [item.verifier_version for item in trajectory.rewards] == ["v1", "v2"]
+        assert reopened.rl.get_snapshot("snapshot-v1") == snapshot_v1
+        assert reopened.rl.get_snapshot("snapshot-v2") == snapshot_v2
+        assert reopened.rl.get_snapshot("snapshot-v2").matches(trajectory)
+    finally:
+        reopened.close()

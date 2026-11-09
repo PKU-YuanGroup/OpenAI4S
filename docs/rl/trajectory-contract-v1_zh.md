@@ -110,4 +110,6 @@ Trajectory 仍在 `extra.openai4s` 中，是训练输入的权威来源。
 Execution Event 都有 sequence；它保存规范轨迹哈希、最大事件序号和记录计数。
 `matches()` 会拒绝已经改变的候选轨迹。
 配置 Store 仓储时，这些元数据由 migration 38 追加到 `rl_dataset_snapshots`，可按
-snapshot ID 读取。
+snapshot ID 读取；显式 Segment parent 由 migration 39 增加。如果之后追加新的
+Verifier Annotation 使轨迹改变，旧 Snapshot 会拒绝匹配，Trainer 不会静默读取已改变的
+reward view。
