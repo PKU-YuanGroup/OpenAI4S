@@ -19,7 +19,7 @@ openai4s serve                               # open the Lab tab beside the Noteb
 release this version is tested with. OpenAI4S finds it on its own: no
 `PYTHONPATH`, no settings file to write. `openai4s lab add` installs the device
 on its fake backend, starts the lab (three built-in demo devices plus what you
-added), registers the connectors and pre-authorizes the simulated devices.
+added), registers the connectors. Agent commands follow the ordinary host permission policy.
 
 Already cloned without `--recursive`? Run `git submodule update --init third_party/OpenMHS`.
 Installed OpenAI4S with `pip`? `openai4s lab setup` downloads the same pinned
@@ -191,12 +191,16 @@ first `openai4s lab add`) serves the endpoints and writes, under
 automatically when you have no `~/.openai4s/mhs.json` of your own),
 `mhs-connectors.json` (the `--config` of the connector rows), `devices.json`
 (what you installed), `lab.json` and `LAB-CARD.md` (exact tool names,
-arguments and limits; use it as the project's agent context). It also adds
-allow rules for the simulated devices only (`mcp_call` on `mhs-<id>/*`,
-`mhs_command` on the device): an operator decision for that data directory,
-removed again with the device. `openai4s lab reset` erases the lab's evidence,
-latches and LIMS for a fresh run; `openai4s lab down` stops the endpoints. A lab
-left running is restarted when the Lab panel next opens after a reboot.
+arguments and limits for operator reference). The project's context contains only
+fixed discovery guidance; live driver metadata is obtained through screened tool
+results. Installing or starting the lab does not add global allow rules. Previous
+preview-generated grants are removed on start, and commands use the normal host
+permission policy. Child processes receive runtime paths and the lab directory,
+not inherited provider keys. `openai4s lab reset` erases the lab's evidence,
+latches and LIMS; `openai4s lab down` stops its endpoints. After a reboot, an
+operator opening the panel can restore a lab that was left running; a team
+member's status poll cannot restart it.
+
 
 The Lab panel reads every endpoint's persisted evidence chain (`--state-dir`),
 so receipts from every access path appear in one live stream, with charts

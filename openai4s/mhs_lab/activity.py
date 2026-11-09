@@ -398,7 +398,11 @@ def _stdio_once(ep: dict[str, Any], action: str, reason: str) -> dict[str, Any]:
     """Run one safety action on the stdio endpoint through a short-lived process on its state dir."""
     from mhs.client import connect  # type: ignore
 
-    client = connect(list(ep["argv"]))
+    from openai4s.mhs_lab.runtime import child_environment
+
+    client = connect(
+        list(ep["argv"]), timeout=5.0, env=child_environment(), inherit_env=False
+    )
     try:
         device_id = client.devices()[0]["device_id"]
         session = client.open_session(device_ids=[device_id])["session_id"]
@@ -442,7 +446,7 @@ def operator_action(
             if ep.get("url"):
                 from mhs.client import connect  # type: ignore
 
-                client = connect(ep["url"])
+                client = connect(ep["url"], timeout=5.0)
                 try:
                     device_id = client.devices()[0]["device_id"]
                     session = client.open_session(device_ids=[device_id])["session_id"]

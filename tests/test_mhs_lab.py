@@ -223,9 +223,6 @@ def test_add_and_remove_market_devices_on_both_surfaces(lab_dir, monkeypatch):
     assert limits.endswith("labs/tiagocoutinho__julabo/site-limits.example.json")
     native_ids = [e["id"] for e in supervisor.native_settings()["endpoints"]]
     assert native_ids == ["reactor", "gym-pusht"]
-    rules = supervisor.allow_rules()
-    assert ("mcp_call", "mhs-julabo/*") in rules
-    assert ("mhs_command", "mhs://localhost/pusht*") in rules
     # Installing the same package on the other surface moves it; installing it again is a no-op.
     again = supervisor.add_device(
         "labs/tiagocoutinho__julabo", via="mcp", start_now=False

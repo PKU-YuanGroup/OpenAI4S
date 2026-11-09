@@ -578,3 +578,5 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 - [`browser_navigation.mjs`](browser_navigation.mjs): Real project navigation, session/folder response reordering, page ownership, retry after failed or malformed reads, and consecutive New-session intent/failure recovery; shared by all three engines.
 
 - [`browser_provenance.mjs`](browser_provenance.mjs): Production provenance controls, read-only retries, refused partial downloads, fixed-version exports and exact producer links; shared by all three engines.
+
+- `test_mhs_lab_lifecycle.py`: stalled MCP cleanup, isolated child environments, concurrent lab mutations, operator authorization, and untrusted metadata boundaries.

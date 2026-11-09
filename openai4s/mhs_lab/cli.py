@@ -56,7 +56,7 @@ def _next_steps() -> None:
         '\nNext: start the workbench with `openai4s serve` (or ./start.sh), open the project "OpenMHS Lab"'
     )
     print(
-        "      (its agent context lists every lab device), start a conversation and open the Lab tab."
+        "      (discover the configured devices from its agent tools), start a conversation and open the Lab tab."
     )
     print('      Try: "Read every lab device and summarise what it can do."')
 

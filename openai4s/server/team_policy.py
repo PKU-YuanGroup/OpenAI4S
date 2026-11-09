@@ -319,6 +319,7 @@ INSTANCE_MUTATION_PATHS = frozenset(
 #: (`{name}`, `{name}/rollback`, `catalog/{name}/enabled`,
 #: `agents/{name}/enabled`) writes instance-global state; the reads stay open.
 INSTANCE_MUTATION_PREFIXES = (
+    "/mhs-lab/",
     "/compute/remote/",
     "/skills/",
     "/agents/",

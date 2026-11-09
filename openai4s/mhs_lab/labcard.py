@@ -10,7 +10,6 @@ manifest, so the names are always the ones the endpoints serve.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -30,58 +29,14 @@ _SKIP_ARGS = {
 def _mcp_tools(
     argv: list[str], env: dict[str, str] | None, timeout: float = 30.0
 ) -> list[dict[str, Any]]:
-    import os
+    from openai4s.mcp_client import MCPConnection
+    from openai4s.mhs_lab.runtime import child_environment
 
-    proc = subprocess.Popen(
-        argv,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,  # noqa: S603
-        text=True,
-        env={**os.environ, **(env or {})},
-    )
+    connection = MCPConnection(argv, env=child_environment(env), timeout=timeout)
     try:
-
-        def rpc(i: int, method: str, params: dict | None = None) -> dict:
-            assert proc.stdin and proc.stdout
-            proc.stdin.write(
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": i,
-                        "method": method,
-                        "params": params or {},
-                    }
-                )
-                + "\n"
-            )
-            proc.stdin.flush()
-            while True:
-                line = proc.stdout.readline()
-                if not line:
-                    raise RuntimeError("MCP server closed its output")
-                msg = json.loads(line)
-                if msg.get("id") == i:
-                    return msg
-
-        rpc(
-            1,
-            "initialize",
-            {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "openai4s-lab-card", "version": "1"},
-            },
-        )
-        assert proc.stdin
-        proc.stdin.write(
-            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
-        )
-        proc.stdin.flush()
-        return list(rpc(2, "tools/list").get("result", {}).get("tools", []))
+        return connection.list_tools()
     finally:
-        proc.kill()
-        proc.wait(timeout=5)
+        connection.close()
 
 
 def _arg_text(name: str, schema: dict[str, Any], required: set[str]) -> str:
@@ -124,7 +79,7 @@ def _tool_lines(tools: list[dict[str, Any]]) -> list[str]:
 def _reactor_lines(url: str) -> list[str]:
     from mhs.client import connect  # type: ignore
 
-    client = connect(url)
+    client = connect(url, timeout=5.0)
     try:
         manifest = client.devices()[0]
         device_id = manifest["device_id"]

@@ -12,9 +12,11 @@ The lab always has three built-in devices reached through three different OpenMH
 | --- | --- |
 | [`__init__.py`](__init__.py) | Package description, `INSTRUMENTS_DIR`, `lab_dir()` (`OPENAI4S_MHS_LAB_DIR`, else `<data dir>/mhs-lab`). |
 | [`openmhs.py`](openmhs.py) | Finds an OpenMHS checkout (`$OPENAI4S_OPENMHS`, the `third_party/OpenMHS` submodule, `<data dir>/openmhs`), puts its sources on `sys.path`/`PYTHONPATH`, selects the lab's `mhs.json` when the operator has none, and downloads the pinned release on request. |
-| [`supervisor.py`](supervisor.py) | Starts and stops the endpoints (`--state-dir`), installs and removes market devices (`devices.json`), writes the two settings documents (`mhs.json` for the native tools, `mhs-connectors.json` for the connector rows), enables the rows, pre-authorizes the simulated devices and writes the lab card. |
+| [`supervisor.py`](supervisor.py) | Starts and stops the endpoints (`--state-dir`), installs and removes market devices (`devices.json`), writes the two settings documents (`mhs.json` for the native tools, `mhs-connectors.json` for the connector rows), enables the rows, removes legacy automatic grants and writes the lab card. |
 | [`cli.py`](cli.py) | `openai4s lab add\|remove\|search\|show\|list\|status\|up\|down\|reset\|setup\|card`. |
-| [`labcard.py`](labcard.py) | The lab card: exact tool and capability names, arguments, units and limits read from the live connectors and manifests, including installed market devices; used as the project's agent context. |
+| [`labcard.py`](labcard.py) | The lab card: exact tool and capability names, arguments, units and limits read from the live connectors and manifests, including installed market devices; operator reference; live metadata is never promoted into project instructions. |
 | [`activity.py`](activity.py) | The Lab panel's data: endpoint status, every receipt from the persisted evidence chains, chart data, offline chain verification, operator e-stop and reset. |
 | [`lims.py`](lims.py) | A file-locked sample registry shared by the reactor (labels vials) and the assay workstation (scans them). |
 | [`instruments/`](instruments/) | The simulated instruments, one `mhs.driver` package each. |
+
+`runtime.py` serializes mutations across threads and processes and builds the least-privilege child environment. Commands use the host permission broker.

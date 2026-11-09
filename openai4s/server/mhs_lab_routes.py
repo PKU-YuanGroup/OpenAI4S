@@ -222,7 +222,8 @@ def handle(self: Any, method: str, sub: str, q: dict) -> bool:
         if lab is None:
             self._json(_unavailable_status())
             return True
-        _revive_if_wanted()
+        if team_policy.may_change_instance_config(self):
+            _revive_if_wanted()
         self._json({"available": True, **lab.status()})
         return True
     if _SETUP.match(method, path):

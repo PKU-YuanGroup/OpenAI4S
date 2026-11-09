@@ -12,9 +12,11 @@
 | --- | --- |
 | [`__init__.py`](__init__.py) | 包说明、`INSTRUMENTS_DIR`、`lab_dir()`（`OPENAI4S_MHS_LAB_DIR`，否则 `<数据目录>/mhs-lab`）。 |
 | [`openmhs.py`](openmhs.py) | 查找 OpenMHS 检出（`$OPENAI4S_OPENMHS`、`third_party/OpenMHS` 子模块、`<数据目录>/openmhs`），把源码加入 `sys.path`/`PYTHONPATH`，在操作员没有自己的设置时选用实验室的 `mhs.json`，并按需下载固定版本。 |
-| [`supervisor.py`](supervisor.py) | 启停端点（`--state-dir`），安装/卸载市场设备（`devices.json`），写两份设置文档（原生工具用的 `mhs.json`、连接器行用的 `mhs-connectors.json`），启用连接器行，为模拟设备预授权，并生成设备卡。 |
+| [`supervisor.py`](supervisor.py) | 启停端点（`--state-dir`），安装/卸载市场设备（`devices.json`），写两份设置文档（原生工具用的 `mhs.json`、连接器行用的 `mhs-connectors.json`），启用连接器行，preserves normal host permissions，并生成设备卡。 |
 | [`cli.py`](cli.py) | `openai4s lab add\|remove\|search\|show\|list\|status\|up\|down\|reset\|setup\|card`。 |
-| [`labcard.py`](labcard.py) | 设备卡：从在线连接器与设备清单读取的确切工具/能力名、参数、单位与限值（包括已安装的市场设备）；作为项目的智能体上下文。 |
+| [`labcard.py`](labcard.py) | 设备卡：从在线连接器与设备清单读取的确切工具/能力名、参数、单位与限值（包括已安装的市场设备）；operator reference only; live metadata is not project instructions。 |
 | [`activity.py`](activity.py) | 实验室面板的数据：端点状态、来自持久化证据链的全部回执、图表数据、离线证据链校验、操作员急停与复位。 |
 | [`lims.py`](lims.py) | 带文件锁的样品登记簿，由反应器（贴标签）与工作站（扫码）共享。 |
 | [`instruments/`](instruments/) | 模拟仪器，每台一个 `mhs.driver` 包。 |
+
+`runtime.py` serializes mutations across threads and processes and builds the least-privilege child environment.
