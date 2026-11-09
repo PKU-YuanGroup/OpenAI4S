@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from openai4s.agent.engine import AgentEngine
+from openai4s.agent.events import ReplyReceived
 from openai4s.agent.models import ExecutionOutcome, ModelReply, RunState
+from openai4s.llm import normalize_usage
 from openai4s.rl import Episode, TrajectoryEventSink, TrajectoryRecorder
 
 
@@ -28,6 +30,32 @@ def test_agent_events_export_policy_decision_and_execution_facts() -> None:
         "execution.completed",
         "episode.finished",
     ]
+    assert trajectory.costs == ()
+
+
+def test_agent_sink_records_authenticated_reply_token_cost_without_pricing() -> None:
+    recorder = TrajectoryRecorder(Episode("ep-cost", "task", "session", 1))
+    sink = TrajectoryEventSink(recorder)
+    sink.emit(
+        ReplyReceived(
+            ModelReply(
+                content="done",
+                usage=normalize_usage(
+                    {"input_tokens": 12, "output_tokens": 5, "cache_read": 2},
+                    "chatgpt",
+                ),
+            ),
+            turn=0,
+        )
+    )
+
+    cost = recorder.snapshot().costs[0]
+    assert cost.cost_id == "ep-cost:cost-0"
+    assert cost.decision_id == "decision-0"
+    assert cost.prompt_tokens == 12
+    assert cost.completion_tokens == 5
+    assert cost.cost_usd is None
+    assert cost.metadata["cache_read"] == 2
 
 
 class _Model:

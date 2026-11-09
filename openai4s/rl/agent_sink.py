@@ -22,8 +22,45 @@ from openai4s.agent.events import (
 )
 from openai4s.agent.models import ModelReply
 
-from .models import ExecutionEvent, Observation, PolicyDecision
+from .models import CostRecord, ExecutionEvent, Observation, PolicyDecision
 from .recorder import TrajectoryRecorder
+
+
+def _cost_record(
+    episode_id: str, turn: int, usage: Any, created_at: int
+) -> CostRecord | None:
+    """Project authenticated provider counters into one RL cost fact.
+
+    Pricing depends on the provider/model and belongs to the ledger's pricing
+    boundary. The trajectory records token evidence here and leaves
+    ``cost_usd`` unknown rather than trusting a model supplied dollar value.
+    """
+
+    from openai4s.llm.usage import measured_usage
+
+    measured = measured_usage(usage)
+    if "input_tokens" not in measured or "output_tokens" not in measured:
+        return None
+    metadata = {
+        key: int(measured[key])
+        for key in (
+            "total_tokens",
+            "cache_read",
+            "cache_write",
+            "reasoning_tokens",
+        )
+        if key in measured
+    }
+    return CostRecord(
+        cost_id=f"{episode_id}:cost-{turn}",
+        episode_id=episode_id,
+        created_at=created_at,
+        prompt_tokens=int(measured["input_tokens"]),
+        completion_tokens=int(measured["output_tokens"]),
+        source="policy_reply",
+        decision_id=f"decision-{turn}",
+        metadata=metadata,
+    )
 
 
 def _action(value: Action | None) -> dict[str, Any]:
@@ -90,6 +127,14 @@ class TrajectoryEventSink:
             self.delegate.emit(event)
         if isinstance(event, ReplyReceived):
             self._replies[event.turn] = event.reply
+            cost = _cost_record(
+                self.recorder.episode.episode_id,
+                event.turn,
+                event.reply.usage,
+                self.recorder.now_ms(),
+            )
+            if cost is not None:
+                self.recorder.add_cost(cost)
         elif isinstance(event, ActionRouted):
             self._record_decision(event.turn, event.action)
             self.recorder.add_event(
