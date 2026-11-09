@@ -2042,6 +2042,9 @@ class SessionState:
         # ``_execute_and_log`` call shape need not expose ledger internals.
         self.active_action_group_id: str | None = None
         self.active_action_ledger: RuntimeActionLedger | None = None
+        # Current Web AgentEngine decision, visible only during its action
+        # boundary. User REPL and lifecycle calls must not inherit this value.
+        self.active_rl_context: dict[str, str] | None = None
         # `env_name` is the environment the current kernel actually runs in;
         # `desired_env` is the user's/agent's pinned selection. They differ only
         # during a transient fallback to base when the pin cannot be resolved.
@@ -9023,11 +9026,13 @@ class SessionRunner:
         )
         binder = getattr(st.dispatcher, "bind_action_context", None)
         if callable(binder):
+            rl_context = getattr(st, "active_rl_context", None)
             with binder(
                 {
                     "action_group_id": group_id,
                     "action_id": call_id,
                     "tool_call_id": call_id,
+                    **(rl_context if isinstance(rl_context, dict) else {}),
                 }
             ):
                 return self._invoke_control_with_artifacts_bound(st, call, emit, invoke)
@@ -12200,6 +12205,18 @@ class SessionRunner:
                 finalize_plan=finalize_plan,
                 cancelled=st.cancel.is_set,
                 tool_catalog=tool_catalog,
+                rl_context_sink=lambda state: setattr(
+                    st,
+                    "active_rl_context",
+                    (
+                        {
+                            "episode_id": str(st.root_frame_id),
+                            "decision_id": str(state.metadata["rl_decision_id"]),
+                        }
+                        if state is not None and state.metadata.get("rl_decision_id")
+                        else None
+                    ),
+                ),
             ),
             context_policy=CompactionPolicy(
                 self.cfg,
@@ -12349,13 +12366,15 @@ class SessionRunner:
         )
         self.recovery.touch(st, language, state="busy")
         self.executions.bind_lease(lease, st.kernels.interrupt_if_current)
+        rl_context = getattr(st, "active_rl_context", None)
         action_context = (
             {
                 "action_group_id": action_group_id,
-                "action_id": f"{action_group_id}:action",
+                "action_id": (f"{action_group_id}:action" if action_group_id else None),
                 "tool_call_id": None,
+                **(rl_context if isinstance(rl_context, dict) else {}),
             }
-            if action_group_id
+            if action_group_id or isinstance(rl_context, dict)
             else None
         )
 

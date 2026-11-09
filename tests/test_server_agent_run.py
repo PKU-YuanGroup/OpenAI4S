@@ -389,6 +389,20 @@ def test_native_batch_returns_canonical_tool_history_and_never_completes(
     assert outcome.stop_reason is None
 
 
+def test_web_action_executor_scopes_rl_context_sink_to_one_action():
+    seen = []
+    dispatcher = SimpleNamespace(last_output=None)
+    executor = _executor(
+        dispatcher,
+        rl_context_sink=lambda state: seen.append(state),
+    )
+    state = RunState([])
+
+    executor.execute(None, ModelReply(content="plain prose"), state)
+
+    assert seen == [state, None]
+
+
 def test_code_action_is_the_only_path_that_reads_submit_completion():
     dispatcher = SimpleNamespace(last_output=None)
     submitted = {
