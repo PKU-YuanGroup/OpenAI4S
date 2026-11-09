@@ -48,6 +48,12 @@ provider 自带的身份字段。没有 logprob 证据时保持缺失，并标�
 元数据和 workspace。存在 active Episode 时会拒绝第二次 reset；只有 rollout 发出终态事件
 后 `release()` 才会删除 workspace。绝对 workspace 路径属于运行时状态，不进入轨迹元数据。
 
+`TrajectoryReplayer` 是持久轨迹上的只读投影。Event replay 校验每个 Episode 内连续的事件
+序号，并支持有界的 `after_sequence` cursor；Decision replay 将每个精确 Observation 与
+采样 Decision 并列输出；Artifact replay 发现不可变版本引用，并通过宿主提供的 checker
+报告 checksum 是否仍可验证。Execution replay 只有调用方显式提供 runner 才会启用，因此不会
+静默重跑 scientific cell 或重复提交远程 job。
+
 `Segment` 是显式 scientific phase，包含名称、目标、父 Segment、状态和元数据。
 `host.segment()` 只产生 Segment 生命周期、observation 和 output 事实，不计算 reward。
 

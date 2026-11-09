@@ -6,6 +6,8 @@ trainer can consume :class:`Trajectory` JSON while the existing agent engine
 continues to own execution and permissions.
 """
 
+from typing import Any
+
 from .host_events import HostCallLifecycle
 from .models import (
     CostRecord,
@@ -32,10 +34,19 @@ _LAZY_EXPORTS = {
     "PolicyProvider": (".policy", "PolicyProvider"),
     "EpisodeReset": (".environment", "EpisodeReset"),
     "RolloutEnvironment": (".environment", "RolloutEnvironment"),
+    "ReplayCursorError": (".replay", "ReplayCursorError"),
+    "ReplayError": (".replay", "ReplayError"),
+    "ReplayIntegrityError": (".replay", "ReplayIntegrityError"),
+    "ReplayUnavailable": (".replay", "ReplayUnavailable"),
+    "ReplayView": (".replay", "ReplayView"),
+    "TrajectoryReplayer": (".replay", "TrajectoryReplayer"),
+    "ReplayMode": (".replay", "ReplayMode"),
+    "ExecutionReplayRunner": (".replay", "ExecutionReplayRunner"),
+    "ArtifactChecker": (".replay", "ArtifactChecker"),
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     target = _LAZY_EXPORTS.get(name)
     if target is None:
         raise AttributeError(name)
@@ -70,4 +81,13 @@ __all__ = [
     "PolicyProvider",
     "EpisodeReset",
     "RolloutEnvironment",
+    "ReplayCursorError",
+    "ReplayError",
+    "ReplayIntegrityError",
+    "ReplayUnavailable",
+    "ReplayView",
+    "TrajectoryReplayer",
+    "ReplayMode",
+    "ExecutionReplayRunner",
+    "ArtifactChecker",
 ]

@@ -80,6 +80,14 @@ active Episode, and `release()` removes the workspace only after the rollout
 has emitted a terminal event. The absolute workspace path is runtime state and
 is excluded from trajectory metadata.
 
+`TrajectoryReplayer` is a read-only projection over a durable trajectory. Event
+replay validates contiguous per-Episode sequences and supports a bounded
+`after_sequence` cursor. Decision replay emits each exact Observation beside
+its sampled Decision. Artifact replay discovers immutable version references
+and reports checksum availability through an embedding-supplied checker.
+Execution replay is deliberately opt-in: it requires a caller-owned runner,
+so replay cannot silently repeat a scientific cell or submit a remote job.
+
 `Segment` is an explicit scientific phase. It contains `segment_id`,
 `episode_id`, `name`, `created_at`, optional `decision_id`, optional
 `parent_segment_id`, optional `objective`, `status`, and JSON `metadata`.

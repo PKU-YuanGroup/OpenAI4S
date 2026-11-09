@@ -31,6 +31,12 @@ Engine/Recorder pair and workspace for each Episode reset. Reset metadata
 records initial artifact references, configuration, and budget without
 exposing the absolute workspace path.
 
+`replay.py` defines `TrajectoryReplayer`. Event replay is cursorable, decision
+replay pairs each sampled decision with the exact observation, and artifact
+replay checks immutable version references through a caller-supplied checker.
+Execution replay never runs implicitly; it requires an explicit controlled
+runner supplied by the embedding application.
+
 `__init__.py` exports the public records and adapters. `agent_sink.py` bridges
 the existing `AgentEngine` event stream into these records without replacing
 the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing

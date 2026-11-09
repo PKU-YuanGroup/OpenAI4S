@@ -9,11 +9,16 @@ from openai4s.agent.models import ExecutionOutcome, ModelReply
 from openai4s.config import Config
 from openai4s.rl import (
     Episode,
+    ExecutionEvent,
+    Observation,
     PolicyAdapter,
+    PolicyDecision,
     RolloutEnvironment,
     RolloutSession,
     TrajectoryRecorder,
+    TrajectoryReplayer,
 )
+from openai4s.rl.replay import ReplayCursorError, ReplayUnavailable
 from openai4s.store import get_store
 
 
@@ -183,6 +188,83 @@ def test_rollout_receipt_prevents_exact_retry_after_completion(tmp_path) -> None
         assert retry.state is None
     finally:
         store.close()
+
+
+def test_trajectory_replayer_provides_cursored_event_and_decision_views() -> None:
+    recorder = TrajectoryRecorder(Episode("ep-replay", "task", "session", 1))
+    recorder.add_observation(
+        Observation(
+            "obs-0",
+            "ep-replay",
+            "decision-0",
+            [{"role": "user", "content": "run"}],
+            2,
+        )
+    )
+    recorder.add_decision(
+        PolicyDecision(
+            "decision-0",
+            "ep-replay",
+            0,
+            "obs-0",
+            "prompt-hash",
+            "policy",
+            "v1",
+            {"type": "code_cell"},
+            3,
+        )
+    )
+    recorder.add_event(
+        ExecutionEvent(
+            "event-1",
+            "ep-replay",
+            "artifact.created",
+            4,
+            {"output_version_id": "v-out", "checksum": "abc"},
+        )
+    )
+    recorder.add_event(ExecutionEvent("event-2", "ep-replay", "cell.completed", 5))
+    recorder.finish("success")
+    snapshot = recorder.create_snapshot("snapshot-replay", created_at=6)
+
+    class _Repository:
+        def load_trajectory(self, episode_id):
+            assert episode_id == "ep-replay"
+            return recorder.snapshot()
+
+        def get_snapshot(self, snapshot_id):
+            assert snapshot_id == "snapshot-replay"
+            return snapshot
+
+    replayer = TrajectoryReplayer(_Repository())
+    page = replayer.replay(
+        "ep-replay", "event", after_sequence=0, limit=1, snapshot_id="snapshot-replay"
+    )
+    assert [item["event_id"] for item in page.records] == ["event-1"]
+    assert page.complete is False
+    assert page.next_sequence == 2
+    rest = replayer.replay("ep-replay", "event", after_sequence=1)
+    assert [item["event_id"] for item in rest.records] == ["event-2"]
+
+    decisions = replayer.replay("ep-replay", "decision")
+    assert [item["type"] for item in decisions.records] == [
+        "observation",
+        "decision",
+    ]
+    artifacts = replayer.replay(
+        "ep-replay",
+        "artifact",
+        artifact_checker=lambda version_id: {
+            "version_id": version_id,
+            "checksum": "abc",
+        },
+    )
+    assert artifacts.verified is True
+    assert artifacts.records[0]["version_id"] == "v-out"
+    with pytest.raises(ReplayCursorError, match="ahead"):
+        replayer.replay("ep-replay", "event", after_sequence=3)
+    with pytest.raises(ReplayUnavailable, match="controlled runner"):
+        replayer.replay("ep-replay", "execution")
 
 
 def test_rollout_receipt_is_settled_when_sampler_fails(tmp_path) -> None:
