@@ -4,7 +4,7 @@
 
 [`test_project_file_tools.py`](test_project_file_tools.py) verifies project-relative recursive reads, binary imports with exact source receipts, existing permission rules, folder switching, and workspace isolation.
 
-The RL Runtime additions are covered by `test_rl_contract.py`, `test_agent_rl_step.py`, `test_rl_agent_sink.py`, `test_rl_repository.py`, `test_rl_segments.py`, `test_rl_rollout.py`, and `test_rl_atif.py`: contract validation and deterministic export, trainer-controlled single-step execution, the AgentEngine-to-trajectory event bridge, Store-backed durable records, the `host.segment()` lifecycle, and the external sampler rollout lifecycle.
+The RL Runtime additions are covered by `test_rl_contract.py`, `test_agent_rl_step.py`, `test_rl_agent_sink.py`, `test_rl_repository.py`, `test_rl_segments.py`, `test_rl_projector.py`, `test_rl_rollout.py`, and `test_rl_atif.py`: contract validation and deterministic export, trainer-controlled single-step execution, the AgentEngine-to-trajectory event bridge, Store-backed durable records, exact Artifact/Compute durable-fact projection, the `host.segment()` lifecycle, and the external sampler rollout lifecycle.
 
 The offline correctness gate for OpenAI4S. `uv run pytest` runs every module here against deterministic fakes, and it has to stay green: the provider-neutral agent engine, the Host services, the persistent Python/R kernel protocol, the repositories, the security boundaries, the tools, the Skills, and the Web composition. Reusable scenarios and scored evaluations are a separate layer and live in [`../harness/`](../harness/).
 

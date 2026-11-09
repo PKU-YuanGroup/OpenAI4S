@@ -43,6 +43,7 @@ _LAZY_EXPORTS = {
     "ReplayMode": (".replay", "ReplayMode"),
     "ExecutionReplayRunner": (".replay", "ExecutionReplayRunner"),
     "ArtifactChecker": (".replay", "ArtifactChecker"),
+    "DurableFactProjector": (".projector", "DurableFactProjector"),
 }
 
 
@@ -90,4 +91,5 @@ __all__ = [
     "ReplayMode",
     "ExecutionReplayRunner",
     "ArtifactChecker",
+    "DurableFactProjector",
 ]

@@ -103,6 +103,13 @@ cell outcome, segment lifecycle transition, or Host RPC lifecycle. It contains
 contain argument/result hashes and an error category, not private arguments or
 results.
 
+The durable projector may append read-only `artifact.version`, `compute.job`,
+and `compute.job_event` references at export time. An Artifact reference carries
+the exact `version_id`, checksum, producing cell, and source event. A Compute
+reference carries the durable job ID, provider, status, receipt, input version
+IDs, artifact manifest, and source job events. It follows IDs already present in
+the trajectory and never resolves a mutable Artifact head or fabricates a cost.
+
 `RewardAnnotation` is an independently produced score. It contains
 `annotation_id`, `episode_id`, finite `value`, `verifier`,
 `verifier_version`, `created_at`, optional decision/segment joins, numeric

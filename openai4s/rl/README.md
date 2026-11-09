@@ -49,3 +49,9 @@ ATIF extension metadata.
 `host_events.py` defines the bounded Host RPC lifecycle facts (`started`,
 `completed`, and `failed`) used to join nested execution to a parent decision
 and segment without copying private arguments or results.
+
+`projector.py` adds a read-only durable-fact projection at export time. It
+follows exact Artifact version and Compute job IDs already referenced by an
+execution event, including checksums, producing cells, receipts, input
+versions, manifests, and append-only job events. It never resolves an Artifact
+head, copies source rows, or estimates GPU/provider cost.

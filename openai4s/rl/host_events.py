@@ -83,6 +83,33 @@ class HostCallLifecycle:
         }
         if completed:
             payload["result_sha256"] = _digest(result)
+            if isinstance(result, dict):
+                references: dict[str, Any] = {}
+                for key in (
+                    "job_id",
+                    "compute_job_id",
+                    "version_id",
+                    "artifact_version_id",
+                    "input_version_id",
+                    "output_version_id",
+                ):
+                    value = result.get(key)
+                    if isinstance(value, str) and value.strip():
+                        references[key] = value
+                for key in (
+                    "input_versions",
+                    "output_versions",
+                    "artifact_version_ids",
+                ):
+                    value = result.get(key)
+                    if isinstance(value, (list, tuple)):
+                        ids = [item for item in value if isinstance(item, str) and item]
+                        if ids:
+                            references[key] = ids
+                if references:
+                    # IDs are safe audit references; the result body itself is
+                    # deliberately still represented only by its digest.
+                    payload["references"] = references
             kind = "host_call.completed"
         else:
             payload["error_category"] = (

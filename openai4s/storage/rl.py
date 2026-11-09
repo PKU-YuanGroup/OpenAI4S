@@ -530,7 +530,7 @@ class RLRepository:
                 (episode_id,),
             )
         )
-        return Trajectory(
+        trajectory = Trajectory(
             episode=_episode_from_row(episode_row),
             observations=observations,
             decisions=decisions,
@@ -538,6 +538,24 @@ class RLRepository:
             execution_events=events,
             rewards=rewards,
             costs=costs,
+        )
+        # Artifact and Compute repositories remain the source of truth.  The
+        # projector adds only exact IDs already referenced by RL events, so a
+        # trajectory export can carry durable scientific evidence without
+        # copying either raw table or resolving a mutable Artifact head.
+        from openai4s.rl.projector import DurableFactProjector
+
+        projected_events = DurableFactProjector(self._connection).project(
+            trajectory.episode, trajectory.execution_events
+        )
+        return Trajectory(
+            episode=trajectory.episode,
+            observations=trajectory.observations,
+            decisions=trajectory.decisions,
+            segments=trajectory.segments,
+            execution_events=projected_events,
+            rewards=trajectory.rewards,
+            costs=trajectory.costs,
         )
 
     def admit_receipt(self, receipt: RunReceipt) -> RunReceipt:

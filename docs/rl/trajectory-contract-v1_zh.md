@@ -61,6 +61,12 @@ Host API 接受显式的 `parent_segment_id`，不会从相邻调用顺序推断
 `ExecutionEvent` 是有界执行事实，例如 action dispatch、Cell 结果、Segment 生命周期或
 Host RPC 生命周期。Host RPC 只记录参数/结果哈希与错误类别，不复制私有参数或结果。
 
+导出时 durable projector 可以只读追加 `artifact.version`、`compute.job` 和
+`compute.job_event` 引用。Artifact 引用携带精确 `version_id`、checksum、producing cell
+和 source event；Compute 引用携带 durable job ID、provider、status、receipt、输入
+version、artifact manifest 和源 job events。它只跟随轨迹中已经存在的 ID，不解析可变
+Artifact head，也不伪造成本。
+
 `RewardAnnotation` 是独立产生的分数，包含 verifier 与版本、数值、组件、元数据、
 `evidence_refs`、可选的 `[0, 1]` `confidence` 和 `source`。同一 Episode 可以有多个
 verifier 版本。`apply_verifier()` 校验 verifier 身份与 Episode 范围，然后追加 Annotation，

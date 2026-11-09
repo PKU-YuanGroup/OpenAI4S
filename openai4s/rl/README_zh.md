@@ -37,3 +37,8 @@ Engine/Recorder 和 workspace。Reset 元数据记录初始 Artifact 引用、�
 
 `host_events.py` 定义有界的 Host RPC 生命周期事实（`started`、`completed`、`failed`），
 用于把嵌套执行关联到父 Decision 和 Segment，同时不复制私有参数或结果。
+
+`projector.py` 在导出边界只读投影持久化事实。它只跟随执行事件已经明确引用的
+Artifact version 和 Compute job ID，带出 checksum、producing cell、receipt、输入
+版本、manifest 以及追加式 job events；不会解析 Artifact head、复制源表或估算 GPU/
+Provider 成本。

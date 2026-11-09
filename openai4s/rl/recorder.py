@@ -199,7 +199,7 @@ class TrajectoryRecorder:
 
     def snapshot(self) -> Trajectory:
         with self._lock:
-            return Trajectory(
+            local = Trajectory(
                 episode=self.episode,
                 observations=tuple(
                     sorted(
@@ -238,6 +238,15 @@ class TrajectoryRecorder:
                     )
                 ),
             )
+            # A Store-backed recorder has already flushed every accepted fact.
+            # Ask its durable projector for the export boundary so Artifact and
+            # Compute references are included in hashes and snapshots too.
+            load = getattr(self.repository, "load_trajectory", None)
+            if callable(load):
+                durable = load(self.episode.episode_id)
+                if isinstance(durable, Trajectory):
+                    return durable
+            return local
 
     def export_json(self) -> str:
         return self.snapshot().canonical_json()
