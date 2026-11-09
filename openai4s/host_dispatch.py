@@ -53,6 +53,7 @@ from openai4s.host.remote_science import RemoteScienceService
 from openai4s.host.session import SessionControlService
 from openai4s.host.skills import SkillService
 from openai4s.llm import chat
+from openai4s.rl.models import Episode, ExecutionEvent, Segment
 from openai4s.storage.memories import MemoryLimitError
 from openai4s.storage.metadata import DERIVABLE_HOST_CALLS
 from openai4s.store import SECRET_ARG_HOST_CALLS, get_store
@@ -3423,6 +3424,96 @@ class HostDispatcher:
     # --- structured output (completion_bullets) ---------------
     def _m_submit_output(self, spec: dict) -> dict:
         return self._completion_service.submit(spec)
+
+    # --- RL segment instrumentation ---------------------------------
+    def _rl_episode(self, episode_id: str | None) -> str:
+        return str(episode_id or self.frame_id or "session")
+
+    def _m_rl_segment_start(self, spec: dict) -> dict:
+        episode_id = self._rl_episode(spec.get("episode_id"))
+        now = int(time.time() * 1000)
+        episode = Episode(
+            episode_id=episode_id,
+            task=str(spec.get("episode_task") or "OpenAI4S rollout"),
+            session_id=str(self.frame_id or episode_id),
+            created_at=now,
+            status="running",
+            metadata={"source": "host.segment"},
+        )
+        try:
+            self.store.rl.append_episode(episode)
+            segment = Segment(
+                segment_id=str(
+                    spec.get("segment_id") or "seg-" + uuid.uuid4().hex[:16]
+                ),
+                episode_id=episode_id,
+                name=str(spec.get("name") or "segment"),
+                objective=spec.get("objective"),
+                created_at=now,
+                metadata=spec.get("metadata") or {},
+            )
+            self.store.rl.append_segment(segment)
+            event = self.store.rl.append_execution_event(
+                ExecutionEvent(
+                    event_id=f"{segment.segment_id}:started",
+                    episode_id=episode_id,
+                    kind="segment.started",
+                    created_at=now,
+                    segment_id=segment.segment_id,
+                    payload=segment.to_dict(),
+                )
+            )
+            return {
+                "segment_id": segment.segment_id,
+                "episode_id": episode_id,
+                "sequence": event.sequence,
+            }
+        except (TypeError, ValueError, KeyError) as error:
+            return {"error": str(error)}
+
+    def _m_rl_segment_observe(self, spec: dict) -> dict:
+        return self._m_rl_segment_event(spec, "segment.observation", spec.get("value"))
+
+    def _m_rl_segment_output(self, spec: dict) -> dict:
+        return self._m_rl_segment_event(spec, "segment.output", spec.get("value"))
+
+    def _m_rl_segment_event(self, spec: dict, kind: str, value: Any) -> dict:
+        try:
+            event = self.store.rl.append_execution_event(
+                ExecutionEvent(
+                    event_id=str(
+                        spec.get("event_id") or kind + ":" + uuid.uuid4().hex[:16]
+                    ),
+                    episode_id=self._rl_episode(spec.get("episode_id")),
+                    kind=kind,
+                    created_at=int(time.time() * 1000),
+                    segment_id=str(spec.get("segment_id") or ""),
+                    payload={"kind": spec.get("kind"), "value": value},
+                )
+            )
+            return {"ok": True, "sequence": event.sequence}
+        except (TypeError, ValueError, KeyError) as error:
+            return {"error": str(error)}
+
+    def _m_rl_segment_close(self, spec: dict) -> dict:
+        status = str(spec.get("status") or "completed")
+        episode_id = self._rl_episode(spec.get("episode_id"))
+        segment_id = str(spec.get("segment_id") or "")
+        try:
+            event = self.store.rl.append_execution_event(
+                ExecutionEvent(
+                    event_id=f"{segment_id}:closed",
+                    episode_id=episode_id,
+                    kind="segment.closed",
+                    created_at=int(time.time() * 1000),
+                    segment_id=segment_id,
+                    payload={"status": status, "error": spec.get("error")},
+                )
+            )
+            self.store.rl.update_segment_status(segment_id, status)
+            return {"ok": True, "status": status, "sequence": event.sequence}
+        except (TypeError, ValueError, KeyError) as error:
+            return {"error": str(error)}
 
     # --- managed endpoints ---------------------------------------
     def _m_endpoints_free_port(self, *_a: Any) -> int:

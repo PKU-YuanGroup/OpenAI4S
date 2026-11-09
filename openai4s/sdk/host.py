@@ -474,6 +474,77 @@ class _Science:
         )
 
 
+class _Segment:
+    """Context manager for an explicit, scientifically meaningful segment."""
+
+    def __init__(self, call: Callable[[str, list], Any], spec: dict[str, Any]):
+        self._call = call
+        self._spec = dict(spec)
+        self._record: dict[str, Any] | None = None
+
+    def __enter__(self) -> "_Segment":
+        self._record = self._call("rl_segment_start", [self._spec])
+        if isinstance(self._record, dict) and "error" in self._record:
+            raise RuntimeError(str(self._record["error"]))
+        return self
+
+    def observe(self, value: Any, *, kind: str = "observation") -> dict:
+        if self._record is None:
+            raise RuntimeError("segment is not active")
+        return self._call(
+            "rl_segment_observe",
+            [
+                {
+                    "segment_id": self.segment_id,
+                    "episode_id": self.episode_id,
+                    "kind": kind,
+                    "value": value,
+                }
+            ],
+        )
+
+    def set_output(self, value: Any) -> dict:
+        if self._record is None:
+            raise RuntimeError("segment is not active")
+        return self._call(
+            "rl_segment_output",
+            [
+                {
+                    "segment_id": self.segment_id,
+                    "episode_id": self.episode_id,
+                    "value": value,
+                }
+            ],
+        )
+
+    @property
+    def segment_id(self) -> str:
+        if not isinstance(self._record, dict) or not self._record.get("segment_id"):
+            raise RuntimeError("segment is not active")
+        return str(self._record["segment_id"])
+
+    @property
+    def episode_id(self) -> str:
+        if not isinstance(self._record, dict) or not self._record.get("episode_id"):
+            raise RuntimeError("segment is not active")
+        return str(self._record["episode_id"])
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
+        if self._record is not None:
+            self._call(
+                "rl_segment_close",
+                [
+                    {
+                        "segment_id": self.segment_id,
+                        "episode_id": self.episode_id,
+                        "status": "failed" if exc_type else "completed",
+                        "error": str(exc_value) if exc_value else None,
+                    }
+                ],
+            )
+        return False
+
+
 # --- remote compute (host.compute) -----------------------------------
 #
 # Gated on the host advertising a remote-compute provider. Installs
@@ -615,6 +686,25 @@ class _Host:
         from openai4s.sdk.judgment import judge as _judge
 
         return _judge(self._call, template, state, **params)
+
+    def segment(
+        self,
+        name: str,
+        *,
+        objective: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        episode_id: str | None = None,
+    ) -> _Segment:
+        """Open a durable segment spanning one or more Host calls."""
+        return _Segment(
+            self._call,
+            {
+                "name": name,
+                "objective": objective,
+                "metadata": metadata or {},
+                "episode_id": episode_id,
+            },
+        )
 
     # --- artifacts / data discovery --------------------------------------
     def artifacts(self, **filters: Any) -> dict:

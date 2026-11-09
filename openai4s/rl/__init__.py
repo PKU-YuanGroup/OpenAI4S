@@ -19,6 +19,7 @@ from .models import (
     Trajectory,
 )
 from .recorder import TrajectoryRecorder
+from .rollout import PolicySampler, RolloutSession
 
 __all__ = [
     "CostRecord",
@@ -32,4 +33,6 @@ __all__ = [
     "Trajectory",
     "TrajectoryRecorder",
     "TrajectoryEventSink",
+    "PolicySampler",
+    "RolloutSession",
 ]

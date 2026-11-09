@@ -12,4 +12,5 @@ outside the harness.
 
 `__init__.py` exports the public records and adapters. `agent_sink.py` bridges
 the existing `AgentEngine` event stream into these records without replacing
-the Action Ledger.
+the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing
+reset/observe/step/finish/export lifecycle.

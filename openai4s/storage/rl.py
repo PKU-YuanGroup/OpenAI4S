@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from typing import Any, Callable, Mapping
 
 from openai4s.rl.models import (
@@ -163,6 +164,24 @@ class RLRepository:
             )
             self._connection.execute("COMMIT")
 
+    def update_segment_status(self, segment_id: str, status: str) -> None:
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            row = self._connection.execute(
+                "SELECT status FROM rl_segments WHERE segment_id=?", (segment_id,)
+            ).fetchone()
+            if row is None:
+                self._connection.execute("ROLLBACK")
+                raise KeyError(segment_id)
+            if row["status"] != "open" and row["status"] != status:
+                self._connection.execute("ROLLBACK")
+                raise ValueError(f"segment {segment_id!r} is already terminal")
+            self._connection.execute(
+                "UPDATE rl_segments SET status=? WHERE segment_id=?",
+                (status, segment_id),
+            )
+            self._connection.execute("COMMIT")
+
     def _append(
         self, table: str, key: str, value: Any, columns: Mapping[str, Any]
     ) -> None:
@@ -221,7 +240,15 @@ class RLRepository:
             },
         )
 
-    def append_execution_event(self, value: ExecutionEvent) -> None:
+    def append_execution_event(self, value: ExecutionEvent) -> ExecutionEvent:
+        if value.sequence is None:
+            with self._lock:
+                row = self._connection.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence "
+                    "FROM rl_execution_events WHERE episode_id=?",
+                    (value.episode_id,),
+                ).fetchone()
+            value = replace(value, sequence=int(row["sequence"]))
         self._append(
             "rl_execution_events",
             "event_id",
@@ -233,6 +260,7 @@ class RLRepository:
                 "created_at": value.created_at,
             },
         )
+        return value
 
     def append_reward(self, value: RewardAnnotation) -> None:
         self._append(
