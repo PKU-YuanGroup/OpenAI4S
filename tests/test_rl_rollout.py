@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from openai4s.agent.engine import AgentEngine
@@ -112,6 +114,46 @@ def test_rollout_environment_resets_with_independent_workspace_and_metadata(tmp_
     assert created[1].workspace != first_workspace
     second.run(lambda _observation: ModelReply(content="done"))
     environment.release(second)
+
+
+def test_rollout_environment_reserves_reset_while_engine_is_constructed(tmp_path):
+    started = threading.Event()
+    proceed = threading.Event()
+    created = []
+
+    def build_engine(reset):
+        created.append(reset)
+        started.set()
+        assert proceed.wait(timeout=5)
+        return AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1)
+
+    environment = RolloutEnvironment(build_engine, workspace_root=tmp_path)
+    holder = []
+
+    def reset_first():
+        holder.append(
+            environment.reset(
+                Episode("ep-concurrent-1", "task", "session", 1),
+                [{"role": "user", "content": "one"}],
+            )
+        )
+
+    thread = threading.Thread(target=reset_first)
+    thread.start()
+    assert started.wait(timeout=5)
+    try:
+        with pytest.raises(RuntimeError, match="already has an active"):
+            environment.reset(
+                Episode("ep-concurrent-2", "task", "session", 1),
+                [{"role": "user", "content": "two"}],
+            )
+    finally:
+        proceed.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert len(holder) == 1
+    holder[0].finish()
+    environment.release(holder[0])
 
 
 def test_rollout_receipt_prevents_exact_retry_after_completion(tmp_path) -> None:

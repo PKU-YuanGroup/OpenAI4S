@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -68,6 +69,12 @@ class RolloutEnvironment:
         )
         if self.workspace_root is not None:
             self.workspace_root.mkdir(parents=True, exist_ok=True)
+        # Reset is a reservation as well as a constructor.  Keep the
+        # reservation separate from ``_active`` so a slow Engine factory
+        # cannot let a second caller pass the active check while the first
+        # episode is still being assembled.
+        self._lock = threading.RLock()
+        self._resetting = False
         self._active: tuple[RolloutSession, EpisodeReset] | None = None
 
     def reset(
@@ -82,30 +89,37 @@ class RolloutEnvironment:
         request_id: str | None = None,
     ) -> RolloutSession:
         """Create and reset one isolated rollout session."""
-        if self._active is not None:
-            raise RuntimeError("rollout environment already has an active episode")
-        if episode.status != "running":
-            raise ValueError("a reset episode must have running status")
-        artifacts = _text_mapping("initial_artifacts", initial_artifacts or {})
-        reset_config = _json_mapping("config", config or {})
-        reset_budget = _json_mapping("budget", budget or {})
-        reset_id = "reset-" + uuid.uuid4().hex
-        workspace_id = "workspace-" + uuid.uuid4().hex
-        workspace = self._new_workspace()
-        reset = EpisodeReset(
-            episode=episode,
-            reset_id=reset_id,
-            workspace=workspace,
-            workspace_id=workspace_id,
-            initial_artifacts=artifacts,
-            config=reset_config,
-            budget=reset_budget,
-        )
-        metadata = dict(episode.metadata)
-        metadata["reset"] = reset.public_metadata()
-        effective_episode = replace(episode, metadata=metadata)
-        reset = replace(reset, episode=effective_episode)
+        with self._lock:
+            if self._active is not None or self._resetting:
+                raise RuntimeError("rollout environment already has an active episode")
+            self._resetting = True
+
+        workspace: Path | None = None
         try:
+            if episode.status != "running":
+                raise ValueError("a reset episode must have running status")
+            artifacts = _text_mapping(
+                "initial_artifacts",
+                {} if initial_artifacts is None else initial_artifacts,
+            )
+            reset_config = _json_mapping("config", {} if config is None else config)
+            reset_budget = _json_mapping("budget", {} if budget is None else budget)
+            reset_id = "reset-" + uuid.uuid4().hex
+            workspace_id = "workspace-" + uuid.uuid4().hex
+            workspace = self._new_workspace()
+            reset = EpisodeReset(
+                episode=episode,
+                reset_id=reset_id,
+                workspace=workspace,
+                workspace_id=workspace_id,
+                initial_artifacts=artifacts,
+                config=reset_config,
+                budget=reset_budget,
+            )
+            metadata = dict(episode.metadata)
+            metadata["reset"] = reset.public_metadata()
+            effective_episode = replace(episode, metadata=metadata)
+            reset = replace(reset, episode=effective_episode)
             engine = self.engine_factory(reset)
             recorder = TrajectoryRecorder(effective_episode, repository=self.repository)
             session = RolloutSession(
@@ -117,28 +131,35 @@ class RolloutEnvironment:
             session.reset(messages, max_turns=max_turns)
             assert session.state is not None
             session.state.metadata["rl_reset"] = reset.public_metadata()
+            with self._lock:
+                self._active = (session, reset)
         except BaseException:
-            shutil.rmtree(workspace, ignore_errors=True)
+            if workspace is not None:
+                shutil.rmtree(workspace, ignore_errors=True)
             raise
-        self._active = (session, reset)
+        finally:
+            with self._lock:
+                self._resetting = False
         return session
 
     def release(self, session: RolloutSession, *, cleanup: bool = True) -> Trajectory:
         """Release a finished session and optionally remove its workspace."""
-        active = self._active
-        if active is None or active[0] is not session:
-            raise ValueError("session does not belong to this rollout environment")
-        if not session.finished:
-            raise RuntimeError("cannot release an unfinished rollout session")
-        trajectory = session.recorder.snapshot()
-        self._active = None
+        with self._lock:
+            active = self._active
+            if active is None or active[0] is not session:
+                raise ValueError("session does not belong to this rollout environment")
+            if not session.finished:
+                raise RuntimeError("cannot release an unfinished rollout session")
+            trajectory = session.recorder.snapshot()
+            self._active = None
         if cleanup:
             shutil.rmtree(active[1].workspace, ignore_errors=True)
         return trajectory
 
     @property
     def active(self) -> bool:
-        return self._active is not None
+        with self._lock:
+            return self._active is not None
 
     def _new_workspace(self) -> Path:
         if self.workspace_root is None:
