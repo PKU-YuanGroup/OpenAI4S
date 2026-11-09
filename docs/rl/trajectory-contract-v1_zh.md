@@ -44,6 +44,10 @@ segments、execution_events、rewards、costs 顺序写出，每行使用单数 
 provider 自带的身份字段。没有 logprob 证据时保持缺失，并标记
 `behavior_logprobs_available: false`。
 
+`RolloutEnvironment.reset()` 通过调用方提供的 Engine factory 创建新的 Episode、Reset
+元数据和 workspace。存在 active Episode 时会拒绝第二次 reset；只有 rollout 发出终态事件
+后 `release()` 才会删除 workspace。绝对 workspace 路径属于运行时状态，不进入轨迹元数据。
+
 `Segment` 是显式 scientific phase，包含名称、目标、父 Segment、状态和元数据。
 `host.segment()` 只产生 Segment 生命周期、observation 和 output 事实，不计算 reward。
 

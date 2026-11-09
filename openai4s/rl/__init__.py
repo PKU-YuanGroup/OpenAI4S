@@ -30,6 +30,8 @@ _LAZY_EXPORTS = {
     "DatasetSnapshot": (".snapshot", "DatasetSnapshot"),
     "PolicyAdapter": (".policy", "PolicyAdapter"),
     "PolicyProvider": (".policy", "PolicyProvider"),
+    "EpisodeReset": (".environment", "EpisodeReset"),
+    "RolloutEnvironment": (".environment", "RolloutEnvironment"),
 }
 
 
@@ -66,4 +68,6 @@ __all__ = [
     "DatasetSnapshot",
     "PolicyAdapter",
     "PolicyProvider",
+    "EpisodeReset",
+    "RolloutEnvironment",
 ]

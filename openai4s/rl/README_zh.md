@@ -20,6 +20,10 @@ Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 `policy.py` 定义 `PolicyProvider` 和 `PolicyAdapter`。Adapter 把 behavior policy 身份
 和采样配置写入 `ModelReply.extra`；缺失的 logprob 保持缺失，不在采样后估算。
 
+`environment.py` 定义 `RolloutEnvironment`，每次 Episode reset 都创建新的
+Engine/Recorder 和 workspace。Reset 元数据记录初始 Artifact 引用、配置与预算，但不暴露
+绝对 workspace 路径。
+
 `__init__.py` 导出公共记录和适配器；`agent_sink.py` 把现有 `AgentEngine` 事件流接入
 这些记录，同时保留 Action Ledger 作为执行事实源。`rollout.py` 导出面向 Trainer 的
 `RolloutSession`，提供 reset/observe/step/finish/export 生命周期。

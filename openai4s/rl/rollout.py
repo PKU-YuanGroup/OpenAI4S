@@ -173,6 +173,11 @@ class RolloutSession:
     def export(self) -> str:
         return self.recorder.export_json()
 
+    @property
+    def finished(self) -> bool:
+        """Whether this rollout has emitted its terminal lifecycle event."""
+        return self._finished
+
     def _emit_finished(self, step: EngineStep) -> None:
         if self._finished:
             return

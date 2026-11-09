@@ -5,7 +5,13 @@ import pytest
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.models import ExecutionOutcome, ModelReply
 from openai4s.config import Config
-from openai4s.rl import Episode, PolicyAdapter, RolloutSession, TrajectoryRecorder
+from openai4s.rl import (
+    Episode,
+    PolicyAdapter,
+    RolloutEnvironment,
+    RolloutSession,
+    TrajectoryRecorder,
+)
 from openai4s.store import get_store
 
 
@@ -63,6 +69,49 @@ def test_policy_adapter_preserves_behavior_identity_and_missing_logprobs() -> No
     assert reply.extra["sampling_config"] == {"temperature": 0.7}
     assert reply.extra["behavior_logprobs_available"] is False
     assert "action_logprob" not in reply.extra
+
+
+def test_rollout_environment_resets_with_independent_workspace_and_metadata(tmp_path):
+    created = []
+
+    def build_engine(reset):
+        created.append(reset)
+        return AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1)
+
+    environment = RolloutEnvironment(build_engine, workspace_root=tmp_path)
+    first = environment.reset(
+        Episode("ep-isolated-1", "task", "session", 1),
+        [{"role": "user", "content": "one"}],
+        initial_artifacts={"input": "version-1"},
+        config={"seed": 11},
+        budget={"wall_time_ms": 1000},
+    )
+    first_workspace = created[0].workspace
+    assert first_workspace.is_dir()
+    assert first.state is not None
+    assert first.state.metadata["rl_reset"]["initial_artifacts"] == {
+        "input": "version-1"
+    }
+    with pytest.raises(RuntimeError, match="already has an active"):
+        environment.reset(
+            Episode("ep-isolated-2", "task", "session", 1),
+            [{"role": "user", "content": "two"}],
+        )
+
+    first.run(lambda _observation: ModelReply(content="done"))
+    first_trajectory = environment.release(first)
+    assert first_trajectory.episode.metadata["reset"]["workspace_id"].startswith(
+        "workspace-"
+    )
+    assert not first_workspace.exists()
+
+    second = environment.reset(
+        Episode("ep-isolated-2", "task", "session", 1),
+        [{"role": "user", "content": "two"}],
+    )
+    assert created[1].workspace != first_workspace
+    second.run(lambda _observation: ModelReply(content="done"))
+    environment.release(second)
 
 
 def test_rollout_receipt_prevents_exact_retry_after_completion(tmp_path) -> None:

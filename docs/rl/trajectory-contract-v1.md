@@ -74,6 +74,12 @@ and `sampling_config` into `ModelReply.extra` and overwrites provider-supplied
 identity fields. If no logprob evidence is returned, the adapter preserves the
 absence and marks `behavior_logprobs_available: false`.
 
+`RolloutEnvironment.reset()` creates a fresh Episode, reset metadata, and
+workspace through an embedding-supplied Engine factory. It refuses a second
+active Episode, and `release()` removes the workspace only after the rollout
+has emitted a terminal event. The absolute workspace path is runtime state and
+is excluded from trajectory metadata.
+
 `Segment` is an explicit scientific phase. It contains `segment_id`,
 `episode_id`, `name`, `created_at`, optional `decision_id`, optional
 `parent_segment_id`, optional `objective`, `status`, and JSON `metadata`.

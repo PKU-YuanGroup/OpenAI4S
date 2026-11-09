@@ -26,6 +26,11 @@ training export. It does not copy or rewrite trajectory records.
 the behavior policy identity and sampling configuration in `ModelReply.extra`;
 it preserves missing logprob evidence instead of estimating it after sampling.
 
+`environment.py` defines `RolloutEnvironment`, which constructs a fresh
+Engine/Recorder pair and workspace for each Episode reset. Reset metadata
+records initial artifact references, configuration, and budget without
+exposing the absolute workspace path.
+
 `__init__.py` exports the public records and adapters. `agent_sink.py` bridges
 the existing `AgentEngine` event stream into these records without replacing
 the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing
