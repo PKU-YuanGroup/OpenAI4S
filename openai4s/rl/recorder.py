@@ -201,12 +201,42 @@ class TrajectoryRecorder:
         with self._lock:
             return Trajectory(
                 episode=self.episode,
-                observations=tuple(self._observations.values()),
-                decisions=tuple(self._decisions.values()),
-                segments=tuple(self._segments.values()),
-                execution_events=tuple(self._events.values()),
-                rewards=tuple(self._rewards.values()),
-                costs=tuple(self._costs.values()),
+                observations=tuple(
+                    sorted(
+                        self._observations.values(),
+                        key=lambda item: (item.created_at, item.observation_id),
+                    )
+                ),
+                decisions=tuple(
+                    sorted(
+                        self._decisions.values(),
+                        key=lambda item: (item.turn, item.decision_id),
+                    )
+                ),
+                segments=tuple(
+                    sorted(
+                        self._segments.values(),
+                        key=lambda item: (item.created_at, item.segment_id),
+                    )
+                ),
+                execution_events=tuple(
+                    sorted(
+                        self._events.values(),
+                        key=lambda item: (item.sequence or 0, item.event_id),
+                    )
+                ),
+                rewards=tuple(
+                    sorted(
+                        self._rewards.values(),
+                        key=lambda item: (item.created_at, item.annotation_id),
+                    )
+                ),
+                costs=tuple(
+                    sorted(
+                        self._costs.values(),
+                        key=lambda item: (item.created_at, item.cost_id),
+                    )
+                ),
             )
 
     def export_json(self) -> str:
