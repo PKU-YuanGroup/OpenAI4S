@@ -21,6 +21,7 @@ from openai4s.rl.models import (
     RewardAnnotation,
     RunReceipt,
     Segment,
+    Trajectory,
 )
 from openai4s.rl.snapshot import DatasetSnapshot
 
@@ -113,6 +114,13 @@ def _snapshot_from_row(row: sqlite3.Row) -> DatasetSnapshot:
         created_at=int(payload["created_at"]),
         record_counts=payload["record_counts"],
     )
+
+
+def _record_from_row(row: sqlite3.Row, record_type: Any) -> Any:
+    payload = json.loads(row["payload"])
+    if not isinstance(payload, Mapping):
+        raise ValueError("stored RL record payload is not an object")
+    return record_type(**payload)
 
 
 def _payload(value: Any) -> str:
@@ -464,6 +472,71 @@ class RLRepository:
         if row is None:
             raise KeyError(snapshot_id)
         return _snapshot_from_row(row)
+
+    def load_trajectory(self, episode_id: str) -> Trajectory:
+        """Rebuild one immutable trajectory from the durable RL projections."""
+        episode_row = self._connection.execute(
+            "SELECT * FROM rl_episodes WHERE episode_id=?", (episode_id,)
+        ).fetchone()
+        if episode_row is None:
+            raise KeyError(episode_id)
+        observations = tuple(
+            _record_from_row(row, Observation)
+            for row in self._connection.execute(
+                "SELECT payload FROM rl_observations WHERE episode_id=? "
+                "ORDER BY created_at, observation_id",
+                (episode_id,),
+            )
+        )
+        decisions = tuple(
+            _record_from_row(row, PolicyDecision)
+            for row in self._connection.execute(
+                "SELECT payload FROM rl_decisions WHERE episode_id=? "
+                "ORDER BY turn, decision_id",
+                (episode_id,),
+            )
+        )
+        segments = tuple(
+            _record_from_row(row, Segment)
+            for row in self._connection.execute(
+                "SELECT payload FROM rl_segments WHERE episode_id=? "
+                "ORDER BY created_at, segment_id",
+                (episode_id,),
+            )
+        )
+        events = tuple(
+            _record_from_row(row, ExecutionEvent)
+            for row in self._connection.execute(
+                "SELECT payload FROM rl_execution_events WHERE episode_id=? "
+                "ORDER BY sequence, event_id",
+                (episode_id,),
+            )
+        )
+        rewards = tuple(
+            _record_from_row(row, RewardAnnotation)
+            for row in self._connection.execute(
+                "SELECT payload FROM rl_reward_annotations WHERE episode_id=? "
+                "ORDER BY created_at, annotation_id",
+                (episode_id,),
+            )
+        )
+        costs = tuple(
+            _record_from_row(row, CostRecord)
+            for row in self._connection.execute(
+                "SELECT payload FROM rl_cost_records WHERE episode_id=? "
+                "ORDER BY created_at, cost_id",
+                (episode_id,),
+            )
+        )
+        return Trajectory(
+            episode=_episode_from_row(episode_row),
+            observations=observations,
+            decisions=decisions,
+            segments=segments,
+            execution_events=events,
+            rewards=rewards,
+            costs=costs,
+        )
 
     def admit_receipt(self, receipt: RunReceipt) -> RunReceipt:
         if receipt.state != "accepted":

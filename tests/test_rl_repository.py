@@ -123,6 +123,9 @@ def test_dataset_snapshot_metadata_is_durable_and_idempotent(tmp_path) -> None:
         first = recorder.create_snapshot("snapshot-1", created_at=4)
         assert recorder.create_snapshot("snapshot-1", created_at=4) == first
         assert store.rl.get_snapshot("snapshot-1") == first
+        assert (
+            store.rl.load_trajectory("ep-snapshot").sha256() == first.trajectory_sha256
+        )
         with pytest.raises(KeyError):
             store.rl.get_snapshot("missing")
     finally:

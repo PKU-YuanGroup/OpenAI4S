@@ -118,6 +118,11 @@ heuristics. ATIF-v1.8 is a projection for interchange; the complete Science
 Trajectory remains under its `extra.openai4s` extension and is the authoritative
 training input.
 
+`RLRepository.load_trajectory(episode_id)` reconstructs the records in stable
+identity order from the SQLite projections. The reconstructed canonical hash
+must equal a `DatasetSnapshot.trajectory_sha256` before a snapshot is admitted
+as a trainer dataset.
+
 ## Current lifecycle boundary
 
 `RolloutSession.reset()` admits a durable run receipt when configured,
