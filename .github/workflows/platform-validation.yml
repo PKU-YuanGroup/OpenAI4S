@@ -1,0 +1,101 @@
+name: Validate published desktop platforms
+
+on:
+  push:
+    branches: [chore/platform-validation-v1.0.0]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-wsl2:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    env:
+      WSL_UTF8: '1'
+      OPENAI4S_NONINTERACTIVE: '1'
+      OPENAI4S_NO_OPEN: '1'
+      OPENAI4S_WSL_DISTRO: Ubuntu-24.04
+      OPENAI4S_WSL_DATA_DIR: /home/oa/release-check
+      OPENAI4S_WSL_PYPI_INDEX: 'off'
+      OPENAI4S_WSL_CONDA_MIRROR: 'off'
+      OPENAI4S_WSL_FAKE_IP_DNS: 'off'
+      OPENAI4S_PORT: '18760'
+      OPENAI4S_SECRET_STORE: env
+      OPENAI4S_SECRET_ENV: '1'
+      OPENAI4S_SKIP_DOTENV: '1'
+      OPENAI4S_UPDATE_SOURCE: offline
+      OPENAI4S_OPENMHS: 'off'
+      OPENAI4S_KERNEL_SANDBOX: enforce
+      WSLENV: OPENAI4S_SECRET_STORE:OPENAI4S_SECRET_ENV:OPENAI4S_SKIP_DOTENV:OPENAI4S_UPDATE_SOURCE:OPENAI4S_OPENMHS:OPENAI4S_KERNEL_SANDBOX
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install a real WSL2 distribution
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory platform-evidence | Out-Null
+          wsl --version
+          wsl --set-default-version 2
+          if ($LASTEXITCODE) { throw 'WSL2 is not available on this runner' }
+          wsl --install -d Ubuntu-24.04 --web-download --no-launch
+          if ($LASTEXITCODE) { throw 'Ubuntu WSL2 installation failed' }
+          wsl -d Ubuntu-24.04 -u root -- bash -lc 'apt-get update && apt-get install -y bubblewrap python3 ca-certificates && useradd -m -s /bin/bash oa && printf "[user]\ndefault=oa\n" > /etc/wsl.conf'
+          if ($LASTEXITCODE) { throw 'WSL2 ordinary-user setup failed' }
+          wsl --terminate Ubuntu-24.04
+          wsl -d Ubuntu-24.04 -- id
+          wsl -l -v
+          if ($LASTEXITCODE) { throw 'WSL2 readiness failed' }
+      - name: Download and check the public Windows package
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip' -OutFile windows.zip
+          $digest = (Get-FileHash windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne '5f259afe0bf9c3365df3220371f6103e8b85db39c67bc941a9b9fb2202a0bdbb') { throw 'Public ZIP digest mismatch' }
+          Expand-Archive windows.zip -DestinationPath 'Downloaded Package'
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE) { throw 'Browser dependency install failed' }
+          npx --no-install playwright install chromium
+          if ($LASTEXITCODE) { throw 'Browser install failed' }
+      - name: Start through the shipped Windows launcher and open the browser
+        shell: pwsh
+        run: |
+          $launcher = Join-Path $PWD 'Downloaded Package/OpenAI4S-1.0.0-windows-x86_64/OpenAI4S.cmd'
+          $output = & $launcher 2>&1
+          $code = $LASTEXITCODE
+          $safe = ($output | Out-String) -replace '(?i)([?&]token=)[^&#\s]+', '$1<redacted>'
+          $safe | Set-Content platform-evidence/windows-launcher.log
+          if ($code) { throw "Published Windows launcher failed: $safe" }
+          $health = Invoke-RestMethod http://127.0.0.1:18760/health
+          if ($health.status -ne 'ok') { throw 'Windows cannot reach WSL daemon' }
+          $denied = Invoke-WebRequest http://127.0.0.1:18760/api/v1/projects -SkipHttpErrorCheck
+          if ($denied.StatusCode -ne 401) { throw 'API authentication is not enforced' }
+          $env:OPENAI4S_TOKEN = (wsl -d Ubuntu-24.04 -- cat /home/oa/release-check/access-token | Out-String).Trim()
+          Write-Output "::add-mask::$env:OPENAI4S_TOKEN"
+          node scripts/validate_windows_browser.mjs
+          if ($LASTEXITCODE) { throw 'Windows browser runtime check failed' }
+          Remove-Item Env:OPENAI4S_TOKEN
+          & $launcher status
+          if ($LASTEXITCODE) { throw 'Windows status command failed' }
+          & $launcher stop
+          if ($LASTEXITCODE) { throw 'Windows stop command failed' }
+      - name: Exercise the actual WSL installation and its sandbox
+        shell: pwsh
+        run: |
+          $linuxRoot = (wsl -d Ubuntu-24.04 -- wslpath -a "$PWD" | Out-String).Trim()
+          wsl -d Ubuntu-24.04 -- python3 "$linuxRoot/scripts/validate_installed_platform.py" --wsl-app /home/oa/release-check/app/current --artifact "$linuxRoot/windows.zip" --report "$linuxRoot/platform-evidence/windows-wsl-runtime.json"
+          if ($LASTEXITCODE) { throw 'Installed WSL2 science scenario failed' }
+          wsl -d Ubuntu-24.04 -- sh -c 'OPENAI4S_DATA_DIR=/home/oa/release-check /home/oa/release-check/app/current/bin/openai4s doctor --json' > platform-evidence/windows-doctor.json
+          if ($LASTEXITCODE) { throw 'Installed WSL doctor failed' }
+      - name: Stop only the test distribution
+        if: always()
+        shell: pwsh
+        run: wsl --terminate Ubuntu-24.04
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: windows-wsl2-validation
+          path: platform-evidence/
+          retention-days: 30
