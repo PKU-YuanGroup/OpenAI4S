@@ -4,7 +4,7 @@
 
 [`test_project_file_tools.py`](test_project_file_tools.py) 验证项目目录递归读取、二进制文件导入和精确来源凭据、已有权限规则、目录切换与会话工作区隔离。
 
-RL Runtime 新增部分由 `test_rl_contract.py`、`test_agent_rl_step.py`、`test_rl_agent_sink.py`、`test_rl_repository.py`、`test_rl_segments.py` 和 `test_rl_rollout.py` 覆盖：合约校验与确定性导出、Trainer 驱动的单步执行、AgentEngine 到 Trajectory 的事件适配、Store 持久化记录、`host.segment()` 生命周期，以及外部 sampler rollout 生命周期。
+RL Runtime 新增部分由 `test_rl_contract.py`、`test_agent_rl_step.py`、`test_rl_agent_sink.py`、`test_rl_repository.py`、`test_rl_segments.py`、`test_rl_rollout.py` 和 `test_rl_atif.py` 覆盖：合约校验与确定性导出、Trainer 驱动的单步执行、AgentEngine 到 Trajectory 的事件适配、Store 持久化记录、`host.segment()` 生命周期，以及外部 sampler rollout 生命周期。
 
 OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这里的每一个模块，而且必须一直是绿的：供应商无关的 Agent 引擎、Host 服务、常驻 Python/R 内核协议、仓储、安全边界、Tool、Skill 与 Web 组合。可复用的场景和计分评测属于另一层，放在 [`../harness/`](../harness/)。
 

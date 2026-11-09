@@ -14,3 +14,6 @@ Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 `__init__.py` 导出公共记录和适配器；`agent_sink.py` 把现有 `AgentEngine` 事件流接入
 这些记录，同时保留 Action Ledger 作为执行事实源。`rollout.py` 导出面向 Trainer 的
 `RolloutSession`，提供 reset/observe/step/finish/export 生命周期。
+
+`atif.py` 提供 `ATIFExporter`，将轨迹确定性地投影为 ATIF-v1.8 交换格式，并在 ATIF
+扩展元数据中保留 Segment、Reward、Cost 和执行事件标识。

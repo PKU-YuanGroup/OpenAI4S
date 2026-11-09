@@ -18,3 +18,7 @@ self-scoring Host API.
 the existing `AgentEngine` event stream into these records without replacing
 the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing
 reset/observe/step/finish/export lifecycle.
+
+`atif.py` provides `ATIFExporter`, a deterministic ATIF-v1.8 interchange
+projection that keeps segment, reward, cost, and execution identifiers in
+ATIF extension metadata.

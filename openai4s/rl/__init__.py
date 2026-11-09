@@ -7,6 +7,7 @@ continues to own execution and permissions.
 """
 
 from .agent_sink import TrajectoryEventSink
+from .atif import ATIFExporter
 from .models import (
     CostRecord,
     Episode,
@@ -33,6 +34,7 @@ __all__ = [
     "Trajectory",
     "TrajectoryRecorder",
     "TrajectoryEventSink",
+    "ATIFExporter",
     "PolicySampler",
     "RolloutSession",
 ]

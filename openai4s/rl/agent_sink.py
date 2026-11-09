@@ -168,5 +168,6 @@ class TrajectoryEventSink:
                 loss_mask=loss_mask,
                 raw_response=raw_response,
                 status="dispatched",
+                assistant_message=reply.assistant_message,
             )
         )

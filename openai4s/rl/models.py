@@ -169,6 +169,7 @@ class PolicyDecision:
     loss_mask: tuple[int, ...] | list[int] | None = None
     raw_response: Mapping[str, Any] | None = None
     status: str = "sampled"
+    assistant_message: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -203,10 +204,14 @@ class PolicyDecision:
                 raise ValueError("loss_mask values must be 0 or 1")
         if self.raw_response is not None:
             object.__setattr__(self, "raw_response", _payload(self.raw_response))
+        if self.assistant_message is not None:
+            object.__setattr__(
+                self, "assistant_message", _payload(self.assistant_message)
+            )
         _text("status", self.status)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "decision_id": self.decision_id,
             "episode_id": self.episode_id,
             "turn": self.turn,
@@ -231,6 +236,9 @@ class PolicyDecision:
             ),
             "status": self.status,
         }
+        if self.assistant_message is not None:
+            data["assistant_message"] = _payload(self.assistant_message)
+        return data
 
 
 @dataclass(frozen=True)
