@@ -6,7 +6,7 @@ nothing in the repository recorded which modules can open an outbound
 connection. "Off by default, and not a single packet leaves the machine" is a
 claim about the whole tree, and it cannot be checked one file at a time.
 
-So the surface is frozen: fifteen modules today, each with a stated reason. A new
+So the surface is frozen: sixteen modules today, each with a stated reason. A new
 one fails this test with its file and line, and the fix is to add it here with a
 justification a reviewer can weigh -- which is the point. Adding a line to this
 table is a decision; adding `urlopen` to a random module is a Tuesday.
@@ -73,6 +73,12 @@ _DECLARED: dict[str, str] = {
         "probes for a local model server (Ollama, LM Studio and friends). "
         "Loopback in practice, but it is a real outbound call and is declared "
         "as one."
+    ),
+    "openai4s/server/endpoint_models.py": (
+        "the explicit model-list lookup a user asks for while configuring an "
+        "endpoint. It sends the submitted credential only to the URL the user "
+        "typed, refuses redirects and proxy environment variables, and bounds "
+        "the response size, model count and model-id length."
     ),
     "openai4s/cli/main.py": (
         "`openai4s share` and the update check, both explicit user actions."
@@ -193,7 +199,7 @@ def test_every_declaration_states_a_reason():
 
 
 def test_the_surface_is_small_enough_to_review():
-    """Fifteen modules is reviewable. If this fails, the question is not how to
+    """Sixteen modules is reviewable. If this fails, the question is not how to
     raise the bound -- it is why the surface grew.
 
     It grew from eleven for two explicit reasons, recorded rather than left to
@@ -211,8 +217,13 @@ def test_the_surface_is_small_enough_to_review():
     It grew from fourteen for `ollama_web.py`: authenticated search and fetch
     against Ollama's fixed cloud origin, with an explicit credential, bounded
     exchanges, no redirects, and policy checks before either operation.
+
+    It grew from fifteen for `server/endpoint_models.py`: the model-list lookup
+    a user explicitly asks for while configuring an endpoint. It reaches only
+    the URL the user typed, with redirects and proxy environment variables
+    disabled, and bounds the response size, model count and model-id length.
     """
-    assert len(_DECLARED) <= 15
+    assert len(_DECLARED) <= 16
 
 
 def test_the_scan_finds_a_planted_call():

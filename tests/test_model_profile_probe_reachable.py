@@ -176,6 +176,7 @@ def test_readiness_costs_no_network(api, monkeypatch):
     assert call("GET", "/model-profiles")["code"] == 200
 
 
+@pytest.mark.stubbed_backend
 def test_endpoint_model_discovery_route_is_explicit_and_read_only(api, monkeypatch):
     runner, call = api
     monkeypatch.setattr(
@@ -198,6 +199,66 @@ def test_endpoint_model_discovery_route_is_explicit_and_read_only(api, monkeypat
     )
     assert result["code"] == 200
     assert result["body"]["models"] == ["gpt-discovered"]
+    assert call("GET", "/model-profiles")["body"]["profiles"] == []
+
+
+def _serving_models(payload):
+    import threading
+    from http.server import BaseHTTPRequestHandler
+
+    from tests._ports import bound_gateway_server
+
+    seen: list[tuple[str, str | None]] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server naming
+            seen.append((self.path, self.headers.get("Authorization")))
+            data = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *_args):
+            return None
+
+    server, port = bound_gateway_server()
+    server.RequestHandlerClass = _Handler
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, port, seen
+
+
+def test_endpoint_model_discovery_route_answers_a_real_listing(api):
+    """Driven against a real loopback endpoint, so the frozen shape that
+    `docs/response-schemas.json` publishes for this route is one the service
+    actually produced rather than the shape a stub was told to return."""
+    runner, call = api
+    server, port, seen = _serving_models(
+        {"data": [{"id": "gpt-discovered"}, {"id": "gpt-other"}]}
+    )
+    try:
+        result = call(
+            "POST",
+            "/model-profiles/discover",
+            {
+                "provider": "chatgpt",
+                "base_url": f"http://127.0.0.1:{port}/v1",
+                "api_key": "never-persisted",
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["code"] == 200
+    assert result["body"] == {
+        "models": ["gpt-discovered", "gpt-other"],
+        "default_model": "gpt-discovered",
+        "count": 2,
+        "source": f"http://127.0.0.1:{port}/v1/models",
+    }
+    assert seen == [("/v1/models", "Bearer never-persisted")]
     assert call("GET", "/model-profiles")["body"]["profiles"] == []
 
 
