@@ -55,6 +55,10 @@ _LAZY_EXPORTS = {
     "ResourceAdmission": (".admission", "ResourceAdmission"),
     "ResourceCapacity": (".admission", "ResourceCapacity"),
     "ResourceRequest": (".admission", "ResourceRequest"),
+    "BudgetExceeded": (".budget", "BudgetExceeded"),
+    "BudgetLedger": (".budget", "BudgetLedger"),
+    "BudgetReservation": (".budget", "BudgetReservation"),
+    "BudgetState": (".budget", "BudgetState"),
 }
 
 
@@ -114,4 +118,8 @@ __all__ = [
     "ResourceAdmission",
     "ResourceCapacity",
     "ResourceRequest",
+    "BudgetExceeded",
+    "BudgetLedger",
+    "BudgetReservation",
+    "BudgetState",
 ]

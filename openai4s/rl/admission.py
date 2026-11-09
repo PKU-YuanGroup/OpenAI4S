@@ -292,7 +292,7 @@ class ResourceAdmission:
         active = [
             item
             for item in self._records.values()
-            if item.state in {"reserved", "running"}
+            if item.state in {"reserved", "running", "unknown"}
         ]
         return (
             sum(item.request.cpu_cores for item in active) + request.cpu_cores

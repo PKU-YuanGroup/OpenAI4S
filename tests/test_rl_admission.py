@@ -77,3 +77,13 @@ def test_unstarted_allocation_can_release_but_running_one_cannot():
     assert released.state == "released"
     with pytest.raises(ValueError, match="reserved"):
         admission.start("job-release")
+
+
+def test_unknown_remote_allocation_continues_to_hold_capacity():
+    admission = ResourceAdmission(ResourceCapacity(1, 1, 8), clock_ms=lambda: 1)
+    request = ResourceRequest(gpu_count=1, gpu_memory_gb=8)
+    admission.admit("job-unknown", request)
+    admission.bind_receipt("job-unknown", "receipt-unknown")
+    admission.start("job-unknown")
+    admission.finish("job-unknown", state="unknown")
+    assert admission.admit("job-next", request).status == "waiting"
