@@ -56,6 +56,31 @@ def test_segment_events_keep_parent_decision_context(tmp_path) -> None:
         dispatcher.store.close()
 
 
+def test_segment_api_persists_explicit_parent_segment_id(tmp_path) -> None:
+    dispatcher = build_dispatcher(
+        Config(data_dir=tmp_path), frame_id="frame-parent-segment"
+    )
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with host.segment("parent") as parent:
+            with host.segment("child", parent_segment_id=parent.segment_id) as child:
+                assert child.segment_id != parent.segment_id
+        row = dispatcher.store._conn.execute(
+            "SELECT parent_segment_id FROM rl_segments WHERE segment_id=?",
+            (child.segment_id,),
+        ).fetchone()
+        assert row[0] == parent.segment_id
+        event = dispatcher.store._conn.execute(
+            "SELECT payload FROM rl_execution_events WHERE event_id=?",
+            (f"{child.segment_id}:started",),
+        ).fetchone()
+        assert json.loads(event[0])["payload"]["parent_segment_id"] == (
+            parent.segment_id
+        )
+    finally:
+        dispatcher.store.close()
+
+
 def test_host_segment_marks_exception_as_failed() -> None:
     dispatcher = build_dispatcher(get_config(), frame_id="frame-failed")
     try:

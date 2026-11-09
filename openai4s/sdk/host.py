@@ -694,8 +694,14 @@ class _Host:
         objective: str | None = None,
         metadata: dict[str, Any] | None = None,
         episode_id: str | None = None,
+        parent_segment_id: str | None = None,
     ) -> _Segment:
-        """Open a durable segment spanning one or more Host calls."""
+        """Open a durable segment spanning one or more Host calls.
+
+        ``parent_segment_id`` is an explicit hierarchy edge.  The Host does
+        not infer parentage from call order, so a replay can distinguish a
+        nested scientific phase from two adjacent phases.
+        """
         return _Segment(
             self._call,
             {
@@ -703,6 +709,7 @@ class _Host:
                 "objective": objective,
                 "metadata": metadata or {},
                 "episode_id": episode_id,
+                "parent_segment_id": parent_segment_id,
             },
         )
 

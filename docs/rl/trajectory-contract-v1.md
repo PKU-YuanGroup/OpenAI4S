@@ -91,6 +91,8 @@ so replay cannot silently repeat a scientific cell or submit a remote job.
 `Segment` is an explicit scientific phase. It contains `segment_id`,
 `episode_id`, `name`, `created_at`, optional `decision_id`, optional
 `parent_segment_id`, optional `objective`, `status`, and JSON `metadata`.
+The Host API accepts `parent_segment_id` explicitly; it does not infer a
+hierarchy from adjacent calls.
 `host.segment()` emits segment lifecycle events and observations/output facts;
 it does not calculate reward.
 

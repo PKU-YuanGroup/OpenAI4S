@@ -46,9 +46,10 @@ CREATE INDEX IF NOT EXISTS ix_rl_decisions_episode ON rl_decisions(episode_id, t
 CREATE INDEX IF NOT EXISTS ix_rl_decisions_action_group ON rl_decisions(action_group_id);
 CREATE TABLE IF NOT EXISTS rl_segments (
     segment_id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, status TEXT NOT NULL,
-    created_at INTEGER NOT NULL, payload TEXT NOT NULL
+    created_at INTEGER NOT NULL, parent_segment_id TEXT, payload TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_rl_segments_episode ON rl_segments(episode_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_rl_segments_parent ON rl_segments(parent_segment_id);
 CREATE TABLE IF NOT EXISTS rl_execution_events (
     event_id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, sequence INTEGER NOT NULL,
     kind TEXT NOT NULL, created_at INTEGER NOT NULL, payload TEXT NOT NULL
@@ -354,6 +355,7 @@ class RLRepository:
                 "episode_id": value.episode_id,
                 "status": value.status,
                 "created_at": value.created_at,
+                "parent_segment_id": value.parent_segment_id,
             },
         )
 

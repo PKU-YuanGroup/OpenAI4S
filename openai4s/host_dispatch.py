@@ -3574,6 +3574,11 @@ class HostDispatcher:
                 objective=spec.get("objective"),
                 created_at=now,
                 decision_id=decision_id,
+                parent_segment_id=(
+                    str(spec["parent_segment_id"])
+                    if spec.get("parent_segment_id")
+                    else None
+                ),
                 metadata=spec.get("metadata") or {},
             )
             self.store.rl.append_segment(segment)

@@ -1717,6 +1717,7 @@ class Store:
                         "rl_dataset_snapshots",
                         self._apply_rl_dataset_snapshots,
                     ),
+                    39: ("rl_segment_parent", self._apply_rl_segment_parent),
                 },
             )
             if report["migrated"]:
@@ -1738,6 +1739,16 @@ class Store:
     def _apply_rl_dataset_snapshots(self, conn: sqlite3.Connection) -> None:
         """Version 38: immutable RL training dataset snapshot metadata."""
         create_rl_snapshot_schema(conn)
+
+    def _apply_rl_segment_parent(self, conn: sqlite3.Connection) -> None:
+        """Version 39: persist explicit Segment parent relationships."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(rl_segments)")}
+        if "parent_segment_id" not in columns:
+            conn.execute("ALTER TABLE rl_segments ADD COLUMN parent_segment_id TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_rl_segments_parent "
+            "ON rl_segments(parent_segment_id)"
+        )
 
     def _apply_datapro_content_index(self, conn: sqlite3.Connection) -> None:
         """Version 16: lossless local indexing for DataPro responses."""

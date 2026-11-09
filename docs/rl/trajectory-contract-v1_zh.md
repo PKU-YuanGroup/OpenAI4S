@@ -55,6 +55,7 @@ provider 自带的身份字段。没有 logprob 证据时保持缺失，并标�
 静默重跑 scientific cell 或重复提交远程 job。
 
 `Segment` 是显式 scientific phase，包含名称、目标、父 Segment、状态和元数据。
+Host API 接受显式的 `parent_segment_id`，不会从相邻调用顺序推断层级。
 `host.segment()` 只产生 Segment 生命周期、observation 和 output 事实，不计算 reward。
 
 `ExecutionEvent` 是有界执行事实，例如 action dispatch、Cell 结果、Segment 生命周期或
