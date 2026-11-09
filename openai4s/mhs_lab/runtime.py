@@ -17,7 +17,17 @@ _LOCAL = threading.local()
 
 def child_environment(explicit: dict | None = None) -> dict[str, str]:
     """Pass runtime paths and the lab directory, never inherited provider keys."""
+    from openai4s.config import get_config
     from openai4s.mcp_client import connector_environment
+
+    data_dir = os.environ.get("OPENAI4S_DATA_DIR") or get_config().data_dir
+    runtime_paths = {
+        "OPENAI4S_DATA_DIR": str(Path(data_dir).expanduser().resolve()),
+        "OPENAI4S_MHS_LAB_DIR": str(lab_dir().resolve()),
+    }
+    lims = os.environ.get("OPENAI4S_LAB_LIMS", "").strip()
+    if lims:
+        runtime_paths["OPENAI4S_LAB_LIMS"] = str(Path(lims).expanduser().resolve())
 
     paths = [str(Path(__file__).resolve().parents[2])]
     for name in ("mhs", "openai4s_mhs"):
@@ -30,7 +40,7 @@ def child_environment(explicit: dict | None = None) -> dict[str, str]:
         {
             "PYTHONPATH": os.pathsep.join(dict.fromkeys(paths)),
             "PYTHONDONTWRITEBYTECODE": "1",
-            "OPENAI4S_MHS_LAB_DIR": str(lab_dir()),
+            **runtime_paths,
             **(explicit or {}),
         }
     )

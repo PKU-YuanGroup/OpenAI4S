@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -44,6 +45,7 @@ def test_stalled_mcp_listing_times_out_and_reaps_child(tmp_path):
 def test_mcp_listing_does_not_inherit_daemon_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("ARK_API_KEY", "private-sentinel")
     monkeypatch.setenv("UNRELATED_SECRET", "private-sentinel")
+    monkeypatch.setenv("OPENAI4S_LAB_LIMS", str(tmp_path / "custom-lims.json"))
     marker = tmp_path / "env.json"
     script = """import json,os,sys
 open(sys.argv[1], 'w').write(json.dumps(dict(os.environ)))
@@ -59,6 +61,47 @@ for line in sys.stdin:
     env = json.loads(marker.read_text())
     assert "ARK_API_KEY" not in env and "UNRELATED_SECRET" not in env
     assert "OPENAI4S_MHS_LAB_DIR" in env
+    assert env["OPENAI4S_DATA_DIR"] == str(tmp_path / "data")
+    assert env["OPENAI4S_LAB_LIMS"] == str(tmp_path / "custom-lims.json")
+
+
+@pytest.mark.parametrize("operation", ["start", "install", "remove"])
+def test_slow_card_generation_does_not_block_stop(monkeypatch, operation):
+    market = SimpleNamespace(
+        find=lambda name: {"id": "labs/owner__" + name, "name": name}
+    )
+    monkeypatch.setattr(supervisor, "_market", lambda: market)
+    installed = supervisor.add_device("old", start_now=False)
+    monkeypatch.setattr(supervisor, "lab_document", lambda: {"endpoints": []})
+    monkeypatch.setattr(
+        supervisor, "write_documents", lambda: {"mhs_connectors": "unused"}
+    )
+    monkeypatch.setattr(supervisor, "register_connectors", lambda _: {})
+    monkeypatch.setattr(supervisor, "sync_project", lambda _: {})
+    monkeypatch.setattr(supervisor, "_forget_device", lambda _: {})
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_card():
+        entered.set()
+        assert release.wait(5)
+        return "unused"
+
+    monkeypatch.setattr(labcard, "write_lab_card", slow_card)
+    actions = {
+        "start": lambda: supervisor.start(wait_s=0),
+        "install": lambda: supervisor.add_device("new"),
+        "remove": lambda: supervisor.remove_device(installed["device"]["id"]),
+    }
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        changing = pool.submit(actions[operation])
+        try:
+            assert entered.wait(2)
+            pool.submit(supervisor.stop).result(timeout=2)
+        finally:
+            release.set()
+        changing.result(timeout=3)
+    # An earlier start must not restore the running marker after this stop.
+    assert not supervisor.wants_running()
 
 
 def test_simultaneous_installs_keep_all_devices_and_distinct_ports(monkeypatch):

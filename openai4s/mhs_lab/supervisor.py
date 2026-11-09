@@ -160,7 +160,6 @@ def _next_port(devices: list[dict[str, Any]]) -> int:
     return port
 
 
-@serialized
 def add_device(
     package: str, via: str = "mcp", *, start_now: bool = True
 ) -> dict[str, Any]:
@@ -170,6 +169,14 @@ def add_device(
     ``mhs market show`` accepts.  ``via`` picks the agent surface: ``"mcp"``
     (a connector row) or ``"mhs"`` (native tools over HTTP).
     """
+    result = _install_device(package, via)
+    if start_now:
+        result.update(_brief(start()))
+    return result
+
+
+@serialized
+def _install_device(package: str, via: str) -> dict[str, Any]:
     if via not in VIAS:
         raise ValueError(f"via must be one of {', '.join(VIAS)}")
     market = _market()
@@ -182,15 +189,13 @@ def add_device(
     for existing in devices:
         if existing["package"] == entry["id"]:
             if existing.get("via") == via:
-                result = start() if start_now else {}
                 return {
                     "added": False,
                     "device": existing,
                     "note": "already installed",
-                    **_brief(result),
                 }
             devices = [d for d in devices if d is not existing]
-            remove_device(existing["id"], _quiet=True)
+            _remove_device(existing["id"], _quiet=True)
             break
     device: dict[str, Any] = {
         "id": _slug(entry["id"], {d["id"] for d in devices}),
@@ -207,13 +212,21 @@ def add_device(
         device["port"] = _next_port(devices)
     devices.append(device)
     _save_devices(devices)
-    result = start() if start_now else {}
-    return {"added": True, "device": device, **_brief(result)}
+    return {"added": True, "device": device}
+
+
+def remove_device(device_id: str, *, _quiet: bool = False) -> dict[str, Any]:
+    """Uninstall an added device: stop its endpoint, drop its connector row and allow rules."""
+    result = _remove_device(device_id, _quiet=_quiet)
+    if not _quiet:
+        from openai4s.mhs_lab.labcard import write_lab_card
+
+        sync_project(write_lab_card())
+    return result
 
 
 @serialized
-def remove_device(device_id: str, *, _quiet: bool = False) -> dict[str, Any]:
-    """Uninstall an added device: stop its endpoint, drop its connector row and allow rules."""
+def _remove_device(device_id: str, *, _quiet: bool) -> dict[str, Any]:
     devices = installed_devices()
     target = next((d for d in devices if d["id"] == device_id), None)
     if target is None:
@@ -233,9 +246,6 @@ def remove_device(device_id: str, *, _quiet: bool = False) -> dict[str, Any]:
         return {"removed": device_id}
     paths = write_documents()
     registration = register_connectors(paths["mhs_connectors"])
-    from openai4s.mhs_lab.labcard import write_lab_card
-
-    sync_project(write_lab_card())
     return {
         "removed": device_id,
         **cleanup,
@@ -650,8 +660,28 @@ def register_connectors(connector_settings_path: str) -> dict[str, Any]:
     return result
 
 
-@serialized
 def start(*, wait_s: float = 30.0) -> dict[str, Any]:
+    result, doc = _start_endpoints()
+    deadline = time.monotonic() + wait_s
+    pending = [ep for ep in doc["endpoints"] if ep.get("url")]
+    while pending and time.monotonic() < deadline:
+        pending = [ep for ep in pending if not _probe(ep["url"])]
+        if pending:
+            time.sleep(0.3)
+    from openai4s.mhs_lab.labcard import write_lab_card
+
+    card = write_lab_card()
+    return {
+        **result,
+        "not_ready": [ep["id"] for ep in pending],
+        "lab_card": card,
+        **sync_project(card),
+    }
+
+
+@serialized
+def _start_endpoints() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Commit process/configuration changes before waiting on device I/O."""
     base = lab_dir()
     doc = lab_document()
     pids = {k: v for k, v in _read_pids().items() if _alive(v)}
@@ -691,27 +721,14 @@ def start(*, wait_s: float = 30.0) -> dict[str, Any]:
             )
         pids[ep["id"]] = proc.pid
     _pids_path().write_text(json.dumps(pids), encoding="utf-8")
-    deadline = time.monotonic() + wait_s
-    pending = [ep for ep in doc["endpoints"] if ep.get("url")]
-    while pending and time.monotonic() < deadline:
-        pending = [ep for ep in pending if not _probe(ep["url"])]
-        if pending:
-            time.sleep(0.3)
     paths = write_documents()
     registration = register_connectors(paths["mhs_connectors"])
-    from openai4s.mhs_lab.labcard import write_lab_card
-
-    card = write_lab_card()
-    project = sync_project(card)
     _mark_running(True)
     return {
         "started": sorted(pids),
-        "not_ready": [ep["id"] for ep in pending],
         **paths,
         **registration,
-        "lab_card": card,
-        **project,
-    }
+    }, doc
 
 
 PROJECT_NAME = "OpenMHS Lab"
