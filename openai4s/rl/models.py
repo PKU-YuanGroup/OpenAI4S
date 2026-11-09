@@ -107,6 +107,12 @@ def _tuple_ints(
     return tuple(checked)
 
 
+def _tuple_texts(name: str, values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    if not isinstance(values, (tuple, list)):
+        raise TypeError(f"{name} must be a list or tuple")
+    return tuple(_text(name, value) for value in values)
+
+
 @dataclass(frozen=True)
 class Episode:
     """Identity and lifecycle projection for one trainer-visible rollout."""
@@ -371,6 +377,9 @@ class RewardAnnotation:
     segment_id: str | None = None
     components: Mapping[str, float] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    evidence_refs: tuple[str, ...] | list[str] = ()
+    confidence: float | None = None
+    source: str = "verifier"
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -384,6 +393,7 @@ class RewardAnnotation:
         _integer("created_at", self.created_at)
         _optional_text("decision_id", self.decision_id)
         _optional_text("segment_id", self.segment_id)
+        _text("source", self.source)
         if not isinstance(self.components, Mapping):
             raise TypeError("components must be a mapping")
         checked = {
@@ -392,6 +402,13 @@ class RewardAnnotation:
         }
         object.__setattr__(self, "components", checked)
         object.__setattr__(self, "metadata", _payload(self.metadata))
+        object.__setattr__(
+            self, "evidence_refs", _tuple_texts("evidence_refs", self.evidence_refs)
+        )
+        confidence = _finite("confidence", self.confidence)
+        if confidence is not None and not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        object.__setattr__(self, "confidence", confidence)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -405,6 +422,9 @@ class RewardAnnotation:
             "segment_id": self.segment_id,
             "components": dict(self.components),
             "metadata": dict(self.metadata),
+            "evidence_refs": list(self.evidence_refs),
+            "confidence": self.confidence,
+            "source": self.source,
         }
 
 

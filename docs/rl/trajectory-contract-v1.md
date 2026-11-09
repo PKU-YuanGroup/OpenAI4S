@@ -84,9 +84,10 @@ results.
 `RewardAnnotation` is an independently produced score. It contains
 `annotation_id`, `episode_id`, finite `value`, `verifier`,
 `verifier_version`, `created_at`, optional decision/segment joins, numeric
-`components`, and JSON `metadata`. Multiple verifier versions may annotate the
-same episode. The current schema treats verifier metadata as opaque; a
-standard evidence-reference interface is a follow-up milestone.
+`components`, JSON `metadata`, `evidence_refs`, an optional `confidence` in
+`[0, 1]`, and a `source` label. Multiple verifier versions may annotate the
+same episode. `apply_verifier()` checks the verifier identity and episode
+scope, then appends these annotations without changing execution events.
 
 `CostRecord` stores measured resource evidence: `cost_id`, `episode_id`,
 `created_at`, optional prompt/completion tokens, wall/GPU milliseconds, an

@@ -14,6 +14,10 @@ Host segment APIs record observations and artifact evidence only. Reward
 annotations are written by a trusted verifier or trainer; the Agent has no
 self-scoring Host API.
 
+`verifier.py` defines the provider-neutral `RewardVerifier` protocol and
+`apply_verifier()`. It validates verifier identity, episode scope and
+append-only execution facts before adding versioned annotations.
+
 `__init__.py` exports the public records and adapters. `agent_sink.py` bridges
 the existing `AgentEngine` event stream into these records without replacing
 the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing

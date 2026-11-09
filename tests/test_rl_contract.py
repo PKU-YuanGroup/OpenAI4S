@@ -11,7 +11,9 @@ from openai4s.rl import (
     PolicyDecision,
     RewardAnnotation,
     TrajectoryRecorder,
+    apply_verifier,
 )
+from openai4s.rl.models import Trajectory
 
 
 def _recorder() -> TrajectoryRecorder:
@@ -118,3 +120,77 @@ def test_reward_versions_are_independent_and_jsonl_is_streamable() -> None:
         "reward-v1",
         "reward-v2",
     ]
+
+
+def test_verifier_appends_versioned_evidence_without_rewriting_execution_facts() -> (
+    None
+):
+    recorder = _recorder()
+    recorder.add_event(
+        ExecutionEvent(
+            "event-verify",
+            "ep-1",
+            "cell.completed",
+            4,
+            payload={"stdout": "ok"},
+        )
+    )
+    before = recorder.snapshot().execution_events[0].to_dict()
+
+    class _Verifier:
+        name = "science-check"
+        version = "2026-11-10"
+
+        def verify(self, trajectory: Trajectory):
+            assert trajectory.execution_events[0].to_dict() == before
+            # A verifier receives a detached view; this must not alter the
+            # recorder's canonical execution fact.
+            trajectory.execution_events[0].payload["stdout"] = "tampered"
+            return [
+                RewardAnnotation(
+                    "reward-check-v1",
+                    "ep-1",
+                    0.75,
+                    "science-check",
+                    "2026-11-10",
+                    5,
+                    evidence_refs=["event-verify"],
+                    confidence=0.9,
+                )
+            ]
+
+    applied = apply_verifier(recorder, _Verifier())
+    assert applied[0].evidence_refs == ("event-verify",)
+    assert applied[0].confidence == 0.9
+    assert recorder.snapshot().execution_events[0].to_dict() == before
+
+    class _SecondVerifier:
+        name = "science-check"
+        version = "2026-11-11"
+
+        def verify(self, trajectory: Trajectory):
+            return [
+                RewardAnnotation(
+                    "reward-check-v2", "ep-1", 0.8, self.name, self.version, 6
+                )
+            ]
+
+    apply_verifier(recorder, _SecondVerifier())
+    assert [item.verifier_version for item in recorder.snapshot().rewards] == [
+        "2026-11-10",
+        "2026-11-11",
+    ]
+
+
+def test_verifier_identity_and_annotation_scope_are_checked() -> None:
+    recorder = _recorder()
+
+    class _WrongVerifier:
+        name = "trusted"
+        version = "v1"
+
+        def verify(self, trajectory: Trajectory):
+            return [RewardAnnotation("wrong", "ep-1", 1.0, "other", "v1", 2)]
+
+    with pytest.raises(ValueError, match="name does not match"):
+        apply_verifier(recorder, _WrongVerifier())

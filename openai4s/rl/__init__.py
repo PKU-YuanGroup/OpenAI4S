@@ -25,6 +25,8 @@ _LAZY_EXPORTS = {
     "PolicySampler": (".rollout", "PolicySampler"),
     "RolloutSession": (".rollout", "RolloutSession"),
     "TrajectoryEventSink": (".agent_sink", "TrajectoryEventSink"),
+    "RewardVerifier": (".verifier", "RewardVerifier"),
+    "apply_verifier": (".verifier", "apply_verifier"),
 }
 
 
@@ -56,4 +58,6 @@ __all__ = [
     "HostCallLifecycle",
     "PolicySampler",
     "RolloutSession",
+    "RewardVerifier",
+    "apply_verifier",
 ]

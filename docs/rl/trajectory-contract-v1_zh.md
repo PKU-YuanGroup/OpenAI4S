@@ -45,9 +45,10 @@ segments、execution_events、rewards、costs 顺序写出，每行使用单数 
 `ExecutionEvent` 是有界执行事实，例如 action dispatch、Cell 结果、Segment 生命周期或
 Host RPC 生命周期。Host RPC 只记录参数/结果哈希与错误类别，不复制私有参数或结果。
 
-`RewardAnnotation` 是独立产生的分数，包含 verifier 与版本、数值、组件及元数据。同一
-Episode 可以有多个 verifier 版本；当前 schema 将 verifier 元数据视为不透明，标准化的
-证据引用接口属于后续里程碑。
+`RewardAnnotation` 是独立产生的分数，包含 verifier 与版本、数值、组件、元数据、
+`evidence_refs`、可选的 `[0, 1]` `confidence` 和 `source`。同一 Episode 可以有多个
+verifier 版本。`apply_verifier()` 校验 verifier 身份与 Episode 范围，然后追加 Annotation，
+不改变执行事件。
 
 `CostRecord` 保存测得的 token、wall/GPU 时间及可选价格。未知价格保持未知，不把缺失计数
 伪造为零。
