@@ -3503,6 +3503,23 @@ class HostDispatcher:
 
     # --- delegation + steering -----------------------------------
     def _m_delegate(self, spec: dict) -> Any:
+        # A delegated child is a worker boundary in the RL trajectory. Carry
+        # only the current join keys into its own Episode; never copy the
+        # parent's decisions or Action Ledger rows.
+        context = self._current_rl_context()
+        # This is an internal transport field, not part of the model-facing
+        # delegation contract. Drop a caller-supplied value before attaching
+        # the dispatcher-owned context so a model cannot forge an episode or
+        # parent decision by smuggling the field through the tool arguments.
+        spec = dict(spec)
+        spec.pop("_rl_parent_context", None)
+        if context.get("episode_id") or context.get("decision_id"):
+            spec["_rl_parent_context"] = {
+                key: str(value)
+                for key, value in context.items()
+                if key in {"episode_id", "decision_id", "segment_id", "source_id"}
+                and value is not None
+            }
         return self._delegation_service.delegate(spec)
 
     def _m_children(self, *_a: Any) -> Any:

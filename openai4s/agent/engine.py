@@ -190,7 +190,10 @@ class AgentEngine:
         self.event_sink.emit(ActionRouted(action, turn))
         # Stable join key for nested execution telemetry. This is metadata for
         # the runtime boundary, not an additional policy action.
-        state.metadata["rl_decision_id"] = f"decision-{turn}"
+        decision_id = getattr(self.event_sink, "decision_id", None)
+        state.metadata["rl_decision_id"] = (
+            str(decision_id(turn)) if callable(decision_id) else f"decision-{turn}"
+        )
         outcome = self.executor.execute(action, reply, state)
         if not isinstance(outcome, ExecutionOutcome):
             raise TypeError("executor must return ExecutionOutcome")

@@ -27,7 +27,12 @@ from .recorder import TrajectoryRecorder
 
 
 def _cost_record(
-    episode_id: str, turn: int, usage: Any, created_at: int
+    episode_id: str,
+    turn: int,
+    usage: Any,
+    created_at: int,
+    *,
+    decision_id: str,
 ) -> CostRecord | None:
     """Project authenticated provider counters into one RL cost fact.
 
@@ -58,7 +63,7 @@ def _cost_record(
         prompt_tokens=int(measured["input_tokens"]),
         completion_tokens=int(measured["output_tokens"]),
         source="policy_reply",
-        decision_id=f"decision-{turn}",
+        decision_id=decision_id,
         metadata=metadata,
     )
 
@@ -101,6 +106,9 @@ class TrajectoryEventSink:
         *,
         policy_name: str | None = None,
         policy_version: str | None = None,
+        parent_decision_id: str | None = None,
+        frame_id: str | None = None,
+        id_prefix: str | None = None,
     ) -> None:
         self.recorder = recorder
         self.delegate = delegate
@@ -108,14 +116,25 @@ class TrajectoryEventSink:
         self.policy_version = (
             policy_version or recorder.episode.policy_version or "unknown"
         )
+        self.parent_decision_id = parent_decision_id
+        self.frame_id = frame_id
+        self.id_prefix = str(id_prefix or "").strip()
         self._observations: dict[int, Observation] = {}
         self._replies: dict[int, ModelReply] = {}
 
+    def decision_id(self, turn: int) -> str:
+        base = f"decision-{turn}"
+        return f"{self.id_prefix}:{base}" if self.id_prefix else base
+
+    def _record_id(self, kind: str, turn: int) -> str:
+        base = f"{kind}-{turn}"
+        return f"{self.id_prefix}:{base}" if self.id_prefix else base
+
     def propose(self, turn: int, messages: Iterable[Mapping[str, Any]]) -> Observation:
         observation = Observation(
-            observation_id=f"obs-{turn}",
+            observation_id=self._record_id("obs", turn),
             episode_id=self.recorder.episode.episode_id,
-            decision_id=f"decision-{turn}",
+            decision_id=self.decision_id(turn),
             messages=[dict(message) for message in messages],
             created_at=self.recorder.now_ms(),
         )
@@ -132,6 +151,7 @@ class TrajectoryEventSink:
                 event.turn,
                 event.reply.usage,
                 self.recorder.now_ms(),
+                decision_id=self.decision_id(event.turn),
             )
             if cost is not None:
                 self.recorder.add_cost(cost)
@@ -139,11 +159,11 @@ class TrajectoryEventSink:
             self._record_decision(event.turn, event.action)
             self.recorder.add_event(
                 ExecutionEvent(
-                    event_id=f"action-{event.turn}",
+                    event_id=self._record_id("action", event.turn),
                     episode_id=self.recorder.episode.episode_id,
                     kind="action.dispatched",
                     created_at=self.recorder.now_ms(),
-                    decision_id=f"decision-{event.turn}",
+                    decision_id=self.decision_id(event.turn),
                     payload={"action": _action(event.action)},
                 )
             )
@@ -151,11 +171,11 @@ class TrajectoryEventSink:
             outcome = event.outcome
             self.recorder.add_event(
                 ExecutionEvent(
-                    event_id=f"outcome-{event.turn}",
+                    event_id=self._record_id("outcome", event.turn),
                     episode_id=self.recorder.episode.episode_id,
                     kind="execution.completed",
                     created_at=self.recorder.now_ms(),
-                    decision_id=f"decision-{event.turn}",
+                    decision_id=self.decision_id(event.turn),
                     payload={
                         "observation": outcome.observation,
                         "completion": outcome.completion,
@@ -167,7 +187,11 @@ class TrajectoryEventSink:
             result = event.result
             self.recorder.add_event(
                 ExecutionEvent(
-                    event_id="episode.finished",
+                    event_id=(
+                        f"{self.id_prefix}:episode.finished"
+                        if self.id_prefix
+                        else "episode.finished"
+                    ),
                     episode_id=self.recorder.episode.episode_id,
                     kind="episode.finished",
                     created_at=self.recorder.now_ms(),
@@ -196,14 +220,14 @@ class TrajectoryEventSink:
         # context. The executor/Kernel manager forwards these keys to the Host
         # Dispatcher; Host RPCs remain execution events, not new decisions.
         extra.setdefault("rl_episode_id", self.recorder.episode.episode_id)
-        extra.setdefault("rl_decision_id", f"decision-{turn}")
+        extra.setdefault("rl_decision_id", self.decision_id(turn))
         token_ids = extra.get("token_ids")
         token_logprobs = extra.get("token_logprobs")
         loss_mask = extra.get("loss_mask")
         raw_response = reply.raw if isinstance(reply.raw, Mapping) else None
         self.recorder.add_decision(
             PolicyDecision(
-                decision_id=f"decision-{turn}",
+                decision_id=self.decision_id(turn),
                 episode_id=self.recorder.episode.episode_id,
                 turn=turn,
                 observation_id=observation.observation_id,
@@ -212,6 +236,8 @@ class TrajectoryEventSink:
                 policy_version=str(extra.get("policy_version", self.policy_version)),
                 action=_action(action),
                 created_at=self.recorder.now_ms(),
+                parent_decision_id=self.parent_decision_id,
+                frame_id=self.frame_id,
                 action_logprob=extra.get("action_logprob"),
                 token_ids=token_ids,
                 token_logprobs=token_logprobs,

@@ -1251,6 +1251,7 @@ class DelegationRunner:
         private_scratch: bool | None = None,
         cancelled: Callable[[], bool] | None = None,
         destination_credential: CredentialResolver | None = None,
+        rl_context: Mapping[str, Any] | None = None,
     ) -> None:
         if depth < 0 or depth > MAX_DEPTH:
             raise ValueError(f"delegation depth must be between 0 and {MAX_DEPTH}")
@@ -1295,6 +1296,10 @@ class DelegationRunner:
         self.cell_hooks_factory = cell_hooks_factory
         self.owner_instance_id = owner_instance_id or DELEGATION_PROCESS_INSTANCE_ID
         self.runner_instance_id = runner_instance_id or f"runner-{uuid.uuid4()}"
+        # The current decision is supplied by HostDispatcher at the delegation
+        # boundary; this initial value covers embedded callers that construct a
+        # runner directly.
+        self.rl_context = dict(rl_context or {})
         if (
             delegation_tree is not None
             and budget is not None
@@ -1559,6 +1564,46 @@ class DelegationRunner:
                 f"leaf={child.depth >= MAX_DEPTH}"
             )
 
+        # Delegated Agents are costly worker processes from the trainer's
+        # perspective. Give each worker its own Episode and retain the parent
+        # decision as a join key, while leaving Action Ledger ownership with
+        # the child Agent itself.
+        trajectory_recorder = None
+        trajectory_parent_decision_id: str | None = None
+        child_rl_context: dict[str, Any] | None = None
+        parent_rl = spec.get("_rl_parent_context")
+        if self.store is not None and isinstance(parent_rl, Mapping):
+            parent_episode_id = str(parent_rl.get("episode_id") or "").strip()
+            trajectory_parent_decision_id = (
+                str(parent_rl.get("decision_id") or "").strip() or None
+            )
+            if parent_episode_id:
+                from openai4s.rl.models import Episode
+                from openai4s.rl.recorder import TrajectoryRecorder
+
+                child_episode_id = str(
+                    child_frame_id or f"{parent_episode_id}:worker:{child.child_id}"
+                )
+                episode = Episode(
+                    episode_id=child_episode_id,
+                    task=_spec_to_task(spec),
+                    session_id=str(self.parent_frame_id or parent_episode_id),
+                    created_at=int(time.time() * 1000),
+                    policy_name="delegated-worker",
+                    policy_version=str(child_cfg.llm.model or "unknown"),
+                    parent_episode_id=parent_episode_id,
+                    metadata={
+                        "source": "delegation",
+                        "training_policy": False,
+                        "child_id": child.child_id,
+                        "parent_decision_id": trajectory_parent_decision_id,
+                    },
+                )
+                trajectory_recorder = TrajectoryRecorder(
+                    episode, repository=getattr(self.store, "rl", None)
+                )
+                child_rl_context = {"episode_id": child_episode_id}
+
         # Recording is unconditional whenever the child has a durable frame;
         # the stage-1 Artifact capture hooks stay optional (their flag
         # defaults off) and compose after the recorder so a capture failure
@@ -1590,7 +1635,7 @@ class DelegationRunner:
         try:
             from openai4s.agent.loop import Agent
 
-            agent = Agent(
+            agent_kwargs: dict[str, Any] = dict(
                 cfg=child_cfg,
                 max_turns=max_turns,
                 verbose=False,
@@ -1616,6 +1661,13 @@ class DelegationRunner:
                 # the child's real interpreter instead of assuming the daemon.
                 generations=self.store,
             )
+            if trajectory_recorder is not None:
+                agent_kwargs.update(
+                    trajectory_recorder=trajectory_recorder,
+                    trajectory_parent_decision_id=trajectory_parent_decision_id,
+                    rl_context=child_rl_context,
+                )
+            agent = Agent(**agent_kwargs)
             agent.dispatcher.set_child_execution_policy(execution_policy)
             step_sink = self._tree.child_step_sink
             if step_sink is not None:
@@ -1636,9 +1688,21 @@ class DelegationRunner:
                 # the reader is bound late and resolved per cell.
                 recorder.bind_generation_source(agent.current_kernel_generation_id)
             if child.attach_agent(agent):
+                if trajectory_recorder is not None:
+                    try:
+                        trajectory_recorder.finish("cancelled")
+                    except Exception:  # noqa: BLE001 - trajectory is observational
+                        pass
                 return child.stopped_result()
             result = agent.run(_spec_to_task(spec))
         except BaseException as error:  # noqa: BLE001 - child failure is a result
+            if trajectory_recorder is not None:
+                try:
+                    trajectory_recorder.finish(
+                        "cancelled" if child.stop_event.is_set() else "failed"
+                    )
+                except Exception:  # noqa: BLE001 - trajectory is observational
+                    pass
             if child.stop_event.is_set():
                 self._persist_status(child, "stopped")
                 self._tree.emit("stopped", child)
@@ -1673,6 +1737,18 @@ class DelegationRunner:
             _ACTIVE_DELEGATION.reset(token)
 
         # Cancellation wins every race, including a late host.submit_output.
+        if (
+            trajectory_recorder is not None
+            and trajectory_recorder.episode.status == "running"
+        ):
+            try:
+                trajectory_recorder.finish(
+                    "completed"
+                    if result.get("stop_reason") == "submitted"
+                    else "failed"
+                )
+            except Exception:  # noqa: BLE001 - trajectory is observational
+                pass
         if child.stop_event.is_set() or result.get("stop_reason") == "cancelled":
             child.request_stop(child.stop_event_reason())
             self._persist_status(child, "stopped")
@@ -1967,6 +2043,9 @@ class DelegationRunner:
         """Spawn after trusted-capture admission has become exclusive."""
 
         child_specs = [_normalize_item(item, spec) for item in items]
+        if self.rl_context:
+            for child_spec in child_specs:
+                child_spec.setdefault("_rl_parent_context", dict(self.rl_context))
         if self.parent_child_id is not None:
             with self._tree.lock:
                 parent = self._tree.children.get(self.parent_child_id)
@@ -2723,6 +2802,7 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
             "unrestricted",
             "require_artifacts",
             "retries",
+            "_rl_parent_context",
         )
         if (value := parent_spec.get(key)) is not None
     }
@@ -2750,6 +2830,11 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
                     normalized.pop(key, None)
                 else:
                     normalized[key] = sorted(narrowed)
+        # The RL parent binding is a dispatcher-owned join key. A fan-out
+        # item may narrow execution settings, but it must not replace the
+        # parent decision supplied on the enclosing delegation call.
+        if "_rl_parent_context" in inherited:
+            normalized["_rl_parent_context"] = inherited["_rl_parent_context"]
         return normalized
     raise DelegationError(
         f"delegate: each request item must be str or dict, got {type(item).__name__}"
