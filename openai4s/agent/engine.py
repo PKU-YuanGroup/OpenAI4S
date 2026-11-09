@@ -188,6 +188,9 @@ class AgentEngine:
         state.last_action = action
         circuit.observe_routed_action(action, reply)
         self.event_sink.emit(ActionRouted(action, turn))
+        # Stable join key for nested execution telemetry. This is metadata for
+        # the runtime boundary, not an additional policy action.
+        state.metadata["rl_decision_id"] = f"decision-{turn}"
         outcome = self.executor.execute(action, reply, state)
         if not isinstance(outcome, ExecutionOutcome):
             raise TypeError("executor must return ExecutionOutcome")

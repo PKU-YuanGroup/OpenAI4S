@@ -147,6 +147,11 @@ class TrajectoryEventSink:
                 "ActionRouted arrived before trajectory decision proposal"
             )
         extra = reply.extra
+        # Carry the durable RL join keys through the existing execution
+        # context. The executor/Kernel manager forwards these keys to the Host
+        # Dispatcher; Host RPCs remain execution events, not new decisions.
+        extra.setdefault("rl_episode_id", self.recorder.episode.episode_id)
+        extra.setdefault("rl_decision_id", f"decision-{turn}")
         token_ids = extra.get("token_ids")
         token_logprobs = extra.get("token_logprobs")
         loss_mask = extra.get("loss_mask")

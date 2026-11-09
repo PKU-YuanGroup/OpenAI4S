@@ -22,3 +22,7 @@ reset/observe/step/finish/export lifecycle.
 `atif.py` provides `ATIFExporter`, a deterministic ATIF-v1.8 interchange
 projection that keeps segment, reward, cost, and execution identifiers in
 ATIF extension metadata.
+
+`host_events.py` defines the bounded Host RPC lifecycle facts (`started`,
+`completed`, and `failed`) used to join nested execution to a parent decision
+and segment without copying private arguments or results.

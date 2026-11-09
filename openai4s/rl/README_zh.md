@@ -17,3 +17,6 @@ Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 
 `atif.py` 提供 `ATIFExporter`，将轨迹确定性地投影为 ATIF-v1.8 交换格式，并在 ATIF
 扩展元数据中保留 Segment、Reward、Cost 和执行事件标识。
+
+`host_events.py` 定义有界的 Host RPC 生命周期事实（`started`、`completed`、`failed`），
+用于把嵌套执行关联到父 Decision 和 Segment，同时不复制私有参数或结果。

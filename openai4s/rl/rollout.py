@@ -104,6 +104,7 @@ class RolloutSession:
                     f"rollout request {self.request_id!r} was already claimed"
                 ) from exc
         self.state = state
+        self.state.metadata["rl_episode_id"] = self.recorder.episode.episode_id
         return state
 
     def observe(self) -> tuple[Message, ...]:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from openai4s.config import get_config
+import json
+
+from openai4s.config import Config, get_config
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.sdk.host import _Host
 
@@ -72,5 +74,62 @@ def test_host_can_open_two_segments_in_one_episode() -> None:
             "segment.closed",
         ]
         assert [row[1] for row in rows] == [1, 2, 3, 4]
+    finally:
+        dispatcher.store.close()
+
+
+def test_host_rpc_lifecycle_is_joined_to_decision_and_segment(tmp_path) -> None:
+    dispatcher = build_dispatcher(Config(data_dir=tmp_path), frame_id="frame-rpc")
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with dispatcher.bind_rl_context(
+            {
+                "episode_id": "frame-rpc",
+                "decision_id": "decision-7",
+                "source_id": "call-7",
+            }
+        ):
+            with host.segment("analysis"):
+                assert host.artifacts()["count"] == 0
+        rows = dispatcher.store._conn.execute(
+            "SELECT kind, payload FROM rl_execution_events "
+            "WHERE episode_id=? ORDER BY sequence",
+            ("frame-rpc",),
+        ).fetchall()
+        assert [row[0] for row in rows] == [
+            "segment.started",
+            "host_call.started",
+            "host_call.completed",
+            "segment.closed",
+        ]
+        started = json.loads(rows[1][1])
+        completed = json.loads(rows[2][1])
+        assert started["decision_id"] == "decision-7"
+        assert started["segment_id"] == completed["segment_id"]
+        assert started["payload"]["method"] == "artifacts"
+        assert "arguments_sha256" in started["payload"]
+        assert "result_sha256" in completed["payload"]
+    finally:
+        dispatcher.store.close()
+
+
+def test_host_rpc_failure_preserves_error_category(tmp_path) -> None:
+    dispatcher = build_dispatcher(Config(data_dir=tmp_path), frame_id="frame-rpc-fail")
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with dispatcher.bind_rl_context(
+            {"episode_id": "frame-rpc-fail", "decision_id": "decision-8"}
+        ):
+            try:
+                host.artifact_path("missing-version")
+            except Exception:
+                pass
+        row = dispatcher.store._conn.execute(
+            "SELECT kind, payload FROM rl_execution_events "
+            "WHERE episode_id=? ORDER BY sequence DESC LIMIT 1",
+            ("frame-rpc-fail",),
+        ).fetchone()
+        assert row[0] == "host_call.failed"
+        assert json.loads(row[1])["payload"]["error_category"] == "KeyError"
     finally:
         dispatcher.store.close()

@@ -53,6 +53,7 @@ from openai4s.host.remote_science import RemoteScienceService
 from openai4s.host.session import SessionControlService
 from openai4s.host.skills import SkillService
 from openai4s.llm import chat
+from openai4s.rl.host_events import HostCallLifecycle
 from openai4s.rl.models import Episode, ExecutionEvent, Segment
 from openai4s.storage.memories import MemoryLimitError
 from openai4s.storage.metadata import DERIVABLE_HOST_CALLS
@@ -1281,6 +1282,10 @@ class HostDispatcher:
         # parallel read-only native tools: each approval must point back to its
         # own provider tool call rather than merely to the surrounding turn.
         self._action_context_local = threading.local()
+        # Optional RL parent binding for nested Host RPC facts. The binding is
+        # thread-local because one dispatcher serves foreground and background
+        # workers concurrently.
+        self._rl_context_local = threading.local()
         # A Web native writer binds its Artifact committer only for the exact
         # dispatcher thread executing that action. A foreground Kernel Cell
         # binds a separate thread-local receipt scope around its one protocol
@@ -1556,6 +1561,91 @@ class HostDispatcher:
     def _current_action_context(self) -> dict[str, Any]:
         value = getattr(self._action_context_local, "value", None)
         return dict(value) if isinstance(value, dict) else {}
+
+    @contextmanager
+    def bind_rl_context(self, context: Mapping[str, Any] | None) -> Iterator[None]:
+        """Bind an RL episode/decision/segment to nested Host RPCs."""
+
+        marker = object()
+        previous = getattr(self._rl_context_local, "value", marker)
+        self._rl_context_local.value = dict(context or {})
+        try:
+            yield
+        finally:
+            if previous is marker:
+                try:
+                    del self._rl_context_local.value
+                except AttributeError:
+                    pass
+            else:
+                self._rl_context_local.value = previous
+
+    def _current_rl_context(self) -> dict[str, Any]:
+        value = getattr(self._rl_context_local, "value", None)
+        context = dict(value) if isinstance(value, dict) else {}
+        action = self._current_action_context()
+        aliases = (
+            ("decision_id", "rl_decision_id"),
+            ("episode_id", "rl_episode_id"),
+            ("segment_id", "rl_segment_id"),
+        )
+        for target, alias in aliases:
+            if target not in context and action.get(target):
+                context[target] = action[target]
+            if target not in context and action.get(alias):
+                context[target] = action[alias]
+        if "episode_id" not in context and context.get("decision_id"):
+            context["episode_id"] = self.frame_id
+        if "source_id" not in context:
+            context["source_id"] = action.get("tool_call_id") or action.get("action_id")
+        return context
+
+    def _rl_call_begin(self, method: str, args: list) -> dict[str, Any] | None:
+        if method.startswith("rl_segment_"):
+            return None
+        context = self._current_rl_context()
+        episode_id = context.get("episode_id")
+        if not isinstance(episode_id, str) or not episode_id:
+            return None
+        try:
+            lifecycle = HostCallLifecycle(self.store.rl, episode_id)
+            handle = lifecycle.begin(
+                method,
+                args,
+                decision_id=(
+                    str(context["decision_id"]) if context.get("decision_id") else None
+                ),
+                segment_id=(
+                    str(context["segment_id"]) if context.get("segment_id") else None
+                ),
+                source_id=(
+                    str(context["source_id"]) if context.get("source_id") else None
+                ),
+            )
+            handle["_lifecycle"] = lifecycle
+            return handle
+        except Exception:
+            # Instrumentation cannot turn a valid Host capability into a
+            # runtime failure. The existing Host audit remains authoritative.
+            return None
+
+    @staticmethod
+    def _rl_call_end(
+        handle: dict[str, Any] | None,
+        *,
+        ok: bool,
+        result: Any,
+        error: BaseException | None,
+    ) -> None:
+        if handle is None:
+            return
+        lifecycle = handle.get("_lifecycle")
+        if not isinstance(lifecycle, HostCallLifecycle):
+            return
+        try:
+            lifecycle.end(handle, ok=ok, result=result, error=error)
+        except Exception:
+            pass
 
     @contextmanager
     def bind_sandbox_status(self, status: Mapping[str, Any] | None) -> Iterator[None]:
@@ -2155,6 +2245,8 @@ class HostDispatcher:
         deferred_step = False
         permission_decision_id = None
         raised_error: str | None = None
+        raised_exception: BaseException | None = None
+        rl_handle = self._rl_call_begin(method, args)
         try:
             child_decision = None
             project_files = None
@@ -2446,8 +2538,15 @@ class HostDispatcher:
             # card otherwise sees nothing (``result`` is still None on the
             # raise path), so keep the message for the ``finally`` below.
             raised_error = f"{type(exc).__name__}: {exc}"
+            raised_exception = exc
             raise
         finally:
+            self._rl_call_end(
+                rl_handle,
+                ok=ok,
+                result=result,
+                error=raised_exception,
+            )
             skill_frame.__exit__(None, None, None)
             self.store.log_host_call(
                 method=method,
@@ -3466,6 +3565,14 @@ class HostDispatcher:
                     payload=segment.to_dict(),
                 )
             )
+            current = self._current_rl_context()
+            current.update(
+                {
+                    "episode_id": episode_id,
+                    "segment_id": segment.segment_id,
+                }
+            )
+            self._rl_context_local.value = current
             return {
                 "segment_id": segment.segment_id,
                 "episode_id": episode_id,
@@ -3514,6 +3621,10 @@ class HostDispatcher:
                 )
             )
             self.store.rl.update_segment_status(segment_id, status)
+            current = self._current_rl_context()
+            if current.get("segment_id") == segment_id:
+                current.pop("segment_id", None)
+                self._rl_context_local.value = current
             return {"ok": True, "status": status, "sequence": event.sequence}
         except (TypeError, ValueError, KeyError) as error:
             return {"error": str(error)}

@@ -8,6 +8,7 @@ continues to own execution and permissions.
 
 from .agent_sink import TrajectoryEventSink
 from .atif import ATIFExporter
+from .host_events import HostCallLifecycle
 from .models import (
     CostRecord,
     Episode,
@@ -35,6 +36,7 @@ __all__ = [
     "TrajectoryRecorder",
     "TrajectoryEventSink",
     "ATIFExporter",
+    "HostCallLifecycle",
     "PolicySampler",
     "RolloutSession",
 ]

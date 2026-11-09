@@ -1299,6 +1299,9 @@ class LocalActionExecutor:
                     "action_group_id": group_id,
                     "action_id": call.id,
                     "tool_call_id": call.id,
+                    "decision_id": state.metadata.get("rl_decision_id"),
+                    "episode_id": state.metadata.get("rl_episode_id")
+                    or getattr(self.dispatcher, "frame_id", None),
                 }
             ):
                 return execute_with_capture()
@@ -1379,6 +1382,9 @@ class LocalActionExecutor:
                             "action_group_id": group_id,
                             "action_id": f"{group_id}:action",
                             "tool_call_id": None,
+                            "decision_id": state.metadata.get("rl_decision_id"),
+                            "episode_id": state.metadata.get("rl_episode_id")
+                            or getattr(self.dispatcher, "frame_id", None),
                         }
                         if group_id
                         else None
