@@ -41,10 +41,17 @@ class TrajectoryRecorder:
     """
 
     def __init__(self, episode: Episode, repository: Any | None = None):
-        self.episode = episode
         self.repository = repository
         if repository is not None:
-            repository.append_episode(episode)
+            # Reusing a durable episode is required for retries and for
+            # segments opened by separate host calls.  The repository's
+            # lifecycle projection is authoritative once the episode exists.
+            ensure_episode = getattr(repository, "ensure_episode", None)
+            if callable(ensure_episode):
+                episode = ensure_episode(episode)
+            else:
+                repository.append_episode(episode)
+        self.episode = episode
         self._lock = threading.RLock()
         self._observations: dict[str, Observation] = {}
         self._decisions: dict[str, PolicyDecision] = {}

@@ -75,3 +75,27 @@ def test_rl_segments_reuse_episode_identity_and_event_sequence(tmp_path) -> None
         assert store.rl.append_execution_event(event_one) == event_one
     finally:
         store.close()
+
+
+def test_rl_receipt_state_is_durable_and_terminal(tmp_path) -> None:
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    try:
+        accepted = store.rl.admit_receipt(
+            RunReceipt("request-state", "fp", "ep", "accepted", 1, 1)
+        )
+        running = store.rl.update_receipt_state("request-state", "running")
+        assert accepted.state == "accepted"
+        assert running.state == "running"
+        with pytest.raises(ValueError, match="cannot return"):
+            store.rl.update_receipt_state("request-state", "accepted")
+        with pytest.raises(ValueError, match="expected state"):
+            store.rl.update_receipt_state(
+                "request-state", "completed", expected_state="accepted"
+            )
+        completed = store.rl.update_receipt_state("request-state", "completed")
+        assert completed.state == "completed"
+        assert store.rl.update_receipt_state("request-state", "completed") == completed
+        with pytest.raises(ValueError, match="already terminal"):
+            store.rl.update_receipt_state("request-state", "failed")
+    finally:
+        store.close()

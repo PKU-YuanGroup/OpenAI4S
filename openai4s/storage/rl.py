@@ -191,7 +191,6 @@ class RLRepository:
                             "policy_name",
                             "policy_version",
                             "parent_episode_id",
-                            "status",
                         )
                     ) and _same_payload(current["metadata"], episode.metadata)
                     if not same:
@@ -410,36 +409,103 @@ class RLRepository:
         )
 
     def admit_receipt(self, receipt: RunReceipt) -> RunReceipt:
+        if receipt.state != "accepted":
+            raise ValueError("new run receipts must start in accepted state")
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
-            row = self._connection.execute(
-                "SELECT * FROM rl_run_receipts WHERE request_id=?",
-                (receipt.request_id,),
-            ).fetchone()
-            if row is not None:
-                if (
-                    row["fingerprint"] != receipt.fingerprint
-                    or row["episode_id"] != receipt.episode_id
-                ):
-                    self._connection.execute("ROLLBACK")
-                    raise ValueError(
-                        "run request is already bound to different content"
-                    )
+            try:
+                row = self._connection.execute(
+                    "SELECT * FROM rl_run_receipts WHERE request_id=?",
+                    (receipt.request_id,),
+                ).fetchone()
+                if row is not None:
+                    if (
+                        row["fingerprint"] != receipt.fingerprint
+                        or row["episode_id"] != receipt.episode_id
+                    ):
+                        raise ValueError(
+                            "run request is already bound to different content"
+                        )
+                    self._connection.execute("COMMIT")
+                    return RunReceipt(**dict(row))
+                self._connection.execute(
+                    "INSERT INTO rl_run_receipts(request_id,fingerprint,episode_id,state,accepted_at,updated_at) VALUES(?,?,?,?,?,?)",
+                    (
+                        receipt.request_id,
+                        receipt.fingerprint,
+                        receipt.episode_id,
+                        receipt.state,
+                        receipt.accepted_at,
+                        receipt.updated_at,
+                    ),
+                )
                 self._connection.execute("COMMIT")
-                return RunReceipt(**dict(row))
-            self._connection.execute(
-                "INSERT INTO rl_run_receipts(request_id,fingerprint,episode_id,state,accepted_at,updated_at) VALUES(?,?,?,?,?,?)",
-                (
-                    receipt.request_id,
-                    receipt.fingerprint,
-                    receipt.episode_id,
-                    receipt.state,
-                    receipt.accepted_at,
-                    receipt.updated_at,
-                ),
-            )
-            self._connection.execute("COMMIT")
-            return receipt
+                return receipt
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+
+    def update_receipt_state(
+        self,
+        request_id: str,
+        state: str,
+        *,
+        updated_at: int | None = None,
+        expected_state: str | None = None,
+    ) -> RunReceipt:
+        """Advance one durable rollout receipt without reopening a terminal run.
+
+        ``expected_state`` makes the transition a compare-and-set operation;
+        rollout admission uses it to ensure that only one caller claims an
+        accepted receipt for execution.
+        """
+        terminal = {"completed", "failed", "cancelled", "interrupted"}
+        allowed = {"accepted", "running", *terminal}
+        if not isinstance(state, str) or state not in allowed:
+            raise ValueError("unsupported receipt state")
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT * FROM rl_run_receipts WHERE request_id=?", (request_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(request_id)
+                current = RunReceipt(**dict(row))
+                if expected_state is not None and current.state != expected_state:
+                    raise ValueError(
+                        f"run receipt {request_id!r} expected state "
+                        f"{expected_state!r}, found {current.state!r}"
+                    )
+                if current.state in terminal and current.state != state:
+                    raise ValueError(f"run receipt {request_id!r} is already terminal")
+                if current.state == state:
+                    self._connection.execute("COMMIT")
+                    return current
+                if current.state == "accepted" and state != "running":
+                    raise ValueError("accepted run receipts must enter running first")
+                if current.state == "running" and state == "accepted":
+                    raise ValueError("running run receipts cannot return to accepted")
+                timestamp = self._clock_ms() if updated_at is None else updated_at
+                if isinstance(timestamp, bool) or not isinstance(timestamp, int):
+                    raise ValueError("updated_at must be an integer")
+                self._connection.execute(
+                    "UPDATE rl_run_receipts SET state=?,updated_at=? "
+                    "WHERE request_id=?",
+                    (state, timestamp, request_id),
+                )
+                self._connection.execute("COMMIT")
+                return RunReceipt(
+                    current.request_id,
+                    current.fingerprint,
+                    current.episode_id,
+                    state,
+                    current.accepted_at,
+                    timestamp,
+                )
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
 
     def get_receipt(self, request_id: str) -> RunReceipt | None:
         with self._lock:

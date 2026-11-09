@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import RunFinished
@@ -15,7 +15,7 @@ from openai4s.agent.models import (
 )
 
 from .agent_sink import TrajectoryEventSink
-from .models import Trajectory
+from .models import RunReceipt, Trajectory
 from .recorder import TrajectoryRecorder
 
 
@@ -41,9 +41,16 @@ class RolloutSession:
         recorder: TrajectoryRecorder,
         *,
         delegate_sink: object | None = None,
+        repository: Any | None = None,
+        request_id: str | None = None,
     ) -> None:
+        if request_id is not None and repository is None:
+            raise ValueError("request_id requires a receipt repository")
         self.engine = engine
         self.recorder = recorder
+        self.repository = repository
+        self.request_id = request_id
+        self.receipt: RunReceipt | None = None
         self.sink = TrajectoryEventSink(
             recorder,
             delegate=delegate_sink if delegate_sink is not None else engine.event_sink,
@@ -60,13 +67,44 @@ class RolloutSession:
     ) -> RunState:
         if self.state is not None:
             raise RuntimeError("rollout session has already been reset")
-        self.state = RunState(
+        state = RunState(
             [dict(message) for message in messages],
             self.engine.max_turns if max_turns is None else max_turns,
         )
-        if self.state.max_turns < 0:
+        if state.max_turns < 0:
             raise ValueError("max_turns must be non-negative")
-        return self.state
+        if self.repository is not None and self.request_id is not None:
+            accepted_at = self.recorder.now_ms()
+            fingerprint = self.recorder.fingerprint(
+                {
+                    "episode_id": self.recorder.episode.episode_id,
+                    "messages": state.messages,
+                    "max_turns": state.max_turns,
+                }
+            )
+            candidate = RunReceipt(
+                request_id=self.request_id,
+                fingerprint=fingerprint,
+                episode_id=self.recorder.episode.episode_id,
+                state="accepted",
+                accepted_at=accepted_at,
+                updated_at=accepted_at,
+            )
+            self.receipt = self.repository.admit_receipt(candidate)
+            if self.receipt.state != "accepted":
+                raise RuntimeError(
+                    f"rollout request {self.request_id!r} was already settled"
+                )
+            try:
+                self.receipt = self.repository.update_receipt_state(
+                    self.request_id, "running", expected_state="accepted"
+                )
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"rollout request {self.request_id!r} was already claimed"
+                ) from exc
+        self.state = state
+        return state
 
     def observe(self) -> tuple[Message, ...]:
         state = self._state()
@@ -98,14 +136,18 @@ class RolloutSession:
         ),
     ) -> Trajectory:
         state = self._state()
-        while not self._finished and state.turn < state.max_turns:
-            observation = self.observe()
-            sampled = (
-                sampler.sample(observation)
-                if hasattr(sampler, "sample")
-                else sampler(observation)
-            )
-            self.step(sampled, observation=observation)
+        try:
+            while not self._finished and state.turn < state.max_turns:
+                observation = self.observe()
+                sampled = (
+                    sampler.sample(observation)
+                    if hasattr(sampler, "sample")
+                    else sampler(observation)
+                )
+                self.step(sampled, observation=observation)
+        except Exception:
+            self.finish("failed")
+            raise
         if not self._finished:
             self._emit_finished(
                 EngineStep(
@@ -122,6 +164,7 @@ class RolloutSession:
     def finish(self, status: str = "completed") -> Trajectory:
         if not self._finished:
             self.recorder.finish(status)
+            self._settle_receipt(status)
             self._finished = True
         return self.recorder.snapshot()
 
@@ -140,7 +183,24 @@ class RolloutSession:
             step.reply,
         )
         self.sink.emit(RunFinished(result))
+        self._settle_receipt(result.stop_reason)
         self._finished = True
+
+    def _settle_receipt(self, stop_reason: str) -> None:
+        if self.repository is None or self.request_id is None:
+            return
+        state = {
+            "completed": "completed",
+            "done": "completed",
+            "cancelled": "cancelled",
+            "timeout": "interrupted",
+            "interrupted": "interrupted",
+            "max_turns": "interrupted",
+            "no_progress": "interrupted",
+            "error": "failed",
+            "failed": "failed",
+        }.get(stop_reason, "completed")
+        self.receipt = self.repository.update_receipt_state(self.request_id, state)
 
     def _state(self) -> RunState:
         if self.state is None:
