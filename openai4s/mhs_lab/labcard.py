@@ -29,14 +29,10 @@ _SKIP_ARGS = {
 def _mcp_tools(
     argv: list[str], env: dict[str, str] | None, timeout: float = 30.0
 ) -> list[dict[str, Any]]:
-    from openai4s.mcp_client import MCPConnection
+    from openai4s.mcp_client import list_stdio_tools
     from openai4s.mhs_lab.runtime import child_environment
 
-    connection = MCPConnection(argv, env=child_environment(env), timeout=timeout)
-    try:
-        return connection.list_tools()
-    finally:
-        connection.close()
+    return list_stdio_tools(argv, env=child_environment(env), timeout=timeout)
 
 
 def _arg_text(name: str, schema: dict[str, Any], required: set[str]) -> str:

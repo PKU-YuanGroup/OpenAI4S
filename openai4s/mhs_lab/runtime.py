@@ -17,7 +17,7 @@ _LOCAL = threading.local()
 
 def child_environment(explicit: dict | None = None) -> dict[str, str]:
     """Pass runtime paths and the lab directory, never inherited provider keys."""
-    from openai4s.mcp_client import _connector_environment
+    from openai4s.mcp_client import connector_environment
 
     paths = [str(Path(__file__).resolve().parents[2])]
     for name in ("mhs", "openai4s_mhs"):
@@ -26,7 +26,7 @@ def child_environment(explicit: dict | None = None) -> dict[str, str]:
         spec = importlib.util.find_spec(name)
         if spec is not None and spec.origin:
             paths.append(str(Path(spec.origin).resolve().parent.parent))
-    return _connector_environment(
+    return connector_environment(
         {
             "PYTHONPATH": os.pathsep.join(dict.fromkeys(paths)),
             "PYTHONDONTWRITEBYTECODE": "1",
