@@ -15,7 +15,7 @@ from .events import (
     TextDelta,
     TurnStarted,
 )
-from .models import EngineResult, ExecutionOutcome, ModelReply, RunState
+from .models import EngineResult, EngineStep, ExecutionOutcome, ModelReply, RunState
 from .ports import (
     ActionExecutor,
     CancellationPort,
@@ -74,75 +74,155 @@ class AgentEngine:
         state = self._state(messages_or_state, max_turns)
         self.event_sink.emit(RunStarted(state.max_turns, len(state.messages)))
         while state.turn < state.max_turns:
-            if self.cancellation.cancelled():
-                return self._finish(state, None, "cancelled")
-            completion = self.completion.completion()
-            if completion is not None:
-                return self._finish(state, completion, "submitted")
-            circuit = self._circuit(state)
-            if circuit.tripped:
+            step = self.step(state)
+            if step.terminal:
                 return self._finish(
                     state,
-                    None,
-                    NO_PROGRESS_STOP_REASON,
-                    progress_reason=circuit.trip_reason,
+                    step.completion,
+                    step.stop_reason or "cancelled",
+                    progress_reason=(
+                        self._circuit(state).trip_reason
+                        if step.stop_reason == NO_PROGRESS_STOP_REASON
+                        else None
+                    ),
                 )
-            turn = state.turn
-            self.event_sink.emit(TurnStarted(turn))
-            prepared = self.context_policy.prepare(state)
-            state.messages[:] = [dict(message) for message in prepared]
-
-            def on_delta(text: str) -> None:
-                self.event_sink.emit(TextDelta(text, turn))
-
-            raw_reply = self.model.complete(state.messages, on_delta)
-            reply = self._reply(raw_reply)
-            if reply.finish_reason == "cancelled":
-                # A model that observed cancellation mid-call answers with the
-                # canonical no-op reply. It is not history: appending its empty
-                # assistant message would leave a non-final empty turn in a
-                # session that outlives this run (the Web session list and the
-                # Action Ledger both alias ``state.messages``), and the
-                # Anthropic and Gemini wires reject exactly that on every
-                # later call. Finish here, before the reply is recorded or
-                # routed, the same way a cancellation seen between turns does.
-                return self._finish(state, None, "cancelled")
-            intercepted = self.reply_interceptor.intercept(reply, state)
-            if intercepted is not None:
-                reply = self._reply(intercepted)
-            state.last_reply = reply
-            state.messages.append(dict(reply.assistant_message))
-            self.event_sink.emit(ReplyReceived(reply, turn))
-            action = route_action(reply.content, reply.tool_calls)
-            state.last_action = action
-            # A trip is enforced at the top of the next iteration, before the
-            # model is called again: every threshold trips inside the
-            # observe_* call that reaches it, so a refusal here would never
-            # fire -- and if it did, it would drop the routed reply from the
-            # Action Ledger (ActionRouted is what records it) and from the
-            # team usage ledger.
-            circuit.observe_routed_action(action, reply)
-            self.event_sink.emit(ActionRouted(action, turn))
-            outcome = self.executor.execute(action, reply, state)
-            if not isinstance(outcome, ExecutionOutcome):
-                raise TypeError("executor must return ExecutionOutcome")
-            outcome = self._note_unexecuted_cell(
-                outcome, unexecuted_cell_note(reply.content, action)
-            )
-            circuit.observe_execution(action, outcome)
-            state.messages.extend(dict(message) for message in outcome.history_messages)
-            state.turn += 1
-            self.event_sink.emit(OutcomeProduced(outcome, turn))
-            if self.cancellation.cancelled():
-                return self._finish(state, None, "cancelled")
-            if outcome.stop_reason:
-                return self._finish(state, outcome.completion, outcome.stop_reason)
-            completion = outcome.completion
-            if completion is None:
-                completion = self.completion.completion()
-            if completion is not None:
-                return self._finish(state, completion, "submitted")
         return self._finish(state, None, "max_turns")
+
+    def prepare_decision(self, state: RunState) -> tuple[Mapping[str, Any], ...]:
+        """Return the exact context that the next policy call will receive.
+
+        The returned messages are detached dictionaries.  A trainer may
+        tokenize or persist them without being able to mutate engine state.
+        Passing the same tuple to :meth:`step` avoids preparing context twice.
+        """
+
+        prepared = tuple(
+            dict(message) for message in self.context_policy.prepare(state)
+        )
+        state.messages[:] = [dict(message) for message in prepared]
+        return prepared
+
+    def step(
+        self,
+        state: RunState,
+        sampled_reply: ModelReply | Mapping[str, Any] | None = None,
+        *,
+        observation: Iterable[Mapping[str, Any]] | None = None,
+    ) -> EngineStep:
+        """Execute one decision using the built-in or an external policy.
+
+        When ``sampled_reply`` is supplied, no model call is made.  This is the
+        white-box RL boundary: an external sampler can return token telemetry
+        in ``ModelReply.extra`` and the existing execution/ledger path still
+        handles routing, permissions, kernels and completion.
+        """
+
+        if state.turn >= state.max_turns:
+            return EngineStep(
+                state.turn,
+                tuple(dict(m) for m in state.messages),
+                None,
+                None,
+                None,
+                stop_reason="max_turns",
+            )
+        if self.cancellation.cancelled():
+            return EngineStep(
+                state.turn,
+                tuple(dict(m) for m in state.messages),
+                None,
+                None,
+                None,
+                stop_reason="cancelled",
+            )
+        completion = self.completion.completion()
+        if completion is not None:
+            return EngineStep(
+                state.turn,
+                tuple(dict(m) for m in state.messages),
+                None,
+                None,
+                None,
+                completion=completion,
+                stop_reason="submitted",
+            )
+        circuit = self._circuit(state)
+        if circuit.tripped:
+            return EngineStep(
+                state.turn,
+                tuple(dict(m) for m in state.messages),
+                None,
+                None,
+                None,
+                stop_reason=NO_PROGRESS_STOP_REASON,
+            )
+        turn = state.turn
+        self.event_sink.emit(TurnStarted(turn))
+        prepared = tuple(
+            dict(message)
+            for message in (
+                observation if observation is not None else self.prepare_decision(state)
+            )
+        )
+        state.messages[:] = [dict(message) for message in prepared]
+
+        def on_delta(text: str) -> None:
+            self.event_sink.emit(TextDelta(text, turn))
+
+        raw_reply = sampled_reply
+        if raw_reply is None:
+            raw_reply = self.model.complete(state.messages, on_delta)
+        reply = self._reply(raw_reply)
+        if reply.finish_reason == "cancelled":
+            return EngineStep(turn, prepared, None, None, None, stop_reason="cancelled")
+        intercepted = self.reply_interceptor.intercept(reply, state)
+        if intercepted is not None:
+            reply = self._reply(intercepted)
+        state.last_reply = reply
+        state.messages.append(dict(reply.assistant_message))
+        self.event_sink.emit(ReplyReceived(reply, turn))
+        action = route_action(reply.content, reply.tool_calls)
+        state.last_action = action
+        circuit.observe_routed_action(action, reply)
+        self.event_sink.emit(ActionRouted(action, turn))
+        outcome = self.executor.execute(action, reply, state)
+        if not isinstance(outcome, ExecutionOutcome):
+            raise TypeError("executor must return ExecutionOutcome")
+        outcome = self._note_unexecuted_cell(
+            outcome, unexecuted_cell_note(reply.content, action)
+        )
+        circuit.observe_execution(action, outcome)
+        state.messages.extend(dict(message) for message in outcome.history_messages)
+        state.turn += 1
+        self.event_sink.emit(OutcomeProduced(outcome, turn))
+        if self.cancellation.cancelled():
+            return EngineStep(
+                turn, prepared, reply, action, outcome, stop_reason="cancelled"
+            )
+        if outcome.stop_reason:
+            return EngineStep(
+                turn,
+                prepared,
+                reply,
+                action,
+                outcome,
+                completion=outcome.completion,
+                stop_reason=outcome.stop_reason,
+            )
+        completion = outcome.completion
+        if completion is None:
+            completion = self.completion.completion()
+        if completion is not None:
+            return EngineStep(
+                turn,
+                prepared,
+                reply,
+                action,
+                outcome,
+                completion=completion,
+                stop_reason="submitted",
+            )
+        return EngineStep(turn, prepared, reply, action, outcome)
 
     def _state(
         self,
