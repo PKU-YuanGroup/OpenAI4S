@@ -59,6 +59,7 @@ _LAZY_EXPORTS = {
     "BudgetLedger": (".budget", "BudgetLedger"),
     "BudgetReservation": (".budget", "BudgetReservation"),
     "BudgetState": (".budget", "BudgetState"),
+    "DurableBudgetLedger": (".budget", "DurableBudgetLedger"),
 }
 
 
@@ -122,4 +123,5 @@ __all__ = [
     "BudgetLedger",
     "BudgetReservation",
     "BudgetState",
+    "DurableBudgetLedger",
 ]

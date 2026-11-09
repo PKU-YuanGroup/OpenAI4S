@@ -164,6 +164,28 @@ class BudgetLedger:
         self._used: dict[str, float] = {}
         self._reservations: dict[str, BudgetReservation] = {}
 
+    @classmethod
+    def from_snapshot(
+        cls,
+        limits: Mapping[str, float | None],
+        *,
+        modes: Mapping[str, BudgetMode] | None = None,
+        used: Mapping[str, Any] | None = None,
+        reservations: tuple[BudgetReservation, ...] | list[BudgetReservation] = (),
+        clock_ms: Callable[[], int] | None = None,
+    ) -> "BudgetLedger":
+        """Rehydrate a ledger after a Store-backed snapshot was loaded."""
+
+        ledger = cls(limits, modes=modes, clock_ms=clock_ms)
+        ledger._used = _amounts("used", {} if used is None else used)
+        for item in reservations:
+            if not isinstance(item, BudgetReservation):
+                raise TypeError("reservations must contain BudgetReservation records")
+            if item.allocation_id in ledger._reservations:
+                raise ValueError("stored budget reservations contain duplicate IDs")
+            ledger._reservations[item.allocation_id] = item
+        return ledger
+
     def reserve(
         self,
         allocation_id: str,
@@ -345,6 +367,122 @@ class BudgetLedger:
         return timestamp
 
 
+class DurableBudgetLedger:
+    """Store-backed wrapper preserving :class:`BudgetLedger` semantics.
+
+    Each mutation is saved as one SQLite transaction containing limits, usage,
+    and every allocation.  This is an operational snapshot rather than a
+    trajectory fact; the trajectory still records the provider cost evidence
+    separately.
+    """
+
+    def __init__(
+        self,
+        repository: Any,
+        budget_id: str,
+        limits: Mapping[str, float | None],
+        *,
+        modes: Mapping[str, BudgetMode] | None = None,
+        clock_ms: Callable[[], int] | None = None,
+    ) -> None:
+        self.repository = repository
+        self.budget_id = _text("budget_id", budget_id)
+        persisted = repository.load_budget_ledger(self.budget_id)
+        requested = BudgetLedger(limits, modes=modes, clock_ms=clock_ms)
+        if persisted is None:
+            self._ledger = requested
+            self._revision = self._persist(expected_revision=0)
+            return
+        persisted_limits = persisted.get("limits")
+        persisted_modes = persisted.get("modes")
+        if not isinstance(persisted_limits, Mapping) or not isinstance(
+            persisted_modes, Mapping
+        ):
+            raise ValueError("stored budget ledger has invalid limits or modes")
+        if dict(requested.state().limits) != dict(persisted_limits):
+            raise ValueError("budget ledger limits conflict with stored content")
+        if dict(requested.state().modes) != dict(persisted_modes):
+            raise ValueError("budget ledger modes conflict with stored content")
+        raw_reservations = persisted.get("reservations", ())
+        if not isinstance(raw_reservations, (list, tuple)):
+            raise ValueError("stored budget ledger reservations are invalid")
+        records_list: list[BudgetReservation] = []
+        for item in raw_reservations:
+            if isinstance(item, BudgetReservation):
+                records_list.append(item)
+            elif isinstance(item, Mapping):
+                records_list.append(BudgetReservation(**item))
+            else:
+                raise ValueError("stored budget ledger contains an invalid reservation")
+        self._ledger = BudgetLedger.from_snapshot(
+            persisted_limits,
+            modes=persisted_modes,
+            used=persisted.get("used") or {},
+            reservations=records_list,
+            clock_ms=clock_ms,
+        )
+        revision = persisted.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ValueError("stored budget ledger has an invalid revision")
+        self._revision = revision
+
+    def reserve(
+        self,
+        allocation_id: str,
+        estimated: Mapping[str, Any],
+        *,
+        reserved_at: int | None = None,
+    ) -> BudgetReservation:
+        result = self._ledger.reserve(allocation_id, estimated, reserved_at=reserved_at)
+        self._revision = self._persist()
+        return result
+
+    def bind_receipt(
+        self, allocation_id: str, provider_receipt: str
+    ) -> BudgetReservation:
+        result = self._ledger.bind_receipt(allocation_id, provider_receipt)
+        self._revision = self._persist()
+        return result
+
+    def release(self, allocation_id: str) -> BudgetReservation:
+        result = self._ledger.release(allocation_id)
+        self._revision = self._persist()
+        return result
+
+    def mark_unknown(self, allocation_id: str) -> BudgetReservation:
+        result = self._ledger.mark_unknown(allocation_id)
+        self._revision = self._persist()
+        return result
+
+    def commit(
+        self, allocation_id: str, actual: Mapping[str, Any]
+    ) -> BudgetReservation:
+        result = self._ledger.commit(allocation_id, actual)
+        self._revision = self._persist()
+        return result
+
+    def reconcile(
+        self, allocation_id: str, actual: Mapping[str, Any]
+    ) -> BudgetReservation:
+        result = self._ledger.reconcile(allocation_id, actual)
+        self._revision = self._persist()
+        return result
+
+    def state(self) -> BudgetState:
+        return self._ledger.state()
+
+    def get(self, allocation_id: str) -> BudgetReservation | None:
+        return self._ledger.get(allocation_id)
+
+    def _persist(self, *, expected_revision: int | None = None) -> int:
+        expected = self._revision if expected_revision is None else expected_revision
+        return self.repository.save_budget_ledger(
+            self.budget_id,
+            self._ledger.state(),
+            expected_revision=expected,
+        )
+
+
 __all__ = [
     "BudgetExceeded",
     "BudgetLedger",
@@ -352,4 +490,5 @@ __all__ = [
     "BudgetReservation",
     "BudgetReservationState",
     "BudgetState",
+    "DurableBudgetLedger",
 ]

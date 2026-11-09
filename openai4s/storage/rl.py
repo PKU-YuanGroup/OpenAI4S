@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import replace
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
+from openai4s.rl.budget import BudgetReservation, BudgetState
 from openai4s.rl.models import (
     CostRecord,
     Episode,
@@ -87,6 +88,30 @@ CREATE INDEX IF NOT EXISTS ix_rl_dataset_snapshots_episode
     ON rl_dataset_snapshots(episode_id, created_at);
 """
 
+RL_BUDGET_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rl_budget_ledgers (
+    budget_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL CHECK(revision >= 1),
+    limits TEXT NOT NULL,
+    modes TEXT NOT NULL,
+    used TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rl_budget_allocations (
+    budget_id TEXT NOT NULL,
+    allocation_id TEXT NOT NULL,
+    estimated TEXT NOT NULL,
+    reserved_at INTEGER NOT NULL,
+    provider_receipt TEXT,
+    state TEXT NOT NULL,
+    actual TEXT NOT NULL,
+    PRIMARY KEY (budget_id, allocation_id),
+    FOREIGN KEY (budget_id) REFERENCES rl_budget_ledgers(budget_id)
+);
+CREATE INDEX IF NOT EXISTS ix_rl_budget_allocations_state
+    ON rl_budget_allocations(budget_id, state);
+"""
+
 
 def create_rl_schema(conn: sqlite3.Connection) -> None:
     """Install the RL schema inside the caller's migration transaction."""
@@ -98,6 +123,13 @@ def create_rl_schema(conn: sqlite3.Connection) -> None:
 def create_rl_snapshot_schema(conn: sqlite3.Connection) -> None:
     """Install only the additive dataset-snapshot tables."""
     for statement in RL_SNAPSHOT_SCHEMA.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
+def create_rl_budget_schema(conn: sqlite3.Connection) -> None:
+    """Install the durable budget allocation snapshot tables."""
+    for statement in RL_BUDGET_SCHEMA.split(";"):
         if statement.strip():
             conn.execute(statement)
 
@@ -162,6 +194,24 @@ class RLRepository:
         self._connection = connection
         self._lock = lock
         self._clock_ms = clock_ms
+
+    def budget_ledger(
+        self,
+        budget_id: str,
+        limits: Mapping[str, float | None],
+        *,
+        modes: Mapping[str, Literal["hard", "soft"]] | None = None,
+    ) -> Any:
+        """Return a Store-backed RL budget ledger for one stable budget ID."""
+        from openai4s.rl.budget import DurableBudgetLedger
+
+        return DurableBudgetLedger(
+            self,
+            budget_id,
+            limits,
+            modes=modes,
+            clock_ms=self._clock_ms,
+        )
 
     def append_episode(self, episode: Episode) -> None:
         data = episode.to_dict()
@@ -664,5 +714,127 @@ class RLRepository:
             ).fetchone()
         return RunReceipt(**dict(row)) if row is not None else None
 
+    def load_budget_ledger(self, budget_id: str) -> dict[str, Any] | None:
+        """Load one budget snapshot without exposing SQLite rows."""
+        row = self._connection.execute(
+            "SELECT budget_id,revision,limits,modes,used FROM rl_budget_ledgers "
+            "WHERE budget_id=?",
+            (budget_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        allocations = self._connection.execute(
+            "SELECT allocation_id,estimated,reserved_at,provider_receipt,state,actual "
+            "FROM rl_budget_allocations WHERE budget_id=? ORDER BY allocation_id",
+            (budget_id,),
+        ).fetchall()
+        return {
+            "budget_id": str(row["budget_id"]),
+            "revision": int(row["revision"]),
+            "limits": json.loads(row["limits"]),
+            "modes": json.loads(row["modes"]),
+            "used": json.loads(row["used"]),
+            "reservations": [
+                {
+                    "allocation_id": str(item["allocation_id"]),
+                    "estimated": json.loads(item["estimated"]),
+                    "reserved_at": int(item["reserved_at"]),
+                    "provider_receipt": item["provider_receipt"],
+                    "state": str(item["state"]),
+                    "actual": json.loads(item["actual"]),
+                }
+                for item in allocations
+            ],
+        }
 
-__all__ = ["RL_SCHEMA", "RLRepository", "create_rl_schema"]
+    def save_budget_ledger(
+        self,
+        budget_id: str,
+        state: BudgetState,
+        *,
+        expected_revision: int | None = None,
+    ) -> int:
+        """Atomically save a budget snapshot and return its new revision."""
+        if not isinstance(budget_id, str) or not budget_id.strip():
+            raise ValueError("budget_id must be a non-empty string")
+        if not isinstance(state, BudgetState):
+            raise TypeError("state must be BudgetState")
+        payload = state.to_dict()
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT revision FROM rl_budget_ledgers WHERE budget_id=?",
+                    (budget_id,),
+                ).fetchone()
+                if row is None:
+                    if expected_revision not in (None, 0):
+                        raise ValueError("budget ledger revision conflict")
+                    revision = 1
+                    self._connection.execute(
+                        "INSERT INTO rl_budget_ledgers(budget_id,revision,limits,modes,used,updated_at) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (
+                            budget_id,
+                            revision,
+                            _payload(payload["limits"]),
+                            _payload(payload["modes"]),
+                            _payload(payload["used"]),
+                            self._clock_ms(),
+                        ),
+                    )
+                else:
+                    current = int(row["revision"])
+                    if expected_revision is not None and current != expected_revision:
+                        raise ValueError("budget ledger revision conflict")
+                    revision = current + 1
+                    self._connection.execute(
+                        "UPDATE rl_budget_ledgers SET revision=?,limits=?,modes=?,used=?,updated_at=? "
+                        "WHERE budget_id=? AND revision=?",
+                        (
+                            revision,
+                            _payload(payload["limits"]),
+                            _payload(payload["modes"]),
+                            _payload(payload["used"]),
+                            self._clock_ms(),
+                            budget_id,
+                            current,
+                        ),
+                    )
+                    if self._connection.execute("SELECT changes()").fetchone()[0] != 1:
+                        raise ValueError("budget ledger revision conflict")
+                self._connection.execute(
+                    "DELETE FROM rl_budget_allocations WHERE budget_id=?",
+                    (budget_id,),
+                )
+                for item in state.reservations:
+                    if not isinstance(item, BudgetReservation):
+                        raise TypeError(
+                            "state reservations must be BudgetReservation records"
+                        )
+                    self._connection.execute(
+                        "INSERT INTO rl_budget_allocations(budget_id,allocation_id,estimated,reserved_at,provider_receipt,state,actual) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        (
+                            budget_id,
+                            item.allocation_id,
+                            _payload(item.estimated),
+                            item.reserved_at,
+                            item.provider_receipt,
+                            item.state,
+                            _payload(item.actual),
+                        ),
+                    )
+                self._connection.execute("COMMIT")
+                return revision
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+
+
+__all__ = [
+    "RL_SCHEMA",
+    "RLRepository",
+    "create_rl_budget_schema",
+    "create_rl_schema",
+]

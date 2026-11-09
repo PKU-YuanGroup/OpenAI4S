@@ -58,3 +58,7 @@ Provider 成本。
 `budget.py` 将预计预留与实际用量分开，并明确 hard/soft 限制。绑定 receipt 的
 allocation 在可能启动 Provider 工作后不能乐观释放；未知终态会保持预留，直到
 显式 reconcile。
+
+`DurableBudgetLedger` 通过 Store 的 RL repository 以带 revision 检查的方式持久化
+预算快照和绑定 receipt 的 allocation，因此守护进程重启不会重新创建或重复扣除
+同一项预留。

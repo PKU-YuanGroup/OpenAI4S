@@ -76,3 +76,7 @@ durable Compute job repository.
 hard versus soft limits explicit. Receipt-bound allocations cannot be released
 after provider work may have started; an unknown terminal state stays reserved
 until reconciliation.
+
+`DurableBudgetLedger` uses the Store's RL repository to persist the budget
+snapshot and receipt-bound allocations with revision checks, so a daemon
+restart does not recreate or double charge a reservation.

@@ -146,6 +146,7 @@ from openai4s.storage.plans import PlanRepository
 from openai4s.storage.recovery import RecoveryJournalRepository
 from openai4s.storage.rl import (
     RLRepository,
+    create_rl_budget_schema,
     create_rl_schema,
     create_rl_snapshot_schema,
 )
@@ -1129,6 +1130,9 @@ _TEAM_VIEW_ONLY_TABLES = frozenset(
         "rl_reward_annotations",
         "rl_cost_records",
         "rl_run_receipts",
+        "rl_dataset_snapshots",
+        "rl_budget_ledgers",
+        "rl_budget_allocations",
     }
 )
 
@@ -1718,6 +1722,7 @@ class Store:
                         self._apply_rl_dataset_snapshots,
                     ),
                     39: ("rl_segment_parent", self._apply_rl_segment_parent),
+                    40: ("rl_budget_ledger", self._apply_rl_budget_ledger),
                 },
             )
             if report["migrated"]:
@@ -1749,6 +1754,10 @@ class Store:
             "CREATE INDEX IF NOT EXISTS ix_rl_segments_parent "
             "ON rl_segments(parent_segment_id)"
         )
+
+    def _apply_rl_budget_ledger(self, conn: sqlite3.Connection) -> None:
+        """Version 40: durable RL budget and receipt-bound allocations."""
+        create_rl_budget_schema(conn)
 
     def _apply_datapro_content_index(self, conn: sqlite3.Connection) -> None:
         """Version 16: lossless local indexing for DataPro responses."""
