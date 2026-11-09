@@ -5,11 +5,13 @@ import json
 import pytest
 
 from openai4s.rl import (
+    DatasetSnapshot,
     Episode,
     ExecutionEvent,
     Observation,
     PolicyDecision,
     RewardAnnotation,
+    Segment,
     TrajectoryRecorder,
     apply_verifier,
 )
@@ -194,3 +196,43 @@ def test_verifier_identity_and_annotation_scope_are_checked() -> None:
 
     with pytest.raises(ValueError, match="name does not match"):
         apply_verifier(recorder, _WrongVerifier())
+
+
+def test_dataset_snapshot_requires_terminal_complete_facts_and_detects_drift() -> None:
+    recorder = _recorder()
+    recorder.add_segment(
+        Segment(
+            "segment-1",
+            "ep-1",
+            "analysis",
+            2,
+            status="completed",
+        )
+    )
+    recorder.add_event(ExecutionEvent("event-snapshot", "ep-1", "cell.completed", 3))
+    recorder.finish("success")
+
+    snapshot = DatasetSnapshot.from_trajectory(
+        recorder.snapshot(), "dataset-1", created_at=4
+    )
+    assert snapshot.event_sequence_max == 1
+    assert snapshot.record_counts["execution_events"] == 1
+    assert snapshot.matches(recorder.snapshot())
+
+    recorder.add_reward(RewardAnnotation("reward-after", "ep-1", 0.1, "v", "1", 5))
+    assert not snapshot.matches(recorder.snapshot())
+
+
+def test_dataset_snapshot_rejects_running_episode_and_open_segment() -> None:
+    running = _recorder()
+    with pytest.raises(ValueError, match="terminal episode"):
+        DatasetSnapshot.from_trajectory(
+            running.snapshot(), "dataset-running", created_at=1
+        )
+
+    running.add_segment(Segment("segment-open", "ep-1", "analysis", 2))
+    running.finish("success")
+    with pytest.raises(ValueError, match="open segments"):
+        DatasetSnapshot.from_trajectory(
+            running.snapshot(), "dataset-open", created_at=3
+        )

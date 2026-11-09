@@ -18,6 +18,10 @@ self-scoring Host API.
 `apply_verifier()`. It validates verifier identity, episode scope and
 append-only execution facts before adding versioned annotations.
 
+`snapshot.py` defines `DatasetSnapshot`, a terminal, content-addressed view
+that freezes the full trajectory hash and event sequence boundary for a
+training export. It does not copy or rewrite trajectory records.
+
 `__init__.py` exports the public records and adapters. `agent_sink.py` bridges
 the existing `AgentEngine` event stream into these records without replacing
 the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing

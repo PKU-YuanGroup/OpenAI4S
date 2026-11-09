@@ -76,3 +76,9 @@ Trajectory 仍在 `extra.openai4s` 中，是训练输入的权威来源。
 上下文；`step()` 接收外部 `ModelReply` 或 mapping；`finish()`/`run()` 导出轨迹。既有
 `AgentEngine` 仍负责 action routing、权限、kernel 执行、completion、取消和 ledger 回调。
 此 runtime 不包含 PPO、GRPO、advantage、模型服务或 Verifier 实现。
+
+`DatasetSnapshot` 是当前固定数据集边界：只接受终态 Episode、没有 open Segment 且所有
+Execution Event 都有 sequence；它保存规范轨迹哈希、最大事件序号和记录计数。
+`matches()` 会拒绝已经改变的候选轨迹。
+配置 Store 仓储时，这些元数据由 migration 38 追加到 `rl_dataset_snapshots`，可按
+snapshot ID 读取。

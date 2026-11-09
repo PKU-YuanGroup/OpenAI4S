@@ -126,3 +126,10 @@ training input.
 The existing `AgentEngine` still owns routing, permissions, kernel execution,
 completion, cancellation, and ledger callbacks. This runtime does not include
 PPO, GRPO, advantage estimation, model serving, or a verifier implementation.
+
+`DatasetSnapshot` is the current fixed dataset boundary. It accepts only a
+terminal Episode with no open Segments and fully sequenced execution events;
+it stores the canonical trajectory hash, the maximum event sequence, and
+record counts. `matches()` rejects a candidate whose trajectory has changed.
+When a Store repository is configured, this metadata is appended to
+`rl_dataset_snapshots` under migration 38 and can be fetched by snapshot ID.

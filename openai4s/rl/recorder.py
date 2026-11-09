@@ -19,6 +19,7 @@ from .models import (
     Segment,
     Trajectory,
 )
+from .snapshot import DatasetSnapshot
 
 Record = TypeVar(
     "Record",
@@ -59,6 +60,7 @@ class TrajectoryRecorder:
         self._events: dict[str, ExecutionEvent] = {}
         self._rewards: dict[str, RewardAnnotation] = {}
         self._costs: dict[str, CostRecord] = {}
+        self._snapshots: dict[str, DatasetSnapshot] = {}
         self._event_sequence = 0
 
     @staticmethod
@@ -138,6 +140,44 @@ class TrajectoryRecorder:
             if self.repository is not None and result is value:
                 self.repository.append_cost(value)
             return result
+
+    def create_snapshot(
+        self, snapshot_id: str, *, created_at: int | None = None
+    ) -> DatasetSnapshot:
+        """Freeze a terminal trajectory and persist its metadata when configured."""
+        with self._lock:
+            value = DatasetSnapshot.from_trajectory(
+                self.snapshot(),
+                snapshot_id,
+                created_at=self.now_ms() if created_at is None else created_at,
+            )
+            current = self._snapshots.get(value.snapshot_id)
+            if current is not None:
+                if current != value:
+                    raise ValueError(
+                        f"snapshot {value.snapshot_id!r} conflicts with stored content"
+                    )
+                return current
+            if self.repository is not None:
+                append_snapshot = getattr(self.repository, "append_snapshot", None)
+                if not callable(append_snapshot):
+                    raise TypeError("repository does not support dataset snapshots")
+                get_snapshot = getattr(self.repository, "get_snapshot", None)
+                if callable(get_snapshot):
+                    try:
+                        durable = get_snapshot(value.snapshot_id)
+                    except KeyError:
+                        durable = None
+                    if durable is not None:
+                        if durable != value:
+                            raise ValueError(
+                                f"snapshot {value.snapshot_id!r} conflicts with stored content"
+                            )
+                        self._snapshots[value.snapshot_id] = durable
+                        return durable
+                append_snapshot(value)
+            self._snapshots[value.snapshot_id] = value
+            return value
 
     def _check_episode(self, episode_id: str) -> None:
         if episode_id != self.episode.episode_id:

@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from openai4s.config import Config
-from openai4s.rl import Episode, ExecutionEvent, RewardAnnotation, TrajectoryRecorder
+from openai4s.rl import (
+    Episode,
+    ExecutionEvent,
+    RewardAnnotation,
+    Segment,
+    TrajectoryRecorder,
+)
 from openai4s.rl.models import RunReceipt
 from openai4s.store import get_store
 
@@ -97,5 +103,27 @@ def test_rl_receipt_state_is_durable_and_terminal(tmp_path) -> None:
         assert store.rl.update_receipt_state("request-state", "completed") == completed
         with pytest.raises(ValueError, match="already terminal"):
             store.rl.update_receipt_state("request-state", "failed")
+    finally:
+        store.close()
+
+
+def test_dataset_snapshot_metadata_is_durable_and_idempotent(tmp_path) -> None:
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    try:
+        recorder = TrajectoryRecorder(
+            Episode("ep-snapshot", "task", "session", 1), repository=store.rl
+        )
+        recorder.add_segment(
+            Segment("seg-snapshot", "ep-snapshot", "analysis", 2, status="completed")
+        )
+        recorder.add_event(
+            ExecutionEvent("event-snapshot", "ep-snapshot", "cell.completed", 3)
+        )
+        recorder.finish("completed")
+        first = recorder.create_snapshot("snapshot-1", created_at=4)
+        assert recorder.create_snapshot("snapshot-1", created_at=4) == first
+        assert store.rl.get_snapshot("snapshot-1") == first
+        with pytest.raises(KeyError):
+            store.rl.get_snapshot("missing")
     finally:
         store.close()

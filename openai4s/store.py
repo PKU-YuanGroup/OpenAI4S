@@ -144,7 +144,11 @@ from openai4s.storage.permissions import PermissionRuleRepository
 from openai4s.storage.permissions import perm_match as _perm_match
 from openai4s.storage.plans import PlanRepository
 from openai4s.storage.recovery import RecoveryJournalRepository
-from openai4s.storage.rl import RLRepository, create_rl_schema
+from openai4s.storage.rl import (
+    RLRepository,
+    create_rl_schema,
+    create_rl_snapshot_schema,
+)
 from openai4s.storage.session_imports import SessionImportRepository
 from openai4s.storage.settings import SettingsRepository
 from openai4s.storage.shares import SharesRepository
@@ -1709,6 +1713,10 @@ class Store:
                         self._apply_dataset_verification_receipts,
                     ),
                     37: ("rl_runtime", self._apply_rl_runtime),
+                    38: (
+                        "rl_dataset_snapshots",
+                        self._apply_rl_dataset_snapshots,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1726,6 +1734,10 @@ class Store:
     def _apply_rl_runtime(self, conn: sqlite3.Connection) -> None:
         """Version 37: durable Agentic RL trajectory and run receipts."""
         create_rl_schema(conn)
+
+    def _apply_rl_dataset_snapshots(self, conn: sqlite3.Connection) -> None:
+        """Version 38: immutable RL training dataset snapshot metadata."""
+        create_rl_snapshot_schema(conn)
 
     def _apply_datapro_content_index(self, conn: sqlite3.Connection) -> None:
         """Version 16: lossless local indexing for DataPro responses."""

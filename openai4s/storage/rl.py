@@ -22,6 +22,7 @@ from openai4s.rl.models import (
     RunReceipt,
     Segment,
 )
+from openai4s.rl.snapshot import DatasetSnapshot
 
 RL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS rl_episodes (
@@ -73,12 +74,45 @@ CREATE TABLE IF NOT EXISTS rl_run_receipts (
 CREATE INDEX IF NOT EXISTS ix_rl_run_receipts_episode ON rl_run_receipts(episode_id, accepted_at);
 """
 
+RL_SNAPSHOT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rl_dataset_snapshots (
+    snapshot_id TEXT PRIMARY KEY, episode_id TEXT NOT NULL,
+    schema_version TEXT NOT NULL, trajectory_sha256 TEXT NOT NULL,
+    event_sequence_max INTEGER NOT NULL, created_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_rl_dataset_snapshots_episode
+    ON rl_dataset_snapshots(episode_id, created_at);
+"""
+
 
 def create_rl_schema(conn: sqlite3.Connection) -> None:
     """Install the RL schema inside the caller's migration transaction."""
     for statement in RL_SCHEMA.split(";"):
         if statement.strip():
             conn.execute(statement)
+
+
+def create_rl_snapshot_schema(conn: sqlite3.Connection) -> None:
+    """Install only the additive dataset-snapshot tables."""
+    for statement in RL_SNAPSHOT_SCHEMA.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
+def _snapshot_from_row(row: sqlite3.Row) -> DatasetSnapshot:
+    payload = json.loads(row["payload"])
+    if not isinstance(payload, Mapping):
+        raise ValueError("stored RL dataset snapshot payload is not an object")
+    return DatasetSnapshot(
+        snapshot_id=str(payload["snapshot_id"]),
+        episode_id=str(payload["episode_id"]),
+        schema_version=str(payload["schema_version"]),
+        trajectory_sha256=str(payload["trajectory_sha256"]),
+        event_sequence_max=int(payload["event_sequence_max"]),
+        created_at=int(payload["created_at"]),
+        record_counts=payload["record_counts"],
+    )
 
 
 def _payload(value: Any) -> str:
@@ -407,6 +441,29 @@ class RLRepository:
                 "created_at": value.created_at,
             },
         )
+
+    def append_snapshot(self, value: DatasetSnapshot) -> None:
+        self._append(
+            "rl_dataset_snapshots",
+            "snapshot_id",
+            value,
+            {
+                "episode_id": value.episode_id,
+                "schema_version": value.schema_version,
+                "trajectory_sha256": value.trajectory_sha256,
+                "event_sequence_max": value.event_sequence_max,
+                "created_at": value.created_at,
+            },
+        )
+
+    def get_snapshot(self, snapshot_id: str) -> DatasetSnapshot:
+        row = self._connection.execute(
+            "SELECT payload FROM rl_dataset_snapshots WHERE snapshot_id=?",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(snapshot_id)
+        return _snapshot_from_row(row)
 
     def admit_receipt(self, receipt: RunReceipt) -> RunReceipt:
         if receipt.state != "accepted":

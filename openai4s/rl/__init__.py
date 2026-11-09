@@ -27,6 +27,7 @@ _LAZY_EXPORTS = {
     "TrajectoryEventSink": (".agent_sink", "TrajectoryEventSink"),
     "RewardVerifier": (".verifier", "RewardVerifier"),
     "apply_verifier": (".verifier", "apply_verifier"),
+    "DatasetSnapshot": (".snapshot", "DatasetSnapshot"),
 }
 
 
@@ -60,4 +61,5 @@ __all__ = [
     "RolloutSession",
     "RewardVerifier",
     "apply_verifier",
+    "DatasetSnapshot",
 ]
