@@ -1114,6 +1114,17 @@ _TEAM_VIEW_ONLY_TABLES = frozenset(
         "compute_job_events",
         "custom_skills",
         "agents",
+        # RL trajectory rows carry prompts, policy outputs, execution facts,
+        # receipts and verifier annotations. They are session content too;
+        # without scoped `my_*` views, team-mode SQL refuses them wholesale.
+        "rl_episodes",
+        "rl_observations",
+        "rl_decisions",
+        "rl_segments",
+        "rl_execution_events",
+        "rl_reward_annotations",
+        "rl_cost_records",
+        "rl_run_receipts",
     }
 )
 

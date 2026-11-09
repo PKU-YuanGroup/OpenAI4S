@@ -6,8 +6,6 @@ trainer can consume :class:`Trajectory` JSON while the existing agent engine
 continues to own execution and permissions.
 """
 
-from .agent_sink import TrajectoryEventSink
-from .atif import ATIFExporter
 from .host_events import HostCallLifecycle
 from .models import (
     CostRecord,
@@ -21,7 +19,26 @@ from .models import (
     Trajectory,
 )
 from .recorder import TrajectoryRecorder
-from .rollout import PolicySampler, RolloutSession
+
+_LAZY_EXPORTS = {
+    "ATIFExporter": (".atif", "ATIFExporter"),
+    "PolicySampler": (".rollout", "PolicySampler"),
+    "RolloutSession": (".rollout", "RolloutSession"),
+    "TrajectoryEventSink": (".agent_sink", "TrajectoryEventSink"),
+}
+
+
+def __getattr__(name: str):
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(name)
+    module_name, attribute = target
+    from importlib import import_module
+
+    value = getattr(import_module(module_name, __name__), attribute)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     "CostRecord",
