@@ -170,9 +170,20 @@ def add_device(
     ``mhs market show`` accepts.  ``via`` picks the agent surface: ``"mcp"``
     (a connector row) or ``"mhs"`` (native tools over HTTP).
     """
-    result = _install_device(package, via)
+    with mutation_lock():
+        result = _install_device(package, via)
+        if start_now:
+            startup = _start_endpoints(None)
     if start_now:
-        result.update(_brief(start()))
+        try:
+            result.update(_brief(_finish_start(*startup, wait_s=30.0)))
+        except LabStartSuperseded:
+            with mutation_lock():
+                if result["device"] not in installed_devices():
+                    raise
+                result["note"] = (
+                    "Device installed; lab startup was superseded by a later stop or restart"
+                )
     return result
 
 
@@ -668,7 +679,16 @@ class LabStartSuperseded(RuntimeError):
 def start(
     *, wait_s: float = 30.0, expected_generation: str | None = None
 ) -> dict[str, Any]:
-    result, doc, generation = _start_endpoints(expected_generation)
+    return _finish_start(*_start_endpoints(expected_generation), wait_s=wait_s)
+
+
+def _finish_start(
+    result: dict[str, Any],
+    doc: dict[str, Any],
+    generation: str | None,
+    *,
+    wait_s: float,
+) -> dict[str, Any]:
     if generation is None:
         return {"started": [], "not_ready": []}
     deadline = time.monotonic() + wait_s
@@ -681,7 +701,7 @@ def start(
     from openai4s.mhs_lab.labcard import write_lab_card
 
     _require_generation(generation)
-    card = write_lab_card()
+    card = write_lab_card(expected_generation=generation)
     with mutation_lock():
         _require_generation(generation)
         result["started"] = sorted(k for k, pid in _read_pids().items() if _alive(pid))

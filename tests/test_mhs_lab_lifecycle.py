@@ -82,7 +82,7 @@ def test_slow_card_generation_does_not_block_stop(monkeypatch, operation):
     entered, release = threading.Event(), threading.Event()
     card_calls = 0
 
-    def slow_card():
+    def slow_card(**kwargs):
         nonlocal card_calls
         card_calls += 1
         if card_calls == 1:
@@ -108,6 +108,11 @@ def test_slow_card_generation_does_not_block_stop(monkeypatch, operation):
             release.set()
         if operation == "remove":
             changing.result(timeout=3)
+        elif operation == "install":
+            result = changing.result(timeout=3)
+            assert result["device"] in supervisor.installed_devices()
+            assert "superseded" in result["note"]
+            assert "started" not in result
         else:
             with pytest.raises(supervisor.LabStartSuperseded):
                 changing.result(timeout=3)
@@ -166,6 +171,64 @@ def test_old_card_cannot_replace_a_newer_device_snapshot(monkeypatch):
         old.result(timeout=3)
     assert current.read_text() == "new"
     assert not list(current.parent.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("start_owned", [False, True])
+def test_old_card_cannot_replace_a_newer_lifecycle(monkeypatch, start_owned):
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(supervisor, "lab_document", lambda: {"endpoints": []})
+    calls = 0
+
+    def build(snapshot):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            assert release.wait(5)
+            return "old endpoints were down"
+        return "new endpoints are ready"
+
+    monkeypatch.setattr(labcard, "build_card", build)
+    generation = supervisor._mark_running(True)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        old = pool.submit(
+            labcard.write_lab_card,
+            expected_generation=generation if start_owned else None,
+        )
+        try:
+            assert entered.wait(2)
+            supervisor.stop()
+            supervisor._mark_running(True)
+            current = Path(labcard.write_lab_card())
+        finally:
+            release.set()
+        if start_owned:
+            with pytest.raises(supervisor.LabStartSuperseded):
+                old.result(timeout=3)
+        else:
+            old.result(timeout=3)
+    assert current.read_text() == "new endpoints are ready"
+    assert not list(current.parent.glob("*.tmp"))
+
+
+def test_superseded_install_does_not_claim_a_removed_device(monkeypatch):
+    monkeypatch.setattr(
+        supervisor,
+        "_market",
+        lambda: SimpleNamespace(
+            find=lambda name: {"id": "labs/owner__" + name, "name": name}
+        ),
+    )
+
+    def removed_while_starting(*args, **kwargs):
+        supervisor._save_devices([])
+        raise supervisor.LabStartSuperseded("removed during start")
+
+    monkeypatch.setattr(supervisor, "_start_endpoints", lambda _: ({}, {}, None))
+    monkeypatch.setattr(supervisor, "_finish_start", removed_while_starting)
+    with pytest.raises(supervisor.LabStartSuperseded):
+        supervisor.add_device("new")
+    assert supervisor.installed_devices() == []
 
 
 def test_simultaneous_installs_keep_all_devices_and_distinct_ports(monkeypatch):
@@ -306,7 +369,7 @@ def test_http_market_process_uses_site_limits_and_clean_environment(
         supervisor, "write_documents", lambda: {"mhs_connectors": "unused"}
     )
     monkeypatch.setattr(supervisor, "register_connectors", lambda _: {})
-    monkeypatch.setattr(labcard, "write_lab_card", lambda: "unused")
+    monkeypatch.setattr(labcard, "write_lab_card", lambda **kwargs: "unused")
     monkeypatch.setattr(supervisor, "sync_project", lambda _: {})
     spawn = Mock(return_value=SimpleNamespace(pid=12345))
     monkeypatch.setattr(supervisor.subprocess, "Popen", spawn)

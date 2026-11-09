@@ -321,17 +321,25 @@ def build_card(doc: dict[str, Any] | None = None) -> str:
     return "\n".join(out) + "\n"
 
 
-def write_lab_card() -> str:
+def write_lab_card(*, expected_generation: str | None = None) -> str:
     from openai4s.mhs_lab import supervisor
     from openai4s.mhs_lab.runtime import mutation_lock
 
     path = lab_dir() / "LAB-CARD.md"
     with mutation_lock():
+        if expected_generation is not None:
+            supervisor._require_generation(expected_generation)
+        generation = supervisor.running_generation()
         snapshot = supervisor.lab_document()
     card = build_card(snapshot)
     with mutation_lock():
-        # A newer install/remove owns the replacement card for its snapshot.
-        if snapshot != supervisor.lab_document():
+        if expected_generation is not None:
+            supervisor._require_generation(expected_generation)
+        # A newer lifecycle or device mutation owns the replacement card.
+        if (
+            generation != supervisor.running_generation()
+            or snapshot != supervisor.lab_document()
+        ):
             return str(path)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False

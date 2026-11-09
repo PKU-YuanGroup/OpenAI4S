@@ -234,6 +234,8 @@ def cmd_add(args: argparse.Namespace) -> int:
     )
     verb = "Installed" if result["added"] else "Already installed"
     print(f"✓ {verb} {device['name']} as `{device['id']}` ({surface}, fake backend).")
+    if result.get("note"):
+        print(f"  {result['note']}")
     for key in ("not_ready", "connector_error", "permission_error"):
         if result.get(key):
             print(f"  ! {key}: {result[key]}")
