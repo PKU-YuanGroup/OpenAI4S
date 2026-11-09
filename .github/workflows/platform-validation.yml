@@ -84,10 +84,11 @@ jobs:
       - name: Exercise the actual WSL installation and its sandbox
         shell: pwsh
         run: |
-          $linuxRoot = (wsl -d Ubuntu-24.04 -- wslpath -a "$PWD" | Out-String).Trim()
-          wsl -d Ubuntu-24.04 -- python3 "$linuxRoot/scripts/validate_installed_platform.py" --wsl-app /home/oa/release-check/app/current --artifact "$linuxRoot/windows.zip" --report "$linuxRoot/platform-evidence/windows-wsl-runtime.json"
+          $linuxRoot = (wsl -d Ubuntu-24.04 --exec wslpath -a "$PWD" | Out-String).Trim()
+          if ($LASTEXITCODE -or -not $linuxRoot.StartsWith('/')) { throw 'WSL path conversion failed' }
+          wsl -d Ubuntu-24.04 --exec python3 "$linuxRoot/scripts/validate_installed_platform.py" --wsl-app /home/oa/release-check/app/current --artifact "$linuxRoot/windows.zip" --report "$linuxRoot/platform-evidence/windows-wsl-runtime.json"
           if ($LASTEXITCODE) { throw 'Installed WSL2 science scenario failed' }
-          wsl -d Ubuntu-24.04 -- sh -c 'OPENAI4S_DATA_DIR=/home/oa/release-check /home/oa/release-check/app/current/bin/openai4s doctor --json' > platform-evidence/windows-doctor.json
+          wsl -d Ubuntu-24.04 --exec sh -c 'OPENAI4S_DATA_DIR=/home/oa/release-check /home/oa/release-check/app/current/bin/openai4s doctor --json' > platform-evidence/windows-doctor.json
           if ($LASTEXITCODE) { throw 'Installed WSL doctor failed' }
       - name: Stop only the test distribution
         if: always()
