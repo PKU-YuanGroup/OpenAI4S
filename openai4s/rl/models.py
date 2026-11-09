@@ -454,7 +454,9 @@ class CostRecord:
             "gpu_time_ms",
         ):
             _integer(name, getattr(self, name))
-        _finite("cost_usd", self.cost_usd)
+        cost_usd = _finite("cost_usd", self.cost_usd)
+        if cost_usd is not None and cost_usd < 0:
+            raise ValueError("cost_usd must be non-negative or None")
         _optional_text("decision_id", self.decision_id)
         object.__setattr__(self, "metadata", _payload(self.metadata))
 

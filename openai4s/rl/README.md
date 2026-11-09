@@ -61,3 +61,8 @@ follows exact Artifact version and Compute job IDs already referenced by an
 execution event, including checksums, producing cells, receipts, input
 versions, manifests, and append-only job events. It never resolves an Artifact
 head, copies source rows, or estimates GPU/provider cost.
+
+`cost.py` accepts only explicitly authenticated provider cost evidence bound to
+the exact compute job and receipt. Missing provider measurements remain
+unknown; durable job elapsed time is metadata and is never relabeled as GPU
+time or a billing amount.

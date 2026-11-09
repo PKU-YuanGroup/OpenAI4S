@@ -141,6 +141,33 @@ class TrajectoryRecorder:
                 self.repository.append_cost(value)
             return result
 
+    def add_provider_cost(
+        self,
+        evidence: Any,
+        compute_job: Any,
+        *,
+        decision_id: str | None = None,
+        cost_id: str | None = None,
+    ) -> CostRecord:
+        """Validate and append one provider-backed compute cost fact.
+
+        The provider receipt and compute row are checked before the normal
+        append-only/idempotent cost path.  Keeping this adapter here lets a
+        Store-backed recorder use exactly the same duplicate handling as token
+        and wall-time records without teaching the recorder to infer pricing.
+        """
+
+        from .cost import provider_cost_record
+
+        value = provider_cost_record(
+            self.episode.episode_id,
+            evidence,
+            compute_job,
+            decision_id=decision_id,
+            cost_id=cost_id,
+        )
+        return self.add_cost(value)
+
     def create_snapshot(
         self, snapshot_id: str, *, created_at: int | None = None
     ) -> DatasetSnapshot:

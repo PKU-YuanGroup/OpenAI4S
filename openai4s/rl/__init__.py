@@ -48,6 +48,8 @@ _LAZY_EXPORTS = {
     "RolloutExport": (".worker", "RolloutExport"),
     "RolloutWorker": (".worker", "RolloutWorker"),
     "WorkerFormat": (".worker", "WorkerFormat"),
+    "ProviderCostEvidence": (".cost", "ProviderCostEvidence"),
+    "provider_cost_record": (".cost", "provider_cost_record"),
 }
 
 
@@ -100,4 +102,6 @@ __all__ = [
     "RolloutExport",
     "RolloutWorker",
     "WorkerFormat",
+    "ProviderCostEvidence",
+    "provider_cost_record",
 ]

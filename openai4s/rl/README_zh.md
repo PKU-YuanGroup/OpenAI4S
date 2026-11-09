@@ -46,3 +46,7 @@ reset/run/release；对 durable receipt 中断状态只报告 `recovery_required
 Artifact version 和 Compute job ID，带出 checksum、producing cell、receipt、输入
 版本、manifest 以及追加式 job events；不会解析 Artifact head、复制源表或估算 GPU/
 Provider 成本。
+
+`cost.py` 只接受明确声明已认证、且绑定到精确 compute job 与 receipt 的 Provider
+成本证据。缺失的 Provider 测量保持未知；持久化 job 的耗时只作为 metadata 保存，
+不会被改称为 GPU 时间或账单金额。
