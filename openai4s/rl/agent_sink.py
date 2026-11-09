@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from openai4s.agent.actions import (
     Action,
@@ -109,6 +109,7 @@ class TrajectoryEventSink:
         parent_decision_id: str | None = None,
         frame_id: str | None = None,
         id_prefix: str | None = None,
+        action_group_id_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self.recorder = recorder
         self.delegate = delegate
@@ -119,6 +120,7 @@ class TrajectoryEventSink:
         self.parent_decision_id = parent_decision_id
         self.frame_id = frame_id
         self.id_prefix = str(id_prefix or "").strip()
+        self.action_group_id_provider = action_group_id_provider
         self._observations: dict[int, Observation] = {}
         self._replies: dict[int, ModelReply] = {}
 
@@ -225,6 +227,7 @@ class TrajectoryEventSink:
         token_logprobs = extra.get("token_logprobs")
         loss_mask = extra.get("loss_mask")
         raw_response = reply.raw if isinstance(reply.raw, Mapping) else None
+        action_group_id = self._action_group_id()
         self.recorder.add_decision(
             PolicyDecision(
                 decision_id=self.decision_id(turn),
@@ -238,6 +241,7 @@ class TrajectoryEventSink:
                 created_at=self.recorder.now_ms(),
                 parent_decision_id=self.parent_decision_id,
                 frame_id=self.frame_id,
+                action_group_id=action_group_id,
                 action_logprob=extra.get("action_logprob"),
                 token_ids=token_ids,
                 token_logprobs=token_logprobs,
@@ -247,3 +251,22 @@ class TrajectoryEventSink:
                 assistant_message=reply.assistant_message,
             )
         )
+
+    def _action_group_id(self) -> str | None:
+        """Return the ledger group created for the routed action, if any.
+
+        The delegate is notified before this sink records the decision.  That
+        ordering lets the authoritative Action Ledger allocate its group and
+        expose the exact identity without making the RL adapter create a
+        second group or infer one from a turn number.
+        """
+
+        provider = self.action_group_id_provider
+        if provider is None:
+            candidate = getattr(self.delegate, "current_action_group_id", None)
+            if callable(candidate):
+                provider = candidate
+        if provider is None:
+            return None
+        value = provider()
+        return str(value) if value else None

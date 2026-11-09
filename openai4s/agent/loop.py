@@ -210,6 +210,11 @@ class _LedgerTranscriptEventSink:
         self.ledger.emit(event)
         self.transcript.emit(event)
 
+    def current_action_group_id(self) -> str | None:
+        """Expose the ledger's current group to trajectory adapters."""
+
+        return self.ledger.current_action_group_id()
+
 
 class _FrameUsageEventSink:
     """Meter every delivered provider reply onto the frame this Agent opened.
@@ -1050,6 +1055,11 @@ class Agent:
                         parent_decision_id=self.trajectory_parent_decision_id,
                         frame_id=self.frame_id,
                         id_prefix=self.trajectory_recorder.episode.episode_id,
+                        action_group_id_provider=(
+                            lambda ledger=action_ledger: getattr(
+                                ledger, "current_group_id", None
+                            )
+                        ),
                     )
                 if self._owns_frame:
                     event_sink = _FrameUsageEventSink(

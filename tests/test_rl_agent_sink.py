@@ -123,12 +123,21 @@ def test_delegated_worker_trajectory_keeps_parent_episode_and_decision(
         assert json.loads(child_episode["metadata"])["training_policy"] is False
         child_episode_id = child_episode["episode_id"]
         decision = store._conn.execute(
-            "SELECT decision_id, episode_id, payload FROM rl_decisions"
+            "SELECT decision_id, episode_id, action_group_id, payload "
+            "FROM rl_decisions"
         ).fetchone()
         assert decision is not None
         payload = json.loads(decision["payload"])
         assert decision["decision_id"] == f"{child_episode_id}:decision-0"
         assert decision["episode_id"] == child_episode_id
+        assert decision["action_group_id"]
+        assert (
+            store._conn.execute(
+                "SELECT group_id FROM action_groups WHERE group_id=?",
+                (decision["action_group_id"],),
+            ).fetchone()
+            is not None
+        )
         assert payload["parent_decision_id"] == "decision-parent"
         observation = store._conn.execute(
             "SELECT observation_id, payload FROM rl_observations"
