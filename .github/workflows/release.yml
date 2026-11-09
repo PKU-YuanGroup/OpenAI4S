@@ -562,6 +562,9 @@ jobs:
     needs: [freeze, linux-app]
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # Install and launch from one cache even after the smoke isolates HOME.
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/openai4s-playwright
     steps:
       - name: Checkout the release tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
