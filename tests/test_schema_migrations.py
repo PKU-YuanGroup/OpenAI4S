@@ -170,6 +170,7 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "background_exec_receipts",
         "project_source_folder",
         "dataset_verification_receipts",
+        "rl_runtime",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -201,7 +202,7 @@ def test_v36_preserves_historical_sources_without_inferred_receipts(tmp_path):
         connection.execute("PRAGMA user_version = 35")
     upgraded = get_store(db)
     try:
-        assert upgraded.schema_state()["version"] == 36
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 37
         assert upgraded.version_meta(artifact["version_id"])["source"] == source
         assert (
             upgraded._conn.execute(
@@ -2237,7 +2238,7 @@ def test_v33_redacts_historical_judge_args_and_leaves_other_rows(tmp_path, monke
     try:
         rows = read_rows(upgraded)
         assert secure_delete_mode(upgraded._conn) == secure_before
-        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 36
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 37
         assert version_33_names(upgraded) == ["redact_judge_host_call_args"]
     finally:
         upgraded.close()

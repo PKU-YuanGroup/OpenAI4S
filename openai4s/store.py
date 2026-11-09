@@ -144,6 +144,7 @@ from openai4s.storage.permissions import PermissionRuleRepository
 from openai4s.storage.permissions import perm_match as _perm_match
 from openai4s.storage.plans import PlanRepository
 from openai4s.storage.recovery import RecoveryJournalRepository
+from openai4s.storage.rl import RLRepository, create_rl_schema
 from openai4s.storage.session_imports import SessionImportRepository
 from openai4s.storage.settings import SettingsRepository
 from openai4s.storage.shares import SharesRepository
@@ -1285,6 +1286,7 @@ class Store:
         # carrying the same rows.
         harden_db(self.db_path)
         self._migrate()
+        self._rl = RLRepository(self._conn, self._lock, clock_ms=lambda: _now_ms())
         self._actions = ActionLedgerRepository(
             self._conn,
             self._lock,
@@ -1695,6 +1697,7 @@ class Store:
                         "dataset_verification_receipts",
                         self._apply_dataset_verification_receipts,
                     ),
+                    37: ("rl_runtime", self._apply_rl_runtime),
                 },
             )
             if report["migrated"]:
@@ -1708,6 +1711,10 @@ class Store:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
         if "folder_path" not in columns:
             conn.execute("ALTER TABLE projects ADD COLUMN folder_path TEXT")
+
+    def _apply_rl_runtime(self, conn: sqlite3.Connection) -> None:
+        """Version 37: durable Agentic RL trajectory and run receipts."""
+        create_rl_schema(conn)
 
     def _apply_datapro_content_index(self, conn: sqlite3.Connection) -> None:
         """Version 16: lossless local indexing for DataPro responses."""
@@ -2650,6 +2657,11 @@ class Store:
     def background_exec_receipts(self) -> BackgroundExecReceiptRepository:
         """Bounded Web background-cell receipts. CLI sessions do not write them."""
         return self._background_exec_receipts
+
+    @property
+    def rl(self) -> RLRepository:
+        """Durable RL trajectory records and idempotent rollout receipts."""
+        return self._rl
 
     @property
     def leases(self) -> LeaseRepository:

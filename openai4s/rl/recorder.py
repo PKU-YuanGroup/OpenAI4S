@@ -40,8 +40,11 @@ class TrajectoryRecorder:
     data after a lost response.
     """
 
-    def __init__(self, episode: Episode):
+    def __init__(self, episode: Episode, repository: Any | None = None):
         self.episode = episode
+        self.repository = repository
+        if repository is not None:
+            repository.append_episode(episode)
         self._lock = threading.RLock()
         self._observations: dict[str, Observation] = {}
         self._decisions: dict[str, PolicyDecision] = {}
@@ -71,17 +74,26 @@ class TrajectoryRecorder:
     def add_observation(self, value: Observation) -> Observation:
         with self._lock:
             self._check_episode(value.episode_id)
-            return self._put(self._observations, value.observation_id, value)
+            result = self._put(self._observations, value.observation_id, value)
+            if self.repository is not None and result is value:
+                self.repository.append_observation(value)
+            return result
 
     def add_decision(self, value: PolicyDecision) -> PolicyDecision:
         with self._lock:
             self._check_episode(value.episode_id)
-            return self._put(self._decisions, value.decision_id, value)
+            result = self._put(self._decisions, value.decision_id, value)
+            if self.repository is not None and result is value:
+                self.repository.append_decision(value)
+            return result
 
     def add_segment(self, value: Segment) -> Segment:
         with self._lock:
             self._check_episode(value.episode_id)
-            return self._put(self._segments, value.segment_id, value)
+            result = self._put(self._segments, value.segment_id, value)
+            if self.repository is not None and result is value:
+                self.repository.append_segment(value)
+            return result
 
     def add_event(self, value: ExecutionEvent) -> ExecutionEvent:
         with self._lock:
@@ -100,18 +112,26 @@ class TrajectoryRecorder:
                 raise ValueError("event sequence must increase for new events")
             assert value.sequence is not None
             self._event_sequence = value.sequence
+            if self.repository is not None:
+                self.repository.append_execution_event(value)
             self._events[value.event_id] = value
             return value
 
     def add_reward(self, value: RewardAnnotation) -> RewardAnnotation:
         with self._lock:
             self._check_episode(value.episode_id)
-            return self._put(self._rewards, value.annotation_id, value)
+            result = self._put(self._rewards, value.annotation_id, value)
+            if self.repository is not None and result is value:
+                self.repository.append_reward(value)
+            return result
 
     def add_cost(self, value: CostRecord) -> CostRecord:
         with self._lock:
             self._check_episode(value.episode_id)
-            return self._put(self._costs, value.cost_id, value)
+            result = self._put(self._costs, value.cost_id, value)
+            if self.repository is not None and result is value:
+                self.repository.append_cost(value)
+            return result
 
     def _check_episode(self, episode_id: str) -> None:
         if episode_id != self.episode.episode_id:
@@ -127,6 +147,8 @@ class TrajectoryRecorder:
             self.episode = type(self.episode)(
                 **{**self.episode.to_dict(), "status": status}
             )
+            if self.repository is not None:
+                self.repository.update_episode_status(self.episode.episode_id, status)
             return self.episode
 
     def snapshot(self) -> Trajectory:
