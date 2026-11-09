@@ -1324,6 +1324,12 @@ def cmd_stop(args) -> int:
     return 0
 
 
+def cmd_lab(args) -> int:
+    from openai4s.mhs_lab.cli import main as lab_main
+
+    return lab_main(list(args.lab_args))
+
+
 def cmd_url(args) -> int:
     cfg = get_config()
     print(
@@ -2972,6 +2978,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ur.set_defaults(fn=cmd_user)
 
+    plab = sub.add_parser(
+        "lab",
+        help="the simulated OpenMHS lab: install market devices, start, stop",
+        add_help=False,
+    )
+    plab.add_argument("lab_args", nargs=argparse.REMAINDER)
+    plab.set_defaults(fn=cmd_lab)
     prelay = sub.add_parser("relay", help="run the public share relay (on a VPS)")
     rsub = prelay.add_subparsers(dest="relay_action", required=True)
     rs = rsub.add_parser("serve", help="serve the relay (front with TLS)")

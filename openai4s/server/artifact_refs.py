@@ -55,11 +55,12 @@ LEGACY_REF = re.compile(r"(?:^|\s)@([\w./-]+\.\w+)(?![\w#])")
 #: places that named no release and would never notice the window closing.
 #: v0.2.0's notes carried no deprecation for it, and CONTRIBUTING requires one
 #: a minor release ahead of a removal, so 0.3.0 announces it and this names the
-#: removal release. `tests/test_artifact_refs.py` fails once
+#: removal release. 1.0.0 moved it to 1.1.0, said so in its release notes,
+#: because the autocomplete precondition below was still open. `tests/test_artifact_refs.py` fails once
 #: `openai4s.__version__` reaches it. Before removing: the workbench
 #: autocomplete must stop inserting a bare name for an artifact row with no
 #: `version_id` (frontend/src/features/autocomplete/rank.ts).
-LEGACY_REF_REMOVED_IN = "0.4.0"
+LEGACY_REF_REMOVED_IN = "1.1.0"
 
 #: How many references one message may resolve, and how much of each is
 #: injected. Both bound the *prompt*, which is the scarce resource here: a
@@ -609,7 +610,7 @@ def _resolve_legacy(
 ) -> tuple[str | None, RefProblem | None, ArtifactRef | None]:
     """The unpinned spelling: this session only, and it says it is unpinned.
 
-    Deprecated; kept until `LEGACY_REF_REMOVED_IN` (0.4.0). It resolves through
+    Deprecated; kept until `LEGACY_REF_REMOVED_IN` (1.1.0). It resolves through
     the artifact's *latest* version rather than its live path, so at least the
     bytes sent are a version that exists rather than whatever a concurrent cell
     happened to leave on disk mid-write.

@@ -1,0 +1,532 @@
+/* Lab panel (OpenMHS simulated lab), a dock pane beside the Notebook.
+   Uses the workbench tokens from style.css; series colours are the validated
+   reference categorical slots 1-5, stepped separately for the dark surface. */
+.lab-root {
+  --lab-s1: #2a78d6;
+  --lab-s2: #eb6834;
+  --lab-s3: #1baf7a;
+  --lab-s4: #6250d6;
+  --lab-s5: #e87ba4;
+  --lab-good: #0ca30c;
+  --lab-critical: #d03b3b;
+  padding: 14px 16px 28px;
+  font-family: var(--sans);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-y: auto;
+  height: 100%;
+  box-sizing: border-box;
+}
+html[data-theme="dark"] .lab-root {
+  --lab-s1: #3987e5;
+  --lab-s2: #d95926;
+  --lab-s3: #199e70;
+  --lab-s4: #9085e9;
+  --lab-s5: #d55181;
+}
+.lab-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+.lab-head h3 {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 500;
+  margin: 0 0 4px;
+}
+.lab-head p {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+.lab-section {
+  margin: 18px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lab-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.lab-chip,
+.lab-tag,
+.lab-access {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11.5px;
+  color: var(--text-300);
+  background: var(--bg-100);
+  white-space: nowrap;
+}
+.lab-chip.ok {
+  color: var(--success-text);
+  background: var(--success-bg);
+  border-color: transparent;
+}
+.lab-chip.bad {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: transparent;
+}
+.lab-tag.strong {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border-color: transparent;
+  vertical-align: middle;
+}
+.lab-tag.off {
+  color: var(--danger);
+}
+.lab-access {
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.lab-access.small {
+  font-size: 10.5px;
+  padding: 0 6px;
+}
+.lab-btn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lab-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.lab-btn.danger {
+  color: #fff;
+  background: var(--lab-critical);
+  border-color: var(--lab-critical);
+}
+.lab-btn.danger.big {
+  font-weight: 600;
+  padding: 8px 12px;
+}
+.lab-btn.warn {
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border-color: transparent;
+}
+.lab-devices {
+  display: grid;
+  gap: 10px;
+}
+.lab-device {
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-card);
+  padding: 10px 12px;
+  background: var(--card);
+}
+.lab-device.is-latched {
+  border-color: var(--lab-critical);
+  box-shadow: 0 0 0 1px var(--lab-critical) inset;
+}
+.lab-device header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.lab-device h4 {
+  margin: 0 0 4px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.lab-device-actions {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.lab-latch {
+  margin: 8px 0 6px;
+  font-size: 12px;
+  color: var(--success-text);
+}
+.lab-latch.on {
+  color: var(--danger);
+  font-weight: 600;
+}
+.lab-kv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 12px;
+  color: var(--text-300);
+  font-variant-numeric: tabular-nums;
+}
+.lab-prov {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.lab-plate {
+  margin-top: 6px;
+  display: grid;
+  gap: 2px;
+}
+.lab-plate-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.lab-plate-label {
+  width: 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+.lab-plate-cpd {
+  margin-left: 6px;
+  font-size: 10.5px;
+  color: var(--text-300);
+  font-family: var(--mono);
+}
+.lab-well {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+.lab-well.s-dosed {
+  background: var(--bg-300);
+}
+.lab-well.s-reacting {
+  background: var(--lab-s2);
+  border-color: transparent;
+}
+.lab-well.s-read {
+  background: var(--lab-s1);
+  border-color: transparent;
+}
+.lab-figure {
+  margin: 8px 0 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-card);
+  padding: 8px 10px 10px;
+}
+.lab-figure figcaption {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-200);
+  margin-bottom: 2px;
+}
+.lab-figure svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.lab-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.lab-axis {
+  fill: var(--muted);
+  font-size: 10.5px;
+  font-family: var(--sans);
+}
+.lab-dot {
+  stroke: var(--card);
+  stroke-width: 2;
+}
+.lab-best {
+  stroke: var(--text-300);
+  stroke-dasharray: 4 3;
+}
+.lab-pose {
+  fill: none;
+  stroke: var(--text-300);
+  stroke-width: 1.5;
+}
+.lab-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 11.5px;
+  color: var(--text-300);
+}
+.lab-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+.lab-legend .lab-best-key {
+  height: 0;
+  border-top: 2px dashed var(--text-300);
+  border-radius: 0;
+  vertical-align: 3px;
+}
+.lab-refused {
+  color: var(--danger);
+}
+.lab-activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-card);
+  max-height: 340px;
+  overflow-y: auto;
+}
+.lab-activity li {
+  display: grid;
+  grid-template-columns: 62px 1fr auto auto;
+  grid-template-areas: "time cap chip seq" "time access summary summary";
+  gap: 1px 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12px;
+  align-items: center;
+}
+.lab-activity li:last-child {
+  border-bottom: 0;
+}
+.lab-activity li.is-refused {
+  background: var(--danger-bg);
+}
+.lab-time {
+  grid-area: time;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.lab-activity .lab-access {
+  grid-area: access;
+  justify-self: start;
+}
+.lab-cap {
+  grid-area: cap;
+  font-weight: 600;
+}
+.lab-activity .lab-chip {
+  grid-area: chip;
+}
+.lab-summary {
+  grid-area: summary;
+  color: var(--text-300);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lab-seq {
+  grid-area: seq;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.lab-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.lab-table th,
+.lab-table td {
+  text-align: left;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.lab-table th {
+  color: var(--muted);
+  font-weight: 500;
+}
+.lab-mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.lab-empty {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.lab-error {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* Header actions, setup, device groups (MHS native / MCP) and the device market. */
+.lab-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: flex-start;
+}
+.lab-btn.primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.lab-btn.primary.big {
+  font-weight: 600;
+  padding: 8px 14px;
+}
+.lab-muted {
+  color: var(--muted);
+  margin: 2px 0 8px;
+  font-size: 12px;
+}
+.lab-notice {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  color: var(--warn-text);
+  background: var(--warn-bg);
+}
+.lab-setup {
+  max-width: 560px;
+  margin: 24px auto;
+  text-align: center;
+}
+.lab-setup h3 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 19px;
+  margin: 0 0 6px;
+}
+.lab-setup p {
+  color: var(--muted);
+}
+.lab-setup code,
+.lab-market-cmd {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.lab-group {
+  margin: 0 0 14px;
+}
+.lab-group-title {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 10px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.lab-market {
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-card);
+  padding: 10px 12px;
+  background: var(--bg-100);
+}
+.lab-market-lead,
+.lab-market-count {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.lab-market-search {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  font: inherit;
+  background: var(--panel);
+  color: var(--ink);
+}
+.lab-market-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 0;
+}
+.lab-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font: inherit;
+  font-size: 11.5px;
+  background: var(--panel);
+  color: var(--text-300);
+  cursor: pointer;
+}
+.lab-pill.on {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.lab-market-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.lab-market-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-card);
+  padding: 9px 10px;
+  background: var(--panel);
+  min-width: 0;
+}
+.lab-market-card h5 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.lab-market-intro {
+  margin: 0;
+  color: var(--text-300);
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.lab-market-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+.lab-market-src {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.lab-market-install {
+  display: inline-flex;
+  gap: 4px;
+}
+.lab-market-install select {
+  font: inherit;
+  font-size: 11.5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+}
+.lab-market-cmd {
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+  color: var(--muted);
+}

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-`openai4s` 命令都放在这里：daemon 生命周期（`serve`、`status`、`stop`、`url`）、本地一次性任务执行（`run`）、首次模型配置（`init`）、科学计算环境创建（`setup`）以及与之并列、把环境当事务处理的 `env` generation、几个支持面（`doctor`、`diagnostics`、`verify-package`）、工作流 `benchmark`、只读会话分享（`share`）与替它对外承接流量的公网 `relay`、批处理任务提交（`cluster`）、team 模式的账号管理（`user`），还有可选的 Jupyter 适配器命令。`-V`/`--version` 回答包版本号。
+`openai4s` 命令都放在这里：daemon 生命周期（`serve`、`status`、`stop`、`url`）、本地一次性任务执行（`run`）、首次模型配置（`init`）、科学计算环境创建（`setup`）以及与之并列、把环境当事务处理的 `env` generation、几个支持面（`doctor`、`diagnostics`、`verify-package`）、工作流 `benchmark`、只读会话分享（`share`）与替它对外承接流量的公网 `relay`、批处理任务提交（`cluster`）、team 模式的账号管理（`user`）、模拟 OpenMHS 实验室（`lab`：安装市场设备、启动、停止；实现在 `openai4s/mhs_lab/cli.py`），还有可选的 Jupyter 适配器命令。`-V`/`--version` 回答包版本号。
 
 ## 在架构中的位置
 

@@ -164,10 +164,10 @@ describe("version-specific tabs", () => {
       addOpenTab({ id: "a", filename: "a.txt" });
       addOpenTab({ id: "b", filename: "b.txt" });
       setActiveTab("a");
-      expect(names()).toEqual(["a.txt", "b.txt", "Notebook", expect.any(String)]);
+      expect(names()).toEqual(["a.txt", "b.txt", "Notebook", expect.any(String), expect.any(String)]);
       closeTab("b");
       expect(activeTab.value).toBe("a");
-      expect(names()).toEqual(["a.txt", "Notebook", expect.any(String)]);
+      expect(names()).toEqual(["a.txt", "Notebook", expect.any(String), expect.any(String)]);
     } finally { vi.unstubAllGlobals(); }
   });
 });
