@@ -15,6 +15,8 @@ from openai4s.rl import (
     PolicyDecision,
     RolloutEnvironment,
     RolloutSession,
+    RolloutWorker,
+    RunReceipt,
     TrajectoryRecorder,
     TrajectoryReplayer,
 )
@@ -46,6 +48,127 @@ def test_rollout_session_runs_external_sampler_and_exports_terminal_trajectory()
     assert trajectory.decisions[0].policy_name == "vllm"
     assert trajectory.execution_events[-1].kind == "episode.finished"
     assert session.export() == trajectory.canonical_json()
+
+
+def test_rollout_worker_releases_environment_and_exports_both_formats(tmp_path):
+    def build_engine(_reset):
+        return AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1)
+
+    worker = RolloutWorker(RolloutEnvironment(build_engine, workspace_root=tmp_path))
+    trajectory = worker.run(
+        Episode("ep-worker", "task", "session", 1),
+        [{"role": "user", "content": "run"}],
+        lambda _observation: ModelReply(content="done"),
+    )
+    assert trajectory.episode.status == "done"
+    json_export = worker.export_json(trajectory)
+    assert json_export.format == "json"
+    assert json_export.schema_version == trajectory.schema_version
+    assert json_export.content == trajectory.canonical_json()
+    exported = worker.export(trajectory, "jsonl")
+    assert exported.format == "jsonl"
+    assert (
+        exported.sha256
+        == __import__("hashlib").sha256(exported.content.encode("utf-8")).hexdigest()
+    )
+    assert exported.content.splitlines()[0].startswith('{"episode":')
+    assert worker.environment.active is False
+
+
+def test_rollout_worker_recovery_never_replays_running_receipt(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    try:
+        store.rl.admit_receipt(
+            RunReceipt("request-recover", "fp", "ep-recover", "accepted", 1, 1)
+        )
+        store.rl.update_receipt_state("request-recover", "running")
+        worker = RolloutWorker(
+            RolloutEnvironment(
+                lambda _reset: AgentEngine(
+                    _NeverCalledModel(), _Executor(), max_turns=1
+                )
+            ),
+            repository=store.rl,
+        )
+        recovered = worker.recover("request-recover")
+        assert recovered.status == "recovery_required"
+        assert recovered.can_resume is False
+    finally:
+        store.close()
+
+
+def test_rollout_worker_refuses_running_request_before_engine_factory(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    created = []
+    try:
+        store.rl.admit_receipt(
+            RunReceipt("request-running", "fp", "ep-running", "accepted", 1, 1)
+        )
+        store.rl.update_receipt_state("request-running", "running")
+        environment = RolloutEnvironment(
+            lambda reset: created.append(reset)
+            or AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1),
+            repository=store.rl,
+            workspace_root=tmp_path / "workspaces",
+        )
+        worker = RolloutWorker(environment)
+        with pytest.raises(RuntimeError, match="recovery_required"):
+            worker.run(
+                Episode("ep-running", "task", "session", 1),
+                [{"role": "user", "content": "run"}],
+                lambda _observation: ModelReply(content="done"),
+                request_id="request-running",
+            )
+        assert created == []
+        assert environment.active is False
+    finally:
+        store.close()
+
+
+def test_rollout_worker_repository_binds_environment_for_run_receipts(tmp_path):
+    store = get_store(Config(data_dir=tmp_path / "store").db_path)
+    try:
+        environment = RolloutEnvironment(
+            lambda _reset: AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1),
+            workspace_root=tmp_path / "workspaces",
+        )
+        worker = RolloutWorker(environment, repository=store.rl)
+        trajectory = worker.run(
+            Episode("ep-worker-receipt", "task", "session", 1),
+            [{"role": "user", "content": "run"}],
+            lambda _observation: ModelReply(content="done"),
+            request_id="request-worker-receipt",
+        )
+        assert trajectory.episode.status == "done"
+        assert store.rl.get_receipt("request-worker-receipt").state == "completed"
+        assert environment.repository is store.rl
+    finally:
+        store.close()
+
+
+def test_rollout_worker_does_not_settle_receipt_on_process_interrupt(tmp_path):
+    store = get_store(Config(data_dir=tmp_path / "store").db_path)
+    try:
+        environment = RolloutEnvironment(
+            lambda _reset: AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1),
+            workspace_root=tmp_path / "workspaces",
+        )
+        worker = RolloutWorker(environment, repository=store.rl)
+
+        def interrupted(_observation):
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            worker.run(
+                Episode("ep-worker-interrupt", "task", "session", 1),
+                [{"role": "user", "content": "run"}],
+                interrupted,
+                request_id="request-worker-interrupt",
+            )
+        assert store.rl.get_receipt("request-worker-interrupt").state == "running"
+        assert environment.active is True
+    finally:
+        store.close()
 
 
 class _NeverCalledModel:

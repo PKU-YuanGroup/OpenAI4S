@@ -166,6 +166,14 @@ The existing `AgentEngine` still owns routing, permissions, kernel execution,
 completion, cancellation, and ledger callbacks. This runtime does not include
 PPO, GRPO, advantage estimation, model serving, or a verifier implementation.
 
+`RolloutWorker` is the synchronous one-Episode adapter around that lifecycle.
+Its `run()` performs reset, external sampling, and release as one bounded call;
+`reset()` and `release()` are also available when a caller needs explicit
+ownership. Recovery only inspects a durable receipt: a `running` receipt
+projects to `recovery_required` and is never retried automatically. Worker
+exports carry the trajectory schema version and the SHA-256 of the exact JSON
+or JSONL payload bytes.
+
 `DatasetSnapshot` is the current fixed dataset boundary. It accepts only a
 terminal Episode with no open Segments and fully sequenced execution events;
 it stores the canonical trajectory hash, the maximum event sequence, and

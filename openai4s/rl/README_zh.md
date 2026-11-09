@@ -32,6 +32,10 @@ Engine/Recorder 和 workspace。Reset 元数据记录初始 Artifact 引用、�
 这些记录，同时保留 Action Ledger 作为执行事实源。`rollout.py` 导出面向 Trainer 的
 `RolloutSession`，提供 reset/observe/step/finish/export 生命周期。
 
+`worker.py` 提供同步的 `RolloutWorker` 边界：负责一个 Episode 的隔离环境
+reset/run/release；对 durable receipt 中断状态只报告 `recovery_required`，不重放副作用；
+并返回带 schema version 和精确 payload 字节 SHA-256 的 JSON/JSONL 导出。
+
 `atif.py` 提供 `ATIFExporter`，将轨迹确定性地投影为 ATIF-v1.8 交换格式，并在 ATIF
 扩展元数据中保留 Segment、Reward、Cost 和执行事件标识。
 

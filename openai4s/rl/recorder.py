@@ -253,37 +253,12 @@ class TrajectoryRecorder:
 
     def export_jsonl(self) -> str:
         """Export the envelope as deterministic JSONL for streaming loaders."""
-        trajectory = self.snapshot().to_dict()
-        lines = [
-            json.dumps(
-                {
-                    "type": "trajectory",
-                    "schema_version": trajectory["schema_version"],
-                    "episode": trajectory["episode"],
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        ]
-        for key in (
-            "observations",
-            "decisions",
-            "segments",
-            "execution_events",
-            "rewards",
-            "costs",
-        ):
-            for record in trajectory[key]:
-                lines.append(
-                    json.dumps(
-                        {"type": key[:-1], **record},
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                )
-        return "\n".join(lines) + "\n"
+        return trajectory_jsonl(self.snapshot())
+
+    @staticmethod
+    def trajectory_jsonl(trajectory: Trajectory) -> str:
+        """Serialize a detached trajectory with the recorder's JSONL contract."""
+        return trajectory_jsonl(trajectory)
 
     @staticmethod
     def fingerprint(value: dict[str, Any]) -> str:
@@ -300,3 +275,41 @@ class TrajectoryRecorder:
     def __len__(self) -> int:
         with self._lock:
             return len(self._events) + len(self._decisions)
+
+
+def trajectory_jsonl(trajectory: Trajectory) -> str:
+    """Serialize one trajectory as deterministic, line-delimited JSON."""
+    envelope = trajectory.to_dict()
+    lines = [
+        json.dumps(
+            {
+                "type": "trajectory",
+                "schema_version": envelope["schema_version"],
+                "episode": envelope["episode"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    ]
+    for key in (
+        "observations",
+        "decisions",
+        "segments",
+        "execution_events",
+        "rewards",
+        "costs",
+    ):
+        for record in envelope[key]:
+            lines.append(
+                json.dumps(
+                    {"type": key[:-1], **record},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+    return "\n".join(lines) + "\n"
+
+
+__all__ = ["TrajectoryRecorder", "trajectory_jsonl"]

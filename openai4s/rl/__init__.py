@@ -44,6 +44,10 @@ _LAZY_EXPORTS = {
     "ExecutionReplayRunner": (".replay", "ExecutionReplayRunner"),
     "ArtifactChecker": (".replay", "ArtifactChecker"),
     "DurableFactProjector": (".projector", "DurableFactProjector"),
+    "RecoveryResult": (".worker", "RecoveryResult"),
+    "RolloutExport": (".worker", "RolloutExport"),
+    "RolloutWorker": (".worker", "RolloutWorker"),
+    "WorkerFormat": (".worker", "WorkerFormat"),
 }
 
 
@@ -92,4 +96,8 @@ __all__ = [
     "ExecutionReplayRunner",
     "ArtifactChecker",
     "DurableFactProjector",
+    "RecoveryResult",
+    "RolloutExport",
+    "RolloutWorker",
+    "WorkerFormat",
 ]

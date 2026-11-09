@@ -42,6 +42,12 @@ the existing `AgentEngine` event stream into these records without replacing
 the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing
 reset/observe/step/finish/export lifecycle.
 
+`worker.py` provides the synchronous `RolloutWorker` boundary for one
+Episode: it resets, runs, and releases an isolated environment, reports a
+durable interrupted receipt as `recovery_required` without retrying side
+effects, and returns schema-versioned JSON/JSONL exports with a SHA-256 of the
+exact payload bytes.
+
 `atif.py` provides `ATIFExporter`, a deterministic ATIF-v1.8 interchange
 projection that keeps segment, reward, cost, and execution identifiers in
 ATIF extension metadata.
