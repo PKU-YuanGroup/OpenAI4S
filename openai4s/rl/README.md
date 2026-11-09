@@ -22,6 +22,10 @@ append-only execution facts before adding versioned annotations.
 that freezes the full trajectory hash and event sequence boundary for a
 training export. It does not copy or rewrite trajectory records.
 
+`policy.py` defines `PolicyProvider` and `PolicyAdapter`. The adapter records
+the behavior policy identity and sampling configuration in `ModelReply.extra`;
+it preserves missing logprob evidence instead of estimating it after sampling.
+
 `__init__.py` exports the public records and adapters. `agent_sink.py` bridges
 the existing `AgentEngine` event stream into these records without replacing
 the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing

@@ -39,6 +39,11 @@ segments、execution_events、rewards、costs 顺序写出，每行使用单数 
 `action_group_id`。外部 sampler 提供时，`token_ids`、`token_logprobs`、`loss_mask` 和
 `action_logprob` 会被保留并校验长度与有限值；运行时不会重新计算这些 telemetry。
 
+可选的 `PolicyAdapter` 是外部 sampler 的 provider-neutral 边界。它把配置的 behavior
+`policy_name`、`policy_version` 和 `sampling_config` 写入 `ModelReply.extra`，并覆盖
+provider 自带的身份字段。没有 logprob 证据时保持缺失，并标记
+`behavior_logprobs_available: false`。
+
 `Segment` 是显式 scientific phase，包含名称、目标、父 Segment、状态和元数据。
 `host.segment()` 只产生 Segment 生命周期、observation 和 output 事实，不计算 reward。
 

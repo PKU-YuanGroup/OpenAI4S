@@ -68,6 +68,12 @@ sampler supplied them, `token_ids`, `token_logprobs`, `loss_mask`, and
 provider response and assistant message are optional JSON evidence. Token
 telemetry is evidence from the sampler; the runtime does not recalculate it.
 
+`PolicyAdapter` is the optional provider-neutral boundary for external
+samplers. It writes the configured behavior `policy_name`, `policy_version`,
+and `sampling_config` into `ModelReply.extra` and overwrites provider-supplied
+identity fields. If no logprob evidence is returned, the adapter preserves the
+absence and marks `behavior_logprobs_available: false`.
+
 `Segment` is an explicit scientific phase. It contains `segment_id`,
 `episode_id`, `name`, `created_at`, optional `decision_id`, optional
 `parent_segment_id`, optional `objective`, `status`, and JSON `metadata`.

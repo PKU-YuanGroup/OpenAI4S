@@ -28,6 +28,8 @@ _LAZY_EXPORTS = {
     "RewardVerifier": (".verifier", "RewardVerifier"),
     "apply_verifier": (".verifier", "apply_verifier"),
     "DatasetSnapshot": (".snapshot", "DatasetSnapshot"),
+    "PolicyAdapter": (".policy", "PolicyAdapter"),
+    "PolicyProvider": (".policy", "PolicyProvider"),
 }
 
 
@@ -62,4 +64,6 @@ __all__ = [
     "RewardVerifier",
     "apply_verifier",
     "DatasetSnapshot",
+    "PolicyAdapter",
+    "PolicyProvider",
 ]

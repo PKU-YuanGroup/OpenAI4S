@@ -5,7 +5,7 @@ import pytest
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.models import ExecutionOutcome, ModelReply
 from openai4s.config import Config
-from openai4s.rl import Episode, RolloutSession, TrajectoryRecorder
+from openai4s.rl import Episode, PolicyAdapter, RolloutSession, TrajectoryRecorder
 from openai4s.store import get_store
 
 
@@ -38,6 +38,31 @@ def test_rollout_session_runs_external_sampler_and_exports_terminal_trajectory()
 class _NeverCalledModel:
     def complete(self, messages, on_delta):
         raise AssertionError("external sampler should own model generation")
+
+
+def test_policy_adapter_preserves_behavior_identity_and_missing_logprobs() -> None:
+    class _Provider:
+        def generate(self, observation, *, config):
+            assert observation[0]["content"] == "run"
+            assert config["temperature"] == 0.7
+            return {
+                "content": "done",
+                "policy_name": "spoofed",
+                "policy_version": "spoofed",
+            }
+
+    adapter = PolicyAdapter(
+        _Provider(),
+        policy_name="vllm",
+        policy_version="weights-42",
+        config={"temperature": 0.7},
+    )
+    reply = adapter.sample(({"role": "user", "content": "run"},))
+    assert reply.extra["policy_name"] == "vllm"
+    assert reply.extra["policy_version"] == "weights-42"
+    assert reply.extra["sampling_config"] == {"temperature": 0.7}
+    assert reply.extra["behavior_logprobs_available"] is False
+    assert "action_logprob" not in reply.extra
 
 
 def test_rollout_receipt_prevents_exact_retry_after_completion(tmp_path) -> None:
