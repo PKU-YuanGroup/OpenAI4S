@@ -236,6 +236,10 @@ class _FrameUsageEventSink:
             return propose(turn, messages)
         return None
 
+    def segment_id(self, turn: int) -> str | None:
+        provider = getattr(self.inner, "segment_id", None)
+        return provider(turn) if callable(provider) else None
+
     def decision_id(self, turn: int) -> str:
         """Preserve the sink's namespaced join key through this wrapper."""
 

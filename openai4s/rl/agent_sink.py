@@ -24,8 +24,9 @@ from openai4s.agent.events import (
 )
 from openai4s.agent.models import ModelReply
 
-from .models import CostRecord, ExecutionEvent, Observation, PolicyDecision
+from .models import CostRecord, ExecutionEvent, Observation, PolicyDecision, Segment
 from .recorder import TrajectoryRecorder
+from .segments import SEGMENT_METADATA, lifecycle_event, outcome_status
 
 
 def _cost_record(
@@ -138,10 +139,14 @@ class TrajectoryEventSink:
         self._observations: dict[int, Observation] = {}
         self._replies: dict[int, ModelReply] = {}
         self._turn_started_ns: dict[int, int] = {}
+        self._action_segments: dict[int, str] = {}
 
     def decision_id(self, turn: int) -> str:
         base = f"decision-{turn}"
         return f"{self.id_prefix}:{base}" if self.id_prefix else base
+
+    def segment_id(self, turn: int) -> str | None:
+        return self._action_segments.get(turn)
 
     def _record_id(self, kind: str, turn: int) -> str:
         base = f"{kind}-{turn}"
@@ -186,6 +191,26 @@ class TrajectoryEventSink:
                 self._turn_started_ns[event.turn] = self.clock_ns()
         elif isinstance(event, ActionRouted):
             self._record_decision(event.turn, event.action)
+            if event.action is not None:
+                segment = Segment(
+                    segment_id=f"{self.recorder.episode.episode_id}:inferred:{self.decision_id(event.turn)}",
+                    episode_id=self.recorder.episode.episode_id,
+                    name=_action(event.action)["type"],
+                    created_at=self.recorder.now_ms(),
+                    decision_id=self.decision_id(event.turn),
+                    metadata={
+                        SEGMENT_METADATA: {
+                            "source": "inferred",
+                            "rule": "action-v1",
+                            "action_group_id": self._action_group_id(),
+                        }
+                    },
+                )
+                self.recorder.transition_segment(
+                    segment,
+                    lifecycle_event(segment, started=True, at=segment.created_at),
+                )
+                self._action_segments[event.turn] = segment.segment_id
             self.recorder.add_event(
                 ExecutionEvent(
                     event_id=self._record_id("action", event.turn),
@@ -194,6 +219,7 @@ class TrajectoryEventSink:
                     created_at=self.recorder.now_ms(),
                     decision_id=self.decision_id(event.turn),
                     payload={"action": _action(event.action)},
+                    segment_id=self._action_segments.get(event.turn),
                 )
             )
         elif isinstance(event, OutcomeProduced):
@@ -211,6 +237,7 @@ class TrajectoryEventSink:
                         decision_id=self.decision_id(event.turn),
                     )
                 )
+            segment_id = self._action_segments.get(event.turn)
             self.recorder.add_event(
                 ExecutionEvent(
                     event_id=self._record_id("outcome", event.turn),
@@ -218,6 +245,7 @@ class TrajectoryEventSink:
                     kind="execution.completed",
                     created_at=self.recorder.now_ms(),
                     decision_id=self.decision_id(event.turn),
+                    segment_id=segment_id,
                     payload={
                         "observation": outcome.observation,
                         "completion": outcome.completion,
@@ -225,6 +253,13 @@ class TrajectoryEventSink:
                     },
                 )
             )
+            if segment_id is not None:
+                self.recorder.close_segment(
+                    segment_id,
+                    outcome_status(outcome.observation, outcome.stop_reason),
+                    decision_id=self.decision_id(event.turn),
+                    reason=outcome.stop_reason,
+                )
         elif isinstance(event, RunFinished):
             result = event.result
             self.recorder.add_event(

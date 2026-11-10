@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 import openai4s.agent.loop as loop_mod
 from openai4s.agent.delegation import DelegationRunner
 from openai4s.agent.engine import AgentEngine
@@ -35,10 +37,20 @@ def test_agent_events_export_policy_decision_and_execution_facts() -> None:
     assert [item.observation_id for item in trajectory.observations] == ["obs-0"]
     assert [item.decision_id for item in trajectory.decisions] == ["decision-0"]
     assert [item.kind for item in trajectory.execution_events] == [
+        "segment.started",
         "action.dispatched",
         "execution.completed",
+        "segment.closed",
         "episode.finished",
     ]
+    segment = trajectory.segments[0]
+    assert segment.status == "completed"
+    assert segment.metadata["openai4s.segment"]["source"] == "inferred"
+    assert segment.decision_id == "decision-0"
+    assert all(
+        event.segment_id == segment.segment_id
+        for event in trajectory.execution_events[:-1]
+    )
     assert trajectory.costs == ()
 
 
@@ -219,6 +231,118 @@ def test_delegated_worker_trajectory_keeps_parent_episode_and_decision(
         )
     finally:
         runner.close()
+        store.close()
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_inferred_segments_close_on_execution_exception(tmp_path, durable):
+    from openai4s.rl import RolloutSession
+
+    class FailingExecutor:
+        def execute(self, *args):
+            raise RuntimeError("execution broke")
+
+    store = get_store(Config(data_dir=tmp_path).db_path) if durable else None
+    try:
+        recorder = TrajectoryRecorder(
+            Episode("ep-error", "task", "session", 1),
+            repository=store.rl if store else None,
+        )
+        session = RolloutSession(AgentEngine(_Model(), FailingExecutor()), recorder)
+        session.reset([{"role": "user", "content": "run"}])
+        with pytest.raises(RuntimeError, match="execution broke"):
+            session.run(lambda _: _Model().complete([], None))
+        trajectory = recorder.snapshot()
+        assert trajectory.segments[0].status == "failed"
+        assert trajectory.execution_events[-2].kind == "segment.closed"
+        assert trajectory.execution_events[-1].kind == "episode.finished"
+        assert recorder.open_segments() == ()
+    finally:
+        if store:
+            store.close()
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_segment_lifecycle_retry_preserves_original_event(tmp_path, durable):
+    from dataclasses import replace
+
+    from openai4s.rl import Segment
+    from openai4s.rl.segments import lifecycle_event
+
+    store = get_store(Config(data_dir=tmp_path).db_path) if durable else None
+    try:
+        recorder = TrajectoryRecorder(
+            Episode("ep-retry-seg", "task", "session", 1),
+            repository=store.rl if store else None,
+        )
+        segment = Segment("phase", "ep-retry-seg", "analysis", 2)
+        first = recorder.transition_segment(
+            segment, lifecycle_event(segment, started=True, at=2)
+        )
+        retry = replace(segment, created_at=3)
+        assert (
+            recorder.transition_segment(
+                retry, lifecycle_event(retry, started=True, at=3)
+            )
+            == first
+        )
+        recorder.close_segment("phase", "completed")
+        frozen = recorder.snapshot().canonical_json()
+        recorder.close_segment("phase", "completed")
+        assert recorder.snapshot().canonical_json() == frozen
+        with pytest.raises(ValueError, match="conflict"):
+            recorder.close_segment("phase", "failed")
+        assert recorder.snapshot().canonical_json() == frozen
+    finally:
+        if store:
+            store.close()
+
+
+@pytest.mark.stubbed_backend
+def test_real_agent_kernel_records_inferred_segments(monkeypatch, tmp_path):
+    from openai4s.agent import Agent
+    from tests.test_agent import ScriptedLLM
+
+    cfg = Config(data_dir=tmp_path / "data")
+    store = get_store(cfg.db_path)
+    frame = store.new_frame(kind="turn")
+    recorder = TrajectoryRecorder(
+        Episode("ep-real", "compute", frame, 1), repository=store.rl
+    )
+    monkeypatch.setattr(
+        loop_mod,
+        "chat",
+        ScriptedLLM(
+            [
+                "```python\nprint(6*7)\n```",
+                "```python\nhost.submit_output({'answer': 42}, ['Computed answer'])\n```",
+            ]
+        ),
+    )
+    try:
+        agent = Agent(
+            cfg=cfg,
+            frame_id=frame,
+            use_skills=False,
+            allow_delegate=False,
+            trajectory_recorder=recorder,
+            max_turns=3,
+        )
+        result = agent.run("compute 6*7")
+        assert result["stop_reason"] == "submitted"
+        trajectory = store.rl.load_trajectory("ep-real")
+        assert len(trajectory.segments) == 2
+        assert all(s.status == "completed" for s in trajectory.segments)
+        assert all(
+            s.metadata["openai4s.segment"]["source"] == "inferred"
+            for s in trajectory.segments
+        )
+        assert all(
+            s.metadata["openai4s.segment"]["action_group_id"]
+            for s in trajectory.segments
+        )
+        assert trajectory.execution_events[-1].kind == "episode.finished"
+    finally:
         store.close()
 
 

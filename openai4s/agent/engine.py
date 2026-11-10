@@ -254,6 +254,10 @@ class AgentEngine:
         state.metadata["rl_decision_id"] = (
             str(decision_id(turn)) if callable(decision_id) else f"decision-{turn}"
         )
+        segment_id = getattr(self.event_sink, "segment_id", None)
+        state.metadata["rl_segment_id"] = (
+            segment_id(turn) if callable(segment_id) else None
+        )
         outcome = self.executor.execute(action, reply, state)
         if not isinstance(outcome, ExecutionOutcome):
             raise TypeError("executor must return ExecutionOutcome")

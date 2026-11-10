@@ -104,9 +104,58 @@ class TrajectoryRecorder:
                 self.repository.append_segment(value)
             return result
 
+    def transition_segment(
+        self, segment: Segment, event: ExecutionEvent
+    ) -> tuple[Segment, ExecutionEvent]:
+        """Append one Segment lifecycle fact and update its projection."""
+        with self._lock:
+            self._check_episode(segment.episode_id)
+            self._check_episode(event.episode_id)
+            if self.repository is not None:
+                stored_segment, stored_event = self.repository.transition_segment(
+                    segment, event
+                )
+            else:
+                from .segments import validate_transition
+
+                current = self._segments.get(segment.segment_id)
+                previous = self._events.get(event.event_id)
+                validate_transition(current, segment, event, previous)
+                stored_segment = segment
+                stored_event = event
+                if previous is None:
+                    if event.sequence is None:
+                        stored_event = replace(event, sequence=self._event_sequence + 1)
+                    self._events[stored_event.event_id] = stored_event
+                    self._event_sequence = stored_event.sequence or self._event_sequence
+                else:
+                    assert current is not None
+                    stored_segment = current
+                    stored_event = previous
+                self._segments[segment.segment_id] = stored_segment
+            self._segments[stored_segment.segment_id] = stored_segment
+            self._events[stored_event.event_id] = stored_event
+            self._event_sequence = max(self._event_sequence, stored_event.sequence or 0)
+            return stored_segment, stored_event
+
+    def open_segments(self) -> tuple[Segment, ...]:
+        """Return durable and in-memory open phases for this Episode."""
+        with self._lock:
+            if self.repository is not None:
+                return tuple(
+                    item for item in self.snapshot().segments if item.status == "open"
+                )
+            return tuple(
+                item for item in self._segments.values() if item.status == "open"
+            )
+
     def add_event(self, value: ExecutionEvent) -> ExecutionEvent:
         with self._lock:
             self._check_episode(value.episode_id)
+            if value.kind == "episode.finished":
+                self.close_open_segments(
+                    str(value.payload.get("stop_reason") or "interrupted")
+                )
             current = self._events.get(value.event_id)
             if current is not None:
                 if not self._same(current, value):
@@ -209,6 +258,54 @@ class TrajectoryRecorder:
     def _check_episode(self, episode_id: str) -> None:
         if episode_id != self.episode.episode_id:
             raise ValueError("record belongs to a different episode")
+
+    def close_segment(
+        self,
+        segment_id: str,
+        status: str,
+        *,
+        decision_id: str | None = None,
+        reason: str | None = None,
+    ) -> Segment:
+        from .segments import lifecycle_event
+
+        with self._lock:
+            segment = (
+                self.repository.get_segment(segment_id)
+                if self.repository is not None
+                else self._segments.get(segment_id)
+            )
+            if segment is None:
+                raise KeyError(segment_id)
+            self._check_episode(segment.episode_id)
+            closed = replace(segment, status=status)
+            event = lifecycle_event(
+                closed,
+                started=False,
+                at=self.now_ms(),
+                decision_id=decision_id,
+                reason=reason,
+            )
+            return self.transition_segment(closed, event)[0]
+
+    def close_open_segments(self, reason: str) -> None:
+        from .segments import interrupted_status
+
+        with self._lock:
+            # Children close before parents; creation order is not a hierarchy.
+            pending = {item.segment_id: item for item in self.open_segments()}
+            while pending:
+                parents = {item.parent_segment_id for item in pending.values()}
+                leaves = [
+                    item for item in pending.values() if item.segment_id not in parents
+                ]
+                if not leaves:
+                    raise ValueError("segment hierarchy contains a cycle")
+                for segment in sorted(leaves, key=lambda item: item.segment_id):
+                    self.close_segment(
+                        segment.segment_id, interrupted_status(reason), reason=reason
+                    )
+                    del pending[segment.segment_id]
 
     def finish(self, status: str) -> Episode:
         """Set the episode lifecycle projection exactly once."""

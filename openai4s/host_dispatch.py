@@ -1622,6 +1622,11 @@ class HostDispatcher:
             # supersede a segment context left on this long-lived dispatcher
             # thread by an interrupted worker; otherwise the next decision's
             # Host RPCs inherit the previous decision ID.
+            if target == "segment_id" and context.get("segment_id"):
+                # A lexical phase opened within this action is more specific
+                # than its inferred execution segment. Stale decisions were
+                # cleared above before considering this fallback.
+                continue
             if action.get(target):
                 context[target] = action[target]
             elif action.get(alias):

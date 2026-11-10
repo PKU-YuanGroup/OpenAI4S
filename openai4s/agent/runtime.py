@@ -1312,6 +1312,7 @@ class LocalActionExecutor:
                     "decision_id": state.metadata.get("rl_decision_id"),
                     "episode_id": state.metadata.get("rl_episode_id")
                     or getattr(self.dispatcher, "frame_id", None),
+                    "segment_id": state.metadata.get("rl_segment_id"),
                 }
             ):
                 return execute_with_capture()
@@ -1395,6 +1396,7 @@ class LocalActionExecutor:
                             "decision_id": state.metadata.get("rl_decision_id"),
                             "episode_id": state.metadata.get("rl_episode_id")
                             or getattr(self.dispatcher, "frame_id", None),
+                            "segment_id": state.metadata.get("rl_segment_id"),
                         }
                         if group_id
                         else None

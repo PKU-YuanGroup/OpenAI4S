@@ -10,6 +10,15 @@ costs are separate records, so a verifier or training snapshot never rewrites
 execution facts. Training algorithms and provider-specific policy clients stay
 outside the harness.
 
+`segments.py` owns shared lifecycle validation. RL-instrumented engines create
+one mechanical execution segment per routed action (Cell, native batch, or
+finalization); prose alone creates none. `metadata["openai4s.segment"]` records
+`source: "inferred"` and `rule: "action-v1"`, not an inferred scientific claim.
+Lifecycle events and status commit atomically; exact retries return the original
+event. Unclosed phases are interrupted/failed before the Episode terminal event.
+The action's Host calls inherit this fallback segment, while lexical phases can
+provide more specific attribution. No reward is computed or duplicated.
+
 Host segment APIs record observations and artifact evidence only. Reward
 annotations are written by a trusted verifier or trainer; the Agent has no
 self-scoring Host API.

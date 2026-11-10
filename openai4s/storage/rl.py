@@ -481,67 +481,129 @@ class RLRepository:
         return _record_from_row(row, Segment)
 
     def append_execution_event(self, value: ExecutionEvent) -> ExecutionEvent:
-        """Append an event while allocating its episode sequence atomically.
-
-        The sequence is part of the event's durable identity.  Reading the
-        current maximum before entering the write transaction lets concurrent
-        callers choose the same number, so this method owns the complete
-        idempotency check, allocation, and insert transaction.
-        """
-        data = value.to_dict()
+        """Allocate and append under one transaction, including exact retries."""
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
-                current = self._connection.execute(
-                    "SELECT sequence, payload FROM rl_execution_events "
-                    "WHERE event_id=?",
-                    (value.event_id,),
-                ).fetchone()
-                if current is not None:
-                    # A retry may omit the sequence because the first call
-                    # allocated it.  Compare against the stored allocation,
-                    # then return the durable value to the caller.
-                    if value.sequence is None:
-                        data["sequence"] = int(current["sequence"])
-                        value = replace(value, sequence=int(current["sequence"]))
-                    if not _same_payload(current["payload"], data):
-                        raise ValueError(
-                            f"record {value.event_id!r} conflicts with stored content"
-                        )
-                    self._connection.execute("COMMIT")
-                    return value
-
-                if value.sequence is None:
-                    row = self._connection.execute(
-                        "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence "
-                        "FROM rl_execution_events WHERE episode_id=?",
-                        (value.episode_id,),
-                    ).fetchone()
-                    value = replace(value, sequence=int(row["sequence"]))
-                    data = value.to_dict()
-                names = [
-                    "event_id",
-                    "episode_id",
-                    "sequence",
-                    "kind",
-                    "created_at",
-                    "payload",
-                ]
-                self._connection.execute(
-                    f"INSERT INTO rl_execution_events({','.join(names)}) "
-                    f"VALUES({','.join('?' for _ in names)})",
-                    (
-                        data["event_id"],
-                        data["episode_id"],
-                        data["sequence"],
-                        data["kind"],
-                        data["created_at"],
-                        _payload(data),
-                    ),
-                )
+                result = self._append_event_unlocked(value)
                 self._connection.execute("COMMIT")
-                return value
-            except Exception:
+                return result
+            except BaseException:
+                self._connection.execute("ROLLBACK")
+                raise
+
+    def _append_event_unlocked(self, value: ExecutionEvent) -> ExecutionEvent:
+        """Caller owns both the Store lock and write transaction."""
+        current = self._connection.execute(
+            "SELECT sequence,payload FROM rl_execution_events WHERE event_id=?",
+            (value.event_id,),
+        ).fetchone()
+        if current is not None:
+            if value.sequence is None:
+                value = replace(value, sequence=int(current["sequence"]))
+            if not _same_payload(current["payload"], value.to_dict()):
+                raise ValueError(
+                    f"record {value.event_id!r} conflicts with stored content"
+                )
+            return value
+        if value.sequence is None:
+            row = self._connection.execute(
+                "SELECT COALESCE(MAX(sequence),0)+1 AS sequence "
+                "FROM rl_execution_events WHERE episode_id=?",
+                (value.episode_id,),
+            ).fetchone()
+            value = replace(value, sequence=int(row["sequence"]))
+        self._connection.execute(
+            "INSERT INTO rl_execution_events(event_id,episode_id,sequence,kind,created_at,payload) "
+            "VALUES(?,?,?,?,?,?)",
+            (
+                value.event_id,
+                value.episode_id,
+                value.sequence,
+                value.kind,
+                value.created_at,
+                _payload(value.to_dict()),
+            ),
+        )
+        return value
+
+    def transition_segment(
+        self, segment: Segment, event: ExecutionEvent
+    ) -> tuple[Segment, ExecutionEvent]:
+        """Atomically append a lifecycle fact and update its status projection.
+
+        Timestamp and sequence are allocated facts, not retry input. Everything
+        else must match on a retry; the original event is returned unchanged.
+        """
+        from openai4s.rl.segments import validate_transition
+
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT payload FROM rl_segments WHERE segment_id=?",
+                    (segment.segment_id,),
+                ).fetchone()
+                current = _record_from_row(row, Segment) if row is not None else None
+                previous_row = self._connection.execute(
+                    "SELECT payload FROM rl_execution_events WHERE event_id=?",
+                    (event.event_id,),
+                ).fetchone()
+                previous = (
+                    _record_from_row(previous_row, ExecutionEvent)
+                    if previous_row
+                    else None
+                )
+                validate_transition(current, segment, event, previous)
+                if previous is not None:
+                    assert current is not None
+                    self._connection.execute("COMMIT")
+                    return current, previous
+                episode = self._connection.execute(
+                    "SELECT status FROM rl_episodes WHERE episode_id=?",
+                    (segment.episode_id,),
+                ).fetchone()
+                if episode is None or episode["status"] != "running":
+                    raise ValueError("segment lifecycle requires a running episode")
+                if segment.parent_segment_id is not None:
+                    parent = self._connection.execute(
+                        "SELECT episode_id,status FROM rl_segments WHERE segment_id=?",
+                        (segment.parent_segment_id,),
+                    ).fetchone()
+                    if (
+                        parent is None
+                        or parent["episode_id"] != segment.episode_id
+                        or parent["status"] != "open"
+                    ):
+                        raise ValueError(
+                            "parent segment must be open in the same episode"
+                        )
+                if current is None:
+                    self._connection.execute(
+                        "INSERT INTO rl_segments(segment_id,episode_id,status,created_at,parent_segment_id,payload) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (
+                            segment.segment_id,
+                            segment.episode_id,
+                            segment.status,
+                            segment.created_at,
+                            segment.parent_segment_id,
+                            _payload(segment.to_dict()),
+                        ),
+                    )
+                else:
+                    self._connection.execute(
+                        "UPDATE rl_segments SET status=?,payload=? WHERE segment_id=?",
+                        (
+                            segment.status,
+                            _payload(segment.to_dict()),
+                            segment.segment_id,
+                        ),
+                    )
+                stored_event = self._append_event_unlocked(event)
+                self._connection.execute("COMMIT")
+                return segment, stored_event
+            except BaseException:
                 self._connection.execute("ROLLBACK")
                 raise
 

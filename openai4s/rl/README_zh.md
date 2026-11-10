@@ -8,6 +8,13 @@
 记录，因此 Verifier 或训练数据快照不会改写执行事实。训练算法和特定 Provider 的
 Policy Client 保持在 Harness 外部。
 
+`segments.py` 统一校验阶段生命周期。启用 RL 记录的 Engine 为每个路由后的 Cell、
+原生工具 batch 或 finalize 创建机械执行段；纯文本不创建阶段。
+`metadata["openai4s.segment"]` 标注 `source: "inferred"` 和 `rule: "action-v1"`，
+不冒充科学阶段声明。生命周期事件与状态原子提交，完全相同的重试返回原事件；
+未关闭阶段在 Episode 终态事件前被标为 interrupted/failed。Host 调用默认继承 action
+执行段，lexical 阶段可以提供更具体的归属；不计算或重复 Reward。
+
 Host Segment 接口只记录 observation 和产物证据。Reward Annotation 必须由可信的
 Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 
