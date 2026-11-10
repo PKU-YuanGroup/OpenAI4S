@@ -151,6 +151,7 @@ class RolloutSession:
                 used_cached_observation = True
             else:
                 prepared = self.observe()
+                used_cached_observation = True
         else:
             prepared = tuple(dict(message) for message in observation)
             used_cached_observation = (
