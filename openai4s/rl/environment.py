@@ -9,7 +9,7 @@ import threading
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping, cast
 
 from openai4s.agent.actions import CodeCell, FinalizeAction, NativeToolBatch
 from openai4s.agent.engine import AgentEngine
@@ -322,7 +322,9 @@ class RolloutEnvironmentAdapter:
         # independent from the export implementation.
         from .worker import RolloutWorker
 
-        exported = RolloutWorker.export(session.recorder.snapshot(), format)
+        exported = RolloutWorker.export(
+            session.recorder.snapshot(), cast(Literal["json", "jsonl", "atif"], format)
+        )
         return exported.to_dict()
 
     def release(self) -> dict[str, Any]:
