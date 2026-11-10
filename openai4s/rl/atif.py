@@ -38,7 +38,7 @@ class CompletionContract:
     status: str
     terminal: bool
     trace_complete: bool
-    scientific_success: bool
+    completion_evidence: bool
     terminal_event_id: str | None = None
     failure: str | None = None
 
@@ -47,7 +47,7 @@ class CompletionContract:
             "status": self.status,
             "terminal": self.terminal,
             "trace_complete": self.trace_complete,
-            "scientific_success": self.scientific_success,
+            "completion_evidence": self.completion_evidence,
             "terminal_event_id": self.terminal_event_id,
             "failure": self.failure,
         }
@@ -58,8 +58,9 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
 
     A terminal status is a valid rollout outcome, including ``failed``,
     ``cancelled`` and ``max_turns``.  Only a ``completed``/legacy ``success``
-    status carrying non-null completion evidence is marked scientifically
-    successful.  A normal ``done`` status remains terminal but unsuccessful.
+    status carrying non-null completion evidence is marked as having positive
+    completion evidence.  This is not a scientific reward or verifier result.
+    A normal ``done`` status remains terminal without that evidence.
     """
 
     if not isinstance(trajectory, Trajectory):
@@ -76,7 +77,7 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
                 status=status,
                 terminal=False,
                 trace_complete=False,
-                scientific_success=False,
+                completion_evidence=False,
                 terminal_event_id=terminal_events[-1].event_id,
                 failure="running episode has a terminal event",
             )
@@ -84,7 +85,7 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
             status=status,
             terminal=False,
             trace_complete=False,
-            scientific_success=False,
+            completion_evidence=False,
             failure="trajectory is unfinished",
         )
     if status not in _STOP_REASON_FOR_STATUS:
@@ -92,7 +93,7 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
             status=status,
             terminal=True,
             trace_complete=False,
-            scientific_success=False,
+            completion_evidence=False,
             failure=f"unknown terminal status {status!r}",
         )
     if len(terminal_events) != 1:
@@ -100,7 +101,7 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
             status=status,
             terminal=True,
             trace_complete=False,
-            scientific_success=False,
+            completion_evidence=False,
             failure="expected exactly one episode.finished event",
         )
     ordered_events = sorted(
@@ -116,7 +117,7 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
             status=status,
             terminal=True,
             trace_complete=False,
-            scientific_success=False,
+            completion_evidence=False,
             terminal_event_id=terminal.event_id,
             failure="episode.finished must be the final execution event",
         )
@@ -126,7 +127,7 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
             status=status,
             terminal=True,
             trace_complete=False,
-            scientific_success=False,
+            completion_evidence=False,
             terminal_event_id=terminal.event_id,
             failure="episode.finished is missing stop_reason",
         )
@@ -135,20 +136,20 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
             status=status,
             terminal=True,
             trace_complete=False,
-            scientific_success=False,
+            completion_evidence=False,
             terminal_event_id=terminal.event_id,
             failure=(
                 f"stop_reason {stop_reason!r} does not match terminal status {status!r}"
             ),
         )
     completion = terminal.payload.get("completion")
-    successful = status in {"completed", "success"} and completion is not None
+    evidence = status in {"completed", "success"} and completion is not None
     if status in {"completed", "success"} and completion is None:
         return CompletionContract(
             status=status,
             terminal=True,
             trace_complete=False,
-            scientific_success=False,
+            completion_evidence=False,
             terminal_event_id=terminal.event_id,
             failure="completed status has no positive completion evidence",
         )
@@ -156,7 +157,7 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
         status=status,
         terminal=True,
         trace_complete=True,
-        scientific_success=successful,
+        completion_evidence=evidence,
         terminal_event_id=terminal.event_id,
     )
 

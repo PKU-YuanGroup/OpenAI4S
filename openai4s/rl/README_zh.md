@@ -69,8 +69,8 @@ receipt 中断状态只报告 `recovery_required`，不重放副作用；
 扩展元数据中保留 Segment、Reward、Cost 和执行事件标识。`completion_contract()` 校验
 Harbor 风格的正向终态证据：非 running Episode 必须有且只有一个位于末尾、且 stop
 reason 匹配的 `episode.finished` 事件。失败、取消、中断、`max_turns` 和普通 `done`
-仍是合法终态记录，但永远不会标为 `scientific_success`；只有 completed 状态带有非空
-completion 证据时才会设置该标志。
+仍是合法终态记录，但永远不会标为正向 `completion_evidence`；该字段只表示 Runtime
+收到终态 completion payload，科学质量仍由外部 Verifier 写入 Reward Annotation。
 
 `host_events.py` 定义有界的 Host RPC 生命周期事实（`started`、`completed`、`failed`），
 用于把嵌套执行关联到父 Decision 和 Segment，同时不复制私有参数或结果。

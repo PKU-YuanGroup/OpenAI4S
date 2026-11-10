@@ -118,7 +118,7 @@ def test_completion_contract_requires_terminal_evidence_and_separates_success() 
         "status": "completed",
         "terminal": True,
         "trace_complete": True,
-        "scientific_success": True,
+        "completion_evidence": True,
         "terminal_event_id": "episode-finished",
         "failure": None,
     }
@@ -127,11 +127,11 @@ def test_completion_contract_requires_terminal_evidence_and_separates_success() 
     failed = _terminal_recorder("failed", "error", None)
     failed_contract = completion_contract(failed.snapshot())
     assert failed_contract.trace_complete is True
-    assert failed_contract.scientific_success is False
+    assert failed_contract.completion_evidence is False
     assert failed_contract.failure is None
 
     done = _terminal_recorder("done", "done", None)
-    assert completion_contract(done.snapshot()).scientific_success is False
+    assert completion_contract(done.snapshot()).completion_evidence is False
 
 
 def test_completion_contract_rejects_missing_or_mismatched_terminal_evidence() -> None:
@@ -157,7 +157,7 @@ def test_atif_exports_completion_contract_without_claiming_done_is_success() -> 
         "status": "done",
         "terminal": True,
         "trace_complete": True,
-        "scientific_success": False,
+        "completion_evidence": False,
         "terminal_event_id": "episode-finished",
         "failure": None,
     }

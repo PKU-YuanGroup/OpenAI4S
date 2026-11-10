@@ -87,8 +87,9 @@ ATIF extension metadata. `completion_contract()` validates Harbor-style
 positive terminal evidence: a non-running Episode needs exactly one final
 `episode.finished` event with a matching stop reason. Failed, cancelled,
 interrupted, `max_turns`, and ordinary `done` outcomes remain valid terminal
-records but are never marked `scientific_success`; only non-null completion
-evidence on a completed status receives that flag.
+records but are never marked with positive `completion_evidence`; that field
+only says the runtime received a terminal completion payload. Scientific
+quality remains an external verifier's Reward Annotation.
 
 `host_events.py` defines the bounded Host RPC lifecycle facts (`started`,
 `completed`, and `failed`) used to join nested execution to a parent decision

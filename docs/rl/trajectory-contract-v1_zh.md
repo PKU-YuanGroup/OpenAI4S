@@ -129,6 +129,12 @@ Recovery 只检查 durable receipt：`running` receipt 投影为 `recovery_requi
 Worker 导出携带轨迹 schema version，以及精确 JSON、JSONL 或 ATIF payload 字节的
 SHA-256。ATIF 选项是 Harbor 交换投影；其 `extra.openai4s` 扩展保留完整轨迹。
 
+ATIF 还携带 `extra.completion_contract`。它要求非 running Episode 恰好有一个位于末尾、
+且 `stop_reason` 匹配的 `episode.finished` 事件。`terminal` 和 `trace_complete` 描述
+生命周期证据；`completion_evidence` 只表示 completed 状态带有非空 completion payload，
+不是科学分数，也不替代外部 Verifier 的 Reward Annotation。失败、取消、中断、
+`max_turns` 和普通 `done` 仍是合法终态记录。
+
 `DatasetSnapshot` 是当前固定数据集边界：只接受终态 Episode、没有 open Segment 且所有
 Execution Event 都有 sequence；它保存规范轨迹哈希、最大事件序号和记录计数。
 `matches()` 会拒绝已经改变的候选轨迹。

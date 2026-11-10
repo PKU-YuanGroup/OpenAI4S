@@ -200,6 +200,14 @@ exports carry the trajectory schema version and the SHA-256 of the exact JSON,
 JSONL, or ATIF payload bytes. The ATIF option is a Harbor interchange
 projection; its `extra.openai4s` extension retains the complete trajectory.
 
+The ATIF projection also carries `extra.completion_contract`. It requires a
+non-running Episode to have exactly one final `episode.finished` event with a
+matching `stop_reason`. `terminal` and `trace_complete` describe lifecycle
+evidence; `completion_evidence` only records that a completed status carried a
+non-null completion payload. It is not a scientific score and does not replace
+an external Verifier's Reward Annotation. Failed, cancelled, interrupted,
+`max_turns`, and ordinary `done` outcomes remain valid terminal records.
+
 `DatasetSnapshot` is the current fixed dataset boundary. It accepts only a
 terminal Episode with no open Segments and fully sequenced execution events;
 it stores the canonical trajectory hash, the maximum event sequence, and
