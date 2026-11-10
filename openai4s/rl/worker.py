@@ -141,6 +141,35 @@ class RolloutWorker:
             if session.finished:
                 self.release(session)
 
+    async def run_async(
+        self,
+        episode: Episode,
+        messages: Iterable[Message],
+        sampler: Any,
+        *,
+        initial_artifacts: Mapping[str, str] | None = None,
+        config: Mapping[str, Any] | None = None,
+        budget: Mapping[str, Any] | None = None,
+        max_turns: int | None = None,
+        request_id: str | None = None,
+    ) -> Trajectory:
+        """Run one isolated Episode with an async-compatible sampler."""
+
+        session = self.reset(
+            episode,
+            messages,
+            initial_artifacts=initial_artifacts,
+            config=config,
+            budget=budget,
+            max_turns=max_turns,
+            request_id=request_id,
+        )
+        try:
+            return await session.run_async(sampler)
+        finally:
+            if session.finished:
+                self.release(session)
+
     def recover(self, request_id: str) -> RecoveryResult:
         """Inspect a durable receipt without retrying the scientific work."""
         if self.repository is None or not callable(

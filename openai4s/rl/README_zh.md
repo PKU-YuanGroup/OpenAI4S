@@ -30,6 +30,9 @@ Episode Reward Annotation，并把按 Decision 关联的 immutable ExecutionEven
 `RolloutSession.current_tools` 会暴露同一组声明。只接收 observation 的旧 sampler
 仍然受支持。
 配置关键字可以使用 `config` 或 `sampling_config`。
+`PolicyAdapter.sample_async()`、`RolloutSession.run_async()` 和
+`RolloutWorker.run_async()` 同时接受同步或 awaitable sampler，因此推理服务器客户端
+可以接入，而不需要把执行逻辑移出已有 Engine。
 轨迹 Observation 会保留该工具投影；如果 sampler 提供了 prompt token IDs 和采样配置，
 Decision 也会保留它们。
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Awaitable, Mapping, Protocol, Sequence
 
 from openai4s.agent.models import Message, ModelReply
 
@@ -19,7 +19,9 @@ class PolicyProvider(Protocol):
         *,
         tools: Sequence[Mapping[str, object]] = (),
         config: Mapping[str, object],
-    ) -> ModelReply | Mapping[str, object]: ...
+    ) -> (
+        ModelReply | Mapping[str, object] | Awaitable[ModelReply | Mapping[str, object]]
+    ): ...
 
 
 @dataclass(frozen=True)
@@ -51,11 +53,39 @@ class PolicyAdapter:
             detached_tools,
             self.config,
         )
-        reply = (
-            raw
-            if isinstance(raw, ModelReply)
-            else ModelReply.from_mapping(_reply_mapping(raw))
+        if inspect.isawaitable(raw):
+            raise TypeError(
+                "policy provider returned an awaitable; use PolicyAdapter.sample_async()"
+            )
+        reply = _normalize_reply(raw)
+        return self._decorate(reply)
+
+    async def sample_async(
+        self,
+        observation: tuple[Message, ...],
+        *,
+        tools: Sequence[Mapping[str, object]] = (),
+    ) -> ModelReply:
+        """Sample from a sync or async provider without changing join keys.
+
+        Async rollout workers may use a provider backed by an inference server
+        while local tests and small trainers keep a synchronous ``generate``.
+        A provider that returns an awaitable is only awaited here; the Engine
+        still owns the subsequent action execution and ledger writes.
+        """
+
+        detached_tools = tuple(deepcopy(dict(tool)) for tool in tools)
+        raw = _generate(
+            self.provider,
+            observation,
+            detached_tools,
+            self.config,
         )
+        if inspect.isawaitable(raw):
+            raw = await raw
+        return self._decorate(_normalize_reply(raw))
+
+    def _decorate(self, reply: ModelReply) -> ModelReply:
         extra = dict(reply.extra)
         # The adapter is the authority for these join keys. A provider reply
         # cannot relabel itself after it has been admitted by the caller.
@@ -90,12 +120,20 @@ def _reply_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
     return normalized
 
 
+def _normalize_reply(value: ModelReply | Mapping[str, object]) -> ModelReply:
+    if isinstance(value, ModelReply):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("policy provider must return ModelReply or a mapping")
+    return ModelReply.from_mapping(_reply_mapping(value))
+
+
 def _generate(
     provider: PolicyProvider,
     observation: tuple[Message, ...],
     tools: Sequence[Mapping[str, object]],
     config: Mapping[str, object],
-) -> ModelReply | Mapping[str, object]:
+) -> ModelReply | Mapping[str, object] | Awaitable[ModelReply | Mapping[str, object]]:
     """Call modern providers while retaining the original two-argument seam."""
 
     generate = provider.generate

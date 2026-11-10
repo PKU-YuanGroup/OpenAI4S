@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 
 import pytest
@@ -390,6 +391,67 @@ def test_policy_adapter_keeps_legacy_one_argument_provider_compatible() -> None:
         config={"temperature": 0.1},
     ).sample(({"role": "user", "content": "run"},))
     assert reply.content == "done"
+
+
+def test_policy_adapter_async_provider_preserves_identity_and_telemetry() -> None:
+    class _AsyncProvider:
+        async def generate(self, observation, *, tools, config):
+            assert observation[0]["content"] == "run"
+            assert tools == ()
+            assert config["temperature"] == 0.2
+            return {
+                "text": "done",
+                "token_ids": [9],
+                "logprobs": [-0.4],
+            }
+
+    adapter = PolicyAdapter(
+        _AsyncProvider(),
+        policy_name="vllm",
+        policy_version="weights-async",
+        config={"temperature": 0.2},
+    )
+    reply = asyncio.run(adapter.sample_async(({"role": "user", "content": "run"},)))
+    assert reply.content == "done"
+    assert reply.extra["policy_version"] == "weights-async"
+    assert reply.extra["token_logprobs"] == [-0.4]
+
+
+def test_rollout_session_run_async_accepts_an_async_sampler() -> None:
+    engine = AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1)
+    recorder = TrajectoryRecorder(Episode("ep-async", "task", "session", 1))
+    session = RolloutSession(engine, recorder)
+    session.reset([{"role": "user", "content": "run"}])
+
+    async def sampler(observation, *, tools):
+        assert observation[0]["content"] == "run"
+        assert tools == ()
+        return {"content": "done", "token_ids": [1], "loss_mask": [1]}
+
+    trajectory = asyncio.run(session.run_async(sampler))
+    assert trajectory.episode.status == "done"
+    assert trajectory.decisions[0].token_ids == (1,)
+    assert trajectory.decisions[0].loss_mask == (1,)
+
+
+def test_rollout_worker_run_async_releases_environment(tmp_path) -> None:
+    def build_engine(_reset):
+        return AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1)
+
+    worker = RolloutWorker(RolloutEnvironment(build_engine, workspace_root=tmp_path))
+
+    async def sampler(_observation):
+        return {"content": "done"}
+
+    trajectory = asyncio.run(
+        worker.run_async(
+            Episode("ep-worker-async", "task", "session", 1),
+            [{"role": "user", "content": "run"}],
+            sampler,
+        )
+    )
+    assert trajectory.episode.status == "done"
+    assert worker.environment.active is False
 
 
 def test_policy_adapter_normalizes_trainer_text_and_logprobs_aliases() -> None:

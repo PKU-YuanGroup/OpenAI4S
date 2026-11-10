@@ -25,6 +25,7 @@ from .recorder import TrajectoryRecorder
 _LAZY_EXPORTS = {
     "ATIFExporter": (".atif", "ATIFExporter"),
     "PolicySampler": (".rollout", "PolicySampler"),
+    "AsyncPolicySampler": (".rollout", "AsyncPolicySampler"),
     "RolloutSession": (".rollout", "RolloutSession"),
     "TrajectoryEventSink": (".agent_sink", "TrajectoryEventSink"),
     "RewardVerifier": (".verifier", "RewardVerifier"),
@@ -93,6 +94,7 @@ __all__ = [
     "ATIFExporter",
     "HostCallLifecycle",
     "PolicySampler",
+    "AsyncPolicySampler",
     "RolloutSession",
     "RewardVerifier",
     "apply_verifier",

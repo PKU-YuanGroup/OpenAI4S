@@ -37,6 +37,10 @@ Modern providers can also receive the detached current native tool projection
 through `tools`; `RolloutSession.current_tools` exposes the same declarations
 after `observe()`. Older observation-only samplers remain supported.
 The configuration keyword may be `config` or `sampling_config`.
+`PolicyAdapter.sample_async()`, `RolloutSession.run_async()`, and
+`RolloutWorker.run_async()` accept synchronous or awaitable samplers, so an
+inference-server client can be used without moving execution out of the
+existing Engine.
 Trajectory observations retain that tool projection, while decisions retain
 prompt token IDs and sampling configuration when the sampler supplies them.
 

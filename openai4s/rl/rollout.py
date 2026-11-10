@@ -32,6 +32,17 @@ class PolicySampler(Protocol):
     ) -> ModelReply | Mapping[str, object]: ...
 
 
+class AsyncPolicySampler(Protocol):
+    """Optional async sampler contract for inference-server rollouts."""
+
+    def sample(
+        self,
+        observation: tuple[Message, ...],
+        *,
+        tools: tuple[Mapping[str, object], ...] = (),
+    ) -> Any: ...
+
+
 class RolloutSession:
     """Expose reset/observe/step/finish without copying the AgentEngine loop.
 
@@ -207,6 +218,42 @@ class RolloutSession:
             )
         return self.recorder.snapshot()
 
+    async def run_async(
+        self,
+        sampler: (
+            AsyncPolicySampler | PolicySampler | Callable[[tuple[Message, ...]], Any]
+        ),
+    ) -> Trajectory:
+        """Run the same lifecycle with an awaitable external sampler.
+
+        Action execution remains synchronous because AgentEngine owns the
+        kernel and permission protocol.  Only policy sampling is awaited, so
+        async inference clients can be used without introducing a second
+        execution state machine.
+        """
+
+        state = self._state()
+        try:
+            while not self._finished and state.turn < state.max_turns:
+                observation = self.observe()
+                sampled = await _sample_async(sampler, observation, self.current_tools)
+                self.step(sampled, observation=observation)
+        except Exception:
+            self.finish("failed")
+            raise
+        if not self._finished:
+            self._emit_finished(
+                EngineStep(
+                    state.turn,
+                    tuple(dict(message) for message in state.messages),
+                    None,
+                    None,
+                    None,
+                    stop_reason="max_turns",
+                )
+            )
+        return self.recorder.snapshot()
+
     def finish(self, status: str = "completed") -> Trajectory:
         if not self._finished:
             state = self.state
@@ -302,4 +349,38 @@ def _sample(
     return callback(observation)
 
 
-__all__ = ["PolicySampler", "RolloutSession"]
+async def _sample_async(
+    sampler: AsyncPolicySampler | PolicySampler | Callable[[tuple[Message, ...]], Any],
+    observation: tuple[Message, ...],
+    tools: tuple[Mapping[str, object], ...],
+) -> ModelReply | Mapping[str, object]:
+    """Call a sampler with the same compatibility rules as :func:`_sample`."""
+
+    async_callback = getattr(sampler, "sample_async", None)
+    callback = (
+        async_callback
+        if callable(async_callback)
+        else sampler.sample if hasattr(sampler, "sample") else sampler
+    )
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    tool_parameter = parameters.get("tools")
+    accepts_tools = (
+        tool_parameter is not None
+        and tool_parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    ) or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    result = (
+        callback(observation, tools=tools) if accepts_tools else callback(observation)
+    )
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+
+__all__ = ["AsyncPolicySampler", "PolicySampler", "RolloutSession"]
