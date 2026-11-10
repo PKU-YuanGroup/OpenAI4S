@@ -10,6 +10,10 @@
 
 SQLite 事务能让明确划定的一组 row 保持原子，但它没法一口气横跨 SQLite、工作区文件、content-addressed blob、运行中的 Python/R 命名空间、远程计算和 WebSocket event。所以各仓储把三样东西分得很清楚：只追加的历史、可变的物化投影，以及对数据库之外那些文件的尽力而为的绑定。
 
+`rl_runs.py` 在 Store 的同一连接/事务/锁上实现 protocol-2 rollout 准入、claim、
+带哈希校验的不可变结果和逐轮 step receipt。Migration 43 是加法迁移；旧 receipt 明确
+保留 legacy 状态，不假定可安全重跑。终态重试返回原始字节而不是当前投影。
+
 ## 文件
 
 | 文件 | 职责 |

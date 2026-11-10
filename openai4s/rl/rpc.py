@@ -18,7 +18,19 @@ from .environment import RolloutEnvironmentAdapter
 PROTOCOL = "openai4s-rl-jsonl-v1"
 DEFAULT_MAX_LINE_BYTES = 4 * 1024 * 1024
 RPC_METHODS = frozenset(
-    {"reset", "observe", "step", "finish", "export", "release", "rewards", "costs"}
+    {
+        "reset",
+        "observe",
+        "step",
+        "finish",
+        "export",
+        "release",
+        "rewards",
+        "costs",
+        "recover",
+        "result",
+        "step_result",
+    }
 )
 
 
@@ -79,6 +91,25 @@ class RolloutRPC:
             return _error(request_id, "execution_error", str(exc))
 
     def _call(self, method: str, params: Mapping[str, Any]) -> Any:
+        if method in {"recover", "result", "step_result"}:
+            _reject_unknown(
+                params,
+                {"request_id", "step_id"} if method != "result" else {"request_id"},
+                method,
+            )
+            request_id = params["request_id"]
+            if not isinstance(request_id, str) or not request_id:
+                raise ValueError("request_id must be a non-empty string")
+            step_id = params.get("step_id")
+            if step_id is not None and (not isinstance(step_id, str) or not step_id):
+                raise ValueError("step_id must be a non-empty string")
+            if method == "result":
+                return self.adapter.result(request_id)
+            if method == "step_result":
+                if step_id is None:
+                    raise ValueError("step_id is required")
+                return self.adapter.step_result(request_id, step_id)
+            return self.adapter.recover(request_id, step_id=step_id)
         if method == "reset":
             _reject_unknown(
                 params,
@@ -98,14 +129,21 @@ class RolloutRPC:
             _require_empty(params, method)
             return self.adapter.observe()
         if method == "step":
-            _reject_unknown(params, {"reply", "observation"}, method)
+            _reject_unknown(
+                params, {"reply", "observation", "step_id", "expected_turn"}, method
+            )
             if "reply" not in params:
                 raise KeyError("reply")
             reply = params["reply"]
             if not isinstance(reply, Mapping):
                 raise TypeError("reply must be a JSON object")
             observation = params.get("observation")
-            return self.adapter.step(reply, observation=observation)
+            return self.adapter.step(
+                reply,
+                observation=observation,
+                step_id=params.get("step_id"),
+                expected_turn=params.get("expected_turn"),
+            )
         if method == "finish":
             _reject_unknown(params, {"status"}, method)
             status = params.get("status", "completed")

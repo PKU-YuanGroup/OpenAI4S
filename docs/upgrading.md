@@ -70,10 +70,11 @@ That is the `openai4s-data` named volume in `compose.yaml`, or the
 container, or scale the Deployment to zero, and back up the volume or the PVC
 before you start the 0.3.1 image.
 
-The current development tree opens schema **42**. Migrations 36 through 42
-add the RL trajectory snapshot, budget, resource-admission, and owner-fenced
-persistent phase records; they are additive and are applied after the 0.3.1
-schema-35 boundary.
+The current development tree opens schema **43**. Migrations 36 through 43
+add RL trajectory snapshots, budgets, resource admissions, owner-fenced phases,
+and immutable run/step receipts. They are additive after the 0.3.1 schema-35
+boundary. Old run receipts lack protocol-2 proof that work has not started and
+are never automatically resumed; missing original results stay unavailable.
 
 ### Install 0.3.1 after the backup
 

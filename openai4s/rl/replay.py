@@ -219,7 +219,7 @@ class TrajectoryReplayer:
     ) -> ReplayView:
         events = tuple(trajectory.execution_events)
         _validate_events(events, trajectory.episode.episode_id)
-        latest = events[-1].sequence or 0
+        latest = (events[-1].sequence or 0) if events else 0
         if after_sequence > latest:
             raise ReplayCursorError(
                 f"event cursor {after_sequence} is ahead of latest sequence {latest}"

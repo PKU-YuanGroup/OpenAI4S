@@ -176,6 +176,7 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "rl_budget_ledger",
         "rl_resource_admission",
         "rl_phase_bindings",
+        "rl_run_results",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

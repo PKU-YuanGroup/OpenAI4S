@@ -15,7 +15,7 @@ from typing import Any, Iterable, Literal, Mapping
 from openai4s.agent.models import Message
 
 from .atif import ATIFExporter
-from .environment import RolloutEnvironment
+from .environment import RolloutEnvironment, RunAlreadyTerminal
 from .models import Episode, RunReceipt, Trajectory
 from .recorder import trajectory_jsonl
 from .rollout import RolloutSession
@@ -96,7 +96,6 @@ class RolloutWorker:
         request_id: str | None = None,
     ) -> RolloutSession:
         """Reserve one Episode through the environment boundary."""
-        self._ensure_request_admissible(request_id)
         return self.environment.reset(
             episode,
             tuple(messages),
@@ -123,15 +122,18 @@ class RolloutWorker:
         max_turns: int | None = None,
         request_id: str | None = None,
     ) -> Trajectory:
-        session = self.reset(
-            episode,
-            messages,
-            initial_artifacts=initial_artifacts,
-            config=config,
-            budget=budget,
-            max_turns=max_turns,
-            request_id=request_id,
-        )
+        try:
+            session = self.reset(
+                episode,
+                messages,
+                initial_artifacts=initial_artifacts,
+                config=config,
+                budget=budget,
+                max_turns=max_turns,
+                request_id=request_id,
+            )
+        except RunAlreadyTerminal as settled:
+            return settled.trajectory
         try:
             return session.run(sampler)
         finally:
@@ -156,15 +158,18 @@ class RolloutWorker:
     ) -> Trajectory:
         """Run one isolated Episode with an async-compatible sampler."""
 
-        session = self.reset(
-            episode,
-            messages,
-            initial_artifacts=initial_artifacts,
-            config=config,
-            budget=budget,
-            max_turns=max_turns,
-            request_id=request_id,
-        )
+        try:
+            session = self.reset(
+                episode,
+                messages,
+                initial_artifacts=initial_artifacts,
+                config=config,
+                budget=budget,
+                max_turns=max_turns,
+                request_id=request_id,
+            )
+        except RunAlreadyTerminal as settled:
+            return settled.trajectory
         try:
             return await session.run_async(sampler)
         finally:
@@ -197,32 +202,25 @@ class RolloutWorker:
             # that side effects settled, so recovery remains explicit and
             # fail-closed rather than silently treating it as terminal.
             status = "recovery_required"
+        safe_to_start = False
+        if receipt.state == "accepted":
+            try:
+                details = self.repository.runs.get(request_id)
+                safe_to_start = bool(details and details.get("protocol") == 2)
+            except (AttributeError, RuntimeError):
+                status = "recovery_required"
         return RecoveryResult(
             request_id=receipt.request_id,
             episode_id=receipt.episode_id,
             receipt_state=receipt.state,
             status=status,
-            can_resume=False,
+            can_resume=safe_to_start,
         )
 
-    def _ensure_request_admissible(self, request_id: str | None) -> None:
-        """Reject a claimed request before constructing an Engine/workspace."""
-        if request_id is None or self.repository is None:
-            return
-        getter = getattr(self.repository, "get_receipt", None)
-        if not callable(getter):
-            return
-        receipt = getter(request_id)
-        if receipt is None:
-            return
-        if isinstance(receipt, Mapping):
-            receipt = RunReceipt(**dict(receipt))
-        if not isinstance(receipt, RunReceipt):
-            raise TypeError("receipt repository returned an unsupported value")
-        if receipt.state != "accepted":
-            raise RuntimeError(
-                f"rollout request {request_id!r} is {self.recover(request_id).status}"
-            )
+    def result(self, request_id: str) -> Trajectory | None:
+        if self.repository is None:
+            raise RuntimeError("result retrieval requires a durable receipt repository")
+        return self.repository.runs.result(request_id)
 
     @staticmethod
     def export(

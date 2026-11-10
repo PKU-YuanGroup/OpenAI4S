@@ -49,6 +49,20 @@ execution-event snapshots joined to each decision (with their stable event
 IDs). Deterministic JSON or streaming JSONL is self-contained at the Trainer
 boundary and does not choose an advantage estimator.
 
+`requests.py` normalizes strict JSON run inputs and fingerprints logical request
+identity. Durable Environment admission now precedes factory construction; its
+`default_max_turns` (32 unless supplied) is part of the effective request. Same
+request/content returns the original terminal result; different content always
+conflicts. A current-protocol accepted request can be claimed once; running or
+legacy unknown work is never automatically replayed. Migration 43 commits the
+terminal event, Episode projection, result bytes/hash, and receipt together.
+Later rewards and compute projections do not change the frozen result.
+
+The JSONL adapter adds `recover`, `result`, and `step_result`. Retry-safe `step`
+requires both `step_id` and `expected_turn` on a durable run; exact retries return
+the recorded response. A claimed step without a response is unknown and cannot
+be replayed. Envelope JSON-RPC IDs alone do not make a step idempotent.
+
 `policy.py` defines `PolicyProvider` and `PolicyAdapter`. The adapter records
 the behavior policy identity and sampling configuration in `ModelReply.extra`;
 it preserves missing logprob evidence instead of estimating it after sampling.

@@ -29,6 +29,10 @@ _STOP_REASON_FOR_STATUS = {
     "timeout": {"interrupted", "timeout"},
     "max_turns": {"max_turns"},
     "no_progress": {"no_progress"},
+    "scientific_failure": {"scientific_failure"},
+    "budget_exhausted": {"budget_exhausted"},
+    "execution_failure": {"execution_failure"},
+    "verifier_failure": {"verifier_failure"},
 }
 _POST_TERMINAL_PROJECTIONS = frozenset(
     {"artifact.version", "compute.job", "compute.job_event"}

@@ -160,6 +160,8 @@ class TrajectoryRecorder:
                 )
             current = self._events.get(value.event_id)
             if current is not None:
+                if value.sequence is None:
+                    value = replace(value, sequence=current.sequence)
                 if not self._same(current, value):
                     raise ValueError(
                         f"record {value.event_id!r} was already stored with different content"

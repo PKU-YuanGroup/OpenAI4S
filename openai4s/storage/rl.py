@@ -228,6 +228,12 @@ class RLRepository:
         self._lock = lock
         self._clock_ms = clock_ms
 
+    @property
+    def runs(self) -> Any:
+        from .rl_runs import RunRepository
+
+        return RunRepository(self)
+
     def budget_ledger(
         self,
         budget_id: str,

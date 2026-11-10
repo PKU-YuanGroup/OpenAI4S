@@ -38,6 +38,16 @@ Episode Reward Annotation，并把按 Decision 关联的 immutable ExecutionEven
 连同稳定的事件 ID 一起写入样本。确定性的 JSON 与流式 JSONL 在 Trainer 边界上自包含；
 它不选择 Advantage Estimator。
 
+`requests.py` 规范化严格 JSON 请求并绑定逻辑身份。持久化 Environment 现在先准入/claim，
+再构造 factory；`default_max_turns`（默认 32）属于有效请求。同 ID 同内容的终态重试
+返回原结果，不同内容始终冲突。新版 accepted 只可 claim 一次；running/legacy 未知执行
+绝不自动重跑。Migration 43 原子提交 terminal event、Episode 状态、固定结果字节/哈希
+和 receipt。后写的 reward/compute 投影不改变原结果。
+
+JSONL adapter 新增 `recover`、`result`、`step_result`。安全重试的 `step` 要求持久化运行
+同时提供 `step_id`、`expected_turn`，完全相同的重试返回原响应。已 claim 但无响应的 step
+视为 unknown，不重新执行。仅 JSON-RPC envelope ID 不提供幂等保证。
+
 `policy.py` 定义 `PolicyProvider` 和 `PolicyAdapter`。Adapter 把 behavior policy 身份
 和采样配置写入 `ModelReply.extra`；缺失的 logprob 保持缺失，不在采样后估算。
 现代 provider 还可以通过 `tools` 接收复制后的当前原生工具投影；`observe()` 之后，

@@ -8,6 +8,10 @@ The RL Runtime additions are covered by `test_rl_contract.py`, `test_agent_rl_st
 
 The offline correctness gate for OpenAI4S. `uv run pytest` runs every module here against deterministic fakes, and it has to stay green: the provider-neutral agent engine, the Host services, the persistent Python/R kernel protocol, the repositories, the security boundaries, the tools, the Skills, and the Web composition. Reusable scenarios and scored evaluations are a separate layer and live in [`../harness/`](../harness/).
 
+`test_rl_run_receipts.py` exercises protocol-2 identity, single claims, frozen
+terminal results, transaction rollback, exact scientific terminal mappings, and
+per-turn operation receipts. Adapter tests also cover lost-response retrieval.
+
 ## Offline contract
 
 - `uv run pytest` must not need a live LLM, an API key, network, a GPU, an SSH host, a Docker daemon, a browser, or a lab system. [`conftest.py`](conftest.py) points `~/.openai4s` at a temporary directory for every test and installs a fake provider and key. That redirect only reaches code that runs after it, so opening a `Store` or creating the data dir under the real one is also refused and fails the test — see [`test_real_data_dir_guard.py`](test_real_data_dir_guard.py).

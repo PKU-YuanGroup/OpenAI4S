@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import threading
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, cast
 
@@ -46,6 +46,14 @@ class EpisodeReset:
 EngineFactory = Callable[[EpisodeReset], AgentEngine]
 
 
+class RunAlreadyTerminal(RuntimeError):
+    """A reset retry has an immutable result, not an executable session."""
+
+    def __init__(self, trajectory: Trajectory):
+        super().__init__("rollout request is already_terminal")
+        self.trajectory = trajectory
+
+
 class RolloutEnvironment:
     """Build isolated Engine/Recorder pairs one Episode at a time.
 
@@ -60,7 +68,15 @@ class RolloutEnvironment:
         *,
         repository: Any | None = None,
         workspace_root: str | Path | None = None,
+        default_max_turns: int = 32,
     ) -> None:
+        if (
+            isinstance(default_max_turns, bool)
+            or not isinstance(default_max_turns, int)
+            or default_max_turns < 0
+        ):
+            raise ValueError("default_max_turns must be a non-negative integer")
+        self.default_max_turns = default_max_turns
         self.engine_factory = engine_factory
         self.repository = repository
         self.workspace_root = (
@@ -105,8 +121,44 @@ class RolloutEnvironment:
             )
             reset_config = _json_mapping("config", {} if config is None else config)
             reset_budget = _json_mapping("budget", {} if budget is None else budget)
+            owner_id = "rl-owner-" + uuid.uuid4().hex
+            claimed = None
             reset_id = "reset-" + uuid.uuid4().hex
             workspace_id = "workspace-" + uuid.uuid4().hex
+            if request_id is not None:
+                if self.repository is None:
+                    raise ValueError("request_id requires a receipt repository")
+                from .requests import normalize_request
+
+                effective_turns = (
+                    self.default_max_turns if max_turns is None else max_turns
+                )
+                request = normalize_request(
+                    episode,
+                    messages,
+                    initial_artifacts=artifacts,
+                    config=reset_config,
+                    budget=reset_budget,
+                    max_turns=effective_turns,
+                )
+                admitted = self.repository.runs.admit(request_id, request)
+                if admitted["state"] not in {"accepted", "running"}:
+                    result = self.repository.runs.result(request_id)
+                    if result is None:
+                        raise RuntimeError("legacy_result_unavailable")
+                    raise RunAlreadyTerminal(result)
+                if admitted["state"] == "running":
+                    raise RuntimeError("rollout request is recovery_required")
+                claimed = self.repository.runs.claim(
+                    request_id, admitted["fingerprint"], owner_id
+                )
+                reset_id = admitted["reset_metadata"]["reset_id"]
+                workspace_id = admitted["reset_metadata"]["workspace_id"]
+                max_turns = effective_turns
+                episode = replace(
+                    episode,
+                    created_at=int(admitted["payload"]["episode"]["created_at"]),
+                )
             workspace = self._new_workspace()
             reset = EpisodeReset(
                 episode=episode,
@@ -141,6 +193,7 @@ class RolloutEnvironment:
             reset = replace(reset, episode=effective_episode)
             engine = self.engine_factory(reset)
             recorder = TrajectoryRecorder(effective_episode, repository=self.repository)
+            recorder.owner_id = owner_id
             session = RolloutSession(
                 engine,
                 recorder,
@@ -151,6 +204,7 @@ class RolloutEnvironment:
                 messages,
                 max_turns=max_turns,
                 receipt_context=receipt_context,
+                claimed_run=claimed,
             )
             assert session.state is not None
             session.state.metadata["rl_reset"] = reset.public_metadata()
@@ -217,19 +271,66 @@ class RolloutEnvironmentAdapter:
         self._session: RolloutSession | None = None
         self._released = False
         self._released_result: dict[str, Any] | None = None
+        self._request_id: str | None = None
+        self._step_lock = threading.Lock()
 
     def reset(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Reset one Episode and return its first trainer observation."""
 
-        if self._session is not None and not self._released:
-            raise RuntimeError("environment adapter already has an active episode")
-        self._session = None
-        self._released = False
-        self._released_result = None
         if not isinstance(request, Mapping):
             raise TypeError("reset request must be a mapping")
         episode = _episode(request.get("episode"))
         messages = _messages(request.get("messages"))
+        request_id = request.get("request_id")
+        if request_id is not None and self.environment.repository is not None:
+            from .requests import normalize_request
+
+            normalized = normalize_request(
+                episode,
+                messages,
+                initial_artifacts=request.get("initial_artifacts"),
+                config=request.get("config"),
+                budget=request.get("budget"),
+                max_turns=(
+                    request.get("max_turns")
+                    if request.get("max_turns") is not None
+                    else self.environment.default_max_turns
+                ),
+            )
+            admitted = self.environment.repository.runs.admit(request_id, normalized)
+            if admitted["state"] != "accepted":
+                if (
+                    self._session is not None
+                    and not self._released
+                    and request_id != self._request_id
+                ):
+                    raise RuntimeError(
+                        "environment adapter already has an active episode"
+                    )
+                self._request_id = request_id
+                if self._released:
+                    self._session = None
+                    self._released_result = None
+                if admitted["state"] == "running":
+                    return {
+                        "request_id": request_id,
+                        "episode_id": admitted["episode_id"],
+                        "status": "recovery_required",
+                        "terminal": False,
+                    }
+                return {
+                    "request_id": request_id,
+                    "episode": self._runs().result(request_id).episode.to_dict(),
+                    "status": "terminal",
+                    "terminal": True,
+                    "reused": True,
+                }
+        if self._session is not None and not self._released:
+            raise RuntimeError("environment adapter already has an active episode")
+        self._session = None
+        self._request_id = request_id
+        self._released = False
+        self._released_result = None
         session = self.environment.reset(
             episode,
             messages,
@@ -261,6 +362,28 @@ class RolloutEnvironmentAdapter:
         reply: ModelReply | Mapping[str, Any],
         *,
         observation: Any = None,
+        step_id: str | None = None,
+        expected_turn: int | None = None,
+    ) -> dict[str, Any]:
+        if not self._step_lock.acquire(blocking=False):
+            raise RuntimeError("an episode step is already executing")
+        try:
+            return self._step(
+                reply,
+                observation=observation,
+                step_id=step_id,
+                expected_turn=expected_turn,
+            )
+        finally:
+            self._step_lock.release()
+
+    def _step(
+        self,
+        reply: ModelReply | Mapping[str, Any],
+        *,
+        observation: Any = None,
+        step_id: str | None = None,
+        expected_turn: int | None = None,
     ) -> dict[str, Any]:
         """Execute one externally sampled reply and return detached results.
 
@@ -271,9 +394,56 @@ class RolloutEnvironmentAdapter:
         """
 
         session = self._active()
+        prepared = None if observation is None else _messages(observation)
+        if (step_id is None) != (expected_turn is None):
+            raise ValueError("step_id and expected_turn must be supplied together")
+        if step_id is not None:
+            if session._run_owner is None or session.request_id is None:
+                raise ValueError(
+                    "durable step identity requires a current-protocol run"
+                )
+            from .requests import request_fingerprint
+
+            raw = (
+                reply
+                if isinstance(reply, Mapping)
+                else {
+                    "content": reply.content,
+                    "tool_calls": [asdict(c) for c in reply.tool_calls],
+                    "assistant_message": reply.assistant_message,
+                    "extra": reply.extra,
+                }
+            )
+            fingerprint = request_fingerprint(
+                {
+                    "reply": _json(raw),
+                    "observation": prepared,
+                    "expected_turn": expected_turn,
+                }
+            )
+            previous = self._runs().step_result(session.request_id, step_id)
+            if previous is not None:
+                if (
+                    previous["fingerprint"] != fingerprint
+                    or previous["expected_turn"] != expected_turn
+                ):
+                    raise ValueError("step identity conflicts with stored content")
+                if previous["response"] is not None:
+                    return _json(previous["response"])
+                raise RuntimeError(
+                    "step is recovery_required; execution must not be replayed"
+                )
+            if session.state is None or expected_turn != session.state.turn:
+                raise ValueError("expected_turn does not match current decision")
+            self._runs().claim_step(
+                session.request_id,
+                session._run_owner,
+                step_id,
+                expected_turn,
+                fingerprint,
+            )
         if self._released:
             raise RuntimeError("rollout episode has already been released")
-        prepared = None if observation is None else _messages(observation)
         result = session.step(reply, observation=prepared)
         response = _step_response(session, result)
         if session.finished:
@@ -282,7 +452,50 @@ class RolloutEnvironmentAdapter:
             response["status"] = "running"
             response["next_observation"] = _messages(session.observe())
             response["next_tools"] = _json(session.current_tools)
+        if step_id is not None:
+            self._runs().record_step(
+                session.request_id, session._run_owner, step_id, response
+            )
         return response
+
+    def _runs(self) -> Any:
+        if self.environment.repository is None:
+            raise RuntimeError("recovery requires a durable receipt repository")
+        return self.environment.repository.runs
+
+    def recover(self, request_id: str, *, step_id: str | None = None) -> dict[str, Any]:
+        if step_id is not None:
+            return self.step_result(request_id, step_id)
+        receipt = self._runs().get(request_id)
+        if receipt is None:
+            raise KeyError(request_id)
+        state = receipt["state"]
+        return {
+            "request_id": request_id,
+            "episode_id": receipt["episode_id"],
+            "receipt_state": state,
+            "status": (
+                "not_started"
+                if state == "accepted"
+                else "recovery_required" if state == "running" else "already_terminal"
+            ),
+            "can_resume": state == "accepted",
+            "result_available": self._runs().result(request_id) is not None,
+        }
+
+    def result(self, request_id: str) -> dict[str, Any]:
+        from .worker import RolloutWorker
+
+        trajectory = self._runs().result(request_id)
+        if trajectory is None:
+            return self.recover(request_id)
+        return RolloutWorker.export(trajectory).to_dict()
+
+    def step_result(self, request_id: str, step_id: str) -> dict[str, Any]:
+        record = self._runs().step_result(request_id, step_id)
+        if record is None:
+            raise KeyError(step_id)
+        return _json(record)
 
     def finish(self, status: str = "completed") -> dict[str, Any]:
         """Explicitly terminalize the active Episode without scoring it."""
@@ -315,6 +528,14 @@ class RolloutEnvironmentAdapter:
     def export(self, format: str = "json") -> dict[str, Any]:
         """Return a schema/hash-bound JSON, JSONL, or ATIF export."""
 
+        if self._request_id is not None:
+            frozen = self._runs().result(self._request_id)
+            if frozen is not None:
+                from .worker import RolloutWorker
+
+                return RolloutWorker.export(
+                    frozen, cast(Literal["json", "jsonl", "atif"], format)
+                ).to_dict()
         session = self._active()
         if not session.finished:
             raise RuntimeError("cannot export a running rollout")
@@ -330,6 +551,15 @@ class RolloutEnvironmentAdapter:
     def release(self) -> dict[str, Any]:
         """Release a terminal Episode after inspecting its final step."""
 
+        if self._session is None and self._request_id is not None:
+            frozen = self._runs().result(self._request_id)
+            if frozen is not None:
+                self._released = True
+                return {
+                    "episode": frozen.episode.to_dict(),
+                    "status": "terminal",
+                    "counts": _trajectory_counts(frozen),
+                }
         session = self._active()
         if self._released:
             return self._release_finished(session)

@@ -8,6 +8,9 @@ RL Runtime 新增部分由 `test_rl_contract.py`、`test_agent_rl_step.py`、`te
 
 OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这里的每一个模块，而且必须一直是绿的：供应商无关的 Agent 引擎、Host 服务、常驻 Python/R 内核协议、仓储、安全边界、Tool、Skill 与 Web 组合。可复用的场景和计分评测属于另一层，放在 [`../harness/`](../harness/)。
 
+`test_rl_run_receipts.py` 验证 protocol-2 请求身份、唯一 claim、固定终态结果、事务回滚、
+科学终态映射和逐轮 operation receipt；Adapter 测试同时验证失联后的原结果取回。
+
 ## 离线契约
 
 - `uv run pytest` 不能依赖真实 LLM、API key、网络、GPU、SSH 主机、Docker daemon、浏览器或实验室系统。[`conftest.py`](conftest.py) 为每个测试把 `~/.openai4s` 指向一个临时目录，并装上 fake provider 与 key。这个重定向只作用于它之后运行的代码，所以在真实数据目录下打开 `Store` 或创建数据目录也会被拒绝并让测试失败——见 [`test_real_data_dir_guard.py`](test_real_data_dir_guard.py)。

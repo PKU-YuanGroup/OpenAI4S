@@ -68,6 +68,8 @@ class RolloutSession:
         self.repository = repository
         self.request_id = request_id
         self.receipt: RunReceipt | None = None
+        self._run_owner: str | None = None
+        self._terminal_result: Trajectory | None = None
         self.sink = TrajectoryEventSink(
             recorder,
             delegate=delegate_sink if delegate_sink is not None else engine.event_sink,
@@ -92,6 +94,7 @@ class RolloutSession:
         *,
         max_turns: int | None = None,
         receipt_context: Mapping[str, Any] | None = None,
+        claimed_run: Mapping[str, Any] | None = None,
     ) -> RunState:
         if self.state is not None:
             raise RuntimeError("rollout session has already been reset")
@@ -101,7 +104,11 @@ class RolloutSession:
         )
         if state.max_turns < 0:
             raise ValueError("max_turns must be non-negative")
-        if self.repository is not None and self.request_id is not None:
+        if (
+            self.repository is not None
+            and self.request_id is not None
+            and claimed_run is None
+        ):
             accepted_at = self.recorder.now_ms()
             fingerprint_payload: dict[str, Any] = {
                 "episode_id": self.recorder.episode.episode_id,
@@ -132,6 +139,15 @@ class RolloutSession:
                 raise RuntimeError(
                     f"rollout request {self.request_id!r} was already claimed"
                 ) from exc
+        if claimed_run is not None:
+            assert self.repository is not None
+            if (
+                claimed_run.get("state") != "running"
+                or claimed_run.get("owner_id") != self.recorder.owner_id
+            ):
+                raise ValueError("invalid run claim")
+            self._run_owner = self.recorder.owner_id
+            self.receipt = self.repository.get_receipt(self.request_id)
         self.state = state
         self.state.metadata["rl_episode_id"] = self.recorder.episode.episode_id
         return state
@@ -233,7 +249,7 @@ class RolloutSession:
                     stop_reason="max_turns",
                 )
             )
-        return self.recorder.snapshot()
+        return self._terminal_result or self.recorder.snapshot()
 
     async def run_async(
         self,
@@ -269,11 +285,16 @@ class RolloutSession:
                     stop_reason="max_turns",
                 )
             )
-        return self.recorder.snapshot()
+        return self._terminal_result or self.recorder.snapshot()
 
     def finish(self, status: str = "completed") -> Trajectory:
+        from openai4s.storage.rl_runs import receipt_state_for_status
+
+        receipt_state_for_status(status)
         if not self._finished:
             state = self.state
+            if self._run_owner is not None:
+                return self._finalize_durable(status, None, state.turn if state else 0)
             self.recorder.add_event(
                 ExecutionEvent(
                     event_id=(f"{self.recorder.episode.episode_id}:episode.finished"),
@@ -290,7 +311,7 @@ class RolloutSession:
             self.recorder.finish(status)
             self._settle_receipt(status)
             self._finished = True
-        return self.recorder.snapshot()
+        return self._terminal_result or self.recorder.snapshot()
 
     def export(self) -> str:
         return self.recorder.export_json()
@@ -311,24 +332,44 @@ class RolloutSession:
             state.turn,
             step.reply,
         )
-        self.sink.emit(RunFinished(result))
-        self._settle_receipt(result.stop_reason)
+        if self._run_owner is not None:
+            self._finalize_durable(result.stop_reason, result.completion, state.turn)
+            if self.sink.delegate is not None:
+                self.sink.delegate.emit(RunFinished(result))
+        else:
+            self.sink.emit(RunFinished(result))
+            self._settle_receipt(result.stop_reason)
+            self._finished = True
+
+    def _finalize_durable(self, reason: str, completion: Any, turns: int) -> Trajectory:
+        assert self.repository is not None
+        status = "completed" if reason in {"submitted", "plan"} else reason
+        terminal = ExecutionEvent(
+            event_id=f"{self.recorder.episode.episode_id}:episode.finished",
+            episode_id=self.recorder.episode.episode_id,
+            kind="episode.finished",
+            created_at=self.recorder.now_ms(),
+            payload={"stop_reason": reason, "completion": completion, "turns": turns},
+        )
+        trajectory = self.repository.runs.finalize(
+            self.request_id,
+            self._run_owner,
+            self.recorder.episode.episode_id,
+            status,
+            terminal,
+        )
+        self.recorder.episode = trajectory.episode
+        self.receipt = self.repository.get_receipt(self.request_id)
+        self._terminal_result = trajectory
         self._finished = True
+        return trajectory
 
     def _settle_receipt(self, stop_reason: str) -> None:
         if self.repository is None or self.request_id is None:
             return
-        state = {
-            "completed": "completed",
-            "done": "completed",
-            "cancelled": "cancelled",
-            "timeout": "interrupted",
-            "interrupted": "interrupted",
-            "max_turns": "interrupted",
-            "no_progress": "interrupted",
-            "error": "failed",
-            "failed": "failed",
-        }.get(stop_reason, "completed")
+        from openai4s.storage.rl_runs import receipt_state_for_status
+
+        state = receipt_state_for_status(stop_reason)
         self.receipt = self.repository.update_receipt_state(self.request_id, state)
 
     def _state(self) -> RunState:

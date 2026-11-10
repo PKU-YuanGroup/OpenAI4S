@@ -10,6 +10,11 @@ The outer loop writes its canonical action ledger and its execution attempts her
 
 A SQLite transaction can make a defined set of rows atomic. It cannot stretch across SQLite, workspace files, content-addressed blobs, a running Python/R namespace, remote compute, and WebSocket events all at once. That is why the repositories keep three things apart: append-only history, mutable materialized projections, and the best-effort binding to files that live outside the database.
 
+`rl_runs.py` owns protocol-2 rollout admission, claims, immutable hash-checked
+results, and per-turn step receipts under the same Store transaction/lock.
+Migration 43 is additive; old receipts remain explicitly legacy, never assumed
+safe to restart. Terminal retries return original bytes, not today's projection.
+
 ## Files
 
 | File | Responsibility |
