@@ -387,12 +387,27 @@ class DurableBudgetLedger:
     ) -> None:
         self.repository = repository
         self.budget_id = _text("budget_id", budget_id)
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self._lock = threading.RLock()
         persisted = repository.load_budget_ledger(self.budget_id)
-        requested = BudgetLedger(limits, modes=modes, clock_ms=clock_ms)
+        requested = BudgetLedger(limits, modes=modes, clock_ms=self._clock_ms)
         if persisted is None:
             self._ledger = requested
-            self._revision = self._persist(expected_revision=0)
-            return
+            try:
+                self._revision = self._persist(expected_revision=0)
+                return
+            except ValueError as error:
+                if str(error) != "budget ledger revision conflict":
+                    raise
+                persisted = repository.load_budget_ledger(self.budget_id)
+                if persisted is None:
+                    raise
+        self._install_persisted(persisted, requested)
+
+    def _install_persisted(
+        self, persisted: Mapping[str, Any], requested: BudgetLedger
+    ) -> None:
+        """Install one complete Store snapshot after construction or a CAS miss."""
         persisted_limits = persisted.get("limits")
         persisted_modes = persisted.get("modes")
         if not isinstance(persisted_limits, Mapping) or not isinstance(
@@ -419,7 +434,7 @@ class DurableBudgetLedger:
             modes=persisted_modes,
             used=persisted.get("used") or {},
             reservations=records_list,
-            clock_ms=clock_ms,
+            clock_ms=self._clock_ms,
         )
         revision = persisted.get("revision")
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
@@ -433,46 +448,100 @@ class DurableBudgetLedger:
         *,
         reserved_at: int | None = None,
     ) -> BudgetReservation:
-        result = self._ledger.reserve(allocation_id, estimated, reserved_at=reserved_at)
-        self._revision = self._persist()
-        return result
+        return self._mutate(
+            lambda: self._ledger.reserve(
+                allocation_id, estimated, reserved_at=reserved_at
+            )
+        )
 
     def bind_receipt(
         self, allocation_id: str, provider_receipt: str
     ) -> BudgetReservation:
-        result = self._ledger.bind_receipt(allocation_id, provider_receipt)
-        self._revision = self._persist()
-        return result
+        return self._mutate(
+            lambda: self._ledger.bind_receipt(allocation_id, provider_receipt)
+        )
 
     def release(self, allocation_id: str) -> BudgetReservation:
-        result = self._ledger.release(allocation_id)
-        self._revision = self._persist()
-        return result
+        return self._mutate(lambda: self._ledger.release(allocation_id))
 
     def mark_unknown(self, allocation_id: str) -> BudgetReservation:
-        result = self._ledger.mark_unknown(allocation_id)
-        self._revision = self._persist()
-        return result
+        return self._mutate(lambda: self._ledger.mark_unknown(allocation_id))
 
     def commit(
         self, allocation_id: str, actual: Mapping[str, Any]
     ) -> BudgetReservation:
-        result = self._ledger.commit(allocation_id, actual)
-        self._revision = self._persist()
-        return result
+        return self._mutate(lambda: self._ledger.commit(allocation_id, actual))
 
     def reconcile(
         self, allocation_id: str, actual: Mapping[str, Any]
     ) -> BudgetReservation:
-        result = self._ledger.reconcile(allocation_id, actual)
-        self._revision = self._persist()
-        return result
+        return self._mutate(lambda: self._ledger.reconcile(allocation_id, actual))
 
     def state(self) -> BudgetState:
-        return self._ledger.state()
+        with self._lock:
+            return self._ledger.state()
 
     def get(self, allocation_id: str) -> BudgetReservation | None:
-        return self._ledger.get(allocation_id)
+        with self._lock:
+            return self._ledger.get(allocation_id)
+
+    def _mutate(self, operation: Callable[[], Any]) -> Any:
+        """Apply and persist one transition, restoring local state on CAS loss.
+
+        The SQLite repository protects the durable snapshot, but the in-memory
+        ``BudgetLedger`` is mutated before that write.  A stale wrapper must
+        not retain a reservation or usage claim after another wrapper wins the
+        revision race.  Reloading the complete winning snapshot also makes
+        the next operation observe the same allocation set as the Store.
+        """
+
+        with self._lock:
+            before = self._ledger.state()
+            try:
+                result = operation()
+            except BaseException:
+                self._ledger = BudgetLedger.from_snapshot(
+                    before.limits,
+                    modes=before.modes,
+                    used=before.used,
+                    reservations=before.reservations,
+                    clock_ms=self._clock_ms,
+                )
+                raise
+            after = self._ledger.state()
+            if after == before:
+                return result
+            try:
+                self._revision = self._persist()
+            except ValueError as error:
+                if "revision conflict" in str(error):
+                    persisted = self.repository.load_budget_ledger(self.budget_id)
+                    if persisted is not None:
+                        requested = BudgetLedger(
+                            persisted.get("limits", {}),
+                            modes=persisted.get("modes", {}),
+                            clock_ms=self._clock_ms,
+                        )
+                        self._install_persisted(persisted, requested)
+                else:
+                    self._ledger = BudgetLedger.from_snapshot(
+                        before.limits,
+                        modes=before.modes,
+                        used=before.used,
+                        reservations=before.reservations,
+                        clock_ms=self._clock_ms,
+                    )
+                raise
+            except BaseException:
+                self._ledger = BudgetLedger.from_snapshot(
+                    before.limits,
+                    modes=before.modes,
+                    used=before.used,
+                    reservations=before.reservations,
+                    clock_ms=self._clock_ms,
+                )
+                raise
+            return result
 
     def _persist(self, *, expected_revision: int | None = None) -> int:
         expected = self._revision if expected_revision is None else expected_revision

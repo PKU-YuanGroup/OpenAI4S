@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from openai4s.config import Config
-from openai4s.rl import ResourceCapacity, ResourceRequest
+from openai4s.rl import BudgetExceeded, ResourceCapacity, ResourceRequest
 from openai4s.store import get_store
 
 
@@ -50,6 +50,27 @@ def test_store_backed_budget_rejects_changed_limits(tmp_path):
             reopened.rl.budget_ledger("budget", {"gpu_seconds": 11})
     finally:
         reopened.close()
+
+
+def test_budget_revision_conflict_reloads_winning_snapshot(tmp_path):
+    db_path = Config(data_dir=tmp_path).db_path
+    store = get_store(db_path)
+    try:
+        first = store.rl.budget_ledger("shared-budget", {"gpu_seconds": 10})
+        second = store.rl.budget_ledger("shared-budget", {"gpu_seconds": 10})
+        first.reserve("allocation-first", {"gpu_seconds": 8}, reserved_at=1)
+
+        with pytest.raises(ValueError, match="revision conflict"):
+            second.reserve("allocation-second", {"gpu_seconds": 3}, reserved_at=2)
+
+        # The failed wrapper must not retain its rejected reservation, and it
+        # must observe the winner's reservation before accepting a new one.
+        assert second.get("allocation-second") is None
+        assert second.get("allocation-first") is not None
+        with pytest.raises(BudgetExceeded):
+            second.reserve("allocation-second", {"gpu_seconds": 3}, reserved_at=2)
+    finally:
+        store.close()
 
 
 def test_store_backed_resource_admission_preserves_unknown_capacity_use(tmp_path):
