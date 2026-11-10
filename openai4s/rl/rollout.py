@@ -141,21 +141,24 @@ class RolloutSession:
         if self._finished:
             raise RuntimeError("rollout session is already finished")
         state = self._state()
+        used_cached_observation = False
         if observation is None:
             if self._pending_observation_turn == state.turn:
                 pending = self._pending_observation
                 if pending is None:
                     raise RuntimeError("rollout observation cache is inconsistent")
                 prepared = tuple(dict(message) for message in pending)
+                used_cached_observation = True
             else:
                 prepared = self.observe()
         else:
             prepared = tuple(dict(message) for message in observation)
-        prepared_tools = (
-            tuple(self._pending_tools)
-            if self._pending_observation_turn == state.turn
-            else None
-        )
+            used_cached_observation = (
+                self._pending_observation_turn == state.turn
+                and self._pending_observation is not None
+                and prepared == self._pending_observation
+            )
+        prepared_tools = tuple(self._pending_tools) if used_cached_observation else None
         self._pending_observation = None
         self._pending_observation_turn = None
         self._pending_tools = ()
