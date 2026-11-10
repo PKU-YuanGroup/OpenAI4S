@@ -79,6 +79,7 @@ class RolloutSession:
         messages: Iterable[Mapping[str, object]],
         *,
         max_turns: int | None = None,
+        receipt_context: Mapping[str, Any] | None = None,
     ) -> RunState:
         if self.state is not None:
             raise RuntimeError("rollout session has already been reset")
@@ -90,13 +91,14 @@ class RolloutSession:
             raise ValueError("max_turns must be non-negative")
         if self.repository is not None and self.request_id is not None:
             accepted_at = self.recorder.now_ms()
-            fingerprint = self.recorder.fingerprint(
-                {
-                    "episode_id": self.recorder.episode.episode_id,
-                    "messages": state.messages,
-                    "max_turns": state.max_turns,
-                }
-            )
+            fingerprint_payload: dict[str, Any] = {
+                "episode_id": self.recorder.episode.episode_id,
+                "messages": state.messages,
+                "max_turns": state.max_turns,
+            }
+            if receipt_context is not None:
+                fingerprint_payload["receipt_context"] = dict(receipt_context)
+            fingerprint = self.recorder.fingerprint(fingerprint_payload)
             candidate = RunReceipt(
                 request_id=self.request_id,
                 fingerprint=fingerprint,

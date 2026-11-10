@@ -127,10 +127,15 @@ def _generate(
         for parameter in parameters.values()
     ):
         kwargs["config"] = config
-    else:
-        # Preserve the original adapter contract for providers whose second
-        # argument was named positionally but is hidden from introspection.
-        kwargs["config"] = config
+    elif sum(
+        parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for parameter in parameters.values()
+    ) > len(args):
+        # Some older adapters used an unnamed ``settings``/``options``
+        # positional parameter.  Pass the config by position when that slot
+        # exists, while leaving true one-argument providers untouched.
+        args.append(config)
     return generate(*args, **kwargs)
 
 

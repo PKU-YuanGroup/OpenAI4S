@@ -116,6 +116,24 @@ class RolloutEnvironment:
                 config=reset_config,
                 budget=reset_budget,
             )
+            # Receipt identity must bind caller inputs, but generated reset and
+            # workspace UUIDs are intentionally excluded: a retry of the same
+            # request must hash identically even though it receives a fresh
+            # isolated workspace.
+            receipt_context = {
+                "episode": {
+                    "episode_id": episode.episode_id,
+                    "task": episode.task,
+                    "session_id": episode.session_id,
+                    "policy_name": episode.policy_name,
+                    "policy_version": episode.policy_version,
+                    "parent_episode_id": episode.parent_episode_id,
+                    "metadata": dict(episode.metadata),
+                },
+                "initial_artifacts": dict(reset.initial_artifacts),
+                "config": dict(reset.config),
+                "budget": dict(reset.budget),
+            }
             metadata = dict(episode.metadata)
             metadata["reset"] = reset.public_metadata()
             effective_episode = replace(episode, metadata=metadata)
@@ -128,7 +146,11 @@ class RolloutEnvironment:
                 repository=self.repository,
                 request_id=request_id,
             )
-            session.reset(messages, max_turns=max_turns)
+            session.reset(
+                messages,
+                max_turns=max_turns,
+                receipt_context=receipt_context,
+            )
             assert session.state is not None
             session.state.metadata["rl_reset"] = reset.public_metadata()
             with self._lock:

@@ -207,6 +207,47 @@ def test_rollout_worker_repository_binds_environment_for_run_receipts(tmp_path):
         store.close()
 
 
+def test_rollout_receipt_fingerprint_binds_environment_inputs(tmp_path):
+    store = get_store(Config(data_dir=tmp_path / "store").db_path)
+    try:
+        environment = RolloutEnvironment(
+            lambda _reset: AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1),
+            repository=store.rl,
+            workspace_root=tmp_path / "workspaces",
+        )
+        session = environment.reset(
+            Episode("ep-fingerprint", "task", "session", 1),
+            [{"role": "user", "content": "run"}],
+            initial_artifacts={"input": "v1"},
+            config={"seed": 1},
+            budget={"wall_time_ms": 1000},
+            request_id="request-fingerprint",
+        )
+        receipt = store.rl.get_receipt("request-fingerprint")
+        assert receipt is not None
+
+        different = RolloutSession(
+            AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1),
+            TrajectoryRecorder(Episode("ep-fingerprint", "task", "session", 1)),
+            repository=store.rl,
+            request_id="request-fingerprint",
+        )
+        with pytest.raises(ValueError, match="different content"):
+            different.reset(
+                [{"role": "user", "content": "different"}],
+                receipt_context={
+                    "initial_artifacts": {"input": "v2"},
+                    "config": {"seed": 2},
+                    "budget": {"wall_time_ms": 2000},
+                },
+            )
+        assert store.rl.get_receipt("request-fingerprint") == receipt
+        session.finish("cancelled")
+        environment.release(session)
+    finally:
+        store.close()
+
+
 def test_durable_rollout_sessions_namespace_generated_record_ids(tmp_path):
     store = get_store(Config(data_dir=tmp_path / "store").db_path)
     try:
@@ -325,6 +366,21 @@ def test_policy_adapter_accepts_sampling_config_provider_spelling() -> None:
             assert messages[0]["content"] == "run"
             assert tools == ()
             assert sampling_config == {"temperature": 0.1}
+            return {"content": "done"}
+
+    reply = PolicyAdapter(
+        _Provider(),
+        policy_name="policy",
+        policy_version="v1",
+        config={"temperature": 0.1},
+    ).sample(({"role": "user", "content": "run"},))
+    assert reply.content == "done"
+
+
+def test_policy_adapter_keeps_legacy_one_argument_provider_compatible() -> None:
+    class _Provider:
+        def generate(self, observation):
+            assert observation[0]["content"] == "run"
             return {"content": "done"}
 
     reply = PolicyAdapter(
