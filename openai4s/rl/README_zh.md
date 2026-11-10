@@ -60,6 +60,11 @@ receipt 中断状态只报告 `recovery_required`，不重放副作用；
 `export("atif")` 是 Harbor 交换投影；完整 Science Trajectory 保留在 ATIF 的
 `extra.openai4s` 扩展中。
 
+`rpc.py` 提供纯标准库的 JSON-lines 外部 Trainer 传输层。`RolloutRPC` 校验
+`reset`/`observe`/`step`/`finish`/`export`/`release`/`rewards`/`costs` 请求并委托给
+`RolloutEnvironmentAdapter`；`serve_rollout_rpc` 对每一行输出结构化响应，遇到格式错误
+或超长请求仍保持流同步，也不会启动第二套执行循环。
+
 `atif.py` 提供 `ATIFExporter`，将轨迹确定性地投影为 ATIF-v1.8 交换格式，并在 ATIF
 扩展元数据中保留 Segment、Reward、Cost 和执行事件标识。
 

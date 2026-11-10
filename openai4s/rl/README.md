@@ -74,6 +74,13 @@ effects, and returns schema-versioned JSON/JSONL/ATIF exports with a SHA-256 of
 the exact payload bytes. `export("atif")` is the Harbor interchange projection;
 the complete Science Trajectory remains in its `extra.openai4s` extension.
 
+`rpc.py` provides a pure-standard-library JSON-lines transport for an external
+trainer. `RolloutRPC` validates `reset`/`observe`/`step`/`finish`/`export`/
+`release`/`rewards`/`costs` requests and delegates them to
+`RolloutEnvironmentAdapter`; `serve_rollout_rpc` emits one structured response
+per input line, keeps malformed or oversized requests on the stream, and never
+starts a second execution loop.
+
 `atif.py` provides `ATIFExporter`, a deterministic ATIF-v1.8 interchange
 projection that keeps segment, reward, cost, and execution identifiers in
 ATIF extension metadata.

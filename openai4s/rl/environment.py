@@ -216,6 +216,7 @@ class RolloutEnvironmentAdapter:
         self.environment = environment
         self._session: RolloutSession | None = None
         self._released = False
+        self._released_result: dict[str, Any] | None = None
 
     def reset(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Reset one Episode and return its first trainer observation."""
@@ -224,6 +225,7 @@ class RolloutEnvironmentAdapter:
             raise RuntimeError("environment adapter already has an active episode")
         self._session = None
         self._released = False
+        self._released_result = None
         if not isinstance(request, Mapping):
             raise TypeError("reset request must be a mapping")
         episode = _episode(request.get("episode"))
@@ -287,14 +289,28 @@ class RolloutEnvironmentAdapter:
 
         session = self._active()
         session.finish(status)
+        return self._release_finished(session, include_stop_reason=True)
+
+    def _release_finished(
+        self, session: RolloutSession, *, include_stop_reason: bool = False
+    ) -> dict[str, Any]:
+        """Release once and return the detached result on repeated calls."""
+
+        if self._released:
+            if self._released_result is None:
+                raise RuntimeError("rollout release state is inconsistent")
+            return _json(self._released_result)
         released = self.environment.release(session)
         self._released = True
-        return {
+        result: dict[str, Any] = {
             "episode": _json(released.episode.to_dict()),
             "status": "terminal",
-            "stop_reason": released.episode.status,
             "counts": _trajectory_counts(released),
         }
+        if include_stop_reason:
+            result["stop_reason"] = released.episode.status
+        self._released_result = result
+        return _json(result)
 
     def export(self, format: str = "json") -> dict[str, Any]:
         """Return a schema/hash-bound JSON, JSONL, or ATIF export."""
@@ -314,16 +330,10 @@ class RolloutEnvironmentAdapter:
 
         session = self._active()
         if self._released:
-            raise RuntimeError("rollout episode has already been released")
+            return self._release_finished(session)
         if not session.finished:
             raise RuntimeError("cannot release an unfinished rollout session")
-        trajectory = self.environment.release(session)
-        self._released = True
-        return {
-            "episode": _json(trajectory.episode.to_dict()),
-            "status": "terminal",
-            "counts": _trajectory_counts(trajectory),
-        }
+        return self._release_finished(session)
 
     def rewards(
         self,
