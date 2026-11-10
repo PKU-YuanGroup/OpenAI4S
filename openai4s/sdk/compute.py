@@ -221,6 +221,7 @@ class _ComputeInstance:
         timeout_s=None,
         env=None,
         idempotency_key=None,
+        resource_request=None,
     ):
         """Stage inputs, write the job script, dispatch. Approval-gated.
         Returns immediately after dispatch. When a session
@@ -269,6 +270,11 @@ class _ComputeInstance:
             including after a daemon restart. Pass one whenever a retry is
             possible: without it there is no basis to tell a retry from a
             genuinely new job, and the retry becomes a second remote run.
+          resource_request — optional provider-neutral admission request with
+            ``cpu_cores``, ``gpu_count``, ``gpu_memory_gb``,
+            ``max_wall_time_ms``, ``priority`` and ``budget_group``. When the
+            session supplies a durable resource-admission controller, a
+            request that cannot fit is refused before provider submission.
         """
         import itertools as _itertools
         import random as _random
@@ -308,6 +314,7 @@ class _ComputeInstance:
                         "provider_params": self._provider_params,
                         "reuse_job_id": self._reuse_via,
                         "idempotency_key": idempotency_key,
+                        "resource_request": resource_request,
                     },
                 )
                 break

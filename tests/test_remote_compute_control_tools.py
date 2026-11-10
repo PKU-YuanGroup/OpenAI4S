@@ -128,6 +128,22 @@ def test_schema_rejects_sdk_only_or_unbounded_remote_compute_fields():
         "intent": "run a bounded analysis",
     }
     assert submit.validation_error(valid) is None
+    assert (
+        submit.validation_error(
+            {
+                **valid,
+                "resource_request": {
+                    "cpu_cores": 2,
+                    "gpu_count": 1,
+                    "gpu_memory_gb": 40,
+                    "max_wall_time_ms": 60000,
+                    "priority": "high",
+                    "budget_group": "rollout",
+                },
+            }
+        )
+        is None
+    )
     assert "unknown property" in submit.validation_error(
         {**valid, "credentials": ["HF_TOKEN"]}
     )

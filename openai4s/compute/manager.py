@@ -1050,7 +1050,13 @@ class ComputeManager:
     # bounds its .phase loop, not a wedged provider SDK socket.
     _HELPER_TIMEOUT_S = 300.0
 
-    def __init__(self, cfg: Any, store: Any = None, workspace: Any = None):
+    def __init__(
+        self,
+        cfg: Any,
+        store: Any = None,
+        workspace: Any = None,
+        resource_admission: Any = None,
+    ):
         self.cfg = cfg
         # The containment base for the direct scp surface. None falls back to
         # the process cwd, which is right for the CLI and wrong for nothing —
@@ -1064,6 +1070,11 @@ class ComputeManager:
         self._providers = _discover_providers(Path(cfg.skills_dir))
         self._install_id = self._resolve_install_id(cfg.data_dir)
         self._store = store if store is not None else _open_store(cfg)
+        # Optional RL resource boundary.  The ordinary compute surface stays
+        # compatible when no controller is supplied; callers that own a
+        # durable admission controller bind it to the same job ids used by the
+        # compute ledger so recovery can continue through the same lifecycle.
+        self._resource_admission = resource_admission
         # In-memory view of the durable records. The database is the source of
         # truth; this is a cache so the hot path does not re-read on every poll.
         self._jobs: dict[str, dict] = {}
@@ -1112,6 +1123,144 @@ class ComputeManager:
         # what the degraded `auto` fallback uses, where asking for the check
         # would only make the helper exit 71 while proving nothing.
         self._require_confinement = False
+
+    def _resource_request(self, kw: dict) -> Any | None:
+        """Decode an optional provider-neutral resource request."""
+        raw = kw.get("resource_request")
+        if raw is None:
+            return None
+        if self._resource_admission is None:
+            raise ComputeError(
+                "resource_request was supplied but resource admission is not configured",
+                "resource_admission_unavailable",
+                indeterminate=False,
+            )
+        from openai4s.rl import ResourceRequest
+
+        if isinstance(raw, ResourceRequest):
+            return raw
+        if not isinstance(raw, dict):
+            raise ComputeError(
+                "resource_request must be an object",
+                "invalid_request",
+                indeterminate=False,
+            )
+        try:
+            return ResourceRequest(**raw)
+        except (TypeError, ValueError) as exc:
+            raise ComputeError(
+                f"invalid resource_request: {exc}",
+                "invalid_request",
+                indeterminate=False,
+            ) from exc
+
+    def _resource_enabled(self, kw: dict) -> bool:
+        return (
+            self._resource_admission is not None
+            and kw.get("resource_request") is not None
+        )
+
+    def _admit_resource(self, job_id: str, kw: dict) -> bool:
+        """Reserve resources after the durable compute claim.
+
+        ``False`` means the request is waiting for capacity.  Waiting does not
+        consume an allocation; the compute claim is nevertheless closed as a
+        failed job so a caller cannot accidentally retry a provider operation
+        against an untracked row.
+        """
+        request = self._resource_request(kw)
+        if request is None:
+            return False
+        try:
+            result = self._resource_admission.admit(job_id, request)
+        except Exception as exc:  # noqa: BLE001 - admission is fail-closed
+            self._persist(
+                job_id,
+                status=states.UNKNOWN,
+                reason=f"resource admission failed: {exc}",
+                termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+            )
+            raise ComputeError(
+                f"resource admission failed: {exc}",
+                "resource_admission_error",
+                indeterminate=True,
+            ) from exc
+        if result.status == "waiting":
+            landed = self._persist_terminal(
+                job_id,
+                status=states.FAILED,
+                reason="resource admission waiting for capacity",
+                termination_reason="resource_admission_waiting",
+                terminal_at=_now_ms(),
+            )
+            if not landed:
+                self._persist(
+                    job_id,
+                    status=states.UNKNOWN,
+                    reason="resource admission waiting could not be recorded",
+                    termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+                )
+                raise ComputeError(
+                    "resource admission waiting could not be recorded",
+                    "resource_admission_error",
+                    indeterminate=True,
+                )
+            self._event(job_id, "resource_admission_waiting")
+            raise ComputeError(
+                "requested resources are currently unavailable",
+                "resource_admission_waiting",
+                indeterminate=False,
+            )
+        return True
+
+    def _bind_and_start_resource(self, job_id: str, receipt: str) -> bool:
+        """Bind a provider receipt and start accounting before reporting running."""
+        if self._resource_admission is None:
+            return True
+        try:
+            if self._resource_admission.get(job_id) is None:
+                return True
+            self._resource_admission.bind_receipt(job_id, receipt)
+            self._resource_admission.start(job_id)
+            return True
+        except Exception as exc:  # noqa: BLE001 - retain a conservative lease
+            reason = f"resource admission receipt binding failed: {exc}"
+            self._persist(
+                job_id,
+                status=states.UNKNOWN,
+                reason=reason,
+                termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+            )
+            self._event(job_id, "resource_admission_unknown", {"reason": reason})
+            return False
+
+    def _release_resource(self, job_id: str) -> None:
+        if self._resource_admission is None:
+            return
+        try:
+            record = self._resource_admission.get(job_id)
+            if record is not None and record.state == "reserved":
+                self._resource_admission.release(job_id)
+        except Exception as exc:  # noqa: BLE001 - preserve conservative usage
+            self._event(
+                job_id,
+                "resource_admission_unknown",
+                {"reason": f"resource release failed: {exc}"},
+            )
+
+    def _finish_resource(self, job_id: str, *, state: str = "completed") -> None:
+        if self._resource_admission is None:
+            return
+        try:
+            record = self._resource_admission.get(job_id)
+            if record is not None and record.state == "running":
+                self._resource_admission.finish(job_id, state=state)
+        except Exception as exc:  # noqa: BLE001 - terminal compute state remains
+            self._event(
+                job_id,
+                "resource_admission_unknown",
+                {"reason": f"resource finish failed: {exc}"},
+            )
 
     def _safe_harvest_dest(self, job_id: str) -> Path:
         """The per-job harvest directory, proven to be under the hpc root.
@@ -1457,6 +1606,7 @@ class ComputeManager:
         job_id = job["job_id"]
         if self._store is None:
             job["status"] = status
+            self._finish_resource(job_id)
             if event:
                 self._event(job_id, event, event_payload)
             return None
@@ -1473,8 +1623,11 @@ class ComputeManager:
                 "terminal_conflict",
                 {"requested": status, "actual": actual},
             )
+            if states.is_terminal(actual):
+                self._finish_resource(job_id)
             return row or {"job_id": job_id, "status": actual}
         job["status"] = status
+        self._finish_resource(job_id)
         if event:
             self._event(job_id, event, event_payload)
         return None
@@ -1590,6 +1743,7 @@ class ComputeManager:
             termination_reason=states.REASON_SUBMIT_REJECTED,
             **fields,
         ):
+            self._release_resource(job_id)
             self._event(job_id, "submit_rejected", {"error": str(exc), "kind": kind})
         else:
             self._persist(
@@ -2196,6 +2350,10 @@ class ComputeManager:
                     "session_concurrency_full",
                     {"live": self._live_count(), "limit": self._limit},
                 )
+        # Validate caller input before creating the durable compute claim.  A
+        # malformed request must not leave a staging row that recovery treats
+        # as a live remote operation.
+        self._resource_request(kw)
         if fam == "ssh":
             # Authorised in the manager, not only in `host_dispatch`. The one
             # `is_known_alias` call in the tree lived at `_m_compute_submit`, so
@@ -2290,6 +2448,9 @@ class ComputeManager:
             kw.get("outputs"),
             input_versions,
         )
+        admitted = self._resource_enabled(kw)
+        if admitted:
+            self._admit_resource(job_id, kw)
         timeout_s = int(kw.get("timeout_seconds") or 14400)
         sid: str | None = None
         try:
@@ -2360,6 +2521,14 @@ class ComputeManager:
         # and do not swallow a dropped write: a live sandbox reported as clean
         # `running` over a `staging` row with no receipt is the exact orphan the
         # failure path was already hardened against.
+        if admitted and not self._bind_and_start_resource(job_id, sid or ""):
+            return self._degrade_submit_to_indeterminate(
+                job_id,
+                provider=f"byoc:{pid}",
+                sandbox_id=sid,
+                reason="submit succeeded but resource admission could not be started",
+                extra_return={"egress": prov["meta"].get("egress")},
+            )
         landed = self._persist_receipt(
             job_id,
             status=states.RUNNING,
@@ -2404,6 +2573,9 @@ class ComputeManager:
         job_id = self._claim(
             f"ssh:{alias}", kw.get("idempotency_key"), kw.get("outputs")
         )
+        admitted = self._resource_enabled(kw)
+        if admitted:
+            self._admit_resource(job_id, kw)
         workdir = f"~/.openai4s-jobs/{job_id}"
         script = kw["command"]
         # The job body runs under a wrapper whose only added responsibility is
@@ -2533,7 +2705,7 @@ class ComputeManager:
                 f"ssh submit failed: {e}", "unknown_state", indeterminate=True
             )
         if proc.returncode != 0:
-            self._persist(
+            landed = self._persist_terminal(
                 job_id,
                 status=states.FAILED,
                 reason="ssh submit rejected",
@@ -2541,7 +2713,32 @@ class ComputeManager:
                 termination_reason=states.REASON_SUBMIT_REJECTED,
                 terminal_at=_now_ms(),
             )
-            self._event(job_id, "submit_rejected", {"rc": proc.returncode})
+            if landed:
+                if admitted:
+                    self._release_resource(job_id)
+                self._event(job_id, "submit_rejected", {"rc": proc.returncode})
+            else:
+                self._persist(
+                    job_id,
+                    status=states.UNKNOWN,
+                    reason="ssh submit rejection could not be recorded",
+                    workdir=workdir,
+                    termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+                )
+                self._track_live(
+                    job_id,
+                    f"ssh:{alias}",
+                    states.UNKNOWN,
+                    alias=alias,
+                    workdir=workdir,
+                    termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+                    reason="ssh submit rejection could not be recorded",
+                )
+                raise ComputeError(
+                    "ssh submit rejection could not be recorded",
+                    "unknown_state",
+                    indeterminate=True,
+                )
             raise ComputeError(
                 proc.stderr.decode("utf-8", "replace") or "ssh submit failed",
                 "transient",
@@ -2580,6 +2777,17 @@ class ComputeManager:
         # and do not swallow a dropped write — a running ssh job reported as
         # clean `running` over a `staging` row with no pid is unrecoverable
         # after a restart, the same orphan class the byoc arm just closed.
+        if admitted and not self._bind_and_start_resource(job_id, pid):
+            return self._degrade_submit_to_indeterminate(
+                job_id,
+                provider=f"ssh:{alias}",
+                alias=alias,
+                workdir=workdir,
+                pid=pid,
+                pgid=pgid,
+                reason="submit succeeded but resource admission could not be started",
+                extra_return={"remote_workdir": workdir},
+            )
         landed = self._persist_receipt(
             job_id,
             status=states.RUNNING,
@@ -2865,6 +3073,11 @@ class ComputeManager:
         row = self._store.get_compute_job(job["job_id"])
         if row is None or not states.is_terminal(row.get("status")):
             return None
+        # A prior terminal writer may have committed the compute row while its
+        # admission finish was interrupted. Re-polling is a safe opportunity
+        # to complete that receipt-bound transition; unknown admissions remain
+        # untouched by _finish_resource.
+        self._finish_resource(job["job_id"])
         # Memory can lag the ledger — a restart, or another handle's cancel —
         # and every caller of this reports the row, so re-sync it here rather
         # than leaving `_live_count` counting a job that has ended.
@@ -3576,6 +3789,7 @@ class ComputeManager:
         if current in states.TERMINAL_STATES:
             # Already over. Signalling a finished job is not a cancel, and it
             # would be a remote call made for a fact we already hold.
+            self._finish_resource(job["job_id"])
             return {
                 "status": current,
                 "conflict": {

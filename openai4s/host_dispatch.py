@@ -1199,6 +1199,7 @@ class HostDispatcher:
         delegate_fn: Callable[[dict], Any] | None = None,
         frame_id: str | None = None,
         workspace: str | Path | None = None,
+        resource_admission: Any | None = None,
     ):
         self.cfg = cfg or get_config()
         self._delegate_fn = delegate_fn
@@ -1392,6 +1393,11 @@ class HostDispatcher:
         self.recorder: Any | None = None
         # remote-compute transport, built lazily on first compute_* call.
         self._compute: Any = None
+        # Optional RL resource controller supplied by the session owner.  It
+        # is intentionally explicit: no default capacity can be inferred from
+        # a provider catalogue, and ordinary compute sessions must retain their
+        # existing admission semantics.
+        self._resource_admission = resource_admission
         self._child_execution_policy: ChildExecutionPolicy | None = None
         self._session_tool_catalog: SessionToolCatalog | None = None
         self._session_tool_scope: tuple[str, str, str] | None = None
@@ -1469,7 +1475,11 @@ class HostDispatcher:
                 workspace = self._workspace()
             except Exception:  # noqa: BLE001 - fall back to the process cwd
                 workspace = None
-            self._compute = ComputeManager(self.cfg, workspace=workspace)
+            self._compute = ComputeManager(
+                self.cfg,
+                workspace=workspace,
+                resource_admission=self._resource_admission,
+            )
             from openai4s.compute.stage11 import official_stage11_enabled
 
             if official_stage11_enabled(self.cfg):
@@ -4052,10 +4062,12 @@ def build_dispatcher(
     delegate_fn: Callable[[dict], Any] | None = None,
     frame_id: str | None = None,
     workspace: str | Path | None = None,
+    resource_admission: Any | None = None,
 ) -> HostDispatcher:
     return HostDispatcher(
         cfg=cfg,
         delegate_fn=delegate_fn,
         frame_id=frame_id,
         workspace=workspace,
+        resource_admission=resource_admission,
     )
