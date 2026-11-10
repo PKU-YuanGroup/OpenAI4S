@@ -8,6 +8,7 @@ are a viewer/interchange projection, not a replacement for policy contexts.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -224,9 +225,28 @@ def _tool_calls(decision: PolicyDecision) -> list[dict[str, Any]]:
 class ATIFExporter:
     """Export one episode without inferring rewards, costs, or policy text."""
 
-    def __init__(self, trajectory: Trajectory, *, agent_version: str = __version__):
+    def __init__(
+        self,
+        trajectory: Trajectory,
+        *,
+        agent_version: str = __version__,
+        children: Iterable[Trajectory] = (),
+    ):
         self.trajectory = trajectory
         self.agent_version = agent_version
+        child_values = tuple(children)
+        if any(not isinstance(child, Trajectory) for child in child_values):
+            raise TypeError("children must contain Trajectory values")
+        if len({child.episode.episode_id for child in child_values}) != len(
+            child_values
+        ):
+            raise ValueError("children must have unique episode IDs")
+        for child in child_values:
+            if child.episode.parent_episode_id != trajectory.episode.episode_id:
+                raise ValueError("child trajectory is not linked to the root episode")
+        self.children = tuple(
+            sorted(child_values, key=lambda child: child.episode.episode_id)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         trajectory = self.trajectory
@@ -337,6 +357,35 @@ class ATIFExporter:
             if metrics:
                 step["metrics"] = metrics
             steps.append(step)
+        child_documents: list[dict[str, Any]] = []
+        for child in self.children:
+            child_document = ATIFExporter(
+                child, agent_version=self.agent_version
+            ).to_dict()
+            parent_decisions = {
+                decision.parent_decision_id
+                for decision in child.decisions
+                if decision.parent_decision_id is not None
+            }
+            for step in steps:
+                extra = step.setdefault("extra", {})
+                decision_id = extra.get("decision_id")
+                if decision_id in parent_decisions:
+                    refs = extra.setdefault("subagent_trajectory_refs", [])
+                    refs.append(
+                        {
+                            "trajectory_id": child.episode.episode_id,
+                            "session_id": child.episode.session_id,
+                        }
+                    )
+            child_documents.append(
+                {
+                    "trajectory_id": child.episode.episode_id,
+                    "parent_episode_id": child.episode.parent_episode_id,
+                    "parent_decision_ids": sorted(parent_decisions),
+                    "document": child_document,
+                }
+            )
         if not steps:
             steps.append(
                 {
@@ -364,6 +413,7 @@ class ATIFExporter:
                 "openai4s": source,
                 "science_trajectory_sha256": trajectory.sha256(),
                 "completion_contract": contract.to_dict(),
+                "child_trajectories": child_documents,
             },
         }
 

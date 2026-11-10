@@ -90,6 +90,10 @@ interrupted, `max_turns`, and ordinary `done` outcomes remain valid terminal
 records but are never marked with positive `completion_evidence`; that field
 only says the runtime received a terminal completion payload. Scientific
 quality remains an external verifier's Reward Annotation.
+`ATIFExporter(..., children=[...])` accepts caller-supplied delegated child
+trajectories and emits each as an independent ATIF document plus a reference
+from the parent decision. It never queries the Store or invents a child
+trajectory.
 
 `host_events.py` defines the bounded Host RPC lifecycle facts (`started`,
 `completed`, and `failed`) used to join nested execution to a parent decision

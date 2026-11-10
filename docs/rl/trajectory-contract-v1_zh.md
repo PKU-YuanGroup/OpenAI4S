@@ -112,6 +112,10 @@ Segment 是该 decision 下的执行事件，不是额外的 policy decision。
 本地命名空间，不能靠字符串启发式和父轨迹合并。ATIF-v1.8 是交换投影，完整 Science
 Trajectory 仍在 `extra.openai4s` 中，是训练输入的权威来源。
 
+调用方显式提供委派 child trajectory 时，ATIF 投影会为每个 child 保留独立文档，并从
+parent decision 建立引用。Exporter 只接受显式输入，不查询 Store，不把 child policy turn
+合并进 root，也不重放 child session。
+
 `RLRepository.load_trajectory(episode_id)` 按稳定身份顺序从 SQLite 投影重建记录。训练
 数据接受 Snapshot 前，重建后的规范哈希必须等于 `DatasetSnapshot.trajectory_sha256`。
 

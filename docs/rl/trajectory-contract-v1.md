@@ -176,6 +176,12 @@ heuristics. ATIF-v1.8 is a projection for interchange; the complete Science
 Trajectory remains under its `extra.openai4s` extension and is the authoritative
 training input.
 
+When the caller supplies delegated child trajectories, the ATIF projection
+keeps each child as an independent document and adds a reference from the
+parent decision. Child trajectories are explicit exporter input; it does not
+query the Store, merge child policy turns into the root, or replay a child
+session.
+
 `RLRepository.load_trajectory(episode_id)` reconstructs the records in stable
 identity order from the SQLite projections. The reconstructed canonical hash
 must equal a `DatasetSnapshot.trajectory_sha256` before a snapshot is admitted

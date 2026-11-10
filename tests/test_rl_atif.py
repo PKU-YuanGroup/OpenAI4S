@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from openai4s.rl import (
     ATIFExporter,
     CompletionContract,
@@ -177,3 +179,90 @@ def test_atif_exports_completion_contract_without_claiming_done_is_success() -> 
         "terminal_event_id": "episode-finished",
         "failure": None,
     }
+
+
+def test_atif_projects_caller_supplied_child_trajectory_as_a_reference() -> None:
+    parent = TrajectoryRecorder(Episode("ep-parent-atif", "task", "session", 1))
+    parent.add_observation(
+        Observation("parent-obs", "ep-parent-atif", "parent-decision", [], 2)
+    )
+    parent.add_decision(
+        PolicyDecision(
+            "parent-decision",
+            "ep-parent-atif",
+            0,
+            "parent-obs",
+            "hash-parent",
+            "policy",
+            "v1",
+            {"type": "code_cell", "language": "python", "code": "pass\n"},
+            3,
+        )
+    )
+    parent.add_event(
+        ExecutionEvent(
+            "parent-finished",
+            "ep-parent-atif",
+            "episode.finished",
+            4,
+            payload={"stop_reason": "done", "completion": None},
+        )
+    )
+    parent.finish("done")
+
+    child = TrajectoryRecorder(
+        Episode(
+            "ep-child-atif",
+            "child task",
+            "child-session",
+            5,
+            parent_episode_id="ep-parent-atif",
+        )
+    )
+    child.add_observation(
+        Observation("child-obs", "ep-child-atif", "child-decision", [], 6)
+    )
+    child.add_decision(
+        PolicyDecision(
+            "child-decision",
+            "ep-child-atif",
+            0,
+            "child-obs",
+            "hash-child",
+            "worker",
+            "v1",
+            {"type": "code_cell", "language": "python", "code": "pass\n"},
+            7,
+            parent_decision_id="parent-decision",
+        )
+    )
+    child.add_event(
+        ExecutionEvent(
+            "child-finished",
+            "ep-child-atif",
+            "episode.finished",
+            8,
+            payload={"stop_reason": "done", "completion": None},
+        )
+    )
+    child.finish("done")
+
+    exported = ATIFExporter(parent.snapshot(), children=[child.snapshot()]).to_dict()
+    assert exported["extra"]["child_trajectories"][0]["trajectory_id"] == (
+        "ep-child-atif"
+    )
+    assert exported["extra"]["child_trajectories"][0]["parent_decision_ids"] == [
+        "parent-decision"
+    ]
+    root_agent_step = exported["steps"][0]
+    assert root_agent_step["extra"]["subagent_trajectory_refs"] == [
+        {"trajectory_id": "ep-child-atif", "session_id": "child-session"}
+    ]
+    assert (
+        exported["extra"]["child_trajectories"][0]["document"]["trajectory_id"]
+        == "ep-child-atif"
+    )
+
+    unrelated = TrajectoryRecorder(Episode("ep-unrelated", "task", "session", 1))
+    with pytest.raises(ValueError, match="not linked"):
+        ATIFExporter(parent.snapshot(), children=[unrelated.snapshot()])

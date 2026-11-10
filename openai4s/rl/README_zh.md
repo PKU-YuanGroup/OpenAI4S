@@ -71,6 +71,9 @@ Harbor 风格的正向终态证据：非 running Episode 必须有且只有一�
 reason 匹配的 `episode.finished` 事件。失败、取消、中断、`max_turns` 和普通 `done`
 仍是合法终态记录，但永远不会标为正向 `completion_evidence`；该字段只表示 Runtime
 收到终态 completion payload，科学质量仍由外部 Verifier 写入 Reward Annotation。
+`ATIFExporter(..., children=[...])` 接受调用方显式提供的委派 child trajectory，并为每个
+child 输出独立 ATIF 文档，同时从 parent decision 建立引用；它不会查询 Store，也不会
+臆造 child trajectory。
 
 `host_events.py` 定义有界的 Host RPC 生命周期事实（`started`、`completed`、`failed`），
 用于把嵌套执行关联到父 Decision 和 Segment，同时不复制私有参数或结果。

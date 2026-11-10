@@ -225,7 +225,12 @@ class RolloutWorker:
             )
 
     @staticmethod
-    def export(trajectory: Trajectory, format: WorkerFormat = "json") -> RolloutExport:
+    def export(
+        trajectory: Trajectory,
+        format: WorkerFormat = "json",
+        *,
+        children: Iterable[Trajectory] = (),
+    ) -> RolloutExport:
         if not isinstance(trajectory, Trajectory):
             raise TypeError("trajectory must be a Trajectory")
         if trajectory.episode.status == "running":
@@ -237,7 +242,7 @@ class RolloutWorker:
             content = trajectory_jsonl(trajectory)
             schema_version = trajectory.schema_version
         elif format == "atif":
-            exporter = ATIFExporter(trajectory)
+            exporter = ATIFExporter(trajectory, children=children)
             content = exporter.export_json()
             schema_version = exporter.to_dict()["schema_version"]
         else:
@@ -261,9 +266,11 @@ class RolloutWorker:
         return RolloutWorker.export(trajectory, "jsonl")
 
     @staticmethod
-    def export_atif(trajectory: Trajectory) -> RolloutExport:
+    def export_atif(
+        trajectory: Trajectory, *, children: Iterable[Trajectory] = ()
+    ) -> RolloutExport:
         """Export the Harbor/ATIF interchange projection with its byte hash."""
-        return RolloutWorker.export(trajectory, "atif")
+        return RolloutWorker.export(trajectory, "atif", children=children)
 
 
 __all__ = ["RecoveryResult", "RolloutExport", "RolloutWorker", "WorkerFormat"]
