@@ -1738,6 +1738,36 @@
           "minLength": 1,
           "type": "string"
         },
+        "resource_request": {
+          "additionalProperties": false,
+          "properties": {
+            "budget_group": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "cpu_cores": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "gpu_count": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "gpu_memory_gb": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "max_wall_time_ms": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "priority": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
         "timeout_seconds": {
           "description": "Optional remote runtime limit (at most seven days).",
           "maximum": 604800,
