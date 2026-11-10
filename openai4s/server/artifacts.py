@@ -58,7 +58,7 @@ Broadcast = Callable[[str, dict[str, Any]], None]
 
 @lru_cache(maxsize=1)
 def _metadata_ctime_can_lag() -> bool:
-    """True on WSL, whose ext4-on-VHD can defer a ctime update within one tick.
+    """True on filesystems known to defer a ctime update within one tick.
 
     Cached because the answer must not vary inside a process: the ``before``
     and ``after`` fingerprints of an unchanged file have to compare equal, and
@@ -72,8 +72,19 @@ def _metadata_ctime_can_lag() -> bool:
         return False
     try:
         with open("/proc/sys/kernel/osrelease", "rb") as handle:
-            return b"microsoft" in handle.read(256).lower()
+            if b"microsoft" in handle.read(256).lower():
+                return True
     except OSError:
+        pass
+    # Container workspaces are commonly overlayfs. Its timestamp behaviour
+    # varies with the backing filesystem and kernel, and some layers preserve
+    # the original ctime when a same-size file is rewritten and utime is
+    # restored. Hash bounded files there just as on WSL; correctness of
+    # artifact provenance is more important than the metadata-only shortcut.
+    try:
+        with open("/proc/mounts", encoding="utf-8") as mounts:
+            return any(line.split(" ")[2] == "overlay" for line in mounts)
+    except (OSError, IndexError):
         return False
 
 
@@ -3192,6 +3203,13 @@ class ArtifactManager:
             status = os.fstat(descriptor)
             if not stat.S_ISREG(status.st_mode):
                 return None
+            # Do not let a root daemon turn mode 000 into a readable artifact.
+            # The configured worker identity is denied by the file mode even
+            # when the test/container process has the privilege to bypass it;
+            # preserve the metadata-only identity expected for an unreadable
+            # regular file.
+            if not status.st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH):
+                return ArtifactManager._metadata_fingerprint(path)
             digest = None
             if (
                 int(status.st_size) <= _MAX_WORKSPACE_FINGERPRINT_BYTES
