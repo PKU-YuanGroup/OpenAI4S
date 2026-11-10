@@ -270,3 +270,27 @@ def test_segment_events_reject_unknown_or_closed_segments(tmp_path) -> None:
         assert count == 2
     finally:
         dispatcher.store.close()
+
+
+def test_new_action_context_cannot_inherit_stale_segment_decision(tmp_path) -> None:
+    dispatcher = build_dispatcher(
+        Config(data_dir=tmp_path), frame_id="frame-context-refresh"
+    )
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with dispatcher.bind_rl_context(
+            {"episode_id": "frame-context-refresh", "decision_id": "old"}
+        ):
+            with host.segment("first"):
+                with dispatcher.bind_action_context(
+                    {"episode_id": "frame-context-refresh", "decision_id": "new"}
+                ):
+                    assert host.artifacts()["count"] == 0
+        payload = dispatcher.store._conn.execute(
+            "SELECT payload FROM rl_execution_events "
+            "WHERE kind='host_call.started' ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()[0]
+        assert json.loads(payload)["decision_id"] == "new"
+        assert json.loads(payload)["segment_id"] is None
+    finally:
+        dispatcher.store.close()

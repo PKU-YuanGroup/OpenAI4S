@@ -1599,10 +1599,32 @@ class HostDispatcher:
             ("episode_id", "rl_episode_id"),
             ("segment_id", "rl_segment_id"),
         )
+        bound_decision = action.get("decision_id") or action.get("rl_decision_id")
+        previous_decision = context.get("decision_id")
+        bound_episode = action.get("episode_id") or action.get("rl_episode_id")
+        previous_episode = context.get("episode_id")
+        if (
+            bound_decision
+            and previous_decision
+            and str(bound_decision) != str(previous_decision)
+        ) or (
+            bound_episode
+            and previous_episode
+            and str(bound_episode) != str(previous_episode)
+        ):
+            # A segment is scoped to one outer policy decision. Do not let a
+            # long-lived dispatcher carry it into the following decision.
+            context.pop("segment_id", None)
+            context.pop("_rl_segment_stack", None)
+            self._rl_context_local.value = context
         for target, alias in aliases:
-            if target not in context and action.get(target):
+            # The action context is rebound for every outer execution. It must
+            # supersede a segment context left on this long-lived dispatcher
+            # thread by an interrupted worker; otherwise the next decision's
+            # Host RPCs inherit the previous decision ID.
+            if action.get(target):
                 context[target] = action[target]
-            if target not in context and action.get(alias):
+            elif action.get(alias):
                 context[target] = action[alias]
         if "episode_id" not in context and context.get("decision_id"):
             context["episode_id"] = self.frame_id
