@@ -105,9 +105,10 @@ def test_rollout_sampler_receives_current_tool_schemas() -> None:
         tools[0]["input_schema"]["type"] = "array"
         return ModelReply(content="done")
 
-    session.run(sampler)
+    trajectory = session.run(sampler)
     assert seen[0][1][0]["name"] == "inspect"
     assert schema == {"type": "object"}
+    assert trajectory.observations[0].tools[0]["input_schema"] == {"type": "object"}
 
 
 def test_rollout_worker_releases_environment_and_exports_both_formats(tmp_path):
