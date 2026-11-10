@@ -165,3 +165,18 @@ def test_indeterminate_submit_keeps_resource_reserved(cfg, monkeypatch):
     rows = get_store(cfg.db_path).list_compute_jobs()
     record = admission.get(rows[0]["job_id"])
     assert record is not None and record.state == "reserved"
+
+
+def test_restart_reconciles_terminal_compute_rows_before_new_submits(cfg):
+    admission = ResourceAdmission(ResourceCapacity(1, 0, 0), clock_ms=lambda: 100)
+    store = get_store(cfg.db_path)
+    store.create_compute_job(
+        job_id="job-restart", provider="ssh:lab", status=states.RUNNING
+    )
+    admission.admit("job-restart", ResourceRequest(cpu_cores=1))
+    admission.bind_receipt("job-restart", "31337")
+    admission.start("job-restart")
+    store.update_compute_job("job-restart", status=states.SUCCEEDED)
+
+    ComputeManager(cfg, resource_admission=admission)
+    assert admission.get("job-restart").state == "completed"

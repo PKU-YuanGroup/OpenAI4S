@@ -1116,6 +1116,7 @@ class ComputeManager:
         self._hpc_stage_root = Path(cfg.data_dir) / "hpc-stage"
         self._hpc_stage_root.mkdir(parents=True, exist_ok=True)
         self._rehydrate()
+        self._reconcile_resource_admission()
         self._confinement_mode = _confinement_mode()
         # The default for the *unconfined* helper form only. `_run_helper`
         # passes `expect_confined=1` whenever it actually wraps, so the boundary
@@ -1123,6 +1124,32 @@ class ComputeManager:
         # what the degraded `auto` fallback uses, where asking for the check
         # would only make the helper exit 71 while proving nothing.
         self._require_confinement = False
+
+    def _reconcile_resource_admission(self) -> None:
+        """Repair admission transitions that were interrupted after compute."""
+        if self._resource_admission is None or self._store is None:
+            return
+        try:
+            records = self._resource_admission.state()
+        except Exception:
+            return
+        for record in records:
+            if record.state not in {"running", "reserved"}:
+                continue
+            try:
+                row = self._store.get_compute_job(record.allocation_id)
+                if row is None or not states.is_terminal(row.get("status")):
+                    continue
+                if record.state == "running":
+                    self._resource_admission.finish(record.allocation_id)
+                elif record.provider_receipt is None:
+                    self._resource_admission.release(record.allocation_id)
+            except Exception as exc:  # noqa: BLE001 - retain conservatively
+                self._event(
+                    record.allocation_id,
+                    "resource_admission_unknown",
+                    {"reason": f"restart reconciliation failed: {exc}"},
+                )
 
     def _resource_request(self, kw: dict) -> Any | None:
         """Decode an optional provider-neutral resource request."""
