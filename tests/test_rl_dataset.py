@@ -148,6 +148,8 @@ def test_dataset_projects_explicit_reward_joins_without_attributing_episode_rewa
     ]
     assert dataset.samples[0].costs[0]["cost_id"] == "cost-1"
     assert dataset.samples[0].execution_event_ids == ("event-1",)
+    assert dataset.samples[0].execution_events[0]["kind"] == "cell.completed"
+    assert dataset.samples[0].execution_events[0]["event_id"] == "event-1"
     assert dataset.samples[0].segment_ids == ("segment-1",)
     assert dataset.samples[0].terminal is False
     assert dataset.samples[1].terminal is True

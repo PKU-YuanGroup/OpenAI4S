@@ -67,6 +67,7 @@ class TrainingSample:
     decision: Mapping[str, Any]
     segment_ids: tuple[str, ...] = ()
     execution_event_ids: tuple[str, ...] = ()
+    execution_events: tuple[Mapping[str, Any], ...] = ()
     rewards: tuple[Mapping[str, Any], ...] = ()
     costs: tuple[Mapping[str, Any], ...] = ()
     terminal: bool = False
@@ -86,6 +87,11 @@ class TrainingSample:
         object.__setattr__(self, "decision", _json(dict(self.decision)))
         object.__setattr__(self, "segment_ids", tuple(self.segment_ids))
         object.__setattr__(self, "execution_event_ids", tuple(self.execution_event_ids))
+        object.__setattr__(
+            self,
+            "execution_events",
+            tuple(_json(dict(event)) for event in self.execution_events),
+        )
         object.__setattr__(
             self,
             "rewards",
@@ -108,6 +114,7 @@ class TrainingSample:
             "decision": dict(self.decision),
             "segment_ids": list(self.segment_ids),
             "execution_event_ids": list(self.execution_event_ids),
+            "execution_events": [dict(event) for event in self.execution_events],
             "rewards": [dict(reward) for reward in self.rewards],
             "costs": [dict(cost) for cost in self.costs],
             "terminal": self.terminal,
@@ -249,6 +256,10 @@ class RolloutDataset:
                     ),
                     execution_event_ids=tuple(
                         event.event_id
+                        for event in events_by_decision[decision.decision_id]
+                    ),
+                    execution_events=tuple(
+                        _record_dict(event)
                         for event in events_by_decision[decision.decision_id]
                     ),
                     rewards=tuple(
