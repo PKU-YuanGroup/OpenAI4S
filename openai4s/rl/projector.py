@@ -90,25 +90,30 @@ class DurableFactProjector:
     ) -> tuple[ExecutionEvent, ...]:
         base = tuple(events)
         known = {event.event_id for event in base}
-        version_sources: dict[str, str | None] = {}
-        job_ids: list[str] = []
+        version_sources: dict[str, tuple[str | None, str | None, str | None]] = {}
+        job_sources: dict[str, tuple[str | None, str | None, str | None]] = {}
         for event in base:
             for version_id in _version_ids(event.payload):
-                version_sources.setdefault(version_id, event.event_id)
+                version_sources.setdefault(
+                    version_id,
+                    (event.event_id, event.decision_id, event.segment_id),
+                )
             for job_id in _job_ids(event.payload):
-                if job_id not in job_ids:
-                    job_ids.append(job_id)
+                job_sources.setdefault(
+                    job_id,
+                    (event.event_id, event.decision_id, event.segment_id),
+                )
         reset = episode.metadata.get("reset")
         if isinstance(reset, Mapping):
             initial = reset.get("initial_artifacts")
             if isinstance(initial, Mapping):
                 for value in initial.values():
                     if isinstance(value, str) and value.strip():
-                        version_sources.setdefault(value, "initial")
+                        version_sources.setdefault(value, ("initial", None, None))
 
         projected: list[ExecutionEvent] = []
         projected.extend(self._artifacts(episode, version_sources, known))
-        projected.extend(self._compute(episode, job_ids, known))
+        projected.extend(self._compute(episode, job_sources, known))
         if not projected:
             return base
         next_sequence = max((event.sequence or 0 for event in base), default=0) + 1
@@ -122,7 +127,7 @@ class DurableFactProjector:
     def _artifacts(
         self,
         episode: Episode,
-        sources: Mapping[str, str | None],
+        sources: Mapping[str, tuple[str | None, str | None, str | None]],
         known: set[str],
     ) -> list[ExecutionEvent]:
         if not sources:
@@ -140,13 +145,16 @@ class DurableFactProjector:
             event_id = f"projected:artifact:{row['version_id']}"
             if event_id in known:
                 continue
+            source_context = sources.get(str(row["version_id"]), (None, None, None))
             result.append(
                 ExecutionEvent(
                     event_id=event_id,
                     episode_id=episode.episode_id,
                     kind="artifact.version",
                     created_at=int(row["created_at"]),
-                    source_id=sources.get(str(row["version_id"])),
+                    source_id=source_context[0],
+                    decision_id=source_context[1],
+                    segment_id=source_context[2],
                     payload={
                         "version_id": row["version_id"],
                         "artifact_id": row["artifact_id"],
@@ -163,9 +171,12 @@ class DurableFactProjector:
         return result
 
     def _compute(
-        self, episode: Episode, job_ids: Iterable[str], known: set[str]
+        self,
+        episode: Episode,
+        job_sources: Mapping[str, tuple[str | None, str | None, str | None]],
+        known: set[str],
     ) -> list[ExecutionEvent]:
-        ids = tuple(dict.fromkeys(job_ids))
+        ids = tuple(job_sources)
         if not ids:
             return []
         marks = ",".join("?" for _ in ids)
@@ -198,6 +209,7 @@ class DurableFactProjector:
                     "source": "durable_compute_projection",
                 },
                 known,
+                source_context=job_sources.get(job_id),
             )
             if event.event_id not in known:
                 result.append(event)
@@ -220,6 +232,7 @@ class DurableFactProjector:
                         "source": "durable_compute_projection",
                     },
                     known,
+                    source_context=job_sources.get(job_id),
                 )
                 if event.event_id not in known:
                     result.append(event)
@@ -233,12 +246,19 @@ class DurableFactProjector:
         kind: str,
         payload: Mapping[str, Any],
         known: set[str],
+        source_context: tuple[str | None, str | None, str | None] | None = None,
     ) -> ExecutionEvent:
-        if event_id in known:
-            # The caller filters these events before appending; returning a
-            # deterministic duplicate keeps the helper total and simple.
-            return ExecutionEvent(event_id, episode_id, kind, created_at, payload)
-        return ExecutionEvent(event_id, episode_id, kind, created_at, payload)
+        context = source_context or (None, None, None)
+        return ExecutionEvent(
+            event_id,
+            episode_id,
+            kind,
+            created_at,
+            payload,
+            decision_id=context[1],
+            segment_id=context[2],
+            source_id=context[0],
+        )
 
 
 __all__ = ["DurableFactProjector"]

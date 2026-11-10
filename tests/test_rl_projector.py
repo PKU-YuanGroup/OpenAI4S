@@ -67,6 +67,8 @@ def test_durable_projector_uses_exact_artifact_version_and_compute_receipt(tmp_p
                 "compute.submitted",
                 6,
                 {"output_version_id": "v-old", "job_id": "job-projector"},
+                decision_id="decision-1",
+                segment_id="segment-1",
             )
         )
         trajectory = store.rl.load_trajectory(episode.episode_id)
@@ -76,12 +78,16 @@ def test_durable_projector_uses_exact_artifact_version_and_compute_receipt(tmp_p
         assert artifact.payload["checksum"] == "old-checksum"
         assert artifact.payload["producing_cell_id"] == "cell-v-old"
         assert artifact.source_id == "source-event"
+        assert artifact.decision_id == "decision-1"
+        assert artifact.segment_id == "segment-1"
         compute = projected["compute.job"]
         assert compute.payload["job_id"] == "job-projector"
         assert compute.payload["provider"] == "byoc:test"
         assert compute.payload["receipt"] is None
         assert compute.payload["input_versions"] == ["v-old"]
         assert compute.payload["artifact_manifest"] is None
+        assert compute.decision_id == "decision-1"
+        assert compute.segment_id == "segment-1"
         assert [event.kind for event in trajectory.execution_events].count(
             "compute.job_event"
         ) == 2
