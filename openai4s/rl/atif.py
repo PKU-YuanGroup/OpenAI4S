@@ -8,12 +8,163 @@ are a viewer/interchange projection, not a replacement for policy contexts.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from openai4s import __version__
 
 from .models import PolicyDecision, Trajectory
+
+_STOP_REASON_FOR_STATUS = {
+    "completed": {"completed", "submitted", "plan"},
+    "success": {"completed", "submitted", "plan", "success"},
+    "submitted": {"completed", "submitted"},
+    "done": {"done"},
+    "failed": {"failed", "error"},
+    "error": {"failed", "error"},
+    "cancelled": {"cancelled"},
+    "interrupted": {"interrupted", "timeout"},
+    "timeout": {"interrupted", "timeout"},
+    "max_turns": {"max_turns"},
+    "no_progress": {"no_progress"},
+}
+
+
+@dataclass(frozen=True)
+class CompletionContract:
+    """Evidence about rollout termination, separate from scientific reward."""
+
+    status: str
+    terminal: bool
+    trace_complete: bool
+    scientific_success: bool
+    terminal_event_id: str | None = None
+    failure: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "terminal": self.terminal,
+            "trace_complete": self.trace_complete,
+            "scientific_success": self.scientific_success,
+            "terminal_event_id": self.terminal_event_id,
+            "failure": self.failure,
+        }
+
+
+def completion_contract(trajectory: Trajectory) -> CompletionContract:
+    """Validate positive terminal evidence without scoring the Episode.
+
+    A terminal status is a valid rollout outcome, including ``failed``,
+    ``cancelled`` and ``max_turns``.  Only a ``completed``/legacy ``success``
+    status carrying non-null completion evidence is marked scientifically
+    successful.  A normal ``done`` status remains terminal but unsuccessful.
+    """
+
+    if not isinstance(trajectory, Trajectory):
+        raise TypeError("trajectory must be a Trajectory")
+    status = trajectory.episode.status
+    terminal_events = [
+        event
+        for event in trajectory.execution_events
+        if event.kind == "episode.finished"
+    ]
+    if status == "running":
+        if terminal_events:
+            return CompletionContract(
+                status=status,
+                terminal=False,
+                trace_complete=False,
+                scientific_success=False,
+                terminal_event_id=terminal_events[-1].event_id,
+                failure="running episode has a terminal event",
+            )
+        return CompletionContract(
+            status=status,
+            terminal=False,
+            trace_complete=False,
+            scientific_success=False,
+            failure="trajectory is unfinished",
+        )
+    if status not in _STOP_REASON_FOR_STATUS:
+        return CompletionContract(
+            status=status,
+            terminal=True,
+            trace_complete=False,
+            scientific_success=False,
+            failure=f"unknown terminal status {status!r}",
+        )
+    if len(terminal_events) != 1:
+        return CompletionContract(
+            status=status,
+            terminal=True,
+            trace_complete=False,
+            scientific_success=False,
+            failure="expected exactly one episode.finished event",
+        )
+    ordered_events = sorted(
+        trajectory.execution_events,
+        key=lambda item: (
+            item.sequence if item.sequence is not None else 0,
+            item.event_id,
+        ),
+    )
+    terminal = terminal_events[0]
+    if not ordered_events or ordered_events[-1].event_id != terminal.event_id:
+        return CompletionContract(
+            status=status,
+            terminal=True,
+            trace_complete=False,
+            scientific_success=False,
+            terminal_event_id=terminal.event_id,
+            failure="episode.finished must be the final execution event",
+        )
+    stop_reason = terminal.payload.get("stop_reason")
+    if not isinstance(stop_reason, str) or not stop_reason:
+        return CompletionContract(
+            status=status,
+            terminal=True,
+            trace_complete=False,
+            scientific_success=False,
+            terminal_event_id=terminal.event_id,
+            failure="episode.finished is missing stop_reason",
+        )
+    if stop_reason not in _STOP_REASON_FOR_STATUS[status]:
+        return CompletionContract(
+            status=status,
+            terminal=True,
+            trace_complete=False,
+            scientific_success=False,
+            terminal_event_id=terminal.event_id,
+            failure=(
+                f"stop_reason {stop_reason!r} does not match terminal status {status!r}"
+            ),
+        )
+    completion = terminal.payload.get("completion")
+    successful = status in {"completed", "success"} and completion is not None
+    if status in {"completed", "success"} and completion is None:
+        return CompletionContract(
+            status=status,
+            terminal=True,
+            trace_complete=False,
+            scientific_success=False,
+            terminal_event_id=terminal.event_id,
+            failure="completed status has no positive completion evidence",
+        )
+    return CompletionContract(
+        status=status,
+        terminal=True,
+        trace_complete=True,
+        scientific_success=successful,
+        terminal_event_id=terminal.event_id,
+    )
+
+
+def completion_failure(trajectory: Trajectory) -> str | None:
+    """Return the contract failure, if any, for Harbor-style validation."""
+
+    return completion_contract(trajectory).failure
 
 
 def _json_text(value: Any) -> str:
@@ -70,6 +221,7 @@ class ATIFExporter:
 
     def to_dict(self) -> dict[str, Any]:
         trajectory = self.trajectory
+        contract = completion_contract(trajectory)
         # Detach every nested extension from the source records.
         source = json.loads(trajectory.canonical_json())
         decisions = sorted(
@@ -202,6 +354,7 @@ class ATIFExporter:
             "extra": {
                 "openai4s": source,
                 "science_trajectory_sha256": trajectory.sha256(),
+                "completion_contract": contract.to_dict(),
             },
         }
 
@@ -213,4 +366,9 @@ class ATIFExporter:
         return self.export_json()
 
 
-__all__ = ["ATIFExporter"]
+__all__ = [
+    "ATIFExporter",
+    "CompletionContract",
+    "completion_contract",
+    "completion_failure",
+]

@@ -83,7 +83,12 @@ starts a second execution loop.
 
 `atif.py` provides `ATIFExporter`, a deterministic ATIF-v1.8 interchange
 projection that keeps segment, reward, cost, and execution identifiers in
-ATIF extension metadata.
+ATIF extension metadata. `completion_contract()` validates Harbor-style
+positive terminal evidence: a non-running Episode needs exactly one final
+`episode.finished` event with a matching stop reason. Failed, cancelled,
+interrupted, `max_turns`, and ordinary `done` outcomes remain valid terminal
+records but are never marked `scientific_success`; only non-null completion
+evidence on a completed status receives that flag.
 
 `host_events.py` defines the bounded Host RPC lifecycle facts (`started`,
 `completed`, and `failed`) used to join nested execution to a parent decision

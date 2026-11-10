@@ -24,6 +24,9 @@ from .recorder import TrajectoryRecorder
 
 _LAZY_EXPORTS = {
     "ATIFExporter": (".atif", "ATIFExporter"),
+    "CompletionContract": (".atif", "CompletionContract"),
+    "completion_contract": (".atif", "completion_contract"),
+    "completion_failure": (".atif", "completion_failure"),
     "PolicySampler": (".rollout", "PolicySampler"),
     "AsyncPolicySampler": (".rollout", "AsyncPolicySampler"),
     "RolloutSession": (".rollout", "RolloutSession"),
@@ -99,6 +102,9 @@ __all__ = [
     "TrajectoryRecorder",
     "TrajectoryEventSink",
     "ATIFExporter",
+    "CompletionContract",
+    "completion_contract",
+    "completion_failure",
     "HostCallLifecycle",
     "PolicySampler",
     "AsyncPolicySampler",

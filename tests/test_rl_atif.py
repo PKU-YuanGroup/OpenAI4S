@@ -4,12 +4,15 @@ import json
 
 from openai4s.rl import (
     ATIFExporter,
+    CompletionContract,
     CostRecord,
     Episode,
     ExecutionEvent,
     Observation,
     PolicyDecision,
     TrajectoryRecorder,
+    completion_contract,
+    completion_failure,
 )
 
 
@@ -90,3 +93,71 @@ def test_atif_export_preserves_decision_telemetry_and_source_evidence() -> None:
         exported, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     assert trajectory.canonical_json() == recorder.export_json()
+
+
+def _terminal_recorder(status: str, stop_reason: str, completion):
+    recorder = TrajectoryRecorder(Episode(f"ep-{status}", "task", "session", 1))
+    recorder.add_event(
+        ExecutionEvent(
+            "episode-finished",
+            recorder.episode.episode_id,
+            "episode.finished",
+            2,
+            payload={"stop_reason": stop_reason, "completion": completion},
+        )
+    )
+    recorder.finish(status)
+    return recorder
+
+
+def test_completion_contract_requires_terminal_evidence_and_separates_success() -> None:
+    completed = _terminal_recorder("completed", "submitted", {"output": "ok"})
+    contract = completion_contract(completed.snapshot())
+    assert isinstance(contract, CompletionContract)
+    assert contract.to_dict() == {
+        "status": "completed",
+        "terminal": True,
+        "trace_complete": True,
+        "scientific_success": True,
+        "terminal_event_id": "episode-finished",
+        "failure": None,
+    }
+    assert completion_failure(completed.snapshot()) is None
+
+    failed = _terminal_recorder("failed", "error", None)
+    failed_contract = completion_contract(failed.snapshot())
+    assert failed_contract.trace_complete is True
+    assert failed_contract.scientific_success is False
+    assert failed_contract.failure is None
+
+    done = _terminal_recorder("done", "done", None)
+    assert completion_contract(done.snapshot()).scientific_success is False
+
+
+def test_completion_contract_rejects_missing_or_mismatched_terminal_evidence() -> None:
+    running = TrajectoryRecorder(Episode("ep-running-contract", "task", "session", 1))
+    unfinished = completion_contract(running.snapshot())
+    assert unfinished.terminal is False
+    assert unfinished.failure == "trajectory is unfinished"
+
+    missing = TrajectoryRecorder(Episode("ep-missing-contract", "task", "session", 1))
+    missing.finish("completed")
+    assert completion_failure(missing.snapshot()) == (
+        "expected exactly one episode.finished event"
+    )
+
+    mismatch = _terminal_recorder("completed", "done", {"output": "ok"})
+    assert "does not match" in completion_failure(mismatch.snapshot())
+
+
+def test_atif_exports_completion_contract_without_claiming_done_is_success() -> None:
+    recorder = _terminal_recorder("done", "done", None)
+    exported = ATIFExporter(recorder.snapshot()).to_dict()
+    assert exported["extra"]["completion_contract"] == {
+        "status": "done",
+        "terminal": True,
+        "trace_complete": True,
+        "scientific_success": False,
+        "terminal_event_id": "episode-finished",
+        "failure": None,
+    }
