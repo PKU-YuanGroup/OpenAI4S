@@ -214,6 +214,8 @@ class TrajectoryRecorder:
         """Set the episode lifecycle projection exactly once."""
         if not isinstance(status, str) or not status.strip():
             raise ValueError("status must be a non-empty string")
+        if status == "running":
+            raise ValueError("finish status must be terminal")
         with self._lock:
             if self.episode.status != "running" and self.episode.status != status:
                 raise ValueError("episode is already terminal")

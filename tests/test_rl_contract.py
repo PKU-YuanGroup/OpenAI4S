@@ -295,3 +295,9 @@ def test_dataset_snapshot_rejects_running_episode_and_open_segment() -> None:
         DatasetSnapshot.from_trajectory(
             running.snapshot(), "dataset-open", created_at=3
         )
+
+
+def test_recorder_cannot_finish_an_episode_as_running() -> None:
+    recorder = _recorder()
+    with pytest.raises(ValueError, match="terminal"):
+        recorder.finish("running")
