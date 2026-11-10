@@ -3697,6 +3697,8 @@ class HostDispatcher:
 
     def _m_rl_segment_close(self, spec: dict) -> dict:
         status = str(spec.get("status") or "completed")
+        if status == "open":
+            return {"error": "segment close status cannot be 'open'"}
         episode_id = self._rl_episode(spec.get("episode_id"))
         segment_id = str(spec.get("segment_id") or "")
         try:
