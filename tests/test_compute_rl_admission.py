@@ -180,3 +180,20 @@ def test_restart_reconciles_terminal_compute_rows_before_new_submits(cfg):
 
     ComputeManager(cfg, resource_admission=admission)
     assert admission.get("job-restart").state == "completed"
+
+
+def test_restart_reuses_durable_compute_terminal_time_for_admission(cfg):
+    admission = ResourceAdmission(ResourceCapacity(1, 0, 0), clock_ms=lambda: 10_000)
+    store = get_store(cfg.db_path)
+    store.create_compute_job(
+        job_id="job-terminal-time", provider="ssh:lab", status=states.RUNNING
+    )
+    admission.admit("job-terminal-time", ResourceRequest(cpu_cores=1), reserved_at=100)
+    admission.bind_receipt("job-terminal-time", "31337")
+    admission.start("job-terminal-time", started_at=250)
+    store.update_compute_job(
+        "job-terminal-time", status=states.SUCCEEDED, terminal_at=500
+    )
+
+    ComputeManager(cfg, resource_admission=admission)
+    assert admission.get("job-terminal-time").actual_compute_time_ms == 250

@@ -1141,7 +1141,15 @@ class ComputeManager:
                 if row is None or not states.is_terminal(row.get("status")):
                     continue
                 if record.state == "running":
-                    self._resource_admission.finish(record.allocation_id)
+                    terminal_at = row.get("terminal_at")
+                    if isinstance(terminal_at, int) and not isinstance(
+                        terminal_at, bool
+                    ):
+                        self._resource_admission.finish(
+                            record.allocation_id, terminal_at=terminal_at
+                        )
+                    else:
+                        self._resource_admission.finish(record.allocation_id)
                 elif record.provider_receipt is None:
                     self._resource_admission.release(record.allocation_id)
             except Exception as exc:  # noqa: BLE001 - retain conservatively
@@ -1275,13 +1283,27 @@ class ComputeManager:
                 {"reason": f"resource release failed: {exc}"},
             )
 
-    def _finish_resource(self, job_id: str, *, state: str = "completed") -> None:
+    def _finish_resource(
+        self,
+        job_id: str,
+        *,
+        state: str = "completed",
+        terminal_at: int | None = None,
+    ) -> None:
         if self._resource_admission is None:
             return
         try:
             record = self._resource_admission.get(job_id)
             if record is not None and record.state == "running":
-                self._resource_admission.finish(job_id, state=state)
+                if terminal_at is None and self._store is not None:
+                    row = self._store.get_compute_job(job_id)
+                    candidate = row.get("terminal_at") if row else None
+                    if isinstance(candidate, int) and not isinstance(candidate, bool):
+                        terminal_at = candidate
+                kwargs: dict[str, Any] = {"state": state}
+                if terminal_at is not None:
+                    kwargs["terminal_at"] = terminal_at
+                self._resource_admission.finish(job_id, **kwargs)
         except Exception as exc:  # noqa: BLE001 - terminal compute state remains
             self._event(
                 job_id,
@@ -1651,10 +1673,10 @@ class ComputeManager:
                 {"requested": status, "actual": actual},
             )
             if states.is_terminal(actual):
-                self._finish_resource(job_id)
+                self._finish_resource(job_id, terminal_at=row.get("terminal_at"))
             return row or {"job_id": job_id, "status": actual}
         job["status"] = status
-        self._finish_resource(job_id)
+        self._finish_resource(job_id, terminal_at=fields.get("terminal_at"))
         if event:
             self._event(job_id, event, event_payload)
         return None
@@ -3104,7 +3126,7 @@ class ComputeManager:
         # admission finish was interrupted. Re-polling is a safe opportunity
         # to complete that receipt-bound transition; unknown admissions remain
         # untouched by _finish_resource.
-        self._finish_resource(job["job_id"])
+        self._finish_resource(job["job_id"], terminal_at=row.get("terminal_at"))
         # Memory can lag the ledger — a restart, or another handle's cancel —
         # and every caller of this reports the row, so re-sync it here rather
         # than leaving `_live_count` counting a job that has ended.
