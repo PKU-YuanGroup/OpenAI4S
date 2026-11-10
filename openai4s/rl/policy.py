@@ -51,7 +51,11 @@ class PolicyAdapter:
             detached_tools,
             self.config,
         )
-        reply = raw if isinstance(raw, ModelReply) else ModelReply.from_mapping(raw)
+        reply = (
+            raw
+            if isinstance(raw, ModelReply)
+            else ModelReply.from_mapping(_reply_mapping(raw))
+        )
         extra = dict(reply.extra)
         # The adapter is the authority for these join keys. A provider reply
         # cannot relabel itself after it has been admitted by the caller.
@@ -73,6 +77,17 @@ def _text(name: str, value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
     return value
+
+
+def _reply_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
+    """Accept common trainer names while keeping ModelReply provider-neutral."""
+
+    normalized = dict(value)
+    if "content" not in normalized and isinstance(normalized.get("text"), str):
+        normalized["content"] = normalized["text"]
+    if "token_logprobs" not in normalized and "logprobs" in normalized:
+        normalized["token_logprobs"] = normalized["logprobs"]
+    return normalized
 
 
 def _generate(

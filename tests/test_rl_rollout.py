@@ -310,6 +310,19 @@ def test_policy_adapter_accepts_sampling_config_provider_spelling() -> None:
     assert reply.content == "done"
 
 
+def test_policy_adapter_normalizes_trainer_text_and_logprobs_aliases() -> None:
+    class _Provider:
+        def generate(self, observation, *, config):
+            return {"text": "done", "token_ids": [7], "logprobs": [-0.2]}
+
+    reply = PolicyAdapter(
+        _Provider(), policy_name="policy", policy_version="v1"
+    ).sample(({"role": "user", "content": "run"},))
+    assert reply.content == "done"
+    assert reply.extra["token_ids"] == [7]
+    assert reply.extra["token_logprobs"] == [-0.2]
+
+
 def test_rollout_environment_resets_with_independent_workspace_and_metadata(tmp_path):
     created = []
 

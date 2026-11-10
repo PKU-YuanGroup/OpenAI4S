@@ -89,6 +89,9 @@ samplers that accept only the original observation/config arguments remain
 valid; they receive no tool keyword.
 Providers that call the configuration argument `sampling_config` are accepted
 as an equivalent spelling.
+Provider replies may use `text` for `content` and `logprobs` for
+`token_logprobs`; the adapter normalizes these aliases before recording the
+decision.
 
 `RolloutEnvironment.reset()` creates a fresh Episode, reset metadata, and
 workspace through an embedding-supplied Engine factory. It refuses a second
