@@ -101,13 +101,18 @@ class RolloutRPC:
             _reject_unknown(params, {"reply", "observation"}, method)
             if "reply" not in params:
                 raise KeyError("reply")
+            reply = params["reply"]
+            if not isinstance(reply, Mapping):
+                raise TypeError("reply must be a JSON object")
             observation = params.get("observation")
-            return self.adapter.step(params["reply"], observation=observation)
+            return self.adapter.step(reply, observation=observation)
         if method == "finish":
             _reject_unknown(params, {"status"}, method)
             status = params.get("status", "completed")
             if not isinstance(status, str) or not status:
                 raise TypeError("status must be a non-empty string")
+            if status == "running":
+                raise ValueError("status must be terminal")
             return self.adapter.finish(status)
         if method == "export":
             _reject_unknown(params, {"format"}, method)
