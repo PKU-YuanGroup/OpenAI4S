@@ -133,3 +133,11 @@ snapshot ID 读取；显式 Segment parent 由 migration 39 增加，持久化 R
 migration 41 增加。如果之后追加新的
 Verifier Annotation 使轨迹改变，旧 Snapshot 会拒绝匹配，Trainer 不会静默读取已改变的
 reward view。
+
+`RolloutDataset` 是该边界上的 Trainer 投影。它为每个 PolicyDecision 生成一个
+`TrainingSample`，携带精确 Observation、Decision，以及关联的 Segment ID、ExecutionEvent
+ID、Decision/Segment Reward Annotation 和 Decision Cost。Episode 级 Annotation 保留在
+数据集 envelope 中，不复制到每个 Decision。调用方可以明确选择一个 verifier/version；
+省略选择器时保留所有版本化 Annotation。JSONL 首行是数据集 envelope，后续每行流式
+输出一个 sample。这个适配器不聚合 reward、不计算 advantage，也不填补缺失的
+token/logprob 证据。

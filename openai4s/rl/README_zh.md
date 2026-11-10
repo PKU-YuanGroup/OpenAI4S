@@ -18,6 +18,11 @@ Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 `snapshot.py` 定义 `DatasetSnapshot`：它要求 Episode 终态、固定完整轨迹哈希和事件
 序号边界，用于冻结训练导出视图；它不复制或改写轨迹记录。
 
+`dataset.py` 定义 `RolloutDataset` 和 `TrainingSample`。这个适配器把一个明确的
+Snapshot 与每个 PolicyDecision 的训练样本关联起来，分别保留 Decision、Segment 和
+Episode Reward Annotation，并提供确定性的 JSON 与流式 JSONL 导出；它不选择
+Advantage Estimator。
+
 `policy.py` 定义 `PolicyProvider` 和 `PolicyAdapter`。Adapter 把 behavior policy 身份
 和采样配置写入 `ModelReply.extra`；缺失的 logprob 保持缺失，不在采样后估算。
 现代 provider 还可以通过 `tools` 接收复制后的当前原生工具投影；`observe()` 之后，

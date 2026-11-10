@@ -205,3 +205,13 @@ with receipt-bound allocations by migration 40, and resource admission ledgers
 by migration 41. A snapshot that no longer
 matches after a later verifier annotation is rejected, so the trainer cannot
 silently consume a changed reward view.
+
+`RolloutDataset` is the trainer-facing projection at that boundary. It emits
+one `TrainingSample` per PolicyDecision, carrying the exact Observation and
+Decision plus joined Segment IDs, ExecutionEvent IDs, decision/segment reward
+annotations, and decision costs. Episode-level annotations remain in the
+dataset envelope instead of being copied onto every decision. A caller may
+select one verifier/version pair; omitting that selector preserves all
+versioned annotations. JSONL starts with a dataset envelope and then streams
+one sample per line. The adapter never aggregates rewards, computes
+advantages, or fills missing token/logprob evidence.
