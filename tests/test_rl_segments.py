@@ -77,6 +77,11 @@ def test_segment_api_persists_explicit_parent_segment_id(tmp_path) -> None:
         assert json.loads(event[0])["payload"]["parent_segment_id"] == (
             parent.segment_id
         )
+        trajectory = dispatcher.store.rl.load_trajectory("frame-parent-segment")
+        child_record = next(
+            item for item in trajectory.segments if item.segment_id == child.segment_id
+        )
+        assert child_record.parent_segment_id == parent.segment_id
     finally:
         dispatcher.store.close()
 
