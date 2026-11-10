@@ -1610,6 +1610,24 @@ class HostDispatcher:
             context["source_id"] = action.get("tool_call_id") or action.get("action_id")
         return context
 
+    def _rl_episode(self, episode_id: str | None) -> str:
+        """Resolve the episode bound to this Host call.
+
+        A rollout's episode identity is carried by the action context all the
+        way to the kernel dispatcher.  Falling back to ``frame_id`` before
+        consulting that binding would put segments opened inside a rollout
+        into the Web frame's episode instead of the trainer's episode.
+        """
+        context = self._current_rl_context()
+        bound = context.get("episode_id")
+        if bound:
+            if episode_id is not None and str(episode_id) != str(bound):
+                raise ValueError("segment episode_id conflicts with the bound rollout")
+            return str(bound)
+        if episode_id:
+            return str(episode_id)
+        return str(self.frame_id or "session")
+
     def _rl_call_begin(self, method: str, args: list) -> dict[str, Any] | None:
         if method.startswith("rl_segment_"):
             return None
@@ -3552,9 +3570,6 @@ class HostDispatcher:
         return self._completion_service.submit(spec)
 
     # --- RL segment instrumentation ---------------------------------
-    def _rl_episode(self, episode_id: str | None) -> str:
-        return str(episode_id or self.frame_id or "session")
-
     def _m_rl_segment_start(self, spec: dict) -> dict:
         episode_id = self._rl_episode(spec.get("episode_id"))
         context = self._current_rl_context()
@@ -3607,6 +3622,17 @@ class HostDispatcher:
                 )
             )
             current = self._current_rl_context()
+            # Keep the enclosing segment bound while nested segments run. The
+            # public parent edge is explicit (``parent_segment_id``), but the
+            # execution context still needs a LIFO restore so Host RPCs after
+            # a child closes remain attributed to their parent.
+            segment_stack = current.get("_rl_segment_stack")
+            if not isinstance(segment_stack, list):
+                segment_stack = []
+            else:
+                segment_stack = list(segment_stack)
+            segment_stack.append(current.get("segment_id"))
+            current["_rl_segment_stack"] = segment_stack
             current.update(
                 {
                     "episode_id": episode_id,
@@ -3682,7 +3708,18 @@ class HostDispatcher:
             self.store.rl.update_segment_status(segment_id, status)
             current = self._current_rl_context()
             if current.get("segment_id") == segment_id:
-                current.pop("segment_id", None)
+                segment_stack = current.get("_rl_segment_stack")
+                previous = None
+                if isinstance(segment_stack, list) and segment_stack:
+                    previous = segment_stack.pop()
+                    if segment_stack:
+                        current["_rl_segment_stack"] = segment_stack
+                    else:
+                        current.pop("_rl_segment_stack", None)
+                if previous:
+                    current["segment_id"] = previous
+                else:
+                    current.pop("segment_id", None)
                 self._rl_context_local.value = current
             return {"ok": True, "status": status, "sequence": event.sequence}
         except (TypeError, ValueError, KeyError) as error:

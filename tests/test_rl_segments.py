@@ -183,3 +183,56 @@ def test_host_rpc_failure_preserves_error_category(tmp_path) -> None:
         assert json.loads(row[1])["payload"]["error_category"] == "KeyError"
     finally:
         dispatcher.store.close()
+
+
+def test_segment_uses_bound_rollout_episode_and_reload_keeps_closed_status(
+    tmp_path,
+) -> None:
+    dispatcher = build_dispatcher(
+        Config(data_dir=tmp_path), frame_id="frame-segment-binding"
+    )
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with dispatcher.bind_rl_context(
+            {"episode_id": "rollout-episode", "decision_id": "decision-1"}
+        ):
+            with host.segment("analysis") as segment:
+                pass
+
+        row = dispatcher.store._conn.execute(
+            "SELECT episode_id,status FROM rl_segments WHERE segment_id=?",
+            (segment.segment_id,),
+        ).fetchone()
+        assert tuple(row) == ("rollout-episode", "completed")
+        loaded = dispatcher.store.rl.load_trajectory("rollout-episode")
+        assert loaded.segments[0].status == "completed"
+    finally:
+        dispatcher.store.close()
+
+
+def test_nested_segment_restores_parent_host_rpc_context(tmp_path) -> None:
+    dispatcher = build_dispatcher(
+        Config(data_dir=tmp_path), frame_id="frame-nested-segment"
+    )
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with dispatcher.bind_rl_context({"episode_id": "frame-nested-segment"}):
+            with host.segment("parent") as parent:
+                with host.segment("child"):
+                    pass
+                assert host.artifacts()["count"] == 0
+
+        rows = dispatcher.store._conn.execute(
+            "SELECT kind,payload FROM rl_execution_events "
+            "WHERE episode_id=? ORDER BY sequence",
+            ("frame-nested-segment",),
+        ).fetchall()
+        host_rows = [row for row in rows if row[0].startswith("host_call.")]
+        assert [row[0] for row in host_rows] == [
+            "host_call.started",
+            "host_call.completed",
+        ]
+        assert json.loads(host_rows[0][1])["segment_id"] == parent.segment_id
+        assert json.loads(host_rows[1][1])["segment_id"] == parent.segment_id
+    finally:
+        dispatcher.store.close()

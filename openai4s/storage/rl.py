@@ -377,7 +377,8 @@ class RLRepository:
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             row = self._connection.execute(
-                "SELECT status FROM rl_segments WHERE segment_id=?", (segment_id,)
+                "SELECT status,payload FROM rl_segments WHERE segment_id=?",
+                (segment_id,),
             ).fetchone()
             if row is None:
                 self._connection.execute("ROLLBACK")
@@ -385,9 +386,19 @@ class RLRepository:
             if row["status"] != "open" and row["status"] != status:
                 self._connection.execute("ROLLBACK")
                 raise ValueError(f"segment {segment_id!r} is already terminal")
+            payload = json.loads(row["payload"])
+            if not isinstance(payload, Mapping):
+                self._connection.execute("ROLLBACK")
+                raise ValueError(f"segment {segment_id!r} has invalid payload")
+            # ``status`` is an indexed lifecycle projection, but the payload is
+            # what durable trajectory reload decodes. Keep both projections in
+            # lockstep or a closed segment would reappear as open after a
+            # restart and make a terminal DatasetSnapshot unverifiable.
+            updated_payload = dict(payload)
+            updated_payload["status"] = status
             self._connection.execute(
-                "UPDATE rl_segments SET status=? WHERE segment_id=?",
-                (status, segment_id),
+                "UPDATE rl_segments SET status=?,payload=? WHERE segment_id=?",
+                (status, _payload(updated_payload), segment_id),
             )
             self._connection.execute("COMMIT")
 

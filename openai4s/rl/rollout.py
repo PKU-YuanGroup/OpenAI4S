@@ -59,6 +59,12 @@ class RolloutSession:
         self.sink = TrajectoryEventSink(
             recorder,
             delegate=delegate_sink if delegate_sink is not None else engine.event_sink,
+            # RolloutSession is also a durable adapter.  Prefixing its
+            # generated observation/decision/event IDs prevents two episodes
+            # in the same Store from colliding on ``obs-0`` or
+            # ``decision-0``.  The AgentRuntime composition supplies its own
+            # sink prefix, so this does not alter the direct sink contract.
+            id_prefix=recorder.episode.episode_id,
             capture_wall_time=True,
         )
         self.engine.event_sink = self.sink

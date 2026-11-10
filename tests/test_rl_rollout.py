@@ -207,6 +207,32 @@ def test_rollout_worker_repository_binds_environment_for_run_receipts(tmp_path):
         store.close()
 
 
+def test_durable_rollout_sessions_namespace_generated_record_ids(tmp_path):
+    store = get_store(Config(data_dir=tmp_path / "store").db_path)
+    try:
+
+        def run_episode(episode_id):
+            session = RolloutSession(
+                AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1),
+                TrajectoryRecorder(
+                    Episode(episode_id, "task", "session", 1), repository=store.rl
+                ),
+                repository=store.rl,
+            )
+            session.reset([{"role": "user", "content": "run"}])
+            return session.run(lambda _observation: ModelReply(content="done"))
+
+        first = run_episode("ep-ids-a")
+        second = run_episode("ep-ids-b")
+        assert first.observations[0].observation_id == "ep-ids-a:obs-0"
+        assert second.observations[0].observation_id == "ep-ids-b:obs-0"
+        assert store.rl.load_trajectory("ep-ids-a").decisions[0].decision_id == (
+            "ep-ids-a:decision-0"
+        )
+    finally:
+        store.close()
+
+
 def test_rollout_worker_does_not_settle_receipt_on_process_interrupt(tmp_path):
     store = get_store(Config(data_dir=tmp_path / "store").db_path)
     try:
