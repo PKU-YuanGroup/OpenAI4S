@@ -200,7 +200,12 @@ class RolloutDataset:
         segment_rewards = tuple(
             item
             for item in selected_rewards
-            if item.segment_id is not None and item.segment_id in known_segment_ids
+            if item.segment_id is not None
+            and item.segment_id in known_segment_ids
+            and not any(
+                item.segment_id in decision_segments
+                for decision_segments in segments_by_decision.values()
+            )
         )
         for reward in selected_rewards:
             if reward.decision_id in rewards_by_decision:

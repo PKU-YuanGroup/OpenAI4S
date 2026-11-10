@@ -155,7 +155,6 @@ def test_dataset_projects_explicit_reward_joins_without_attributing_episode_rewa
         "reward-episode-v1"
     ]
     assert [item["annotation_id"] for item in dataset.segment_rewards] == [
-        "reward-segment-v1",
         "reward-unbound-segment-v1",
     ]
     assert [item["cost_id"] for item in dataset.episode_costs] == ["cost-episode"]
