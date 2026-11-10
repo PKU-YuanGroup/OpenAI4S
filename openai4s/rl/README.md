@@ -28,6 +28,7 @@ it preserves missing logprob evidence instead of estimating it after sampling.
 Modern providers can also receive the detached current native tool projection
 through `tools`; `RolloutSession.current_tools` exposes the same declarations
 after `observe()`. Older observation-only samplers remain supported.
+The configuration keyword may be `config` or `sampling_config`.
 Trajectory observations retain that tool projection, while decisions retain
 prompt token IDs and sampling configuration when the sampler supplies them.
 

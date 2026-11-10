@@ -22,6 +22,7 @@ Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 现代 provider 还可以通过 `tools` 接收复制后的当前原生工具投影；`observe()` 之后，
 `RolloutSession.current_tools` 会暴露同一组声明。只接收 observation 的旧 sampler
 仍然受支持。
+配置关键字可以使用 `config` 或 `sampling_config`。
 轨迹 Observation 会保留该工具投影；如果 sampler 提供了 prompt token IDs 和采样配置，
 Decision 也会保留它们。
 

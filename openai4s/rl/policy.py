@@ -89,17 +89,34 @@ def _generate(
     except (TypeError, ValueError):
         parameters = {}
     tool_parameter = parameters.get("tools")
-    accepts_tools = (
-        tool_parameter is not None
-        and tool_parameter.kind
-        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    ) or any(
+    config_parameter = parameters.get("config") or parameters.get("sampling_config")
+    args: list[object] = [observation]
+    kwargs: dict[str, object] = {}
+    if tool_parameter is not None:
+        if tool_parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+            args.append(tools)
+        else:
+            kwargs[tool_parameter.name] = tools
+    elif any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
-    )
-    if accepts_tools:
-        return generate(observation, tools=tools, config=config)
-    return generate(observation, config=config)
+    ):
+        kwargs["tools"] = tools
+    if config_parameter is not None:
+        if config_parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+            args.append(config)
+        else:
+            kwargs[config_parameter.name] = config
+    elif any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        kwargs["config"] = config
+    else:
+        # Preserve the original adapter contract for providers whose second
+        # argument was named positionally but is hidden from introspection.
+        kwargs["config"] = config
+    return generate(*args, **kwargs)
 
 
 __all__ = ["PolicyAdapter", "PolicyProvider"]

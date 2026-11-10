@@ -293,6 +293,23 @@ def test_policy_adapter_passes_detached_tools_to_modern_provider() -> None:
     assert reply.extra["policy_version"] == "v2"
 
 
+def test_policy_adapter_accepts_sampling_config_provider_spelling() -> None:
+    class _Provider:
+        def generate(self, messages, tools, sampling_config):
+            assert messages[0]["content"] == "run"
+            assert tools == ()
+            assert sampling_config == {"temperature": 0.1}
+            return {"content": "done"}
+
+    reply = PolicyAdapter(
+        _Provider(),
+        policy_name="policy",
+        policy_version="v1",
+        config={"temperature": 0.1},
+    ).sample(({"role": "user", "content": "run"},))
+    assert reply.content == "done"
+
+
 def test_rollout_environment_resets_with_independent_workspace_and_metadata(tmp_path):
     created = []
 

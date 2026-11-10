@@ -87,6 +87,8 @@ and `RolloutSession` detach these JSON declarations before handing them to a
 sampler, so a policy cannot mutate the live catalog. Legacy providers and
 samplers that accept only the original observation/config arguments remain
 valid; they receive no tool keyword.
+Providers that call the configuration argument `sampling_config` are accepted
+as an equivalent spelling.
 
 `RolloutEnvironment.reset()` creates a fresh Episode, reset metadata, and
 workspace through an embedding-supplied Engine factory. It refuses a second
