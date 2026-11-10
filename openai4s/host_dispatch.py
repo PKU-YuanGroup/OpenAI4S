@@ -1287,6 +1287,7 @@ class HostDispatcher:
         # thread-local because one dispatcher serves foreground and background
         # workers concurrently.
         self._rl_context_local = threading.local()
+        self._rl_owner_id = "host-owner-" + uuid.uuid4().hex
         # A Web native writer binds its Artifact committer only for the exact
         # dispatcher thread executing that action. A foreground Kernel Cell
         # binds a separate thread-local receipt scope around its one protocol
@@ -1633,6 +1634,16 @@ class HostDispatcher:
                 context[target] = action[alias]
         if "episode_id" not in context and context.get("decision_id"):
             context["episode_id"] = self.frame_id
+        context["rl_owner_id"] = (
+            action.get("rl_owner_id") or context.get("rl_owner_id") or self._rl_owner_id
+        )
+        episode_id = context.get("episode_id")
+        if episode_id:
+            phase = self.store.rl.active_phase(
+                str(episode_id), str(context["rl_owner_id"])
+            )
+            if phase is not None and not context.get("_rl_segment_stack"):
+                context["segment_id"] = phase.segment_id
         if "source_id" not in context:
             context["source_id"] = action.get("tool_call_id") or action.get("action_id")
         return context
@@ -3599,6 +3610,18 @@ class HostDispatcher:
     # --- RL segment instrumentation ---------------------------------
     def _m_rl_segment_start(self, spec: dict) -> dict:
         episode_id = self._rl_episode(spec.get("episode_id"))
+        if spec.get("persistent"):
+            try:
+                from openai4s.rl.segments import HostSegments
+
+                return HostSegments(
+                    self.store.rl,
+                    episode_id,
+                    self._current_rl_context(),
+                    str(self.frame_id),
+                ).start(spec)
+            except (TypeError, ValueError, KeyError) as error:
+                return {"error": str(error)}
         context = self._current_rl_context()
         decision_id = (
             str(context["decision_id"]) if context.get("decision_id") else None
@@ -3625,7 +3648,11 @@ class HostDispatcher:
             # Segment calls share one Episode.  The repository returns the
             # existing immutable identity when a later segment opens with a
             # fresh wall-clock timestamp.
-            self.store.rl.ensure_episode(episode)
+            existing_episode = self.store.rl.get_episode(episode_id)
+            if existing_episode is not None and existing_episode.status != "running":
+                return {"error": "segment lifecycle requires a running episode"}
+            if existing_episode is None:
+                self.store.rl.ensure_episode(episode)
             segment = Segment(
                 segment_id=str(
                     spec.get("segment_id") or "seg-" + uuid.uuid4().hex[:16]
@@ -3636,22 +3663,18 @@ class HostDispatcher:
                 created_at=now,
                 decision_id=decision_id,
                 parent_segment_id=(parent_segment_id),
-                metadata=spec.get("metadata") or {},
+                metadata={
+                    **(spec.get("metadata") or {}),
+                    "openai4s.segment": {
+                        "source": "explicit",
+                        "persistent": False,
+                    },
+                },
             )
-            self.store.rl.append_segment(segment)
-            event = self.store.rl.append_execution_event(
-                ExecutionEvent(
-                    event_id=f"{segment.segment_id}:started",
-                    episode_id=episode_id,
-                    kind="segment.started",
-                    created_at=now,
-                    decision_id=decision_id,
-                    source_id=(
-                        str(context["source_id"]) if context.get("source_id") else None
-                    ),
-                    segment_id=segment.segment_id,
-                    payload=segment.to_dict(),
-                )
+            from openai4s.rl.segments import lifecycle_event
+
+            segment, event = self.store.rl.transition_segment(
+                segment, lifecycle_event(segment, started=True, at=now)
             )
             current = self._current_rl_context()
             # Keep the enclosing segment bound while nested segments run. The
@@ -3677,6 +3700,19 @@ class HostDispatcher:
                 "episode_id": episode_id,
                 "sequence": event.sequence,
             }
+        except (TypeError, ValueError, KeyError) as error:
+            return {"error": str(error)}
+
+    def _m_rl_segment_resume(self, spec: dict) -> dict:
+        try:
+            from openai4s.rl.segments import HostSegments
+
+            return HostSegments(
+                self.store.rl,
+                self._rl_episode(spec.get("episode_id")),
+                self._current_rl_context(),
+                str(self.frame_id),
+            ).resume(str(spec.get("segment_id") or ""))
         except (TypeError, ValueError, KeyError) as error:
             return {"error": str(error)}
 
@@ -3729,33 +3765,30 @@ class HostDispatcher:
         episode_id = self._rl_episode(spec.get("episode_id"))
         segment_id = str(spec.get("segment_id") or "")
         try:
-            context = self._current_rl_context()
             segment = self.store.rl.get_segment(segment_id)
+            if segment is not None and bool(
+                segment.metadata.get("openai4s.segment", {}).get("persistent")
+            ):
+                from openai4s.rl.segments import HostSegments
+
+                return HostSegments(
+                    self.store.rl,
+                    episode_id,
+                    self._current_rl_context(),
+                    str(self.frame_id),
+                ).close(spec)
+            context = self._current_rl_context()
             if segment is None:
                 return {"error": f"unknown segment {segment_id!r}"}
             if segment.episode_id != episode_id:
                 return {"error": "segment belongs to a different episode"}
             if segment.status != "open" and segment.status != status:
                 return {"error": f"segment is already {segment.status}"}
-            event = self.store.rl.append_execution_event(
-                ExecutionEvent(
-                    event_id=f"{segment_id}:closed",
-                    episode_id=episode_id,
-                    kind="segment.closed",
-                    created_at=int(time.time() * 1000),
-                    decision_id=(
-                        str(context["decision_id"])
-                        if context.get("decision_id")
-                        else None
-                    ),
-                    source_id=(
-                        str(context["source_id"]) if context.get("source_id") else None
-                    ),
-                    segment_id=segment_id,
-                    payload={"status": status, "error": spec.get("error")},
-                )
-            )
-            self.store.rl.update_segment_status(segment_id, status)
+            from openai4s.rl.segments import HostSegments
+
+            closed = HostSegments(
+                self.store.rl, episode_id, context, str(self.frame_id)
+            ).close(spec)
             current = self._current_rl_context()
             if current.get("segment_id") == segment_id:
                 segment_stack = current.get("_rl_segment_stack")
@@ -3771,7 +3804,7 @@ class HostDispatcher:
                 else:
                     current.pop("segment_id", None)
                 self._rl_context_local.value = current
-            return {"ok": True, "status": status, "sequence": event.sequence}
+            return closed
         except (TypeError, ValueError, KeyError) as error:
             return {"error": str(error)}
 

@@ -236,6 +236,10 @@ class _FrameUsageEventSink:
             return propose(turn, messages)
         return None
 
+    @property
+    def owner_id(self) -> str | None:
+        return getattr(self.inner, "owner_id", None)
+
     def segment_id(self, turn: int) -> str | None:
         provider = getattr(self.inner, "segment_id", None)
         return provider(turn) if callable(provider) else None

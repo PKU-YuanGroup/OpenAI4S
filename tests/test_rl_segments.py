@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from openai4s.config import Config, get_config
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.sdk.host import _Host
@@ -270,6 +272,104 @@ def test_segment_events_reject_unknown_or_closed_segments(tmp_path) -> None:
         assert count == 2
     finally:
         dispatcher.store.close()
+
+
+def test_persistent_phase_spans_decisions_in_existing_trainer_episode(tmp_path):
+    from openai4s.rl import Episode
+
+    dispatcher = build_dispatcher(Config(data_dir=tmp_path), frame_id="frame-phase")
+    try:
+        dispatcher.store.rl.ensure_episode(
+            Episode(
+                "trainer-ep",
+                "actual task",
+                "actual-session",
+                1,
+                policy_name="policy",
+                policy_version="v7",
+                metadata={"seed": 7},
+            )
+        )
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with dispatcher.bind_action_context(
+            {"episode_id": "trainer-ep", "decision_id": "d1"}
+        ):
+            phase = host.begin_segment("analysis", segment_id="phase")
+        with dispatcher.bind_action_context(
+            {"episode_id": "trainer-ep", "decision_id": "d2"}
+        ):
+            host.artifacts()
+            with host.segment("nested", parent_segment_id=phase.segment_id):
+                host.artifacts()
+            host.artifacts()
+        with dispatcher.bind_action_context(
+            {"episode_id": "trainer-ep", "decision_id": "d3"}
+        ):
+            phase = host.resume_segment("phase")
+            phase.close()
+            phase.close()
+        trajectory = dispatcher.store.rl.load_trajectory("trainer-ep")
+        assert trajectory.episode.task == "actual task"
+        calls = [
+            e for e in trajectory.execution_events if e.kind == "host_call.started"
+        ]
+        assert [e.segment_id for e in calls][::2] == ["phase", "phase"]
+        assert calls[1].segment_id != "phase"
+        assert all(e.decision_id == "d2" for e in calls)
+        assert all(s.status == "completed" for s in trajectory.segments)
+    finally:
+        dispatcher.store.close()
+
+
+@pytest.mark.stubbed_backend
+def test_real_kernel_phase_spans_cells_and_dataset_decisions(monkeypatch, tmp_path):
+    import openai4s.agent.loop as loop_mod
+    from openai4s.agent import Agent
+    from openai4s.rl import Episode, RolloutDataset, TrajectoryRecorder
+    from tests.test_agent import ScriptedLLM
+
+    dispatcher = build_dispatcher(Config(data_dir=tmp_path), frame_id="real-phase")
+    store = dispatcher.store
+    frame = store.new_frame(kind="turn")
+    recorder = TrajectoryRecorder(
+        Episode("real-phase-ep", "analysis", frame, 1), repository=store.rl
+    )
+    monkeypatch.setattr(
+        loop_mod,
+        "chat",
+        ScriptedLLM(
+            [
+                "```python\nphase = host.begin_segment('analysis', segment_id='science-phase')\nphase.observe({'step':1})\n```",
+                "```python\nprint(host.artifacts())\nphase.observe({'step':2})\n```",
+                "```python\nphase.close()\nhost.submit_output({'ok':True}, ['Analyzed evidence'])\n```",
+            ]
+        ),
+    )
+    try:
+        result = Agent(
+            cfg=Config(data_dir=tmp_path),
+            frame_id=frame,
+            max_turns=3,
+            use_skills=False,
+            allow_delegate=False,
+            trajectory_recorder=recorder,
+        ).run("analyze")
+        assert result["stop_reason"] == "submitted"
+        trajectory = store.rl.load_trajectory("real-phase-ep")
+        phase = next(s for s in trajectory.segments if s.segment_id == "science-phase")
+        assert phase.status == "completed"
+        dataset = RolloutDataset.from_trajectory(
+            trajectory, recorder.create_snapshot("phase-snapshot")
+        )
+        assert all("science-phase" in sample.segment_ids for sample in dataset.samples)
+        calls = [
+            e
+            for e in trajectory.execution_events
+            if e.kind == "host_call.started" and e.payload["method"] == "artifacts"
+        ]
+        assert len(calls) == 1 and calls[0].segment_id == "science-phase"
+    finally:
+        store.close()
 
 
 def test_new_action_context_cannot_inherit_stale_segment_decision(tmp_path) -> None:

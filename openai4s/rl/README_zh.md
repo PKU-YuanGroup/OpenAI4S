@@ -15,6 +15,13 @@ Policy Client 保持在 Harness 外部。
 未关闭阶段在 Episode 终态事件前被标为 interrupted/failed。Host 调用默认继承 action
 执行段，lexical 阶段可以提供更具体的归属；不计算或重复 Reward。
 
+显式科学阶段可跨决策：用 `phase = host.begin_segment(...)` 开始，在后续 Cell 调用
+`phase.observe(...)`，最后 `phase.close()`。`host.resume_segment(id)` 只验证并连接当前
+运行 owner 的 open phase，不夺取失联 worker 的所有权、不重放执行。Migration 42 持久化
+带 owner 校验的 active phase。`with host.segment(...)` 仍是 lexical scope，其陈旧上下文
+仍会在决策切换时清除。每个活跃阶段追加 `segment.decision_joined`，包括没有 Host RPC
+的 native/R action。跨样本的 Segment reward 保留原 annotation ID/scope，不能重复求和。
+
 Host Segment 接口只记录 observation 和产物证据。Reward Annotation 必须由可信的
 Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 

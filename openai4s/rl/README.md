@@ -19,6 +19,16 @@ event. Unclosed phases are interrupted/failed before the Episode terminal event.
 The action's Host calls inherit this fallback segment, while lexical phases can
 provide more specific attribution. No reward is computed or duplicated.
 
+Explicit scientific phases can span decisions: `phase = host.begin_segment(...)`,
+then `phase.observe(...)` in later Cells, and `phase.close()` at the boundary.
+`host.resume_segment(id)` validates an existing open phase under the same runtime
+owner; it never transfers ownership from a lost worker or replays work. Migration
+42 stores owner-fenced active phase bindings. `with host.segment(...)` remains a
+lexical scope: stale lexical context is still discarded at decision boundaries.
+Each active phase receives `segment.decision_joined` facts, including native/R
+actions without Host RPC. Segment reward references keep their annotation IDs
+and scope across samples; consumers must not sum repeated references.
+
 Host segment APIs record observations and artifact evidence only. Reward
 annotations are written by a trusted verifier or trainer; the Agent has no
 self-scoring Host API.

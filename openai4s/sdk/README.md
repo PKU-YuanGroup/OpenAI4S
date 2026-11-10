@@ -23,6 +23,14 @@ The R analysis worker never imports this package and has no `host` singleton.
 | [`host.py`](host.py) | The public `host.*` facade. A strict wire codec sits at the top and maps snake_case against camelCase. Under it: the skills/query/lineage/endpoints/credentials/MCP/environments/science/compute namespaces, the file, network, delegation and session helpers, and `host.submit_output`. `materialise_artifact` brings another session's version in as *this* session's Artifact with a lineage edge back to where it came from, so an analysis keeps a resolvable provenance even after the source session is deleted; `save_artifact(source=...)` carries the retrieval envelope that separates a saved file from evidence. The network helpers grew HEAD probes, a `user_agent` override and `web_download` because the Skills that needed any of the three reached for raw `urllib` instead — a request subject to neither the egress allowlist nor the SSRF guard. `web_search` answers through Doubao when an Agent Plan key is configured and through the fallback engines otherwise, and reports which in `source`. The model-backend bring-up surface adds `accelerator_status`, which reports local GPUs and SSH-remote GPU registrations separately — hardware visibility does not imply that a repository, environment, checkpoint or canary has been admitted — and `stage_model_asset`, which imports a user-supplied local checkpoint without admitting it. |
 | [`judgment.py`](judgment.py) | Worker-side `host.judge(template, state, **params)` signature. It sends a host_call and refuses a raw questions list so cell code cannot bypass the template registry. |
 
+## Scientific phases
+
+`with host.segment(name)` remains a lexical phase. For a phase spanning multiple
+Cells/PolicyDecisions, use `phase = host.begin_segment(name, segment_id=...)`,
+then `phase.observe(...)` / `phase.set_output(...)` and `phase.close()` in later
+Cells. `host.resume_segment(id)` validates an existing open phase under the same
+runtime owner. These methods record facts only, not rewards or scientific success.
+
 ## RPC and completion contract
 
 - Every call blocks inside the Python Cell. The worker's Host-call transaction lock allows only one request in flight, even if user code spins up threads.

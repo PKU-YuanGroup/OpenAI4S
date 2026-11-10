@@ -132,6 +132,13 @@ CREATE INDEX IF NOT EXISTS ix_rl_resource_allocations_state
 """
 
 
+def create_rl_phase_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS rl_phase_bindings (
+        episode_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+        segment_id TEXT, revision INTEGER NOT NULL DEFAULT 1
+    )""")
+
+
 def create_rl_schema(conn: sqlite3.Connection) -> None:
     """Install the RL schema inside the caller's migration transaction."""
     for statement in RL_SCHEMA.split(";"):
@@ -297,6 +304,97 @@ class RLRepository:
                 ),
             )
             self._connection.execute("COMMIT")
+
+    def get_episode(self, episode_id: str) -> Episode | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM rl_episodes WHERE episode_id=?",
+                (episode_id,),
+            ).fetchone()
+            return _episode_from_row(row) if row is not None else None
+
+    def set_active_phase(
+        self, episode_id: str, owner_id: str, segment_id: str | None
+    ) -> None:
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT owner_id,revision FROM rl_phase_bindings WHERE episode_id=?",
+                    (episode_id,),
+                ).fetchone()
+                if row is not None and row["owner_id"] != owner_id:
+                    raise ValueError("phase belongs to a different execution owner")
+                if segment_id is not None:
+                    segment = self.get_segment(segment_id)
+                    episode = self.get_episode(episode_id)
+                    if (
+                        segment is None
+                        or segment.episode_id != episode_id
+                        or segment.status != "open"
+                    ):
+                        raise ValueError(
+                            "only an open phase in this episode can be resumed"
+                        )
+                    if episode is None or episode.status != "running":
+                        raise ValueError("phase resume requires a running episode")
+                    info = segment.metadata.get("openai4s.segment", {})
+                    if not info.get("persistent") or info.get("owner_id") != owner_id:
+                        raise ValueError("phase belongs to a different execution owner")
+                revision = int(row["revision"] + 1) if row is not None else 1
+                self._connection.execute(
+                    "INSERT INTO rl_phase_bindings(episode_id,owner_id,segment_id,revision) VALUES(?,?,?,?) "
+                    "ON CONFLICT(episode_id) DO UPDATE SET owner_id=excluded.owner_id,segment_id=excluded.segment_id,revision=excluded.revision",
+                    (episode_id, owner_id, segment_id, revision),
+                )
+                self._connection.execute("COMMIT")
+            except BaseException:
+                self._connection.execute("ROLLBACK")
+                raise
+
+    def active_phase(self, episode_id: str, owner_id: str) -> Segment | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT owner_id,segment_id FROM rl_phase_bindings WHERE episode_id=?",
+                (episode_id,),
+            ).fetchone()
+            if row is None or row["segment_id"] is None:
+                return None
+            if row["owner_id"] != owner_id:
+                raise ValueError("phase belongs to a different execution owner")
+            segment = self.get_segment(row["segment_id"])
+            return segment if segment is not None and segment.status == "open" else None
+
+    def join_active_phase(
+        self, episode_id: str, owner_id: str, decision_id: str
+    ) -> str | None:
+        """Append one membership per phase/decision, never duplicate execution."""
+        with self._lock:
+            phase = self.active_phase(episode_id, owner_id)
+            leaf = phase.segment_id if phase else None
+            while phase is not None:
+                event_id = f"{phase.segment_id}:decision:{decision_id}"
+                row = self._connection.execute(
+                    "SELECT payload FROM rl_execution_events WHERE event_id=?",
+                    (event_id,),
+                ).fetchone()
+                if row is None:
+                    self.append_execution_event(
+                        ExecutionEvent(
+                            event_id,
+                            episode_id,
+                            "segment.decision_joined",
+                            self._clock_ms(),
+                            decision_id=decision_id,
+                            segment_id=phase.segment_id,
+                        )
+                    )
+                phase = (
+                    self.get_segment(phase.parent_segment_id)
+                    if phase.parent_segment_id
+                    else None
+                )
+            return leaf
 
     def ensure_episode(self, episode: Episode) -> Episode:
         """Return the durable Episode, creating it atomically when absent.
@@ -578,6 +676,13 @@ class RLRepository:
                         raise ValueError(
                             "parent segment must be open in the same episode"
                         )
+                if current is not None and segment.status != "open":
+                    child = self._connection.execute(
+                        "SELECT 1 FROM rl_segments WHERE parent_segment_id=? AND status='open' LIMIT 1",
+                        (segment.segment_id,),
+                    ).fetchone()
+                    if child is not None:
+                        raise ValueError("cannot close a segment with open children")
                 if current is None:
                     self._connection.execute(
                         "INSERT INTO rl_segments(segment_id,episode_id,status,created_at,parent_segment_id,payload) "
@@ -599,6 +704,31 @@ class RLRepository:
                             _payload(segment.to_dict()),
                             segment.segment_id,
                         ),
+                    )
+                info = segment.metadata.get("openai4s.segment", {})
+                if isinstance(info, Mapping) and info.get("persistent"):
+                    owner = info.get("owner_id")
+                    binding = self._connection.execute(
+                        "SELECT * FROM rl_phase_bindings WHERE episode_id=?",
+                        (segment.episode_id,),
+                    ).fetchone()
+                    if not isinstance(owner, str) or not owner:
+                        raise ValueError("persistent phase requires an execution owner")
+                    if binding is not None and binding["owner_id"] != owner:
+                        raise ValueError("phase belongs to a different execution owner")
+                    active_id = binding["segment_id"] if binding else None
+                    if segment.status == "open":
+                        if active_id not in {None, segment.parent_segment_id}:
+                            raise ValueError("another phase is active")
+                        next_id = segment.segment_id
+                    else:
+                        if active_id != segment.segment_id:
+                            raise ValueError("only the active phase can close")
+                        next_id = segment.parent_segment_id
+                    self._connection.execute(
+                        "INSERT INTO rl_phase_bindings(episode_id,owner_id,segment_id,revision) VALUES(?,?,?,1) "
+                        "ON CONFLICT(episode_id) DO UPDATE SET segment_id=excluded.segment_id,revision=revision+1",
+                        (segment.episode_id, owner, next_id),
                     )
                 stored_event = self._append_event_unlocked(event)
                 self._connection.execute("COMMIT")

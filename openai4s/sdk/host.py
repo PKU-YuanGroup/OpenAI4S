@@ -481,6 +481,7 @@ class _Segment:
         self._call = call
         self._spec = dict(spec)
         self._record: dict[str, Any] | None = None
+        self._closed = False
 
     def __enter__(self) -> "_Segment":
         self._record = self._call("rl_segment_start", [self._spec])
@@ -529,18 +530,28 @@ class _Segment:
             raise RuntimeError("segment is not active")
         return str(self._record["episode_id"])
 
+    def close(self, status: str = "completed", *, error: str | None = None) -> dict:
+        result = self._call(
+            "rl_segment_close",
+            [
+                {
+                    "segment_id": self.segment_id,
+                    "episode_id": self.episode_id,
+                    "status": status,
+                    "error": error,
+                }
+            ],
+        )
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(str(result["error"]))
+        self._closed = True
+        return result
+
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
-        if self._record is not None:
-            self._call(
-                "rl_segment_close",
-                [
-                    {
-                        "segment_id": self.segment_id,
-                        "episode_id": self.episode_id,
-                        "status": "failed" if exc_type else "completed",
-                        "error": str(exc_value) if exc_value else None,
-                    }
-                ],
+        if self._record is not None and not self._closed:
+            self.close(
+                "failed" if exc_type else "completed",
+                error=str(exc_value) if exc_value else None,
             )
         return False
 
@@ -712,6 +723,49 @@ class _Host:
                 "parent_segment_id": parent_segment_id,
             },
         )
+
+    def begin_segment(
+        self,
+        name: str,
+        *,
+        segment_id: str | None = None,
+        objective: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        parent_segment_id: str | None = None,
+        episode_id: str | None = None,
+    ) -> _Segment:
+        """Begin an explicit phase that remains active across policy decisions."""
+        handle = _Segment(
+            self._call,
+            {
+                "name": name,
+                "segment_id": segment_id,
+                "objective": objective,
+                "metadata": metadata or {},
+                "parent_segment_id": parent_segment_id,
+                "episode_id": episode_id,
+                "persistent": True,
+            },
+        )
+        return handle.__enter__()
+
+    def resume_segment(
+        self, segment_id: str, *, episode_id: str | None = None
+    ) -> _Segment:
+        """Validate and attach an existing open phase; never replay its work."""
+        handle = _Segment(self._call, {})
+        handle._record = self._call(
+            "rl_segment_resume",
+            [
+                {
+                    "segment_id": segment_id,
+                    "episode_id": episode_id,
+                }
+            ],
+        )
+        if isinstance(handle._record, dict) and "error" in handle._record:
+            raise RuntimeError(str(handle._record["error"]))
+        return handle
 
     # --- artifacts / data discovery --------------------------------------
     def artifacts(self, **filters: Any) -> dict:

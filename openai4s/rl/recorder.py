@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 import time
+import uuid
 from dataclasses import replace
 from typing import Any, Iterable, TypeVar
 
@@ -53,6 +54,7 @@ class TrajectoryRecorder:
             else:
                 repository.append_episode(episode)
         self.episode = episode
+        self.owner_id = "rl-owner-" + uuid.uuid4().hex
         self._lock = threading.RLock()
         self._observations: dict[str, Observation] = {}
         self._decisions: dict[str, PolicyDecision] = {}

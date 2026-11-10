@@ -145,7 +145,18 @@ class TrajectoryEventSink:
         base = f"decision-{turn}"
         return f"{self.id_prefix}:{base}" if self.id_prefix else base
 
+    @property
+    def owner_id(self) -> str:
+        return self.recorder.owner_id
+
     def segment_id(self, turn: int) -> str | None:
+        repository = self.recorder.repository
+        if repository is not None:
+            phase = repository.active_phase(
+                self.recorder.episode.episode_id, self.owner_id
+            )
+            if phase is not None:
+                return str(phase.segment_id)
         return self._action_segments.get(turn)
 
     def _record_id(self, kind: str, turn: int) -> str:
@@ -191,6 +202,13 @@ class TrajectoryEventSink:
                 self._turn_started_ns[event.turn] = self.clock_ns()
         elif isinstance(event, ActionRouted):
             self._record_decision(event.turn, event.action)
+            phase_id = None
+            if self.recorder.repository is not None:
+                phase_id = self.recorder.repository.join_active_phase(
+                    self.recorder.episode.episode_id,
+                    self.owner_id,
+                    self.decision_id(event.turn),
+                )
             if event.action is not None:
                 segment = Segment(
                     segment_id=f"{self.recorder.episode.episode_id}:inferred:{self.decision_id(event.turn)}",
@@ -219,7 +237,7 @@ class TrajectoryEventSink:
                     created_at=self.recorder.now_ms(),
                     decision_id=self.decision_id(event.turn),
                     payload={"action": _action(event.action)},
-                    segment_id=self._action_segments.get(event.turn),
+                    segment_id=phase_id or self._action_segments.get(event.turn),
                 )
             )
         elif isinstance(event, OutcomeProduced):

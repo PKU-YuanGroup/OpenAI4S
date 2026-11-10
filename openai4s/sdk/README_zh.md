@@ -23,6 +23,13 @@ R 分析 worker 从不导入本包，那边也没有 `host` 单例。
 | [`host.py`](host.py) | 公开的 `host.*` 门面。最上面是严格的 wire 编解码，负责 snake_case 与 camelCase 之间的映射。它下面是 skills/query/lineage/endpoints/credentials/MCP/environments/science/compute 等命名空间，文件、网络、委派与会话辅助方法，以及 `host.submit_output`。`materialise_artifact` 把另一个 session 的某个版本取进来，作为**本** session 自己的 Artifact，并留下一条指回来源的血缘边，这样即便来源 session 之后被删掉，基于它的分析仍然有可解析的溯源；`save_artifact(source=...)` 则带上检索时的来源信封——数据库、确切的请求、抓取时刻、返回字节的哈希——正是它把「一个保存下来的文件」和「一份证据」区分开。网络辅助方法新增了 HEAD 探测、`user_agent` 覆盖和 `web_download`，因为需要其中任何一项的 Skill 之前都改用裸 `urllib`——那样的请求既不受出网允许名单约束，也不经过 SSRF 防护。`web_search` 在配置了 Agent Plan key 时走豆包，否则走兜底引擎，并在 `source` 里报告用的是哪个。模型后端 bring-up 面新增了 `accelerator_status`——分开报告本地 GPU 与 SSH 远端 GPU 注册，因为看得见硬件并不代表某个仓库、环境、checkpoint 或 canary 已通过准入——以及 `stage_model_asset`，它只把用户提供的本地 checkpoint 导入进来，并不做准入。 |
 | [`judgment.py`](judgment.py) | Worker 侧 `host.judge(template, state, **params)` 签名。它发出一次 host_call，并拒绝直接传入问题列表，这样 cell 代码就不能绕过模板注册表。 |
 
+## 科学阶段
+
+`with host.segment(name)` 仍是 lexical 阶段。跨多个 Cell/PolicyDecision 的阶段使用
+`phase = host.begin_segment(name, segment_id=...)`，在后续 Cell 调用 `phase.observe(...)`、
+`phase.set_output(...)` 和 `phase.close()`。`host.resume_segment(id)` 只连接当前运行 owner
+的已有 open phase。这些接口只记录事实，不计算 Reward 或声明科学成功。
+
 ## RPC 与完成契约
 
 - 每次调用都在 Python Cell 内阻塞。即使用户代码自己起了线程，worker 的 Host-call 事务锁也只允许一个请求同时在飞。

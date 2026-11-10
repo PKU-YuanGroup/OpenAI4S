@@ -43,8 +43,9 @@ cp -a ~/.openai4s ~/.openai4s-before-0.3.1
 
 容器镜像把数据放在 `/data`（`OPENAI4S_DATA_DIR=/data`），也就是 `compose.yaml` 里名为 `openai4s-data` 的命名卷，或 `deploy/kubernetes.yaml` 里名为 `openai4s-data` 的 PersistentVolumeClaim。请先停止容器（或把 Deployment 缩容到 0），备份这个卷或 PVC，再启动 0.3.1 的镜像。
 
-当前开发代码树打开的是 schema **41**。第 36 到 41 步是加法迁移，增加 RL trajectory
-snapshot、budget 和 resource-admission 记录，接在 0.3.1 的 schema 35 边界之后执行。
+当前开发代码树打开的是 schema **42**。第 36 到 42 步是加法迁移，增加 RL trajectory
+snapshot、budget、resource-admission 和带 owner 校验的持久化阶段记录，接在 0.3.1 的
+schema 35 边界之后执行。
 
 ### 备份后安装 0.3.1
 

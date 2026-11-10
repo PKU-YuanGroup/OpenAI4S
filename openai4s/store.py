@@ -1730,6 +1730,7 @@ class Store:
                         "rl_resource_admission",
                         self._apply_rl_resource_admission,
                     ),
+                    42: ("rl_phase_bindings", self._apply_rl_phase_bindings),
                 },
             )
             if report["migrated"]:
@@ -1765,6 +1766,11 @@ class Store:
     def _apply_rl_budget_ledger(self, conn: sqlite3.Connection) -> None:
         """Version 40: durable RL budget and receipt-bound allocations."""
         create_rl_budget_schema(conn)
+
+    def _apply_rl_phase_bindings(self, conn: sqlite3.Connection) -> None:
+        from openai4s.storage.rl import create_rl_phase_schema
+
+        create_rl_phase_schema(conn)
 
     def _apply_rl_resource_admission(self, conn: sqlite3.Connection) -> None:
         """Version 41: durable RL resource admission snapshots."""
