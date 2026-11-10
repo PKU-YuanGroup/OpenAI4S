@@ -12,7 +12,8 @@ Host Segment 接口只记录 observation 和产物证据。Reward Annotation 必
 Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 
 `verifier.py` 定义与 Provider 无关的 `RewardVerifier` 协议和 `apply_verifier()`。
-它在追加带版本 Annotation 前校验 Verifier 身份、Episode 范围和执行事实不变。
+它在追加带版本 Annotation 前校验 Verifier 身份、Episode 范围、decision/segment
+关联、durable evidence 引用和执行事实不变。
 
 `snapshot.py` 定义 `DatasetSnapshot`：它要求 Episode 终态、固定完整轨迹哈希和事件
 序号边界，用于冻结训练导出视图；它不复制或改写轨迹记录。

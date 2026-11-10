@@ -134,8 +134,9 @@ the trajectory and never resolves a mutable Artifact head or fabricates a cost.
 `verifier_version`, `created_at`, optional decision/segment joins, numeric
 `components`, JSON `metadata`, `evidence_refs`, an optional `confidence` in
 `[0, 1]`, and a `source` label. Multiple verifier versions may annotate the
-same episode. `apply_verifier()` checks the verifier identity and episode
-scope, then appends these annotations without changing execution events.
+same episode. `apply_verifier()` checks the verifier identity, Episode scope,
+decision/segment joins, and that every evidence reference names a durable
+trajectory fact before appending without changing execution events.
 
 `CostRecord` stores measured resource evidence: `cost_id`, `episode_id`,
 `created_at`, optional prompt/completion tokens, wall/GPU milliseconds, an

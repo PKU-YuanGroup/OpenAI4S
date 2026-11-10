@@ -81,7 +81,8 @@ Artifact head，也不伪造成本。
 
 `RewardAnnotation` 是独立产生的分数，包含 verifier 与版本、数值、组件、元数据、
 `evidence_refs`、可选的 `[0, 1]` `confidence` 和 `source`。同一 Episode 可以有多个
-verifier 版本。`apply_verifier()` 校验 verifier 身份与 Episode 范围，然后追加 Annotation，
+verifier 版本。`apply_verifier()` 校验 verifier 身份、Episode 范围、decision/segment
+关联，并确认每个 evidence reference 都指向轨迹中的 durable 事实，然后追加 Annotation，
 不改变执行事件。
 
 `CostRecord` 保存测得的 token、wall/GPU 时间及可选价格。未知价格保持未知，不把缺失计数

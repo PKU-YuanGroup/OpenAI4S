@@ -15,8 +15,9 @@ annotations are written by a trusted verifier or trainer; the Agent has no
 self-scoring Host API.
 
 `verifier.py` defines the provider-neutral `RewardVerifier` protocol and
-`apply_verifier()`. It validates verifier identity, episode scope and
-append-only execution facts before adding versioned annotations.
+`apply_verifier()`. It validates verifier identity, episode scope, decision /
+segment joins, durable evidence references, and append-only execution facts
+before adding versioned annotations.
 
 `snapshot.py` defines `DatasetSnapshot`, a terminal, content-addressed view
 that freezes the full trajectory hash and event sequence boundary for a
