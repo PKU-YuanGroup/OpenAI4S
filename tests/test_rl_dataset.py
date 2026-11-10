@@ -175,6 +175,7 @@ def test_dataset_jsonl_is_deterministic_and_streamable():
         "decision-0",
         "decision-1",
     ]
+    assert list(dataset.iter_jsonl()) == dataset.jsonl().splitlines()
     assert dataset.jsonl() == dataset.jsonl()
     assert len(dataset.sha256()) == 64
 

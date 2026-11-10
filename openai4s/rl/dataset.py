@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 from .models import (
     CostRecord,
@@ -305,6 +306,11 @@ class RolloutDataset:
     def jsonl(self) -> str:
         """Return a deterministic stream envelope followed by one sample/line."""
 
+        return "\n".join(self.iter_jsonl()) + "\n"
+
+    def iter_jsonl(self) -> Iterator[str]:
+        """Yield the deterministic JSONL envelope and samples one line at a time."""
+
         header = {
             "type": "dataset",
             "schema_version": self.schema_version,
@@ -315,12 +321,9 @@ class RolloutDataset:
             "episode_rewards": [dict(reward) for reward in self.episode_rewards],
             "episode_costs": [dict(cost) for cost in self.episode_costs],
         }
-        lines = [_canonical(header)]
-        lines.extend(
-            _canonical({"type": "sample", **sample.to_dict()})
-            for sample in self.samples
-        )
-        return "\n".join(lines) + "\n"
+        yield _canonical(header)
+        for sample in self.samples:
+            yield _canonical({"type": "sample", **sample.to_dict()})
 
 
 __all__ = ["RolloutDataset", "SCHEMA_VERSION", "TrainingSample"]
