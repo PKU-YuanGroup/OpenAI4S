@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -551,14 +552,25 @@ def _data_dir(cfg: Any) -> Check:
             facts,
         )
     probe = target if target.exists() else target.parent
-    if probe.exists() and not os.access(probe, os.W_OK | os.X_OK):
-        return Check(
-            "data",
-            FAIL,
-            f"{probe} is not writable by this user",
-            remedy,
-            facts,
-        )
+    if probe.exists():
+        try:
+            mode = probe.stat().st_mode
+        except OSError:
+            mode = 0
+        # ``os.access`` answers whether the current process (including root)
+        # could bypass mode bits. Doctor reports whether the configured
+        # directory is explicitly writable for a normal daemon identity, so a
+        # mode such as 0500 must still be diagnosed as unwritable in a root-run
+        # test/container.
+        has_write_bit = bool(mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+        if not has_write_bit or not os.access(probe, os.W_OK | os.X_OK):
+            return Check(
+                "data",
+                FAIL,
+                f"{probe} is not writable by this user",
+                remedy,
+                facts,
+            )
     db_path = getattr(cfg, "db_path", None)
     if db_path is not None:
         from openai4s.storage.migrations import FutureSchemaError, preflight_schema
