@@ -20,8 +20,9 @@ Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 
 `dataset.py` 定义 `RolloutDataset` 和 `TrainingSample`。这个适配器把一个明确的
 Snapshot 与每个 PolicyDecision 的训练样本关联起来，分别保留 Decision、Segment 和
-Episode Reward Annotation，并提供确定性的 JSON 与流式 JSONL 导出；它不选择
-Advantage Estimator。
+Episode Reward Annotation，并把按 Decision 关联的 immutable ExecutionEvent 快照
+连同稳定的事件 ID 一起写入样本。确定性的 JSON 与流式 JSONL 在 Trainer 边界上自包含；
+它不选择 Advantage Estimator。
 
 `policy.py` 定义 `PolicyProvider` 和 `PolicyAdapter`。Adapter 把 behavior policy 身份
 和采样配置写入 `ModelReply.extra`；缺失的 logprob 保持缺失，不在采样后估算。

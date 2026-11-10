@@ -25,8 +25,10 @@ training export. It does not copy or rewrite trajectory records.
 
 `dataset.py` defines `RolloutDataset` and `TrainingSample`. The adapter joins
 one explicit snapshot to one sample per PolicyDecision, keeps decision,
-segment, and episode reward annotations separate, and emits deterministic
-JSON or streaming JSONL without choosing an advantage estimator.
+segment, and episode reward annotations separate, and includes the immutable
+execution-event snapshots joined to each decision (with their stable event
+IDs). Deterministic JSON or streaming JSONL is self-contained at the Trainer
+boundary and does not choose an advantage estimator.
 
 `policy.py` defines `PolicyProvider` and `PolicyAdapter`. The adapter records
 the behavior policy identity and sampling configuration in `ModelReply.extra`;

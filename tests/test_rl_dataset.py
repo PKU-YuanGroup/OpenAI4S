@@ -177,6 +177,12 @@ def test_dataset_jsonl_is_deterministic_and_streamable():
         "decision-0",
         "decision-1",
     ]
+    assert lines[1]["execution_event_ids"] == ["event-1"]
+    assert lines[1]["execution_events"] == [
+        recorder.snapshot().execution_events[0].to_dict()
+    ]
+    assert lines[2]["execution_event_ids"] == ["event-2"]
+    assert lines[2]["execution_events"][0]["event_id"] == "event-2"
     assert list(dataset.iter_jsonl()) == dataset.jsonl().splitlines()
     assert dataset.jsonl() == dataset.jsonl()
     assert len(dataset.sha256()) == 64

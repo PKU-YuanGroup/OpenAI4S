@@ -208,12 +208,15 @@ silently consume a changed reward view.
 
 `RolloutDataset` is the trainer-facing projection at that boundary. It emits
 one `TrainingSample` per PolicyDecision, carrying the exact Observation and
-Decision plus joined Segment IDs, ExecutionEvent IDs, decision/segment reward
-annotations, and decision costs. Episode-level annotations and costs remain in the
-dataset envelope instead of being copied onto every decision; segment-level
-annotations without an exact decision join remain in the envelope's
-`segment_rewards`. A caller may
-select one verifier/version pair; omitting that selector preserves all
-versioned annotations. JSONL starts with a dataset envelope and then streams
-one sample per line. The adapter never aggregates rewards, computes
-advantages, or fills missing token/logprob evidence.
+Decision plus joined Segment IDs, ExecutionEvent IDs, immutable
+`execution_events` snapshots, decision/segment reward annotations, and
+decision costs. The event IDs remain stable join keys, while the snapshots
+make each JSONL sample self-contained; a Trainer does not need to re-read the
+Science Trajectory to inspect an event. Episode-level annotations and costs
+remain in the dataset envelope instead of being copied onto every decision;
+segment-level annotations without an exact decision join remain in the
+envelope's `segment_rewards`. A caller may select one verifier/version pair;
+omitting that selector preserves all versioned annotations. JSONL starts with
+a dataset envelope and then streams one sample per line. The adapter never
+aggregates rewards, computes advantages, or fills missing token/logprob
+evidence.
