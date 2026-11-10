@@ -147,6 +147,8 @@ def _evidence_ids(trajectory: Trajectory) -> set[str]:
                 visit(child)
 
     for event in trajectory.execution_events:
+        if event.source_id:
+            result.add(event.source_id)
         visit(event.payload)
     return result
 
