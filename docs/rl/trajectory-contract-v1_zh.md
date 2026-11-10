@@ -33,11 +33,14 @@ segments、execution_events、rewards、costs 顺序写出，每行使用单数 
 
 `Observation` 是一次 decision 前实际提供的、脱离运行状态的消息上下文，包含
 `observation_id`、`decision_id`、消息、时间、来源及截断标记。
+它还可以包含提供给 policy 的脱离运行状态的 `tools` 投影；旧的持久化 Observation
+可以省略这个可选字段。
 
 `PolicyDecision` 是一次 policy sampling 边界，包含 observation 关联、prompt hash、
 规范化 action、policy 身份和可选的 `parent_decision_id`、`frame_id`、
 `action_group_id`。外部 sampler 提供时，`token_ids`、`token_logprobs`、`loss_mask` 和
 `action_logprob` 会被保留并校验长度与有限值；运行时不会重新计算这些 telemetry。
+可选的 `prompt_token_ids` 和 `sampling_config` 也会按 sampler 提供的值保留。
 
 可选的 `PolicyAdapter` 是外部 sampler 的 provider-neutral 边界。它把配置的 behavior
 `policy_name`、`policy_version` 和 `sampling_config` 写入 `ModelReply.extra`，并覆盖

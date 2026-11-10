@@ -140,12 +140,21 @@ class TrajectoryEventSink:
         return f"{self.id_prefix}:{base}" if self.id_prefix else base
 
     def propose(self, turn: int, messages: Iterable[Mapping[str, Any]]) -> Observation:
+        return self.propose_with_tools(turn, messages, ())
+
+    def propose_with_tools(
+        self,
+        turn: int,
+        messages: Iterable[Mapping[str, Any]],
+        tools: Iterable[Mapping[str, Any]],
+    ) -> Observation:
         observation = Observation(
             observation_id=self._record_id("obs", turn),
             episode_id=self.recorder.episode.episode_id,
             decision_id=self.decision_id(turn),
             messages=[dict(message) for message in messages],
             created_at=self.recorder.now_ms(),
+            tools=[dict(tool) for tool in tools],
         )
         self._observations[turn] = self.recorder.add_observation(observation)
         return observation
@@ -247,6 +256,7 @@ class TrajectoryEventSink:
         extra.setdefault("rl_episode_id", self.recorder.episode.episode_id)
         extra.setdefault("rl_decision_id", self.decision_id(turn))
         token_ids = extra.get("token_ids")
+        prompt_token_ids = extra.get("prompt_token_ids")
         token_logprobs = extra.get("token_logprobs")
         loss_mask = extra.get("loss_mask")
         raw_response = reply.raw if isinstance(reply.raw, Mapping) else None
@@ -272,6 +282,8 @@ class TrajectoryEventSink:
                 raw_response=raw_response,
                 status="dispatched",
                 assistant_message=reply.assistant_message,
+                prompt_token_ids=prompt_token_ids,
+                sampling_config=extra.get("sampling_config", {}),
             )
         )
 

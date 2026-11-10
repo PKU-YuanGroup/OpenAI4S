@@ -12263,7 +12263,9 @@ class SessionRunner:
             completion=CompletionSignal(
                 lambda: getattr(st.dispatcher, "last_output", None)
             ),
-            tool_schema_provider=lambda state: model_tools(state.messages),
+            tool_schema_provider=lambda state: (
+                model_tools(state.messages) if callable(model_tools) else model_tools
+            ),
             max_turns=max_turns,
         )
         from openai4s.agent.ledger import restore_progress_circuit

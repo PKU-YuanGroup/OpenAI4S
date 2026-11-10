@@ -41,6 +41,44 @@ def test_agent_events_export_policy_decision_and_execution_facts() -> None:
     assert trajectory.costs == ()
 
 
+def test_agent_sink_persists_tool_projection_and_sampling_evidence() -> None:
+    recorder = TrajectoryRecorder(Episode("ep-evidence", "task", "session", 1))
+
+    class _ToolExecutor(_Executor):
+        def policy_tools(self, messages):
+            return (
+                {
+                    "name": "inspect",
+                    "description": "Inspect",
+                    "input_schema": {"type": "object"},
+                },
+            )
+
+    class _Policy:
+        def complete(self, messages, on_delta):
+            return ModelReply(
+                content="done",
+                extra={
+                    "prompt_token_ids": [3, 4],
+                    "token_ids": [5, 6],
+                    "sampling_config": {"temperature": 0.4},
+                },
+            )
+
+    engine = AgentEngine(
+        _Policy(),
+        _ToolExecutor(),
+        event_sink=TrajectoryEventSink(recorder),
+        max_turns=1,
+    )
+    engine.run(RunState([{"role": "user", "content": "go"}], max_turns=1))
+    trajectory = recorder.snapshot()
+    assert trajectory.observations[0].tools[0]["name"] == "inspect"
+    assert trajectory.decisions[0].prompt_token_ids == (3, 4)
+    assert trajectory.decisions[0].token_ids == (5, 6)
+    assert trajectory.decisions[0].sampling_config == {"temperature": 0.4}
+
+
 def test_agent_sink_records_authenticated_reply_token_cost_without_pricing() -> None:
     recorder = TrajectoryRecorder(Episode("ep-cost", "task", "session", 1))
     sink = TrajectoryEventSink(recorder)

@@ -151,10 +151,17 @@ class RolloutSession:
                 prepared = self.observe()
         else:
             prepared = tuple(dict(message) for message in observation)
+        prepared_tools = (
+            tuple(self._pending_tools)
+            if self._pending_observation_turn == state.turn
+            else None
+        )
         self._pending_observation = None
         self._pending_observation_turn = None
         self._pending_tools = ()
-        result = self.engine.step(state, reply, observation=prepared)
+        result = self.engine.step(
+            state, reply, observation=prepared, tools=prepared_tools
+        )
         if result.terminal:
             self._emit_finished(result)
         return result

@@ -159,6 +159,7 @@ class AgentEngine:
         sampled_reply: ModelReply | Mapping[str, Any] | None = None,
         *,
         observation: Iterable[Mapping[str, Any]] | None = None,
+        tools: Iterable[Mapping[str, Any]] | None = None,
     ) -> EngineStep:
         """Execute one decision using the built-in or an external policy.
 
@@ -217,7 +218,15 @@ class AgentEngine:
         )
         state.messages[:] = [dict(message) for message in prepared]
         decision_hook = getattr(self.event_sink, "propose", None)
-        if callable(decision_hook):
+        prepared_tools = (
+            self.prepare_tools(state)
+            if tools is None
+            else tuple(_detach_tool_spec(tool) for tool in tools)
+        )
+        detailed_decision_hook = getattr(self.event_sink, "propose_with_tools", None)
+        if callable(detailed_decision_hook):
+            detailed_decision_hook(turn, prepared, prepared_tools)
+        elif callable(decision_hook):
             decision_hook(turn, prepared)
 
         def on_delta(text: str) -> None:

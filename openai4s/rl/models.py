@@ -176,6 +176,8 @@ class PolicyDecision:
     raw_response: Mapping[str, Any] | None = None
     status: str = "sampled"
     assistant_message: Mapping[str, Any] | None = None
+    prompt_token_ids: tuple[int, ...] | list[int] | None = None
+    sampling_config: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -200,6 +202,11 @@ class PolicyDecision:
             self, "token_logprobs", _tuple_floats("token_logprobs", self.token_logprobs)
         )
         object.__setattr__(self, "loss_mask", _tuple_ints("loss_mask", self.loss_mask))
+        object.__setattr__(
+            self,
+            "prompt_token_ids",
+            _tuple_ints("prompt_token_ids", self.prompt_token_ids),
+        )
         if self.token_logprobs is not None and self.token_ids is not None:
             if len(self.token_logprobs) != len(self.token_ids):
                 raise ValueError("token_ids and token_logprobs must have equal length")
@@ -214,6 +221,7 @@ class PolicyDecision:
             object.__setattr__(
                 self, "assistant_message", _payload(self.assistant_message)
             )
+        object.__setattr__(self, "sampling_config", _payload(self.sampling_config))
         _text("status", self.status)
 
     def to_dict(self) -> dict[str, Any]:
@@ -241,6 +249,12 @@ class PolicyDecision:
                 dict(self.raw_response) if self.raw_response is not None else None
             ),
             "status": self.status,
+            "prompt_token_ids": (
+                list(self.prompt_token_ids)
+                if self.prompt_token_ids is not None
+                else None
+            ),
+            "sampling_config": dict(self.sampling_config),
         }
         if self.assistant_message is not None:
             data["assistant_message"] = _payload(self.assistant_message)
@@ -256,6 +270,7 @@ class Observation:
     created_at: int
     source: str = "agent_context"
     truncated: bool = False
+    tools: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]] = ()
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -272,6 +287,9 @@ class Observation:
         object.__setattr__(self, "messages", normalized)
         if not isinstance(self.truncated, bool):
             raise TypeError("truncated must be a bool")
+        if not isinstance(self.tools, (tuple, list)):
+            raise TypeError("tools must be a list or tuple")
+        object.__setattr__(self, "tools", tuple(_payload(tool) for tool in self.tools))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -282,6 +300,7 @@ class Observation:
             "created_at": self.created_at,
             "source": self.source,
             "truncated": self.truncated,
+            "tools": [dict(tool) for tool in self.tools],
         }
 
 

@@ -59,6 +59,10 @@ child episode with its own ID namespace; its parent relationship is explicit.
 decision. It contains `observation_id`, `episode_id`, `decision_id`, `messages`,
 `created_at`, `source`, and `truncated`.
 
+An Observation also carries the detached `tools` projection that was
+available to the policy. Older stored observations may omit this optional
+field.
+
 `PolicyDecision` is one policy sampling boundary. It contains
 `decision_id`, `episode_id`, `turn`, `observation_id`, `prompt_hash`, policy
 identity, the normalized `action`, `created_at`, and optional joins:
@@ -67,6 +71,8 @@ sampler supplied them, `token_ids`, `token_logprobs`, `loss_mask`, and
 `action_logprob` are preserved with length and finite-value checks. The raw
 provider response and assistant message are optional JSON evidence. Token
 telemetry is evidence from the sampler; the runtime does not recalculate it.
+Optional `prompt_token_ids` and `sampling_config` are retained as supplied by
+the sampler.
 
 `PolicyAdapter` is the optional provider-neutral boundary for external
 samplers. It writes the configured behavior `policy_name`, `policy_version`,
