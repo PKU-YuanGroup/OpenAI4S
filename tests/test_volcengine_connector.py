@@ -66,7 +66,7 @@ def _fake_arkcli(tmp_path):
                 print(json.dumps(value, separators=(",", ":")))
 
             if args == ["--version"]:
-                print("arkcli 1.0.15")
+                print("arkcli 1.0.46")
             elif args[:2] == ["auth", "whoami"]:
                 emit({"logged_in": True, "auth_method": "sso", "name": "Alice",
                       "project_name": "default", "region": "cn-beijing"})
@@ -85,7 +85,7 @@ def _fake_arkcli(tmp_path):
             elif args[:3] == ["profile", "models", "list"]:
                 emit({"resources": {"text": {
                     "default": "doubao-seed-2-0-pro-260215"}}})
-            elif args[:3] == ["profile", "keys", "list"]:
+            elif args[:3] == ["profile", "apikey", "list"]:
                 emit({"default_api_key": "392****dab0"})
             elif args[:3] == ["profile", "keys", "refresh"]:
                 emit({"ok": True})
@@ -157,19 +157,36 @@ def test_proxy_environment_variables_reach_the_arkcli_child():
     assert "OPENAI_API_KEY" not in child
 
 
-def test_bridge_matches_the_profile_default_before_getting_the_raw_key():
+@pytest.mark.parametrize(
+    "unsupported",
+    [
+        None,
+        CommandResult(
+            1,
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {
+                        "message": 'unknown subcommand "apikey" for "arkcli profile"\n'
+                        "run `arkcli profile --help` to see available subcommands",
+                    },
+                }
+            ),
+            "",
+        ),
+        CommandResult(1, "", 'Error: unknown command "apikey" for "arkcli profile"\n'),
+    ],
+    ids=["modern", "legacy-json", "legacy-stderr"],
+)
+def test_bridge_matches_the_profile_default_before_getting_the_raw_key(unsupported):
     profile = "agent-plan_cn-beijing"
     raw_key = "ark-live-secret-value"
+    profile_args = ("list", "--profile", profile, "--format", "json")
+    current = ("profile", "apikey", *profile_args)
+    legacy = ("profile", "keys", *profile_args)
+    selection = {"default_api_key": "392****dab0"}
     replies = {
-        (
-            "profile",
-            "keys",
-            "list",
-            "--profile",
-            profile,
-            "--format",
-            "json",
-        ): {"default_api_key": "392****dab0"},
+        current: unsupported if unsupported is not None else selection,
         (
             "api",
             "apikey.list",
@@ -199,13 +216,37 @@ def test_bridge_matches_the_profile_default_before_getting_the_raw_key():
             "json",
         ): {"Result": {"ApiKey": raw_key}},
     }
+    if unsupported is not None:
+        replies[legacy] = selection
     bridge, runner = _bridge(replies)
 
     assert bridge.default_api_key(profile) == raw_key
     assert bridge.api_key(profile, 9) == raw_key
     assert runner.calls[-1][1] == "apikey.get_raw"
-    assert not any(call[:3] == ("profile", "keys", "refresh") for call in runner.calls)
+    assert [call for call in runner.calls if call[0] == "profile"] == (
+        [current, legacy] if unsupported is not None else [current]
+    )
     assert all(raw_key not in " ".join(map(str, call)) for call in runner.calls)
+
+
+@pytest.mark.parametrize(
+    ("result", "code"),
+    [
+        (CommandResult(1, "", "AccessDenied"), "arkcli_failed"),
+        (CommandResult(1, "", "", timed_out=True), "arkcli_timeout"),
+        (CommandResult(0, "not JSON", ""), "arkcli_invalid_output"),
+    ],
+)
+def test_bridge_does_not_fall_back_on_key_list_failure(result, code):
+    profile = "platform_cn-beijing_default"
+    current = ("profile", "apikey", "list", "--profile", profile, "--format", "json")
+    bridge, runner = _bridge({current: result})
+
+    with pytest.raises(ArkCliError) as raised:
+        bridge.api_key_inventory(profile)
+
+    assert raised.value.code == code
+    assert runner.calls == [current]
 
 
 def test_bridge_refuses_to_guess_when_multiple_keys_do_not_match():
@@ -213,7 +254,7 @@ def test_bridge_refuses_to_guess_when_multiple_keys_do_not_match():
     replies = {
         (
             "profile",
-            "keys",
+            "apikey",
             "list",
             "--profile",
             profile,

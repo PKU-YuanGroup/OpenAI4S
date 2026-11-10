@@ -511,6 +511,16 @@ class ArkCliBridge:
                     "a Project selection",
                 )
             reason = _command_failure_detail(result)
+            if tuple(args[:3]) == ("profile", "apikey", "list") and re.match(
+                r"""^(?:error:\s*)?unknown (?:sub)?command ["']apikey["'] """
+                r"""for ["']arkcli profile["'](?:\s|$)""",
+                reason,
+                flags=re.IGNORECASE,
+            ):
+                raise ArkCliError(
+                    "arkcli_profile_apikey_unsupported",
+                    "This Ark CLI version does not support profile apikey",
+                )
             message = "Ark CLI could not complete the request"
             if reason:
                 message += f": {reason}"
@@ -711,7 +721,13 @@ class ArkCliBridge:
 
         if not _PROFILE_NAME.fullmatch(profile_name):
             raise ArkCliError("ark_profile_invalid", "Ark CLI profile name is invalid")
-        selected = self._json(("profile", "keys", "list", "--profile", profile_name))
+        profile_args = ("list", "--profile", profile_name)
+        try:
+            selected = self._json(("profile", "apikey", *profile_args))
+        except ArkCliError as error:
+            if error.code != "arkcli_profile_apikey_unsupported":
+                raise
+            selected = self._json(("profile", "keys", *profile_args))
         selected_map = _mapping(selected)
         masked = _text(
             _named(selected_map, "default_api_key", "defaultApiKey", "DefaultApiKey"),
