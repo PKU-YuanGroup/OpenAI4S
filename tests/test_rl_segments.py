@@ -236,3 +236,37 @@ def test_nested_segment_restores_parent_host_rpc_context(tmp_path) -> None:
         assert json.loads(host_rows[1][1])["segment_id"] == parent.segment_id
     finally:
         dispatcher.store.close()
+
+
+def test_segment_events_reject_unknown_or_closed_segments(tmp_path) -> None:
+    dispatcher = build_dispatcher(
+        Config(data_dir=tmp_path), frame_id="frame-segment-validation"
+    )
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        with host.segment("analysis") as segment:
+            pass
+
+        result = dispatcher(
+            "rl_segment_observe",
+            [
+                {
+                    "segment_id": segment.segment_id,
+                    "episode_id": segment.episode_id,
+                    "value": {"late": True},
+                }
+            ],
+        )
+        assert result == {"error": "segment is already completed"}
+        unknown = dispatcher(
+            "rl_segment_close",
+            [{"segment_id": "missing", "episode_id": segment.episode_id}],
+        )
+        assert unknown == {"error": "unknown segment 'missing'"}
+        count = dispatcher.store._conn.execute(
+            "SELECT COUNT(*) FROM rl_execution_events WHERE episode_id=?",
+            (segment.episode_id,),
+        ).fetchone()[0]
+        assert count == 2
+    finally:
+        dispatcher.store.close()

@@ -449,6 +449,16 @@ class RLRepository:
         )
 
     def append_segment(self, value: Segment) -> None:
+        if value.parent_segment_id is not None:
+            parent = self.get_segment(value.parent_segment_id)
+            if parent is None:
+                raise ValueError(
+                    f"parent segment {value.parent_segment_id!r} does not exist"
+                )
+            if parent.episode_id != value.episode_id:
+                raise ValueError("parent segment belongs to a different episode")
+            if parent.segment_id == value.segment_id:
+                raise ValueError("segment cannot be its own parent")
         self._append(
             "rl_segments",
             "segment_id",
@@ -460,6 +470,15 @@ class RLRepository:
                 "parent_segment_id": value.parent_segment_id,
             },
         )
+
+    def get_segment(self, segment_id: str) -> Segment | None:
+        """Return one durable segment projection for lifecycle validation."""
+        row = self._connection.execute(
+            "SELECT payload FROM rl_segments WHERE segment_id=?", (segment_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return _record_from_row(row, Segment)
 
     def append_execution_event(self, value: ExecutionEvent) -> ExecutionEvent:
         """Append an event while allocating its episode sequence atomically.

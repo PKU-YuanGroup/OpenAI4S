@@ -3577,6 +3577,15 @@ class HostDispatcher:
             str(context["decision_id"]) if context.get("decision_id") else None
         )
         now = int(time.time() * 1000)
+        parent_segment_id = (
+            str(spec["parent_segment_id"]) if spec.get("parent_segment_id") else None
+        )
+        if parent_segment_id:
+            parent = self.store.rl.get_segment(parent_segment_id)
+            if parent is None:
+                return {"error": f"unknown parent segment {parent_segment_id!r}"}
+            if parent.episode_id != episode_id:
+                return {"error": "parent segment belongs to a different episode"}
         episode = Episode(
             episode_id=episode_id,
             task=str(spec.get("episode_task") or "OpenAI4S rollout"),
@@ -3599,11 +3608,7 @@ class HostDispatcher:
                 objective=spec.get("objective"),
                 created_at=now,
                 decision_id=decision_id,
-                parent_segment_id=(
-                    str(spec["parent_segment_id"])
-                    if spec.get("parent_segment_id")
-                    else None
-                ),
+                parent_segment_id=(parent_segment_id),
                 metadata=spec.get("metadata") or {},
             )
             self.store.rl.append_segment(segment)
@@ -3657,12 +3662,21 @@ class HostDispatcher:
     def _m_rl_segment_event(self, spec: dict, kind: str, value: Any) -> dict:
         try:
             context = self._current_rl_context()
+            episode_id = self._rl_episode(spec.get("episode_id"))
+            segment_id = str(spec.get("segment_id") or "")
+            segment = self.store.rl.get_segment(segment_id)
+            if segment is None:
+                return {"error": f"unknown segment {segment_id!r}"}
+            if segment.episode_id != episode_id:
+                return {"error": "segment belongs to a different episode"}
+            if segment.status != "open":
+                return {"error": f"segment is already {segment.status}"}
             event = self.store.rl.append_execution_event(
                 ExecutionEvent(
                     event_id=str(
                         spec.get("event_id") or kind + ":" + uuid.uuid4().hex[:16]
                     ),
-                    episode_id=self._rl_episode(spec.get("episode_id")),
+                    episode_id=episode_id,
                     kind=kind,
                     created_at=int(time.time() * 1000),
                     decision_id=(
@@ -3673,7 +3687,7 @@ class HostDispatcher:
                     source_id=(
                         str(context["source_id"]) if context.get("source_id") else None
                     ),
-                    segment_id=str(spec.get("segment_id") or ""),
+                    segment_id=segment_id,
                     payload={"kind": spec.get("kind"), "value": value},
                 )
             )
@@ -3687,6 +3701,13 @@ class HostDispatcher:
         segment_id = str(spec.get("segment_id") or "")
         try:
             context = self._current_rl_context()
+            segment = self.store.rl.get_segment(segment_id)
+            if segment is None:
+                return {"error": f"unknown segment {segment_id!r}"}
+            if segment.episode_id != episode_id:
+                return {"error": "segment belongs to a different episode"}
+            if segment.status != "open" and segment.status != status:
+                return {"error": f"segment is already {segment.status}"}
             event = self.store.rl.append_execution_event(
                 ExecutionEvent(
                     event_id=f"{segment_id}:closed",
