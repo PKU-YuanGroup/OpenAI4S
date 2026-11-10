@@ -6,6 +6,8 @@ from openai4s.config import Config
 from openai4s.rl import (
     Episode,
     ExecutionEvent,
+    Observation,
+    PolicyDecision,
     RewardAnnotation,
     Segment,
     TrajectoryRecorder,
@@ -46,6 +48,46 @@ def test_rl_records_use_store_connection_and_survive_reopen(tmp_path) -> None:
         assert reopened.rl.get_receipt("request-1") == receipt
     finally:
         reopened.close()
+
+
+def test_rl_policy_inputs_survive_durable_trajectory_reload(tmp_path) -> None:
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    try:
+        recorder = TrajectoryRecorder(
+            Episode("ep-policy-inputs", "task", "session", 1),
+            repository=store.rl,
+        )
+        recorder.add_observation(
+            Observation(
+                "obs-policy-inputs",
+                "ep-policy-inputs",
+                "decision-policy-inputs",
+                [{"role": "user", "content": "run"}],
+                2,
+                tools=[{"name": "inspect", "input_schema": {"type": "object"}}],
+            )
+        )
+        recorder.add_decision(
+            PolicyDecision(
+                "decision-policy-inputs",
+                "ep-policy-inputs",
+                0,
+                "obs-policy-inputs",
+                "hash",
+                "policy",
+                "v1",
+                {"type": "code_cell"},
+                3,
+                prompt_token_ids=[1, 2],
+                sampling_config={"temperature": 0.4},
+            )
+        )
+        loaded = store.rl.load_trajectory("ep-policy-inputs")
+        assert loaded.observations[0].tools[0]["name"] == "inspect"
+        assert loaded.decisions[0].prompt_token_ids == (1, 2)
+        assert loaded.decisions[0].sampling_config == {"temperature": 0.4}
+    finally:
+        store.close()
 
 
 def test_rl_receipt_conflict_is_rejected_atomically(tmp_path) -> None:
