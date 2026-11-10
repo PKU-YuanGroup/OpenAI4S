@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from unittest import mock
@@ -77,6 +78,21 @@ def test_agent_sink_persists_tool_projection_and_sampling_evidence() -> None:
     assert trajectory.decisions[0].prompt_token_ids == (3, 4)
     assert trajectory.decisions[0].token_ids == (5, 6)
     assert trajectory.decisions[0].sampling_config == {"temperature": 0.4}
+
+
+def test_prompt_hash_includes_tools_without_changing_legacy_empty_tool_hash() -> None:
+    from openai4s.rl.agent_sink import _prompt_hash
+
+    messages = [{"role": "user", "content": "go"}]
+    legacy = hashlib.sha256(
+        json.dumps(
+            messages, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    assert _prompt_hash(messages) == legacy
+    assert _prompt_hash(messages, [{"name": "one"}]) != _prompt_hash(
+        messages, [{"name": "two"}]
+    )
 
 
 def test_agent_sink_records_authenticated_reply_token_cost_without_pricing() -> None:

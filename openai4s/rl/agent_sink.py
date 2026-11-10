@@ -85,9 +85,17 @@ def _action(value: Action | None) -> dict[str, Any]:
     raise TypeError(f"unsupported action {type(value)!r}")
 
 
-def _prompt_hash(messages: Iterable[Mapping[str, Any]]) -> str:
+def _prompt_hash(
+    messages: Iterable[Mapping[str, Any]],
+    tools: Iterable[Mapping[str, Any]] = (),
+) -> str:
+    message_values = list(messages)
+    tool_values = list(tools)
+    value: Any = message_values
+    if tool_values:
+        value = {"messages": message_values, "tools": tool_values}
     payload = json.dumps(
-        list(messages), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -267,7 +275,7 @@ class TrajectoryEventSink:
                 episode_id=self.recorder.episode.episode_id,
                 turn=turn,
                 observation_id=observation.observation_id,
-                prompt_hash=_prompt_hash(observation.messages),
+                prompt_hash=_prompt_hash(observation.messages, observation.tools),
                 policy_name=str(extra.get("policy_name", self.policy_name)),
                 policy_version=str(extra.get("policy_version", self.policy_version)),
                 action=_action(action),
