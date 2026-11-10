@@ -182,6 +182,22 @@ def test_restart_reconciles_terminal_compute_rows_before_new_submits(cfg):
     assert admission.get("job-restart").state == "completed"
 
 
+def test_restart_settles_receipt_bound_reservation_without_inventing_time(cfg):
+    admission = ResourceAdmission(ResourceCapacity(1, 0, 0), clock_ms=lambda: 100)
+    store = get_store(cfg.db_path)
+    store.create_compute_job(
+        job_id="job-bound", provider="ssh:lab", status=states.RUNNING
+    )
+    admission.admit("job-bound", ResourceRequest(cpu_cores=1))
+    admission.bind_receipt("job-bound", "receipt-bound")
+    store.update_compute_job("job-bound", status=states.SUCCEEDED, terminal_at=200)
+    ComputeManager(cfg, resource_admission=admission)
+    record = admission.get("job-bound")
+    assert record.state == "completed"
+    assert record.actual_compute_time_ms is None
+    assert admission.admit("next", ResourceRequest(cpu_cores=1)).status == "admitted"
+
+
 def test_restart_reuses_durable_compute_terminal_time_for_admission(cfg):
     admission = ResourceAdmission(ResourceCapacity(1, 0, 0), clock_ms=lambda: 10_000)
     store = get_store(cfg.db_path)

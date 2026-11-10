@@ -236,7 +236,9 @@ class RolloutSession:
                 sampled = _sample(sampler, observation, self.current_tools)
                 self.step(sampled, observation=observation)
         except Exception:
-            self.finish("failed")
+            self.finish(
+                "cancelled" if self.engine.cancellation.cancelled() else "failed"
+            )
             raise
         if not self._finished:
             self._emit_finished(
@@ -257,35 +259,23 @@ class RolloutSession:
             AsyncPolicySampler | PolicySampler | Callable[[tuple[Message, ...]], Any]
         ),
     ) -> Trajectory:
-        """Run the same lifecycle with an awaitable external sampler.
+        """Hand off this idle session to a serial lane; sampling stays on its loop.
 
-        Action execution remains synchronous because AgentEngine owns the
-        kernel and permission protocol.  Only policy sampling is awaited, so
-        async inference clients can be used without introducing a second
-        execution state machine.
+        The caller must not concurrently use the borrowed Engine. Factory-owned
+        resources should use RolloutWorker.run_async for same-thread creation and
+        teardown as well as execution.
         """
+        from .async_lane import Cancellation, run_on_lane
 
-        state = self._state()
-        try:
-            while not self._finished and state.turn < state.max_turns:
-                observation = self.observe()
-                sampled = await _sample_async(sampler, observation, self.current_tools)
-                self.step(sampled, observation=observation)
-        except Exception:
-            self.finish("failed")
-            raise
-        if not self._finished:
-            self._emit_finished(
-                EngineStep(
-                    state.turn,
-                    tuple(dict(message) for message in state.messages),
-                    None,
-                    None,
-                    None,
-                    stop_reason="max_turns",
-                )
-            )
-        return self._terminal_result or self.recorder.snapshot()
+        def execute(bridge: Any, requested: Any) -> Trajectory:
+            original = self.engine.cancellation
+            self.engine.cancellation = Cancellation(original, requested)
+            try:
+                return self.run(bridge)
+            finally:
+                self.engine.cancellation = original
+
+        return await run_on_lane(execute, sampler)
 
     def finish(self, status: str = "completed") -> Trajectory:
         from openai4s.storage.rl_runs import receipt_state_for_status

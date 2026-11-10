@@ -272,18 +272,28 @@ class ResourceAdmission:
 
         with self._lock:
             record = self._get(allocation_id)
-            if record.state in {"completed", "unknown"}:
+            if record.state == "completed" or (
+                record.state == "unknown" and state == "unknown"
+            ):
                 return record
-            if record.state != "running" or record.started_at is None:
-                raise ValueError("only a running allocation can finish")
+            if record.state not in {"running", "unknown"} and not (
+                record.state == "reserved" and record.provider_receipt is not None
+            ):
+                raise ValueError(
+                    "only a running or receipt-bound allocation can finish"
+                )
             terminal = self._now(terminal_at)
-            if terminal < record.started_at:
+            if record.started_at is not None and terminal < record.started_at:
                 raise ValueError("terminal_at precedes started_at")
             updated = replace(
                 record,
                 state=state,
                 terminal_at=terminal,
-                actual_compute_time_ms=terminal - record.started_at,
+                actual_compute_time_ms=(
+                    (terminal - record.started_at)
+                    if record.started_at is not None
+                    else None
+                ),
             )
             self._records[allocation_id] = updated
             return updated

@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 import uuid
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, cast
@@ -43,7 +44,7 @@ class EpisodeReset:
         }
 
 
-EngineFactory = Callable[[EpisodeReset], AgentEngine]
+EngineFactory = Callable[[EpisodeReset], Any]
 
 
 class RunAlreadyTerminal(RuntimeError):
@@ -69,6 +70,8 @@ class RolloutEnvironment:
         repository: Any | None = None,
         workspace_root: str | Path | None = None,
         default_max_turns: int = 32,
+        close_engine: Callable[[AgentEngine], None] | None = None,
+        interrupt_engine: Callable[[AgentEngine], None] | None = None,
     ) -> None:
         if (
             isinstance(default_max_turns, bool)
@@ -78,6 +81,9 @@ class RolloutEnvironment:
             raise ValueError("default_max_turns must be a non-negative integer")
         self.default_max_turns = default_max_turns
         self.engine_factory = engine_factory
+        self.close_engine = close_engine
+        self.interrupt_engine = interrupt_engine
+        self._runtime_stack: ExitStack | None = None
         self.repository = repository
         self.workspace_root = (
             Path(workspace_root).expanduser().resolve()
@@ -112,6 +118,7 @@ class RolloutEnvironment:
             self._resetting = True
 
         workspace: Path | None = None
+        runtime_stack = ExitStack()
         try:
             if episode.status != "running":
                 raise ValueError("a reset episode must have running status")
@@ -191,7 +198,18 @@ class RolloutEnvironment:
             metadata["reset"] = reset.public_metadata()
             effective_episode = replace(episode, metadata=metadata)
             reset = replace(reset, episode=effective_episode)
-            engine = self.engine_factory(reset)
+            runtime = self.engine_factory(reset)
+            engine = (
+                runtime
+                if isinstance(runtime, AgentEngine)
+                else runtime_stack.enter_context(runtime)
+            )
+            if not isinstance(engine, AgentEngine):
+                raise TypeError(
+                    "engine factory must return an AgentEngine or a context manager yielding one"
+                )
+            if self.close_engine is not None:
+                runtime_stack.callback(self.close_engine, engine)
             recorder = TrajectoryRecorder(effective_episode, repository=self.repository)
             recorder.owner_id = owner_id
             session = RolloutSession(
@@ -210,9 +228,13 @@ class RolloutEnvironment:
             session.state.metadata["rl_reset"] = reset.public_metadata()
             with self._lock:
                 self._active = (session, reset)
+                self._runtime_stack = runtime_stack
         except BaseException:
-            if workspace is not None:
-                shutil.rmtree(workspace, ignore_errors=True)
+            try:
+                runtime_stack.close()
+            finally:
+                if workspace is not None:
+                    shutil.rmtree(workspace, ignore_errors=True)
             raise
         finally:
             with self._lock:
@@ -227,11 +249,35 @@ class RolloutEnvironment:
                 raise ValueError("session does not belong to this rollout environment")
             if not session.finished:
                 raise RuntimeError("cannot release an unfinished rollout session")
-            trajectory = session.recorder.snapshot()
+            trajectory = session._terminal_result or session.recorder.snapshot()
+            if self._runtime_stack is not None:
+                self._runtime_stack.close()
+                self._runtime_stack = None
             self._active = None
         if cleanup:
             shutil.rmtree(active[1].workspace, ignore_errors=True)
         return trajectory
+
+    def abandon(self) -> None:
+        """Close idle owned local resources without claiming remote settlement.
+
+        Only the execution owner may call this after its synchronous operation
+        has unwound. The workspace and running receipt remain for recovery.
+        """
+        with self._lock:
+            if self._resetting:
+                raise RuntimeError("cannot abandon an environment during reset")
+            if self._runtime_stack is not None:
+                self._runtime_stack.close()
+                self._runtime_stack = None
+            self._active = None
+
+    def interrupt(self) -> None:
+        """Request exact-owner interruption; never close resources from here."""
+        with self._lock:
+            active = self._active
+        if active is not None and self.interrupt_engine is not None:
+            self.interrupt_engine(active[0].engine)
 
     @property
     def active(self) -> bool:

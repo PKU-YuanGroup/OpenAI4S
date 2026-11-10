@@ -93,9 +93,12 @@ Provider replies may use `text` for `content` and `logprobs` for
 `token_logprobs`; the adapter normalizes these aliases before recording the
 decision.
 `PolicyAdapter.sample_async()` accepts the same provider contract when
-`generate()` returns an awaitable. `RolloutSession.run_async()` and
-`RolloutWorker.run_async()` await policy sampling while leaving the existing
-synchronous Engine in charge of action execution.
+`generate()` returns an awaitable. `RolloutSession.run_async()` hands an idle
+borrowed Engine to a serial execution lane; callers must not concurrently use
+it. `RolloutWorker.run_async()` additionally constructs and closes managed
+factory resources on that same lane. Awaitable sampling stays on its event
+loop, while complete synchronous Engine/Host scopes execute off-loop. Cancelling
+a waiter drains actual execution before releasing ownership or workspace.
 
 `RolloutEnvironment.reset()` creates a fresh Episode, reset metadata, and
 workspace through an embedding-supplied Engine factory. It refuses a second

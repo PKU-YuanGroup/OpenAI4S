@@ -74,6 +74,13 @@ _LAZY_EXPORTS = {
     "DurableBudgetLedger": (".budget", "DurableBudgetLedger"),
     "RolloutDataset": (".dataset", "RolloutDataset"),
     "TrainingSample": (".dataset", "TrainingSample"),
+    "RolloutCollector": (".collector", "RolloutCollector"),
+    "CollectedRollout": (".collector", "CollectedRollout"),
+    "RolloutClient": (".client", "RolloutClient"),
+    "AsyncRolloutClient": (".client", "AsyncRolloutClient"),
+    "RemoteRolloutWorker": (".client", "RemoteRolloutWorker"),
+    "RolloutTransportError": (".client", "RolloutTransportError"),
+    "RolloutRemoteError": (".client", "RolloutRemoteError"),
 }
 
 
@@ -152,4 +159,11 @@ __all__ = [
     "DurableBudgetLedger",
     "RolloutDataset",
     "TrainingSample",
+    "RolloutCollector",
+    "CollectedRollout",
+    "RolloutClient",
+    "AsyncRolloutClient",
+    "RemoteRolloutWorker",
+    "RolloutTransportError",
+    "RolloutRemoteError",
 ]

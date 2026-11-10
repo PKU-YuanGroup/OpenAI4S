@@ -733,6 +733,12 @@ QUERY_DENYLIST = frozenset(
     {
         "settings",
         "connectors",
+        # Rollout claim/phase ownership and frozen request responses are Host
+        # control state, never an Agent SQL capability (even in single-user mode).
+        "rl_phase_bindings",
+        "rl_run_requests",
+        "rl_run_results",
+        "rl_step_receipts",
         "memories",
         # Same class as `connectors`: `managed_endpoints.credential` is a
         # plaintext bearer token for a local model endpoint, and it was

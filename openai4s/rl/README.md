@@ -63,6 +63,29 @@ requires both `step_id` and `expected_turn` on a durable run; exact retries retu
 the recorded response. A claimed step without a response is unknown and cannot
 be replayed. Envelope JSON-RPC IDs alone do not make a step idempotent.
 
+`collector.py` provides `RolloutCollector(worker_factory, requests, sampler_factory,
+max_concurrency=..., max_pending=..., max_results=..., pool_limits=...)`: fixed
+consumer slots, lazy input, bounded pending/output work and completion-order
+results. Request IDs are retained for duplicate detection for the batch lifetime;
+use finite batches for indefinitely streaming workloads. `execution_pool` selects
+an explicitly configured pool (default `science`); training capacity is not
+implicitly available. Compute jobs retain their separate existing admission ledger.
+
+`async_lane.py` runs each Episode's complete synchronous lifecycle on one owned
+thread while awaitable policy sampling stays on the caller's event loop. Managed
+factory context managers enter/exit on that same lane; borrowed Stores are not
+closed. An optional exact-owner `interrupt_engine` requests cancellation, but
+cancellation always drains actual execution before freeing the lane/workspace.
+A stuck execution stays occupied rather than being silently detached/replayed.
+
+`client.py` provides sync/async bounded JSONL clients and `RemoteRolloutWorker`.
+Use deployment-provided argv (never a shell string) or secure streams. Transport
+loss leaves work unknown: query `recover/result/step_result`, never auto-resubmit.
+`serve.py` is the trusted-factory entrypoint: `python -m openai4s.rl.serve
+installed_module:build_environment`. The factory is operator configuration, not
+an RPC field. Logs use stderr; stdin/stdout remain protocol-only. This works over
+local subprocesses or a deployment-managed SSH channel, not a new public server.
+
 `policy.py` defines `PolicyProvider` and `PolicyAdapter`. The adapter records
 the behavior policy identity and sampling configuration in `ModelReply.extra`;
 it preserves missing logprob evidence instead of estimating it after sampling.

@@ -56,8 +56,10 @@ provider 自带的身份字段。没有 logprob 证据时保持缺失，并标�
 Provider reply 可以用 `text` 表示 `content`、用 `logprobs` 表示
 `token_logprobs`；Adapter 会在记录 Decision 前统一这些别名。
 如果 `generate()` 返回 awaitable，`PolicyAdapter.sample_async()` 接受相同的 provider
-合约。`RolloutSession.run_async()` 和 `RolloutWorker.run_async()` 只等待 policy 采样，
-动作执行仍由现有同步 Engine 负责。
+合约。`RolloutSession.run_async()` 将闲置的 borrowed Engine 交给串行执行 lane，调用方
+不得并发使用它；`RolloutWorker.run_async()` 还在同一 lane 构造和关闭 managed factory
+资源。awaitable sampling 留在原 event loop，完整 Engine/Host 同步 scope 在 loop 外执行。
+取消等待者必须等实际执行退出后才回收 owner/workspace。
 
 `RolloutEnvironment.reset()` 通过调用方提供的 Engine factory 创建新的 Episode、Reset
 元数据和 workspace。存在 active Episode 时会拒绝第二次 reset；只有 rollout 发出终态事件

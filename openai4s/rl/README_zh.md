@@ -48,6 +48,24 @@ JSONL adapter 新增 `recover`、`result`、`step_result`。安全重试的 `ste
 同时提供 `step_id`、`expected_turn`，完全相同的重试返回原响应。已 claim 但无响应的 step
 视为 unknown，不重新执行。仅 JSON-RPC envelope ID 不提供幂等保证。
 
+`collector.py` 提供 `RolloutCollector(worker_factory, requests, sampler_factory,
+max_concurrency=..., max_pending=..., max_results=..., pool_limits=...)`：固定执行槽、
+惰性输入、有界 pending/result 工作和按完成顺序返回结果。batch 生命周期保留去重 ID，
+无限输入应切成有限 batch。`execution_pool` 选择显式配置的池（默认 science），不默认
+占用训练资源；Compute Job 仍使用已有的独立 admission ledger。
+
+`async_lane.py` 将每个 Episode 的完整同步生命周期放在一个专属线程，awaitable sampler
+仍在调用方 event loop。managed factory context 的 enter/exit 同线程执行，借用的 Store
+不关闭。可用精确 owner 的 `interrupt_engine` 请求取消，但必须等执行退出后才回收
+lane/workspace。卡住的执行仍占用槽位，不静默脱离或重放。
+
+`client.py` 提供同步/异步有界 JSONL client 和 `RemoteRolloutWorker`。使用部署方提供的
+argv（不是 shell 字符串）或安全 streams；失联只报告 unknown，通过
+`recover/result/step_result` 查询，绝不自动重提。`serve.py` 是可信工厂入口：
+`python -m openai4s.rl.serve installed_module:build_environment`。工厂由管理员配置，
+不是 RPC 字段；日志走 stderr、stdin/stdout 专用于协议。支持本地子进程和部署方管理的
+SSH 通道，不新增公网服务。
+
 `policy.py` 定义 `PolicyProvider` 和 `PolicyAdapter`。Adapter 把 behavior policy 身份
 和采样配置写入 `ModelReply.extra`；缺失的 logprob 保持缺失，不在采样后估算。
 现代 provider 还可以通过 `tools` 接收复制后的当前原生工具投影；`observe()` 之后，

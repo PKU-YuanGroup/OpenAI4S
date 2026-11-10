@@ -156,25 +156,42 @@ class RolloutWorker:
         max_turns: int | None = None,
         request_id: str | None = None,
     ) -> Trajectory:
-        """Run one isolated Episode with an async-compatible sampler."""
+        """Run the complete synchronous lifetime on one owned execution lane."""
+        from .async_lane import Cancellation, run_on_lane
 
-        try:
-            session = self.reset(
-                episode,
-                messages,
-                initial_artifacts=initial_artifacts,
-                config=config,
-                budget=budget,
-                max_turns=max_turns,
-                request_id=request_id,
+        def execute(bridge: Any, requested: Any) -> Trajectory:
+            try:
+                session = self.reset(
+                    episode,
+                    messages,
+                    initial_artifacts=initial_artifacts,
+                    config=config,
+                    budget=budget,
+                    max_turns=max_turns,
+                    request_id=request_id,
+                )
+            except RunAlreadyTerminal as settled:
+                return settled.trajectory
+            session.engine.cancellation = Cancellation(
+                session.engine.cancellation, requested
             )
-        except RunAlreadyTerminal as settled:
-            return settled.trajectory
-        try:
-            return await session.run_async(sampler)
-        finally:
-            if session.finished:
-                self.release(session)
+            try:
+                if requested.is_set():
+                    return session.finish("cancelled")
+                return session.run(bridge)
+            finally:
+                if session.finished:
+                    self.release(session)
+
+        return await run_on_lane(execute, sampler, interrupt=self.environment.interrupt)
+
+    @property
+    def cancel_confirmed(self) -> bool:
+        return not self.environment.active
+
+    async def aclose(self) -> None:
+        if self.environment.active:
+            raise RuntimeError("rollout execution remains active or recovery_required")
 
     def recover(self, request_id: str) -> RecoveryResult:
         """Inspect a durable receipt without retrying the scientific work."""

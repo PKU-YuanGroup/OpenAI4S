@@ -8,6 +8,10 @@ RL Runtime 新增部分由 `test_rl_contract.py`、`test_agent_rl_step.py`、`te
 
 OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这里的每一个模块，而且必须一直是绿的：供应商无关的 Agent 引擎、Host 服务、常驻 Python/R 内核协议、仓储、安全边界、Tool、Skill 与 Web 组合。可复用的场景和计分评测属于另一层，放在 [`../harness/`](../harness/)。
 
+`test_rl_collector.py` 验证有界并发、背压、取消 drain、同线程 managed lifecycle，
+以及真实 Kernel/Host/Store 并发阶段。`test_rl_client.py` 驱动有界 JSONL 子进程/异步
+streams，验证真实 RPC worker 重启后原结果恢复且不重放 action。
+
 `test_rl_run_receipts.py` 验证 protocol-2 请求身份、唯一 claim、固定终态结果、事务回滚、
 科学终态映射和逐轮 operation receipt；Adapter 测试同时验证失联后的原结果取回。
 

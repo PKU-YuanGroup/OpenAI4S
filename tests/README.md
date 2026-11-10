@@ -8,6 +8,11 @@ The RL Runtime additions are covered by `test_rl_contract.py`, `test_agent_rl_st
 
 The offline correctness gate for OpenAI4S. `uv run pytest` runs every module here against deterministic fakes, and it has to stay green: the provider-neutral agent engine, the Host services, the persistent Python/R kernel protocol, the repositories, the security boundaries, the tools, the Skills, and the Web composition. Reusable scenarios and scored evaluations are a separate layer and live in [`../harness/`](../harness/).
 
+`test_rl_collector.py` verifies bounded concurrency, backpressure, cancellation
+drain, same-thread managed lifetime, and concurrent real Kernel/Host/Store phases.
+`test_rl_client.py` drives bounded JSONL subprocess/async streams and verifies
+result recovery across real RPC worker restarts without replaying actions.
+
 `test_rl_run_receipts.py` exercises protocol-2 identity, single claims, frozen
 terminal results, transaction rollback, exact scientific terminal mappings, and
 per-turn operation receipts. Adapter tests also cover lost-response retrieval.

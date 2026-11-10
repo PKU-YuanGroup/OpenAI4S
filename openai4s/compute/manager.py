@@ -1134,13 +1134,16 @@ class ComputeManager:
         except Exception:
             return
         for record in records:
-            if record.state not in {"running", "reserved"}:
+            if record.state not in {"running", "reserved", "unknown"}:
                 continue
             try:
                 row = self._store.get_compute_job(record.allocation_id)
                 if row is None or not states.is_terminal(row.get("status")):
                     continue
-                if record.state == "running":
+                if (
+                    record.state in {"running", "unknown"}
+                    or record.provider_receipt is not None
+                ):
                     terminal_at = row.get("terminal_at")
                     if isinstance(terminal_at, int) and not isinstance(
                         terminal_at, bool
@@ -1294,7 +1297,10 @@ class ComputeManager:
             return
         try:
             record = self._resource_admission.get(job_id)
-            if record is not None and record.state == "running":
+            if record is not None and (
+                record.state in {"running", "unknown"}
+                or (record.state == "reserved" and record.provider_receipt is not None)
+            ):
                 if terminal_at is None and self._store is not None:
                     row = self._store.get_compute_job(job_id)
                     candidate = row.get("terminal_at") if row else None
