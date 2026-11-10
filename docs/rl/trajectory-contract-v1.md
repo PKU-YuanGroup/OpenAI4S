@@ -92,6 +92,10 @@ as an equivalent spelling.
 Provider replies may use `text` for `content` and `logprobs` for
 `token_logprobs`; the adapter normalizes these aliases before recording the
 decision.
+`PolicyAdapter.sample_async()` accepts the same provider contract when
+`generate()` returns an awaitable. `RolloutSession.run_async()` and
+`RolloutWorker.run_async()` await policy sampling while leaving the existing
+synchronous Engine in charge of action execution.
 
 `RolloutEnvironment.reset()` creates a fresh Episode, reset metadata, and
 workspace through an embedding-supplied Engine factory. It refuses a second

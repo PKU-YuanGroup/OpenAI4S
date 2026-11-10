@@ -55,6 +55,9 @@ provider 自带的身份字段。没有 logprob 证据时保持缺失，并标�
 将配置参数命名为 `sampling_config` 的 provider 也使用同等兼容路径。
 Provider reply 可以用 `text` 表示 `content`、用 `logprobs` 表示
 `token_logprobs`；Adapter 会在记录 Decision 前统一这些别名。
+如果 `generate()` 返回 awaitable，`PolicyAdapter.sample_async()` 接受相同的 provider
+合约。`RolloutSession.run_async()` 和 `RolloutWorker.run_async()` 只等待 policy 采样，
+动作执行仍由现有同步 Engine 负责。
 
 `RolloutEnvironment.reset()` 通过调用方提供的 Engine factory 创建新的 Episode、Reset
 元数据和 workspace。存在 active Episode 时会拒绝第二次 reset；只有 rollout 发出终态事件
