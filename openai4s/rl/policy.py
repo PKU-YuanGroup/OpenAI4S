@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from typing import Any, Awaitable, Mapping, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence, cast
 
 from openai4s.agent.models import Message, ModelReply
 
@@ -141,13 +141,15 @@ def _generate(
 
     generate = provider.generate
     try:
-        parameters = inspect.signature(generate).parameters
+        parameters: Mapping[str, inspect.Parameter] = inspect.signature(
+            generate
+        ).parameters
     except (TypeError, ValueError):
         parameters = {}
     tool_parameter = parameters.get("tools")
     config_parameter = parameters.get("config") or parameters.get("sampling_config")
-    args: list[object] = [observation]
-    kwargs: dict[str, object] = {}
+    args: list[Any] = [observation]
+    kwargs: dict[str, Any] = {}
     if tool_parameter is not None:
         if tool_parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
             args.append(tools)
@@ -177,7 +179,11 @@ def _generate(
         # positional parameter.  Pass the config by position when that slot
         # exists, while leaving true one-argument providers untouched.
         args.append(config)
-    return generate(*args, **kwargs)
+    # Signature inspection is the compatibility boundary: the Protocol keeps
+    # the modern shape typed, while this cast permits legacy providers with a
+    # positional tools/config slot to remain supported at runtime.
+    callable_generate = cast(Callable[..., Any], generate)
+    return callable_generate(*args, **kwargs)
 
 
 __all__ = ["PolicyAdapter", "PolicyProvider"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from copy import deepcopy
 from dataclasses import replace
-from typing import Any, Callable, Iterable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol, cast
 
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import RunFinished
@@ -349,9 +349,12 @@ def _sample(
 
     callback = sampler.sample if hasattr(sampler, "sample") else sampler
     try:
-        parameters = inspect.signature(callback).parameters
+        parameters: Mapping[str, inspect.Parameter] = inspect.signature(
+            callback
+        ).parameters
     except (TypeError, ValueError):
         parameters = {}
+    dynamic_callback = cast(Callable[..., Any], callback)
     tool_parameter = parameters.get("tools")
     positional_tools = (
         tool_parameter is not None
@@ -366,10 +369,10 @@ def _sample(
         for parameter in parameters.values()
     )
     if positional_tools:
-        return callback(observation, tools)
+        return dynamic_callback(observation, tools)
     if accepts_tools:
-        return callback(observation, tools=tools)
-    return callback(observation)
+        return dynamic_callback(observation, tools=tools)
+    return dynamic_callback(observation)
 
 
 async def _sample_async(
@@ -386,9 +389,12 @@ async def _sample_async(
         else sampler.sample if hasattr(sampler, "sample") else sampler
     )
     try:
-        parameters = inspect.signature(callback).parameters
+        parameters: Mapping[str, inspect.Parameter] = inspect.signature(
+            callback
+        ).parameters
     except (TypeError, ValueError):
         parameters = {}
+    dynamic_callback = cast(Callable[..., Any], callback)
     tool_parameter = parameters.get("tools")
     positional_tools = (
         tool_parameter is not None
@@ -403,11 +409,11 @@ async def _sample_async(
         for parameter in parameters.values()
     )
     if positional_tools:
-        result = callback(observation, tools)
+        result = dynamic_callback(observation, tools)
     elif accepts_tools:
-        result = callback(observation, tools=tools)
+        result = dynamic_callback(observation, tools=tools)
     else:
-        result = callback(observation)
+        result = dynamic_callback(observation)
     if inspect.isawaitable(result):
         result = await result
     return result

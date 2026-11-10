@@ -55,7 +55,13 @@ class DatasetSnapshot:
         sequences = [event.sequence for event in trajectory.execution_events]
         if any(sequence is None for sequence in sequences):
             raise ValueError("dataset snapshots require sequenced execution events")
-        ordered = sorted(int(sequence) for sequence in sequences)
+        # The guard above is deliberately explicit rather than relying on
+        # comprehension narrowing: mypy cannot infer that an ``any`` check
+        # over a list removes ``None`` from its element type.
+        sequenced: list[int] = [
+            sequence for sequence in sequences if sequence is not None
+        ]
+        ordered = sorted(sequenced)
         if ordered != list(range(1, len(ordered) + 1)):
             raise ValueError("dataset snapshots require contiguous event sequences")
         return cls(
