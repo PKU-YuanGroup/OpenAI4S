@@ -122,8 +122,9 @@ Trajectory 仍在 `extra.openai4s` 中，是训练输入的权威来源。
 `AgentEngine` 仍负责 action routing、权限、kernel 执行、completion、取消和 ledger 回调。
 此 runtime 不包含 PPO、GRPO、advantage、模型服务或 Verifier 实现。
 
-`RolloutWorker` 是围绕这个生命周期的同步单 Episode 适配器。`run()` 在一次有界调用中
-完成 reset、外部 sampler、release；需要显式所有权时也可直接使用 `reset()` 和 `release()`。
+`RolloutWorker` 是围绕这个生命周期的单 Episode 适配器。`run()` 在一次有界调用中
+完成同步 reset、外部 sampler、release；`run_async()` 使用 awaitable sampler 完成相同边界；
+需要显式所有权时也可直接使用 `reset()` 和 `release()`。
 Recovery 只检查 durable receipt：`running` receipt 投影为 `recovery_required`，不会自动重试。
 Worker 导出携带轨迹 schema version，以及精确 JSON/JSONL payload 字节的 SHA-256。
 

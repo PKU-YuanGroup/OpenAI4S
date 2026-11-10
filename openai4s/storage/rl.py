@@ -597,7 +597,19 @@ class RLRepository:
         return _snapshot_from_row(row)
 
     def load_trajectory(self, episode_id: str) -> Trajectory:
-        """Rebuild one immutable trajectory from the durable RL projections."""
+        """Rebuild one immutable trajectory from one SQLite read snapshot.
+
+        A rollout exporter can run while Host RPCs append facts. Holding the
+        Store lock across every projection query prevents an episode from
+        combining records from different write generations (for example, an
+        event sequence that was read before a segment close with rewards read
+        after it).
+        """
+        with self._lock:
+            return self._load_trajectory_unlocked(episode_id)
+
+    def _load_trajectory_unlocked(self, episode_id: str) -> Trajectory:
+        """Internal loader; the caller must hold ``self._lock``."""
         episode_row = self._connection.execute(
             "SELECT * FROM rl_episodes WHERE episode_id=?", (episode_id,)
         ).fetchone()

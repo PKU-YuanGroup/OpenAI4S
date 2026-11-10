@@ -190,8 +190,9 @@ The existing `AgentEngine` still owns routing, permissions, kernel execution,
 completion, cancellation, and ledger callbacks. This runtime does not include
 PPO, GRPO, advantage estimation, model serving, or a verifier implementation.
 
-`RolloutWorker` is the synchronous one-Episode adapter around that lifecycle.
-Its `run()` performs reset, external sampling, and release as one bounded call;
+`RolloutWorker` is the one-Episode adapter around that lifecycle. Its `run()`
+performs reset, synchronous external sampling, and release as one bounded call;
+`run_async()` performs the same boundary with an awaitable sampler;
 `reset()` and `release()` are also available when a caller needs explicit
 ownership. Recovery only inspects a durable receipt: a `running` receipt
 projects to `recovery_required` and is never retried automatically. Worker
