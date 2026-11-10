@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Iterable, Protocol
+from typing import Any, Iterable, Protocol
 
 from .models import RewardAnnotation, Trajectory
 from .recorder import TrajectoryRecorder
@@ -37,6 +37,9 @@ def apply_verifier(
     raw = verifier.verify(before)
     annotations = tuple(raw)
     existing = {item.annotation_id: item for item in before.rewards}
+    known_evidence = _evidence_ids(before)
+    known_decisions = {item.decision_id for item in before.decisions}
+    known_segments = {item.segment_id for item in before.segments}
     seen: set[str] = set()
     for annotation in annotations:
         if not isinstance(annotation, RewardAnnotation):
@@ -47,6 +50,32 @@ def apply_verifier(
             raise ValueError("verifier annotation name does not match verifier")
         if annotation.verifier_version != version:
             raise ValueError("verifier annotation version does not match verifier")
+        if (
+            annotation.decision_id is not None
+            and annotation.decision_id not in known_decisions
+        ):
+            raise ValueError(
+                f"verifier annotation references unknown decision "
+                f"{annotation.decision_id!r}"
+            )
+        if (
+            annotation.segment_id is not None
+            and annotation.segment_id not in known_segments
+        ):
+            raise ValueError(
+                f"verifier annotation references unknown segment "
+                f"{annotation.segment_id!r}"
+            )
+        missing = [
+            reference
+            for reference in annotation.evidence_refs
+            if reference not in known_evidence
+        ]
+        if missing:
+            raise ValueError(
+                "verifier annotation references unknown evidence: "
+                + ", ".join(repr(item) for item in missing)
+            )
         if annotation.annotation_id in seen:
             raise ValueError("verifier returned duplicate annotation IDs")
         seen.add(annotation.annotation_id)
@@ -66,6 +95,60 @@ def _identity(name: str, value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"verifier {name} must be a non-empty string")
     return value
+
+
+def _evidence_ids(trajectory: Trajectory) -> set[str]:
+    """Collect durable IDs a reward annotation may cite.
+
+    Evidence references are intentionally ID-only.  A verifier can cite an
+    event, policy input, segment, cost, Artifact version, or Compute job that
+    is present in this immutable trajectory view; arbitrary strings would make
+    a reward look evidenced while leaving no auditable join.
+    """
+
+    result: set[str] = set()
+    for collection in (
+        trajectory.observations,
+        trajectory.decisions,
+        trajectory.segments,
+        trajectory.execution_events,
+        trajectory.costs,
+    ):
+        result.update(
+            str(getattr(item, field))
+            for item in collection
+            for field in (
+                "observation_id",
+                "decision_id",
+                "segment_id",
+                "event_id",
+                "cost_id",
+            )
+            if getattr(item, field, None)
+        )
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key in (
+                "version_id",
+                "artifact_version_id",
+                "input_version_id",
+                "output_version_id",
+                "job_id",
+                "compute_job_id",
+            ):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    result.add(candidate)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    for event in trajectory.execution_events:
+        visit(event.payload)
+    return result
 
 
 __all__ = ["RewardVerifier", "apply_verifier"]

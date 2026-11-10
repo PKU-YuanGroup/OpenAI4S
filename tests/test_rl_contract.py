@@ -198,6 +198,65 @@ def test_verifier_identity_and_annotation_scope_are_checked() -> None:
         apply_verifier(recorder, _WrongVerifier())
 
 
+def test_verifier_rejects_unjoinable_evidence_and_targets() -> None:
+    recorder = _recorder()
+    recorder.add_observation(
+        Observation("obs-1", "ep-1", "dec-1", [{"role": "user"}], 2)
+    )
+    recorder.add_decision(
+        PolicyDecision(
+            "dec-1",
+            "ep-1",
+            0,
+            "obs-1",
+            "hash",
+            "policy",
+            "v1",
+            {"type": "none"},
+            3,
+        )
+    )
+
+    class _Verifier:
+        name = "trusted"
+        version = "v1"
+
+        def verify(self, trajectory: Trajectory):
+            return [
+                RewardAnnotation(
+                    "reward-invalid",
+                    "ep-1",
+                    1.0,
+                    self.name,
+                    self.version,
+                    4,
+                    decision_id="dec-missing",
+                    evidence_refs=["event-missing"],
+                )
+            ]
+
+    with pytest.raises(ValueError, match="unknown decision"):
+        apply_verifier(recorder, _Verifier())
+
+    class _EvidenceVerifier(_Verifier):
+        def verify(self, trajectory: Trajectory):
+            return [
+                RewardAnnotation(
+                    "reward-invalid-evidence",
+                    "ep-1",
+                    1.0,
+                    self.name,
+                    self.version,
+                    4,
+                    decision_id="dec-1",
+                    evidence_refs=["event-missing"],
+                )
+            ]
+
+    with pytest.raises(ValueError, match="unknown evidence"):
+        apply_verifier(recorder, _EvidenceVerifier())
+
+
 def test_dataset_snapshot_requires_terminal_complete_facts_and_detects_drift() -> None:
     recorder = _recorder()
     recorder.add_segment(
