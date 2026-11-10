@@ -16,6 +16,14 @@ import pytest
 
 import openai4s  # noqa: F401,E402  - finds OpenMHS (third_party/OpenMHS or $OPENAI4S_OPENMHS) first
 
+if os.environ.get("OPENAI4S_OPENMHS", "").strip().lower() in {
+    "off",
+    "0",
+    "none",
+    "false",
+}:
+    pytest.skip("OpenMHS discovery is disabled", allow_module_level=True)
+
 mhs = pytest.importorskip("mhs")
 
 from mhs.driver import build_server, close_server  # noqa: E402
