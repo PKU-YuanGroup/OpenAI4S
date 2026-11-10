@@ -336,6 +336,10 @@ def _sample(
     except (TypeError, ValueError):
         parameters = {}
     tool_parameter = parameters.get("tools")
+    positional_tools = (
+        tool_parameter is not None
+        and tool_parameter.kind is inspect.Parameter.POSITIONAL_ONLY
+    )
     accepts_tools = (
         tool_parameter is not None
         and tool_parameter.kind
@@ -344,6 +348,8 @@ def _sample(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
+    if positional_tools:
+        return callback(observation, tools)
     if accepts_tools:
         return callback(observation, tools=tools)
     return callback(observation)
@@ -367,6 +373,10 @@ async def _sample_async(
     except (TypeError, ValueError):
         parameters = {}
     tool_parameter = parameters.get("tools")
+    positional_tools = (
+        tool_parameter is not None
+        and tool_parameter.kind is inspect.Parameter.POSITIONAL_ONLY
+    )
     accepts_tools = (
         tool_parameter is not None
         and tool_parameter.kind
@@ -375,9 +385,12 @@ async def _sample_async(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
-    result = (
-        callback(observation, tools=tools) if accepts_tools else callback(observation)
-    )
+    if positional_tools:
+        result = callback(observation, tools)
+    elif accepts_tools:
+        result = callback(observation, tools=tools)
+    else:
+        result = callback(observation)
     if inspect.isawaitable(result):
         result = await result
     return result

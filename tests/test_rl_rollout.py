@@ -434,6 +434,22 @@ def test_rollout_session_run_async_accepts_an_async_sampler() -> None:
     assert trajectory.decisions[0].loss_mask == (1,)
 
 
+def test_rollout_sampler_accepts_positional_only_tools() -> None:
+    seen = []
+    engine = AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1)
+    recorder = TrajectoryRecorder(Episode("ep-positional-tools", "task", "session", 1))
+    session = RolloutSession(engine, recorder)
+    session.reset([{"role": "user", "content": "run"}])
+
+    def sampler(observation, tools, /):
+        seen.append((observation, tools))
+        return {"content": "done"}
+
+    trajectory = session.run(sampler)
+    assert trajectory.episode.status == "done"
+    assert seen[0][1] == ()
+
+
 def test_rollout_worker_run_async_releases_environment(tmp_path) -> None:
     def build_engine(_reset):
         return AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1)

@@ -54,6 +54,9 @@ class PolicyAdapter:
             self.config,
         )
         if inspect.isawaitable(raw):
+            close = getattr(raw, "close", None)
+            if callable(close):
+                close()
             raise TypeError(
                 "policy provider returned an awaitable; use PolicyAdapter.sample_async()"
             )
