@@ -22,6 +22,7 @@ The offline correctness gate for OpenAI4S. `uv run pytest` runs every module her
 
 | File | Responsibility |
 | --- | --- |
+| [`__init__.py`](__init__.py) | Makes the repository test helpers a regular package so the optional OpenMHS integration tree's separate `tests` package cannot shadow imports such as `tests._ports`. |
 | [`test_project_folders.py`](test_project_folders.py) | Local project folder migration, binding, secure browsing and bounded preview over real HTTP; missing-root, traversal, secret, symlink, hardlink and non-local refusals. |
 | [`test_project_history.py`](test_project_history.py) | Real-Store portable history, file versions, branch projection, safe metadata writes, omissions, integrity checks, linear archive growth, no-op saves and reads that never wait behind a save. |
 | [`test_project_history_autosave.py`](test_project_history_autosave.py) | Durable-boundary saves without a browser (once per execution, not per cell), retry/failure persistence, restart recovery and archive-before-delete ordering. |

@@ -22,6 +22,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 
 | 文件 | 职责 |
 | --- | --- |
+| [`__init__.py`](__init__.py) | 将本仓库的测试辅助模块固定为普通包，避免可选 OpenMHS integration tree 中的另一个 `tests` 包覆盖 `tests._ports` 等导入。 |
 | [`test_project_folders.py`](test_project_folders.py) | 本地项目目录迁移、绑定、安全浏览与有界预览的真实 HTTP 验证；缺失目录、越界、秘密文件、符号链接、硬链接和非本地访问拒绝。 |
 | [`test_project_history.py`](test_project_history.py) | 真实 Store 验证可迁移历史、文件版本、分支投影、安全元数据写入、遗漏清单、完整性校验、历史线性增长、内容未变不写入，以及读取不等待保存。 |
 | [`test_project_history_autosave.py`](test_project_history_autosave.py) | 无浏览器时在持久边界保存（每次执行一次，而非每个代码单元）、重试与失败状态保留、重启补存以及先归档后删除顺序。 |

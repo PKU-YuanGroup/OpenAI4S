@@ -18,11 +18,11 @@ import sys
 import threading
 from pathlib import Path
 
-import conftest
 import pytest
 
 from openai4s.config import get_config
 from openai4s.store import Store, get_store
+from tests import conftest
 
 
 @pytest.fixture
