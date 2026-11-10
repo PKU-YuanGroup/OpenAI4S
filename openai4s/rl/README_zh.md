@@ -56,7 +56,9 @@ reset/observe/step/finish/release/export，以及只读的 reward/cost 投影。
 `worker.py` 提供一个 Episode 的 `RolloutWorker` 边界：`run()` 是同步路径，
 `run_async()` 接受 awaitable sampler；它负责隔离环境 reset/run/release，对 durable
 receipt 中断状态只报告 `recovery_required`，不重放副作用；
-并返回带 schema version 和精确 payload 字节 SHA-256 的 JSON/JSONL 导出。
+并返回带 schema version 和精确 payload 字节 SHA-256 的 JSON/JSONL/ATIF 导出。
+`export("atif")` 是 Harbor 交换投影；完整 Science Trajectory 保留在 ATIF 的
+`extra.openai4s` 扩展中。
 
 `atif.py` 提供 `ATIFExporter`，将轨迹确定性地投影为 ATIF-v1.8 交换格式，并在 ATIF
 扩展元数据中保留 Segment、Reward、Cost 和执行事件标识。

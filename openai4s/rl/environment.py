@@ -297,7 +297,7 @@ class RolloutEnvironmentAdapter:
         }
 
     def export(self, format: str = "json") -> dict[str, Any]:
-        """Return the worker's schema/hash-bound JSON or JSONL export."""
+        """Return a schema/hash-bound JSON, JSONL, or ATIF export."""
 
         session = self._active()
         if not session.finished:

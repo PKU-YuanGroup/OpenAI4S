@@ -134,6 +134,19 @@ def test_rollout_worker_releases_environment_and_exports_both_formats(tmp_path):
         == __import__("hashlib").sha256(exported.content.encode("utf-8")).hexdigest()
     )
     assert exported.content.splitlines()[0].startswith('{"episode":')
+    atif = worker.export_atif(trajectory)
+    assert atif.format == "atif"
+    assert atif.schema_version == "ATIF-v1.8"
+    assert (
+        __import__("json").loads(atif.content)["extra"]["openai4s"]["episode"][
+            "episode_id"
+        ]
+        == "ep-worker"
+    )
+    assert (
+        atif.sha256
+        == __import__("hashlib").sha256(atif.content.encode("utf-8")).hexdigest()
+    )
     assert worker.environment.active is False
 
 

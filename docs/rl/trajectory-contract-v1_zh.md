@@ -126,7 +126,8 @@ Trajectory 仍在 `extra.openai4s` 中，是训练输入的权威来源。
 完成同步 reset、外部 sampler、release；`run_async()` 使用 awaitable sampler 完成相同边界；
 需要显式所有权时也可直接使用 `reset()` 和 `release()`。
 Recovery 只检查 durable receipt：`running` receipt 投影为 `recovery_required`，不会自动重试。
-Worker 导出携带轨迹 schema version，以及精确 JSON/JSONL payload 字节的 SHA-256。
+Worker 导出携带轨迹 schema version，以及精确 JSON、JSONL 或 ATIF payload 字节的
+SHA-256。ATIF 选项是 Harbor 交换投影；其 `extra.openai4s` 扩展保留完整轨迹。
 
 `DatasetSnapshot` 是当前固定数据集边界：只接受终态 Episode、没有 open Segment 且所有
 Execution Event 都有 sequence；它保存规范轨迹哈希、最大事件序号和记录计数。

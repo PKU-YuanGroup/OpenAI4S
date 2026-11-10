@@ -14,12 +14,13 @@ from typing import Any, Iterable, Literal, Mapping
 
 from openai4s.agent.models import Message
 
+from .atif import ATIFExporter
 from .environment import RolloutEnvironment
 from .models import Episode, RunReceipt, Trajectory
 from .recorder import trajectory_jsonl
 from .rollout import RolloutSession
 
-WorkerFormat = Literal["json", "jsonl"]
+WorkerFormat = Literal["json", "jsonl", "atif"]
 
 
 @dataclass(frozen=True)
@@ -231,14 +232,20 @@ class RolloutWorker:
             raise ValueError("cannot export a running rollout")
         if format == "json":
             content = trajectory.canonical_json()
+            schema_version = trajectory.schema_version
         elif format == "jsonl":
             content = trajectory_jsonl(trajectory)
+            schema_version = trajectory.schema_version
+        elif format == "atif":
+            exporter = ATIFExporter(trajectory)
+            content = exporter.export_json()
+            schema_version = exporter.to_dict()["schema_version"]
         else:
-            raise ValueError("format must be 'json' or 'jsonl'")
+            raise ValueError("format must be 'json', 'jsonl', or 'atif'")
         return RolloutExport(
             episode_id=trajectory.episode.episode_id,
             format=format,
-            schema_version=trajectory.schema_version,
+            schema_version=schema_version,
             sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
             content=content,
         )
@@ -252,6 +259,11 @@ class RolloutWorker:
     def export_jsonl(trajectory: Trajectory) -> RolloutExport:
         """Export deterministic JSONL with its schema and byte hash."""
         return RolloutWorker.export(trajectory, "jsonl")
+
+    @staticmethod
+    def export_atif(trajectory: Trajectory) -> RolloutExport:
+        """Export the Harbor/ATIF interchange projection with its byte hash."""
+        return RolloutWorker.export(trajectory, "atif")
 
 
 __all__ = ["RecoveryResult", "RolloutExport", "RolloutWorker", "WorkerFormat"]

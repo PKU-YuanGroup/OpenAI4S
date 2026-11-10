@@ -70,8 +70,9 @@ reset/observe/step/finish/export lifecycle.
 `run()` path is synchronous and `run_async()` accepts an awaitable sampler; it
 resets, runs, and releases an isolated environment, reports a
 durable interrupted receipt as `recovery_required` without retrying side
-effects, and returns schema-versioned JSON/JSONL exports with a SHA-256 of the
-exact payload bytes.
+effects, and returns schema-versioned JSON/JSONL/ATIF exports with a SHA-256 of
+the exact payload bytes. `export("atif")` is the Harbor interchange projection;
+the complete Science Trajectory remains in its `extra.openai4s` extension.
 
 `atif.py` provides `ATIFExporter`, a deterministic ATIF-v1.8 interchange
 projection that keeps segment, reward, cost, and execution identifiers in

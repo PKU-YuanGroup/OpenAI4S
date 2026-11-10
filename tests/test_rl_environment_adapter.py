@@ -65,6 +65,9 @@ def test_environment_adapter_exposes_json_step_and_export_boundary():
     exported = adapter.export("jsonl")
     assert exported["format"] == "jsonl"
     assert exported["sha256"]
+    atif = adapter.export("atif")
+    assert atif["format"] == "atif"
+    assert atif["schema_version"] == "ATIF-v1.8"
     released = adapter.release()
     assert released["episode"]["episode_id"] == "adapter-episode"
     assert environment.active is False
