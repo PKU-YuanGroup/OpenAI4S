@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from typing import Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from openai4s.agent.models import Message, ModelReply
 
@@ -15,6 +17,7 @@ class PolicyProvider(Protocol):
         self,
         observation: tuple[Message, ...],
         *,
+        tools: Sequence[Mapping[str, object]] = (),
         config: Mapping[str, object],
     ) -> ModelReply | Mapping[str, object]: ...
 
@@ -35,8 +38,19 @@ class PolicyAdapter:
             raise TypeError("policy config must be a mapping")
         object.__setattr__(self, "config", dict(self.config))
 
-    def sample(self, observation: tuple[Message, ...]) -> ModelReply:
-        raw = self.provider.generate(observation, config=self.config)
+    def sample(
+        self,
+        observation: tuple[Message, ...],
+        *,
+        tools: Sequence[Mapping[str, object]] = (),
+    ) -> ModelReply:
+        detached_tools = tuple(deepcopy(dict(tool)) for tool in tools)
+        raw = _generate(
+            self.provider,
+            observation,
+            detached_tools,
+            self.config,
+        )
         reply = raw if isinstance(raw, ModelReply) else ModelReply.from_mapping(raw)
         extra = dict(reply.extra)
         # The adapter is the authority for these join keys. A provider reply
@@ -59,6 +73,33 @@ def _text(name: str, value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
     return value
+
+
+def _generate(
+    provider: PolicyProvider,
+    observation: tuple[Message, ...],
+    tools: Sequence[Mapping[str, object]],
+    config: Mapping[str, object],
+) -> ModelReply | Mapping[str, object]:
+    """Call modern providers while retaining the original two-argument seam."""
+
+    generate = provider.generate
+    try:
+        parameters = inspect.signature(generate).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    tool_parameter = parameters.get("tools")
+    accepts_tools = (
+        tool_parameter is not None
+        and tool_parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    ) or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if accepts_tools:
+        return generate(observation, tools=tools, config=config)
+    return generate(observation, config=config)
 
 
 __all__ = ["PolicyAdapter", "PolicyProvider"]

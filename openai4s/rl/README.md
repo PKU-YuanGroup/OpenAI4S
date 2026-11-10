@@ -25,6 +25,9 @@ training export. It does not copy or rewrite trajectory records.
 `policy.py` defines `PolicyProvider` and `PolicyAdapter`. The adapter records
 the behavior policy identity and sampling configuration in `ModelReply.extra`;
 it preserves missing logprob evidence instead of estimating it after sampling.
+Modern providers can also receive the detached current native tool projection
+through `tools`; `RolloutSession.current_tools` exposes the same declarations
+after `observe()`. Older observation-only samplers remain supported.
 
 `environment.py` defines `RolloutEnvironment`, which constructs a fresh
 Engine/Recorder pair and workspace for each Episode reset. Reset metadata

@@ -3,6 +3,7 @@ from __future__ import annotations
 from openai4s.agent.actions import CodeCell
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.models import ExecutionOutcome, ModelReply, RunState
+from openai4s.tools.native import ToolSpec
 
 
 class _Model:
@@ -61,3 +62,27 @@ def test_step_stops_at_max_turns_before_sampling_or_execution() -> None:
     assert step.terminal
     assert model.calls == []
     assert executor.calls == 0
+
+
+def test_prepare_tools_returns_detached_provider_neutral_schemas() -> None:
+    schema = {"type": "object", "properties": {"value": {"type": "string"}}}
+
+    class _ExecutorWithTools(_Executor):
+        def policy_tools(self, messages):
+            assert messages[0]["content"] == "calculate"
+            return (ToolSpec("inspect", "Inspect data", schema),)
+
+    engine = AgentEngine(_Model(), _ExecutorWithTools(), max_turns=1)
+    state = RunState([{"role": "user", "content": "calculate"}], max_turns=1)
+    tools = engine.prepare_tools(state)
+
+    assert tools == (
+        {
+            "name": "inspect",
+            "description": "Inspect data",
+            "input_schema": schema,
+            "strict": False,
+        },
+    )
+    tools[0]["input_schema"]["properties"]["value"]["type"] = "number"  # type: ignore[index]
+    assert schema["properties"]["value"]["type"] == "string"

@@ -74,6 +74,14 @@ and `sampling_config` into `ModelReply.extra` and overwrites provider-supplied
 identity fields. If no logprob evidence is returned, the adapter preserves the
 absence and marks `behavior_logprobs_available: false`.
 
+The external sampler may implement `generate(observation, *, tools, config)`.
+`tools` is the current provider-neutral native tool projection, including the
+Engine-owned `finalize_response` declaration when it is available. The Engine
+and `RolloutSession` detach these JSON declarations before handing them to a
+sampler, so a policy cannot mutate the live catalog. Legacy providers and
+samplers that accept only the original observation/config arguments remain
+valid; they receive no tool keyword.
+
 `RolloutEnvironment.reset()` creates a fresh Episode, reset metadata, and
 workspace through an embedding-supplied Engine factory. It refuses a second
 active Episode, and `release()` removes the workspace only after the rollout

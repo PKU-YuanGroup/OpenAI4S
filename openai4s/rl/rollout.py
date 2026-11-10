@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+from copy import deepcopy
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from openai4s.agent.engine import AgentEngine
@@ -23,7 +25,10 @@ class PolicySampler(Protocol):
     """Minimal external policy contract used by :meth:`RolloutSession.run`."""
 
     def sample(
-        self, observation: tuple[Message, ...]
+        self,
+        observation: tuple[Message, ...],
+        *,
+        tools: tuple[Mapping[str, object], ...] = (),
     ) -> ModelReply | Mapping[str, object]: ...
 
 
@@ -61,6 +66,7 @@ class RolloutSession:
         self._finished = False
         self._pending_observation: tuple[Message, ...] | None = None
         self._pending_observation_turn: int | None = None
+        self._pending_tools: tuple[Mapping[str, object], ...] = ()
 
     def reset(
         self,
@@ -117,7 +123,14 @@ class RolloutSession:
         )
         self._pending_observation = prepared
         self._pending_observation_turn = state.turn
+        self._pending_tools = tuple(self.engine.prepare_tools(state))
         return prepared
+
+    @property
+    def current_tools(self) -> tuple[Mapping[str, object], ...]:
+        """The detached tool declarations for the last :meth:`observe` call."""
+
+        return tuple(deepcopy(dict(tool)) for tool in self._pending_tools)
 
     def step(
         self,
@@ -140,6 +153,7 @@ class RolloutSession:
             prepared = tuple(dict(message) for message in observation)
         self._pending_observation = None
         self._pending_observation_turn = None
+        self._pending_tools = ()
         result = self.engine.step(state, reply, observation=prepared)
         if result.terminal:
             self._emit_finished(result)
@@ -156,11 +170,7 @@ class RolloutSession:
         try:
             while not self._finished and state.turn < state.max_turns:
                 observation = self.observe()
-                sampled = (
-                    sampler.sample(observation)
-                    if hasattr(sampler, "sample")
-                    else sampler(observation)
-                )
+                sampled = _sample(sampler, observation, self.current_tools)
                 self.step(sampled, observation=observation)
         except Exception:
             self.finish("failed")
@@ -228,6 +238,35 @@ class RolloutSession:
         if self.state is None:
             raise RuntimeError("rollout session must be reset before use")
         return self.state
+
+
+def _sample(
+    sampler: (
+        PolicySampler
+        | Callable[[tuple[Message, ...]], ModelReply | Mapping[str, object]]
+    ),
+    observation: tuple[Message, ...],
+    tools: tuple[Mapping[str, object], ...],
+) -> ModelReply | Mapping[str, object]:
+    """Call a modern sampler without breaking legacy one-argument callables."""
+
+    callback = sampler.sample if hasattr(sampler, "sample") else sampler
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    tool_parameter = parameters.get("tools")
+    accepts_tools = (
+        tool_parameter is not None
+        and tool_parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    ) or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if accepts_tools:
+        return callback(observation, tools=tools)
+    return callback(observation)
 
 
 __all__ = ["PolicySampler", "RolloutSession"]

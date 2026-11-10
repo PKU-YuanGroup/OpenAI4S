@@ -1163,6 +1163,16 @@ class LocalActionExecutor:
     # keeps the historical in-memory-only continuity metadata.
     generation_recorder: KernelGenerationRecorder | None = None
 
+    def policy_tools(self, messages: Sequence[Mapping[str, Any]]) -> tuple[Any, ...]:
+        """Expose this executor's current native declarations to RL samplers."""
+
+        catalog = self.tool_catalog
+        if catalog is None:
+            return ()
+        from .finalize import with_finalize_response
+
+        return with_finalize_response(catalog.specs_for(messages))
+
     def bind_progress_circuit(self, state: RunState) -> None:
         """Restore the process cache from the Action Ledger, if present."""
 

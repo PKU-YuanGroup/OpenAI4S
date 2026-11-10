@@ -19,6 +19,9 @@ Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
 
 `policy.py` 定义 `PolicyProvider` 和 `PolicyAdapter`。Adapter 把 behavior policy 身份
 和采样配置写入 `ModelReply.extra`；缺失的 logprob 保持缺失，不在采样后估算。
+现代 provider 还可以通过 `tools` 接收复制后的当前原生工具投影；`observe()` 之后，
+`RolloutSession.current_tools` 会暴露同一组声明。只接收 observation 的旧 sampler
+仍然受支持。
 
 `environment.py` 定义 `RolloutEnvironment`，每次 Episode reset 都创建新的
 Engine/Recorder 和 workspace。Reset 元数据记录初始 Artifact 引用、配置与预算，但不暴露

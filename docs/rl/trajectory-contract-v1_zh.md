@@ -44,6 +44,12 @@ segments、execution_events、rewards、costs 顺序写出，每行使用单数 
 provider 自带的身份字段。没有 logprob 证据时保持缺失，并标记
 `behavior_logprobs_available: false`。
 
+外部 sampler 可以实现 `generate(observation, *, tools, config)`。`tools` 是当前
+ provider-neutral 原生工具投影；如果可用，其中也包括 Engine 自有的
+ `finalize_response` 声明。Engine 和 `RolloutSession` 在交给 sampler 前会复制这些
+ JSON 声明，因此 policy 不能修改运行中的 catalog。只接受原有 observation/config
+ 参数的旧 provider 和 sampler 仍然有效，它们不会收到 `tools` 关键字。
+
 `RolloutEnvironment.reset()` 通过调用方提供的 Engine factory 创建新的 Episode、Reset
 元数据和 workspace。存在 active Episode 时会拒绝第二次 reset；只有 rollout 发出终态事件
 后 `release()` 才会删除 workspace。绝对 workspace 路径属于运行时状态，不进入轨迹元数据。

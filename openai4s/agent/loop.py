@@ -1167,6 +1167,9 @@ class Agent:
                     event_sink=event_sink,
                     cancellation=self.cancellation,
                     completion=CompletionSignal(lambda: self.dispatcher.last_output),
+                    tool_schema_provider=lambda state: self._model_tool_specs(
+                        tool_catalog, state.messages
+                    ),
                     max_turns=self.max_turns,
                 )
                 if self.trajectory_recorder is None and not self.rl_context:

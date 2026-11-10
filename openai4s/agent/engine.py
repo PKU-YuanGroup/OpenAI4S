@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
-from typing import Any, Callable, Iterable, Mapping, cast
+from typing import Any, Callable, Iterable, Mapping, Sequence, cast
 
 from .actions import route_action, unexecuted_cell_note
 from .events import (
@@ -39,6 +40,35 @@ from .progress_circuit import (
 from .recovery import recovery_message
 
 
+def _detach_tool_spec(spec: Any) -> Mapping[str, Any]:
+    """Normalize a ToolSpec-like value without importing the tool catalog."""
+
+    if isinstance(spec, Mapping):
+        value = deepcopy(dict(spec))
+    else:
+        try:
+            value = {
+                "name": getattr(spec, "name"),
+                "description": getattr(spec, "description"),
+                "input_schema": getattr(spec, "input_schema"),
+                "strict": getattr(spec, "strict", False),
+            }
+        except AttributeError as exc:
+            raise TypeError(
+                "tool schema must be a mapping or ToolSpec-like value"
+            ) from exc
+        value = deepcopy(value)
+    if not isinstance(value.get("name"), str) or not value["name"].strip():
+        raise TypeError("tool schema name must be a non-empty string")
+    if not isinstance(value.get("description"), str):
+        raise TypeError("tool schema description must be a string")
+    if not isinstance(value.get("input_schema"), Mapping):
+        raise TypeError("tool schema input_schema must be a mapping")
+    value["input_schema"] = deepcopy(dict(value["input_schema"]))
+    value["strict"] = bool(value.get("strict", False))
+    return value
+
+
 class AgentEngine:
     """Coordinate context, model, routing, execution, and terminal states."""
 
@@ -52,6 +82,7 @@ class AgentEngine:
         cancellation: CancellationPort | None = None,
         completion: CompletionPort | None = None,
         reply_interceptor: ReplyInterceptor | None = None,
+        tool_schema_provider: Callable[[RunState], Sequence[Any]] | None = None,
         max_turns: int = 32,
     ) -> None:
         if max_turns < 0:
@@ -63,6 +94,7 @@ class AgentEngine:
         self.cancellation = cancellation or NeverCancelled()
         self.completion = completion or NoCompletion()
         self.reply_interceptor = reply_interceptor or IdentityReplyInterceptor()
+        self.tool_schema_provider = tool_schema_provider
         self.max_turns = max_turns
 
     def run(
@@ -101,6 +133,25 @@ class AgentEngine:
         )
         state.messages[:] = [dict(message) for message in prepared]
         return prepared
+
+    def prepare_tools(self, state: RunState) -> tuple[Mapping[str, Any], ...]:
+        """Return detached provider-neutral tools for an external policy.
+
+        Local runtimes may inject the same dynamic projection they give their
+        built-in model.  Lightweight embeddings can instead expose a
+        ``policy_tools(messages)`` method on their executor.  The returned
+        declarations are copied so a sampler cannot mutate a live catalog.
+        """
+
+        provider = self.tool_schema_provider
+        if provider is not None:
+            raw = provider(state)
+        else:
+            fallback = getattr(self.executor, "policy_tools", None)
+            if not callable(fallback):
+                return ()
+            raw = fallback(tuple(dict(message) for message in state.messages))
+        return tuple(_detach_tool_spec(spec) for spec in (raw or ()))
 
     def step(
         self,

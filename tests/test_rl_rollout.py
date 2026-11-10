@@ -80,6 +80,36 @@ def test_rollout_step_reuses_observation_prepared_by_previous_observe() -> None:
     assert recorder.snapshot().observations[0].messages == observation
 
 
+def test_rollout_sampler_receives_current_tool_schemas() -> None:
+    seen = []
+    schema = {"type": "object"}
+
+    class _ExecutorWithTools(_Executor):
+        def policy_tools(self, messages):
+            return (
+                {
+                    "name": "inspect",
+                    "description": "Inspect data",
+                    "input_schema": schema,
+                    "strict": False,
+                },
+            )
+
+    engine = AgentEngine(_NeverCalledModel(), _ExecutorWithTools(), max_turns=1)
+    recorder = TrajectoryRecorder(Episode("ep-tools", "task", "session", 1))
+    session = RolloutSession(engine, recorder)
+    session.reset([{"role": "user", "content": "run"}])
+
+    def sampler(observation, *, tools):
+        seen.append((observation, tools))
+        tools[0]["input_schema"]["type"] = "array"
+        return ModelReply(content="done")
+
+    session.run(sampler)
+    assert seen[0][1][0]["name"] == "inspect"
+    assert schema == {"type": "object"}
+
+
 def test_rollout_worker_releases_environment_and_exports_both_formats(tmp_path):
     def build_engine(_reset):
         return AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1)
@@ -229,6 +259,37 @@ def test_policy_adapter_preserves_behavior_identity_and_missing_logprobs() -> No
     assert reply.extra["sampling_config"] == {"temperature": 0.7}
     assert reply.extra["behavior_logprobs_available"] is False
     assert "action_logprob" not in reply.extra
+
+
+def test_policy_adapter_passes_detached_tools_to_modern_provider() -> None:
+    source_schema = {"type": "object"}
+
+    class _Provider:
+        def generate(self, observation, *, tools, config):
+            assert observation[0]["content"] == "run"
+            assert config == {"temperature": 0.2}
+            assert tools[0]["name"] == "inspect"
+            tools[0]["input_schema"]["type"] = "array"
+            return {"content": "done"}
+
+    adapter = PolicyAdapter(
+        _Provider(),
+        policy_name="vllm",
+        policy_version="v2",
+        config={"temperature": 0.2},
+    )
+    reply = adapter.sample(
+        ({"role": "user", "content": "run"},),
+        tools=(
+            {
+                "name": "inspect",
+                "description": "Inspect",
+                "input_schema": source_schema,
+            },
+        ),
+    )
+    assert source_schema == {"type": "object"}
+    assert reply.extra["policy_version"] == "v2"
 
 
 def test_rollout_environment_resets_with_independent_workspace_and_metadata(tmp_path):
