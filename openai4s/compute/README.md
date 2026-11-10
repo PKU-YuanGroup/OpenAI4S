@@ -10,6 +10,18 @@ The Python [`host.compute` SDK](../sdk/compute.py) turns every call into a `comp
 
 For `byoc:*`, the manager looks for provider shims under `skills/remote-compute-<id>/`, stages a job archive, and runs the confined [`openai4s_compute_provider`](../../openai4s_compute_provider) helper with credentials on stdin. For `ssh:*`, it shells out to local `ssh`/`scp` against a user-configured alias. Harvested files land below the configured data directory, in `hpc/<job_id>/`.
 
+An optional durable resource-admission controller can be passed to the
+dispatcher. `submit_job` and native `compute_submit` then accept a
+`resource_request` with `cpu_cores`, `gpu_count`, `gpu_memory_gb`,
+`max_wall_time_ms`, `priority`, and `budget_group`. The compute row is claimed
+before admission, capacity is reserved before provider submission, and the
+provider receipt is bound before the job is reported as running. A capacity
+wait is a durable failed job (`resource_admission_waiting`) and never reaches
+the provider. Terminal jobs finish their started allocation; a definite
+provider rejection releases an unstarted one. Unknown provider state keeps the
+allocation reserved for conservative restart reconciliation. The request is
+opt-in, so existing compute calls remain unchanged without a controller.
+
 ## Files
 
 | File | Responsibility |
@@ -40,6 +52,7 @@ For `byoc:*`, the manager looks for provider shims under `skills/remote-compute-
 - **Job records are durable; warm-sandbox handles are not.** A job row is written *before* the submit is attempted and carries the provider receipt, so a restarted manager rehydrates every job that may still be consuming a remote resource, keeps it in the concurrency count, and can still poll or cancel it. `reconcile()` reports those jobs and deliberately never resubmits — a job in flight may or may not be running, and guessing wrong costs either a duplicate charge or a lost result. What is still in-memory only: the warm byoc sandbox handle per provider, so a restart cannot reuse a warm container (the job that container is running is still recoverable through its receipt). [`registry.py`](registry.py) persists the specialized SSH capability catalogue.
 - **One job, one terminal state, decided in one place.** `_commit_terminal` writes the end state to the ledger *before* memory or any observer believes it, and does not swallow the failure: a lost compare-and-swap re-reads the row and reports what actually won, and any other write failure propagates rather than being reported as success. The row stays live in that case and `reconcile` keeps surfacing it, which is the safe direction — claiming a success the ledger never accepted is not.
 - **A duplicate submit is refused, not silently run twice.** An `idempotency_key` already on one of this owner's rows makes the second submit an error naming the winner, and the UNIQUE index catches the pair that raced past the pre-check. The success receipt — the sandbox id, or the remote pid/pgid — is persisted before memory believes the job is cleanly running; a dropped write degrades to `unknown`/`submit_indeterminate` rather than reporting a clean `running` over a row with no receipt, which is an orphan that bills with nothing left able to name it.
+- **Admission is receipt-bound.** `max_wall_time_ms` is stored with the request but does not replace the provider-enforced `timeout_seconds` deadline. Admission measures reservation wait and actual compute time separately; it never turns wall time into a provider cost estimate. Durable admission rows are reconciled against terminal compute rows when this manager is rebuilt.
 - **There is no background poller.** `result()` is what probes the remote and harvests; a job nobody polls is never harvested.
 - **Sessions do not see each other's jobs.** Rehydration, `result`, `cancel` and the per-job event stream all resolve through the same owner-scoped map, so a job id belonging to another session is indistinguishable from one that does not exist.
 - Native `compute_submit` is approval-gated. Harvesting a result, cancelling, and closing deliberately do not ask a second time for a job that was already authorized. The richer direct `compute_ssh`/`compute_scp` compatibility methods still require an alias the user offered, but they are not in the native gate at all — approval of `compute_submit` must not be read as approval of them.

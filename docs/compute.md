@@ -34,6 +34,44 @@ result = job.result()   # one non-blocking poll — call it again from a later c
                         # until result['status'] is terminal
 ```
 
+### Optional resource admission
+
+Callers that configure a durable resource-admission controller on the session
+may attach a provider-neutral request to either the SDK or native
+`compute_submit` call:
+
+```python
+job = c.submit_job(
+    intent="run esmfold2 on 1 seq",
+    command="python run_esmfold.py ./seq.fasta",
+    resource_request={
+        "cpu_cores": 4,
+        "gpu_count": 1,
+        "gpu_memory_gb": 40,
+        "max_wall_time_ms": 1_800_000,
+        "priority": "normal",
+        "budget_group": "protein-folding",
+    },
+)
+```
+
+The request is optional and ordinary compute calls keep their existing
+behavior when no controller is configured. With a controller, the manager
+claims the durable compute row first, reserves capacity before calling the
+provider, and binds the provider receipt before reporting `running`. A request
+that is waiting for capacity becomes a durable failed job with
+`termination_reason=resource_admission_waiting`; the provider is not called.
+Definite provider rejection releases an unstarted reservation. Terminal
+result, cancellation, and confirmed close finish a started reservation.
+Provider outcomes that are indeterminate retain the reservation so a restart
+or later reconciliation cannot oversubscribe the declared capacity.
+
+`max_wall_time_ms` is recorded as part of the admission contract. The remote
+deadline is still enforced by the existing `timeout_seconds` job option; the
+admission layer does not infer provider cost or GPU time from wall-clock
+duration. Durable admissions are restored from the Store and reconciled with
+terminal compute rows when a manager starts.
+
 The daemon forwards **only** the keys a provider declares in its `provider.json` `secret_env` into the job (over the helper's stdin) — never your whole environment.
 
 `outputs` is a promise, not a hint: a pattern that matches nothing when the
