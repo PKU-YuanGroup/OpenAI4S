@@ -249,13 +249,11 @@ class PolicyDecision:
                 dict(self.raw_response) if self.raw_response is not None else None
             ),
             "status": self.status,
-            "prompt_token_ids": (
-                list(self.prompt_token_ids)
-                if self.prompt_token_ids is not None
-                else None
-            ),
-            "sampling_config": dict(self.sampling_config),
         }
+        if self.prompt_token_ids is not None:
+            data["prompt_token_ids"] = list(self.prompt_token_ids)
+        if self.sampling_config:
+            data["sampling_config"] = dict(self.sampling_config)
         if self.assistant_message is not None:
             data["assistant_message"] = _payload(self.assistant_message)
         return data
@@ -292,7 +290,7 @@ class Observation:
         object.__setattr__(self, "tools", tuple(_payload(tool) for tool in self.tools))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "observation_id": self.observation_id,
             "episode_id": self.episode_id,
             "decision_id": self.decision_id,
@@ -300,8 +298,10 @@ class Observation:
             "created_at": self.created_at,
             "source": self.source,
             "truncated": self.truncated,
-            "tools": [dict(tool) for tool in self.tools],
         }
+        if self.tools:
+            data["tools"] = [dict(tool) for tool in self.tools]
+        return data
 
 
 @dataclass(frozen=True)
