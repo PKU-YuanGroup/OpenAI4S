@@ -150,6 +150,22 @@ def test_completion_contract_rejects_missing_or_mismatched_terminal_evidence() -
     assert "does not match" in completion_failure(mismatch.snapshot())
 
 
+def test_completion_contract_allows_durable_projection_after_terminal_event() -> None:
+    recorder = _terminal_recorder("completed", "submitted", {"output": "ok"})
+    recorder.add_event(
+        ExecutionEvent(
+            "projected-artifact",
+            recorder.episode.episode_id,
+            "artifact.version",
+            3,
+            payload={"version_id": "version-1"},
+        )
+    )
+    contract = completion_contract(recorder.snapshot())
+    assert contract.trace_complete is True
+    assert contract.completion_evidence is True
+
+
 def test_atif_exports_completion_contract_without_claiming_done_is_success() -> None:
     recorder = _terminal_recorder("done", "done", None)
     exported = ATIFExporter(recorder.snapshot()).to_dict()

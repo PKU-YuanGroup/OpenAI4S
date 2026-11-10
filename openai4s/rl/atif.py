@@ -29,6 +29,9 @@ _STOP_REASON_FOR_STATUS = {
     "max_turns": {"max_turns"},
     "no_progress": {"no_progress"},
 }
+_POST_TERMINAL_PROJECTIONS = frozenset(
+    {"artifact.version", "compute.job", "compute.job_event"}
+)
 
 
 @dataclass(frozen=True)
@@ -112,7 +115,12 @@ def completion_contract(trajectory: Trajectory) -> CompletionContract:
         ),
     )
     terminal = terminal_events[0]
-    if not ordered_events or ordered_events[-1].event_id != terminal.event_id:
+    lifecycle_events = [
+        event
+        for event in ordered_events
+        if event.kind not in _POST_TERMINAL_PROJECTIONS
+    ]
+    if not lifecycle_events or lifecycle_events[-1].event_id != terminal.event_id:
         return CompletionContract(
             status=status,
             terminal=True,
