@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
 from openai4s.rl import (
     CostRecord,
+    DatasetSnapshot,
     Episode,
     ExecutionEvent,
     Observation,
@@ -123,6 +125,7 @@ def _finished_recorder() -> TrajectoryRecorder:
             "cost-1", "ep-dataset", 12, completion_tokens=3, decision_id="decision-0"
         )
     )
+    recorder.add_cost(CostRecord("cost-episode", "ep-dataset", 13, wall_time_ms=4))
     recorder.finish("completed")
     return recorder
 
@@ -155,6 +158,7 @@ def test_dataset_projects_explicit_reward_joins_without_attributing_episode_rewa
         "reward-segment-v1",
         "reward-unbound-segment-v1",
     ]
+    assert [item["cost_id"] for item in dataset.episode_costs] == ["cost-episode"]
     assert dataset.reward_verifier == "science"
     assert dataset.reward_verifier_version == "v1"
 
@@ -186,3 +190,21 @@ def test_dataset_rejects_snapshot_drift_and_running_episodes():
     running = TrajectoryRecorder(Episode("ep-running", "task", "session", 1))
     with pytest.raises(ValueError, match="terminal"):
         running.create_snapshot("snapshot-running", created_at=2)
+
+
+def test_dataset_rejects_unknown_fact_joins():
+    recorder = _finished_recorder()
+    trajectory = recorder.snapshot()
+    bad_reward = RewardAnnotation(
+        "reward-bad",
+        "ep-dataset",
+        0.1,
+        "science",
+        "v1",
+        22,
+        decision_id="missing-decision",
+    )
+    bad = replace(trajectory, rewards=trajectory.rewards + (bad_reward,))
+    snapshot = DatasetSnapshot.from_trajectory(bad, "snapshot-bad", created_at=23)
+    with pytest.raises(ValueError, match="unknown decision"):
+        RolloutDataset.from_trajectory(bad, snapshot)

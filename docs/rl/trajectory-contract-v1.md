@@ -209,7 +209,7 @@ silently consume a changed reward view.
 `RolloutDataset` is the trainer-facing projection at that boundary. It emits
 one `TrainingSample` per PolicyDecision, carrying the exact Observation and
 Decision plus joined Segment IDs, ExecutionEvent IDs, decision/segment reward
-annotations, and decision costs. Episode-level annotations remain in the
+annotations, and decision costs. Episode-level annotations and costs remain in the
 dataset envelope instead of being copied onto every decision; segment-level
 annotations without an exact decision join remain in the envelope's
 `segment_rewards`. A caller may

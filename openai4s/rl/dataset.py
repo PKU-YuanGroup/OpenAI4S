@@ -128,6 +128,7 @@ class RolloutDataset:
     samples: tuple[TrainingSample, ...]
     segment_rewards: tuple[Mapping[str, Any], ...] = ()
     episode_rewards: tuple[Mapping[str, Any], ...] = ()
+    episode_costs: tuple[Mapping[str, Any], ...] = ()
     reward_verifier: str | None = None
     reward_verifier_version: str | None = None
     schema_version: str = SCHEMA_VERSION
@@ -147,10 +148,14 @@ class RolloutDataset:
             raise TypeError("snapshot must be a DatasetSnapshot")
         if (verifier is None) != (verifier_version is None):
             raise ValueError("verifier and verifier_version must be supplied together")
+        if trajectory.episode.status == "running":
+            raise ValueError("training datasets require a terminal episode")
         if not snapshot.matches(trajectory):
             raise ValueError("trajectory does not match the dataset snapshot")
 
         decisions = tuple(trajectory.decisions)
+        known_decisions = {item.decision_id for item in decisions}
+        known_segments = {item.segment_id for item in trajectory.segments}
         observations = {item.observation_id: item for item in trajectory.observations}
         segments_by_decision: dict[str, set[str]] = {
             item.decision_id: set() for item in decisions
@@ -173,6 +178,21 @@ class RolloutDataset:
             if verifier is None
             or (item.verifier == verifier and item.verifier_version == verifier_version)
         )
+        for reward in selected_rewards:
+            if (
+                reward.decision_id is not None
+                and reward.decision_id not in known_decisions
+            ):
+                raise ValueError(
+                    f"reward {reward.annotation_id!r} references an unknown decision"
+                )
+            if (
+                reward.segment_id is not None
+                and reward.segment_id not in known_segments
+            ):
+                raise ValueError(
+                    f"reward {reward.annotation_id!r} references an unknown segment"
+                )
         rewards_by_decision: dict[str, list[RewardAnnotation]] = {
             item.decision_id: [] for item in decisions
         }
@@ -193,9 +213,16 @@ class RolloutDataset:
         costs_by_decision: dict[str, list[CostRecord]] = {
             item.decision_id: [] for item in decisions
         }
+        episode_costs: list[CostRecord] = []
         for cost in trajectory.costs:
             if cost.decision_id in costs_by_decision:
                 costs_by_decision[cost.decision_id].append(cost)
+            elif cost.decision_id is None:
+                episode_costs.append(cost)
+            else:
+                raise ValueError(
+                    f"cost {cost.cost_id!r} references an unknown decision"
+                )
 
         samples: list[TrainingSample] = []
         for decision in decisions:
@@ -241,6 +268,7 @@ class RolloutDataset:
                 for reward in selected_rewards
                 if reward.decision_id is None and reward.segment_id is None
             ),
+            episode_costs=tuple(_record_dict(cost) for cost in episode_costs),
             reward_verifier=verifier,
             reward_verifier_version=verifier_version,
         )
@@ -260,6 +288,7 @@ class RolloutDataset:
             "samples": [sample.to_dict() for sample in self.samples],
             "segment_rewards": [dict(reward) for reward in self.segment_rewards],
             "episode_rewards": [dict(reward) for reward in self.episode_rewards],
+            "episode_costs": [dict(cost) for cost in self.episode_costs],
         }
 
     def canonical_json(self) -> str:
@@ -279,6 +308,7 @@ class RolloutDataset:
             "reward_view": self.to_dict()["reward_view"],
             "segment_rewards": [dict(reward) for reward in self.segment_rewards],
             "episode_rewards": [dict(reward) for reward in self.episode_rewards],
+            "episode_costs": [dict(cost) for cost in self.episode_costs],
         }
         lines = [_canonical(header)]
         lines.extend(
