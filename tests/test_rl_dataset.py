@@ -55,6 +55,9 @@ def _finished_recorder() -> TrajectoryRecorder:
             status="closed",
         )
     )
+    recorder.add_segment(
+        Segment("segment-2", "ep-dataset", "verification", 6, status="closed")
+    )
     recorder.add_event(
         ExecutionEvent(
             "event-1",
@@ -90,6 +93,18 @@ def _finished_recorder() -> TrajectoryRecorder:
             "science",
             "v1",
             10,
+            evidence_refs=["event-2"],
+        )
+    )
+    recorder.add_reward(
+        RewardAnnotation(
+            "reward-unbound-segment-v1",
+            "ep-dataset",
+            0.8,
+            "science",
+            "v1",
+            10,
+            segment_id="segment-2",
             evidence_refs=["event-2"],
         )
     )
@@ -135,6 +150,10 @@ def test_dataset_projects_explicit_reward_joins_without_attributing_episode_rewa
     assert dataset.samples[1].terminal is True
     assert [item["annotation_id"] for item in dataset.episode_rewards] == [
         "reward-episode-v1"
+    ]
+    assert [item["annotation_id"] for item in dataset.segment_rewards] == [
+        "reward-segment-v1",
+        "reward-unbound-segment-v1",
     ]
     assert dataset.reward_verifier == "science"
     assert dataset.reward_verifier_version == "v1"

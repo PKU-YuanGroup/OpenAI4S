@@ -117,14 +117,16 @@ class TrainingSample:
 class RolloutDataset:
     """A deterministic, snapshot-bound projection for a trainer.
 
-    ``episode_rewards`` deliberately stays outside decision samples.  Turning
-    an episode or segment annotation into a per-token training target is an
-    algorithmic attribution choice and belongs to the external trainer.
+    ``segment_rewards`` and ``episode_rewards`` deliberately stay outside
+    decision samples when no exact decision join exists. Turning a segment or
+    episode annotation into a per-token training target is an algorithmic
+    attribution choice and belongs to the external trainer.
     """
 
     snapshot: DatasetSnapshot
     episode: Mapping[str, Any]
     samples: tuple[TrainingSample, ...]
+    segment_rewards: tuple[Mapping[str, Any], ...] = ()
     episode_rewards: tuple[Mapping[str, Any], ...] = ()
     reward_verifier: str | None = None
     reward_verifier_version: str | None = None
@@ -174,6 +176,12 @@ class RolloutDataset:
         rewards_by_decision: dict[str, list[RewardAnnotation]] = {
             item.decision_id: [] for item in decisions
         }
+        known_segment_ids = {item.segment_id for item in trajectory.segments}
+        segment_rewards = tuple(
+            item
+            for item in selected_rewards
+            if item.segment_id is not None and item.segment_id in known_segment_ids
+        )
         for reward in selected_rewards:
             if reward.decision_id in rewards_by_decision:
                 rewards_by_decision[reward.decision_id].append(reward)
@@ -227,6 +235,7 @@ class RolloutDataset:
             snapshot=snapshot,
             episode=_record_dict(trajectory.episode),
             samples=tuple(samples),
+            segment_rewards=tuple(_record_dict(reward) for reward in segment_rewards),
             episode_rewards=tuple(
                 _record_dict(reward)
                 for reward in selected_rewards
@@ -249,6 +258,7 @@ class RolloutDataset:
             "episode": dict(self.episode),
             "reward_view": reward_view,
             "samples": [sample.to_dict() for sample in self.samples],
+            "segment_rewards": [dict(reward) for reward in self.segment_rewards],
             "episode_rewards": [dict(reward) for reward in self.episode_rewards],
         }
 
@@ -267,6 +277,7 @@ class RolloutDataset:
             "snapshot": self.snapshot.to_dict(),
             "episode": dict(self.episode),
             "reward_view": self.to_dict()["reward_view"],
+            "segment_rewards": [dict(reward) for reward in self.segment_rewards],
             "episode_rewards": [dict(reward) for reward in self.episode_rewards],
         }
         lines = [_canonical(header)]

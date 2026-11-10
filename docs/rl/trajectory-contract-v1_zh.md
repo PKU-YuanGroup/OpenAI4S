@@ -137,7 +137,8 @@ reward view。
 `RolloutDataset` 是该边界上的 Trainer 投影。它为每个 PolicyDecision 生成一个
 `TrainingSample`，携带精确 Observation、Decision，以及关联的 Segment ID、ExecutionEvent
 ID、Decision/Segment Reward Annotation 和 Decision Cost。Episode 级 Annotation 保留在
-数据集 envelope 中，不复制到每个 Decision。调用方可以明确选择一个 verifier/version；
+数据集 envelope 中，不复制到每个 Decision；没有精确 Decision 关联的 Segment Annotation
+保留在 envelope 的 `segment_rewards` 中。调用方可以明确选择一个 verifier/version；
 省略选择器时保留所有版本化 Annotation。JSONL 首行是数据集 envelope，后续每行流式
 输出一个 sample。这个适配器不聚合 reward、不计算 advantage，也不填补缺失的
 token/logprob 证据。
