@@ -267,6 +267,10 @@ def test_bootstrap_selects_the_lab_settings_only_without_an_operator_document(
     data = tmp_path / "data"
     (data / "mhs-lab").mkdir(parents=True)
     monkeypatch.setenv("OPENAI4S_DATA_DIR", str(data))
+    # Another lab-surface test may deliberately disable discovery; this test
+    # exercises the settings selector itself and must make that precondition
+    # explicit rather than inheriting a process-wide environment toggle.
+    monkeypatch.delenv("OPENAI4S_OPENMHS", raising=False)
     monkeypatch.delenv("OPENAI4S_MHS_LAB_DIR", raising=False)
     monkeypatch.delenv("MHS_CONFIG", raising=False)
     openmhs.bootstrap()
