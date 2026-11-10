@@ -70,6 +70,10 @@ That is the `openai4s-data` named volume in `compose.yaml`, or the
 container, or scale the Deployment to zero, and back up the volume or the PVC
 before you start the 0.3.1 image.
 
+The current development tree opens schema **41**. Migrations 36 through 41
+add the RL trajectory snapshot, budget, and resource-admission records; they
+are additive and are applied after the 0.3.1 schema-35 boundary.
+
 ### Install 0.3.1 after the backup
 
 For an existing PyPI installation, activate its virtual environment and install
