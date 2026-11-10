@@ -616,5 +616,8 @@ def test_rollout_receipt_is_settled_when_sampler_fails(tmp_path) -> None:
         with pytest.raises(RuntimeError, match="sampler failed"):
             session.run(fail)
         assert store.rl.get_receipt("request-failed-receipt").state == "failed"
+        trajectory = session.recorder.snapshot()
+        assert trajectory.episode.status == "failed"
+        assert trajectory.execution_events[-1].kind == "episode.finished"
     finally:
         store.close()

@@ -17,7 +17,7 @@ from openai4s.agent.models import (
 )
 
 from .agent_sink import TrajectoryEventSink
-from .models import RunReceipt, Trajectory
+from .models import ExecutionEvent, RunReceipt, Trajectory
 from .recorder import TrajectoryRecorder
 
 
@@ -209,6 +209,20 @@ class RolloutSession:
 
     def finish(self, status: str = "completed") -> Trajectory:
         if not self._finished:
+            state = self.state
+            self.recorder.add_event(
+                ExecutionEvent(
+                    event_id=(f"{self.recorder.episode.episode_id}:episode.finished"),
+                    episode_id=self.recorder.episode.episode_id,
+                    kind="episode.finished",
+                    created_at=self.recorder.now_ms(),
+                    payload={
+                        "stop_reason": status,
+                        "completion": None,
+                        "turns": state.turn if state is not None else 0,
+                    },
+                )
+            )
             self.recorder.finish(status)
             self._settle_receipt(status)
             self._finished = True
