@@ -59,6 +59,8 @@ class RolloutSession:
         self.engine.event_sink = self.sink
         self.state: RunState | None = None
         self._finished = False
+        self._pending_observation: tuple[Message, ...] | None = None
+        self._pending_observation_turn: int | None = None
 
     def reset(
         self,
@@ -110,7 +112,12 @@ class RolloutSession:
 
     def observe(self) -> tuple[Message, ...]:
         state = self._state()
-        return tuple(dict(message) for message in self.engine.prepare_decision(state))
+        prepared = tuple(
+            dict(message) for message in self.engine.prepare_decision(state)
+        )
+        self._pending_observation = prepared
+        self._pending_observation_turn = state.turn
+        return prepared
 
     def step(
         self,
@@ -121,10 +128,18 @@ class RolloutSession:
         if self._finished:
             raise RuntimeError("rollout session is already finished")
         state = self._state()
-        prepared = tuple(
-            dict(message)
-            for message in (observation if observation is not None else self.observe())
-        )
+        if observation is None:
+            if self._pending_observation_turn == state.turn:
+                pending = self._pending_observation
+                if pending is None:
+                    raise RuntimeError("rollout observation cache is inconsistent")
+                prepared = tuple(dict(message) for message in pending)
+            else:
+                prepared = self.observe()
+        else:
+            prepared = tuple(dict(message) for message in observation)
+        self._pending_observation = None
+        self._pending_observation_turn = None
         result = self.engine.step(state, reply, observation=prepared)
         if result.terminal:
             self._emit_finished(result)

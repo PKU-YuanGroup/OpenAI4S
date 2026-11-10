@@ -50,6 +50,36 @@ def test_rollout_session_runs_external_sampler_and_exports_terminal_trajectory()
     assert session.export() == trajectory.canonical_json()
 
 
+def test_rollout_step_reuses_observation_prepared_by_previous_observe() -> None:
+    class _Context:
+        def __init__(self):
+            self.calls = 0
+
+        def prepare(self, state):
+            self.calls += 1
+            return tuple(state.messages) + (
+                {"role": "system", "content": f"prepared-{self.calls}"},
+            )
+
+    context = _Context()
+    engine = AgentEngine(
+        _NeverCalledModel(),
+        _Executor(),
+        context_policy=context,
+        max_turns=1,
+    )
+    recorder = TrajectoryRecorder(Episode("ep-observe-cache", "task", "session", 1))
+    session = RolloutSession(engine, recorder)
+    session.reset([{"role": "user", "content": "run"}])
+
+    observation = session.observe()
+    result = session.step(ModelReply(content="done"))
+
+    assert result.terminal
+    assert context.calls == 1
+    assert recorder.snapshot().observations[0].messages == observation
+
+
 def test_rollout_worker_releases_environment_and_exports_both_formats(tmp_path):
     def build_engine(_reset):
         return AgentEngine(_NeverCalledModel(), _Executor(), max_turns=1)
