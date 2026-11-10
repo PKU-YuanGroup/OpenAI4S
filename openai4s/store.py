@@ -147,6 +147,7 @@ from openai4s.storage.recovery import RecoveryJournalRepository
 from openai4s.storage.rl import (
     RLRepository,
     create_rl_budget_schema,
+    create_rl_resource_admission_schema,
     create_rl_schema,
     create_rl_snapshot_schema,
 )
@@ -1725,6 +1726,10 @@ class Store:
                     ),
                     39: ("rl_segment_parent", self._apply_rl_segment_parent),
                     40: ("rl_budget_ledger", self._apply_rl_budget_ledger),
+                    41: (
+                        "rl_resource_admission",
+                        self._apply_rl_resource_admission,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1760,6 +1765,10 @@ class Store:
     def _apply_rl_budget_ledger(self, conn: sqlite3.Connection) -> None:
         """Version 40: durable RL budget and receipt-bound allocations."""
         create_rl_budget_schema(conn)
+
+    def _apply_rl_resource_admission(self, conn: sqlite3.Connection) -> None:
+        """Version 41: durable RL resource admission snapshots."""
+        create_rl_resource_admission_schema(conn)
 
     def _apply_datapro_content_index(self, conn: sqlite3.Connection) -> None:
         """Version 16: lossless local indexing for DataPro responses."""

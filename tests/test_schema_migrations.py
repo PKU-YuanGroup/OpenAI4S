@@ -174,9 +174,33 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "rl_dataset_snapshots",
         "rl_segment_parent",
         "rl_budget_ledger",
+        "rl_resource_admission",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
+
+
+def test_v40_database_gets_resource_admission_tables_on_upgrade(tmp_path):
+    db = Config(data_dir=tmp_path).db_path
+    get_store(db).close()
+    with sqlite3.connect(str(db)) as connection:
+        connection.execute("DROP TABLE rl_resource_allocations")
+        connection.execute("DROP TABLE rl_resource_admissions")
+        connection.execute("DELETE FROM schema_migrations WHERE version=41")
+        connection.execute("PRAGMA user_version = 40")
+
+    upgraded = get_store(db)
+    try:
+        tables = {
+            row[0]
+            for row in upgraded._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert {"rl_resource_admissions", "rl_resource_allocations"} <= tables
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION
+    finally:
+        upgraded.close()
 
 
 def test_an_unversioned_database_reports_version_zero(plain_db):

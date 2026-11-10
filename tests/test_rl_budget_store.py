@@ -78,3 +78,24 @@ def test_store_backed_resource_admission_preserves_unknown_capacity_use(tmp_path
         assert restored.admit("allocation-next", request).status == "waiting"
     finally:
         reopened.close()
+
+
+def test_resource_admission_revision_conflict_does_not_leave_local_capacity_claim(
+    tmp_path,
+):
+    db_path = Config(data_dir=tmp_path).db_path
+    store = get_store(db_path)
+    capacity = ResourceCapacity(1, 0, 0)
+    first = store.rl.resource_admission("shared", capacity)
+    second = store.rl.resource_admission("shared", capacity)
+    request = ResourceRequest(cpu_cores=1)
+    first.admit("first", request, reserved_at=1)
+
+    with pytest.raises(ValueError, match="revision conflict"):
+        second.admit("second", request, reserved_at=2)
+    assert second.get("second") is None
+    assert second.get("first") is not None
+    assert second.admit("second", request, reserved_at=2).status == "waiting"
+    assert store.rl.resource_admission("shared", capacity).get("first") is not None
+    assert store.rl.resource_admission("shared", capacity).get("second") is None
+    store.close()

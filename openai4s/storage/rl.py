@@ -111,6 +111,9 @@ CREATE TABLE IF NOT EXISTS rl_budget_allocations (
 );
 CREATE INDEX IF NOT EXISTS ix_rl_budget_allocations_state
     ON rl_budget_allocations(budget_id, state);
+"""
+
+RL_RESOURCE_ADMISSION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS rl_resource_admissions (
     admission_id TEXT PRIMARY KEY,
     revision INTEGER NOT NULL CHECK(revision >= 1),
@@ -146,6 +149,13 @@ def create_rl_snapshot_schema(conn: sqlite3.Connection) -> None:
 def create_rl_budget_schema(conn: sqlite3.Connection) -> None:
     """Install the durable budget allocation snapshot tables."""
     for statement in RL_BUDGET_SCHEMA.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
+def create_rl_resource_admission_schema(conn: sqlite3.Connection) -> None:
+    """Install the durable resource admission snapshot tables."""
+    for statement in RL_RESOURCE_ADMISSION_SCHEMA.split(";"):
         if statement.strip():
             conn.execute(statement)
 
@@ -863,24 +873,29 @@ class RLRepository:
                 raise
 
     def load_resource_admission(self, admission_id: str) -> dict[str, Any] | None:
-        row = self._connection.execute(
-            "SELECT admission_id,revision,capacity FROM rl_resource_admissions "
-            "WHERE admission_id=?",
-            (admission_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        rows = self._connection.execute(
-            "SELECT payload FROM rl_resource_allocations WHERE admission_id=? "
-            "ORDER BY allocation_id",
-            (admission_id,),
-        ).fetchall()
-        return {
-            "admission_id": str(row["admission_id"]),
-            "revision": int(row["revision"]),
-            "capacity": json.loads(row["capacity"]),
-            "records": [json.loads(item["payload"]) for item in rows],
-        }
+        # Both SELECTs must observe the same snapshot. A writer replaces the
+        # header and all allocation rows in one transaction; taking the
+        # repository lock around both reads prevents a controller from
+        # combining a new revision with an older allocation set.
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT admission_id,revision,capacity FROM rl_resource_admissions "
+                "WHERE admission_id=?",
+                (admission_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            rows = self._connection.execute(
+                "SELECT payload FROM rl_resource_allocations WHERE admission_id=? "
+                "ORDER BY allocation_id",
+                (admission_id,),
+            ).fetchall()
+            return {
+                "admission_id": str(row["admission_id"]),
+                "revision": int(row["revision"]),
+                "capacity": json.loads(row["capacity"]),
+                "records": [json.loads(item["payload"]) for item in rows],
+            }
 
     def save_resource_admission(
         self,
@@ -946,6 +961,11 @@ class RLRepository:
                     )
                 self._connection.execute("COMMIT")
                 return revision
+            except sqlite3.IntegrityError as error:
+                self._connection.execute("ROLLBACK")
+                if "rl_resource_admissions.admission_id" in str(error):
+                    raise ValueError("resource admission revision conflict") from error
+                raise
             except Exception:
                 self._connection.execute("ROLLBACK")
                 raise
@@ -955,5 +975,6 @@ __all__ = [
     "RL_SCHEMA",
     "RLRepository",
     "create_rl_budget_schema",
+    "create_rl_resource_admission_schema",
     "create_rl_schema",
 ]

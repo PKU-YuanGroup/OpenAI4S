@@ -351,11 +351,25 @@ class DurableResourceAdmission:
     ) -> None:
         self.repository = repository
         self.admission_id = _text("admission_id", admission_id)
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self._lock = threading.RLock()
         persisted = repository.load_resource_admission(self.admission_id)
         if persisted is None:
-            self._admission = ResourceAdmission(capacity, clock_ms=clock_ms)
-            self._revision = self._persist(expected_revision=0)
-            return
+            self._admission = ResourceAdmission(capacity, clock_ms=self._clock_ms)
+            try:
+                self._revision = self._persist(expected_revision=0)
+                return
+            except ValueError as error:
+                if str(error) != "resource admission revision conflict":
+                    raise
+                persisted = repository.load_resource_admission(self.admission_id)
+                if persisted is None:
+                    raise
+        self._install_persisted(persisted, capacity)
+
+    def _install_persisted(
+        self, persisted: Mapping[str, Any], capacity: ResourceCapacity
+    ) -> None:
         persisted_capacity = persisted.get("capacity")
         if not isinstance(persisted_capacity, Mapping):
             raise ValueError("stored resource admission has invalid capacity")
@@ -391,7 +405,7 @@ class DurableResourceAdmission:
             else:
                 raise ValueError("stored resource admission contains invalid record")
         self._admission = ResourceAdmission.from_snapshot(
-            stored, records, clock_ms=clock_ms
+            stored, records, clock_ms=self._clock_ms
         )
         revision = persisted.get("revision")
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
@@ -409,24 +423,28 @@ class DurableResourceAdmission:
         *,
         reserved_at: int | None = None,
     ) -> AdmissionResult:
-        result = self._admission.admit(allocation_id, request, reserved_at=reserved_at)
-        if result.status == "admitted":
-            self._revision = self._persist()
-        return result
+        with self._lock:
+            return self._mutate(
+                lambda: self._admission.admit(
+                    allocation_id, request, reserved_at=reserved_at
+                )
+            )
 
     def bind_receipt(
         self, allocation_id: str, provider_receipt: str
     ) -> AdmissionRecord:
-        result = self._admission.bind_receipt(allocation_id, provider_receipt)
-        self._revision = self._persist()
-        return result
+        with self._lock:
+            return self._mutate(
+                lambda: self._admission.bind_receipt(allocation_id, provider_receipt)
+            )
 
     def start(
         self, allocation_id: str, *, started_at: int | None = None
     ) -> AdmissionRecord:
-        result = self._admission.start(allocation_id, started_at=started_at)
-        self._revision = self._persist()
-        return result
+        with self._lock:
+            return self._mutate(
+                lambda: self._admission.start(allocation_id, started_at=started_at)
+            )
 
     def finish(
         self,
@@ -435,22 +453,61 @@ class DurableResourceAdmission:
         terminal_at: int | None = None,
         state: Literal["completed", "unknown"] = "completed",
     ) -> AdmissionRecord:
-        result = self._admission.finish(
-            allocation_id, terminal_at=terminal_at, state=state
-        )
-        self._revision = self._persist()
-        return result
+        with self._lock:
+            return self._mutate(
+                lambda: self._admission.finish(
+                    allocation_id, terminal_at=terminal_at, state=state
+                )
+            )
 
     def release(self, allocation_id: str) -> AdmissionRecord:
-        result = self._admission.release(allocation_id)
-        self._revision = self._persist()
-        return result
+        with self._lock:
+            return self._mutate(lambda: self._admission.release(allocation_id))
 
     def get(self, allocation_id: str) -> AdmissionRecord | None:
-        return self._admission.get(allocation_id)
+        with self._lock:
+            return self._admission.get(allocation_id)
 
     def state(self) -> tuple[AdmissionRecord, ...]:
-        return self._admission.state()
+        with self._lock:
+            return self._admission.state()
+
+    def _mutate(self, operation: Callable[[], Any]) -> Any:
+        """Persist one local transition, restoring it if the CAS fails.
+
+        The in-process controller changes its state before the Store can run
+        the revision check. Without restoring the prior snapshot, a stale
+        controller would report capacity as occupied even though its write
+        was rejected by another writer.
+        """
+        before = self._admission.state()
+        try:
+            result = operation()
+        except BaseException:
+            self._admission = ResourceAdmission.from_snapshot(
+                self.capacity, before, clock_ms=self._clock_ms
+            )
+            raise
+        after = self._admission.state()
+        if after == before:
+            return result
+        try:
+            self._revision = self._persist()
+        except ValueError as error:
+            self._admission = ResourceAdmission.from_snapshot(
+                self.capacity, before, clock_ms=self._clock_ms
+            )
+            if "revision conflict" in str(error):
+                persisted = self.repository.load_resource_admission(self.admission_id)
+                if persisted is not None:
+                    self._install_persisted(persisted, self.capacity)
+            raise
+        except BaseException:
+            self._admission = ResourceAdmission.from_snapshot(
+                self.capacity, before, clock_ms=self._clock_ms
+            )
+            raise
+        return result
 
     def _persist(self, *, expected_revision: int | None = None) -> int:
         expected = self._revision if expected_revision is None else expected_revision
