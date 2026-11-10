@@ -40,6 +40,11 @@ Decision 也会保留它们。
 Engine/Recorder 和 workspace。Reset 元数据记录初始 Artifact 引用、配置与预算，但不暴露
 绝对 workspace 路径。
 
+`RolloutEnvironmentAdapter` 是这个环境之上的 JSON 安全 Trainer 边界，提供
+reset/observe/step/finish/release/export，以及只读的 reward/cost 投影。外部 Trainer
+不需要导入 Engine 的 Action 类或直接查询 SQLite；它不会计算 Reward、暴露 workspace
+路径，也不会复制第二套执行循环。
+
 `replay.py` 定义 `TrajectoryReplayer`。Event replay 支持 cursor，Decision replay 将每次
 采样和当时的 Observation 配对，Artifact replay 通过调用方提供的 checker 校验不可变版本
 引用。Execution replay 不会隐式执行，必须由宿主显式提供受控 runner。

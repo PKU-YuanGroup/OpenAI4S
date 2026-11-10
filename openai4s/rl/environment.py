@@ -11,8 +11,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from openai4s.agent.actions import CodeCell, FinalizeAction, NativeToolBatch
 from openai4s.agent.engine import AgentEngine
-from openai4s.agent.models import Message
+from openai4s.agent.models import EngineStep, Message, ModelReply
 
 from .models import Episode, Trajectory
 from .recorder import TrajectoryRecorder
@@ -191,6 +192,277 @@ class RolloutEnvironment:
         return path
 
 
+class RolloutEnvironmentAdapter:
+    """JSON-safe trainer boundary over :class:`RolloutEnvironment`.
+
+    The trainer should exchange observations, sampled replies, and detached
+    execution results; it should not need to import ``AgentEngine`` or inspect
+    ``Action``/``ExecutionOutcome`` objects.  This adapter owns that narrow
+    translation while the existing environment and engine retain ownership of
+    workspaces, permissions, kernels, and ledger writes.
+
+    Requests use one stable shape::
+
+        {"episode": {...}, "messages": [{"role": "user", "content": ...}]}
+
+    ``episode`` may also be an :class:`Episode` for in-process callers.  All
+    returned mappings are detached JSON values, and the workspace path is
+    deliberately never included in the response.
+    """
+
+    def __init__(self, environment: RolloutEnvironment):
+        if not isinstance(environment, RolloutEnvironment):
+            raise TypeError("environment must be a RolloutEnvironment")
+        self.environment = environment
+        self._session: RolloutSession | None = None
+        self._released = False
+
+    def reset(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Reset one Episode and return its first trainer observation."""
+
+        if self._session is not None and not self._released:
+            raise RuntimeError("environment adapter already has an active episode")
+        self._session = None
+        self._released = False
+        if not isinstance(request, Mapping):
+            raise TypeError("reset request must be a mapping")
+        episode = _episode(request.get("episode"))
+        messages = _messages(request.get("messages"))
+        session = self.environment.reset(
+            episode,
+            messages,
+            initial_artifacts=request.get("initial_artifacts"),
+            config=request.get("config"),
+            budget=request.get("budget"),
+            max_turns=request.get("max_turns"),
+            request_id=request.get("request_id"),
+        )
+        self._session = session
+        observation = session.observe()
+        return self._observation_response(observation)
+
+    def observe(self) -> dict[str, Any]:
+        """Prepare and return the exact context for the next policy call."""
+
+        session = self._active()
+        if self._released:
+            raise RuntimeError("rollout episode has already been released")
+        if session.finished:
+            return self._observation_response(()) | {
+                "terminal": True,
+                "status": "terminal",
+            }
+        return self._observation_response(session.observe())
+
+    def step(
+        self,
+        reply: ModelReply | Mapping[str, Any],
+        *,
+        observation: Any = None,
+    ) -> dict[str, Any]:
+        """Execute one externally sampled reply and return detached results.
+
+        ``observation`` is optional.  When omitted, the observation prepared by
+        the preceding :meth:`reset`/:meth:`observe` call is reused by the
+        underlying session, preserving the exact prompt hash captured in the
+        trajectory.
+        """
+
+        session = self._active()
+        if self._released:
+            raise RuntimeError("rollout episode has already been released")
+        prepared = None if observation is None else _messages(observation)
+        result = session.step(reply, observation=prepared)
+        response = _step_response(session, result)
+        if session.finished:
+            response["status"] = "terminal"
+        else:
+            response["status"] = "running"
+            response["next_observation"] = _messages(session.observe())
+            response["next_tools"] = _json(session.current_tools)
+        return response
+
+    def finish(self, status: str = "completed") -> dict[str, Any]:
+        """Explicitly terminalize the active Episode without scoring it."""
+
+        session = self._active()
+        session.finish(status)
+        released = self.environment.release(session)
+        self._released = True
+        return {
+            "episode": _json(released.episode.to_dict()),
+            "status": "terminal",
+            "stop_reason": released.episode.status,
+            "counts": _trajectory_counts(released),
+        }
+
+    def export(self, format: str = "json") -> dict[str, Any]:
+        """Return the worker's schema/hash-bound JSON or JSONL export."""
+
+        session = self._active()
+        if not session.finished:
+            raise RuntimeError("cannot export a running rollout")
+        # Import lazily to keep the environment module's construction path
+        # independent from the export implementation.
+        from .worker import RolloutWorker
+
+        exported = RolloutWorker.export(session.recorder.snapshot(), format)
+        return exported.to_dict()
+
+    def release(self) -> dict[str, Any]:
+        """Release a terminal Episode after inspecting its final step."""
+
+        session = self._active()
+        if self._released:
+            raise RuntimeError("rollout episode has already been released")
+        if not session.finished:
+            raise RuntimeError("cannot release an unfinished rollout session")
+        trajectory = self.environment.release(session)
+        self._released = True
+        return {
+            "episode": _json(trajectory.episode.to_dict()),
+            "status": "terminal",
+            "counts": _trajectory_counts(trajectory),
+        }
+
+    def rewards(
+        self,
+        *,
+        verifier: str | None = None,
+        verifier_version: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read annotations without computing or mutating reward."""
+
+        values = self._active().recorder.snapshot().rewards
+        return [
+            _json(value.to_dict())
+            for value in values
+            if (verifier is None or value.verifier == verifier)
+            and (verifier_version is None or value.verifier_version == verifier_version)
+        ]
+
+    def costs(self) -> list[dict[str, Any]]:
+        """Read measured cost evidence without estimating missing fields."""
+
+        return [
+            _json(value.to_dict()) for value in self._active().recorder.snapshot().costs
+        ]
+
+    @property
+    def finished(self) -> bool:
+        return self._session is not None and self._session.finished
+
+    def _active(self) -> RolloutSession:
+        if self._session is None:
+            raise RuntimeError("environment adapter must be reset first")
+        return self._session
+
+    def _observation_response(self, observation: Any) -> dict[str, Any]:
+        session = self._active()
+        state = session.state
+        assert state is not None
+        return {
+            "episode": _json(session.recorder.episode.to_dict()),
+            "turn": state.turn,
+            "max_turns": state.max_turns,
+            "observation": _messages(observation),
+            "tools": _json(session.current_tools),
+            "terminal": session.finished,
+            "status": "terminal" if session.finished else "running",
+        }
+
+
+# The short name mirrors the plan and keeps embedding code independent from
+# the concrete class name used by the environment implementation.
+EnvironmentAdapter = RolloutEnvironmentAdapter
+
+
+def _episode(value: Any) -> Episode:
+    if isinstance(value, Episode):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("reset request episode must be an Episode or mapping")
+    try:
+        return Episode(**dict(value))
+    except TypeError as exc:
+        raise ValueError(f"invalid episode: {exc}") from exc
+
+
+def _messages(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError("messages/observation must be a list or tuple")
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise TypeError(f"message {index} must be a mapping")
+        result.append(_json(dict(item)))
+    return result
+
+
+def _json(value: Any) -> Any:
+    """Round-trip a value through strict JSON and return a detached object."""
+
+    try:
+        result = json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise TypeError("trainer boundary values must be JSON-compatible") from exc
+    return result
+
+
+def _action(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, CodeCell):
+        return {"type": "code_cell", "language": value.language, "code": value.code}
+    if isinstance(value, FinalizeAction):
+        return {"type": "finalize", "call": _json(value.call.__dict__)}
+    if isinstance(value, NativeToolBatch):
+        return {
+            "type": "native_tool_batch",
+            "calls": [_json(call.__dict__) for call in value.calls],
+        }
+    raise TypeError(f"unsupported engine action {type(value)!r}")
+
+
+def _step_response(session: RolloutSession, result: EngineStep) -> dict[str, Any]:
+    state = session.state
+    assert state is not None
+    outcome = result.outcome
+    return {
+        "episode": _json(session.recorder.episode.to_dict()),
+        "turn": result.turn,
+        "observation": _messages(result.observation),
+        "action": _action(result.action),
+        "outcome": (
+            None
+            if outcome is None
+            else _json(
+                {
+                    "history_messages": list(outcome.history_messages),
+                    "observation": outcome.observation,
+                    "completion": outcome.completion,
+                    "stop_reason": outcome.stop_reason,
+                }
+            )
+        ),
+        "completion": _json(result.completion),
+        "stop_reason": result.stop_reason,
+        "terminal": session.finished,
+        "state": {"turn": state.turn, "max_turns": state.max_turns},
+    }
+
+
+def _trajectory_counts(trajectory: Trajectory) -> dict[str, int]:
+    return {
+        "observations": len(trajectory.observations),
+        "decisions": len(trajectory.decisions),
+        "segments": len(trajectory.segments),
+        "execution_events": len(trajectory.execution_events),
+        "rewards": len(trajectory.rewards),
+        "costs": len(trajectory.costs),
+    }
+
+
 def _text_mapping(name: str, value: Mapping[str, str]) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be a mapping")
@@ -213,4 +485,9 @@ def _json_mapping(name: str, value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-__all__ = ["EpisodeReset", "RolloutEnvironment"]
+__all__ = [
+    "EnvironmentAdapter",
+    "EpisodeReset",
+    "RolloutEnvironment",
+    "RolloutEnvironmentAdapter",
+]

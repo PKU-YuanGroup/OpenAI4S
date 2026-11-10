@@ -49,6 +49,12 @@ Engine/Recorder pair and workspace for each Episode reset. Reset metadata
 records initial artifact references, configuration, and budget without
 exposing the absolute workspace path.
 
+`RolloutEnvironmentAdapter` is the JSON-safe Trainer boundary over that
+environment. It exposes reset/observe/step/finish/release/export plus read-only
+reward and cost projections, so an external Trainer does not need to import
+Engine action classes or inspect SQLite. It never computes reward, hides the
+workspace path, or creates a second execution loop.
+
 `replay.py` defines `TrajectoryReplayer`. Event replay is cursorable, decision
 replay pairs each sampled decision with the exact observation, and artifact
 replay checks immutable version references through a caller-supplied checker.

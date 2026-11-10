@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from openai4s.agent.engine import AgentEngine
@@ -137,6 +138,16 @@ class RolloutSession:
 
     def observe(self) -> tuple[Message, ...]:
         state = self._state()
+        # Observation preparation can be requested by both a transport layer
+        # and a trainer retry.  Reuse the exact detached context for the
+        # current turn so context compaction and dynamic tool projection run
+        # once, and the recorded prompt hash remains the one sampled by the
+        # policy.
+        if (
+            self._pending_observation_turn == state.turn
+            and self._pending_observation is not None
+        ):
+            return tuple(dict(message) for message in self._pending_observation)
         prepared = tuple(
             dict(message) for message in self.engine.prepare_decision(state)
         )
@@ -185,6 +196,12 @@ class RolloutSession:
         result = self.engine.step(
             state, reply, observation=prepared, tools=prepared_tools
         )
+        # A trainer-facing step is a complete lifecycle unit. If the action
+        # consumed the last allowed turn without producing a domain terminal,
+        # close the Episode here instead of requiring a synthetic extra reply
+        # merely to discover ``max_turns``.
+        if not result.terminal and state.turn >= state.max_turns:
+            result = replace(result, stop_reason="max_turns")
         if result.terminal:
             self._emit_finished(result)
         return result
