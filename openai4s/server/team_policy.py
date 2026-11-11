@@ -212,6 +212,7 @@ INSTANCE_CONFIG_PATHS = frozenset(
     {
         "/config/llm",
         "/model-profiles",
+        "/model-profiles/discover",
         "/models/default",
         "/search/config",
         "/datapro/config",

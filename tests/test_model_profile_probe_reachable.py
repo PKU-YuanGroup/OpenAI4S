@@ -176,6 +176,41 @@ def test_readiness_costs_no_network(api, monkeypatch):
     assert call("GET", "/model-profiles")["code"] == 200
 
 
+def test_endpoint_model_discovery_route_answers_a_real_listing(api):
+    """Driven against a real loopback endpoint, so the frozen shape that
+    `docs/response-schemas.json` publishes for this route is one the service
+    actually produced rather than the shape a stub was told to return."""
+    runner, call = api
+    server, port, hits = _answering(
+        200,
+        json.dumps({"data": [{"id": "gpt-discovered"}, {"id": "gpt-other"}]}),
+        "application/json",
+    )
+    try:
+        result = call(
+            "POST",
+            "/model-profiles/discover",
+            {
+                "provider": "chatgpt",
+                "base_url": f"http://127.0.0.1:{port}/v1",
+                "api_key": "never-persisted",
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["code"] == 200
+    assert result["body"] == {
+        "models": ["gpt-discovered", "gpt-other"],
+        "default_model": "gpt-discovered",
+        "count": 2,
+        "source": f"http://127.0.0.1:{port}/v1/models",
+    }
+    assert hits == ["/v1/models"]
+    assert call("GET", "/model-profiles")["body"]["profiles"] == []
+
+
 def test_the_probe_route_answers(api, monkeypatch):
     """The route existed and was reachable; nothing called it."""
     runner, call = api
@@ -388,6 +423,8 @@ def _answering(status, body, content_type):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+
+        do_GET = do_POST  # noqa: N815 - the model-list lookup is a GET
 
         def log_message(self, *_args):
             return None

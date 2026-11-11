@@ -45,6 +45,27 @@ export async function completeOnboarding(
   );
 }
 
+export interface DiscoveredModels {
+  models: string[];
+  /** The protocol default when the endpoint serves it, else the first id. */
+  defaultModel: string;
+}
+
+/** Every failure is a non-2xx, which `api()` already throws as `ApiError`. */
+export async function discoverModelProfile(
+  body: Record<string, unknown>,
+): Promise<DiscoveredModels> {
+  const result = await api("/model-profiles/discover", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  const models = Array.isArray(result.models)
+    ? result.models.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  const preferred = String(result.default_model || "").trim();
+  return { models, defaultModel: models.includes(preferred) ? preferred : models[0] || "" };
+}
+
 export async function saveModelProfile(
   body: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {

@@ -100,6 +100,14 @@ describe("M-01 wizard state machine", () => {
     expect(after.testClicked).toBe(true);
   });
 
+  it("counts a model-list fetch as a provider request without deciding Test", () => {
+    const start = run([{ type: "hydrate", complete: false }]);
+    const fetched = reduceWizard(start, { type: "providerRequest" });
+    expect(fetched.providerRequests).toBe(1);
+    expect(fetched.testClicked).toBe(false);
+    expect(fetched.decided).toEqual(start.decided);
+  });
+
   it("drops extra credential fields from path choice so state JSON cannot hold a key", () => {
     const sneaky = {
       ...PATH,

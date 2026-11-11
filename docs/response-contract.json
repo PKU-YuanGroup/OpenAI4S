@@ -1920,6 +1920,19 @@
         404
       ]
     },
+    "/model-profiles/discover": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        400,
+        404
+      ]
+    },
     "/models": {
       "content_types": [
         "application/json"

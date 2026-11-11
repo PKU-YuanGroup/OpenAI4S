@@ -12,6 +12,7 @@ import {
   activateExistingModelProfile,
   activateModelProfile,
   completeOnboarding,
+  discoverModelProfile,
   fetchOnboarding,
   mergeReadinessRefresh,
   probeModelProfile,
@@ -81,33 +82,111 @@ function PathStep({
   busy,
   onChoose,
   onSaveNew,
+  onProviderRequest,
 }: {
   status: OnboardingStatus;
   state: WizardState;
   busy: boolean;
   onChoose: (path: PathChoice) => void;
   onSaveNew: (path: PathChoice, apiKey: string) => void;
+  /** A model-list fetch is about to contact the provider. */
+  onProviderRequest: () => void;
 }) {
   const keyRef = useRef<HTMLInputElement>(null);
   const protocols = modelProtocolOptions(status.protocols);
   const [kind, setKind] = useState<PathChoice["kind"]>(state.path?.kind || "existing");
   const [provider, setProvider] = useState(state.path?.provider || protocols[0]?.value || "chatgpt");
   const [name, setName] = useState(state.path?.name || "");
+  // Name edits do not invalidate a fetch, so Continue reads the latest value
+  // after awaiting one rather than the name from the render that started it.
+  const latestName = useRef(name);
+  latestName.current = name;
   const [model, setModel] = useState(state.path?.model || "");
   const [baseUrl, setBaseUrl] = useState(state.path?.baseUrl || "");
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState("");
+  const discoveryRun = useRef(0);
+  const discoveryPending = useRef(false);
+  const autoModel = useRef("");
   const locals = status.local_model_catalog.endpoints;
 
-  const submitCloud = () => {
+  useEffect(() => () => { discoveryRun.current += 1; }, []);
+
+  // Invalidate synchronously on edits, not after a render: a late response
+  // must never fill (or save) a model from the previous endpoint/key/protocol.
+  const invalidateDiscovery = (clearOptions = true) => {
+    discoveryRun.current += 1;
+    discoveryPending.current = false;
+    setDiscovering(false);
+    setDiscoveryError("");
+    if (clearOptions) {
+      setModelOptions([]);
+      if (autoModel.current) setModel("");
+      autoModel.current = "";
+    }
+  };
+
+  const fetchModels = async (): Promise<string> => {
+    if (busy || discoveryPending.current) return "";
+    const run = ++discoveryRun.current;
+    discoveryPending.current = true;
+    setDiscovering(true);
+    setDiscoveryError("");
+    onProviderRequest();
+    try {
+      const { models, defaultModel } = await discoverModelProfile({
+        provider,
+        base_url: baseUrl.trim(),
+        api_key: keyRef.current?.value || "",
+      });
+      if (run !== discoveryRun.current) return "";
+      setModelOptions(models);
+      if (!models.length) {
+        setDiscoveryError(ot("onboarding.path.noModels"));
+        return "";
+      }
+      const selected = model.trim() || defaultModel;
+      if (!model.trim() && selected) {
+        autoModel.current = selected;
+        setModel(selected);
+      }
+      return selected;
+    } catch (error) {
+      if (run === discoveryRun.current) {
+        setModelOptions([]);
+        const failure = wizardErrorFromUnknown(error);
+        setDiscoveryError(formatWizardError(failure));
+      }
+      return "";
+    } finally {
+      if (run === discoveryRun.current) {
+        discoveryPending.current = false;
+        setDiscovering(false);
+      }
+    }
+  };
+
+  const submitCloud = async () => {
+    if (busy || discoveryPending.current) return;
+    if (!name.trim()) {
+      setDiscoveryError(t("toast.specialist.enterName"));
+      return;
+    }
     const apiKey = keyRef.current?.value || "";
+    const selectedModel = model.trim() || await fetchModels();
+    // Discovery is optional when a model was typed, but an empty/failed list
+    // must not silently fall through to the protocol's unrelated default.
+    if (!selectedModel) return;
     if (keyRef.current) keyRef.current.value = "";
     onSaveNew(
       {
         kind: "cloud",
         profileId: "",
         provider,
-        model: model.trim(),
+        model: selectedModel,
         baseUrl: baseUrl.trim(),
-        name: name.trim(),
+        name: latestName.current.trim(),
       },
       apiKey,
     );
@@ -121,7 +200,7 @@ function PathStep({
             key={item}
             type="button"
             class={"onb-step" + (kind === item ? " active" : "")}
-            onClick={() => setKind(item)}
+            onClick={() => { invalidateDiscovery(); setKind(item); }}
           >
             {ot("onboarding.path." + item)}
           </button>
@@ -167,7 +246,10 @@ function PathStep({
           <select
             class="cust-input"
             value={provider}
-            onChange={(e) => setProvider((e.currentTarget as HTMLSelectElement).value)}
+            onChange={(e) => {
+              setProvider((e.currentTarget as HTMLSelectElement).value);
+              invalidateDiscovery();
+            }}
           >
             {protocols.map((item) => (
               <option value={item.value} key={item.value}>
@@ -179,25 +261,51 @@ function PathStep({
           <input
             class="cust-input"
             value={baseUrl}
-            onInput={(e) => setBaseUrl((e.currentTarget as HTMLInputElement).value)}
+            onInput={(e) => {
+              setBaseUrl((e.currentTarget as HTMLInputElement).value);
+              invalidateDiscovery();
+            }}
             placeholder={t("cust.models.baseUrlPlaceholder")}
           />
           <label class="skill-lbl">{t("label.model")}</label>
           <input
             class="cust-input"
+            list="onboarding-model-options"
             value={model}
-            onInput={(e) => setModel((e.currentTarget as HTMLInputElement).value)}
-            placeholder={t("cust.models.modelPlaceholder2")}
+            onInput={(e) => {
+              const value = (e.currentTarget as HTMLInputElement).value;
+              if (value !== autoModel.current) autoModel.current = "";
+              invalidateDiscovery(false);
+              setModel(value);
+            }}
+            placeholder={ot("onboarding.path.modelPlaceholder")}
           />
+          {modelOptions.length ? (
+            <datalist id="onboarding-model-options">
+              {modelOptions.map((item) => <option value={item} key={item} />)}
+            </datalist>
+          ) : null}
+          <div class="onb-model-discovery">
+            <button
+              type="button"
+              class="outline-btn small"
+              disabled={busy || discovering}
+              onClick={() => void fetchModels()}
+            >
+              {discovering ? ot("onboarding.path.fetchingModels") : ot("onboarding.path.fetchModels")}
+            </button>
+            {discoveryError ? <span class="onb-model-discovery-error">{discoveryError}</span> : null}
+          </div>
           <label class="skill-lbl">{t("cust.models.label.apiKey")}</label>
           <input
             ref={keyRef}
             class="cust-input"
             type="password"
             autocomplete="off"
+            onInput={() => invalidateDiscovery()}
             placeholder={t("cust.models.keyPlaceholderUnset")}
           />
-          <button type="button" class="solid-btn" disabled={busy} onClick={submitCloud}>
+          <button type="button" class="solid-btn" disabled={busy || discovering} onClick={submitCloud}>
             {ot("onboarding.next")}
           </button>
         </div>
@@ -693,6 +801,7 @@ export function WizardHost() {
                 busy={busy}
                 onChoose={choosePath}
                 onSaveNew={onSaveNew}
+                onProviderRequest={() => dispatch({ type: "providerRequest" })}
               />
             ) : null}
             {state.step === "test" ? (
