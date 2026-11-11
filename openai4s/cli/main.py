@@ -1544,10 +1544,16 @@ def _prompt_search() -> tuple[str | None, str]:
 
     print(
         "Web search: 1) Doubao (Agent Plan key)  2) Tavily (API key)  "
-        "3) You.com (free; key optional)  4) built-in keyless engines only"
+        "3) You.com (free; key optional)  4) built-in keyless engines only  5) Parallel (keyless)"
     )
-    answer = input("Choose 1-4, or press Enter to keep the current setup: ").strip()
-    choice = {"1": "doubao", "2": "tavily", "3": "you", "4": "builtin"}.get(answer)
+    answer = input("Choose 1-5, or press Enter to keep the current setup: ").strip()
+    choice = {
+        "1": "doubao",
+        "2": "tavily",
+        "3": "you",
+        "4": "builtin",
+        "5": "parallel",
+    }.get(answer)
     if choice == "doubao":
         return choice, getpass.getpass("Agent Plan key (input hidden): ")
     if choice == "tavily":
@@ -2752,7 +2758,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pi.add_argument(
         "--search",
-        choices=("doubao", "tavily", "you", "builtin"),
+        choices=("doubao", "tavily", "you", "builtin", "parallel"),
         help="web search: Doubao (Agent Plan key), or the backup engine to try "
         "first (builtin = keyless engines only)",
     )

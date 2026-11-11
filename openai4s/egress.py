@@ -119,6 +119,7 @@ EGRESS_GROUPS: list[dict] = [
             "open.feedcoopapi.com",
             "ollama.com",
             "ydc-index.io",
+            "mcp.parallel.ai",
             "api.tavily.com",
         ],
         "domains": [
@@ -130,6 +131,7 @@ EGRESS_GROUPS: list[dict] = [
             # You.com: keyless tier, and the exact host that receives YDC_API_KEY.
             "api.you.com",
             "ydc-index.io",
+            "mcp.parallel.ai",
             # Tavily's fixed endpoint; it receives the Tavily key.
             "api.tavily.com",
             "bing.com",

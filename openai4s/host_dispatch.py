@@ -1994,7 +1994,7 @@ class HostDispatcher:
                 fallback=lambda q, **kw: webtools.web_search(q, engines=engines, **kw),
             )
         except DoubaoSearchQuotaError:
-            chosen = confirm_quota_fallback(
+            fallback_engines = confirm_quota_fallback(
                 store=self.store,
                 frame_id=self.frame_id,
                 engines=engines,
@@ -2002,13 +2002,13 @@ class HostDispatcher:
                 delegated=self._child_execution_policy is not None,
                 action_context=self._current_action_context(),
             )
-            if chosen is None:
+            if fallback_engines is None:
                 raise
             return webtools.web_search(
                 query,
                 num_results=num_results,
                 timeout=timeout,
-                engines=engines[engines.index(chosen) :],
+                engines=fallback_engines,
             )
 
     def _fetch_web(self, url: str, **options: Any) -> dict[str, Any]:

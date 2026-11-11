@@ -197,6 +197,30 @@ def read_body_capped(
     on_truncated: Callable[[], BaseException],
     on_unbounded: Callable[[], BaseException] | None = None,
 ) -> bytes:
+    """Read the complete bounded HTTP body."""
+    return b"".join(
+        iter_body_capped(
+            response,
+            limit=limit,
+            exchange=exchange,
+            on_timeout=on_timeout,
+            on_oversize=on_oversize,
+            on_truncated=on_truncated,
+            on_unbounded=on_unbounded,
+        )
+    )
+
+
+def iter_body_capped(
+    response: Any,
+    *,
+    limit: int,
+    exchange: HTTPExchangeDeadline,
+    on_timeout: Callable[[], BaseException],
+    on_oversize: Callable[[], BaseException],
+    on_truncated: Callable[[], BaseException],
+    on_unbounded: Callable[[], BaseException] | None = None,
+) -> Iterator[bytes]:
     """Read one response body under a byte cap and an absolute deadline.
 
     The single bounded reader for this package.  Its consumers differ only in
@@ -257,7 +281,6 @@ def read_body_capped(
             raise on_timeout() from None
         raise on_truncated()
 
-    chunks: list[bytes] = []
     total = 0
     while True:
         if exhausted():
@@ -292,10 +315,9 @@ def read_body_capped(
         total += len(chunk)
         if total > limit:
             raise on_oversize()
-        chunks.append(chunk)
+        yield chunk
     if exchange.expired:
         raise on_timeout() from None
-    return b"".join(chunks)
 
 
 def _response_socket(response: Any) -> socket.socket | None:

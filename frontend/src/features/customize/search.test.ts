@@ -53,3 +53,14 @@ describe("search engine list", () => {
     ]);
   });
 });
+
+it("retains the optional Parallel engine in configuration edits", () => {
+  const config = readSearchConfig({
+    engines: [
+      { id: "parallel", enabled: true, usable: true, needs_key: false, accepts_key: false },
+      { id: "builtin", enabled: true, usable: true },
+    ],
+  });
+  expect(config.engines.map((engine) => engine.id)).toEqual(["parallel", "builtin"]);
+  expect(engineConfigBody(config, { toggle: "parallel" }).enabled.parallel).toBe(false);
+});
