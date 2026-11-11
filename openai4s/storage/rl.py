@@ -577,12 +577,17 @@ class RLRepository:
 
     def get_segment(self, segment_id: str) -> Segment | None:
         """Return one durable segment projection for lifecycle validation."""
-        row = self._connection.execute(
-            "SELECT payload FROM rl_segments WHERE segment_id=?", (segment_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        return _record_from_row(row, Segment)
+        # The Store connection is shared by all rollout lanes.  Reads must
+        # use the same lock as lifecycle writes; otherwise a concurrent
+        # ``BEGIN IMMEDIATE`` on this connection can interleave with the
+        # SELECT and expose an incomplete transaction to a second worker.
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload FROM rl_segments WHERE segment_id=?", (segment_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return _record_from_row(row, Segment)
 
     def append_execution_event(self, value: ExecutionEvent) -> ExecutionEvent:
         """Allocate and append under one transaction, including exact retries."""
