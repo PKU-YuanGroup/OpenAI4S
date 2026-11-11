@@ -365,6 +365,24 @@ def _command_failure_detail(result: CommandResult) -> str:
     return detail[:240]
 
 
+def _rejects_subcommand(result: CommandResult, subcommand: str) -> bool:
+    """Whether Ark CLI refused ``subcommand`` itself as an unknown command.
+
+    Reads the raw streams rather than the redacted display detail: a CLI may
+    print its JSON error on stdout beside unrelated stderr noise, put a line
+    before the error, or carry the message as a JSON string whose quotes
+    arrive escaped.
+    """
+
+    pattern = re.compile(
+        r"""unknown (?:sub)?command \\?["']""" + re.escape(subcommand) + r"""\\?["']""",
+        re.IGNORECASE,
+    )
+    return any(
+        pattern.search(stream or "") for stream in (result.stderr, result.stdout)
+    )
+
+
 def _device_payload(value: str) -> dict[str, str]:
     """Read Ark's base64 ``code=...&state=...`` envelope when present."""
 
@@ -476,7 +494,15 @@ class ArkCliBridge:
         *,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         cancel_event: threading.Event | None = None,
+        unsupported_code: str | None = None,
     ) -> CommandResult:
+        """Run one fixed command.
+
+        ``unsupported_code`` lets a caller with a fallback learn that this
+        CLI version does not know the command's second token (the subcommand
+        under its domain); every other failure keeps its usual code.
+        """
+
         executable = self.executable()
         if not executable:
             raise ArkCliError("arkcli_not_installed", "Ark CLI is not installed")
@@ -510,6 +536,15 @@ class ArkCliBridge:
                     "Volcengine authorization succeeded, but Ark CLI still needs "
                     "a Project selection",
                 )
+            if (
+                unsupported_code
+                and len(args) > 1
+                and _rejects_subcommand(result, str(args[1]))
+            ):
+                raise ArkCliError(
+                    unsupported_code,
+                    f"This Ark CLI version does not support {args[0]} {args[1]}",
+                )
             reason = _command_failure_detail(result)
             message = "Ark CLI could not complete the request"
             if reason:
@@ -518,9 +553,17 @@ class ArkCliBridge:
         return result
 
     def _json(
-        self, args: Sequence[str], *, timeout_s: float = _DEFAULT_TIMEOUT_S
+        self,
+        args: Sequence[str],
+        *,
+        timeout_s: float = _DEFAULT_TIMEOUT_S,
+        unsupported_code: str | None = None,
     ) -> Any:
-        result = self._run((*args, "--format", "json"), timeout_s=timeout_s)
+        result = self._run(
+            (*args, "--format", "json"),
+            timeout_s=timeout_s,
+            unsupported_code=unsupported_code,
+        )
         try:
             return json.loads(result.stdout)
         except (TypeError, ValueError) as error:
@@ -711,7 +754,16 @@ class ArkCliBridge:
 
         if not _PROFILE_NAME.fullmatch(profile_name):
             raise ArkCliError("ark_profile_invalid", "Ark CLI profile name is invalid")
-        selected = self._json(("profile", "keys", "list", "--profile", profile_name))
+        profile_args = ("list", "--profile", profile_name)
+        try:
+            selected = self._json(
+                ("profile", "apikey", *profile_args),
+                unsupported_code="arkcli_profile_apikey_unsupported",
+            )
+        except ArkCliError as error:
+            if error.code != "arkcli_profile_apikey_unsupported":
+                raise
+            selected = self._json(("profile", "keys", *profile_args))
         selected_map = _mapping(selected)
         masked = _text(
             _named(selected_map, "default_api_key", "defaultApiKey", "DefaultApiKey"),
