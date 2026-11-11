@@ -22,6 +22,7 @@
 | [`ws/`](ws/) | WebSocket 游标协议、handler 注册表、`connectWS`。 |
 | [`artifacts/`](artifacts/) | F-17 Files + 版本缓存 + 科学渲染器胶水（M-03）。 |
 | [`notebook/`](notebook/) | Notebook 面板：cell 合并/live 协议、按 producing_cell_id 键控的 CellList、kernel chips/REPL。 |
+| [`lab/`](lab/) | 与 Notebook 并列的实验室面板：OpenMHS 模拟实验室（设备与接入方式、实时回执、结果图表、证据校验、操作员急停/复位）。 |
 | [`timeline/`](timeline/) | F-15 Action Timeline：sanitize* / merge、虚拟化 ledger 孤岛、工作台 WS。 |
 | [`autocomplete/`](autocomplete/) | F-12 作曲框（`@/#/`）与编辑器自动补全。关键词表来自 F-08 `editorKeywords`。 |
 | [`send/`](send/) | F-11 发送全链、turn ticket、步骤/计划/权限/候选卡片、admission 追踪器。 |

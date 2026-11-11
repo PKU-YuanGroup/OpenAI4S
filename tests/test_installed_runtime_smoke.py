@@ -29,6 +29,7 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -580,6 +581,41 @@ def test_the_browser_expectation_names_the_session_and_both_exact_versions(tmp_p
     assert document["png"]["version_id"] == "v-png"
     assert document["png"]["filename"] == "figure-1.png"
     assert "token" not in json.dumps(document).lower()
+
+
+@pytest.mark.parametrize("browser_cache", ["/tmp/shared browsers", "0"])
+def test_browser_cache_survives_home_isolation_without_caller_hooks(
+    tmp_path, monkeypatch, browser_cache
+):
+    scenario = _scenario(tmp_path)
+    scenario._prepare_dirs()
+    scenario.env_base = {
+        "HOME": "/home/caller",
+        "PATH": "/usr/bin",
+        "PLAYWRIGHT_BROWSERS_PATH": browser_cache,
+        "NODE_OPTIONS": "--require=caller.js",
+        "PYTHONPATH": "/caller/source",
+        "OPENAI4S_TEST_API_KEY": "caller-secret",
+    }
+    scenario.daemon = SimpleNamespace(port=12345, token=TOKEN)
+    launched = []
+
+    def launch(argv, **options):
+        launched.append(options["env"])
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(smoke.subprocess, "run", launch)
+    scenario.step_browser_open()
+
+    assert len(launched) == 1
+    env = launched[0]
+    assert env["PLAYWRIGHT_BROWSERS_PATH"] == browser_cache
+    assert env["HOME"] == str(scenario.home)
+    assert env["OPENAI4S_DATA_DIR"] == str(scenario.data_dir)
+    assert env["OPENAI4S_BROWSER_URL"] == "http://127.0.0.1:12345/"
+    for name in ("NODE_OPTIONS", "PYTHONPATH", "OPENAI4S_TEST_API_KEY"):
+        assert name not in env
+    assert scenario.checks["browser_open"] == smoke.PASSED
 
 
 def test_a_bundle_runtime_launches_and_stops_through_the_bundled_cli(

@@ -63,6 +63,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`kernel/`](./kernel/) | 常驻 Python/R worker 的所在地。语言无关的 manager 协议也在这里，还有环境选择、沙箱集成和 Cell 内的 Host RPC。 |
 | [`llm/`](./llm/) | 供应商中立的 LLM 客户端。capabilities、标准化的消息与工具，以及标准库 transport，都架在每家供应商各自的 wire 适配器之上。 |
 | [`mcp_servers/`](./mcp_servers/) | 内置的纯标准库 stdio MCP 服务器：既有用于演示和测试的示例 fixture `example_server.py`，也有可部署的 `protein_design/` 后端适配器——其重型模型依赖始终留在核心之外。 |
+| [`mhs_lab/`](./mhs_lab/) | 可选的 OpenMHS 模拟实验室（核心从不导入）：两台以 `mhs.driver` 包编写的模拟仪器、实验室管理进程、设备卡以及实验室面板的数据。需要 OpenMHS SDK。 |
 | [`orchestration/`](./orchestration/) | 集群控制平面：被请求的工作是什么、为其中一次尝试授予了什么资源，以及任何资源平面都要呈现的 backend Protocol。它的定义性特征在于它**不**包含什么——一条被检查的规则（INV-2）把调度器的每一个词都挡在核心的源码与 import 图之外，好让做策略的代码长不出带调度器形状的假设。 |
 | [`sdk/`](./sdk/) | 注入 Python Cell 的兼容 `host` facade 和远程计算命名空间。 |
 | [`security/`](./security/) | 沙箱和子进程环境隔离。它也筛查代码与内容、检查注入，并提供这些层要用的策略辅助模块。每一层都是独立的，其中有几层会失败即放行。 |

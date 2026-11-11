@@ -90,7 +90,16 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "AVAILABLE_SEARCH_ENGINES",
         }
     ),
-    "openai4s.mcp_client": frozenset({"disconnect_if_initialized", "manager"}),
+    "openai4s.mcp_client": frozenset(
+        {
+            "disconnect_if_initialized",
+            "manager",
+            # Operator lab discovery shares the bounded transport and filtered
+            # environment through public operations, not connection internals.
+            "connector_environment",
+            "list_stdio_tools",
+        }
+    ),
     "openai4s.permissions": frozenset(
         {"PermissionBroker", "broker", "guardian_denial_history"}
     ),

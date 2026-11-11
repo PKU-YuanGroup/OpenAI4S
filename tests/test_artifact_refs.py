@@ -276,7 +276,7 @@ def test_the_number_of_references_is_bounded_and_says_when_it_cuts(tmp_path):
 
 
 def test_the_legacy_spelling_still_works_and_says_it_is_unpinned(tmp_path):
-    """Deprecated; kept until `LEGACY_REF_REMOVED_IN` (0.4.0). It resolves
+    """Deprecated; kept until `LEGACY_REF_REMOVED_IN` (1.1.0). It resolves
     through the artifact's latest *version* rather than the live path, so at
     least the bytes sent are a version that exists rather than whatever a
     concurrent cell left mid-write.

@@ -85,6 +85,7 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 
 ## 📣 News
 
+- **`2026-11-08`** 🔬 **`v1.0.0` pre-release — the OpenMHS lab** — a major update: OpenAI4S now ships [OpenMHS](https://mhs.openai4s.org) (the open-source Model Hardware Standard) as a git submodule. The new **Lab** tab beside the Notebook runs simulated instruments under endpoint-enforced limits, e-stops and hash-chained receipts, and installs any of **746 devices** from the [OpenMHS market](https://mhs.openai4s.org/market/) in one click or one command (`openai4s lab add <id>`), through native MHS tools or an MCP connector. → [OpenMHS guide](docs/openmhs.md)
 - **`2026-10-18`** 📁 **[`v0.3.1`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1) — local project folders and portable history** — link source folders, browse saved conversation history, import scientific datasets with checksum verification, and work with **611 bundled Skills**. Linux and Windows/WSL2 packages are on GitHub, Python packages on PyPI, and the public container image on GHCR. macOS uses PyPI while signing and notarization are deferred. The database moves from schema 32 to 35; read **[Upgrading to 0.3.1](docs/upgrading.md)** before the first start.
 - **`2026-09`** 🧭 **`v0.3.0` — the new workbench, and the first Windows package** — the Preact/TypeScript workbench replaces the `app.js` monolith as the default UI, and the release adds the first **Windows/WSL2 zip** beside the Linux tarball. Every local daemon now requires its access token: the `OPENAI4S_REQUIRE_TOKEN=0` loopback opt-out is gone. Interactive HTML reports run on a separate sandboxed origin, Notebook cells keep the exact artifact versions they produced, long-context compaction actually lands and survives a restart, delegated sub-agents inherit their environment and leave durable, exportable cell records, and Auto Mode admits budget atomically and stops a run that makes no progress. The single-cell RNA analysis Skill brings the total to 604. The Apple Silicon **macOS image** is an ad-hoc-signed preview, not a notarized one. The database schema moves from 27 to 32, so read **[Upgrading from 0.2.x](docs/upgrading.md)** before the first start.
 - **`2026-08-24`** 🚀 **`v0.2.0` — the multi-platform release** — one release, two desktop packages: the Apple Silicon **`.dmg`** and a relocatable **Linux `x86_64` tarball** carrying the same embedded Python and science stack (the Windows/WSL2 zip is built and under stabilization — it ships in a coming release). Underneath: **Auto Mode** with a Guardian review boundary, honest **completion-evidence reconciliation** (a crashed cell can no longer render as a clean success), the **MCP Streamable HTTP** transport with the Volcengine DataPro connector and Doubao web search, **Anthropic Messages SSE streaming**, the pinned **561-recipe bioSkills collection** (603 Skills in all, installable anywhere via `npx`), a trajectory-ledger view in the workbench, Docker/Kubernetes deployment, `openai4s --version`, and the interrupt-signal train that makes a running R cell reliably stoppable on every platform.
@@ -227,6 +228,18 @@ Download the [complete 0.3.1 Windows ZIP](https://github.com/PKU-YuanGroup/OpenA
 - Cold-start performance. The unmodified full browser smoke did not pass: it exceeded its 20-second queue-admission wait. WSL service connection timeouts were also seen under concurrent load.
 
 **Native Windows is not supported, and the program refuses to start a kernel there** rather than warning and proceeding — it spawns POSIX subprocesses, the R channel rides file descriptors 3 and 4 through a shell redirection, and the sandbox has no Windows backend. WSL2 reports as Linux, so this package runs the same build every other platform runs. If you do not have WSL2 yet, the launcher stops and tells you the exact command (`wsl --install`, from an Administrator PowerShell). Details: **[Supported platforms](docs/platforms.md)**.
+
+### 🔬 OpenMHS lab: 746 simulated devices
+
+```bash
+git clone --recursive https://github.com/PKU-YuanGroup/OpenAI4S.git && cd OpenAI4S
+./setup.sh && source .venv/bin/activate
+openai4s lab add labs/tiagocoutinho__julabo   # any id from https://mhs.openai4s.org/market/
+openai4s serve                               # Lab tab → Device market → Install
+```
+
+The `third_party/OpenMHS` submodule is found automatically (no `PYTHONPATH`). Devices run on simulators or fake backends;
+hardware stays an explicit operator decision. Details: [OpenMHS guide](docs/openmhs.md).
 
 ### 🐳 Docker and Kubernetes
 

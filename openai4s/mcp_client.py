@@ -322,6 +322,13 @@ def _connector_environment(
     return env
 
 
+def connector_environment(
+    explicit: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """Build the filtered child environment shared by managed connectors and labs."""
+    return _connector_environment(explicit)
+
+
 class MCPConnection:
     def __init__(
         self,
@@ -788,6 +795,20 @@ class MCPConnection:
         if not isinstance(res, dict):
             raise MCPError("prompts/get returned a non-object result")
         return res
+
+
+def list_stdio_tools(
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float = 30.0,
+) -> list[dict]:
+    """Discover tools through one bounded stdio connection, then reap its child."""
+    connection = MCPConnection(command, env=env, timeout=timeout)
+    try:
+        return connection.list_tools()
+    finally:
+        connection.close()
 
 
 class MCPManager:
