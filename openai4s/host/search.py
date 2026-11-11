@@ -38,13 +38,15 @@ def confirm_quota_fallback(
     action_context: dict[str, Any],
     permission_broker=None,
 ) -> list[str] | None:
-    """Return the allowed backup chain starting at the chosen engine.
+    """Return the approved backup chain starting at the chosen engine.
 
     ``engines`` is the switched-on chain in the user's order; Tavily without a
     key is left out because it cannot answer. Engines are checked against
     remembered rules first (an ``allow`` picks that engine, a ``deny`` removes
     it from the offer); only then, and only with a person present, is the user
-    asked.
+    asked. After the chosen engine the chain only continues through engines
+    that carry their own ``allow`` rule: approving one provider is not consent
+    to send the query to the ones behind it.
     """
 
     candidates = [
@@ -67,9 +69,14 @@ def confirm_quota_fallback(
         for engine in candidates
     }
     offered = [engine for engine in candidates if decisions[engine] != "deny"]
+
+    def chain_from(index: int) -> list[str]:
+        later = offered[index + 1 :]
+        return [offered[index], *(e for e in later if decisions[e] == "allow")]
+
     for index, engine in enumerate(offered):
         if decisions[engine] == "allow":
-            return offered[index:]
+            return chain_from(index)
     if not offered or delegated:
         return None
     if permission_broker is None:
@@ -99,4 +106,4 @@ def confirm_quota_fallback(
     if not gate.get("allow"):
         return None
     choice = gate.get("choice") or offered[0]
-    return offered[offered.index(choice) :] if choice in offered else None
+    return chain_from(offered.index(choice)) if choice in offered else None

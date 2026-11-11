@@ -22,7 +22,7 @@ import json
 import os
 from typing import Any
 
-from openai4s.webtools import AVAILABLE_SEARCH_ENGINES as SEARCH_ENGINES
+from openai4s.webtools import AVAILABLE_SEARCH_ENGINES
 from openai4s.webtools import SEARCH_ENGINES as DEFAULT_SEARCH_ENGINES
 
 SETTING_KEY = "search_engines"
@@ -48,9 +48,10 @@ class SearchSettingsError(ValueError):
 
 def _default() -> dict[str, Any]:
     return {
-        "order": list(SEARCH_ENGINES),
+        "order": list(AVAILABLE_SEARCH_ENGINES),
         "enabled": {
-            engine: engine in DEFAULT_SEARCH_ENGINES for engine in SEARCH_ENGINES
+            engine: engine in DEFAULT_SEARCH_ENGINES
+            for engine in AVAILABLE_SEARCH_ENGINES
         },
     }
 
@@ -70,9 +71,9 @@ def load(store) -> dict[str, Any]:
         stored = {}
     if not isinstance(stored, dict):
         stored = {}
-    order = [e for e in stored.get("order") or [] if e in SEARCH_ENGINES]
+    order = [e for e in stored.get("order") or [] if e in AVAILABLE_SEARCH_ENGINES]
     order = list(dict.fromkeys(order))
-    order += [e for e in SEARCH_ENGINES if e not in order]
+    order += [e for e in AVAILABLE_SEARCH_ENGINES if e not in order]
     enabled_raw = stored.get("enabled")
     enabled_raw = enabled_raw if isinstance(enabled_raw, dict) else {}
     enabled = {
@@ -81,7 +82,7 @@ def load(store) -> dict[str, Any]:
             if isinstance(enabled_raw.get(e), bool)
             else e in DEFAULT_SEARCH_ENGINES
         )
-        for e in SEARCH_ENGINES
+        for e in AVAILABLE_SEARCH_ENGINES
     }
     return {"order": order, "enabled": enabled}
 
@@ -127,20 +128,20 @@ def save(store, *, order: Any, enabled: Any) -> dict[str, Any]:
     if (
         not isinstance(order, list)
         or not all(isinstance(e, str) for e in order)
-        or sorted(order) != sorted(SEARCH_ENGINES)
+        or sorted(order) != sorted(AVAILABLE_SEARCH_ENGINES)
     ):
         raise SearchSettingsError(
-            f"order must list each of {', '.join(SEARCH_ENGINES)} exactly once"
+            f"order must list each of {', '.join(AVAILABLE_SEARCH_ENGINES)} exactly once"
         )
     if not isinstance(enabled, dict) or not all(
-        isinstance(enabled.get(e), bool) for e in SEARCH_ENGINES
+        isinstance(enabled.get(e), bool) for e in AVAILABLE_SEARCH_ENGINES
     ):
         raise SearchSettingsError("enabled must map every engine to true or false")
     config = {
         "order": list(order),
-        "enabled": {e: enabled[e] for e in SEARCH_ENGINES},
+        "enabled": {e: enabled[e] for e in AVAILABLE_SEARCH_ENGINES},
     }
-    if not any(usable(store, e, config["enabled"]) for e in SEARCH_ENGINES):
+    if not any(usable(store, e, config["enabled"]) for e in AVAILABLE_SEARCH_ENGINES):
         raise SearchSettingsError(
             "at least one search engine must stay on and usable "
             "(Tavily counts only with an API key)"
@@ -164,19 +165,19 @@ def choose_primary(store, engine: str) -> dict[str, Any]:
     the list as it was.
     """
 
-    if engine not in SEARCH_ENGINES:
+    if engine not in AVAILABLE_SEARCH_ENGINES:
         raise SearchSettingsError(f"unknown search engine {engine!r}")
     config = load(store)
     order = [engine] + [e for e in config["order"] if e != engine]
     enabled = dict(config["enabled"])
     enabled[engine] = True
     if engine == "builtin":
-        enabled = {e: e == "builtin" for e in SEARCH_ENGINES}
+        enabled = {e: e == "builtin" for e in AVAILABLE_SEARCH_ENGINES}
     return save(store, order=order, enabled=enabled)
 
 
 #: First-run setup's one search decision: Doubao, or a backup engine first.
-SETUP_CHOICES = ("doubao",) + SEARCH_ENGINES
+SETUP_CHOICES = ("doubao",) + AVAILABLE_SEARCH_ENGINES
 
 
 def apply_setup_choice(store, choice: str, key: str = "") -> dict[str, Any]:
@@ -195,7 +196,7 @@ def apply_setup_choice(store, choice: str, key: str = "") -> dict[str, Any]:
 
         datapro.save_agent_plan_key(store, key)
         return project(store)
-    if choice not in SEARCH_ENGINES:
+    if choice not in AVAILABLE_SEARCH_ENGINES:
         raise SearchSettingsError(
             f"search choice must be one of {', '.join(SETUP_CHOICES)}"
         )

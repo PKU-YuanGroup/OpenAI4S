@@ -26,6 +26,39 @@ SOURCE = {
 pytestmark = pytest.mark.stubbed_backend
 
 
+@pytest.fixture(autouse=True)
+def _no_pooled_sessions():
+    """Each test starts and ends without a reused Parallel MCP session."""
+
+    def drain():
+        with parallel_search._idle_lock:
+            parked = [connection for _, connection, _ in parallel_search._idle]
+            parallel_search._idle.clear()
+        for connection in parked:
+            connection.close()
+
+    drain()
+    yield
+    drain()
+
+
+def _no_other_engines(monkeypatch):
+    """Record, instead of reaching, the engines a Parallel failure hands over to."""
+    tried = []
+
+    def you(*args):
+        tried.append("you")
+        return []
+
+    def builtin(*args):
+        tried.append("builtin")
+        return [], "", None
+
+    monkeypatch.setattr(webtools, "_you_search", you)
+    monkeypatch.setattr(webtools, "_builtin_search", builtin)
+    return tried
+
+
 @pytest.fixture
 def peer():
     observations = []
@@ -117,6 +150,7 @@ def test_native_host_returns_before_stream_eof(tmp_path, monkeypatch, peer, path
     monkeypatch.setattr(parallel_search, "ENDPOINT", root + path)
     # Only the fixture's loopback destination bypasses SSRF in this synthetic test.
     monkeypatch.setattr(webtools, "guard_url", lambda url: None)
+    tried = _no_other_engines(monkeypatch)
     host = HostDispatcher(Config(data_dir=tmp_path), frame_id="parallel-test")
     try:
         host.store.seed_default_permission_rules()
@@ -135,8 +169,13 @@ def test_native_host_returns_before_stream_eof(tmp_path, monkeypatch, peer, path
             assert result["results"] == [
                 {"url": SOURCE["url"], "title": SOURCE["title"], "snippet": PASSAGE}
             ]
+            assert tried == []
         else:
-            assert "-32042" in result["error"]
+            # A failing Parallel hands over to the next switched-on engine and
+            # keeps its reason in the note instead of ending the whole search.
+            assert result["count"] == 0
+            assert "Parallel: " in result["note"] and "-32042" in result["note"]
+            assert tried == ["you", "builtin"]
         for _ in range(100):
             if observations:
                 break
@@ -145,7 +184,6 @@ def test_native_host_returns_before_stream_eof(tmp_path, monkeypatch, peer, path
         assert [body["method"] for body, _ in requests] == [
             "initialize",
             "notifications/initialized",
-            "tools/list",
             "tools/call",
         ]
         assert all(
@@ -177,6 +215,7 @@ def test_search_deadline_spans_handshake_and_session_recovery(
     root, requests, _ = peer
     monkeypatch.setattr(parallel_search, "ENDPOINT", root + path)
     monkeypatch.setattr(webtools, "guard_url", lambda url: None)
+    _no_other_engines(monkeypatch)
     host = HostDispatcher(Config(data_dir=tmp_path), frame_id="deadline")
     try:
         host.store.seed_default_permission_rules()
@@ -185,7 +224,7 @@ def test_search_deadline_spans_handshake_and_session_recovery(
         reply = host("web_search", [{"query": "fixture query", "timeout": 1.2}])
         elapsed = time.monotonic() - start
         assert elapsed < 1.6, (elapsed, [req["method"] for req, _ in requests])
-        assert "error" in reply
+        assert reply["count"] == 0 and "Parallel: " in reply["note"]
         methods = [req["method"] for req, _ in requests]
         if path == "/slow-handshake":
             assert methods == ["initialize", "notifications/initialized"]
@@ -193,7 +232,6 @@ def test_search_deadline_spans_handshake_and_session_recovery(
             assert methods == [
                 "initialize",
                 "notifications/initialized",
-                "tools/list",
                 "tools/call",
                 "initialize",
             ]
@@ -226,9 +264,6 @@ def test_results_match_the_other_engines_shape(monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def list_tools(self):
-            return [{"name": "web_search"}]
-
         def call_tool(self, name, arguments):
             rows = [
                 {
@@ -243,6 +278,12 @@ def test_results_match_the_other_engines_shape(monkeypatch):
                 "text": "",
                 "raw": {"structuredContent": {"results": rows}},
             }
+
+        def set_deadline(self, deadline):
+            pass
+
+        def faulted(self):
+            return False
 
         def close(self):
             return True
@@ -564,20 +605,20 @@ def test_quota_fallback_honors_provider_denials_on_the_wire(
         search_settings.save(
             host.store, order=order, enabled={e: e != "tavily" for e in order}
         )
-        host.store.set_permission_rule(
-            scope="global",
-            scope_id="",
-            tool=FALLBACK_PERMISSION,
-            pattern="you",
-            decision="allow",
-        )
-        if deny_parallel:
+        # Each backup carries its own decision: the chain behind an approved
+        # engine only continues through engines that were approved too.
+        decisions = {
+            "you": "allow",
+            "parallel": "deny" if deny_parallel else "allow",
+            "builtin": "allow",
+        }
+        for engine, decision in decisions.items():
             host.store.set_permission_rule(
                 scope="global",
                 scope_id="",
                 tool=FALLBACK_PERMISSION,
-                pattern="parallel",
-                decision="deny",
+                pattern=engine,
+                decision=decision,
             )
         result = host("web_search", [{"query": "fixture query", "timeout": 2}])
         if deny_parallel:
@@ -591,3 +632,39 @@ def test_quota_fallback_honors_provider_denials_on_the_wire(
             assert result["count"] == 0 and "no results" in result["note"]
     finally:
         host.store.close()
+
+
+def test_a_second_search_reuses_the_session(monkeypatch, peer):
+    root, requests, _ = peer
+    monkeypatch.setattr(parallel_search, "ENDPOINT", root + "/success")
+    monkeypatch.setattr(webtools, "guard_url", lambda url: None)
+    for _ in range(2):
+        rows = parallel_search.search("fixture query", 5, 2)
+        assert [row["url"] for row in rows] == [SOURCE["url"]]
+    assert [body["method"] for body, _ in requests] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/call",
+        "tools/call",
+    ]
+
+
+def test_a_failed_search_does_not_park_its_session(monkeypatch, peer):
+    root, requests, _ = peer
+    monkeypatch.setattr(parallel_search, "ENDPOINT", root + "/error")
+    monkeypatch.setattr(webtools, "guard_url", lambda url: None)
+    for _ in range(2):
+        with pytest.raises(MCPError, match="-32042"):
+            parallel_search.search("fixture query", 5, 2)
+    assert parallel_search._idle == []
+    assert [body["method"] for body, _ in requests].count("initialize") == 2
+
+
+def test_an_expired_idle_session_is_not_reused(monkeypatch, peer):
+    root, requests, _ = peer
+    monkeypatch.setattr(parallel_search, "ENDPOINT", root + "/success")
+    monkeypatch.setattr(webtools, "guard_url", lambda url: None)
+    parallel_search.search("fixture query", 5, 2)
+    monkeypatch.setattr(parallel_search, "_IDLE_TTL", 0.0)
+    parallel_search.search("fixture query", 5, 2)
+    assert [body["method"] for body, _ in requests].count("initialize") == 2

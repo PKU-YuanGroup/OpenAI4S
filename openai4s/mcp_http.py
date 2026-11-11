@@ -608,6 +608,12 @@ class MCPHTTPConnection:
             # un-initialized and answers ``-32002`` forever.
             self._initialized = False
 
+    def set_deadline(self, deadline: float | None) -> None:
+        """Bound every later exchange by a new absolute monotonic deadline, so
+        one session can be reused across separately budgeted operations."""
+        with self._lock:
+            self._deadline = deadline
+
     def alive(self) -> bool:
         return not self._closed
 

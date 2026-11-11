@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 from openai4s import __version__
@@ -14,6 +15,53 @@ USER_AGENT = (
     f"OpenAI4S/{__version__} "
     "(https://github.com/PKU-YuanGroup/OpenAI4S; Parallel search)"
 )
+#: Per-exchange ceiling; every search also bounds the session by its deadline.
+_EXCHANGE_TIMEOUT = 15.0
+#: Idle sessions are reused so a search costs one round trip, not three. They
+#: are short-lived (a stale server-side session would only cost a re-handshake)
+#: and few (concurrent searches each check out their own).
+_IDLE_TTL = 60.0
+_MAX_IDLE = 2
+_idle: list[tuple[str, MCPHTTPConnection, float]] = []
+_idle_lock = threading.Lock()
+
+
+def _checkout(deadline: float) -> MCPHTTPConnection:
+    now = time.monotonic()
+    stale: list[MCPHTTPConnection] = []
+    reused = None
+    with _idle_lock:
+        while _idle:
+            endpoint, connection, parked = _idle.pop()
+            if (
+                reused is None
+                and endpoint == ENDPOINT
+                and now - parked < _IDLE_TTL
+                and not connection.faulted()
+            ):
+                reused = connection
+            else:
+                stale.append(connection)
+    for connection in stale:
+        connection.close()
+    if reused is not None:
+        reused.set_deadline(deadline)
+        return reused
+    return MCPHTTPConnection(
+        ENDPOINT,
+        headers={"User-Agent": USER_AGENT},
+        timeout=_EXCHANGE_TIMEOUT,
+        deadline=deadline,
+    )
+
+
+def _checkin(connection: MCPHTTPConnection) -> None:
+    connection.set_deadline(None)
+    with _idle_lock:
+        if len(_idle) < _MAX_IDLE and not connection.faulted():
+            _idle.append((ENDPOINT, connection, time.monotonic()))
+            return
+    connection.close()
 
 
 def search(query: str, num_results: int, timeout: float) -> list[dict]:
@@ -21,18 +69,16 @@ def search(query: str, num_results: int, timeout: float) -> list[dict]:
 
     Fast is the service's documented anonymous default. No credentials, extra
     transports, fetch tools or provider fallback are introduced here. MCP and
-    HTTP failures surface through WebSearchTool's existing soft-error envelope.
+    HTTP failures raise ``MCPError``; ``webtools.web_search`` records the reason
+    and moves on to the next switched-on engine.
     """
     if timeout <= 0:
         return []
-    deadline = time.monotonic() + timeout
-    connection = MCPHTTPConnection(
-        ENDPOINT, headers={"User-Agent": USER_AGENT}, timeout=timeout, deadline=deadline
-    )
+    connection = _checkout(time.monotonic() + timeout)
+    healthy = False
     try:
-        tools = connection.list_tools()
-        if not any(tool.get("name") == "web_search" for tool in tools):
-            raise MCPError("Parallel MCP does not expose web_search")
+        # A missing tool already fails the call with a JSON-RPC error, so no
+        # separate tools/list probe is spent on every search.
         reply = connection.call_tool(
             "web_search", {"objective": query, "search_queries": [query]}
         )
@@ -72,6 +118,10 @@ def search(query: str, num_results: int, timeout: float) -> list[dict]:
             )
             if len(out) >= num_results:
                 break
+        healthy = True
         return out
     finally:
-        connection.close()
+        if healthy:
+            _checkin(connection)
+        else:
+            connection.close()

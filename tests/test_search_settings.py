@@ -214,11 +214,33 @@ def test_a_remembered_deny_removes_that_engine_from_the_offer(tmp_path):
     st = _store(tmp_path)
     _rule(st, "you", "deny")
     broker = _Broker(answer={"allow": True, "choice": "builtin"})
-    assert _confirm(st, broker, engines=("builtin", "you", "parallel")) == [
+    assert _confirm(st, broker, engines=("builtin", "you", "parallel")) == ["builtin"]
+    assert [c["id"] for c in broker.gates[0]["choices"]] == ["builtin", "parallel"]
+
+
+def test_the_chain_after_the_pick_needs_its_own_approval(tmp_path):
+    st = _store(tmp_path)
+    broker = _Broker(answer={"allow": True, "choice": "builtin"})
+    # Parallel sits behind the pick with no rule of its own: approving builtin
+    # must not also send the query to mcp.parallel.ai.
+    assert _confirm(st, broker, engines=("you", "builtin", "parallel")) == ["builtin"]
+    assert [c["id"] for c in broker.gates[0]["choices"]] == [
+        "you",
         "builtin",
         "parallel",
     ]
-    assert [c["id"] for c in broker.gates[0]["choices"]] == ["builtin", "parallel"]
+
+
+def test_a_remembered_allow_carries_only_later_allowed_engines(tmp_path):
+    st = _store(tmp_path)
+    _rule(st, "you", "allow")
+    _rule(st, "builtin", "allow")
+    broker = _Broker(reachable=False)
+    assert _confirm(st, broker, engines=("you", "parallel", "builtin")) == [
+        "you",
+        "builtin",
+    ]
+    assert broker.gates == []
 
 
 @pytest.mark.parametrize("delegated, reachable", [(True, True), (False, False)])

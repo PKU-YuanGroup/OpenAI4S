@@ -273,7 +273,7 @@ for what the gate stands in front of.
 
 `OPENAI4S_EGRESS` (`off`) — `allowlist` applies the host domain allowlist to `web_fetch`, `web_search`, and authorized `host.bash`. In that mode a new Python or R Cell is also admitted only when the kernel sandbox is enforced, its self-test passed, and `network_policy` is `blocked`. Anything else, including a remote kernel, is refused before the Cell runs with `egress_boundary_unavailable`. `off` leaves Cell execution unchanged. See [Security](security.md).
 
-**Web search engines.** With an Agent Plan key configured, Doubao Search always answers first. Behind it, `web_search` tries the backup engines in the order set in Settings → Network: Tavily (only with a key), You.com and the built-in keyless engines (DuckDuckGo → Bing → DuckDuckGo lite → Mojeek). All three are on by default; each can be reordered or switched off, but at least one usable engine stays on. You.com without a key uses the free tier at `api.you.com` (100 searches a day per IP); with a key (`YDC_API_KEY`, the Network tab, or `OPENAI4S_SECRET_SEARCH_YOU_API_KEY` through the env broker) it uses `ydc-index.io`. Both hosts are on the built-in egress allowlist, `ydc-index.io` as an exact host because it receives the key (as is `api.tavily.com`; both keyed engines POST through the same egress, SSRF and no-redirect guards as `web_fetch`). After a 429 from You.com it is skipped for the server's `Retry-After` or an hour, and one You.com request is capped at 5 s. When Doubao's quota or rate limit is spent, the user is asked on an approval card whether to fall back and to which switched-on engine; a remembered answer applies later without asking, and with nobody to ask (a delegated child, a run with no UI, an active Auto Mode run) the search returns the quota error. A rejected Agent Plan key never falls back.
+**Web search engines.** With an Agent Plan key configured, Doubao Search always answers first. Behind it, `web_search` tries the backup engines in the order set in Settings → Network: Tavily (only with a key), You.com and the built-in keyless engines (DuckDuckGo → Bing → DuckDuckGo lite → Mojeek). All three are on by default; each can be reordered or switched off, but at least one usable engine stays on. You.com without a key uses the free tier at `api.you.com` (100 searches a day per IP); with a key (`YDC_API_KEY`, the Network tab, or `OPENAI4S_SECRET_SEARCH_YOU_API_KEY` through the env broker) it uses `ydc-index.io`. Both hosts are on the built-in egress allowlist, `ydc-index.io` as an exact host because it receives the key (as is `api.tavily.com`; both keyed engines POST through the same egress, SSRF and no-redirect guards as `web_fetch`). After a 429 from You.com it is skipped for the server's `Retry-After` or an hour, and one You.com request is capped at 5 s. When Doubao's quota or rate limit is spent, the user is asked on an approval card whether to fall back and to which switched-on engine; after that engine the search continues only through engines that carry their own remembered approval, so approving one provider never sends the query to the ones behind it. A remembered answer applies later without asking, and with nobody to ask (a delegated child, a run with no UI, an active Auto Mode run) the search returns the quota error. A rejected Agent Plan key never falls back.
 
 **Parallel (opt-in, keyless).** Enable Parallel in Settings → Network and move
 it before the other backup engines, or run `openai4s init --search parallel`.
@@ -282,11 +282,13 @@ agent to search for that topic. Existing defaults and saved engine switches
 stay unchanged; Parallel starts off. Configured Ollama and Doubao still take
 priority, including their credential errors and the Doubao quota approval.
 Queries go anonymously to `https://mcp.parallel.ai/mcp` using its `web_search`
-tool, with an OpenAI4S User-Agent on initialization, notification, discovery
-and search requests. The service documents Fast as its anonymous default;
+tool, with an OpenAI4S User-Agent on initialization, notification and search
+requests. A session idle for under a minute is reused, so a later search costs
+one request. The service documents Fast as its anonymous default;
 OpenAI4S does not set paid API search options or expose Parallel fetch tools.
-Returned excerpts become ordinary search snippets. Parallel errors surface as
-normal tool errors; they do not silently switch provider. The network switch,
+Returned excerpts become ordinary search snippets, capped like the other
+engines'. A Parallel error hands over to the next switched-on backup engine, as
+Tavily and You.com do, and its reason is kept in the result's note. The network switch,
 SSRF checks and egress fence apply to every request; the exact MCP host is in
 the built-in Web search allowlist. Existing clients submitting the legacy
 engine list remain supported and preserve the saved Parallel on/off choice.
@@ -296,7 +298,8 @@ engine list remain supported and preserve the saved Parallel on/off choice.
 已配置的 Ollama 和 Doubao 仍优先使用，凭证错误与额度回退审批规则不变。
 查询通过 `https://mcp.parallel.ai/mcp` 匿名发送，使用服务默认的 Fast 模式；
 返回的摘录作为搜索摘要。网络开关、SSRF 检查和精确主机出口限制适用于每次请求，
-请求标明来自 OpenAI4S。服务错误按普通工具错误返回，不会静默切换提供商。
+请求标明来自 OpenAI4S；空闲不到一分钟的会话会被复用。Parallel 出错时与 Tavily、You.com 一样交给下一个已开启的备用引擎，
+错误原因保留在结果的 note 里。
 
 `OPENAI4S_KERNEL_SANDBOX` (`auto`) — `enforce` fails closed when Seatbelt or bubblewrap cannot prove the boundary; `auto` warns and continues unsandboxed; `off` disables the OS boundary. Under `OPENAI4S_EGRESS=allowlist`, Cell admission needs the enforced, self-tested, `network_policy=blocked` posture. `OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1` reports `raw_allowed` and is refused while allowlist is on.
 
