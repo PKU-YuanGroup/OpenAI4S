@@ -16885,6 +16885,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if sub == "/model-profiles" and method == "GET":
                 self._json(self._model_profiles_payload())
                 return
+            if sub == "/model-profiles/discover" and method == "POST":
+                try:
+                    self._json(model_profiles.discover_models(self._body()))
+                except ModelProfileError as exc:
+                    # Endpoint/network failures are expected while a user is
+                    # typing a custom URL. Return a bounded, actionable error;
+                    # the wizard catches it and falls back to manual entry.
+                    self._json(
+                        {
+                            "models": [],
+                            "error": str(exc),
+                            "code": (
+                                "model_discovery_failed"
+                                if exc.status_code >= 500
+                                else "model_discovery_invalid"
+                            ),
+                        },
+                        exc.status_code,
+                    )
+                return
             if sub == "/model-profiles" and method == "POST":
                 try:
                     self._json(model_profiles.create(self._body()), 201)

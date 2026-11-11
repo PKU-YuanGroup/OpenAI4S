@@ -21,6 +21,7 @@ def test_public_recognition_is_appended_after_commit_contributors():
         "difficulttopickaname",
         "ChampionZhong",
         "Pandasama2025",
+        "georgeatparallel",
     ]
 
 
@@ -40,6 +41,7 @@ def test_a_recognized_login_the_api_already_lists_is_not_duplicated():
         "difficulttopickaname",
         "ChampionZhong",
         "Pandasama2025",
+        "georgeatparallel",
     ]
 
 

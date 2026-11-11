@@ -1030,9 +1030,12 @@ def _you_search(query: str, num_results: int, timeout: float) -> list[dict]:
 #: the keyless scraper chain (DuckDuckGo → Bing → DuckDuckGo lite → Mojeek).
 #: `openai4s.search_settings` stores the user's order and on/off choices.
 SEARCH_ENGINES = ("tavily", "you", "builtin")
+# Available in settings, but opt-in so working keyless defaults stay unchanged.
+AVAILABLE_SEARCH_ENGINES = SEARCH_ENGINES + ("parallel",)
 _ENGINE_LABELS = {
     "tavily": "Tavily",
     "you": "You.com",
+    "parallel": "Parallel",
     "builtin": "DuckDuckGo/Bing/Mojeek",
 }
 
@@ -1080,6 +1083,7 @@ def web_search(
             "Settings → Network",
         }
     tried: list[str] = []
+    failures: list[str] = []
     for engine in engines:
         if _time_left(deadline) <= 0:
             break
@@ -1092,6 +1096,17 @@ def web_search(
         elif engine == "you":
             results = _dedupe(_you_search(query, num_results, _req_timeout(deadline)))
             source = "you.com"
+        elif engine == "parallel":
+            from openai4s.parallel_search import search
+
+            try:
+                results = _dedupe(search(query, num_results, _req_timeout(deadline)))
+            except Exception as error:  # noqa: BLE001 - any failure → next engine
+                # Like Tavily/You.com, a failing engine hands over to the next
+                # switched-on one; unlike them the reason is kept for the note.
+                failures.append(f"Parallel: {error}")
+                results = []
+            source = "parallel"
         elif engine == "builtin":
             results, source, note = _builtin_search(query, num_results, deadline)
         else:
@@ -1108,6 +1123,7 @@ def web_search(
             if note:
                 out["note"] = note
             return out
+    failed = f" Failed: {'; '.join(failures)}." if failures else ""
     return {
         "query": query,
         "count": 0,
@@ -1116,7 +1132,7 @@ def web_search(
             f"no results from any engine ({', '.join(tried) or 'none reached'}) "
             "— they may be rate-limiting; retry shortly with different "
             "terms, or use host.web_fetch on a known URL / a specific "
-            "database API instead."
+            f"database API instead.{failed}"
         ),
     }
 

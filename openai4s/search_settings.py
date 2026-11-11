@@ -3,16 +3,16 @@
 Doubao (the Agent Plan key) is not in this list: when it is configured it always
 answers first, and `host/search.py` decides what happens when its quota runs
 out. Behind it sit the engines `webtools.web_search` knows by id — ``tavily``,
-``you`` (You.com) and ``builtin`` (the keyless DuckDuckGo/Bing/Mojeek chain) —
+``you`` (You.com), opt-in ``parallel`` and ``builtin`` (the keyless DuckDuckGo/Bing/Mojeek chain) —
 which the user can reorder and switch on or off.
 
 One rule is enforced here and in the UI alike: at least one engine must stay
 *usable*, meaning on and able to answer. Tavily counts only with a key; the
-other two need none. Without the rule a user could switch every engine off and
+other engines need none. Without the rule a user could switch every engine off and
 every search would come back empty with no hint why.
 
 The stored setting is a JSON object under ``search_engines``. An install that
-never saved one gets the default order with every engine on — the same chain
+never saved one gets the default order with the legacy engines on — the same chain
 `web_search` walked before the setting existed, so an upgrade changes nothing.
 """
 
@@ -22,7 +22,8 @@ import json
 import os
 from typing import Any
 
-from openai4s.webtools import SEARCH_ENGINES
+from openai4s.webtools import AVAILABLE_SEARCH_ENGINES
+from openai4s.webtools import SEARCH_ENGINES as DEFAULT_SEARCH_ENGINES
 
 SETTING_KEY = "search_engines"
 SECRET_SCOPE = "search"
@@ -35,6 +36,7 @@ ENGINE_ENDPOINTS = {
     "tavily": "https://api.tavily.com/search",
     "you": "https://api.you.com/v1/agents/search",
     "builtin": "",
+    "parallel": "https://mcp.parallel.ai/mcp",
 }
 #: You.com answers keyed requests from a different host.
 _YOU_KEYED_ENDPOINT = "https://ydc-index.io/v1/search"
@@ -46,8 +48,11 @@ class SearchSettingsError(ValueError):
 
 def _default() -> dict[str, Any]:
     return {
-        "order": list(SEARCH_ENGINES),
-        "enabled": {engine: True for engine in SEARCH_ENGINES},
+        "order": list(AVAILABLE_SEARCH_ENGINES),
+        "enabled": {
+            engine: engine in DEFAULT_SEARCH_ENGINES
+            for engine in AVAILABLE_SEARCH_ENGINES
+        },
     }
 
 
@@ -56,7 +61,7 @@ def load(store) -> dict[str, Any]:
 
     A row written by another version may name an engine this one dropped or
     miss one it added; unknown ids are discarded and missing ones appended in
-    default order, switched on, so a newly shipped engine is not silently off.
+    default order. Parallel is opt-in; missing legacy engines stay switched on.
     """
 
     raw = store.get_setting(SETTING_KEY)
@@ -66,14 +71,18 @@ def load(store) -> dict[str, Any]:
         stored = {}
     if not isinstance(stored, dict):
         stored = {}
-    order = [e for e in stored.get("order") or [] if e in SEARCH_ENGINES]
+    order = [e for e in stored.get("order") or [] if e in AVAILABLE_SEARCH_ENGINES]
     order = list(dict.fromkeys(order))
-    order += [e for e in SEARCH_ENGINES if e not in order]
+    order += [e for e in AVAILABLE_SEARCH_ENGINES if e not in order]
     enabled_raw = stored.get("enabled")
     enabled_raw = enabled_raw if isinstance(enabled_raw, dict) else {}
     enabled = {
-        e: enabled_raw[e] if isinstance(enabled_raw.get(e), bool) else True
-        for e in SEARCH_ENGINES
+        e: (
+            enabled_raw[e]
+            if isinstance(enabled_raw.get(e), bool)
+            else e in DEFAULT_SEARCH_ENGINES
+        )
+        for e in AVAILABLE_SEARCH_ENGINES
     }
     return {"order": order, "enabled": enabled}
 
@@ -103,22 +112,36 @@ def save(store, *, order: Any, enabled: Any) -> dict[str, Any]:
     """Validate and persist a new configuration; returns what was stored."""
 
     if (
+        isinstance(order, list)
+        and sorted(str(e) for e in order) == sorted(DEFAULT_SEARCH_ENGINES)
+        and isinstance(enabled, dict)
+    ):
+        current = load(store)
+        order = list(order)
+        # Keep Parallel behind every engine that outranked it, not at its old
+        # index, so a legacy reorder cannot lift it past one of them.
+        stored = current["order"]
+        above = set(stored[: stored.index("parallel")])
+        at = max((i + 1 for i, e in enumerate(order) if e in above), default=0)
+        order.insert(at, "parallel")
+        enabled = {**enabled, "parallel": current["enabled"]["parallel"]}
+    if (
         not isinstance(order, list)
         or not all(isinstance(e, str) for e in order)
-        or sorted(order) != sorted(SEARCH_ENGINES)
+        or sorted(order) != sorted(AVAILABLE_SEARCH_ENGINES)
     ):
         raise SearchSettingsError(
-            f"order must list each of {', '.join(SEARCH_ENGINES)} exactly once"
+            f"order must list each of {', '.join(AVAILABLE_SEARCH_ENGINES)} exactly once"
         )
     if not isinstance(enabled, dict) or not all(
-        isinstance(enabled.get(e), bool) for e in SEARCH_ENGINES
+        isinstance(enabled.get(e), bool) for e in AVAILABLE_SEARCH_ENGINES
     ):
         raise SearchSettingsError("enabled must map every engine to true or false")
     config = {
         "order": list(order),
-        "enabled": {e: enabled[e] for e in SEARCH_ENGINES},
+        "enabled": {e: enabled[e] for e in AVAILABLE_SEARCH_ENGINES},
     }
-    if not any(usable(store, e, config["enabled"]) for e in SEARCH_ENGINES):
+    if not any(usable(store, e, config["enabled"]) for e in AVAILABLE_SEARCH_ENGINES):
         raise SearchSettingsError(
             "at least one search engine must stay on and usable "
             "(Tavily counts only with an API key)"
@@ -142,19 +165,19 @@ def choose_primary(store, engine: str) -> dict[str, Any]:
     the list as it was.
     """
 
-    if engine not in SEARCH_ENGINES:
+    if engine not in AVAILABLE_SEARCH_ENGINES:
         raise SearchSettingsError(f"unknown search engine {engine!r}")
     config = load(store)
     order = [engine] + [e for e in config["order"] if e != engine]
     enabled = dict(config["enabled"])
     enabled[engine] = True
     if engine == "builtin":
-        enabled = {e: e == "builtin" for e in SEARCH_ENGINES}
+        enabled = {e: e == "builtin" for e in AVAILABLE_SEARCH_ENGINES}
     return save(store, order=order, enabled=enabled)
 
 
 #: First-run setup's one search decision: Doubao, or a backup engine first.
-SETUP_CHOICES = ("doubao",) + SEARCH_ENGINES
+SETUP_CHOICES = ("doubao",) + AVAILABLE_SEARCH_ENGINES
 
 
 def apply_setup_choice(store, choice: str, key: str = "") -> dict[str, Any]:
@@ -173,7 +196,7 @@ def apply_setup_choice(store, choice: str, key: str = "") -> dict[str, Any]:
 
         datapro.save_agent_plan_key(store, key)
         return project(store)
-    if choice not in SEARCH_ENGINES:
+    if choice not in AVAILABLE_SEARCH_ENGINES:
         raise SearchSettingsError(
             f"search choice must be one of {', '.join(SETUP_CHOICES)}"
         )

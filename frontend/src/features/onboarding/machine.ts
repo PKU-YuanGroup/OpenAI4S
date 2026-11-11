@@ -1,7 +1,7 @@
 /**
  * M-01 first-run wizard state machine.
  * Four required decision steps; skip and checklist are first-class.
- * Provider requests stay 0 until the explicit Test action.
+ * Provider requests stay 0 until Test or a model-list fetch; both are counted.
  */
 
 export const REQUIRED_STEPS = ["path", "test", "readiness", "project"] as const;
@@ -72,6 +72,8 @@ export type WizardAction =
   | { type: "showWizard" }
   | { type: "skip" }
   | { type: "startTest" }
+  /** A model-list fetch: a provider request, but not the Test decision. */
+  | { type: "providerRequest" }
   | {
       type: "testResult";
       receipt: WizardReceipt | null;
@@ -210,6 +212,8 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
         error: null,
         probeDetail: "",
       };
+    case "providerRequest":
+      return { ...state, providerRequests: state.providerRequests + 1 };
     case "testResult":
       // The receipt is filed under `state.path`, so it has to have been
       // measured for it. Clearing on an identity change covers what is already

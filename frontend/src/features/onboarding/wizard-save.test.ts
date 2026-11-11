@@ -42,6 +42,7 @@ const api = vi.hoisted(() => ({
   activateModelProfile: vi.fn(),
   activateExistingModelProfile: vi.fn(),
   fetchOnboarding: vi.fn(),
+  discoverModelProfile: vi.fn(),
   loadModels: vi.fn(),
 }));
 
@@ -61,6 +62,7 @@ vi.mock("./api", async (importOriginal) => {
     activateModelProfile: api.activateModelProfile,
     activateExistingModelProfile: api.activateExistingModelProfile,
     fetchOnboarding: api.fetchOnboarding,
+    discoverModelProfile: api.discoverModelProfile,
   };
 });
 
@@ -240,5 +242,79 @@ describe("first-run wizard: saving a path again", () => {
     expect(api.saveModelProfile).toHaveBeenCalledTimes(2);
     expect(api.activateModelProfile).toHaveBeenLastCalledWith("mp-again");
     expect(wizard().error).toBeNull();
+  });
+});
+
+describe("first-run wizard: model discovery on the cloud path", () => {
+  type Handler = (event?: { currentTarget: { value: string } }) => unknown;
+
+  /** Render the path step alone, as the local-endpoint case above does. */
+  function cloudStep() {
+    hooks.slots[REDUCER] = { ...wizard(), path: { ...CLOUD, model: "" } } satisfies WizardState;
+    const step = find(render(), (node) => typeof node.props?.onSaveNew === "function")!;
+    hooks.reset();
+    const onSaveNew = vi.fn();
+    const onProviderRequest = vi.fn();
+    const props = { ...step.props, onSaveNew, onProviderRequest };
+    const draw = (): VNode => {
+      hooks.begin();
+      return (step.type as (p: unknown) => VNode)(props);
+    };
+    draw();
+    return { draw, onSaveNew, onProviderRequest };
+  }
+
+  const continueButton = (tree: VNode) =>
+    find(tree, (node) => node.type === "button" && node.props?.class === "solid-btn")!;
+  const inputWithValue = (tree: VNode, value: string) =>
+    find(tree, (node) => node.type === "input" && node.props?.value === value)!;
+  const typeInto = (node: VNode, value: string) =>
+    (node.props!.onInput as Handler)({ currentTarget: { value } });
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  it("saves the protocol default the endpoint serves, not its first listed id, and counts the request", async () => {
+    api.discoverModelProfile.mockResolvedValue({ models: ["whisper-1", "gpt-5"], defaultModel: "gpt-5" });
+    const { draw, onSaveNew, onProviderRequest } = cloudStep();
+    await (continueButton(draw()).props!.onClick as Handler)();
+    expect(onProviderRequest).toHaveBeenCalledTimes(1);
+    expect(onSaveNew).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-5", name: CLOUD.name }), "");
+  });
+
+  it("does not fall through to a save when discovery fails", async () => {
+    api.discoverModelProfile.mockRejectedValue(new Error("could not reach the model endpoint"));
+    const { draw, onSaveNew } = cloudStep();
+    await (continueButton(draw()).props!.onClick as Handler)();
+    expect(onSaveNew).not.toHaveBeenCalled();
+    expect(textOf(draw())).toContain("could not reach the model endpoint");
+  });
+
+  it("drops a late answer for an endpoint the user has since edited", async () => {
+    const answer = deferred<{ models: string[]; defaultModel: string }>();
+    api.discoverModelProfile.mockReturnValue(answer.promise);
+    const { draw, onSaveNew } = cloudStep();
+    const pending = (continueButton(draw()).props!.onClick as Handler)();
+    typeInto(inputWithValue(draw(), CLOUD.baseUrl), "https://other.example/v1");
+    answer.resolve({ models: ["stale"], defaultModel: "stale" });
+    await pending;
+    expect(onSaveNew).not.toHaveBeenCalled();
+    expect(find(draw(), (node) => node.type === "input" && node.props?.value === "stale")).toBeNull();
+  });
+
+  it("keeps Continue disabled while a fetch is pending and saves the name typed meanwhile", async () => {
+    const answer = deferred<{ models: string[]; defaultModel: string }>();
+    api.discoverModelProfile.mockReturnValue(answer.promise);
+    const { draw, onSaveNew } = cloudStep();
+    const pending = (continueButton(draw()).props!.onClick as Handler)();
+    expect(continueButton(draw()).props!.disabled).toBe(true);
+    typeInto(inputWithValue(draw(), CLOUD.name), "Renamed");
+    draw();
+    answer.resolve({ models: ["gpt-5"], defaultModel: "gpt-5" });
+    await pending;
+    expect(onSaveNew).toHaveBeenCalledWith(expect.objectContaining({ name: "Renamed", model: "gpt-5" }), "");
   });
 });
