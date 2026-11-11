@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import time
 
+from openai4s import __version__
 from openai4s.mcp_http import MCPHTTPConnection
 from openai4s.mcp_protocol import MCPError
 
 ENDPOINT = "https://mcp.parallel.ai/mcp"
 USER_AGENT = (
-    "OpenAI4S/0.3.1 (https://github.com/PKU-YuanGroup/OpenAI4S; Parallel search)"
+    f"OpenAI4S/{__version__} "
+    "(https://github.com/PKU-YuanGroup/OpenAI4S; Parallel search)"
 )
 
 
@@ -62,8 +64,11 @@ def search(query: str, num_results: int, timeout: float) -> list[dict]:
                 if isinstance(excerpts, list)
                 else ""
             )
+            title = row.get("title")
+            title = title.strip() if isinstance(title, str) else ""
+            # Same shape and snippet cap as the Tavily/You.com mappers.
             out.append(
-                {"url": url, "title": row.get("title") or url, "snippet": snippet}
+                {"url": url, "title": title or url, "snippet": snippet.strip()[:500]}
             )
             if len(out) >= num_results:
                 break

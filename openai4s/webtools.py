@@ -1098,7 +1098,7 @@ def web_search(
         elif engine == "parallel":
             from openai4s.parallel_search import search
 
-            results = _dedupe(search(query, num_results, _time_left(deadline)))
+            results = _dedupe(search(query, num_results, _req_timeout(deadline)))
             source = "parallel"
         elif engine == "builtin":
             results, source, note = _builtin_search(query, num_results, deadline)

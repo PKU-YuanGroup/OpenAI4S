@@ -211,6 +211,70 @@ def test_sse_line_boundaries_and_unicode(separator):
     assert PASSAGE in response.decode()
 
 
+def test_sse_reply_without_trailing_blank_line_is_accepted_at_eof():
+    # ``_sse_messages`` dispatches an unterminated last event at EOF; the
+    # incremental reader must not turn that complete reply into an error.
+    stream = io.BytesIO(b'data: {"id":3,"result":{}}\n')
+    response = _read_sse_response(iter(lambda: stream.read(4), b""), 3)
+    assert b'"id":3' in response
+    with pytest.raises(MCPError, match="ended before"):
+        _read_sse_response(iter([b'data: {"id":4,"result":{}}']), 3)
+
+
+def test_results_match_the_other_engines_shape(monkeypatch):
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_tools(self):
+            return [{"name": "web_search"}]
+
+        def call_tool(self, name, arguments):
+            rows = [
+                {
+                    "url": "https://a.example/",
+                    "title": "  Spaced  ",
+                    "excerpts": ["x" * 900],
+                },
+                {"url": "https://b.example/", "title": {"bad": 1}, "excerpts": "short"},
+            ]
+            return {
+                "is_error": False,
+                "text": "",
+                "raw": {"structuredContent": {"results": rows}},
+            }
+
+        def close(self):
+            return True
+
+    monkeypatch.setattr(parallel_search, "MCPHTTPConnection", Connection)
+    first, second = parallel_search.search("q", 5, 2)
+    assert first["title"] == "Spaced" and len(first["snippet"]) == 500
+    assert second == {
+        "url": "https://b.example/",
+        "title": "https://b.example/",
+        "snippet": "short",
+    }
+
+
+def test_legacy_save_keeps_parallel_behind_engines_that_outranked_it(tmp_path):
+    host = HostDispatcher(Config(data_dir=tmp_path))
+    try:
+        search_settings.save(
+            host.store,
+            order=["tavily", "parallel", "you", "builtin"],
+            enabled={"tavily": True, "parallel": True, "you": True, "builtin": True},
+        )
+        stored = search_settings.save(
+            host.store,
+            order=["builtin", "tavily", "you"],
+            enabled={"tavily": True, "you": True, "builtin": True},
+        )
+        assert stored["order"] == ["builtin", "tavily", "parallel", "you"]
+    finally:
+        host.store.close()
+
+
 def test_parallel_is_opt_in_and_legacy_clients_preserve_switch(tmp_path):
     host = HostDispatcher(Config(data_dir=tmp_path))
     try:

@@ -201,6 +201,16 @@ def _select_response(
     raise MCPError("MCP server response did not contain the requested JSON-RPC id")
 
 
+def _matching_event(event: list[bytes], expected_id: int) -> bytes | None:
+    """One complete SSE event, if it carries the requested JSON-RPC id."""
+    body = b"\n".join(event) + b"\n\n"
+    for message in _sse_messages(body):
+        mid = message.get("id")
+        if type(mid) is int and mid == expected_id:
+            return body
+    return None
+
+
 def _read_sse_response(chunks: Iterable[bytes], expected_id: int) -> bytes:
     """Stop at the matching event, even when the peer keeps its stream open."""
     line_parts: list[bytes] = []
@@ -218,14 +228,17 @@ def _read_sse_response(chunks: Iterable[bytes], expected_id: int) -> bytes:
             if complete:
                 event.append(complete)
                 continue
-            body = b"\n".join(event) + b"\n\n"
+            matched = _matching_event(event, expected_id)
             event.clear()
-            for message in _sse_messages(body):
-                mid = message.get("id")
-                if type(mid) is int and mid == expected_id:
-                    return body
+            if matched is not None:
+                return matched
         if lines[-1]:
             line_parts.append(lines[-1])
+    # At EOF an unterminated last event still counts, as in ``_sse_messages``.
+    if line_parts:
+        event.append(b"".join(line_parts))
+    if event and (matched := _matching_event(event, expected_id)) is not None:
+        return matched
     raise MCPError("MCP event stream ended before the requested JSON-RPC id")
 
 
@@ -386,7 +399,7 @@ class MCPHTTPConnection:
             limit=_MAX_FRAME_BYTES,
             exchange=exchange,
             on_timeout=lambda: MCPTimeout(
-                f"MCP HTTP request exceeded {self._timeout:g}s"
+                f"MCP HTTP request exceeded {exchange.timeout:g}s"
             ),
             on_oversize=_oversize,
             on_truncated=lambda: MCPError(
@@ -411,12 +424,15 @@ class MCPHTTPConnection:
     ) -> dict[str, Any] | None:
         if self._closed:
             raise MCPError(self._failure or "MCP HTTP connection is closed")
-        operation_exchange = None
+        budget = self._timeout
         if self._deadline is not None:
             remaining = self._deadline - time.monotonic()
             if remaining <= 0:
                 raise MCPTimeout("MCP HTTP operation exceeded its deadline")
-            operation_exchange = HTTPExchangeDeadline(min(remaining, self._timeout))
+            budget = min(remaining, self._timeout)
+        # Started now so the policy check and header resolution below are
+        # charged to the same absolute deadline.
+        exchange_deadline = HTTPExchangeDeadline(budget)
         self._check_network_policy()
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         if len(body) > _MAX_FRAME_BYTES:
@@ -452,7 +468,7 @@ class MCPHTTPConnection:
             # redacting a multi-megabyte reply is local CPU work; charging it to
             # the wire budget let a complete, correct response be thrown away as
             # a timeout.  ``doubao_search`` already splits it this way.
-            with operation_exchange or HTTPExchangeDeadline(self._timeout) as exchange:
+            with exchange_deadline as exchange:
                 opener = exchange.build_opener(_NoRedirect)
                 with exchange.open(opener, request) as response:
                     status = getattr(response, "status", None) or response.getcode()
@@ -491,12 +507,10 @@ class MCPHTTPConnection:
                 ) from None
             raise MCPError(f"MCP HTTP request failed with status {status}") from None
         except (socket.timeout, TimeoutError):
-            raise MCPTimeout(f"MCP HTTP request exceeded {self._timeout:g}s") from None
+            raise MCPTimeout(f"MCP HTTP request exceeded {budget:g}s") from None
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, (socket.timeout, TimeoutError)):
-                raise MCPTimeout(
-                    f"MCP HTTP request exceeded {self._timeout:g}s"
-                ) from None
+                raise MCPTimeout(f"MCP HTTP request exceeded {budget:g}s") from None
             raise MCPError(
                 f"MCP HTTP transport failed ({type(exc.reason).__name__})"
             ) from None

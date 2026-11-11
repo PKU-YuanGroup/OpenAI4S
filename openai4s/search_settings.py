@@ -117,7 +117,12 @@ def save(store, *, order: Any, enabled: Any) -> dict[str, Any]:
     ):
         current = load(store)
         order = list(order)
-        order.insert(current["order"].index("parallel"), "parallel")
+        # Keep Parallel behind every engine that outranked it, not at its old
+        # index, so a legacy reorder cannot lift it past one of them.
+        stored = current["order"]
+        above = set(stored[: stored.index("parallel")])
+        at = max((i + 1 for i, e in enumerate(order) if e in above), default=0)
+        order.insert(at, "parallel")
         enabled = {**enabled, "parallel": current["enabled"]["parallel"]}
     if (
         not isinstance(order, list)
