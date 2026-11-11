@@ -81,11 +81,14 @@ EXCLUDE = {"github-actions[bot]", "dependabot[bot]", "actions-user"}
 # it then does for the same reason as above.
 # `Pandasama2025` reported and diagnosed the committed-stream timeout and
 # repeated-action continuation failures in #174, addressed by #175.
+# `georgeatparallel` contributed the opt-in keyless Parallel search engine in
+# #254; the entry drops out on its own once the API lists the login.
 RECOGNIZED_CONTRIBUTORS = (
     "EQSTLab",
     "difficulttopickaname",
     "ChampionZhong",
     "Pandasama2025",
+    "georgeatparallel",
 )
 _UA = {"User-Agent": "openai4s-contributors-script"}
 

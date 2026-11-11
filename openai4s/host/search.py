@@ -23,6 +23,7 @@ FALLBACK_PERMISSION = "web_search_fallback"
 ENGINE_LABELS = {
     "tavily": "Tavily",
     "you": "You.com",
+    "parallel": "Parallel",
     "builtin": "DuckDuckGo / Bing / Mojeek",
 }
 
@@ -36,14 +37,16 @@ def confirm_quota_fallback(
     delegated: bool,
     action_context: dict[str, Any],
     permission_broker=None,
-) -> str | None:
-    """The backup engine to use after a Doubao quota error, or None for none.
+) -> list[str] | None:
+    """Return the approved backup chain starting at the chosen engine.
 
     ``engines`` is the switched-on chain in the user's order; Tavily without a
     key is left out because it cannot answer. Engines are checked against
     remembered rules first (an ``allow`` picks that engine, a ``deny`` removes
     it from the offer); only then, and only with a person present, is the user
-    asked.
+    asked. After the chosen engine the chain only continues through engines
+    that carry their own ``allow`` rule: approving one provider is not consent
+    to send the query to the ones behind it.
     """
 
     candidates = [
@@ -56,18 +59,24 @@ def confirm_quota_fallback(
     scope = store.resolve_frame_scope(frame_id)
     root = scope.get("root_frame_id")
     project = scope.get("project_id") or "default"
-    offered: list[str] = []
-    for engine in candidates:
-        decision = store.resolve_permission(
+    decisions = {
+        engine: store.resolve_permission(
             root_frame_id=root,
             project_id=project,
             tool=FALLBACK_PERMISSION,
             pattern_input=engine,
         )
-        if decision == "allow":
-            return engine
-        if decision != "deny":
-            offered.append(engine)
+        for engine in candidates
+    }
+    offered = [engine for engine in candidates if decisions[engine] != "deny"]
+
+    def chain_from(index: int) -> list[str]:
+        later = offered[index + 1 :]
+        return [offered[index], *(e for e in later if decisions[e] == "allow")]
+
+    for index, engine in enumerate(offered):
+        if decisions[engine] == "allow":
+            return chain_from(index)
     if not offered or delegated:
         return None
     if permission_broker is None:
@@ -97,4 +106,4 @@ def confirm_quota_fallback(
     if not gate.get("allow"):
         return None
     choice = gate.get("choice") or offered[0]
-    return choice if choice in offered else None
+    return chain_from(offered.index(choice)) if choice in offered else None

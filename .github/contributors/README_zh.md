@@ -37,6 +37,7 @@ README；单次替换是原子的，但整批替换不是全部成功或全部�
 | `cursoragent.png` | 贡献者 `cursoragent` 的可直接渲染头像。 |
 | `difficulttopickaname.png` | 贡献者 `difficulttopickaname` 的可直接渲染头像。 |
 | `dvd233.png` | 贡献者 `dvd233` 的可直接渲染头像。 |
+| `georgeatparallel.png` | 贡献者 `georgeatparallel` 的可直接渲染头像。 |
 | `jiangzx25.png` | 贡献者 `jiangzx25` 的可直接渲染头像。 |
 | `muzimu217.png` | 贡献者 `muzimu217` 的可直接渲染头像。 |
 | `riiiiiiin.png` | 贡献者 `riiiiiiin` 的可直接渲染头像。 |

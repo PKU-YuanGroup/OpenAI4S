@@ -46,8 +46,8 @@ def _store(tmp_path):
 def test_a_fresh_install_keeps_the_pre_setting_chain(tmp_path):
     st = _store(tmp_path)
     assert search_settings.load(st) == {
-        "order": ["tavily", "you", "builtin"],
-        "enabled": {"tavily": True, "you": True, "builtin": True},
+        "order": ["tavily", "you", "builtin", "parallel"],
+        "enabled": {"tavily": True, "you": True, "builtin": True, "parallel": False},
     }
     assert search_settings.engine_chain(st) == webtools.SEARCH_ENGINES
 
@@ -69,8 +69,8 @@ def test_a_row_from_another_version_is_repaired(tmp_path):
         json.dumps({"order": ["gone", "you", "you"], "enabled": {"you": False}}),
     )
     assert search_settings.load(st) == {
-        "order": ["you", "tavily", "builtin"],
-        "enabled": {"tavily": True, "you": False, "builtin": True},
+        "order": ["you", "tavily", "builtin", "parallel"],
+        "enabled": {"tavily": True, "you": False, "builtin": True, "parallel": False},
     }
 
 
@@ -189,7 +189,7 @@ def _rule(st, engine, decision):
 def test_the_user_picks_from_the_usable_switched_on_engines(tmp_path):
     st = _store(tmp_path)
     broker = _Broker(answer={"allow": True, "decision_id": "d", "choice": "builtin"})
-    assert _confirm(st, broker) == "builtin"
+    assert _confirm(st, broker) == ["builtin"]
     (gate,) = broker.gates
     assert gate["method"] == FALLBACK_PERMISSION
     assert gate["approvals_reviewer"] == "user"
@@ -206,16 +206,41 @@ def test_a_remembered_allow_decides_without_asking_even_unattended(tmp_path):
     st = _store(tmp_path)
     _rule(st, "builtin", "allow")
     broker = _Broker(reachable=False)
-    assert _confirm(st, broker, delegated=True) == "builtin"
+    assert _confirm(st, broker, delegated=True) == ["builtin"]
     assert broker.gates == []
 
 
 def test_a_remembered_deny_removes_that_engine_from_the_offer(tmp_path):
     st = _store(tmp_path)
     _rule(st, "you", "deny")
-    broker = _Broker()
-    _confirm(st, broker)
-    assert [c["id"] for c in broker.gates[0]["choices"]] == ["builtin"]
+    broker = _Broker(answer={"allow": True, "choice": "builtin"})
+    assert _confirm(st, broker, engines=("builtin", "you", "parallel")) == ["builtin"]
+    assert [c["id"] for c in broker.gates[0]["choices"]] == ["builtin", "parallel"]
+
+
+def test_the_chain_after_the_pick_needs_its_own_approval(tmp_path):
+    st = _store(tmp_path)
+    broker = _Broker(answer={"allow": True, "choice": "builtin"})
+    # Parallel sits behind the pick with no rule of its own: approving builtin
+    # must not also send the query to mcp.parallel.ai.
+    assert _confirm(st, broker, engines=("you", "builtin", "parallel")) == ["builtin"]
+    assert [c["id"] for c in broker.gates[0]["choices"]] == [
+        "you",
+        "builtin",
+        "parallel",
+    ]
+
+
+def test_a_remembered_allow_carries_only_later_allowed_engines(tmp_path):
+    st = _store(tmp_path)
+    _rule(st, "you", "allow")
+    _rule(st, "builtin", "allow")
+    broker = _Broker(reachable=False)
+    assert _confirm(st, broker, engines=("you", "parallel", "builtin")) == [
+        "you",
+        "builtin",
+    ]
+    assert broker.gates == []
 
 
 @pytest.mark.parametrize("delegated, reachable", [(True, True), (False, False)])
@@ -375,7 +400,7 @@ def test_an_approved_fallback_starts_at_the_picked_engine(tmp_path, monkeypatch)
 
     def confirm(**kwargs):
         seen.update(kwargs)
-        return "you"
+        return ["you", "builtin"]
 
     monkeypatch.setattr(host_search, "confirm_quota_fallback", confirm)
     dispatcher = _dispatcher(tmp_path)
@@ -444,8 +469,13 @@ def test_route_reports_the_list_and_keeps_the_tavily_fields(route):
     assert status == 200
     assert body["endpoint"] == "https://api.tavily.com/search"
     assert body["api_key_configured"] is False
-    assert body["order"] == ["tavily", "you", "builtin"]
-    assert [e["id"] for e in body["engines"]] == ["tavily", "you", "builtin"]
+    assert body["order"] == ["tavily", "you", "builtin", "parallel"]
+    assert [e["id"] for e in body["engines"]] == [
+        "tavily",
+        "you",
+        "builtin",
+        "parallel",
+    ]
     assert body["doubao_configured"] is False
 
 
@@ -457,7 +487,7 @@ def test_route_saves_order_switches_and_a_you_key(route):
             "enabled": {"tavily": False, "you": True, "builtin": True},
         },
     )
-    assert status == 200 and body["order"] == ["you", "builtin", "tavily"]
+    assert status == 200 and body["order"] == ["you", "builtin", "tavily", "parallel"]
     status, body = route("POST", {"engine": "you", "api_key": "ydc-route-secret"})
     assert status == 200
     you = next(e for e in body["engines"] if e["id"] == "you")
