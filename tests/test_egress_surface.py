@@ -76,9 +76,13 @@ _DECLARED: dict[str, str] = {
     ),
     "openai4s/server/endpoint_models.py": (
         "the explicit model-list lookup a user asks for while configuring an "
-        "endpoint. It sends the submitted credential only to the URL the user "
-        "typed, refuses redirects and proxy environment variables, and bounds "
-        "the response size, model count and model-id length."
+        "endpoint. It reaches the URL the caller names (private and link-local "
+        "hosts included, as LAN model servers need) or, for a blank one, the "
+        "endpoint dispatch resolves; it is an instance-config route (admin-only "
+        "in team mode). A credential goes only to that endpoint: the submitted "
+        "key, or a same-provider environment key at that provider's own "
+        "endpoint. It refuses redirects and proxy environment variables, and "
+        "bounds the response size, model count and model-id length."
     ),
     "openai4s/cli/main.py": (
         "`openai4s share` and the update check, both explicit user actions."
@@ -219,9 +223,11 @@ def test_the_surface_is_small_enough_to_review():
     exchanges, no redirects, and policy checks before either operation.
 
     It grew from fifteen for `server/endpoint_models.py`: the model-list lookup
-    a user explicitly asks for while configuring an endpoint. It reaches only
-    the URL the user typed, with redirects and proxy environment variables
-    disabled, and bounds the response size, model count and model-id length.
+    a user explicitly asks for while configuring an endpoint. It reaches the
+    URL the caller names (private hosts included) or the endpoint dispatch
+    resolves for a blank one, sends a credential only to that endpoint, with
+    redirects and proxy environment variables disabled, and bounds the
+    response size, model count and model-id length.
     """
     assert len(_DECLARED) <= 16
 

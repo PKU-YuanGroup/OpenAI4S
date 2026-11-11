@@ -82,18 +82,25 @@ function PathStep({
   busy,
   onChoose,
   onSaveNew,
+  onProviderRequest,
 }: {
   status: OnboardingStatus;
   state: WizardState;
   busy: boolean;
   onChoose: (path: PathChoice) => void;
   onSaveNew: (path: PathChoice, apiKey: string) => void;
+  /** A model-list fetch is about to contact the provider. */
+  onProviderRequest: () => void;
 }) {
   const keyRef = useRef<HTMLInputElement>(null);
   const protocols = modelProtocolOptions(status.protocols);
   const [kind, setKind] = useState<PathChoice["kind"]>(state.path?.kind || "existing");
   const [provider, setProvider] = useState(state.path?.provider || protocols[0]?.value || "chatgpt");
   const [name, setName] = useState(state.path?.name || "");
+  // Name edits do not invalidate a fetch, so Continue reads the latest value
+  // after awaiting one rather than the name from the render that started it.
+  const latestName = useRef(name);
+  latestName.current = name;
   const [model, setModel] = useState(state.path?.model || "");
   const [baseUrl, setBaseUrl] = useState(state.path?.baseUrl || "");
   const [modelOptions, setModelOptions] = useState<string[]>([]);
@@ -126,8 +133,9 @@ function PathStep({
     discoveryPending.current = true;
     setDiscovering(true);
     setDiscoveryError("");
+    onProviderRequest();
     try {
-      const models = await discoverModelProfile({
+      const { models, defaultModel } = await discoverModelProfile({
         provider,
         base_url: baseUrl.trim(),
         api_key: keyRef.current?.value || "",
@@ -138,7 +146,7 @@ function PathStep({
         setDiscoveryError(ot("onboarding.path.noModels"));
         return "";
       }
-      const selected = model.trim() || models[0] || "";
+      const selected = model.trim() || defaultModel;
       if (!model.trim() && selected) {
         autoModel.current = selected;
         setModel(selected);
@@ -178,7 +186,7 @@ function PathStep({
         provider,
         model: selectedModel,
         baseUrl: baseUrl.trim(),
-        name: name.trim(),
+        name: latestName.current.trim(),
       },
       apiKey,
     );
@@ -297,7 +305,7 @@ function PathStep({
             onInput={() => invalidateDiscovery()}
             placeholder={t("cust.models.keyPlaceholderUnset")}
           />
-          <button type="button" class="solid-btn" disabled={busy} onClick={submitCloud}>
+          <button type="button" class="solid-btn" disabled={busy || discovering} onClick={submitCloud}>
             {ot("onboarding.next")}
           </button>
         </div>
@@ -793,6 +801,7 @@ export function WizardHost() {
                 busy={busy}
                 onChoose={choosePath}
                 onSaveNew={onSaveNew}
+                onProviderRequest={() => dispatch({ type: "providerRequest" })}
               />
             ) : null}
             {state.step === "test" ? (

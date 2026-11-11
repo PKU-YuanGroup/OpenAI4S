@@ -291,13 +291,28 @@ class ModelProfileService:
     def discover_models(self, body: Mapping[str, Any]) -> dict[str, Any]:
         """Fetch model ids for a protocol/endpoint without saving the profile."""
         provider = self._protocol(body.get("provider"))
-        spec = self._providers().get(provider, {})
-        base_url = str(body.get("base_url") or spec.get("base_url") or "").strip()
+        submitted = str(body.get("base_url") or "").strip()
+        # Ask the endpoint the saved profile would actually be dispatched to:
+        # a blank Base URL is resolved by the dispatch rule (provider env var,
+        # generic env var, protocol default), not by the static default alone.
+        base_url = (
+            submitted
+            or self._credential_scope({"provider": provider, "base_url": ""})[1]
+        )
+        api_key = clean_api_key(body.get("api_key"))
+        if not api_key:
+            # The credential that profile would be dispatched under: a
+            # same-provider environment key at that provider's own endpoint,
+            # nothing for a local endpoint or for any other URL.
+            api_key = self.credential(
+                {"provider": provider, "base_url": submitted, "model": ""}
+            ).api_key
         try:
             return EndpointModelFetcher().fetch(
                 provider=provider,
                 base_url=base_url,
-                api_key=clean_api_key(body.get("api_key")),
+                api_key=api_key,
+                preferred_model=self.effective_model_id(provider, ""),
             )
         except EndpointModelError as error:
             raise ModelProfileError(str(error), error.status_code) from None

@@ -9,7 +9,7 @@ export { copyLookup, type CopyTable };
 const COPY: CopyTable = {
   zh: {
     "onboarding.title": "首次设置",
-    "onboarding.subtitle": "四个必需步骤。除非你主动获取模型列表，否则在「测试连接」之前不会向模型供应商发请求。",
+    "onboarding.subtitle": "四个必需步骤。在「测试连接」之前，只有获取模型列表（点「从端点获取模型」，或模型留空直接点「继续」）会向模型供应商发请求。",
     "onboarding.skip": "暂时跳过",
     "onboarding.checklist": "清单",
     "onboarding.checklist.title": "首次设置清单",
@@ -32,7 +32,7 @@ const COPY: CopyTable = {
     "onboarding.path.fetchingModels": "正在获取模型…",
     "onboarding.path.noModels": "端点没有返回可用的模型 id，请手动填写。",
     "onboarding.test.warning":
-      "按下「测试连接」会向你的模型供应商发出 1–2 个极小、无副作用的请求。在此之前，供应商请求数为 0。",
+      "按下「测试连接」会向你的模型供应商发出 1–2 个极小、无副作用的请求。",
     "onboarding.test.idle": "尚未向供应商发出任何请求。",
     "onboarding.test.needProfile": "测试需要一个已保存的模型配置。",
     "onboarding.readiness.network": "网络姿态（本地标志，未出站）",
@@ -61,7 +61,7 @@ const COPY: CopyTable = {
   en: {
     "onboarding.title": "First-run setup",
     "onboarding.subtitle":
-      "Four required steps. No provider request is made before Test unless you explicitly fetch model ids.",
+      "Four required steps. Before Test, the only provider request is a model-list fetch (Fetch models, or Continue with no model).",
     "onboarding.skip": "Skip for now",
     "onboarding.checklist": "Checklist",
     "onboarding.checklist.title": "First-run checklist",
@@ -85,7 +85,7 @@ const COPY: CopyTable = {
     "onboarding.path.fetchingModels": "Fetching models…",
     "onboarding.path.noModels": "The endpoint returned no usable model id; enter one manually.",
     "onboarding.test.warning":
-      "Pressing Test sends 1–2 tiny, side-effect-free requests to your model provider. Until then, provider requests stay at 0.",
+      "Pressing Test sends 1–2 tiny, side-effect-free requests to your model provider.",
     "onboarding.test.idle": "No provider request has been made yet.",
     "onboarding.test.needProfile": "Test needs a saved model profile.",
     "onboarding.readiness.network": "Network posture (local flags, nobody contacted)",
