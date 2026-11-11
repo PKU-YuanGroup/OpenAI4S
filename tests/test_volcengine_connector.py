@@ -53,10 +53,10 @@ def _bridge(replies):
     return bridge, runner
 
 
-def _fake_arkcli(tmp_path):
+def _fake_arkcli(tmp_path, *, legacy=False):
     script = tmp_path / "fake_arkcli.py"
     script.write_text(
-        textwrap.dedent("""
+        f"LEGACY = {legacy!r}\n" + textwrap.dedent("""
             import json
             import sys
 
@@ -86,6 +86,16 @@ def _fake_arkcli(tmp_path):
                 emit({"resources": {"text": {
                     "default": "doubao-seed-2-0-pro-260215"}}})
             elif args[:3] == ["profile", "apikey", "list"]:
+                if LEGACY:
+                    # A pre-`apikey` CLI: unrelated runtime noise first, then
+                    # the rejection, both on stderr.
+                    print("(node:4242) Warning: unrelated runtime notice",
+                          file=sys.stderr)
+                    print('Error: unknown command "apikey" for "arkcli profile"',
+                          file=sys.stderr)
+                    raise SystemExit(1)
+                emit({"default_api_key": "392****dab0"})
+            elif LEGACY and args[:3] == ["profile", "keys", "list"]:
                 emit({"default_api_key": "392****dab0"})
             elif args[:3] == ["profile", "keys", "refresh"]:
                 emit({"ok": True})
@@ -247,6 +257,99 @@ def test_bridge_does_not_fall_back_on_key_list_failure(result, code):
 
     assert raised.value.code == code
     assert runner.calls == [current]
+
+
+_LEGACY_JSON_ERROR = json.dumps(
+    {
+        "ok": False,
+        "error": {"message": 'unknown command "apikey" for "arkcli profile"'},
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "rejection",
+    [
+        CommandResult(
+            1,
+            _LEGACY_JSON_ERROR,
+            "(node:4242) [DEP0040] DeprecationWarning: The `punycode` module is "
+            "deprecated.\n",
+        ),
+        CommandResult(
+            1,
+            "",
+            "Update available 1.0.15 -> 1.0.46\n"
+            'Error: unknown command "apikey" for "arkcli profile"\n',
+        ),
+        CommandResult(
+            1,
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": 'unknown subcommand "apikey" for "arkcli profile"',
+                }
+            ),
+            "",
+        ),
+        CommandResult(1, "", "error: unknown command 'apikey'\n"),
+    ],
+    ids=["stdout-json-beside-stderr-noise", "stderr-preamble", "string-error", "bare"],
+)
+def test_bridge_falls_back_whatever_stream_carries_the_rejection(rejection):
+    profile = "platform_cn-beijing_default"
+    tail = ("list", "--profile", profile, "--format", "json")
+    current = ("profile", "apikey", *tail)
+    legacy = ("profile", "keys", *tail)
+    listed = (
+        "api",
+        "apikey.list",
+        "--params",
+        '{"PageSize":100}',
+        "--page-all",
+        "--profile",
+        profile,
+        "--format",
+        "json",
+    )
+    bridge, runner = _bridge(
+        {
+            current: rejection,
+            legacy: {"default_api_key": "392****dab0"},
+            listed: {"Result": {"Items": [{"Id": 9, "Key": "392****dab0"}]}},
+        }
+    )
+
+    assert [item["id"] for item in bridge.api_key_inventory(profile)] == [9]
+    assert runner.calls[:2] == [current, legacy]
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        'Error: unknown command "list" for "arkcli profile apikey"\n',
+        "AccessDenied: apikey list is not permitted\n",
+    ],
+    ids=["another-subcommand", "mentions-apikey"],
+)
+def test_bridge_falls_back_only_when_apikey_itself_is_unknown(stderr):
+    profile = "platform_cn-beijing_default"
+    current = ("profile", "apikey", "list", "--profile", profile, "--format", "json")
+    bridge, runner = _bridge({current: CommandResult(1, "", stderr)})
+
+    with pytest.raises(ArkCliError) as raised:
+        bridge.api_key_inventory(profile)
+
+    assert raised.value.code == "arkcli_failed"
+    assert runner.calls == [current]
+
+
+def test_a_real_legacy_cli_falls_back_to_profile_keys(tmp_path):
+    bridge = ArkCliBridge(executable=str(_fake_arkcli(tmp_path, legacy=True)))
+
+    keys = bridge.api_key_inventory("agent-plan_cn-beijing")
+
+    assert [(item["id"], item["selected"]) for item in keys] == [(9, True)]
 
 
 def test_bridge_refuses_to_guess_when_multiple_keys_do_not_match():
