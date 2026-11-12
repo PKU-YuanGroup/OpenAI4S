@@ -282,8 +282,7 @@ class RLRepository:
 
     def append_episode(self, episode: Episode) -> None:
         data = episode.to_dict()
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
+        with self._transaction():
             current = self._connection.execute(
                 "SELECT * FROM rl_episodes WHERE episode_id=?", (episode.episode_id,)
             ).fetchone()
@@ -301,11 +300,9 @@ class RLRepository:
                     )
                 ) and _same_payload(current["metadata"], episode.metadata)
                 if not same:
-                    self._connection.execute("ROLLBACK")
                     raise ValueError(
                         f"episode {episode.episode_id!r} conflicts with stored content"
                     )
-                self._connection.execute("COMMIT")
                 return
             self._connection.execute(
                 "INSERT INTO rl_episodes(episode_id,task,session_id,policy_name,policy_version,parent_episode_id,status,created_at,updated_at,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -322,7 +319,6 @@ class RLRepository:
                     _payload(episode.metadata),
                 ),
             )
-            self._connection.execute("COMMIT")
 
     def get_episode(self, episode_id: str) -> Episode | None:
         with self._lock:
