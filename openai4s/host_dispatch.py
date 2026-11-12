@@ -1647,8 +1647,10 @@ class HostDispatcher:
                 phase = None
             if phase is not None and not context.get("_rl_segment_stack"):
                 context["segment_id"] = phase.segment_id
-        if "source_id" not in context:
+        if action.get("decision_id") or action.get("episode_id"):
             context["source_id"] = action.get("tool_call_id") or action.get("action_id")
+        elif "source_id" not in context:
+            context["source_id"] = None
         return context
 
     def _rl_episode(self, episode_id: str | None) -> str:
@@ -3713,12 +3715,16 @@ class HostDispatcher:
         try:
             from openai4s.rl.segments import HostSegments
 
-            return HostSegments(
+            result = HostSegments(
                 self.store.rl,
                 self._rl_episode(spec.get("episode_id")),
                 self._current_rl_context(),
                 str(self.frame_id),
             ).resume(str(spec.get("segment_id") or ""))
+            context = self._current_rl_context()
+            context["segment_id"] = result["segment_id"]
+            self._rl_context_local.value = context
+            return result
         except (TypeError, ValueError, KeyError) as error:
             return {"error": str(error)}
 
