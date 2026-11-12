@@ -3,15 +3,29 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import time
 import uuid
 from typing import Any
 
 from .models import ExecutionEvent
 
+_SECRET_METHODS = frozenset(
+    {
+        "credentials_set",
+        "credentials_get",
+        "credentials_issue",
+        "credentials_redeem",
+        "credentials_list",
+    }
+)
 
-def _digest(value: Any) -> str:
+
+def _digest(method: str, value: Any) -> str | None:
+    if method in _SECRET_METHODS:
+        return None
     encoded = json.dumps(
         value,
         ensure_ascii=False,
@@ -20,7 +34,12 @@ def _digest(value: Any) -> str:
         default=str,
         allow_nan=False,
     )
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    key = os.environ.get("OPENAI4S_RL_DIGEST_KEY", "").encode("utf-8")
+    if not key:
+        # No public digest is useful for identity-only audit data: unsalted
+        # hashes make small secrets brute-forceable from host.query/export.
+        return None
+    return hmac.new(key, encoded.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 class HostCallLifecycle:
@@ -43,11 +62,10 @@ class HostCallLifecycle:
         source_id: str | None = None,
     ) -> dict[str, Any]:
         call_id = "host-call-" + uuid.uuid4().hex
-        payload = {
-            "call_id": call_id,
-            "method": method,
-            "arguments_sha256": _digest(args),
-        }
+        payload = {"call_id": call_id, "method": method}
+        digest = _digest(method, args)
+        if digest is not None:
+            payload["arguments_hmac_sha256"] = digest
         self.repository.append_execution_event(
             ExecutionEvent(
                 event_id=f"{call_id}:started",
@@ -76,13 +94,13 @@ class HostCallLifecycle:
         error: BaseException | None = None,
     ) -> None:
         completed = ok and error is None
-        payload = {
-            "call_id": handle["call_id"],
-            "method": handle["method"],
-            "arguments_sha256": handle["arguments_sha256"],
-        }
+        payload = {"call_id": handle["call_id"], "method": handle["method"]}
+        if handle.get("arguments_hmac_sha256") is not None:
+            payload["arguments_hmac_sha256"] = handle["arguments_hmac_sha256"]
         if completed:
-            payload["result_sha256"] = _digest(result)
+            result_digest = _digest(handle["method"], result)
+            if result_digest is not None:
+                payload["result_hmac_sha256"] = result_digest
             if isinstance(result, dict):
                 references: dict[str, Any] = {}
                 for key in (

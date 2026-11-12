@@ -1184,15 +1184,16 @@ class Agent:
                     result = engine.run(messages)
                 else:
                     state = RunState(messages, max_turns=self.max_turns)
-                    state.metadata["rl_episode_id"] = (
-                        self.trajectory_recorder.episode.episode_id
-                        if self.trajectory_recorder is not None
-                        else (
-                            self.rl_context.get("episode_id")
-                            if isinstance(self.rl_context, Mapping)
-                            else None
+                    if self.trajectory_recorder is not None:
+                        state.metadata["rl_episode_id"] = (
+                            self.trajectory_recorder.episode.episode_id
                         )
-                    )
+                    elif isinstance(self.rl_context, Mapping) and self.rl_context.get(
+                        "episode_id"
+                    ):
+                        state.metadata["rl_episode_id"] = str(
+                            self.rl_context["episode_id"]
+                        )
                     result = engine.run(state)
         finally:
             self._close_run()

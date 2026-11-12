@@ -251,16 +251,14 @@ class AgentEngine:
         # Stable join key for nested execution telemetry. This is metadata for
         # the runtime boundary, not an additional policy action.
         decision_id = getattr(self.event_sink, "decision_id", None)
-        state.metadata["rl_decision_id"] = (
-            str(decision_id(turn)) if callable(decision_id) else f"decision-{turn}"
-        )
-        segment_id = getattr(self.event_sink, "segment_id", None)
-        state.metadata["rl_segment_id"] = (
-            segment_id(turn) if callable(segment_id) else None
-        )
-        owner_id = getattr(self.event_sink, "owner_id", None)
-        if owner_id is not None:
-            state.metadata["rl_owner_id"] = owner_id
+        if callable(decision_id):
+            state.metadata["rl_decision_id"] = str(decision_id(turn))
+            segment_id = getattr(self.event_sink, "segment_id", None)
+            if callable(segment_id):
+                state.metadata["rl_segment_id"] = segment_id(turn)
+            owner_id = getattr(self.event_sink, "owner_id", None)
+            if owner_id is not None:
+                state.metadata["rl_owner_id"] = owner_id
         outcome = self.executor.execute(action, reply, state)
         if not isinstance(outcome, ExecutionOutcome):
             raise TypeError("executor must return ExecutionOutcome")

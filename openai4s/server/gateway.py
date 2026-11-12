@@ -12218,7 +12218,9 @@ class SessionRunner:
                             "episode_id": str(st.root_frame_id),
                             "decision_id": str(state.metadata["rl_decision_id"]),
                         }
-                        if state is not None and state.metadata.get("rl_decision_id")
+                        if state is not None
+                        and state.metadata.get("rl_episode_id")
+                        and state.metadata.get("rl_decision_id")
                         else None
                     ),
                 ),

@@ -181,7 +181,12 @@ def test_delegated_worker_trajectory_keeps_parent_episode_and_decision(
             },
         }
 
-    runner = DelegationRunner(cfg, parent_frame_id=parent_frame, store=store)
+    runner = DelegationRunner(
+        cfg,
+        parent_frame_id=parent_frame,
+        store=store,
+        rl_context={"episode_id": "episode-parent", "decision_id": "decision-parent"},
+    )
     try:
         with mock.patch.object(loop_mod, "chat", scripted_chat):
             result = runner(

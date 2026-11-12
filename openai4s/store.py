@@ -739,6 +739,18 @@ QUERY_DENYLIST = frozenset(
         "rl_run_requests",
         "rl_run_results",
         "rl_step_receipts",
+        "rl_episodes",
+        "rl_observations",
+        "rl_decisions",
+        "rl_segments",
+        "rl_execution_events",
+        "rl_reward_annotations",
+        "rl_cost_records",
+        "rl_dataset_snapshots",
+        "rl_budget_ledgers",
+        "rl_budget_allocations",
+        "rl_resource_admissions",
+        "rl_resource_allocations",
         "memories",
         # Same class as `connectors`: `managed_endpoints.credential` is a
         # plaintext bearer token for a local model endpoint, and it was

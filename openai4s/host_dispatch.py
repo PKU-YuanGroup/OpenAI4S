@@ -1632,16 +1632,19 @@ class HostDispatcher:
                 context[target] = action[target]
             elif action.get(alias):
                 context[target] = action[alias]
-        if "episode_id" not in context and context.get("decision_id"):
-            context["episode_id"] = self.frame_id
         context["rl_owner_id"] = (
             action.get("rl_owner_id") or context.get("rl_owner_id") or self._rl_owner_id
         )
         episode_id = context.get("episode_id")
         if episode_id:
-            phase = self.store.rl.active_phase(
-                str(episode_id), str(context["rl_owner_id"])
-            )
+            try:
+                phase = self.store.rl.active_phase(
+                    str(episode_id), str(context["rl_owner_id"])
+                )
+            except Exception:
+                # A stale phase owner must not break ordinary Host calls; only
+                # explicit phase operations report the owner mismatch.
+                phase = None
             if phase is not None and not context.get("_rl_segment_stack"):
                 context["segment_id"] = phase.segment_id
         if "source_id" not in context:
@@ -1669,11 +1672,11 @@ class HostDispatcher:
     def _rl_call_begin(self, method: str, args: list) -> dict[str, Any] | None:
         if method.startswith("rl_segment_"):
             return None
-        context = self._current_rl_context()
-        episode_id = context.get("episode_id")
-        if not isinstance(episode_id, str) or not episode_id:
-            return None
         try:
+            context = self._current_rl_context()
+            episode_id = context.get("episode_id")
+            if not isinstance(episode_id, str) or not episode_id:
+                return None
             lifecycle = HostCallLifecycle(self.store.rl, episode_id)
             handle = lifecycle.begin(
                 method,
@@ -2312,7 +2315,7 @@ class HostDispatcher:
         permission_decision_id = None
         raised_error: str | None = None
         raised_exception: BaseException | None = None
-        rl_handle = self._rl_call_begin(method, args)
+        rl_handle = None
         try:
             child_decision = None
             project_files = None
@@ -2569,6 +2572,9 @@ class HostDispatcher:
                     result = {"error": f"Permission denied: {msg}"}
                     ok = False
                     return result
+            # RL lifecycle starts only after all child/file/approval gates pass;
+            # denied credential calls must not leave RL evidence behind.
+            rl_handle = self._rl_call_begin(method, args)
             result = handler(*args)
             if method in NATIVE_ARTIFACT_RECEIPT_METHODS:
                 result = self._commit_or_queue_artifact_receipt(result)

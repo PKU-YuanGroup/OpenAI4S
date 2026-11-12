@@ -2043,9 +2043,12 @@ class DelegationRunner:
         """Spawn after trusted-capture admission has become exclusive."""
 
         child_specs = [_normalize_item(item, spec) for item in items]
-        if self.rl_context:
-            for child_spec in child_specs:
-                child_spec.setdefault("_rl_parent_context", dict(self.rl_context))
+        for child_spec in child_specs:
+            # A fan-out item is untrusted input too; never preserve a forged
+            # parent pointer when this runner has no explicit RL context.
+            child_spec.pop("_rl_parent_context", None)
+            if self.rl_context:
+                child_spec["_rl_parent_context"] = dict(self.rl_context)
         if self.parent_child_id is not None:
             with self._tree.lock:
                 parent = self._tree.children.get(self.parent_child_id)

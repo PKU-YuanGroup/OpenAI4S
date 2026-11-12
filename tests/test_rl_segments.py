@@ -9,6 +9,21 @@ from openai4s.host_dispatch import build_dispatcher
 from openai4s.sdk.host import _Host
 
 
+def test_ordinary_host_calls_do_not_create_rl_capture_rows(tmp_path) -> None:
+    dispatcher = build_dispatcher(Config(data_dir=tmp_path), frame_id="ordinary-frame")
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        assert host.artifacts()["count"] == 0
+        count = dispatcher.store._conn.execute(
+            "SELECT COUNT(*) FROM rl_execution_events WHERE episode_id=?",
+            ("ordinary-frame",),
+        ).fetchone()[0]
+        assert count == 0
+        assert dispatcher.store.rl.get_episode("ordinary-frame") is None
+    finally:
+        dispatcher.store.close()
+
+
 def test_host_segment_context_records_lifecycle_events_and_output() -> None:
     dispatcher = build_dispatcher(get_config(), frame_id="frame-segment")
     try:
@@ -130,7 +145,9 @@ def test_host_can_open_two_segments_in_one_episode() -> None:
         dispatcher.store.close()
 
 
-def test_host_rpc_lifecycle_is_joined_to_decision_and_segment(tmp_path) -> None:
+def test_host_rpc_lifecycle_is_joined_to_decision_and_segment(
+    tmp_path, monkeypatch
+) -> None:
     dispatcher = build_dispatcher(Config(data_dir=tmp_path), frame_id="frame-rpc")
     try:
         host = _Host(lambda method, args: dispatcher(method, args))
@@ -159,8 +176,8 @@ def test_host_rpc_lifecycle_is_joined_to_decision_and_segment(tmp_path) -> None:
         assert started["decision_id"] == "decision-7"
         assert started["segment_id"] == completed["segment_id"]
         assert started["payload"]["method"] == "artifacts"
-        assert "arguments_sha256" in started["payload"]
-        assert "result_sha256" in completed["payload"]
+        assert "arguments_hmac_sha256" not in started["payload"]
+        assert "result_hmac_sha256" not in completed["payload"]
     finally:
         dispatcher.store.close()
 
