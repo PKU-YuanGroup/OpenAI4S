@@ -128,6 +128,8 @@ class RolloutEnvironment:
             )
             reset_config = _json_mapping("config", {} if config is None else config)
             reset_budget = _json_mapping("budget", {} if budget is None else budget)
+            effective_turns = self.default_max_turns if max_turns is None else max_turns
+            max_turns = effective_turns
             owner_id = "rl-owner-" + uuid.uuid4().hex
             claimed = None
             reset_id = "reset-" + uuid.uuid4().hex
@@ -137,16 +139,13 @@ class RolloutEnvironment:
                     raise ValueError("request_id requires a receipt repository")
                 from .requests import normalize_request
 
-                effective_turns = (
-                    self.default_max_turns if max_turns is None else max_turns
-                )
                 request = normalize_request(
                     episode,
                     messages,
                     initial_artifacts=artifacts,
                     config=reset_config,
                     budget=reset_budget,
-                    max_turns=effective_turns,
+                    max_turns=max_turns,
                 )
                 admitted = self.repository.runs.admit(request_id, request)
                 if admitted["state"] not in {"accepted", "running"}:
@@ -544,11 +543,12 @@ class RolloutEnvironmentAdapter:
         return _json(record)
 
     def finish(self, status: str = "completed") -> dict[str, Any]:
-        """Explicitly terminalize the active Episode without scoring it."""
+        """Wait for any step, then terminalize and release the Episode."""
 
-        session = self._active()
-        session.finish(status)
-        return self._release_finished(session, include_stop_reason=True)
+        with self._step_lock:
+            session = self._active()
+            session.finish(status)
+            return self._release_finished(session, include_stop_reason=True)
 
     def _release_finished(
         self, session: RolloutSession, *, include_stop_reason: bool = False
@@ -597,6 +597,10 @@ class RolloutEnvironmentAdapter:
     def release(self) -> dict[str, Any]:
         """Release a terminal Episode after inspecting its final step."""
 
+        with self._step_lock:
+            return self._release_serialized()
+
+    def _release_serialized(self) -> dict[str, Any]:
         if self._session is None and self._request_id is not None:
             frozen = self._runs().result(self._request_id)
             if frozen is not None:

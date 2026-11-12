@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -78,14 +79,15 @@ class PolicyAdapter:
         """
 
         detached_tools = tuple(deepcopy(dict(tool)) for tool in tools)
-        raw = _generate(
-            self.provider,
-            observation,
-            detached_tools,
-            self.config,
-        )
-        if inspect.isawaitable(raw):
-            raw = await raw
+        if inspect.iscoroutinefunction(getattr(self.provider, "generate", None)):
+            raw = _generate(self.provider, observation, detached_tools, self.config)
+            raw = await raw if inspect.isawaitable(raw) else raw
+        else:
+            raw = await asyncio.to_thread(
+                _generate, self.provider, observation, detached_tools, self.config
+            )
+            if inspect.isawaitable(raw):
+                raw = await raw
         return self._decorate(_normalize_reply(raw))
 
     def _decorate(self, reply: ModelReply) -> ModelReply:
