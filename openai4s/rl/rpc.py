@@ -201,7 +201,15 @@ def serve(
         line = reader.readline(max_line_bytes + 1)
         if not line:
             break
-        if len(line.encode("utf-8")) > max_line_bytes:
+        try:
+            line_bytes = line.encode("utf-8")
+        except UnicodeError:
+            response = _error(None, "parse_error", "request contains invalid unicode")
+            writer.write(_encode(response))
+            writer.flush()
+            responses += 1
+            continue
+        if len(line_bytes) > max_line_bytes:
             while "\n" not in line:
                 line = reader.readline(max_line_bytes + 1)
                 if not line:
@@ -212,7 +220,7 @@ def serve(
         else:
             try:
                 request = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError, ValueError, UnicodeError):
                 response = _error(None, "parse_error", "request is not valid JSON")
             else:
                 response = rpc.dispatch(request)
@@ -256,7 +264,7 @@ def _error(request_id: Any, code: str, message: str) -> dict[str, Any]:
 
 def _encode(value: Mapping[str, Any]) -> str:
     return (
-        json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
         + "\n"
     )
 
