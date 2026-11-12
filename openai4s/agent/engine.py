@@ -129,9 +129,9 @@ class AgentEngine:
         """
 
         prepared = tuple(
-            dict(message) for message in self.context_policy.prepare(state)
+            deepcopy(dict(message)) for message in self.context_policy.prepare(state)
         )
-        state.messages[:] = [dict(message) for message in prepared]
+        state.messages[:] = [deepcopy(dict(message)) for message in prepared]
         return prepared
 
     def prepare_tools(self, state: RunState) -> tuple[Mapping[str, Any], ...]:

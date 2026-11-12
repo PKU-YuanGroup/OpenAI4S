@@ -175,6 +175,13 @@ class RolloutDataset:
             item.decision_id: [] for item in decisions
         }
         for event in trajectory.execution_events:
+            if (
+                event.decision_id is not None
+                and event.decision_id not in known_decisions
+            ):
+                raise ValueError(
+                    f"execution event {event.event_id!r} references an unknown decision"
+                )
             if event.decision_id in events_by_decision:
                 events_by_decision[event.decision_id].append(event)
                 if event.segment_id is not None:
@@ -208,7 +215,8 @@ class RolloutDataset:
         segment_rewards = tuple(
             item
             for item in selected_rewards
-            if item.segment_id is not None
+            if item.decision_id is None
+            and item.segment_id is not None
             and item.segment_id in known_segment_ids
             and not any(
                 item.segment_id in decision_segments
@@ -218,10 +226,8 @@ class RolloutDataset:
         for reward in selected_rewards:
             if reward.decision_id in rewards_by_decision:
                 rewards_by_decision[reward.decision_id].append(reward)
-            elif reward.segment_id is not None:
-                for decision_id, segment_ids in segments_by_decision.items():
-                    if reward.segment_id in segment_ids:
-                        rewards_by_decision[decision_id].append(reward)
+            # Segment-scoped reward remains in the dataset envelope. It is
+            # one annotation for the phase, not N additive per-decision rewards.
 
         costs_by_decision: dict[str, list[CostRecord]] = {
             item.decision_id: [] for item in decisions

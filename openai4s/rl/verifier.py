@@ -136,10 +136,21 @@ def _evidence_ids(trajectory: Trajectory) -> set[str]:
                 "output_version_id",
                 "job_id",
                 "compute_job_id",
+                "input_versions",
+                "output_versions",
+                "artifact_version_ids",
+                "job_ids",
+                "compute_job_ids",
             ):
                 candidate = value.get(key)
                 if isinstance(candidate, str) and candidate.strip():
                     result.add(candidate)
+                elif isinstance(candidate, (list, tuple)):
+                    result.update(
+                        item
+                        for item in candidate
+                        if isinstance(item, str) and item.strip()
+                    )
             for child in value.values():
                 visit(child)
         elif isinstance(value, (list, tuple)):

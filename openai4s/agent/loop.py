@@ -228,6 +228,17 @@ class _FrameUsageEventSink:
         self.inner = inner
         self.record = record
 
+    def propose_with_tools(
+        self,
+        turn: int,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+    ) -> Any:
+        propose = getattr(self.inner, "propose_with_tools", None)
+        if callable(propose):
+            return propose(turn, messages, tools)
+        return self.propose(turn, messages)
+
     def propose(self, turn: int, messages: Sequence[Mapping[str, Any]]) -> Any:
         """Keep optional trajectory proposal hooks visible through metering."""
 

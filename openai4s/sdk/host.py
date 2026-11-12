@@ -484,9 +484,13 @@ class _Segment:
         self._closed = False
 
     def __enter__(self) -> "_Segment":
+        if self._record is not None:
+            return self
         self._record = self._call("rl_segment_start", [self._spec])
         if isinstance(self._record, dict) and "error" in self._record:
-            raise RuntimeError(str(self._record["error"]))
+            error = str(self._record["error"])
+            self._record = None
+            raise RuntimeError(error)
         return self
 
     def observe(self, value: Any, *, kind: str = "observation") -> dict:

@@ -226,12 +226,23 @@ class TrajectoryRecorder:
     ) -> DatasetSnapshot:
         """Freeze a terminal trajectory and persist its metadata when configured."""
         with self._lock:
-            value = DatasetSnapshot.from_trajectory(
-                self.snapshot(),
-                snapshot_id,
-                created_at=self.now_ms() if created_at is None else created_at,
+            current = self._snapshots.get(snapshot_id)
+            if current is None and self.repository is not None:
+                get_snapshot = getattr(self.repository, "get_snapshot", None)
+                if callable(get_snapshot):
+                    try:
+                        current = get_snapshot(snapshot_id)
+                    except KeyError:
+                        current = None
+            effective_created_at = (
+                current.created_at
+                if current is not None
+                else self.now_ms() if created_at is None else created_at
             )
-            current = self._snapshots.get(value.snapshot_id)
+            value = DatasetSnapshot.from_trajectory(
+                self.snapshot(), snapshot_id, created_at=effective_created_at
+            )
+            current = current
             if current is not None:
                 if current != value:
                     raise ValueError(

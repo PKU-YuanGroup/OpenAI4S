@@ -143,9 +143,8 @@ def test_dataset_projects_explicit_reward_joins_without_attributing_episode_rewa
         "decision-0",
         "decision-1",
     ]
-    assert [item["annotation_id"] for item in dataset.samples[0].rewards] == [
-        "reward-segment-v1"
-    ]
+    assert dataset.samples[0].rewards == ()
+    assert dataset.samples[1].rewards == ()
     assert dataset.samples[0].costs[0]["cost_id"] == "cost-1"
     assert dataset.samples[0].execution_event_ids == ("event-1",)
     assert dataset.samples[0].execution_events[0]["kind"] == "cell.completed"
