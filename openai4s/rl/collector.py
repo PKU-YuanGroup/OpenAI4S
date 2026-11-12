@@ -314,10 +314,7 @@ class RolloutCollector:
                 self._unconfirmed.append(request_id)
             raise
         except BaseException as exc:
-            if getattr(exc, "state_unknown", False) or (
-                worker is not None
-                and getattr(worker, "cancel_confirmed", True) is False
-            ):
+            if getattr(exc, "state_unknown", False):
                 self._unconfirmed.append(request_id)
             result = CollectedRollout(
                 request_id=request_id,
