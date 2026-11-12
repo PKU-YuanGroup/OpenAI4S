@@ -61,18 +61,6 @@ class SubmitRemoteComputeJobTool(Tool):
                 "maximum": 604800,
                 "description": "Optional remote runtime limit (at most seven days).",
             },
-            "resource_request": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "cpu_cores": {"type": "integer", "minimum": 0},
-                    "gpu_count": {"type": "integer", "minimum": 0},
-                    "gpu_memory_gb": {"type": "number", "minimum": 0},
-                    "max_wall_time_ms": {"type": "integer", "minimum": 1},
-                    "priority": {"type": "string", "minLength": 1},
-                    "budget_group": {"type": "string", "minLength": 1},
-                },
-            },
         },
         "required": ["provider", "command", "intent"],
     }
