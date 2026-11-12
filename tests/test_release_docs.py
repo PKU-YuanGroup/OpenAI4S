@@ -347,69 +347,93 @@ def test_no_install_doc_sends_a_mac_user_to_the_latest_release_for_a_dmg():
     assert not offenders, f"DMG download pointed at the latest release: {offenders}"
 
 
-#: The release the install docs present as current. v0.3.1 was published by
-#: `release.yml` with nothing attached by hand, so unlike v0.3.0 it has no
-#: macOS image. A fact about a release that exists, so it is a constant
-#: rather than the tree's version.
-CURRENT_RELEASE = "0.3.1"
+#: The release the install docs present as current. v1.0.0 was published by
+#: `release.yml`, which omits macOS; its DMG was then built locally from the
+#: unchanged tag and attached by hand, ad-hoc signed and not notarized (its
+#: supplemental validation record says so). v0.3.1, the release before it,
+#: had no image at all. A fact about a release that exists, so it is a
+#: constant rather than the tree's version.
+CURRENT_RELEASE = "1.0.0"
 
-#: Per install doc, the words each of its language halves uses to say that
-#: release has no macOS image.
-_NO_DMG = {
-    "README.md": ("has no macOS DMG",),
-    "README_zh.md": ("暂不提供 macOS DMG",),
-    "docs/startup-guide.md": ("has no macOS DMG", "暂不提供 macOS DMG"),
+#: Per install doc, the words each of its language halves uses to say the
+#: current release's image is ad-hoc signed rather than notarized.
+_AD_HOC_DMG = {
+    "README.md": ("ad-hoc signed, not notarized",),
+    "README_zh.md": ("ad-hoc 签名，未经公证",),
+    "docs/startup-guide.md": ("ad-hoc signed, not notarized", "ad-hoc 签名、未经公证"),
 }
 
+_DMG_NAME = re.compile(r"OpenAI4S-(\d+\.\d+\.\d+)-macos-arm64\.dmg")
+_DMG_URL = re.compile(r"https://[^\s)\]]*?/OpenAI4S-(\d+\.\d+\.\d+)-macos-arm64\.dmg")
 
-def test_install_docs_send_a_mac_user_to_pypi_for_the_release_without_a_dmg():
-    """With no image on the current release, every install doc has to say so
-    in each language it carries and give the PyPI install pinned to that
-    release, or a Mac user goes looking for a download that is not there."""
+
+def test_install_docs_offer_the_ad_hoc_dmg_and_pypi_for_the_current_release():
+    """The current release carries a hand-attached, ad-hoc-signed image, so
+    every install doc names it pinned to that release, says in each language
+    it carries that it is not notarized (a Mac user meets Gatekeeper on first
+    launch), and still gives the PyPI install pinned to the release, which is
+    the only route on an Intel Mac."""
     if not _macos_asset_defaults_to_omit():
         pytest.skip("release.yml publishes a DMG by default again")
-    assert set(_NO_DMG) == {p.relative_to(ROOT).as_posix() for p in USER_INSTALL_DOCS}
-    for name, phrases in _NO_DMG.items():
+    assert set(_AD_HOC_DMG) == {
+        p.relative_to(ROOT).as_posix() for p in USER_INSTALL_DOCS
+    }
+    dmg = f"OpenAI4S-{CURRENT_RELEASE}-macos-arm64.dmg"
+    for name, phrases in _AD_HOC_DMG.items():
         text = _normalised(ROOT / name)
+        assert dmg in text, f"{name} does not name {dmg}"
+        assert f"{dmg}.sha256" in text, f"{name} gives no checksum for {dmg}"
         for phrase in phrases:
             assert phrase in text, f"{name} does not say {phrase!r}"
         assert f"https://pypi.org/project/openai4s/{CURRENT_RELEASE}/" in text, name
         assert f"openai4s[science]=={CURRENT_RELEASE}" in text, name
 
 
-def test_install_docs_pin_the_v030_preview_image_to_its_release_page():
-    """The other half of the rule above: a doc that names the v0.3.0 image has
-    to say where it is, and that is the pinned release page. Since 0.3.1 the
-    READMEs no longer name it and send a Mac user to the startup guide's
-    historical notes, so that guide must still carry it, and must say it
-    installs 0.3.0 rather than the current release."""
-    guide = ROOT / "docs" / "startup-guide.md"
+def test_install_docs_pin_every_dmg_to_its_own_release():
+    """The other half of the rule above: a doc that names an image has to say
+    where it is, and that is its own pinned release, never `releases/latest`
+    and never another release's page. Older images stay on their release pages
+    and install older versions, so the startup guide has to say they must not
+    open a data directory the current release has upgraded."""
     for path in USER_INSTALL_DOCS:
         text = path.read_text(encoding="utf-8")
-        if path != guide and "macos-arm64.dmg" not in text:
-            continue
-        assert "OpenAI4S-0.3.0-macos-arm64.dmg" in text, path.name
-        assert "/releases/tag/v0.3.0" in text, path.name
-        assert "ad-hoc" in text, path.name
-    text = _normalised(guide)
-    assert f"This installs **0.3.0**, not {CURRENT_RELEASE}." in text
-    assert f"这里安装的是 **0.3.0**，不是 {CURRENT_RELEASE}。" in text
+        for match in _DMG_URL.finditer(text):
+            assert f"/releases/download/v{match.group(1)}/" in match.group(
+                0
+            ), f"{path.name} links the {match.group(1)} image elsewhere: {match[0]}"
+        for version in set(_DMG_NAME.findall(text)):
+            assert (
+                f"/releases/download/v{version}/" in text
+                or f"/releases/tag/v{version}" in text
+            ), f"{path.name} names the {version} image without its release"
+            assert "ad-hoc" in text, path.name
+    guide = _normalised(ROOT / "docs" / "startup-guide.md")
+    assert "/releases/tag/v0.3.0" in guide and "/releases/tag/v0.2.0" in guide
+    assert (
+        f"must not open a data directory that {CURRENT_RELEASE} has upgraded" in guide
+    )
+    assert f"不能打开已被 {CURRENT_RELEASE} 升级过的数据目录" in guide
 
 
 def test_platforms_does_not_claim_a_notarized_dmg_ships():
-    """Until 0.3.1 the macOS gate column said no release had met the
-    notarization gate and that v0.3.0's image was an ad-hoc-signed preview.
-    That row now states the current release's fact, and the other two live in
-    the tier rationale, so each is read where it now is."""
+    """The macOS gate column states the current release's fact: an ad-hoc
+    image attached outside the workflow. The tier rationale keeps the history,
+    that no release has met the notarization gate and which releases carry an
+    ad-hoc image, so each is read where it now is."""
     if not _macos_asset_defaults_to_omit():
         pytest.skip("release.yml publishes a DMG by default again")
     text = _normalised(ROOT / "docs" / "platforms.md")
     assert "macOS ships as a signed, notarized" not in text
-    assert f"{CURRENT_RELEASE} uses PyPI; no DMG is included." in text
     assert (
-        f"No release has met that gate yet, so {CURRENT_RELEASE} omits the DMG." in text
+        f"{CURRENT_RELEASE} ships an ad-hoc-signed DMG, attached outside the "
+        "release workflow." in text
     )
-    assert "v0.2.0 and v0.3.0 each carry an ad-hoc-signed preview image" in text
+    assert "No release has met that gate yet" in text
+    assert f"{CURRENT_RELEASE}'s is ad-hoc signed" in text
+    assert (
+        f"v0.2.0, v0.3.0 and {CURRENT_RELEASE} each carry an ad-hoc-signed image"
+        in text
+    )
     assert "v0.3.0 publishes no DMG" not in text
 
 

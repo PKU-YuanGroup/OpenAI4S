@@ -5,16 +5,16 @@
 把 OpenAI4S 自带的 Skill 库复制到本机——装进 Claude Code、装进 OpenAI4S 数据
 目录，或装进命令行指定的任意目录。
 
-npm 发布版 `@pku-yuangroup/openai4s-skills@0.2.0` 包含 603 个 Skill：42 个精选 + 561 个固定版本
+npm 上最新的发布版 `@pku-yuangroup/openai4s-skills@0.3.0` 包含 604 个 Skill：43 个精选 + 561 个固定版本
 bioSkills。以下命令固定使用该包版本：
 
 ```bash
-npx @pku-yuangroup/openai4s-skills@0.2.0 list
-npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0：42 个精选 Skill
-npx @pku-yuangroup/openai4s-skills@0.2.0 install --collection bioskills # v0.2.0：561 个固定版第三方配方
-npx @pku-yuangroup/openai4s-skills@0.2.0 install alphafold2 boltz --target claude
-npx @pku-yuangroup/openai4s-skills@0.2.0 installed
-npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
+npx @pku-yuangroup/openai4s-skills@0.3.0 list
+npx @pku-yuangroup/openai4s-skills@0.3.0 install --all                  # v0.3.0：43 个精选 Skill
+npx @pku-yuangroup/openai4s-skills@0.3.0 install --collection bioskills # v0.3.0：561 个固定版第三方配方
+npx @pku-yuangroup/openai4s-skills@0.3.0 install alphafold2 boltz --target claude
+npx @pku-yuangroup/openai4s-skills@0.3.0 installed
+npx @pku-yuangroup/openai4s-skills@0.3.0 uninstall --all
 ```
 
 `npx @pku-yuangroup/openai4s-skills <command>` 使用 npm 的最新发布版。若要使用当前仓库目录

@@ -57,9 +57,10 @@ register_model_preset("lab_openai", "science-model", "Local science model")
 `register_provider` accepts only the four shipped wires and validates identity,
 URL, credentials-in-URL, default model, and capability metadata before making
 the provider visible. Registration is process-local; a deployment/plugin owns
-re-registration at startup. Model-profile seeding consumes the independent
-preset catalog through `server/model_profiles.py`, so do not add provider/model
-conditionals to `gateway.py`.
+re-registration at startup. Model profiles are user-saved only: the preset
+catalog seeds nothing, and `server/model_profiles.py` reads it only to remove
+the preset rows older releases seeded. Do not add provider/model conditionals
+to `gateway.py`.
 
 Only an upstream protocol that cannot be expressed as `openai`, `responses`,
 `anthropic`, or `gemini` warrants a module under `llm/providers/`. In that case,

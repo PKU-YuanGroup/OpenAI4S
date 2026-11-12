@@ -9,8 +9,11 @@ Model-weight-bound work runs its heavy step on a remote GPU, not the local kerne
 > [`docs/package-architecture.md`](package-architecture.md). Only the compute
 > providers below (`byoc:*`, `ssh:*`) are implemented today (model endpoints
 > are partial: the registry exists, the scoped inference kernel is not yet
-> wired); SLURM/Kubernetes/Modal/lab providers are **future** and must not be
-> assumed available.
+> wired); Kubernetes/Modal/lab providers are **future** and must not be
+> assumed available. `host.compute` has no `slurm:` provider either; Slurm batch
+> scheduling exists separately, through Team Server orchestration and
+> `openai4s cluster submit|list|cancel|logs|profiles`
+> ([Team Server](team-server.md)).
 
 ## 1 · `host.compute` — general BYOC / SSH job dispatcher
 
