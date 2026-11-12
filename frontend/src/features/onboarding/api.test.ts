@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { activateExistingModelProfile, mergeReadinessRefresh } from "./api";
+import { activateExistingModelProfile, discoverModelProfile, mergeReadinessRefresh } from "./api";
 import { sanitizeOnboardingStatus } from "./status";
 
 function snapshot(overrides: Record<string, unknown> = {}) {
@@ -69,6 +69,45 @@ describe("existing-profile onboarding", () => {
       { url: "/api/v1/onboarding", method: "GET" },
     ]);
     expect(status.active_id).toBe("profile/selected");
+  });
+});
+
+describe("endpoint model discovery", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns model ids without exposing the submitted key to callers", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ models: ["gpt-test", "gpt-other"], default_model: "gpt-other" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(discoverModelProfile({
+      provider: "chatgpt",
+      base_url: "https://api.example/v1",
+      api_key: "secret-not-returned",
+    })).resolves.toEqual({ models: ["gpt-test", "gpt-other"], defaultModel: "gpt-other" });
+    expect(JSON.stringify(fetchMock.mock.calls[0])).toContain("secret-not-returned");
+  });
+
+  it("falls back to the first id when the server names no served default", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ models: ["a", "b"], default_model: "absent" }), { status: 200 }),
+    ));
+    await expect(discoverModelProfile({ provider: "chatgpt" }))
+      .resolves.toEqual({ models: ["a", "b"], defaultModel: "a" });
+  });
+
+  it("surfaces a failed discovery as the thrown ApiError", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ models: [], error: "could not reach the model endpoint" }), { status: 502 }),
+    ));
+    await expect(discoverModelProfile({ provider: "chatgpt" }))
+      .rejects.toMatchObject({ message: "could not reach the model endpoint", status: 502 });
   });
 });
 

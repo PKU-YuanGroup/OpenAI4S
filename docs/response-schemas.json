@@ -4731,6 +4731,19 @@
         "type": "object"
       }
     },
+    "DELETE /model-profiles/discover [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /models [error]": {
       "schema": {
         "properties": {
@@ -18156,6 +18169,39 @@
         "type": "object"
       }
     },
+    "GET /model-profiles/discover [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /models [ok]": {
       "schema": {
         "properties": {
@@ -28647,6 +28693,31 @@
           "error",
           "method",
           "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /model-profiles/discover [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
           "request_id",
           "status"
         ],
@@ -41650,6 +41721,63 @@
         "type": "object"
       }
     },
+    "POST /model-profiles/discover [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "models": {
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "models",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /model-profiles/discover [ok]": {
+      "schema": {
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "default_model": {
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "default_model",
+          "models",
+          "source"
+        ],
+        "type": "object"
+      }
+    },
     "POST /models [error]": {
       "schema": {
         "properties": {
@@ -50756,6 +50884,31 @@
           "error",
           "method",
           "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /model-profiles/discover [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
           "request_id",
           "status"
         ],

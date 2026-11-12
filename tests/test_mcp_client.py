@@ -645,6 +645,13 @@ def test_streamable_http_rejects_truncated_and_unbounded_bodies():
         connection._read_body(short, HTTPExchangeDeadline(2.0))
     assert short.length == 9
 
+    event = b'data: {"id":1,"result":{}}\n\n'
+    complete = _ShortResponse(event, len(event))
+    assert connection._read_body(complete, HTTPExchangeDeadline(2), sse_id=1) == event
+    short_event = _ShortResponse(event, len(event) + 9)
+    with pytest.raises(MCPError, match="ended before its declared length"):
+        connection._read_body(short_event, HTTPExchangeDeadline(2), sse_id=1)
+
     with pytest.raises(MCPError, match="no bounded read transport"):
         connection._read_body(_UnboundedResponse(), HTTPExchangeDeadline(2.0))
 

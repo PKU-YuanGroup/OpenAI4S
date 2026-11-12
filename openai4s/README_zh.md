@@ -34,6 +34,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`jobs.py`](./jobs.py) | 在本进程内运行后台计算任务，限制同时活跃的任务数，并按字节、在二进制读取上限制输出缓冲——按字符设上限、又读的是文本管道，那道上限只在 `readline` 已经把任务在下一个换行符之前打印的全部内容分配出来*之后*才做裁剪。终态由唯一一处判定，且判定之后不再被覆盖；停止一个任务走的是与内核 shell 执行器同一套进程组逻辑，因为真正要紧的场景恰恰是 shell 退出了、它拉起的活儿没退。注册表在内存里，但每个任务还会在数据目录下留下一份原子写入的回执：以前重启一次，一个跑了四小时的任务就直接从 Jobs 面板上消失，所以现在未完成的任务会以终态 `abandoned` 被重新收编——不复活，也刻意既不叫 `failed`（那是在指责命令本身）也不叫 `cancelled`（那是在声称有人想停它）。 |
 | [`mcp_client.py`](./mcp_client.py) | 纯标准库 MCP 客户端 facade 与进程级 manager。stdio JSON-RPC 仍是默认 transport；显式的受管 connector 可以分派到 Streamable HTTP sibling。连接覆盖工具、资源与 prompt，带绝对截止时间并按 connector id 单飞构建。服务器发起的 sampling 仍不在范围内。 |
 | [`mcp_http.py`](./mcp_http.py) | 纯标准库 MCP Streamable HTTP transport：独立 JSON-RPC POST、JSON/SSE 响应、协商后的 session 与协议版本、有界响应体、网络策略/SSRF 检查，并拒绝重定向以免鉴权 Header 被带往另一 origin。 |
+| [`parallel_search.py`](./parallel_search.py) | 可选启用、免 key 的 Parallel 搜索，经受策略防护的纯标准库 MCP 客户端发出；来源摘录作为网页搜索摘要返回。 |
 | [`mcp_protocol.py`](./mcp_protocol.py) | stdio 与 Streamable HTTP 客户端共用的 MCP 响应大小边界和带类型 transport 错误。 |
 | [`onboarding.py`](./onboarding.py) | 无界面 CLI 以及 `GET/POST /api/v1/onboarding` 使用的首次模型/供应商配置，做成一个小服务是为了可测试。API key 一律经 secret broker 读写，绝不落成普通设置行：迁移之后那一行存的是一个引用，而无论 keychain 里那个值还在不在，引用本身都是 truthy——直接读原始值的话，一个已被手动吊销的 key 依然会被报成「已配置」。Web 投影脱敏且零出站。 |
 | [`permissions.py`](./permissions.py) | 进程级的权限 broker。它解析 allow/deny/ask 规则；需要用户拍板时，持久化一条审批请求并阻塞当前回合，同时处理取消与超时。无人值守的执行默认失败即拒绝，也仅仅是默认：运维把 `OPENAI4S_UNATTENDED_APPROVAL` 设成 `allow`，就等于主动选择了失败即放行，此后每一条无人应答的审批都会被放过。 |

@@ -8,8 +8,9 @@ import {
   type SearchConfig,
 } from "../../features/customize/search";
 
-type SetupChoice = "doubao" | "tavily" | "you" | "builtin";
-const CHOICES: readonly SetupChoice[] = ["doubao", "tavily", "you", "builtin"];
+// Same choices, in the same order, as `openai4s init` (search_settings.SETUP_CHOICES).
+type SetupChoice = "doubao" | "tavily" | "you" | "builtin" | "parallel";
+const CHOICES: readonly SetupChoice[] = ["doubao", "tavily", "you", "builtin", "parallel"];
 
 function currentOrder(config: SearchConfig): string {
   // Usable, not merely on: a switched-on Tavily without a key never answers.
