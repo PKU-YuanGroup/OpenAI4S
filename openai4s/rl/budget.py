@@ -18,6 +18,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Callable, Literal, Mapping
 
 BudgetMode = Literal["hard", "soft"]
@@ -213,8 +214,10 @@ class BudgetLedger:
                 if (
                     self._modes.get(name, "hard") != "hard"
                     or limit is None
-                    or self._used.get(name, 0.0) + reserved.get(name, 0.0) + value
-                    <= limit
+                    or Decimal(str(self._used.get(name, 0.0)))
+                    + Decimal(str(reserved.get(name, 0.0)))
+                    + Decimal(str(value))
+                    <= Decimal(str(limit))
                 ):
                     continue
                 exceeded[name] = (

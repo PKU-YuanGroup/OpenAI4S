@@ -14,6 +14,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from typing import Any, Callable, Literal, Mapping
 
 AdmissionState = Literal["reserved", "running", "completed", "released", "unknown"]
@@ -332,9 +333,12 @@ class ResourceAdmission:
             <= self.capacity.cpu_cores
             and sum(item.request.gpu_count for item in active) + request.gpu_count
             <= self.capacity.gpu_count
-            and sum(item.request.gpu_memory_gb for item in active)
-            + request.gpu_memory_gb
-            <= self.capacity.gpu_memory_gb
+            and sum(
+                (Decimal(str(item.request.gpu_memory_gb)) for item in active),
+                Decimal("0"),
+            )
+            + Decimal(str(request.gpu_memory_gb))
+            <= Decimal(str(self.capacity.gpu_memory_gb))
         )
 
     def _get(self, allocation_id: str) -> AdmissionRecord:
