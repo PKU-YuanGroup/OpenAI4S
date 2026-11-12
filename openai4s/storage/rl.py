@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, Callable, Literal, Mapping
 
@@ -267,6 +268,18 @@ class RLRepository:
             clock_ms=self._clock_ms,
         )
 
+    @contextmanager
+    def _transaction(self):
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self._connection.execute("ROLLBACK")
+                raise
+            else:
+                self._connection.execute("COMMIT")
+
     def append_episode(self, episode: Episode) -> None:
         data = episode.to_dict()
         with self._lock:
@@ -510,18 +523,15 @@ class RLRepository:
         self, table: str, key: str, value: Any, columns: Mapping[str, Any]
     ) -> None:
         data = value.to_dict()
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
+        with self._transaction():
             current = self._connection.execute(
                 f"SELECT payload FROM {table} WHERE {key}=?", (data[key],)
             ).fetchone()
             if current is not None:
                 if not _same_payload(current["payload"], data):
-                    self._connection.execute("ROLLBACK")
                     raise ValueError(
                         f"record {data[key]!r} conflicts with stored content"
                     )
-                self._connection.execute("COMMIT")
                 return
             names = [key, *columns.keys(), "payload"]
             values = [data[key], *columns.values(), _payload(data)]
@@ -529,7 +539,6 @@ class RLRepository:
                 f"INSERT INTO {table}({','.join(names)}) VALUES({','.join('?' for _ in names)})",
                 values,
             )
-            self._connection.execute("COMMIT")
 
     def append_observation(self, value: Observation) -> None:
         self._append(
