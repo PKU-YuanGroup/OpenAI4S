@@ -1,145 +1,178 @@
-# RL Runtime 合约
+# RL runtime
 
 [English](README.md)
 
-这个包是 OpenAI4S 执行运行时与外部 Agentic RL Trainer 之间的无依赖数据边界。
-`models.py` 定义版本化的 Science Trajectory 记录；`recorder.py` 收集一个 Episode，
-支持追加式幂等写入以及确定性的 JSON/JSONL 导出。Reward Annotation 和 Cost 是独立
-记录，因此 Verifier 或训练数据快照不会改写执行事实。训练算法和特定 Provider 的
-Policy Client 保持在 Harness 外部。
+OpenAI4S 可以作为 agentic 强化学习的**环境**：外部 Trainer 采样策略的下一步动作，
+OpenAI4S 用真实的工具、权限、内核与 Artifact 执行这个动作，本包把发生的一切记录成
+版本化的 *Science Trajectory*，Trainer 再把它转成训练样本。
 
-`segments.py` 统一校验阶段生命周期。启用 RL 记录的 Engine 为每个路由后的 Cell、
-原生工具 batch 或 finalize 创建机械执行段；纯文本不创建阶段。
-`metadata["openai4s.segment"]` 标注 `source: "inferred"` 和 `rule: "action-v1"`，
-不冒充科学阶段声明。生命周期事件与状态原子提交，完全相同的重试返回原事件；
-未关闭阶段在 Episode 终态事件前被标为 interrupted/failed。Host 调用默认继承 action
-执行段，lexical 阶段可以提供更具体的归属；不计算或重复 Reward。
+这个模块只负责边界。它**不包含损失函数、优化器和奖励模型**——这些留在 Trainer 里；
+它**只用标准库**，所以引入它不会给核心增加任何依赖。
 
-显式科学阶段可跨决策：用 `phase = host.begin_segment(...)` 开始，在后续 Cell 调用
-`phase.observe(...)`，最后 `phase.close()`。`host.resume_segment(id)` 只验证并连接当前
-运行 owner 的 open phase，不夺取失联 worker 的所有权、不重放执行。Migration 42 持久化
-带 owner 校验的 active phase。`with host.segment(...)` 仍是 lexical scope，其陈旧上下文
-仍会在决策切换时清除。每个活跃阶段追加 `segment.decision_joined`，包括没有 Host RPC
-的 native/R action。跨样本的 Segment reward 保留原 annotation ID/scope，不能重复求和。
+## 这个包是什么
 
-Host Segment 接口只记录 observation 和产物证据。Reward Annotation 必须由可信的
-Verifier 或 Trainer 写入，Agent 没有 Host 自评分接口。
+Trainer 通常只有两个糟糕的选择：导入 Agent 的 Python 内部实现，或者去读它的数据库。
+这个包的存在就是为了两者都不必做。所有数据都以纯 JSON 穿过边界：
 
-`verifier.py` 定义与 Provider 无关的 `RewardVerifier` 协议和 `apply_verifier()`。
-它在追加带版本 Annotation 前校验 Verifier 身份、Episode 范围、decision/segment
-关联、durable evidence 引用和执行事实不变。
+- **reset** 一个任务，拿到第一条 observation；
+- **step** 提交一次采样回复，拿到执行结果和下一条 observation；
+- **finish** 结束 Episode，得到可导出为 JSON、JSONL 或 ATIF 的终态轨迹；
+- **release** 释放 Episode 及其 workspace。
 
-`snapshot.py` 定义 `DatasetSnapshot`：它要求 Episode 终态、固定完整轨迹哈希和事件
-序号边界，用于冻结训练导出视图；它不复制或改写轨迹记录。
+职责划分是严格的：
 
-`dataset.py` 定义 `RolloutDataset` 和 `TrainingSample`。这个适配器把一个明确的
-Snapshot 与每个 PolicyDecision 的训练样本关联起来，分别保留 Decision、Segment 和
-Episode Reward Annotation，并把按 Decision 关联的 immutable ExecutionEvent 快照
-连同稳定的事件 ID 一起写入样本。确定性的 JSON 与流式 JSONL 在 Trainer 边界上自包含；
-它不选择 Advantage Estimator。
+- OpenAI4S 继续负责路由、权限、内核、完成判定、取消和 Action Ledger。这里不会启动
+  第二套执行循环。
+- Trainer 负责采样、奖励、归属（attribution）和优化。
+- **执行事实只追加、不改写。** Reward Annotation 和 Cost 是独立、带版本的记录，
+  所以重新打分、甚至整体替换 Verifier，都不会改写历史。
+- Agent 不能给自己打分：没有自评分的 Host API。每一个 reward 都由可信 Verifier
+  或 Trainer 写入。
 
-`requests.py` 规范化严格 JSON 请求并绑定逻辑身份。持久化 Environment 现在先准入/claim，
-再构造 factory；`default_max_turns`（默认 32）属于有效请求。同 ID 同内容的终态重试
-返回原结果，不同内容始终冲突。新版 accepted 只可 claim 一次；running/legacy 未知执行
-绝不自动重跑。Migration 43 原子提交 terminal event、Episode 状态、固定结果字节/哈希
-和 receipt。后写的 reward/compute 投影不改变原结果。
+规范的数据格式见[轨迹契约](../../docs/rl/trajectory-contract-v1_zh.md)。
 
-JSONL adapter 新增 `recover`、`result`、`step_result`。安全重试的 `step` 要求持久化运行
-同时提供 `step_id`、`expected_turn`，完全相同的重试返回原响应。已 claim 但无响应的 step
-视为 unknown，不重新执行。仅 JSON-RPC envelope ID 不提供幂等保证。
+## 一次 rollout 如何运行
 
-`collector.py` 提供 `RolloutCollector(worker_factory, requests, sampler_factory,
-max_concurrency=..., max_pending=..., max_results=..., pool_limits=...)`：固定执行槽、
-惰性输入、有界 pending/result 工作和按完成顺序返回结果。batch 生命周期保留去重 ID，
-无限输入应切成有限 batch。`execution_pool` 选择显式配置的池（默认 science），不默认
-占用训练资源；Compute Job 仍使用已有的独立 admission ledger。
+1. **`reset`** 通过你的工厂创建全新的 `AgentEngine` 和 `TrajectoryRecorder`，以及
+   独立的 workspace。Reset 元数据记录初始 Artifact 引用、配置和预算，但不暴露绝对
+   workspace 路径。
+2. **`observe`** 返回策略应当看到的精确消息，以及当前原生工具的声明。
+3. **`step`** 把采样得到的回复交给引擎；引擎执行 code cell、原生工具 batch 或
+   finalize，然后返回结果和下一条 observation。
+4. **`finish`** 结束 Episode 并冻结轨迹。`export` 返回带 schema 版本、并对精确字节
+   计算 SHA-256 的载荷。
+5. **`release`** 销毁环境与 workspace。
 
-`async_lane.py` 将每个 Episode 的完整同步生命周期放在一个专属线程，awaitable sampler
-仍在调用方 event loop。managed factory context 的 enter/exit 同线程执行，借用的 Store
-不关闭。可用精确 owner 的 `interrupt_engine` 请求取消，但必须等执行退出后才回收
-lane/workspace。卡住的执行仍占用槽位，不静默脱离或重放。
+一个 Episode 对应一个引擎、一个 recorder 和一个 workspace。Segment 把动作组织成有意义
+的阶段：默认每个路由后的动作生成一个机械 Segment；科学代码也可以用
+`host.begin_segment(...)`、`phase.observe(...)`、`phase.close()` 打开跨越多个决策的
+显式阶段。
 
-`client.py` 提供同步/异步有界 JSONL client 和 `RemoteRolloutWorker`。使用部署方提供的
-argv（不是 shell 字符串）或安全 streams；失联只报告 unknown，通过
-`recover/result/step_result` 查询，绝不自动重提。`serve.py` 是可信工厂入口：
-`python -m openai4s.rl.serve installed_module:build_environment`。工厂由管理员配置，
-不是 RPC 字段；日志走 stderr、stdin/stdout 专用于协议。支持本地子进程和部署方管理的
-SSH 通道，不新增公网服务。
+## 快速开始
 
-`policy.py` 定义 `PolicyProvider` 和 `PolicyAdapter`。Adapter 把 behavior policy 身份
-和采样配置写入 `ModelReply.extra`；缺失的 logprob 保持缺失，不在采样后估算。
-现代 provider 还可以通过 `tools` 接收复制后的当前原生工具投影；`observe()` 之后，
-`RolloutSession.current_tools` 会暴露同一组声明。只接收 observation 的旧 sampler
-仍然受支持。
-配置关键字可以使用 `config` 或 `sampling_config`。
-`PolicyAdapter.sample_async()`、`RolloutSession.run_async()` 和
-`RolloutWorker.run_async()` 同时接受同步或 awaitable sampler，因此推理服务器客户端
-可以接入，而不需要把执行逻辑移出已有 Engine。
-轨迹 Observation 会保留该工具投影；如果 sampler 提供了 prompt token IDs 和采样配置，
-Decision 也会保留它们。
+### 在本地跑一次 rollout
 
-`environment.py` 定义 `RolloutEnvironment`，每次 Episode reset 都创建新的
-Engine/Recorder 和 workspace。Reset 元数据记录初始 Artifact 引用、配置与预算，但不暴露
-绝对 workspace 路径。
+```python
+from openai4s.agent.engine import AgentEngine
+from openai4s.rl import Episode, PolicyAdapter, RolloutEnvironment, RolloutWorker
 
-`RolloutEnvironmentAdapter` 是这个环境之上的 JSON 安全 Trainer 边界，提供
-reset/observe/step/finish/release/export，以及只读的 reward/cost 投影。外部 Trainer
-不需要导入 Engine 的 Action 类或直接查询 SQLite；它不会计算 Reward、暴露 workspace
-路径，也不会复制第二套执行循环。
+def build_engine(reset):
+    """按你平时的方式组装引擎：model port、action executor、工具、最大轮数。"""
+    return AgentEngine(model=..., executor=..., max_turns=reset.max_turns)
 
-`replay.py` 定义 `TrajectoryReplayer`。Event replay 支持 cursor，Decision replay 将每次
-采样和当时的 Observation 配对，Artifact replay 通过调用方提供的 checker 校验不可变版本
-引用。Execution replay 不会隐式执行，必须由宿主显式提供受控 runner。
+worker = RolloutWorker(
+    RolloutEnvironment(build_engine, workspace_root="/data/rollouts"),
+)
 
-`__init__.py` 导出公共记录和适配器；`agent_sink.py` 把现有 `AgentEngine` 事件流接入
-这些记录，同时保留 Action Ledger 作为执行事实源。`rollout.py` 导出面向 Trainer 的
-`RolloutSession`，提供 reset/observe/step/finish/export 生命周期。
+def sample(observation, *, tools):
+    """任意 ``(observation, *, tools) -> ModelReply | mapping`` 可调用对象都可以。
 
-`worker.py` 提供一个 Episode 的 `RolloutWorker` 边界：`run()` 是同步路径，
-`run_async()` 接受 awaitable sampler；它负责隔离环境 reset/run/release，对 durable
-receipt 中断状态只报告 `recovery_required`，不重放副作用；
-并返回带 schema version 和精确 payload 字节 SHA-256 的 JSON/JSONL/ATIF 导出。
-`export("atif")` 是 Harbor 交换投影；完整 Science Trajectory 保留在 ATIF 的
-`extra.openai4s` 扩展中。
+    它也可以是 async。用 ``PolicyAdapter(provider, "vllm", "step-1200")``
+    包装推理服务客户端即可记录 behavior policy 身份。
+    """
+    return my_inference_server.chat(observation, tools=tools)
 
-`rpc.py` 提供纯标准库的 JSON-lines 外部 Trainer 传输层。`RolloutRPC` 校验
-`reset`/`observe`/`step`/`finish`/`export`/`release`/`rewards`/`costs` 请求并委托给
-`RolloutEnvironmentAdapter`；`serve_rollout_rpc` 对每一行输出结构化响应，遇到格式错误
-或超长请求仍保持流同步，也不会启动第二套执行循环。
+trajectory = worker.run(
+    Episode("ep-1", "tune the reaction yield", "session-1", created_at=0),
+    [{"role": "user", "content": "Tune the reaction yield."}],
+    sample,
+)
+print(worker.export(trajectory, "jsonl").sha256)
+```
 
-`atif.py` 提供 `ATIFExporter`，将轨迹确定性地投影为 ATIF-v1.8 交换格式，并在 ATIF
-扩展元数据中保留 Segment、Reward、Cost 和执行事件标识。`completion_contract()` 校验
-Harbor 风格的正向终态证据：非 running Episode 必须有且只有一个位于末尾、且 stop
-reason 匹配的 `episode.finished` 事件。失败、取消、中断、`max_turns` 和普通 `done`
-仍是合法终态记录，但永远不会标为正向 `completion_evidence`；该字段只表示 Runtime
-收到终态 completion payload，科学质量仍由外部 Verifier 写入 Reward Annotation。
-`ATIFExporter(..., children=[...])` 接受调用方显式提供的委派 child trajectory，并为每个
-child 输出独立 ATIF 文档，同时从 parent decision 建立引用；它不会查询 Store，也不会
-臆造 child trajectory。
+`worker.run()` 返回终态 `Trajectory`。导出是确定性的，并带有 schema 版本和字节哈希，
+所以训练分片无需重跑即可校验。
 
-`host_events.py` 定义有界的 Host RPC 生命周期事实（`started`、`completed`、`failed`），
-用于把嵌套执行关联到父 Decision 和 Segment，同时不复制私有参数或结果。
+### 通过 JSONL 为 Trainer 提供服务
 
-`projector.py` 在导出边界只读投影持久化事实。它只跟随执行事件已经明确引用的
-Artifact version 和 Compute job ID，带出 checksum、producing cell、receipt、输入
-版本、manifest 以及追加式 job events；不会解析 Artifact head、复制源表或估算 GPU/
-Provider 成本。
+如果 Trainer 在另一个进程、另一台机器或 GPU 主机上，就用 stdin/stdout 启动 worker，
+再用内置客户端与它通信。工厂是管理员配置，绝不能由 RPC 指定：
 
-`cost.py` 只接受明确声明已认证、且绑定到精确 compute job 与 receipt 的 Provider
-成本证据。缺失的 Provider 测量保持未知；持久化 job 的耗时只作为 metadata 保存，
-不会被改称为 GPU 时间或账单金额。
+```bash
+python -m openai4s.rl.serve my_deployment:build_environment
+```
 
-`admission.py` 提供与 Provider 无关的资源请求和幂等 allocation 边界。它要求在
-启动前绑定 Provider receipt，并分别报告准入等待时间和实际计算时间；它不替换
-持久化 Compute job 仓储。
+```python
+from openai4s.rl import RolloutClient
 
-`DurableResourceAdmission` 通过 Store 和 revision 检查持久化容量预留及生命周期，
-因此守护进程重启后未知的远端 allocation 仍会占用容量。
+client = RolloutClient(
+    ["ssh", "gpu-box", "python", "-m", "openai4s.rl.serve", "my_deployment:build_environment"]
+)
+client.reset({"episode": {...}, "messages": [{"role": "user", "content": "..."}]})
+```
 
-`budget.py` 将预计预留与实际用量分开，并明确 hard/soft 限制。绑定 receipt 的
-allocation 在可能启动 Provider 工作后不能乐观释放；未知终态会保持预留，直到
-显式 reconcile。
+传输是一行一个 JSON 的单流协议。日志走 stderr，stdin/stdout 只用于协议。`step`、
+`recover`、`result`、`step_result` 都是幂等的：完全相同的重试会返回已记录的响应。
+如果传输在请求中途断开，客户端会把状态报告为 unknown，你必须去查询持久化结果——
+客户端绝不会自动重提副作用。
 
-`DurableBudgetLedger` 通过 Store 的 RL repository 以带 revision 检查的方式持久化
-预算快照和绑定 receipt 的 allocation，因此守护进程重启不会重新创建或重复扣除
-同一项预留。
+## 从 rollout 到训练数据
+
+`DatasetSnapshot` 在内容寻址的边界上冻结一条终态轨迹；`RolloutDataset` 再为每个
+`PolicyDecision` 投影出一个 `TrainingSample`：
+
+```python
+from openai4s.rl import DatasetSnapshot, RolloutDataset
+
+snapshot = DatasetSnapshot.from_trajectory(trajectory, "snap-ep1", created_at=1)
+dataset = RolloutDataset.from_trajectory(trajectory, snapshot)
+open("shard.jsonl", "w").write(dataset.jsonl())
+```
+
+每个样本包含 observation、decision（sampler 提供时会带上 prompt token ID 和 loss
+mask），以及只与该 decision 显式关联的执行事件和 reward。Segment 级和 Episode 级
+reward 不会进入逐决策样本：把它们拆成逐 token 目标属于归属算法，是 Trainer 的选择，
+本包不会替你猜。本包也不选择 advantage estimator。
+
+## 奖励、成本与预算
+
+- **奖励。** `apply_verifier(recorder, verifier)` 针对不可变快照运行与 Provider 无关的
+  `RewardVerifier`，校验身份、作用范围、关联关系和证据引用，然后才追加带版本的
+  Annotation。
+- **成本。** `cost.py` 只接受明确经过认证、且绑定到精确 compute job 与 receipt 的
+  Provider 成本证据。缺失的测量保持 unknown；job 的实际耗时绝不会被改称为 GPU 时间
+  或账单金额。
+- **准入与预算。** `admission.py` 在开工前绑定 Provider receipt，并把排队等待与计算
+  时间分开报告。`budget.py` 把预估预留与实际用量分开，并明确 hard/soft 限额。两者都有
+  持久化封装，守护进程重启后不会重建或重复扣除同一项预留。
+
+## 安全与失败行为
+
+- 持久化 step 是 claim-once：已接受且已有记录的请求会返回原响应，而已 claim 未响应
+  或 legacy-unknown 的工作绝不会自动重放。
+- 恢复是 fail-closed 的。被中断的 Episode 以 `recovery_required` 和持久 receipt 报告，
+  不会替 Trainer 重跑执行。
+- 取消按精确 owner 生效。请求中断后，会先等真实执行退出，再释放 lane 和 workspace；
+  卡住的执行保持占用，而不是被静默脱离。
+- 导出与 RPC 流都很严格：格式错误或超长的行会得到结构化错误，但不会让流失步；正在
+  运行的 Episode 不能被导出。
+
+## 模块地图
+
+| 文件 | 作用 |
+|---|---|
+| `__init__.py` | 公共记录与适配器；较重的模块按需惰性加载。 |
+| `models.py` | 版本化 JSON 记录：Episode、Observation、PolicyDecision、Segment、ExecutionEvent、RewardAnnotation、CostRecord、RunReceipt、Trajectory。 |
+| `recorder.py` | 线程安全的追加式 recorder，幂等写入，确定性 JSON/JSONL 导出。 |
+| `segments.py` | Segment 生命周期：每个路由动作一个机械 Segment，另支持跨决策的显式科学阶段。 |
+| `verifier.py` | 与 Provider 无关的 `RewardVerifier` 协议和 `apply_verifier()`；校验身份、范围、关联与证据。 |
+| `snapshot.py` | `DatasetSnapshot`：内容寻址的终态视图，冻结轨迹哈希与事件边界。 |
+| `dataset.py` | `RolloutDataset` 与 `TrainingSample`：逐决策样本，带 token ID、loss mask 和显式 reward 关联。 |
+| `requests.py` | 严格请求规范化、幂等 step 语义和持久终态 receipt。 |
+| `environment.py` | `RolloutEnvironment`（每个 Episode 全新的引擎、recorder 与 workspace）以及 JSON 安全的 `RolloutEnvironmentAdapter`。 |
+| `rollout.py` | `RolloutSession`：面向 Trainer 的 reset/observe/step/finish 生命周期，复用未修改的 `AgentEngine`。 |
+| `agent_sink.py` | 把 `AgentEngine` 事件流接入这些记录，同时不取代 Action Ledger。 |
+| `policy.py` | `PolicyProvider` 与 `PolicyAdapter`：规范化采样回复并记录 behavior policy 身份；缺失的 logprob 保持缺失。 |
+| `worker.py` | `RolloutWorker`：单 Episode 从 reset 到 release，确定性 JSON/JSONL/ATIF 导出，以及显式恢复结果。 |
+| `replay.py` | `TrajectoryReplayer`：支持 cursor 的事件、决策与 Artifact 重放；执行重放需要显式 runner。 |
+| `atif.py` | `ATIFExporter`：面向 Harbor 的确定性 ATIF-v1.8 投影，以及正向终态证据校验。 |
+| `host_events.py` | 有界的 Host RPC 生命周期事实（`started`、`completed`、`failed`），用于把嵌套执行关联到决策。 |
+| `projector.py` | 只读投影执行事件已明确引用的持久化事实。 |
+| `cost.py` | 只接受已认证、绑定 receipt 的 Provider 成本证据；绝不估算 GPU 时间或账单。 |
+| `admission.py` | 与 Provider 无关、幂等、绑定 receipt 的资源准入，排队时间与计算时间分开。 |
+| `budget.py` | hard/soft 预算账本，区分预估与实际用量；未知 allocation 保持预留直到 reconcile。 |
+| `collector.py` | `RolloutCollector`：固定并发、有界的 pending/result 队列、按完成顺序返回。 |
+| `async_lane.py` | 每个 Episode 的同步生命周期跑在一条专属线程上，采样仍留在 event loop。 |
+| `client.py` | `RolloutClient`、`AsyncRolloutClient` 与 `RemoteRolloutWorker`：有界 JSONL 客户端。 |
+| `serve.py` | 可信入口：`python -m openai4s.rl.serve module:factory`。 |
+| `rpc.py` | `RolloutRPC` 与标准库 JSON-lines 服务端；每行输入对应一条结构化响应。 |

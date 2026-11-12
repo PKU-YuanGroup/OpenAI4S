@@ -1,185 +1,201 @@
-# RL runtime contracts
+# RL runtime
 
 [中文说明](README_zh.md)
 
-This package is the dependency-free data boundary between OpenAI4S execution
-and an external Agentic RL trainer. `models.py` defines the versioned Science
-Trajectory records. `recorder.py` collects one episode with append-only,
-idempotent writes and deterministic JSON/JSONL export. Reward annotations and
-costs are separate records, so a verifier or training snapshot never rewrites
-execution facts. Training algorithms and provider-specific policy clients stay
-outside the harness.
+OpenAI4S can serve as the **environment** for agentic reinforcement learning. An
+external trainer samples the policy's next action; OpenAI4S executes that action
+with its real tools, permissions, kernels, and artifacts; and this package
+records what happened as a versioned *Science Trajectory* that the trainer can
+turn into training samples.
 
-`segments.py` owns shared lifecycle validation. RL-instrumented engines create
-one mechanical execution segment per routed action (Cell, native batch, or
-finalization); prose alone creates none. `metadata["openai4s.segment"]` records
-`source: "inferred"` and `rule: "action-v1"`, not an inferred scientific claim.
-Lifecycle events and status commit atomically; exact retries return the original
-event. Unclosed phases are interrupted/failed before the Episode terminal event.
-The action's Host calls inherit this fallback segment, while lexical phases can
-provide more specific attribution. No reward is computed or duplicated.
+This module is only the boundary. It ships **no loss function, no optimizer, and
+no reward model** — those stay in the trainer — and it is **standard-library
+only**, so importing it adds no dependency to the core.
 
-Explicit scientific phases can span decisions: `phase = host.begin_segment(...)`,
-then `phase.observe(...)` in later Cells, and `phase.close()` at the boundary.
-`host.resume_segment(id)` validates an existing open phase under the same runtime
-owner; it never transfers ownership from a lost worker or replays work. Migration
-42 stores owner-fenced active phase bindings. `with host.segment(...)` remains a
-lexical scope: stale lexical context is still discarded at decision boundaries.
-Each active phase receives `segment.decision_joined` facts, including native/R
-actions without Host RPC. Segment reward references keep their annotation IDs
-and scope across samples; consumers must not sum repeated references.
+## What this is
 
-Host segment APIs record observations and artifact evidence only. Reward
-annotations are written by a trusted verifier or trainer; the Agent has no
-self-scoring Host API.
+A trainer normally has two bad options: import the agent's Python internals, or
+scrape its database. This package exists so it needs neither. Everything crosses
+the boundary as plain JSON:
 
-`verifier.py` defines the provider-neutral `RewardVerifier` protocol and
-`apply_verifier()`. It validates verifier identity, episode scope, decision /
-segment joins, durable evidence references, and append-only execution facts
-before adding versioned annotations.
+- **reset** a task and receive the first observation;
+- **step** with a sampled reply and receive the execution result and the next
+  observation;
+- **finish** with a terminal trajectory, exportable as JSON, JSONL, or ATIF;
+- **release** the episode and its workspace.
 
-`snapshot.py` defines `DatasetSnapshot`, a terminal, content-addressed view
-that freezes the full trajectory hash and event sequence boundary for a
-training export. It does not copy or rewrite trajectory records.
+The split of responsibilities is strict:
 
-`dataset.py` defines `RolloutDataset` and `TrainingSample`. The adapter joins
-one explicit snapshot to one sample per PolicyDecision, keeps decision,
-segment, and episode reward annotations separate, and includes the immutable
-execution-event snapshots joined to each decision (with their stable event
-IDs). Deterministic JSON or streaming JSONL is self-contained at the Trainer
-boundary and does not choose an advantage estimator.
+- OpenAI4S keeps ownership of routing, permissions, kernels, completion,
+  cancellation, and the Action Ledger. Nothing here starts a second execution
+  loop.
+- The trainer keeps ownership of sampling, reward, attribution, and optimization.
+- **Execution facts are append-only.** Reward annotations and cost records are
+  separate, versioned records, so re-scoring a rollout — or replacing the
+  verifier entirely — never rewrites history.
+- The Agent cannot score itself: there is no self-reward Host API. A trusted
+  verifier or trainer writes every reward.
 
-`requests.py` normalizes strict JSON run inputs and fingerprints logical request
-identity. Durable Environment admission now precedes factory construction; its
-`default_max_turns` (32 unless supplied) is part of the effective request. Same
-request/content returns the original terminal result; different content always
-conflicts. A current-protocol accepted request can be claimed once; running or
-legacy unknown work is never automatically replayed. Migration 43 commits the
-terminal event, Episode projection, result bytes/hash, and receipt together.
-Later rewards and compute projections do not change the frozen result.
+The normative record format is the
+[trajectory contract](../../docs/rl/trajectory-contract-v1.md).
 
-The JSONL adapter adds `recover`, `result`, and `step_result`. Retry-safe `step`
-requires both `step_id` and `expected_turn` on a durable run; exact retries return
-the recorded response. A claimed step without a response is unknown and cannot
-be replayed. Envelope JSON-RPC IDs alone do not make a step idempotent.
+## How a rollout works
 
-`collector.py` provides `RolloutCollector(worker_factory, requests, sampler_factory,
-max_concurrency=..., max_pending=..., max_results=..., pool_limits=...)`: fixed
-consumer slots, lazy input, bounded pending/output work and completion-order
-results. Request IDs are retained for duplicate detection for the batch lifetime;
-use finite batches for indefinitely streaming workloads. `execution_pool` selects
-an explicitly configured pool (default `science`); training capacity is not
-implicitly available. Compute jobs retain their separate existing admission ledger.
+1. **`reset`** builds a fresh `AgentEngine` and `TrajectoryRecorder` through your
+   factory, plus an isolated workspace. Reset metadata records initial artifact
+   references, configuration, and budget — never the absolute workspace path.
+2. **`observe`** returns the exact messages the policy should see, together with
+   the current native tool declarations.
+3. **`step`** hands your sampled reply to the engine. It executes a code cell, a
+   native tool batch, or a finalization, then returns the result and the next
+   observation.
+4. **`finish`** closes the episode and freezes the trajectory. `export` returns a
+   schema-versioned payload with a SHA-256 over the exact bytes.
+5. **`release`** disposes of the environment and workspace.
 
-`async_lane.py` runs each Episode's complete synchronous lifecycle on one owned
-thread while awaitable policy sampling stays on the caller's event loop. Managed
-factory context managers enter/exit on that same lane; borrowed Stores are not
-closed. An optional exact-owner `interrupt_engine` requests cancellation, but
-cancellation always drains actual execution before freeing the lane/workspace.
-A stuck execution stays occupied rather than being silently detached/replayed.
+One episode is one engine, one recorder, and one workspace. Segments group
+actions into meaningful phases: by default the engine creates one mechanical
+segment per routed action, and scientific code can open an explicit phase that
+spans several decisions with `host.begin_segment(...)`, `phase.observe(...)`, and
+`phase.close()`.
 
-`client.py` provides sync/async bounded JSONL clients and `RemoteRolloutWorker`.
-Use deployment-provided argv (never a shell string) or secure streams. Transport
-loss leaves work unknown: query `recover/result/step_result`, never auto-resubmit.
-`serve.py` is the trusted-factory entrypoint: `python -m openai4s.rl.serve
-installed_module:build_environment`. The factory is operator configuration, not
-an RPC field. Logs use stderr; stdin/stdout remain protocol-only. This works over
-local subprocesses or a deployment-managed SSH channel, not a new public server.
+## Quick start
 
-`policy.py` defines `PolicyProvider` and `PolicyAdapter`. The adapter records
-the behavior policy identity and sampling configuration in `ModelReply.extra`;
-it preserves missing logprob evidence instead of estimating it after sampling.
-Modern providers can also receive the detached current native tool projection
-through `tools`; `RolloutSession.current_tools` exposes the same declarations
-after `observe()`. Older observation-only samplers remain supported.
-The configuration keyword may be `config` or `sampling_config`.
-`PolicyAdapter.sample_async()`, `RolloutSession.run_async()`, and
-`RolloutWorker.run_async()` accept synchronous or awaitable samplers, so an
-inference-server client can be used without moving execution out of the
-existing Engine.
-Trajectory observations retain that tool projection, while decisions retain
-prompt token IDs and sampling configuration when the sampler supplies them.
+### Run one rollout locally
 
-`environment.py` defines `RolloutEnvironment`, which constructs a fresh
-Engine/Recorder pair and workspace for each Episode reset. Reset metadata
-records initial artifact references, configuration, and budget without
-exposing the absolute workspace path.
+```python
+from openai4s.agent.engine import AgentEngine
+from openai4s.rl import Episode, PolicyAdapter, RolloutEnvironment, RolloutWorker
 
-`RolloutEnvironmentAdapter` is the JSON-safe Trainer boundary over that
-environment. It exposes reset/observe/step/finish/release/export plus read-only
-reward and cost projections, so an external Trainer does not need to import
-Engine action classes or inspect SQLite. It never computes reward, hides the
-workspace path, or creates a second execution loop.
+def build_engine(reset):
+    """Wire your normal engine: model port, action executor, tools, max turns."""
+    return AgentEngine(model=..., executor=..., max_turns=reset.max_turns)
 
-`replay.py` defines `TrajectoryReplayer`. Event replay is cursorable, decision
-replay pairs each sampled decision with the exact observation, and artifact
-replay checks immutable version references through a caller-supplied checker.
-Execution replay never runs implicitly; it requires an explicit controlled
-runner supplied by the embedding application.
+worker = RolloutWorker(
+    RolloutEnvironment(build_engine, workspace_root="/data/rollouts"),
+)
 
-`__init__.py` exports the public records and adapters. `agent_sink.py` bridges
-the existing `AgentEngine` event stream into these records without replacing
-the Action Ledger. `rollout.py` exposes `RolloutSession`, a trainer-facing
-reset/observe/step/finish/export lifecycle.
+def sample(observation, *, tools):
+    """Any ``(observation, *, tools) -> ModelReply | mapping`` callable works.
 
-`worker.py` provides the `RolloutWorker` boundary for one Episode: its
-`run()` path is synchronous and `run_async()` accepts an awaitable sampler; it
-resets, runs, and releases an isolated environment, reports a
-durable interrupted receipt as `recovery_required` without retrying side
-effects, and returns schema-versioned JSON/JSONL/ATIF exports with a SHA-256 of
-the exact payload bytes. `export("atif")` is the Harbor interchange projection;
-the complete Science Trajectory remains in its `extra.openai4s` extension.
+    It may be async. Wrap an inference-server client with
+    ``PolicyAdapter(provider, "vllm", "step-1200")`` to record its identity.
+    """
+    return my_inference_server.chat(observation, tools=tools)
 
-`rpc.py` provides a pure-standard-library JSON-lines transport for an external
-trainer. `RolloutRPC` validates `reset`/`observe`/`step`/`finish`/`export`/
-`release`/`rewards`/`costs` requests and delegates them to
-`RolloutEnvironmentAdapter`; `serve_rollout_rpc` emits one structured response
-per input line, keeps malformed or oversized requests on the stream, and never
-starts a second execution loop.
+trajectory = worker.run(
+    Episode("ep-1", "tune the reaction yield", "session-1", created_at=0),
+    [{"role": "user", "content": "Tune the reaction yield."}],
+    sample,
+)
+print(worker.export(trajectory, "jsonl").sha256)
+```
 
-`atif.py` provides `ATIFExporter`, a deterministic ATIF-v1.8 interchange
-projection that keeps segment, reward, cost, and execution identifiers in
-ATIF extension metadata. `completion_contract()` validates Harbor-style
-positive terminal evidence: a non-running Episode needs exactly one final
-`episode.finished` event with a matching stop reason. Failed, cancelled,
-interrupted, `max_turns`, and ordinary `done` outcomes remain valid terminal
-records but are never marked with positive `completion_evidence`; that field
-only says the runtime received a terminal completion payload. Scientific
-quality remains an external verifier's Reward Annotation.
-`ATIFExporter(..., children=[...])` accepts caller-supplied delegated child
-trajectories and emits each as an independent ATIF document plus a reference
-from the parent decision. It never queries the Store or invents a child
-trajectory.
+`worker.run()` returns the terminal `Trajectory`. Exports are deterministic and
+carry a schema version and a byte hash, so a training shard can be verified
+without re-running anything.
 
-`host_events.py` defines the bounded Host RPC lifecycle facts (`started`,
-`completed`, and `failed`) used to join nested execution to a parent decision
-and segment without copying private arguments or results.
+### Serve a trainer over JSONL
 
-`projector.py` adds a read-only durable-fact projection at export time. It
-follows exact Artifact version and Compute job IDs already referenced by an
-execution event, including checksums, producing cells, receipts, input
-versions, manifests, and append-only job events. It never resolves an Artifact
-head, copies source rows, or estimates GPU/provider cost.
+For a separate process, machine, or GPU host, start the worker over
+stdin/stdout and talk to it with the bundled client. The factory is
+administrator configuration and never a field the RPC can set:
 
-`cost.py` accepts only explicitly authenticated provider cost evidence bound to
-the exact compute job and receipt. Missing provider measurements remain
-unknown; durable job elapsed time is metadata and is never relabeled as GPU
-time or a billing amount.
+```bash
+python -m openai4s.rl.serve my_deployment:build_environment
+```
 
-`admission.py` supplies a provider-neutral resource request and idempotent
-allocation boundary. It binds a provider receipt before start and reports
-admission wait separately from actual compute time; it does not replace the
-durable Compute job repository.
+```python
+from openai4s.rl import RolloutClient
 
-`DurableResourceAdmission` persists the capacity reservation and lifecycle
-through the Store with revision checks, so an unknown remote allocation still
-occupies capacity after a daemon restart.
+client = RolloutClient(
+    ["ssh", "gpu-box", "python", "-m", "openai4s.rl.serve", "my_deployment:build_environment"]
+)
+client.reset({"episode": {...}, "messages": [{"role": "user", "content": "..."}]})
+```
 
-`budget.py` keeps estimated reservations separate from actual usage and makes
-hard versus soft limits explicit. Receipt-bound allocations cannot be released
-after provider work may have started; an unknown terminal state stays reserved
-until reconciliation.
+The transport is newline-delimited JSON over one stream. Logs go to stderr and
+stdin/stdout stay protocol-only. `step`, `recover`, `result`, and `step_result`
+are idempotent: an exact retry returns the recorded response. If the transport
+drops mid-request, the client reports the state as unknown and you must query
+the durable result — the client never auto-resubmits side effects.
 
-`DurableBudgetLedger` uses the Store's RL repository to persist the budget
-snapshot and receipt-bound allocations with revision checks, so a daemon
-restart does not recreate or double charge a reservation.
+## From rollouts to training data
+
+`DatasetSnapshot` freezes a terminal trajectory at a content-addressed boundary;
+`RolloutDataset` then projects one `TrainingSample` per `PolicyDecision`:
+
+```python
+from openai4s.rl import DatasetSnapshot, RolloutDataset
+
+snapshot = DatasetSnapshot.from_trajectory(trajectory, "snap-ep1", created_at=1)
+dataset = RolloutDataset.from_trajectory(trajectory, snapshot)
+open("shard.jsonl", "w").write(dataset.jsonl())
+```
+
+Each sample carries the observation, the decision (including prompt token IDs
+and loss mask when the sampler supplies them), and only the execution events and
+rewards explicitly joined to that decision. Segment-level and episode-level
+rewards stay outside the per-decision samples: turning them into a per-token
+target is an attribution choice the trainer makes, and this package will not
+guess it. It also does not pick an advantage estimator.
+
+## Rewards, costs, and budgets
+
+- **Rewards.** `apply_verifier(recorder, verifier)` runs a provider-neutral
+  `RewardVerifier` against an immutable snapshot, checks identity, scope, joins,
+  and evidence references, and only then appends versioned annotations.
+- **Costs.** `cost.py` accepts provider cost evidence only when it is
+  explicitly authenticated and bound to the exact compute job and receipt. A
+  missing measurement stays unknown; job wall time is never relabeled as GPU
+  time or a bill.
+- **Admission and budget.** `admission.py` binds a provider receipt before work
+  starts and reports queue wait separately from compute time. `budget.py` keeps
+  estimated reservations apart from actual usage and makes hard versus soft
+  limits explicit. Both have durable wrappers that survive a daemon restart
+  without recreating or double-charging a reservation.
+
+## Safety and failure behavior
+
+- Durable steps are claim-once: an accepted request with a recorded response
+  returns that response, while claimed-but-unanswered or legacy-unknown work is
+  never replayed automatically.
+- Recovery is fail-closed. An interrupted episode is reported as
+  `recovery_required` with its durable receipt; execution is not re-run on the
+  trainer's behalf.
+- Cancellation is exact-owner. Requesting an interrupt drains real execution
+  before the lane and workspace are released; a stuck execution stays occupied
+  rather than being silently detached.
+- Exports and the RPC stream are strict: malformed or oversized lines produce a
+  structured error without desynchronizing the stream, and a running episode
+  cannot be exported.
+
+## Module map
+
+| file | role |
+|---|---|
+| `__init__.py` | Public records and adapters; heavier modules load lazily. |
+| `models.py` | Versioned JSON records: Episode, Observation, PolicyDecision, Segment, ExecutionEvent, RewardAnnotation, CostRecord, RunReceipt, Trajectory. |
+| `recorder.py` | Thread-safe append-only recorder with idempotent writes and deterministic JSON/JSONL export. |
+| `segments.py` | Segment lifecycle: one mechanical segment per routed action, plus explicit cross-decision scientific phases. |
+| `verifier.py` | Provider-neutral `RewardVerifier` protocol and `apply_verifier()`; validates identity, scope, joins, and evidence. |
+| `snapshot.py` | `DatasetSnapshot`: a content-addressed, terminal view that freezes the trajectory hash and event boundary. |
+| `dataset.py` | `RolloutDataset` and `TrainingSample`: one sample per decision with token IDs, loss mask, and explicit reward joins. |
+| `requests.py` | Strict request normalization, idempotent step semantics, and durable terminal receipts. |
+| `environment.py` | `RolloutEnvironment` (fresh engine, recorder, and workspace per episode) and the JSON-safe `RolloutEnvironmentAdapter`. |
+| `rollout.py` | `RolloutSession`: the trainer-facing reset/observe/step/finish lifecycle over the unmodified `AgentEngine`. |
+| `agent_sink.py` | Bridges the `AgentEngine` event stream into these records without replacing the Action Ledger. |
+| `policy.py` | `PolicyProvider` and `PolicyAdapter`: normalizes sampled replies and records behavior-policy identity; missing logprobs stay missing. |
+| `worker.py` | `RolloutWorker`: one episode from reset to release, deterministic JSON/JSONL/ATIF exports, and explicit recovery results. |
+| `replay.py` | `TrajectoryReplayer`: cursorable event, decision, and artifact replay; execution replay needs an explicit runner. |
+| `atif.py` | `ATIFExporter`: deterministic ATIF-v1.8 projection for Harbor, plus the positive-terminal-evidence check. |
+| `host_events.py` | Bounded Host-RPC lifecycle facts (`started`, `completed`, `failed`) that join nested work to a decision. |
+| `projector.py` | Read-only projection of durable facts already referenced by execution events. |
+| `cost.py` | Accepts authenticated, receipt-bound provider cost evidence; never estimates GPU time or billing. |
+| `admission.py` | Provider-neutral, idempotent, receipt-bound resource admission with separate queue and compute time. |
+| `budget.py` | Hard/soft budget ledger with estimated versus actual usage; unknown allocations stay reserved until reconciled. |
+| `collector.py` | `RolloutCollector`: fixed concurrency, bounded pending/result queues, and completion-order results. |
+| `async_lane.py` | Runs each episode's synchronous lifecycle on one owned thread while sampling stays on the event loop. |
+| `client.py` | `RolloutClient`, `AsyncRolloutClient`, and `RemoteRolloutWorker`: bounded JSONL clients. |
+| `serve.py` | The trusted entry point: `python -m openai4s.rl.serve module:factory`. |
+| `rpc.py` | `RolloutRPC` and the standard-library JSON-lines server; one structured response per input line. |
