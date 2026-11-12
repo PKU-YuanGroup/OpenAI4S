@@ -225,7 +225,8 @@ When a Store repository is configured, this metadata is appended to
 `rl_dataset_snapshots` under migration 38 and can be fetched by snapshot ID;
 explicit Segment parents are added by migration 39, durable RL budget ledgers
 with receipt-bound allocations by migration 40, and resource admission ledgers
-by migration 41. A snapshot that no longer
+by migration 41; owner-fenced persistent phase bindings are migration 42,
+and immutable run/step receipts are migration 43. A snapshot that no longer
 matches after a later verifier annotation is rejected, so the trainer cannot
 silently consume a changed reward view.
 

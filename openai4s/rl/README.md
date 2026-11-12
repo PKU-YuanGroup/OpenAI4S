@@ -69,7 +69,7 @@ from openai4s.rl import Episode, PolicyAdapter, RolloutEnvironment, RolloutWorke
 
 def build_engine(reset):
     """Wire your normal engine: model port, action executor, tools, max turns."""
-    return AgentEngine(model=..., executor=..., max_turns=reset.max_turns)
+    return AgentEngine(model=..., executor=..., max_turns=3)
 
 worker = RolloutWorker(
     RolloutEnvironment(build_engine, workspace_root="/data/rollouts"),
