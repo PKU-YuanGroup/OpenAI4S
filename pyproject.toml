@@ -329,6 +329,10 @@ files = [
     "openai4s/judgment/task_mode_shadow.py",
     "openai4s/judgment/templates/features.py",
     "openai4s/judgment/llm_backend.py",
+    # The trainer boundary is dependency-free and checked as one package;
+    # keep its dynamic legacy-sampler compatibility shims under the default
+    # type gate rather than relying on a manually remembered command.
+    "openai4s/rl",
 ]
 follow_imports = "skip"
 check_untyped_defs = true

@@ -128,6 +128,11 @@ def test_schema_rejects_sdk_only_or_unbounded_remote_compute_fields():
         "intent": "run a bounded analysis",
     }
     assert submit.validation_error(valid) is None
+    # No production dispatcher wires resource admission, so the model-facing
+    # schema does not offer resource_request (it would fail after approval).
+    assert "unknown property" in submit.validation_error(
+        {**valid, "resource_request": {"gpu_count": 1}}
+    )
     assert "unknown property" in submit.validation_error(
         {**valid, "credentials": ["HF_TOKEN"]}
     )

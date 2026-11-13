@@ -16,6 +16,14 @@ import pytest
 
 import openai4s  # noqa: F401,E402  - finds OpenMHS (third_party/OpenMHS or $OPENAI4S_OPENMHS) first
 
+if os.environ.get("OPENAI4S_OPENMHS", "").strip().lower() in {
+    "off",
+    "0",
+    "none",
+    "false",
+}:
+    pytest.skip("OpenMHS discovery is disabled", allow_module_level=True)
+
 mhs = pytest.importorskip("mhs")
 
 from mhs.driver import build_server, close_server  # noqa: E402
@@ -259,6 +267,10 @@ def test_bootstrap_selects_the_lab_settings_only_without_an_operator_document(
     data = tmp_path / "data"
     (data / "mhs-lab").mkdir(parents=True)
     monkeypatch.setenv("OPENAI4S_DATA_DIR", str(data))
+    # Another lab-surface test may deliberately disable discovery; this test
+    # exercises the settings selector itself and must make that precondition
+    # explicit rather than inheriting a process-wide environment toggle.
+    monkeypatch.delenv("OPENAI4S_OPENMHS", raising=False)
     monkeypatch.delenv("OPENAI4S_MHS_LAB_DIR", raising=False)
     monkeypatch.delenv("MHS_CONFIG", raising=False)
     openmhs.bootstrap()

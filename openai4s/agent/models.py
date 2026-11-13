@@ -139,6 +139,29 @@ class ExecutionOutcome:
 
 
 @dataclass(frozen=True)
+class EngineStep:
+    """Result of exactly one outer-loop decision/execution cycle.
+
+    ``state`` is intentionally not copied: the engine owns the mutable
+    :class:`RunState` supplied by the caller.  A rollout worker can therefore
+    prepare an observation, sample externally, call ``step`` with that reply,
+    and inspect the same state before the next decision.
+    """
+
+    turn: int
+    observation: tuple[Message, ...]
+    reply: ModelReply | None
+    action: Action | None
+    outcome: ExecutionOutcome | None
+    completion: Any = None
+    stop_reason: str | None = None
+
+    @property
+    def terminal(self) -> bool:
+        return self.stop_reason is not None
+
+
+@dataclass(frozen=True)
 class EngineResult:
     history_messages: tuple[Message, ...]
     completion: Any

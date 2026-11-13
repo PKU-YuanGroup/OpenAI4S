@@ -43,6 +43,12 @@ cp -a ~/.openai4s ~/.openai4s-before-0.3.1
 
 容器镜像把数据放在 `/data`（`OPENAI4S_DATA_DIR=/data`），也就是 `compose.yaml` 里名为 `openai4s-data` 的命名卷，或 `deploy/kubernetes.yaml` 里名为 `openai4s-data` 的 PersistentVolumeClaim。请先停止容器（或把 Deployment 缩容到 0），备份这个卷或 PVC，再启动 0.3.1 的镜像。
 
+当前开发代码树打开的是 schema **43**。第 36 步新增 `dataset_verification_receipts` 表（见上文
+1.0.0 一节）；第 37 到 43 步增加 RL trajectory、snapshot、budget、resource-admission、
+带 owner 校验的阶段和不可变 run/step receipt。它们都是加法迁移，接在 0.3.1 的 schema 35
+边界之后执行。旧 receipt 缺少 protocol-2 的未开始证明，
+不自动恢复执行；缺失的原结果仍明确不可用。
+
 ### 备份后安装 0.3.1
 
 已有 PyPI 安装时，先激活其虚拟环境，再安装 [0.3.1 包](https://pypi.org/project/openai4s/0.3.1/)：

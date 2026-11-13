@@ -4,7 +4,16 @@
 
 [`test_project_file_tools.py`](test_project_file_tools.py) 验证项目目录递归读取、二进制文件导入和精确来源凭据、已有权限规则、目录切换与会话工作区隔离。
 
+RL Runtime 新增部分由 `test_rl_contract.py`、`test_agent_rl_step.py`、`test_rl_agent_sink.py`、`test_rl_repository.py`、`test_rl_segments.py`、`test_rl_projector.py`、`test_rl_rollout.py`、`test_rl_environment_adapter.py`、`test_rl_rpc.py`、`test_rl_atif.py`、`test_rl_cost.py`、`test_rl_admission.py`、`test_rl_budget.py`、`test_rl_budget_store.py` 和 `test_rl_dataset.py` 覆盖：合约校验与确定性导出、与科学 Reward 分离的 Harbor 风格终态证据、Trainer 驱动的单步执行、JSON 安全的 Environment Adapter 与 JSON-lines 传输、AgentEngine 到 Trajectory 的事件适配、Store 持久化记录、精确 Artifact/Compute 持久事实投影、已认证的 Provider 成本证据、绑定 receipt 的资源准入及分离的排队/计算耗时、hard/soft 预计与实际用量预算、可在重启后恢复的预算和 resource allocation 持久化、`host.segment()` 生命周期、外部 sampler rollout 生命周期，以及经 Snapshot 校验、按 Decision 投影并显式关联 Reward 的训练 JSON/JSONL 导出。
+
 OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这里的每一个模块，而且必须一直是绿的：供应商无关的 Agent 引擎、Host 服务、常驻 Python/R 内核协议、仓储、安全边界、Tool、Skill 与 Web 组合。可复用的场景和计分评测属于另一层，放在 [`../harness/`](../harness/)。
+
+`test_rl_collector.py` 验证有界并发、背压、取消 drain、同线程 managed lifecycle，
+以及真实 Kernel/Host/Store 并发阶段。`test_rl_client.py` 驱动有界 JSONL 子进程/异步
+streams，验证真实 RPC worker 重启后原结果恢复且不重放 action。
+
+`test_rl_run_receipts.py` 验证 protocol-2 请求身份、唯一 claim、固定终态结果、事务回滚、
+科学终态映射和逐轮 operation receipt；Adapter 测试同时验证失联后的原结果取回。
 
 ## 离线契约
 
@@ -20,6 +29,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 
 | 文件 | 职责 |
 | --- | --- |
+| [`__init__.py`](__init__.py) | 将本仓库的测试辅助模块固定为普通包，避免可选 OpenMHS integration tree 中的另一个 `tests` 包覆盖 `tests._ports` 等导入。 |
 | [`test_project_folders.py`](test_project_folders.py) | 本地项目目录迁移、绑定、安全浏览与有界预览的真实 HTTP 验证；缺失目录、越界、秘密文件、符号链接、硬链接和非本地访问拒绝。 |
 | [`test_project_history.py`](test_project_history.py) | 真实 Store 验证可迁移历史、文件版本、分支投影、安全元数据写入、遗漏清单、完整性校验、历史线性增长、内容未变不写入，以及读取不等待保存。 |
 | [`test_project_history_autosave.py`](test_project_history_autosave.py) | 无浏览器时在持久边界保存（每次执行一次，而非每个代码单元）、重试与失败状态保留、重启补存以及先归档后删除顺序。 |
@@ -530,6 +540,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_byoc_confinement.py`](test_byoc_confinement.py) | 从内部检验边界。家目录不可读、stage 目录是唯一可写处、解释器仍能启动——以及 keychain 不可达，这一条并不能由文件系统不变量推出，因为 `security find-generic-password` 是去问 securityd 而不是读文件。用的是带金丝雀的临时 keychain，绝不碰开发者本人的。 |
 | [`test_compute_harvest_safety.py`](test_compute_harvest_safety.py) | 远端的字节被允许落到哪里，以及它们不老实时会怎样。被符号链接替换的 harvest 根目录或按任务目录会被拒绝，恶意归档不留下 staging 树，终态任务复轮询返回已记录的证据而不是重新收割，带上限的传输按**实际传输字节**中止而不是按远端自称的大小。 |
 | [`test_compute_lifecycle.py`](test_compute_lifecycle.py) | `close()` 不是「写个 cancelled」的同义词：它必须真的向远端发信号、不得声称一次它没能送达的取消、并且必须终止一个它只从任务行里知道名字的 sandbox。同时钉住恢复按所属会话隔离，使重启不会把一个会话的任务——及其回收产物——交给另一个会话。 |
+| [`test_compute_rl_admission.py`](test_compute_rl_admission.py) | 远程 compute 的显式资源准入：容量不足时在 provider 提交前拒绝，provider receipt 绑定后才开始计量，确认的 result/cancel 完成 allocation，而提交结果不确定时保留活动预留。 |
 | [`test_compute_output_caps.py`](test_compute_output_caps.py) | daemon 被允许为一台它不控制的远端分配多少内存。用**真实子进程**驱动，因为对着 `BytesIO` 断言只能证明算术，证明不了管道、线程和死锁：stdout 洪水、stderr 洪水、双流同时洪水，以及一个必须抛 `TimeoutExpired` 而不是挂死的卡住命令。 |
 | [`test_env_generations.py`](test_env_generations.py) | 把环境变更当事务——plan 不动任何东西、失败的 apply 保持当前环境原样、rollback 只是移动指针——并且指代 generation 的 id 被限定在它自己的环境内，因此 `rollback python ../../r/generations/env-R` 无法把 Python 指向一个 R 前缀并把溯源标成 Python。Stage 1 还证明 `--repair` 即使 spec 未变也会构建新 generation，而且必须等真实 Python/R 解释器与完整 standard 包清单验证通过后才能移动 pointer。 |
 | [`test_preinstall_probe_confinement.py`](test_preinstall_probe_confinement.py) | 被探测的解释器是**外来**的：恶意 `.pth` 或 `sitecustomize` 会在探针自己的代码之前运行。所以探针在受限环境中运行、环境变量被清洗，且在 `enforce` 下是拒绝而不是降级。它还在自己的空目录里运行，而不是 daemon 的启动目录——`python -c` 会把后者放在 `sys.path` 最前面。超时的探针会连同它拉起的一切一起结束，包括离开了其进程组的子进程；通过 `stop` 事件停下的探针会立即结束，而不是等那个子进程占着的管道，并杀掉该子进程、删除工作区；在启动之前就被停下的探针什么都不会运行。 |

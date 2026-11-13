@@ -448,6 +448,7 @@ def test_kernel_child_environment_is_rebuilt_from_strict_allowlist(tmp_path):
     assert env["MPLCONFIGDIR"] == "/safe/tmp/openai4s-matplotlib"
     assert env["OPENAI4S_PROVENANCE_OFF"] == "1"
     assert env["OPENAI4S_SAFETY_AUDIT_HOOK"] == "0"
+    assert env["OPENAI4S_SKIP_DOTENV"] == "1"
     assert env["OPENAI4S_KERNEL_MODE"] == "python"
     assert env["OPENAI4S_KERNEL_GENERATION"] == "kernel:test-generation"
     assert env["OPENAI4S_WORKSPACE"] == str(tmp_path.resolve())

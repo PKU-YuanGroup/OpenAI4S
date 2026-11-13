@@ -53,6 +53,8 @@ from openai4s.host.remote_science import RemoteScienceService
 from openai4s.host.session import SessionControlService
 from openai4s.host.skills import SkillService
 from openai4s.llm import chat
+from openai4s.rl.host_events import HostCallLifecycle
+from openai4s.rl.models import Episode, ExecutionEvent, Segment
 from openai4s.storage.memories import MemoryLimitError
 from openai4s.storage.metadata import DERIVABLE_HOST_CALLS
 from openai4s.store import SECRET_ARG_HOST_CALLS, get_store
@@ -1197,6 +1199,7 @@ class HostDispatcher:
         delegate_fn: Callable[[dict], Any] | None = None,
         frame_id: str | None = None,
         workspace: str | Path | None = None,
+        resource_admission: Any | None = None,
     ):
         self.cfg = cfg or get_config()
         self._delegate_fn = delegate_fn
@@ -1280,6 +1283,11 @@ class HostDispatcher:
         # parallel read-only native tools: each approval must point back to its
         # own provider tool call rather than merely to the surrounding turn.
         self._action_context_local = threading.local()
+        # Optional RL parent binding for nested Host RPC facts. The binding is
+        # thread-local because one dispatcher serves foreground and background
+        # workers concurrently.
+        self._rl_context_local = threading.local()
+        self._rl_owner_id = "host-owner-" + uuid.uuid4().hex
         # A Web native writer binds its Artifact committer only for the exact
         # dispatcher thread executing that action. A foreground Kernel Cell
         # binds a separate thread-local receipt scope around its one protocol
@@ -1386,6 +1394,11 @@ class HostDispatcher:
         self.recorder: Any | None = None
         # remote-compute transport, built lazily on first compute_* call.
         self._compute: Any = None
+        # Optional RL resource controller supplied by the session owner.  It
+        # is intentionally explicit: no default capacity can be inferred from
+        # a provider catalogue, and ordinary compute sessions must retain their
+        # existing admission semantics.
+        self._resource_admission = resource_admission
         self._child_execution_policy: ChildExecutionPolicy | None = None
         self._session_tool_catalog: SessionToolCatalog | None = None
         self._session_tool_scope: tuple[str, str, str] | None = None
@@ -1463,7 +1476,11 @@ class HostDispatcher:
                 workspace = self._workspace()
             except Exception:  # noqa: BLE001 - fall back to the process cwd
                 workspace = None
-            self._compute = ComputeManager(self.cfg, workspace=workspace)
+            self._compute = ComputeManager(
+                self.cfg,
+                workspace=workspace,
+                resource_admission=self._resource_admission,
+            )
             from openai4s.compute.stage11 import official_stage11_enabled
 
             if official_stage11_enabled(self.cfg):
@@ -1555,6 +1572,191 @@ class HostDispatcher:
     def _current_action_context(self) -> dict[str, Any]:
         value = getattr(self._action_context_local, "value", None)
         return dict(value) if isinstance(value, dict) else {}
+
+    @contextmanager
+    def bind_rl_context(self, context: Mapping[str, Any] | None) -> Iterator[None]:
+        """Bind an RL episode/decision/segment to nested Host RPCs."""
+
+        marker = object()
+        previous = getattr(self._rl_context_local, "value", marker)
+        self._rl_context_local.value = dict(context or {})
+        try:
+            yield
+        finally:
+            if previous is marker:
+                try:
+                    del self._rl_context_local.value
+                except AttributeError:
+                    pass
+            else:
+                self._rl_context_local.value = previous
+
+    def _current_rl_context(self) -> dict[str, Any]:
+        value = getattr(self._rl_context_local, "value", None)
+        context = dict(value) if isinstance(value, dict) else {}
+        action = self._current_action_context()
+        aliases = (
+            ("decision_id", "rl_decision_id"),
+            ("episode_id", "rl_episode_id"),
+            ("segment_id", "rl_segment_id"),
+        )
+        bound_decision = action.get("decision_id") or action.get("rl_decision_id")
+        previous_decision = context.get("decision_id")
+        bound_episode = action.get("episode_id") or action.get("rl_episode_id")
+        previous_episode = context.get("episode_id")
+        if (
+            bound_decision
+            and previous_decision
+            and str(bound_decision) != str(previous_decision)
+        ) or (
+            bound_episode
+            and previous_episode
+            and str(bound_episode) != str(previous_episode)
+        ):
+            # A segment is scoped to one outer policy decision. Do not let a
+            # long-lived dispatcher carry it into the following decision.
+            if "_rl_base_context" in context:
+                # Segment or resumed-phase context abandoned by an earlier
+                # decision: return this thread to what it held before it.
+                base = context["_rl_base_context"]
+                context = dict(base) if isinstance(base, dict) else {}
+                self._set_rl_thread_context(base)
+            else:
+                context.pop("segment_id", None)
+                context.pop("_rl_segment_stack", None)
+                # Store a copy: the active phase filled in below must not
+                # stick to this thread after that phase closes.
+                self._rl_context_local.value = dict(context)
+        for target, alias in aliases:
+            # The action context is rebound for every outer execution. It must
+            # supersede a segment context left on this long-lived dispatcher
+            # thread by an interrupted worker; otherwise the next decision's
+            # Host RPCs inherit the previous decision ID.
+            if target == "segment_id" and context.get("segment_id"):
+                # A lexical phase opened within this action is more specific
+                # than its inferred execution segment. Stale decisions were
+                # cleared above before considering this fallback.
+                continue
+            if action.get(target):
+                context[target] = action[target]
+            elif action.get(alias):
+                context[target] = action[alias]
+        # Without a rollout owner, a session's phases belong to its frame, so
+        # a dispatcher rebuilt after a daemon restart can still resume and
+        # close them instead of being fenced out forever.
+        context["rl_owner_id"] = (
+            action.get("rl_owner_id")
+            or context.get("rl_owner_id")
+            or (f"host-owner-{self.frame_id}" if self.frame_id else self._rl_owner_id)
+        )
+        episode_id = context.get("episode_id")
+        if episode_id:
+            try:
+                phase = self.store.rl.active_phase(
+                    str(episode_id), str(context["rl_owner_id"])
+                )
+            except Exception:
+                # A stale phase owner must not break ordinary Host calls; only
+                # explicit phase operations report the owner mismatch.
+                phase = None
+            if phase is not None and not context.get("_rl_segment_stack"):
+                context["segment_id"] = phase.segment_id
+            elif context.get("segment_id") and not context.get("_rl_segment_stack"):
+                # A phase named by the action may have closed during it (a
+                # phase.close() earlier in the same cell): stop attributing.
+                # A lexical segment's own close path manages the stack.
+                named = self.store.rl.get_segment(str(context["segment_id"]))
+                if named is not None and named.status != "open":
+                    context.pop("segment_id", None)
+        if action.get("decision_id") or action.get("episode_id"):
+            context["source_id"] = action.get("tool_call_id") or action.get("action_id")
+        elif "source_id" not in context:
+            context["source_id"] = None
+        return context
+
+    def _set_rl_thread_context(self, value: Any) -> None:
+        if isinstance(value, dict):
+            self._rl_context_local.value = dict(value)
+        else:
+            try:
+                del self._rl_context_local.value
+            except AttributeError:
+                pass
+
+    def _rl_base_context(self) -> dict[str, Any] | None:
+        """What this thread held before RL segment state was layered on it."""
+        prior = getattr(self._rl_context_local, "value", None)
+        if not isinstance(prior, dict):
+            return None
+        if "_rl_base_context" in prior:
+            base = prior["_rl_base_context"]
+            return dict(base) if isinstance(base, dict) else None
+        return dict(prior)
+
+    def _rl_episode(self, episode_id: str | None) -> str:
+        """Resolve the episode bound to this Host call.
+
+        A rollout's episode identity is carried by the action context all the
+        way to the kernel dispatcher.  Falling back to ``frame_id`` before
+        consulting that binding would put segments opened inside a rollout
+        into the Web frame's episode instead of the trainer's episode.
+        """
+        context = self._current_rl_context()
+        bound = context.get("episode_id")
+        if bound:
+            if episode_id is not None and str(episode_id) != str(bound):
+                raise ValueError("segment episode_id conflicts with the bound rollout")
+            return str(bound)
+        if episode_id:
+            return str(episode_id)
+        return str(self.frame_id or "session")
+
+    def _rl_call_begin(self, method: str, args: list) -> dict[str, Any] | None:
+        if method.startswith("rl_segment_"):
+            return None
+        try:
+            context = self._current_rl_context()
+            episode_id = context.get("episode_id")
+            if not isinstance(episode_id, str) or not episode_id:
+                return None
+            lifecycle = HostCallLifecycle(self.store.rl, episode_id)
+            handle = lifecycle.begin(
+                method,
+                args,
+                decision_id=(
+                    str(context["decision_id"]) if context.get("decision_id") else None
+                ),
+                segment_id=(
+                    str(context["segment_id"]) if context.get("segment_id") else None
+                ),
+                source_id=(
+                    str(context["source_id"]) if context.get("source_id") else None
+                ),
+            )
+            handle["_lifecycle"] = lifecycle
+            return handle
+        except Exception:
+            # Instrumentation cannot turn a valid Host capability into a
+            # runtime failure. The existing Host audit remains authoritative.
+            return None
+
+    @staticmethod
+    def _rl_call_end(
+        handle: dict[str, Any] | None,
+        *,
+        ok: bool,
+        result: Any,
+        error: BaseException | None,
+    ) -> None:
+        if handle is None:
+            return
+        lifecycle = handle.get("_lifecycle")
+        if not isinstance(lifecycle, HostCallLifecycle):
+            return
+        try:
+            lifecycle.end(handle, ok=ok, result=result, error=error)
+        except Exception:
+            pass
 
     @contextmanager
     def bind_sandbox_status(self, status: Mapping[str, Any] | None) -> Iterator[None]:
@@ -2154,6 +2356,8 @@ class HostDispatcher:
         deferred_step = False
         permission_decision_id = None
         raised_error: str | None = None
+        raised_exception: BaseException | None = None
+        rl_handle = None
         try:
             child_decision = None
             project_files = None
@@ -2410,6 +2614,9 @@ class HostDispatcher:
                     result = {"error": f"Permission denied: {msg}"}
                     ok = False
                     return result
+            # RL lifecycle starts only after all child/file/approval gates pass;
+            # denied credential calls must not leave RL evidence behind.
+            rl_handle = self._rl_call_begin(method, args)
             result = handler(*args)
             if method in NATIVE_ARTIFACT_RECEIPT_METHODS:
                 result = self._commit_or_queue_artifact_receipt(result)
@@ -2445,8 +2652,15 @@ class HostDispatcher:
             # card otherwise sees nothing (``result`` is still None on the
             # raise path), so keep the message for the ``finally`` below.
             raised_error = f"{type(exc).__name__}: {exc}"
+            raised_exception = exc
             raise
         finally:
+            self._rl_call_end(
+                rl_handle,
+                ok=ok,
+                result=result,
+                error=raised_exception,
+            )
             skill_frame.__exit__(None, None, None)
             self.store.log_host_call(
                 method=method,
@@ -3403,6 +3617,23 @@ class HostDispatcher:
 
     # --- delegation + steering -----------------------------------
     def _m_delegate(self, spec: dict) -> Any:
+        # A delegated child is a worker boundary in the RL trajectory. Carry
+        # only the current join keys into its own Episode; never copy the
+        # parent's decisions or Action Ledger rows.
+        context = self._current_rl_context()
+        # This is an internal transport field, not part of the model-facing
+        # delegation contract. Drop a caller-supplied value before attaching
+        # the dispatcher-owned context so a model cannot forge an episode or
+        # parent decision by smuggling the field through the tool arguments.
+        spec = dict(spec)
+        spec.pop("_rl_parent_context", None)
+        if context.get("episode_id") or context.get("decision_id"):
+            spec["_rl_parent_context"] = {
+                key: str(value)
+                for key, value in context.items()
+                if key in {"episode_id", "decision_id", "segment_id", "source_id"}
+                and value is not None
+            }
         return self._delegation_service.delegate(spec)
 
     def _m_children(self, *_a: Any) -> Any:
@@ -3423,6 +3654,186 @@ class HostDispatcher:
     # --- structured output (completion_bullets) ---------------
     def _m_submit_output(self, spec: dict) -> dict:
         return self._completion_service.submit(spec)
+
+    # --- RL segment instrumentation ---------------------------------
+    def _m_rl_segment_start(self, spec: dict) -> dict:
+        episode_id = self._rl_episode(spec.get("episode_id"))
+        persistent = bool(spec.get("persistent"))
+        try:
+            from openai4s.rl.segments import HostSegments
+
+            # One segment implementation for lexical and persistent phases:
+            # the record, episode, parent and retry rules live in HostSegments.
+            started = HostSegments(
+                self.store.rl,
+                episode_id,
+                self._current_rl_context(),
+                str(self.frame_id),
+            ).start({**spec, "persistent": persistent})
+            if persistent:
+                return started
+            # A lexical segment also binds this dispatcher thread until it
+            # closes; only that binding is managed here.
+            current = self._current_rl_context()
+            # Keep the enclosing segment bound while nested segments run. The
+            # public parent edge is explicit (``parent_segment_id``), but the
+            # execution context still needs a LIFO restore so Host RPCs after
+            # a child closes remain attributed to their parent.
+            segment_stack = current.get("_rl_segment_stack")
+            if not isinstance(segment_stack, list):
+                segment_stack = []
+                # The outermost lexical segment remembers what this thread
+                # held before it, so closing it restores exactly that instead
+                # of leaving the merged episode/decision/source behind.
+                current.setdefault("_rl_base_context", self._rl_base_context())
+            else:
+                segment_stack = list(segment_stack)
+            segment_stack.append(current.get("segment_id"))
+            current["_rl_segment_stack"] = segment_stack
+            current.update(
+                {
+                    "episode_id": episode_id,
+                    "segment_id": started["segment_id"],
+                }
+            )
+            self._rl_context_local.value = current
+            return started
+        except (TypeError, ValueError, KeyError) as error:
+            return {"error": str(error)}
+
+    def _m_rl_segment_resume(self, spec: dict) -> dict:
+        try:
+            from openai4s.rl.segments import HostSegments
+
+            result = HostSegments(
+                self.store.rl,
+                self._rl_episode(spec.get("episode_id")),
+                self._current_rl_context(),
+                str(self.frame_id),
+            ).resume(str(spec.get("segment_id") or ""))
+            context = self._current_rl_context()
+            context["segment_id"] = result["segment_id"]
+            # Restorable: the next decision, or closing this phase, returns
+            # the thread to what it held before the resume.
+            context.setdefault("_rl_base_context", self._rl_base_context())
+            self._rl_context_local.value = context
+            return result
+        except (TypeError, ValueError, KeyError) as error:
+            return {"error": str(error)}
+
+    def _m_rl_segment_observe(self, spec: dict) -> dict:
+        return self._m_rl_segment_event(spec, "segment.observation", spec.get("value"))
+
+    def _m_rl_segment_output(self, spec: dict) -> dict:
+        return self._m_rl_segment_event(spec, "segment.output", spec.get("value"))
+
+    def _m_rl_segment_event(self, spec: dict, kind: str, value: Any) -> dict:
+        try:
+            from openai4s.rl.segments import HostSegments
+
+            context = self._current_rl_context()
+            episode_id = self._rl_episode(spec.get("episode_id"))
+            # Same existence, episode and owner checks as resume/close: a
+            # caller cannot append to another execution owner's phase.
+            segment = HostSegments(
+                self.store.rl, episode_id, context, str(self.frame_id)
+            ).require_open(str(spec.get("segment_id") or ""))
+            segment_id = segment.segment_id
+            event = self.store.rl.append_execution_event(
+                ExecutionEvent(
+                    event_id=str(
+                        spec.get("event_id") or kind + ":" + uuid.uuid4().hex[:16]
+                    ),
+                    episode_id=episode_id,
+                    kind=kind,
+                    created_at=int(time.time() * 1000),
+                    decision_id=(
+                        str(context["decision_id"])
+                        if context.get("decision_id")
+                        else None
+                    ),
+                    source_id=(
+                        str(context["source_id"]) if context.get("source_id") else None
+                    ),
+                    segment_id=segment_id,
+                    payload={"kind": spec.get("kind"), "value": value},
+                )
+            )
+            return {"ok": True, "sequence": event.sequence}
+        except (TypeError, ValueError, KeyError) as error:
+            return {"error": str(error)}
+
+    def _m_rl_segment_close(self, spec: dict) -> dict:
+        status = str(spec.get("status") or "completed")
+        if status == "open":
+            return {"error": "segment close status cannot be 'open'"}
+        episode_id = self._rl_episode(spec.get("episode_id"))
+        segment_id = str(spec.get("segment_id") or "")
+        try:
+            segment = self.store.rl.get_segment(segment_id)
+            if segment is not None and bool(
+                segment.metadata.get("openai4s.segment", {}).get("persistent")
+            ):
+                from openai4s.rl.segments import HostSegments
+
+                result = HostSegments(
+                    self.store.rl,
+                    episode_id,
+                    self._current_rl_context(),
+                    str(self.frame_id),
+                ).close(spec)
+                value = getattr(self._rl_context_local, "value", None)
+                if (
+                    isinstance(value, dict)
+                    and value.get("segment_id") == segment.segment_id
+                    and not value.get("_rl_segment_stack")
+                ):
+                    # The phase attached to this thread by a resume just
+                    # closed: later calls must not stay attributed to it.
+                    if "_rl_base_context" in value:
+                        self._set_rl_thread_context(value["_rl_base_context"])
+                    else:
+                        value = dict(value)
+                        value.pop("segment_id", None)
+                        self._rl_context_local.value = value
+                return result
+            context = self._current_rl_context()
+            if segment is None:
+                return {"error": f"unknown segment {segment_id!r}"}
+            if segment.episode_id != episode_id:
+                return {"error": "segment belongs to a different episode"}
+            if segment.status != "open" and segment.status != status:
+                return {"error": f"segment is already {segment.status}"}
+            from openai4s.rl.segments import HostSegments
+
+            closed = HostSegments(
+                self.store.rl, episode_id, context, str(self.frame_id)
+            ).close(spec)
+            current = self._current_rl_context()
+            if current.get("segment_id") == segment_id:
+                segment_stack = current.get("_rl_segment_stack")
+                previous = None
+                if isinstance(segment_stack, list) and segment_stack:
+                    previous = segment_stack.pop()
+                    if segment_stack:
+                        current["_rl_segment_stack"] = segment_stack
+                    else:
+                        current.pop("_rl_segment_stack", None)
+                if previous:
+                    current["segment_id"] = previous
+                else:
+                    current.pop("segment_id", None)
+                if (
+                    current.get("_rl_segment_stack")
+                    or "_rl_base_context" not in current
+                ):
+                    self._rl_context_local.value = current
+                else:
+                    # The outermost lexical segment closed: restore the thread.
+                    self._set_rl_thread_context(current["_rl_base_context"])
+            return closed
+        except (TypeError, ValueError, KeyError) as error:
+            return {"error": str(error)}
 
     # --- managed endpoints ---------------------------------------
     def _m_endpoints_free_port(self, *_a: Any) -> int:
@@ -3798,10 +4209,12 @@ def build_dispatcher(
     delegate_fn: Callable[[dict], Any] | None = None,
     frame_id: str | None = None,
     workspace: str | Path | None = None,
+    resource_admission: Any | None = None,
 ) -> HostDispatcher:
     return HostDispatcher(
         cfg=cfg,
         delegate_fn=delegate_fn,
         frame_id=frame_id,
         workspace=workspace,
+        resource_admission=resource_admission,
     )

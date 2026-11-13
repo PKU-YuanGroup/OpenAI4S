@@ -24,7 +24,7 @@ from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import ReplyReceived
 from openai4s.agent.finalize import with_finalize_response
 from openai4s.agent.ledger import RuntimeActionLedger, new_turn_id
-from openai4s.agent.models import KernelEnvSpec
+from openai4s.agent.models import KernelEnvSpec, RunState
 from openai4s.agent.runtime import (
     ChatModel,
     CompactionPolicy,
@@ -210,6 +210,11 @@ class _LedgerTranscriptEventSink:
         self.ledger.emit(event)
         self.transcript.emit(event)
 
+    def current_action_group_id(self) -> str | None:
+        """Expose the ledger's current group to trajectory adapters."""
+
+        return self.ledger.current_action_group_id()
+
 
 class _FrameUsageEventSink:
     """Meter every delivered provider reply onto the frame this Agent opened.
@@ -219,9 +224,29 @@ class _FrameUsageEventSink:
     Action Ledger held the real numbers.
     """
 
+    # RL hooks pass through only when the wrapped sink has them. A wrapper that
+    # always answered would make the engine stamp synthetic decision ids and
+    # project tools on every turn for sinks that record neither.
+    _FORWARDED_HOOKS = frozenset(
+        {"propose_with_tools", "decision_id", "segment_id", "owner_id"}
+    )
+
     def __init__(self, inner: Any, record: Callable[[Mapping[str, Any]], None]):
         self.inner = inner
         self.record = record
+
+    def __getattr__(self, name: str) -> Any:
+        if name in _FrameUsageEventSink._FORWARDED_HOOKS:
+            return getattr(self.inner, name)
+        raise AttributeError(name)
+
+    def propose(self, turn: int, messages: Sequence[Mapping[str, Any]]) -> Any:
+        """Keep optional trajectory proposal hooks visible through metering."""
+
+        propose = getattr(self.inner, "propose", None)
+        if callable(propose):
+            return propose(turn, messages)
+        return None
 
     def emit(self, event: Any) -> None:
         if isinstance(event, ReplyReceived) and event.reply.usage:
@@ -363,6 +388,12 @@ class Agent:
     delegated_cell_hooks_factory: Callable[[str], object] | None = field(
         default=None, repr=False
     )
+    # Optional RL trajectory sink for a delegated child. The parent runner
+    # creates this only when delegation entered under an RL context; ordinary
+    # Agent runs retain their existing event path.
+    trajectory_recorder: object | None = field(default=None, repr=False)
+    trajectory_parent_decision_id: str | None = field(default=None, repr=False)
+    rl_context: Mapping[str, Any] | None = field(default=None, repr=False)
     _recorder: object | None = field(default=None, repr=False)
     # persistent R kernel for ```r cells — spawned lazily on first use,
     # retargeted when host.env.use() picks an R-only env, shut down with the run
@@ -1019,6 +1050,22 @@ class Agent:
                     if action_ledger is not None
                     else transcript_events
                 )
+                if self.trajectory_recorder is not None:
+                    from openai4s.rl.agent_sink import TrajectoryEventSink
+
+                    event_sink = TrajectoryEventSink(
+                        self.trajectory_recorder,
+                        delegate=event_sink,
+                        parent_decision_id=self.trajectory_parent_decision_id,
+                        frame_id=self.frame_id,
+                        id_prefix=self.trajectory_recorder.episode.episode_id,
+                        action_group_id_provider=(
+                            lambda ledger=action_ledger: getattr(
+                                ledger, "current_group_id", None
+                            )
+                        ),
+                        capture_wall_time=True,
+                    )
                 if self._owns_frame:
                     event_sink = _FrameUsageEventSink(
                         event_sink, self._record_frame_usage
@@ -1124,9 +1171,26 @@ class Agent:
                     event_sink=event_sink,
                     cancellation=self.cancellation,
                     completion=CompletionSignal(lambda: self.dispatcher.last_output),
+                    tool_schema_provider=lambda state: self._model_tool_specs(
+                        tool_catalog, state.messages
+                    ),
                     max_turns=self.max_turns,
                 )
-                result = engine.run(messages)
+                if self.trajectory_recorder is None and not self.rl_context:
+                    result = engine.run(messages)
+                else:
+                    state = RunState(messages, max_turns=self.max_turns)
+                    if self.trajectory_recorder is not None:
+                        state.metadata["rl_episode_id"] = (
+                            self.trajectory_recorder.episode.episode_id
+                        )
+                    elif isinstance(self.rl_context, Mapping) and self.rl_context.get(
+                        "episode_id"
+                    ):
+                        state.metadata["rl_episode_id"] = str(
+                            self.rl_context["episode_id"]
+                        )
+                    result = engine.run(state)
         finally:
             self._close_run()
 
@@ -1592,6 +1656,7 @@ class Agent:
             cell_hooks_factory=self.delegated_cell_hooks_factory,
             env=self.env,
             cancelled=self._cancelled,
+            rl_context=self.rl_context,
         )
         self._delegation_runner = runner
         self.dispatcher._delegate_fn = runner

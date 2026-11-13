@@ -170,9 +170,39 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "background_exec_receipts",
         "project_source_folder",
         "dataset_verification_receipts",
+        "rl_runtime",
+        "rl_dataset_snapshots",
+        "rl_segment_parent",
+        "rl_budget_ledger",
+        "rl_resource_admission",
+        "rl_phase_bindings",
+        "rl_run_results",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
+
+
+def test_v40_database_gets_resource_admission_tables_on_upgrade(tmp_path):
+    db = Config(data_dir=tmp_path).db_path
+    get_store(db).close()
+    with sqlite3.connect(str(db)) as connection:
+        connection.execute("DROP TABLE rl_resource_allocations")
+        connection.execute("DROP TABLE rl_resource_admissions")
+        connection.execute("DELETE FROM schema_migrations WHERE version=41")
+        connection.execute("PRAGMA user_version = 40")
+
+    upgraded = get_store(db)
+    try:
+        tables = {
+            row[0]
+            for row in upgraded._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert {"rl_resource_admissions", "rl_resource_allocations"} <= tables
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION
+    finally:
+        upgraded.close()
 
 
 def test_an_unversioned_database_reports_version_zero(plain_db):
@@ -201,7 +231,7 @@ def test_v36_preserves_historical_sources_without_inferred_receipts(tmp_path):
         connection.execute("PRAGMA user_version = 35")
     upgraded = get_store(db)
     try:
-        assert upgraded.schema_state()["version"] == 36
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION
         assert upgraded.version_meta(artifact["version_id"])["source"] == source
         assert (
             upgraded._conn.execute(
@@ -2237,7 +2267,7 @@ def test_v33_redacts_historical_judge_args_and_leaves_other_rows(tmp_path, monke
     try:
         rows = read_rows(upgraded)
         assert secure_delete_mode(upgraded._conn) == secure_before
-        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 36
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION
         assert version_33_names(upgraded) == ["redact_judge_host_call_args"]
     finally:
         upgraded.close()
