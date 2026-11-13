@@ -71,7 +71,16 @@ def drip(handler, stopped, chunks):
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_idle_slow_headers_are_typed_and_never_replayed(stream):
+def test_idle_slow_headers_are_typed_and_retried_before_any_output(stream):
+    """A peer that accepts the POST but never sends headers delivered nothing.
+
+    The failure used to be a hard first-attempt error. It is now retried like
+    any other transient connection failure -- bounded by ``max_attempts`` and
+    the retry budget -- and still surfaces typed with no output committed. A
+    stream that has already delivered an event keeps its separate no-replay
+    rule (``tests/test_llm_transport_typed.py``).
+    """
+
     def respond(handler, stopped):
         stopped.wait(1)
 
@@ -79,13 +88,16 @@ def test_idle_slow_headers_are_typed_and_never_replayed(stream):
         started = time.monotonic()
         with pytest.raises(TransportError) as caught:
             if stream:
-                transport.post_sse(url, {}, {}, 0.1, lambda _: None)
+                transport.post_sse(
+                    url, {}, {}, 0.1, lambda _: None, sleep=lambda _s: None
+                )
             else:
-                transport.post_json(url, {}, {}, 0.1)
-        assert time.monotonic() - started < 0.6
-        assert not caught.value.retryable
+                transport.post_json(url, {}, {}, 0.1, sleep=lambda _s: None)
+        assert time.monotonic() - started < 1.5
+        assert caught.value.retryable is True
+        assert caught.value.output_committed is False
         assert llm_failure_code(caught.value) is None
-        assert len(requests) == 1
+        assert len(requests) == 3, "bounded retries, one request per attempt"
 
 
 @pytest.mark.parametrize("stream", [False, True])

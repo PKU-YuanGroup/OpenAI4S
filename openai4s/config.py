@@ -218,7 +218,7 @@ class LLMConfig:
     # message below, so ``OPENAI4S_LLM_TOTAL_TIMEOUT=`` died with a raw
     # "could not convert string to float" from the daemon's boot path.
     total_timeout_s: float = field(
-        default_factory=lambda: os.environ.get("OPENAI4S_LLM_TOTAL_TIMEOUT", "600")
+        default_factory=lambda: os.environ.get("OPENAI4S_LLM_TOTAL_TIMEOUT", "900")
     )
     # Transport retry policy for one logical call; see ``llm/transport.py``.
     # Parsed in ``__post_init__`` for the same reason as ``total_timeout_s``.

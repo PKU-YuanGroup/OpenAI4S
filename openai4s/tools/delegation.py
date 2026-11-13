@@ -100,6 +100,37 @@ class DelegateTaskTool(Tool):
         spec.setdefault("wait", True)
         return runtime.invoke(self.host_method, spec)
 
+    def declared_failure(self, result: Any) -> str | None:
+        """A child envelope that declares failure is a failed tool call.
+
+        The Host answers a failed child with a structured envelope rather
+        than the single-key soft-fail dict: it carries ``task_status``,
+        ``stop_reason``, artifacts and environment alongside ``error``. Read
+        that envelope instead of collapsing it, so a transport-failed child
+        reaches the model and the no-progress circuit as an error while the
+        Step card keeps its structured detail.
+        """
+        detail = super().declared_failure(result)
+        if detail is not None:
+            return detail
+        if isinstance(result, list) and result:
+            # A fan-out is a failed call only when no child produced a usable
+            # result; one failed sibling must not hide the others.
+            reasons = [_child_failure_reason(item) for item in result]
+            if all(reason is not None for reason in reasons):
+                return reasons[0]
+            return None
+        return _child_failure_reason(result)
+
+
+def _child_failure_reason(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    if result.get("task_status") != "failed" and result.get("stop_reason") != "error":
+        return None
+    detail = result.get("error")
+    return str(detail) if detail else "sub-agent failed"
+
 
 class ListChildrenTool(Tool):
     name = "list_children"
