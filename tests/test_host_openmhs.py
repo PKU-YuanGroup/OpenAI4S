@@ -289,9 +289,13 @@ def test_named_stop_returns_adapter_failures_as_soft_errors(route):
 )
 def test_optional_import_hook_reports_broken_installed_hosts(tmp_path, mode):
     script = """
+import os
 import sys
 from types import ModuleType
 mode = sys.argv[1]
+os.environ.pop("OPENAI4S_OPENMHS", None)
+if mode == 'disabled':
+    os.environ["OPENAI4S_OPENMHS"] = "off"
 if mode == 'absent':
     sys.modules['openai4s_mhs'] = None
 else:
@@ -309,7 +313,9 @@ else:
 import openai4s
 assert openai4s.__version__
 assert 'openai4s.host_dispatch' not in sys.modules
-if mode != 'absent':
+if mode == 'disabled':
+    assert calls == []
+elif mode != 'absent':
     assert calls == ['install']
 """
     env = {

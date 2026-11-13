@@ -27,6 +27,8 @@ from openai4s.agent.delegation import (
 from openai4s.agent.models import KernelEnvSpec
 from openai4s.config import get_config
 from openai4s.store import get_store
+from openai4s.tools.delegation import DelegateTaskTool
+from openai4s.tools.registry import execute_tool_call
 
 _RENDEZVOUS_TIMEOUT = 30
 
@@ -1380,3 +1382,79 @@ def test_provenance_record_prefers_the_injected_cell_and_keeps_a_direct_claim(tm
         }
     )
     assert store.fields["producing_cell_id"] == "cell-legacy"
+
+
+# --------------------------------------------------------------------------
+# a failed child is a failed tool call, not a successful one
+# --------------------------------------------------------------------------
+
+
+def _failed_child(**overrides):
+    envelope = {
+        "child_id": "child-0-1",
+        "name": "GENERAL",
+        "task_status": "failed",
+        "stop_reason": "error",
+        "output": None,
+        "error": "LLM connection or response headers failed",
+    }
+    envelope.update(overrides)
+    return envelope
+
+
+def test_failed_child_envelope_is_a_failed_tool_call():
+    """The envelope keeps its structured fields but must report failure.
+
+    Only a single-key ``{"error": ...}`` used to count as a tool error, so a
+    failed ``delegate_task`` returned a rich envelope and was marked ok: the
+    model, the Action Ledger and the no-progress circuit disagreed with the
+    Step card, which already rendered the child as failed.
+    """
+
+    tool = DelegateTaskTool()
+    assert (
+        tool.declared_failure(_failed_child())
+        == "LLM connection or response headers failed"
+    )
+
+
+def test_not_done_child_states_are_not_tool_failures():
+    """partial/blocked/max_turns carry output the parent can still use."""
+
+    tool = DelegateTaskTool()
+    for envelope in (
+        {"task_status": "completed", "stop_reason": "submitted"},
+        {"task_status": "partial", "stop_reason": "max_turns", "error": "budget"},
+        {"task_status": "blocked", "stop_reason": "stopped"},
+        {"task_status": "running", "stop_reason": None},
+    ):
+        assert tool.declared_failure(envelope) is None
+
+
+def test_single_child_soft_fail_still_counts():
+    assert DelegateTaskTool().declared_failure({"error": "boom"}) == "boom"
+
+
+def test_a_fanout_fails_only_when_every_child_failed():
+    tool = DelegateTaskTool()
+    bad = _failed_child()
+    good = {"task_status": "completed", "stop_reason": "submitted", "output": "ok"}
+    assert (
+        tool.declared_failure([bad, bad]) == "LLM connection or response headers failed"
+    )
+    assert tool.declared_failure([good, bad]) is None
+
+
+def test_execute_tool_call_marks_a_transport_failed_child_as_an_error():
+    """The regression, through the seam both CLI and Web use."""
+
+    def dispatcher(method, arguments):
+        assert method == "delegate"
+        return _failed_child()
+
+    text, ok = execute_tool_call(
+        dispatcher,
+        {"name": "delegate_task", "arguments": {"request": "inspect the file"}},
+    )
+    assert ok is False
+    assert "error: LLM connection or response headers failed" in text

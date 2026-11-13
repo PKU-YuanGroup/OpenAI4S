@@ -18,6 +18,7 @@ Tests inject `sleep` rather than actually sleeping; the delay is asserted as a
 value, which is also the only way to pin the Retry-After/backoff precedence.
 """
 
+import http.client
 import io
 import urllib.error
 
@@ -347,6 +348,37 @@ def test_connection_error_is_retryable(monkeypatch):
     assert post_json("https://x.invalid", {}, {}, 5, sleep=_Recorder()) == {"ok": 1}
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionResetError("connection reset by peer"),
+        http.client.RemoteDisconnected("remote end closed connection"),
+        http.client.BadStatusLine("not http"),
+    ],
+)
+def test_connection_or_header_failure_is_retried_on_whole_response(
+    monkeypatch, failure
+):
+    """The generic ``OSError``/``HTTPException`` branch used to be a hard
+    first-attempt failure ("LLM connection or response headers failed").
+
+    A whole-response POST commits nothing until its body is complete, so a
+    dropped connection or a malformed status line is a transient upstream
+    condition worth the same bounded retry as a 503.
+    """
+    state = []
+
+    def urlopen(*a, **k):
+        state.append(1)
+        if len(state) == 1:
+            raise failure
+        return _Resp(b'{"ok":1}')
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    assert post_json("https://x.invalid", {}, {}, 5, sleep=_Recorder()) == {"ok": 1}
+    assert len(state) == 2
+
+
 # --------------------------------------------------------------------------
 # streams: the no-retry-after-output rule
 # --------------------------------------------------------------------------
@@ -360,6 +392,28 @@ def test_sse_connect_failure_is_retried(monkeypatch):
         state.append(1)
         if len(state) == 1:
             raise _http_error(503)
+        return iter([b'data: {"delta":"hi"}\n', b"\n"])
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    seen = []
+    post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
+    assert seen == [{"delta": "hi"}]
+    assert len(state) == 2
+
+
+def test_sse_header_failure_is_retried_before_any_event(monkeypatch):
+    """A connection/header failure before the first event committed nothing.
+
+    The generic branch in ``post_sse`` runs while opening the response, so no
+    event has reached ``on_event``; ``_consume`` has its own no-replay rule
+    for read failures after this point. Retrying here cannot duplicate output.
+    """
+    state = []
+
+    def urlopen(*a, **k):
+        state.append(1)
+        if len(state) == 1:
+            raise ConnectionResetError("reset before headers")
         return iter([b'data: {"delta":"hi"}\n', b"\n"])
 
     monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)

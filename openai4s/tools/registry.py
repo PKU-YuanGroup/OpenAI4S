@@ -712,7 +712,7 @@ def execute_tool_call(
             return f"[Tool: {tool.name}] {err}", False
 
         result = tool.invoke(dispatcher, spec)
-        ok = not (isinstance(result, dict) and set(result.keys()) == {"error"})
+        ok = tool.declared_failure(result) is None
         return format_tool_result(tool, result), ok
     except Exception as e:  # noqa: BLE001 — a tool error must not crash the loop
         try:

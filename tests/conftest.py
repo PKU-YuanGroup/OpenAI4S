@@ -270,6 +270,37 @@ class _RealDataDirGuard:
 
 _REAL_DATA_DIR_GUARD = _RealDataDirGuard(_real_data_dirs())
 
+
+def _deactivate_openmhs_native_surface() -> None:
+    """Remove optional OpenMHS native tools leaked across a test boundary.
+
+    The OpenMHS developer-preview installer mutates OpenAI4S's process-global
+    registry and HostDispatcher class. Some lab routes intentionally call it
+    during a test; xdist can also fork after collection has already imported an
+    enabled adapter. Clean both sides of the function boundary so later
+    registry/catalog contracts see the built-in surface only.
+    """
+    module = sys.modules.get("openai4s_mhs")
+    if module is not None:
+        deactivate = getattr(module, "deactivate", None)
+        if callable(deactivate):
+            deactivate()
+
+    from openai4s.tools import registry
+
+    for tool in tuple(registry.REGISTRY):
+        if type(tool) not in registry.TOOL_TYPES:
+            registry._unregister_tool(tool.name)
+    registry.BUILTIN_CONTROL_HOST_METHODS = frozenset(
+        tool.host_method for tool in registry.REGISTRY
+    )
+    host_dispatch = sys.modules.get("openai4s.host_dispatch")
+    if host_dispatch is not None:
+        host_dispatch.BUILTIN_CONTROL_HOST_METHODS = (
+            registry.BUILTIN_CONTROL_HOST_METHODS
+        )
+
+
 # The per-test redirect in `isolated_openai4s_home` is function-scoped, but
 # collection imports every test module first and pytest sets up module- and
 # session-scoped fixtures before any function-scoped one. In that window the
@@ -331,6 +362,11 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     """Keep tests off the developer's real ~/.openai4s database."""
     import openai4s.config as config_mod
     import openai4s.store as store_mod
+
+    # Optional OpenMHS is discovered while importing the package, before this
+    # function-scoped fixture can run. Clear that process-global overlay first,
+    # then clear it again in teardown for tests that explicitly enable the lab.
+    _deactivate_openmhs_native_surface()
 
     def reset_singletons():
         for st in list(store_mod._STORES.values()):
@@ -425,6 +461,7 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     try:
         _quiesce_judgment_shadows()
     finally:
+        _deactivate_openmhs_native_surface()
         reset_singletons()
     # Not drained at setup: higher-scoped fixtures this test instantiated ran
     # before this fixture did, and their refusals belong to this test.
