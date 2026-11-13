@@ -175,10 +175,31 @@ class SessionDeletionRepository:
             if episode_ids:
                 marks = self._marks(tuple(sorted(episode_ids)))
                 params = tuple(sorted(episode_ids))
+                # Run requests, results and step receipts are keyed by
+                # request_id, not episode_id: reach them through the
+                # episode's run receipts, then delete those receipts too.
+                request_ids = self._unique(
+                    row["request_id"]
+                    for row in self._connection.execute(
+                        f"SELECT request_id FROM rl_run_receipts WHERE episode_id IN {marks}",
+                        params,
+                    ).fetchall()
+                )
+                if request_ids:
+                    request_marks = self._marks(request_ids)
+                    for table in (
+                        "rl_step_receipts",
+                        "rl_run_results",
+                        "rl_run_requests",
+                    ):
+                        self._delete_counted(
+                            deleted_rows,
+                            table,
+                            f"request_id IN {request_marks}",
+                            request_ids,
+                        )
                 for table in (
-                    "rl_step_receipts",
-                    "rl_run_results",
-                    "rl_run_requests",
+                    "rl_run_receipts",
                     "rl_phase_bindings",
                     "rl_observations",
                     "rl_decisions",
