@@ -31,6 +31,12 @@ _MAX_WORKERS = 4
 def _run_suite(destination: Path) -> int:
     env = dict(os.environ)
     env["OPENAI4S_CAPTURE_SCHEMAS"] = str(destination)
+    # The response artifact is a CI/offline contract. Do not let an optional
+    # OpenMHS checkout on a developer machine alter collection order, import
+    # paths, or the global native-tool catalog while the suite is captured.
+    # `capture_response_contract.py` applies the same posture for its route
+    # driver; schema capture must be equally reproducible.
+    env["OPENAI4S_OPENMHS"] = "off"
     # Deliberately no -x. Stopping at the first failure truncates the capture,
     # and every route the run never reached would then be reported as "frozen
     # but no longer observed" -- drift that is really just an aborted run.

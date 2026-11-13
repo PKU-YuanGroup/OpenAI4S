@@ -74,6 +74,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## 📣 更新
 
+- **`2026-11-12`** 🤖 **Agentic RL runtime** —— OpenAI4S 现在也可以作为强化学习的环境：外部 Trainer 负责采样策略，Agent 用真实的工具、权限与内核执行，新增的 `openai4s/rl` 包把每次 rollout 记录成版本化的 Science Trajectory，并导出确定性的 JSON/JSONL 训练数据，以及 Harbor 使用的 ATIF-v1.8 交换格式。Reward、Cost、准入与预算保持为独立的追加式记录；中断的 rollout 会 fail closed，而不是被重放。→ [RL runtime](openai4s/rl/README_zh.md)
 - **`2026-11`** 🔭 **`main` —— `v1.0.0` 之后** —— 新增可选的匿名 **Parallel Search**，作为免密钥的备用联网搜索引擎（默认关闭；`openai4s init --search parallel`）；**首次设置**新增**接入点模型发现**：「从端点获取模型」会列出 Ark/OpenAI 兼容、Responses、Anthropic、Gemini 或 Ollama 接入点实际提供的模型 id，不再靠猜默认值。→ [配置](docs/configuration.md)
 - **`2026-11-09`** 🔬 **[`v1.0.0`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0) —— OpenMHS 实验室** —— 一次大版本更新：OpenAI4S 以 git 子模块的形式内置 [OpenMHS](https://mhs.openai4s.org)（开源的 Model Hardware Standard）。Notebook 旁新增 **实验室** 标签页：模拟仪器在端点强制的限值、急停与哈希链回执下运行；[OpenMHS 市场](https://mhs.openai4s.org/market/) 的 **746 台设备** 一键（或一条命令 `openai4s lab add <id>`）即可安装，可选原生 MHS 工具或 MCP 连接器接入。本版还新增 **Ollama** 模型与网页工具、可选的 **You.com** 搜索、分子动力学 Skill（共 **612 个 Skill**），以及有读取上限的只读预览。Apple Silicon **DMG** 以 ad-hoc 签名镜像的形式回归，与 Linux、Windows/WSL2、PyPI 和 GHCR 渠道并列。数据库 schema 从 35 升到 36，首次启动前请阅读 **[升级到 1.0.0](docs/upgrading_zh.md)**。→ [OpenMHS 指南](docs/openmhs_zh.md)
 - **`2026-10-18`** 📁 **[`v0.3.1`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1) —— 本地项目文件夹与可携带的历史记录** —— 绑定源文件夹、浏览已保存的会话历史、导入带校验的科学数据集，并使用 **611 个内置 Skill**。Linux 与 Windows/WSL2 安装包通过 GitHub 发布，Python 包通过 PyPI 发布，公开容器镜像通过 GHCR 发布。macOS 签名与公证暂缓，当前请使用 PyPI。数据库 schema 从 32 升到 35，首次启动前请阅读 **[升级到 0.3.1](docs/upgrading_zh.md)**。
@@ -89,6 +90,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 - **🧬 混合动作引擎** —— 基于类的原生 JSON 工具负责编排，持久 Python/R 内核执行科学任务。CLI/Web 中的前台语言 slot 惰性启动；tool/finalize 路由本身不会启动它，但个别工具仍可管理专用 worker。
 - **📒 Ledger-first 运行时** —— action group/event 和终止事实以追加方式记录；执行尝试、generation 生命周期、用量与 completion record 可持久和重建。
+- **🤖 Agentic RL runtime** —— 外部 Trainer 可以把 OpenAI4S 当作 RL 环境：它负责采样策略，Agent 用真实工具与内核执行，`openai4s/rl` 把过程记录成只追加的 Science Trajectory。导出为确定性 JSON/JSONL/ATIF 并带字节哈希；reward 与 cost 是独立的版本化记录，重新打分不会改写执行历史，中断的 rollout 会被如实报告而不是重放。
 - **🐍 纯标准库核心** —— 引擎**和** Web 服务器都是纯标准库(`http.server` + 手写 WebSocket，无框架、无依赖)。LLM 客户端仅用 `urllib` 直接对接 OpenAI / Anthropic / Gemini。
 - **🔌 一行切换多供应商** —— `ark`（doubao · glm · kimi · deepseek · minimax）、官方 `chatgpt` · `openai_responses` · `claude` · `gemini`，以及 `ollama`（云端或本地），都由一个 `host.llm` 统一封装；在 UI 里即可切换。
 - **🔬 OpenMHS 模拟实验室** —— 实验室标签页可安装 OpenMHS 市场中的 746 台模拟设备，经原生 MHS 工具或 MCP 连接器接入，并受端点强制的限值、急停与哈希链回执约束。安装、启停与急停始终由人操作。→ [OpenMHS 指南](docs/openmhs_zh.md)
@@ -113,6 +115,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 | **数据与检索** | 十个规范化公共数据库连接器（Zenodo · UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex · STRING · BindingDB），外加三个由开关管控的数据源（ClinVar · PubMed · ClinicalTrials.gov），记录自带来源与时间 · 覆盖其中三个的每日金丝雀 · 以 Agent Plan Key 授权的**豆包搜索 Custom 版**作为联网搜索主选 · 可调整顺序的备用引擎：Tavily、You.com、内置免密钥引擎，以及需手动开启的匿名 Parallel · 使用独立 Key 的 Ollama 联网搜索与抓取 · 托管的 DataPro 专业数据集检索 |
 | **实验室** | 自动发现的 OpenMHS 子模块 · 按 MHS/MCP 分组、带实时状态、急停锁存与回执图表的实验室标签页 · 746 台模拟设备的设备市场 · `openai4s lab`（`setup`、`add`、`remove`、`search`、`show`、`list`、`status`、`up`、`down`、`reset`）· 自动维护的 **OpenMHS Lab** 项目 |
 | **工作台** | 实时流式 · Action Timeline · 默认只读的 Notebook · 分支 fork/激活/revert · 带明确 Partial/Failed 状态的验证式恢复 · 锁定到所指版本的 `@file` 引用 · 2D 化学/基因组/序列/MSA/LaTeX 渲染器 · Markdown 与 `.ipynb` 导出 |
+| **Agentic RL** | 外部 Trainer 驱动真实的 Agent 循环 · 只追加的 Science Trajectory 记录 · 确定性 JSON/JSONL/ATIF（Harbor ATIF-v1.8）导出并带字节哈希 · 逐决策训练样本（含 prompt token ID 与 loss mask）· verifier、cost、准入与预算账本与执行事实分离 |
 | **共享与可移植** | 经由你自己运行的 relay 的只读会话共享 · 隔离的可移植 Session 包 · 可选的、接到同一批内核上的 Jupyter KernelSpec 桥 |
 | **运维、安全与发布** | `/api/v1` 与启动凭据 · Seatbelt/bubblewrap 沙箱适配器，降级与 fail-closed 状态显式呈现 · 无人值守时默认拒绝的持久审批 · 脱敏诊断 · 可撤销遥测 · 环境即事务 · 跑在真实 Store、内核与 dispatcher 上的 13 workflow/46 case 基准 · 公开前先验证产物的分阶段发布流水线 |
 
@@ -294,6 +297,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 | [**升级**](docs/upgrading_zh.md) | 新的在前。1.0.0（schema 35 → 36）：先备份；数据集校验回执，以及需主动启用的实验室。0.3.1（schema 32 → 35）：首次启动前先停守护进程并复制数据目录，因为不支持退回。从 0.2.x 升级：在 schema 27 → 32 迁移之前备份数据库、为什么不支持退回 0.2.x，以及现在总是必需的访问令牌 |
 | [**OpenMHS 实验室**](docs/openmhs_zh.md) | 模拟实验室：安装配置、设备市场、MHS 与 MCP 两种接入面、实验室文件与操作员动作 |
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
+| [**RL runtime**](openai4s/rl/README_zh.md) | 把 OpenAI4S 作为 agentic RL 环境：rollout 生命周期、JSONL Trainer 传输、轨迹导出与训练数据投影 |
 | [**后端扩展指南**](docs/backend-extension-guide.md) | 新 Tool、Host service、repository 与 session 行为应归属的位置 |
 | [**模型后端 bring-up**](docs/model-backend-bringup_zh.md) | 本地/远程 GPU 选择、checkpoint staging、真实推理 canary 准入与 connector 可移植性 |
 | [**Skills**](docs/skills.md) | 51 个精选 Skill + 561 个固定版本 bioSkills + 如何自撰 |

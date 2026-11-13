@@ -201,7 +201,7 @@ def collect_snapshots(*, data_dir: Path) -> dict[str, Any]:
 
     from openai4s.host.skills import SkillService
     from openai4s.security.classifier import classify_code
-    from openai4s.tools.registry import REGISTRY
+    from openai4s.tools.registry import REGISTRY, TOOL_TYPES
 
     cfg = _make_cfg(data_dir)
     service = SkillService(cfg)
@@ -217,6 +217,10 @@ def collect_snapshots(*, data_dir: Path) -> dict[str, Any]:
                 "parameters": tool.parameters,
             }
             for tool in REGISTRY
+            # This fixture freezes the built-in default-off surface, not tools
+            # installed by an optional checkout during another test's bootstrap.
+            # Keep live built-in instances so schema drift still fails the gate.
+            if type(tool) in TOOL_TYPES
         ]
         classify = []
         for code in _CLASSIFY_SNIPPETS:

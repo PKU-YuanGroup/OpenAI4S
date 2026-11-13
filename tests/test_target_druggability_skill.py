@@ -263,12 +263,11 @@ def test_dossier_preserves_zero_confidence_and_escapes_source_text():
 def test_documented_recipe_runs_through_real_host_and_artifact_store(
     tmp_path, monkeypatch, empty
 ):
-    from test_science_connectors import RESPONSES
-
     from openai4s.host.data import HostDataService
     from openai4s.host.science import ScienceConnectorService
     from openai4s.sdk.host import _Host, decode_args
     from openai4s.store import get_store
+    from tests.test_science_connectors import RESPONSES
 
     cfg = get_config()
     store = get_store(cfg.db_path)

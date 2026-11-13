@@ -489,8 +489,22 @@ class WebActionExecutor:
     finalize_plan: Callable[[ModelReply, str], None] | None = None
     cancelled: Callable[[], bool] = _never_cancelled
     tool_catalog: Any = None
+    # The gateway binds this short-lived context to the session while the
+    # current Engine action crosses the native-tool or kernel boundary.
+    rl_context_sink: Callable[[RunState | None], None] | None = None
 
     def execute(
+        self, action: Action | None, reply: ModelReply, state: RunState
+    ) -> ExecutionOutcome:
+        if self.rl_context_sink is not None:
+            self.rl_context_sink(state)
+        try:
+            return self._execute_bound(action, reply, state)
+        finally:
+            if self.rl_context_sink is not None:
+                self.rl_context_sink(None)
+
+    def _execute_bound(
         self, action: Action | None, reply: ModelReply, state: RunState
     ) -> ExecutionOutcome:
         if self.cancelled():

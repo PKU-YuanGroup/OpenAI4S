@@ -10,6 +10,10 @@
 
 SQLite 事务能让明确划定的一组 row 保持原子，但它没法一口气横跨 SQLite、工作区文件、content-addressed blob、运行中的 Python/R 命名空间、远程计算和 WebSocket event。所以各仓储把三样东西分得很清楚：只追加的历史、可变的物化投影，以及对数据库之外那些文件的尽力而为的绑定。
 
+`rl_runs.py` 在 Store 的同一连接/事务/锁上实现 protocol-2 rollout 准入、claim、
+带哈希校验的不可变结果和逐轮 step receipt。Migration 43 是加法迁移；旧 receipt 明确
+保留 legacy 状态，不假定可安全重跑。终态重试返回原始字节而不是当前投影。
+
 ## 文件
 
 | 文件 | 职责 |
@@ -44,6 +48,7 @@ SQLite 事务能让明确划定的一组 row 保持原子，但它没法一口�
 | [`permissions.py`](permissions.py) | 解析带作用域的 allow/ask/deny 规则，写入本地默认值，持久化审批请求与事件，并让过了期限的待决 decision 过期。带版本的安全替换可以撤销不安全的旧默认，同时不会恢复已删除或更严格的规则；v4 把旧的 `skills_edit` 静默放行改成 ask，因为 Skill 文档和 sidecar 会进入后续执行。重启后的 continuation grant 绑定得很窄，且只会被原子地消费一次。 |
 | [`plans.py`](plans.py) | 某个 frame 的结构化 plan，以及每一步的状态与备注。状态集合在 Python 里强制，而不是写成 SQL CHECK：`plans` 是用 `CREATE TABLE IF NOT EXISTS` 建的，今天加上的约束只对新库生效，对既有库则悄无声息——护的恰好是最不需要护的那批人。状态变更走 compare-and-set；被已死进程留在 `executing` 的行，在启动时与内核 generation 一起被清算：置为 paused 而非 failed，因为已经完成的步骤确实完成了。`get_by_frame` 返回的是最新的、未被 discard 的那个 plan，这也正是为什么一行卡在 `executing` 会永久遮住该 session 之后的每一份草稿。 |
 | [`recovery.py`](recovery.py) | 恢复日志。每一次尝试、每一次修复都追加一条有序记录，所以失败或只做了一半的恢复，在 daemon 重启之后依然查得到。 |
+| [`rl.py`](rl.py) | 由 Store 统一持有的 RL Trajectory 记录、Reward Annotation、Cost 和幂等 Rollout Receipt。 |
 | [`settings.py`](settings.py) | 一张 key/value 表，上面搭了两个结构化视图。模型 profile 以 JSON 列表存放，`mutate_model_profiles` 在 `Store` 的锁里完成读取、修改、写回，所以并发编辑不会把哪个 profile 弄丢。消息反馈则按 frame 归键。 |
 | [`skills.py`](skills.py) | content-addressed 的 Skill 包：不可变的 blob、文件与 manifest；只在乐观并发下才移动的安装指针；以及只追加的启用/停用历史，其元数据可证明保留版本经过的受信任创作边界。包的校验与物化归 [`skills_loader/versions.py`](../skills_loader/versions.py) 管，不在这里。 |
 | [`shares.py`](shares.py) | Web 分享用的 `shares` 表：每个分享一行持久记录，保存生命周期状态（`publishing`/`ready`/`failed`/`revoked`）、当前快照 id、bundle 哈希与可选有效期。一个部分唯一索引保证每个会话至多一个活跃分享；文件系统发布与 lease GC 在 `server/share_service.py`。 |

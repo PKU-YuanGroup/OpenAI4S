@@ -335,6 +335,16 @@ class RuntimeActionLedger:
         default=None, init=False, repr=False
     )
 
+    def current_action_group_id(self) -> str | None:
+        """Expose the group allocated for the current routed action.
+
+        RL adapters use this read-only join point after ``ActionRouted`` has
+        passed through the ledger.  The ledger remains the sole owner of
+        action-group identity.
+        """
+
+        return self.current_group_id
+
     def append_user(self, message: Mapping[str, Any] | Any) -> dict:
         if isinstance(message, Mapping):
             normalized = copy.deepcopy(dict(message))

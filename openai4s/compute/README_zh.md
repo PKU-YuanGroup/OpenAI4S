@@ -10,6 +10,19 @@ Python 的 [`host.compute` SDK](../sdk/compute.py) 把每次调用变成一个 `
 
 走 `byoc:*` 时，manager 到 `skills/remote-compute-<id>/` 下面找 provider shim，把 job 归档暂存好，再运行受限的 [`openai4s_compute_provider`](../../openai4s_compute_provider) helper，credential 从 stdin 递进去。走 `ssh:*` 时，它就是对着用户配置的 alias 调本地的 `ssh`/`scp`。回收下来的文件一律落在已配置数据目录下的 `hpc/<job_id>/`。
 
+dispatcher 可以显式配置 durable resource-admission controller。这样
+`submit_job` 就可以接收带有
+`cpu_cores`、`gpu_count`、`gpu_memory_gb`、`max_wall_time_ms`、`priority`、
+`budget_group` 的 `resource_request`；面向模型的 `compute_submit` 工具不提供这个字段。
+manager 先占住 durable compute 行，
+再在调用 provider 前预留容量，并在把任务报告成 running 前绑定 provider
+receipt。容量不足（`resource_admission_waiting`）或 admission 失败时不会调用
+provider，并删除这条 staging 行，所以同一个 idempotency key 可以重试。
+确定的 provider 拒绝会释放尚未启动的预留；终态任务会结束已经
+启动的 allocation；provider 状态不确定时则保守地保留 allocation，直到任务
+有结果，届时从未绑定 receipt 的 allocation 会被释放，与重启后的 reconciliation
+一致。没有配置 controller 时，原有 compute 调用保持不变。
+
 ## 文件
 
 | 文件 | 职责 |
@@ -40,6 +53,7 @@ Python 的 [`host.compute` SDK](../sdk/compute.py) 把每次调用变成一个 `
 - **job 记录是持久的，预热沙箱 handle 不是。** job 行在提交*之前*就写入，并带上 provider receipt，所以重启后的 manager 会把每个可能仍在占用远端资源的 job 重新装载回来，计入并发计数，并且仍然可以轮询或取消它。`reconcile()` 只上报这些 job，有意不重新提交——一个在途的 job 可能在跑也可能没跑，猜错的代价要么是重复计费，要么是丢结果。仍然只在内存里的是：每个 provider 的预热 byoc 沙箱 handle，所以重启后接不回一个已经预热的容器（但那个容器里正在跑的 job 仍可通过 receipt 恢复）。[`registry.py`](registry.py) 持久化那份专用的 SSH capability 目录。
 - **一个 job 一个终态，而且在同一处判定。** `_commit_terminal` 先把终态写进账本，之后内存和任何观察者才被允许相信它，并且不吞异常：compare-and-swap 输掉时会回读那一行、报出真正胜出的状态，其余任何写失败则直接抛出，而不是当成成功回报。那种情况下这一行仍算存活，`reconcile` 会一直把它捞出来——这是偏安全的方向；宣称一个账本从未接受过的成功则不是。
 - **重复提交是被拒绝，而不是被悄悄跑两遍。** 如果某个 `idempotency_key` 已经落在本 owner 的某一行上，第二次提交就是一个点名了胜出者的错误；而那些抢在前置检查之后才碰头的并发对，则由 UNIQUE 索引兜住。提交成功的回执——沙箱 id，或者远程 pid/pgid——在内存相信这个 job 干净地跑起来之前就已持久化；写失败会退化成 `unknown`/`submit_indeterminate`，而不是在一行没有回执的记录上报出一个干净的 `running`——那是一个还在计费、却再没有东西叫得出它名字的孤儿。
+- **准入绑定 receipt。** `max_wall_time_ms` 会随 request 保存，但不替代 provider 实际执行的 `timeout_seconds` deadline。准入会分别记录等待容量的时间和实际计算时间，不会从 wall time 推算 provider cost。manager 重建时，会把 durable admission 行与已经终止的 compute 行重新对账。
 - **没有后台轮询器。** 真正去探测远端并回收产物的是 `result()`；没人轮询的 job 永远不会被回收。
 - **session 之间互相看不见对方的 job。** 重新装载、`result`、`cancel` 以及逐 job 的事件流，全都通过同一张按 owner 划定的表来解析，所以属于别的 session 的 job id 与一个根本不存在的 id 无从区分。
 - native 的 `compute_submit` 需要审批。对已经授权过的那个确切 job，回收结果、取消和关闭有意不再问第二次。更丰富的直接调用 `compute_ssh`/`compute_scp` 如今同样要求 alias 是用户交出来过的，但它们压根不在 native 审批门里——不能拿 `compute_submit` 的批准当它们的批准。
