@@ -77,6 +77,44 @@ def _metadata_ctime_can_lag() -> bool:
         return False
 
 
+@lru_cache(maxsize=1)
+def _mount_table() -> tuple[tuple[str, str], ...]:
+    """``(mount point, fstype)`` pairs, longest mount point first (Linux)."""
+
+    if not sys.platform.startswith("linux"):
+        return ()
+    entries: list[tuple[str, str]] = []
+    try:
+        with open("/proc/mounts", encoding="utf-8") as mounts:
+            for line in mounts:
+                fields = line.split(" ")
+                if len(fields) > 2:
+                    point = re.sub(
+                        r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[1]
+                    )
+                    entries.append((point, fields[2]))
+    except OSError:
+        return ()
+    return tuple(sorted(entries, key=lambda item: len(item[0]), reverse=True))
+
+
+def _on_overlay(path: Path) -> bool:
+    """Whether ``path`` itself lives on overlayfs, by its own mount.
+
+    Container workspaces can be overlayfs, where some layers keep the original
+    ctime when a same-size file is rewritten and its utime restored. Only the
+    mount holding the file matters: an overlay root elsewhere (the shipped
+    image keeps workspaces on its /data volume) must not make every snapshot
+    hash every file.
+    """
+
+    text = str(path)
+    for point, fstype in _mount_table():
+        if text == point or text.startswith(point.rstrip("/") + "/"):
+            return fstype == "overlay"
+    return False
+
+
 _ARTIFACT_WRITER_LOCKS: dict[str, threading.RLock] = {}
 _ARTIFACT_WRITER_LOCKS_GUARD = threading.Lock()
 
@@ -3120,7 +3158,7 @@ class ArtifactManager:
         return result
 
     @staticmethod
-    def _content_fingerprints_required() -> bool:
+    def _content_fingerprints_required(path: Path | None = None) -> bool:
         """Whether the snapshot must read bytes rather than trust the metadata.
 
         The digest answers one filesystem. Everywhere else the kernel-owned
@@ -3141,7 +3179,7 @@ class ArtifactManager:
             return True
         if override in ("0", "false", "no", "off"):
             return False
-        return _metadata_ctime_can_lag()
+        return _metadata_ctime_can_lag() or (path is not None and _on_overlay(path))
 
     @staticmethod
     def _metadata_fingerprint(path: Path) -> WorkspaceFileState | None:
@@ -3192,10 +3230,18 @@ class ArtifactManager:
             status = os.fstat(descriptor)
             if not stat.S_ISREG(status.st_mode):
                 return None
+            # A root daemon can read a mode-000 file that the worker identity
+            # cannot. Keep the metadata-only identity an unreadable file gets
+            # elsewhere, so its fingerprint does not depend on who runs the
+            # daemon. This only decides the snapshot identity; it does not
+            # stop the bytes from being captured.
+            if not status.st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH):
+                return ArtifactManager._metadata_fingerprint(path)
             digest = None
-            if (
-                int(status.st_size) <= _MAX_WORKSPACE_FINGERPRINT_BYTES
-                and ArtifactManager._content_fingerprints_required()
+            if int(
+                status.st_size
+            ) <= _MAX_WORKSPACE_FINGERPRINT_BYTES and ArtifactManager._content_fingerprints_required(
+                path
             ):
                 hasher = hashlib.sha256()
                 while True:

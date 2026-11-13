@@ -1163,6 +1163,16 @@ class LocalActionExecutor:
     # keeps the historical in-memory-only continuity metadata.
     generation_recorder: KernelGenerationRecorder | None = None
 
+    def policy_tools(self, messages: Sequence[Mapping[str, Any]]) -> tuple[Any, ...]:
+        """Expose this executor's current native declarations to RL samplers."""
+
+        catalog = self.tool_catalog
+        if catalog is None:
+            return ()
+        from .finalize import with_finalize_response
+
+        return with_finalize_response(catalog.specs_for(messages))
+
     def bind_progress_circuit(self, state: RunState) -> None:
         """Restore the process cache from the Action Ledger, if present."""
 
@@ -1299,6 +1309,10 @@ class LocalActionExecutor:
                     "action_group_id": group_id,
                     "action_id": call.id,
                     "tool_call_id": call.id,
+                    "decision_id": state.metadata.get("rl_decision_id"),
+                    "episode_id": state.metadata.get("rl_episode_id"),
+                    "segment_id": state.metadata.get("rl_segment_id"),
+                    "rl_owner_id": state.metadata.get("rl_owner_id"),
                 }
             ):
                 return execute_with_capture()
@@ -1379,8 +1393,12 @@ class LocalActionExecutor:
                             "action_group_id": group_id,
                             "action_id": f"{group_id}:action",
                             "tool_call_id": None,
+                            "decision_id": state.metadata.get("rl_decision_id"),
+                            "episode_id": state.metadata.get("rl_episode_id"),
+                            "segment_id": state.metadata.get("rl_segment_id"),
+                            "rl_owner_id": state.metadata.get("rl_owner_id"),
                         }
-                        if group_id
+                        if group_id or state.metadata.get("rl_episode_id")
                         else None
                     )
                     binder = getattr(self.kernel, "bind_action_context", None)

@@ -56,6 +56,7 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 | --- | --- |
 | [`adapters/`](./adapters/) | Optional ecosystem adapters kept outside the stdlib runtime core. |
 | [`agent/`](./agent/) | The provider-neutral outer loop. It routes actions and finalizes them, compacts context past a token threshold, fans work out to sub-agents, and composes the local runtime. |
+| [`rl/`](./rl/) | Dependency-free RL Runtime contracts and the AgentEngine event adapter. It exports versioned Science Trajectory records without embedding a trainer or changing the Action Ledger. |
 | [`cli/`](./cli/) | Command-line lifecycle and one-shot task entry points, plus the environment, support, benchmark, and sharing commands. |
 | [`compute/`](./compute/) | Host-side registry and job orchestration for BYOC/remote compute. General remote compute remains a Prototype surface. |
 | [`execution/`](./execution/) | What a scientific cell goes through outside the kernel: admission, cancellation, dependency projection, result values, and timeout recovery. |

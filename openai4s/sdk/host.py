@@ -474,6 +474,92 @@ class _Science:
         )
 
 
+class _Segment:
+    """Context manager for an explicit, scientifically meaningful segment."""
+
+    def __init__(self, call: Callable[[str, list], Any], spec: dict[str, Any]):
+        self._call = call
+        self._spec = dict(spec)
+        self._record: dict[str, Any] | None = None
+        self._closed = False
+
+    def __enter__(self) -> "_Segment":
+        if self._record is not None:
+            return self
+        self._record = self._call("rl_segment_start", [self._spec])
+        if isinstance(self._record, dict) and "error" in self._record:
+            error = str(self._record["error"])
+            self._record = None
+            raise RuntimeError(error)
+        return self
+
+    def observe(self, value: Any, *, kind: str = "observation") -> dict:
+        if self._record is None:
+            raise RuntimeError("segment is not active")
+        return self._call(
+            "rl_segment_observe",
+            [
+                {
+                    "segment_id": self.segment_id,
+                    "episode_id": self.episode_id,
+                    "kind": kind,
+                    "value": value,
+                }
+            ],
+        )
+
+    def set_output(self, value: Any) -> dict:
+        if self._record is None:
+            raise RuntimeError("segment is not active")
+        return self._call(
+            "rl_segment_output",
+            [
+                {
+                    "segment_id": self.segment_id,
+                    "episode_id": self.episode_id,
+                    "value": value,
+                }
+            ],
+        )
+
+    @property
+    def segment_id(self) -> str:
+        if not isinstance(self._record, dict) or not self._record.get("segment_id"):
+            raise RuntimeError("segment is not active")
+        return str(self._record["segment_id"])
+
+    @property
+    def episode_id(self) -> str:
+        if not isinstance(self._record, dict) or not self._record.get("episode_id"):
+            raise RuntimeError("segment is not active")
+        return str(self._record["episode_id"])
+
+    def close(self, status: str = "completed", *, error: str | None = None) -> dict:
+        result = self._call(
+            "rl_segment_close",
+            [
+                {
+                    "segment_id": self.segment_id,
+                    "episode_id": self.episode_id,
+                    "status": status,
+                    "error": error,
+                }
+            ],
+        )
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(str(result["error"]))
+        self._closed = True
+        return result
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
+        if self._record is not None and not self._closed:
+            self.close(
+                "failed" if exc_type else "completed",
+                error=str(exc_value) if exc_value else None,
+            )
+        return False
+
+
 # --- remote compute (host.compute) -----------------------------------
 #
 # Gated on the host advertising a remote-compute provider. Installs
@@ -615,6 +701,75 @@ class _Host:
         from openai4s.sdk.judgment import judge as _judge
 
         return _judge(self._call, template, state, **params)
+
+    def segment(
+        self,
+        name: str,
+        *,
+        objective: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        episode_id: str | None = None,
+        parent_segment_id: str | None = None,
+    ) -> _Segment:
+        """Open a durable segment spanning one or more Host calls.
+
+        ``parent_segment_id`` is an explicit hierarchy edge.  The Host does
+        not infer parentage from call order, so a replay can distinguish a
+        nested scientific phase from two adjacent phases.
+        """
+        return _Segment(
+            self._call,
+            {
+                "name": name,
+                "objective": objective,
+                "metadata": metadata or {},
+                "episode_id": episode_id,
+                "parent_segment_id": parent_segment_id,
+            },
+        )
+
+    def begin_segment(
+        self,
+        name: str,
+        *,
+        segment_id: str | None = None,
+        objective: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        parent_segment_id: str | None = None,
+        episode_id: str | None = None,
+    ) -> _Segment:
+        """Begin an explicit phase that remains active across policy decisions."""
+        handle = _Segment(
+            self._call,
+            {
+                "name": name,
+                "segment_id": segment_id,
+                "objective": objective,
+                "metadata": metadata or {},
+                "parent_segment_id": parent_segment_id,
+                "episode_id": episode_id,
+                "persistent": True,
+            },
+        )
+        return handle.__enter__()
+
+    def resume_segment(
+        self, segment_id: str, *, episode_id: str | None = None
+    ) -> _Segment:
+        """Validate and attach an existing open phase; never replay its work."""
+        handle = _Segment(self._call, {})
+        handle._record = self._call(
+            "rl_segment_resume",
+            [
+                {
+                    "segment_id": segment_id,
+                    "episode_id": episode_id,
+                }
+            ],
+        )
+        if isinstance(handle._record, dict) and "error" in handle._record:
+            raise RuntimeError(str(handle._record["error"]))
+        return handle
 
     # --- artifacts / data discovery --------------------------------------
     def artifacts(self, **filters: Any) -> dict:

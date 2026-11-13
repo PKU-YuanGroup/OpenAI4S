@@ -4,7 +4,18 @@
 
 [`test_project_file_tools.py`](test_project_file_tools.py) verifies project-relative recursive reads, binary imports with exact source receipts, existing permission rules, folder switching, and workspace isolation.
 
+The RL Runtime additions are covered by `test_rl_contract.py`, `test_agent_rl_step.py`, `test_rl_agent_sink.py`, `test_rl_repository.py`, `test_rl_segments.py`, `test_rl_projector.py`, `test_rl_rollout.py`, `test_rl_environment_adapter.py`, `test_rl_rpc.py`, `test_rl_atif.py`, `test_rl_cost.py`, `test_rl_admission.py`, `test_rl_budget.py`, `test_rl_budget_store.py`, and `test_rl_dataset.py`: contract validation and deterministic export, Harbor-style completion evidence separate from scientific reward, trainer-controlled single-step execution, the JSON-safe environment adapter and JSON-lines transport, the AgentEngine-to-trajectory event bridge, Store-backed durable records, exact Artifact/Compute durable-fact projection, authenticated provider cost evidence, receipt-bound resource admission with separate queue and compute timing, hard/soft estimated-versus-actual budget accounting, restart-safe budget and resource allocation persistence, the `host.segment()` lifecycle, the external sampler rollout lifecycle, and snapshot-checked per-decision training JSON/JSONL projection with explicit reward joins.
+
 The offline correctness gate for OpenAI4S. `uv run pytest` runs every module here against deterministic fakes, and it has to stay green: the provider-neutral agent engine, the Host services, the persistent Python/R kernel protocol, the repositories, the security boundaries, the tools, the Skills, and the Web composition. Reusable scenarios and scored evaluations are a separate layer and live in [`../harness/`](../harness/).
+
+`test_rl_collector.py` verifies bounded concurrency, backpressure, cancellation
+drain, same-thread managed lifetime, and concurrent real Kernel/Host/Store phases.
+`test_rl_client.py` drives bounded JSONL subprocess/async streams and verifies
+result recovery across real RPC worker restarts without replaying actions.
+
+`test_rl_run_receipts.py` exercises protocol-2 identity, single claims, frozen
+terminal results, transaction rollback, exact scientific terminal mappings, and
+per-turn operation receipts. Adapter tests also cover lost-response retrieval.
 
 ## Offline contract
 
@@ -20,6 +31,7 @@ The offline correctness gate for OpenAI4S. `uv run pytest` runs every module her
 
 | File | Responsibility |
 | --- | --- |
+| [`__init__.py`](__init__.py) | Makes the repository test helpers a regular package so the optional OpenMHS integration tree's separate `tests` package cannot shadow imports such as `tests._ports`. |
 | [`test_project_folders.py`](test_project_folders.py) | Local project folder migration, binding, secure browsing and bounded preview over real HTTP; missing-root, traversal, secret, symlink, hardlink and non-local refusals. |
 | [`test_project_history.py`](test_project_history.py) | Real-Store portable history, file versions, branch projection, safe metadata writes, omissions, integrity checks, linear archive growth, no-op saves and reads that never wait behind a save. |
 | [`test_project_history_autosave.py`](test_project_history_autosave.py) | Durable-boundary saves without a browser (once per execution, not per cell), retry/failure persistence, restart recovery and archive-before-delete ordering. |
@@ -530,6 +542,7 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_byoc_confinement.py`](test_byoc_confinement.py) | The boundary tried from inside. The home directory is unreadable, the stage directory is the only writable place, the interpreter still starts — and the keychain is unreachable, which the filesystem invariant does not imply, because `security find-generic-password` asks securityd rather than reading the file. Uses a scratch keychain with a planted canary, never the developer's own. |
 | [`test_compute_harvest_safety.py`](test_compute_harvest_safety.py) | Where the remote's bytes are allowed to land, and what happens when they misbehave. A symlinked harvest root or per-job directory is refused, a hostile archive leaves no staging tree behind, a terminal job re-polled returns its recorded evidence instead of re-harvesting, and the capped transfer aborts on transferred bytes rather than on the size the remote claimed. |
 | [`test_compute_lifecycle.py`](test_compute_lifecycle.py) | `close()` is not a synonym for "write cancelled": it must actually signal the remote, must not claim a cancel it could not deliver, and must terminate a sandbox it only knows from a job row. Also pins that recovery is scoped to the owning session, so a restart cannot hand one session's jobs — and their harvested outputs — to another. |
+| [`test_compute_rl_admission.py`](test_compute_rl_admission.py) | Explicit resource admission around remote compute: capacity refusal happens before provider submission, provider receipts bind and start accounting, confirmed result/cancel finishes the allocation, and indeterminate submission keeps the reservation live. |
 | [`test_compute_output_caps.py`](test_compute_output_caps.py) | What the daemon is allowed to allocate for a remote it does not control. Driven with real subprocesses, because a cap asserted against a `BytesIO` proves the arithmetic and nothing about pipes, threads or deadlock: flooded stdout, flooded stderr, both flooding at once, and a hung command that must raise `TimeoutExpired` rather than hang. |
 | [`test_env_generations.py`](test_env_generations.py) | An environment change as a transaction — plan touches nothing, a failed apply leaves the current environment intact, rollback is a pointer move — and the id that names a generation is confined to its own environment, so `rollback python ../../r/generations/env-R` cannot point Python at an R prefix and label its provenance Python. Stage 1 additionally proves `--repair` builds a fresh generation despite an unchanged spec and cannot move the pointer until the real Python/R interpreter and complete standard package list verify. |
 | [`test_preinstall_probe_confinement.py`](test_preinstall_probe_confinement.py) | The interpreter being probed is *foreign*: a hostile `.pth` or `sitecustomize` runs before the probe's own code. So the probe runs confined, with the environment scrubbed, and under `enforce` it refuses rather than degrading. It also runs in its own empty directory rather than the daemon's launch directory, which `python -c` would put first on `sys.path`. A probe that times out is ended together with everything it started, including a child that left its process group; a probe stopped through its `stop` event ends at once rather than waiting on the pipes that child holds, kills it, and removes its workspace; and one stopped before it starts runs nothing. |

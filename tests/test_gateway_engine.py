@@ -12,6 +12,7 @@ import copy
 import json
 import re
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -187,6 +188,37 @@ def test_trusted_native_write_fails_with_retry_veto_when_capture_fails(
         runner.store.artifact_by_filename("uncaptured.txt", frame_id, strict=True)
         is None
     )
+
+
+def test_native_web_action_context_keeps_rl_parent_keys(tmp_path, monkeypatch):
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), _Hub())
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+    state.active_rl_context = {
+        "episode_id": frame_id,
+        "decision_id": "decision-3",
+    }
+    dispatcher = runner._ensure_runtime(state)
+    captured = []
+
+    @contextmanager
+    def bind_action_context(context):
+        captured.append(dict(context))
+        yield
+
+    monkeypatch.setattr(dispatcher, "bind_action_context", bind_action_context)
+    try:
+        result = runner._invoke_control_with_artifacts(
+            state,
+            SimpleNamespace(name="list_dir"),
+            lambda _event: None,
+            lambda: ("ok", True),
+        )
+        assert result == ("ok", True)
+        assert captured[0]["episode_id"] == frame_id
+        assert captured[0]["decision_id"] == "decision-3"
+    finally:
+        runner.close()
 
 
 @pytest.mark.parametrize("explicit_save", [False, True])

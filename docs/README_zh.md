@@ -33,6 +33,7 @@
 | `plan-corecoder-refactor.md` | 内部的历史重构计划；不进入公开网站的内容。 |
 | `refactor-plan.md` | 为保留决策上下文而留存的历史迁移计划。 |
 | `release-validation.md` | 发布要过的几道关卡：本地关卡、证据包、被强制的契约、macOS app image、Linux app bundle、Windows 包、可信发布、draft-first 流水线，以及有意留在 CI 之外的外部关卡。它还把 macOS 的签名状态收敛成一个具名取值，由证据而不是由配置算出，并且直说本版本里 `verified` 不可达——不需要任何读者从「没有声明」里去推断一条限制。 |
+| `rl/` | Agentic RL 轨迹契约：版本化 Science Trajectory 包络、Action Ledger 关联、委派命名空间、Segment/Host 事实，以及运行时证据与外部 Reward/Trainer 的边界。 |
 | `science-connectors.md` | `science_search` 背后默认的七个公开科学数据库，以及三个由 Stage 10 开关管控的数据源：各自的接口、学科范围，以及归一化后返回的记录字段。另有并列记述的两个火山引擎托管面 —— 豆包搜索 Custom（首选的托管网页搜索，其产品检查刻意不设兜底）和固定的 `volcengine-datapro` MCP Streamable HTTP 专业数据集连接器 —— 二者共用的 Agent Plan Key 都经 SecretBroker 保管，仅在拼装每个出站请求的那一刻才解析出来。 |
 | `security.md` | 威胁模型、信任边界、各层防护与已知的覆盖缺口。 |
 | `skills.md` | 内置与用户 Skill 的格式、加载方式、sidecar 与生命周期。 |

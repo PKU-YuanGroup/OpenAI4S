@@ -152,6 +152,68 @@ class SessionDeletionRepository:
         artifacts = self._unique(artifact_ids)
         deleted_rows: dict[str, int] = {}
 
+        # RL trajectories are session-owned content. Include delegated child
+        # episodes through parent_episode_id before deleting their frames.
+        episode_ids: set[str] = set()
+        if roots or frames:
+            rows = self._connection.execute(
+                "SELECT episode_id FROM rl_episodes WHERE session_id IN "
+                + self._marks(roots + frames),
+                roots + frames,
+            ).fetchall()
+            episode_ids.update(str(row["episode_id"]) for row in rows)
+            while episode_ids:
+                children = self._connection.execute(
+                    "SELECT episode_id FROM rl_episodes WHERE parent_episode_id IN "
+                    + self._marks(tuple(sorted(episode_ids))),
+                    tuple(sorted(episode_ids)),
+                ).fetchall()
+                fresh = {str(row["episode_id"]) for row in children} - episode_ids
+                if not fresh:
+                    break
+                episode_ids.update(fresh)
+            if episode_ids:
+                marks = self._marks(tuple(sorted(episode_ids)))
+                params = tuple(sorted(episode_ids))
+                # Run requests, results and step receipts are keyed by
+                # request_id, not episode_id: reach them through the
+                # episode's run receipts, then delete those receipts too.
+                request_ids = self._unique(
+                    row["request_id"]
+                    for row in self._connection.execute(
+                        f"SELECT request_id FROM rl_run_receipts WHERE episode_id IN {marks}",
+                        params,
+                    ).fetchall()
+                )
+                if request_ids:
+                    request_marks = self._marks(request_ids)
+                    for table in (
+                        "rl_step_receipts",
+                        "rl_run_results",
+                        "rl_run_requests",
+                    ):
+                        self._delete_counted(
+                            deleted_rows,
+                            table,
+                            f"request_id IN {request_marks}",
+                            request_ids,
+                        )
+                for table in (
+                    "rl_run_receipts",
+                    "rl_phase_bindings",
+                    "rl_observations",
+                    "rl_decisions",
+                    "rl_segments",
+                    "rl_execution_events",
+                    "rl_reward_annotations",
+                    "rl_cost_records",
+                    "rl_dataset_snapshots",
+                    "rl_episodes",
+                ):
+                    self._delete_counted(
+                        deleted_rows, table, f"episode_id IN {marks}", params
+                    )
+
         version_rows = []
         if artifacts:
             version_rows = self._connection.execute(

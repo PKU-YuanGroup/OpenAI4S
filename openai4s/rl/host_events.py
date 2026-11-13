@@ -1,0 +1,151 @@
+"""Host RPC lifecycle facts for the RL trajectory boundary."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import time
+import uuid
+from typing import Any
+
+from .models import ExecutionEvent
+
+_SECRET_METHODS = frozenset(
+    {
+        "credentials_set",
+        "credentials_get",
+        "credentials_issue",
+        "credentials_redeem",
+        "credentials_list",
+    }
+)
+
+
+def _digest(method: str, value: Any) -> str | None:
+    if method in _SECRET_METHODS:
+        return None
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+        allow_nan=False,
+    )
+    key = os.environ.get("OPENAI4S_RL_DIGEST_KEY", "").encode("utf-8")
+    if not key:
+        # No public digest is useful for identity-only audit data: unsalted
+        # hashes make small secrets brute-forceable from host.query/export.
+        return None
+    return hmac.new(key, encoded.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+class HostCallLifecycle:
+    """Append bounded start/completion facts for one Host RPC."""
+
+    def __init__(
+        self, repository: Any, episode_id: str, *, clock_ms: Any | None = None
+    ):
+        self.repository = repository
+        self.episode_id = episode_id
+        self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+
+    def begin(
+        self,
+        method: str,
+        args: list[Any],
+        *,
+        decision_id: str | None = None,
+        segment_id: str | None = None,
+        source_id: str | None = None,
+    ) -> dict[str, Any]:
+        call_id = "host-call-" + uuid.uuid4().hex
+        payload = {"call_id": call_id, "method": method}
+        digest = _digest(method, args)
+        if digest is not None:
+            payload["arguments_hmac_sha256"] = digest
+        self.repository.append_execution_event(
+            ExecutionEvent(
+                event_id=f"{call_id}:started",
+                episode_id=self.episode_id,
+                kind="host_call.started",
+                created_at=self.clock_ms(),
+                decision_id=decision_id,
+                segment_id=segment_id,
+                source_id=source_id,
+                payload=payload,
+            )
+        )
+        return {
+            **payload,
+            "decision_id": decision_id,
+            "segment_id": segment_id,
+            "source_id": source_id,
+        }
+
+    def end(
+        self,
+        handle: dict[str, Any],
+        *,
+        ok: bool,
+        result: Any = None,
+        error: BaseException | None = None,
+    ) -> None:
+        completed = ok and error is None
+        payload = {"call_id": handle["call_id"], "method": handle["method"]}
+        if handle.get("arguments_hmac_sha256") is not None:
+            payload["arguments_hmac_sha256"] = handle["arguments_hmac_sha256"]
+        if completed:
+            result_digest = _digest(handle["method"], result)
+            if result_digest is not None:
+                payload["result_hmac_sha256"] = result_digest
+            if isinstance(result, dict):
+                references: dict[str, Any] = {}
+                for key in (
+                    "job_id",
+                    "compute_job_id",
+                    "version_id",
+                    "artifact_version_id",
+                    "input_version_id",
+                    "output_version_id",
+                ):
+                    value = result.get(key)
+                    if isinstance(value, str) and value.strip():
+                        references[key] = value
+                for key in (
+                    "input_versions",
+                    "output_versions",
+                    "artifact_version_ids",
+                ):
+                    value = result.get(key)
+                    if isinstance(value, (list, tuple)):
+                        ids = [item for item in value if isinstance(item, str) and item]
+                        if ids:
+                            references[key] = ids
+                if references:
+                    # IDs are safe audit references; the result body itself is
+                    # deliberately still represented only by its digest.
+                    payload["references"] = references
+            kind = "host_call.completed"
+        else:
+            payload["error_category"] = (
+                type(error).__name__ if error is not None else "soft_failure"
+            )
+            kind = "host_call.failed"
+        self.repository.append_execution_event(
+            ExecutionEvent(
+                event_id=f"{handle['call_id']}:{'completed' if completed else 'failed'}",
+                episode_id=self.episode_id,
+                kind=kind,
+                created_at=self.clock_ms(),
+                decision_id=handle.get("decision_id"),
+                segment_id=handle.get("segment_id"),
+                source_id=handle.get("source_id"),
+                payload=payload,
+            )
+        )
+
+
+__all__ = ["HostCallLifecycle"]

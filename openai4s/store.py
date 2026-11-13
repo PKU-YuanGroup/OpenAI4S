@@ -144,6 +144,13 @@ from openai4s.storage.permissions import PermissionRuleRepository
 from openai4s.storage.permissions import perm_match as _perm_match
 from openai4s.storage.plans import PlanRepository
 from openai4s.storage.recovery import RecoveryJournalRepository
+from openai4s.storage.rl import (
+    RLRepository,
+    create_rl_budget_schema,
+    create_rl_resource_admission_schema,
+    create_rl_schema,
+    create_rl_snapshot_schema,
+)
 from openai4s.storage.session_imports import SessionImportRepository
 from openai4s.storage.settings import SettingsRepository
 from openai4s.storage.shares import SharesRepository
@@ -726,6 +733,25 @@ QUERY_DENYLIST = frozenset(
     {
         "settings",
         "connectors",
+        # Rollout claim/phase ownership and frozen request responses are Host
+        # control state, never an Agent SQL capability (even in single-user mode).
+        "rl_phase_bindings",
+        "rl_run_requests",
+        "rl_run_results",
+        "rl_step_receipts",
+        "rl_episodes",
+        "rl_observations",
+        "rl_decisions",
+        "rl_segments",
+        "rl_execution_events",
+        "rl_reward_annotations",
+        "rl_cost_records",
+        "rl_dataset_snapshots",
+        "rl_budget_ledgers",
+        "rl_budget_allocations",
+        "rl_resource_admissions",
+        "rl_resource_allocations",
+        "rl_run_receipts",
         "memories",
         # Same class as `connectors`: `managed_endpoints.credential` is a
         # plaintext bearer token for a local model endpoint, and it was
@@ -1113,6 +1139,22 @@ _TEAM_VIEW_ONLY_TABLES = frozenset(
         "compute_job_events",
         "custom_skills",
         "agents",
+        # RL trajectory rows carry prompts, policy outputs, execution facts,
+        # receipts and verifier annotations. They are session content too;
+        # without scoped `my_*` views, team-mode SQL refuses them wholesale.
+        "rl_episodes",
+        "rl_observations",
+        "rl_decisions",
+        "rl_segments",
+        "rl_execution_events",
+        "rl_reward_annotations",
+        "rl_cost_records",
+        "rl_run_receipts",
+        "rl_dataset_snapshots",
+        "rl_budget_ledgers",
+        "rl_budget_allocations",
+        "rl_resource_admissions",
+        "rl_resource_allocations",
     }
 )
 
@@ -1285,6 +1327,7 @@ class Store:
         # carrying the same rows.
         harden_db(self.db_path)
         self._migrate()
+        self._rl = RLRepository(self._conn, self._lock, clock_ms=lambda: _now_ms())
         self._actions = ActionLedgerRepository(
             self._conn,
             self._lock,
@@ -1695,6 +1738,19 @@ class Store:
                         "dataset_verification_receipts",
                         self._apply_dataset_verification_receipts,
                     ),
+                    37: ("rl_runtime", self._apply_rl_runtime),
+                    38: (
+                        "rl_dataset_snapshots",
+                        self._apply_rl_dataset_snapshots,
+                    ),
+                    39: ("rl_segment_parent", self._apply_rl_segment_parent),
+                    40: ("rl_budget_ledger", self._apply_rl_budget_ledger),
+                    41: (
+                        "rl_resource_admission",
+                        self._apply_rl_resource_admission,
+                    ),
+                    42: ("rl_phase_bindings", self._apply_rl_phase_bindings),
+                    43: ("rl_run_results", self._apply_rl_run_results),
                 },
             )
             if report["migrated"]:
@@ -1708,6 +1764,42 @@ class Store:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
         if "folder_path" not in columns:
             conn.execute("ALTER TABLE projects ADD COLUMN folder_path TEXT")
+
+    def _apply_rl_runtime(self, conn: sqlite3.Connection) -> None:
+        """Version 37: durable Agentic RL trajectory and run receipts."""
+        create_rl_schema(conn)
+
+    def _apply_rl_dataset_snapshots(self, conn: sqlite3.Connection) -> None:
+        """Version 38: immutable RL training dataset snapshot metadata."""
+        create_rl_snapshot_schema(conn)
+
+    def _apply_rl_segment_parent(self, conn: sqlite3.Connection) -> None:
+        """Version 39: persist explicit Segment parent relationships."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(rl_segments)")}
+        if "parent_segment_id" not in columns:
+            conn.execute("ALTER TABLE rl_segments ADD COLUMN parent_segment_id TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_rl_segments_parent "
+            "ON rl_segments(parent_segment_id)"
+        )
+
+    def _apply_rl_budget_ledger(self, conn: sqlite3.Connection) -> None:
+        """Version 40: durable RL budget and receipt-bound allocations."""
+        create_rl_budget_schema(conn)
+
+    def _apply_rl_run_results(self, conn: sqlite3.Connection) -> None:
+        from openai4s.storage.rl_runs import create_rl_run_schema
+
+        create_rl_run_schema(conn)
+
+    def _apply_rl_phase_bindings(self, conn: sqlite3.Connection) -> None:
+        from openai4s.storage.rl import create_rl_phase_schema
+
+        create_rl_phase_schema(conn)
+
+    def _apply_rl_resource_admission(self, conn: sqlite3.Connection) -> None:
+        """Version 41: durable RL resource admission snapshots."""
+        create_rl_resource_admission_schema(conn)
 
     def _apply_datapro_content_index(self, conn: sqlite3.Connection) -> None:
         """Version 16: lossless local indexing for DataPro responses."""
@@ -2650,6 +2742,11 @@ class Store:
     def background_exec_receipts(self) -> BackgroundExecReceiptRepository:
         """Bounded Web background-cell receipts. CLI sessions do not write them."""
         return self._background_exec_receipts
+
+    @property
+    def rl(self) -> RLRepository:
+        """Durable RL trajectory records and idempotent rollout receipts."""
+        return self._rl
 
     @property
     def leases(self) -> LeaseRepository:

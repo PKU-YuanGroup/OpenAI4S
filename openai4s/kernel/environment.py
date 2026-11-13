@@ -203,6 +203,14 @@ def build_kernel_environment(
     env = _copy_allowed(host_env, _RUNTIME_ALLOWLIST)
     env.update(_copy_allowed(host_env, _TRUSTED_OPENAI4S_ALLOWLIST))
 
+    # A worker must never rediscover the daemon's checkout-local ``.env``.
+    # The allowlist intentionally does not inherit arbitrary configuration,
+    # but config.py's zero-dependency loader would otherwise find that file
+    # when the worker imports OpenAI4S and reintroduce a provider key from disk.
+    # Synthesize the guard after filtering so a hostile source cannot turn it
+    # off for a child process.
+    env["OPENAI4S_SKIP_DOTENV"] = "1"
+
     # A usable command path is required even under a deliberately sparse host
     # environment.  The selected conda prefix wins for all kernel subprocesses.
     path = env.get("PATH") or os.defpath

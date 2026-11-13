@@ -774,3 +774,49 @@ def test_project_delete_refusal_leaves_shares_and_compute_untouched(tmp_path):
     assert [kind for kind, _root in events] == ["drop", "drop"]
     assert {root for _kind, root in events} <= set(roots)
     assert store.get_project("science") is not None
+
+
+def test_deleting_a_session_purges_its_rl_rows_and_run_receipts(tmp_path):
+    """A session that used RL features must stay deletable.
+
+    Run requests, results and step receipts are keyed by ``request_id``, not
+    ``episode_id``. Deleting them by episode raised "no such column" and left
+    every session holding an RL episode undeletable.
+    """
+    from openai4s.rl.models import Episode
+    from openai4s.rl.requests import normalize_request, request_fingerprint
+
+    cfg = Config(data_dir=tmp_path)
+    store = get_store(cfg.db_path)
+    store.create_project(project_id="science", name="Science")
+    deleted = store.new_frame(project_id="science", status="ready")
+    kept = store.new_frame(project_id="science", status="ready")
+    root = Episode("ep-deleted", "analyze", deleted, 1)
+    store.rl.ensure_episode(root)
+    store.rl.ensure_episode(
+        Episode("ep-child", "child", deleted, 2, parent_episode_id="ep-deleted")
+    )
+    store.rl.ensure_episode(Episode("ep-kept", "other", kept, 3))
+    request = normalize_request(root, [{"role": "user", "content": "go"}], max_turns=2)
+    store.rl.runs.admit("req-deleted", request)
+    store.rl.runs.claim("req-deleted", request_fingerprint(request), "owner-1")
+    store.rl.runs.claim_step("req-deleted", "owner-1", "step-0", 0, "fp-0")
+
+    service = SessionDeletionService(
+        store,
+        data_dir=tmp_path,
+        cas=WorkspaceCAS(tmp_path / "workspace-cas"),
+        drop_runtime=lambda root, reason: None,
+        drop_resume_window=lambda root: None,
+    )
+    assert service.delete_session(deleted)["ok"] is True
+
+    assert store.rl.get_episode("ep-deleted") is None
+    assert store.rl.get_episode("ep-child") is None
+    assert store.rl.get_episode("ep-kept") is not None
+    for table in ("rl_run_receipts", "rl_run_requests", "rl_step_receipts"):
+        count = store._conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE request_id='req-deleted'"
+        ).fetchone()[0]
+        assert count == 0, table
+    store.close()
