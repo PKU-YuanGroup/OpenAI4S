@@ -36,7 +36,7 @@ loopback CLI 按决策 D2 等同管理员——能读到宿主上 access-token �
 配额按用户或项目、按种类、按窗口设置：
 
 ```bash
-curl -X PUT .../api/v1/team/quotas -d '{"scope":"user","scope_id":"...",
+curl -X POST .../api/v1/team/quotas -d '{"scope":"user","scope_id":"...",
   "kind":"llm_output_tokens","limit_amount":2000000,"window":"month"}'
 ```
 

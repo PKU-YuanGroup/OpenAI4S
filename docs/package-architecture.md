@@ -23,7 +23,7 @@ The five concepts, and where each stands today:
 |---|---|---|
 | **ComputeProvider** | Launches a *job* (stage inputs → run → harvest outputs) on some compute backend. | **Yes** — `byoc:<id>` (Docker/NIM) and `ssh:<alias>`. |
 | **ModelEndpointProvider** | Serves *inference* from an already-running model behind an HTTP `BASE_URL`. Request/response, no job lifecycle. | **Partially** — the `host.endpoints.*` registry (register/status/probe) is implemented; calls are plain HTTP from the normal agent kernel. The scoped inference kernel is **designed, not wired** (see below). |
-| **LabProvider** | Drives physical lab instruments / automation hardware. | **No — future.** No lab code ships today. |
+| **LabProvider** | Drives physical lab instruments / automation hardware. | **No — future** as a provider kind. A *simulated* lab ships: the OpenMHS lab (`openai4s/mhs_lab/`, see [openmhs.md](openmhs.md)), reached through native MHS tools or MCP connectors, never physical hardware. |
 | **Worker Runtime** | The *inside-the-sandbox* process contract: how staged code actually runs in a confined remote/container process, plus its hardening (env scrub, redaction, harvest). | **Yes** — `openai4s_compute_provider` (kept under this legacy name for compatibility). |
 | **Transport** | How the host *reaches* a backend: `ssh <alias>`, the local `docker` CLI, an HTTP gateway. | **Yes**, per provider — not a standalone pluggable layer. |
 
@@ -109,9 +109,15 @@ further variant; their lifecycle is out of scope for this document.
 ## LabProvider — future
 
 A LabProvider would drive physical lab instruments or automation hardware, with
-its own trust boundary and lifecycle. **No lab code ships in OpenAI4S today.**
-The `platforms/lab/` slot in the target layout is a placeholder. Any mention of
-"lab" in the roadmap is aspirational; do not document lab behavior as available.
+its own trust boundary and lifecycle. **No such provider ships in OpenAI4S
+today.** What does ship is the simulated OpenMHS lab (`openai4s/mhs_lab/`, the
+`openai4s lab` CLI, the Lab tab and `/api/v1/mhs-lab/*`; see
+[openmhs.md](openmhs.md)): devices run on simulators or fake backends behind
+endpoint-enforced limits, and the agent reaches them through native MHS tools or
+MCP connectors, not through a provider kind. Driving real hardware stays an
+operator decision outside the lab. The `platforms/lab/` slot in the target
+layout is still a placeholder; do not document physical-instrument control as
+available.
 
 ## Worker Runtime — `openai4s_compute_provider`
 

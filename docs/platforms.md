@@ -6,8 +6,8 @@ a support claim nobody has to take on faith is the only kind worth publishing.
 
 | Platform | Tier | Kernel | OS sandbox | Gate |
 | --- | --- | --- | --- | --- |
-| macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | **0.3.1 uses PyPI; no DMG is included.** Developer ID signing and notarization remain deferred. The release workflow uploads a DMG only with `macos_asset=notarized`; older v0.3.0/v0.2.0 DMGs are ad-hoc-signed previews. The tier describes the code. |
-| macOS (Intel) | stable | runs | Seatbelt | install 0.3.1 from PyPI; older preview DMGs are Apple Silicon only |
+| macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | **1.0.0 ships an ad-hoc-signed DMG, attached outside the release workflow.** Developer ID signing and notarization remain deferred. The release workflow uploads a DMG only with `macos_asset=notarized`; the 1.0.0, v0.3.0 and v0.2.0 DMGs are all ad-hoc signed. The tier describes the code. |
+| macOS (Intel) | stable | runs | Seatbelt | install 1.0.0 from PyPI; every DMG so far is Apple Silicon only |
 | Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | full filesystem/egress boundary runs in every CI (`harness/smoke/linux_sandbox.py`); private-PID Python/R interrupt is a separate job that allows raw networking; the release workflow does not re-execute the full smoke until multiple scheduled greens pass |
 | Windows (native) | **unsupported** | **refused** | none exists | not planned; use WSL2, which reports as Linux |
 | Anything else | unsupported | **refused** | — | — |
@@ -19,21 +19,22 @@ a person can actually download, and the two are not the same thing — the Windo
 row above says "unsupported" and the Windows row below says a package exists,
 because that package does not run OpenAI4S on Windows.
 
-**Current release: [0.3.1](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1).** GitHub carries the Linux and Windows packages, `SHA256SUMS`, and the evidence archive. Python distributions are on PyPI; containers are on public GHCR.
+**Current release: [1.0.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0).** GitHub carries the macOS, Linux and Windows packages, `SHA256SUMS`, the evidence archive, and a supplemental macOS validation record. Python distributions are on PyPI; containers are on public GHCR.
 
 | Download | Built by | Verified by | What it is |
 | --- | --- | --- | --- |
-| macOS DMG: **not included in 0.3.1** | [`scripts/build_macos_dmg.sh`](../scripts/build_macos_dmg.sh), then [`scripts/notarize_macos_dmg.sh`](../scripts/notarize_macos_dmg.sh) | `verify_macos_bundle.py` | Developer ID signing and notarization are deferred. Install from [PyPI 0.3.1](https://pypi.org/project/openai4s/0.3.1/) on Apple Silicon or Intel. Older ad-hoc-signed previews remain on the [v0.3.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0) and [v0.2.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0) pages; they install those older versions. |
-| [OpenAI4S-0.3.1-linux-x86_64.tar.gz](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-linux-x86_64.tar.gz) | [`scripts/build_linux_bundle.sh`](../scripts/build_linux_bundle.sh) | `verify_linux_bundle.py` | Embedded Python and the science stack in a relocatable directory, with a `.desktop` template and per-user `install.sh`. Verify the checksum, unpack, and run `./OpenAI4S`. |
-| [OpenAI4S-0.3.1-windows-x86_64.zip](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-windows-x86_64.zip) | [`scripts/build_windows_zip.sh`](../scripts/build_windows_zip.sh) | `verify_windows_zip.py` | A complete ZIP containing a Windows launcher and **the same Linux tarball**. Requires WSL2, Ubuntu 24.04, and working bubblewrap 0.8.0+. Archive, launcher, and payload checks passed; full Windows/WSL2 runtime acceptance was not performed for 0.3.1. See the [Windows/WSL2 guide](windows-wsl.md). |
-| [PyPI 0.3.1: wheel and source distribution](https://pypi.org/project/openai4s/0.3.1/) | `uv build` | `verify_release_artifacts.py` | The zero-dependency core for supported platforms with Python 3.10+. Install `openai4s[science]==0.3.1` for the optional science stack. These files are distributed through PyPI. |
-| [GHCR](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s): `ghcr.io/pku-yuangroup/openai4s:0.3.1` | [`Dockerfile`](../Dockerfile), [`publish-image.yml`](../.github/workflows/publish-image.yml) | [`scripts/container_smoke.sh`](../scripts/container_smoke.sh) | Public linux/amd64 image; anonymous pulls are supported. Pin `0.3.1`; `latest` follows future releases. No arm64 image is published. See [docker.md](docker.md). |
+| [OpenAI4S-1.0.0-macos-arm64.dmg](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg) ([SHA-256](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg.sha256)) | [`scripts/build_macos_dmg.sh`](../scripts/build_macos_dmg.sh) on a local Mac, from the unchanged tagged source | `verify_macos_bundle.py`, plus the [supplemental validation record](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64-validation.json) | Apple Silicon only. Embedded Python 3.13 and the science stack. **Ad-hoc signed, with no Developer ID signature and no notarization**, so the first launch needs *Open Anyway*. Built and attached after the publishing workflow, which omits macOS; the evidence archive does not cover it. Intel Macs install from [PyPI 1.0.0](https://pypi.org/project/openai4s/1.0.0/). |
+| [OpenAI4S-1.0.0-linux-x86_64.tar.gz](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-linux-x86_64.tar.gz) | [`scripts/build_linux_bundle.sh`](../scripts/build_linux_bundle.sh) | `verify_linux_bundle.py` | Embedded Python and the science stack in a relocatable directory, with a `.desktop` template and per-user `install.sh`. Verify the checksum, unpack, and run `./OpenAI4S`. |
+| [OpenAI4S-1.0.0-windows-x86_64.zip](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip) | [`scripts/build_windows_zip.sh`](../scripts/build_windows_zip.sh) | `verify_windows_zip.py` | A complete ZIP containing a Windows launcher and **the same Linux tarball**. Requires WSL2, Ubuntu 24.04, and working bubblewrap 0.8.0+. The public ZIP passed a post-publication runtime run on Windows Server 2025 with Ubuntu 24.04 WSL2, without model credentials; the launcher is unsigned. See the [Windows/WSL2 guide](windows-wsl.md). |
+| [PyPI 1.0.0: wheel and source distribution](https://pypi.org/project/openai4s/1.0.0/) | `uv build` | `verify_release_artifacts.py` | The zero-dependency core for supported platforms with Python 3.10+. Install `openai4s[science]==1.0.0` for the optional science stack. These files are distributed through PyPI. |
+| [GHCR](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s): `ghcr.io/pku-yuangroup/openai4s:1.0.0` | [`Dockerfile`](../Dockerfile), [`publish-image.yml`](../.github/workflows/publish-image.yml) | [`scripts/container_smoke.sh`](../scripts/container_smoke.sh) | Public linux/amd64 image; anonymous pulls are supported. Pin `1.0.0`; `latest` follows future releases. No arm64 image is published. See [docker.md](docker.md). |
 
-Download [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS)
+Download [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/SHA256SUMS)
 to verify the desktop packages and the
-[evidence archive](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/openai4s-0.3.1-evidence.zip).
+[evidence archive](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/openai4s-1.0.0-evidence.zip).
 The archive contains the build manifest, component inventory, SBOM, provenance,
-and validation references.
+and validation references for the publishing workflow; the later macOS DMG has
+its own supplemental validation record instead.
 
 Only `x86_64` Linux/Windows bundles are published. On arm64 Linux, use PyPI in a
 virtual environment. Windows on ARM is unverified; native Windows remains
@@ -46,7 +47,7 @@ fails on hardened and containerised hosts, and it would fail at *cell execution*
 time — long after the app looked like it had started successfully.
 ## Python versions
 
-| Version | `requires-python` | Classifier | CI offline suite | Preview DMG build (not shipped in 0.3.1) | Ships in the container |
+| Version | `requires-python` | Classifier | CI offline suite | DMG build | Ships in the container |
 | --- | --- | --- | --- | --- | --- |
 | 3.10 | admitted (the floor) | yes | yes | no | no |
 | 3.11 | admitted | yes | no — see below | no | no |
@@ -136,9 +137,10 @@ both. The tiers differ in what has been *proven*:
 
 - macOS distribution is gated on a signed, notarized `.dmg`, which would be a
   distribution promise on top of the technical one. No release has met that
-  gate yet, so 0.3.1 omits the DMG. v0.2.0 and v0.3.0 each carry an ad-hoc-signed preview image, and
-  v0.3.0's was built locally and attached outside the release workflow, because
-  the Developer ID and notary credentials do not exist
+  gate yet; 0.3.1 omitted the DMG, and 1.0.0's is ad-hoc signed. v0.2.0, v0.3.0
+  and 1.0.0 each carry an ad-hoc-signed image, and v0.3.0's and 1.0.0's were
+  built locally and attached outside the release workflow, because the
+  Developer ID and notary credentials do not exist
   ([D11](v03-decisions.md)). The tier therefore rests on the technical half:
   Seatbelt enforced and smoke-tested nightly, and a PyPI install on either
   architecture. `scripts/notarize_macos_dmg.sh` is the sign →

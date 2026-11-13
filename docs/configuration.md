@@ -15,7 +15,7 @@ One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_u
 | `gemini` | gemini | `gemini-2.5-flash` | ✅ |
 | `ollama` | openai | `gemma4:31b` (cloud) | ✅ |
 
-`ark` is Volcengine's plan/v3 gateway — one endpoint + key serving `doubao-seed-2.0-{pro,code,lite,mini}`, `glm-5.2`, `kimi-k2.7-code`, `kimi-k2.6`, `deepseek-v4-{pro,flash}`, `minimax-{m3,m2.7}` — all pre-registered as switchable model profiles. Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
+`ark` is Volcengine's plan/v3 gateway — one endpoint + key serving `doubao-seed-2.0-{pro,code,lite,mini}`, `glm-5.2`, `kimi-k2.7-code`, `kimi-k2.6`, `deepseek-v4-{pro,flash}`, `minimax-{m3,m2.7}`. These are catalog presets, not saved profiles: no profile is pre-registered, so save one for each model you want to switch to (First-run setup can fetch the ids the endpoint actually serves). Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
 
 Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
 
@@ -184,7 +184,7 @@ Starting the daemon never modifies your Python environment. `serve` only *report
 openai4s setup            # provision the kernel environments
 ```
 
-or Customize → Compute → "Install package" in the UI, or `host.pip_install` from a cell.
+or Customize → Compute → **Install additional packages** in the UI.
 
 This used to be implicit: `serve` resolved ~23 *unpinned* package names against PyPI on a background thread and installed them with `--break-system-packages`. That made booting the daemon mutate the user's interpreter, made two cold starts a week apart produce different environments, and made an offline cold start fail where nobody was looking. Diagnosis and mutation are now separate.
 
@@ -196,7 +196,7 @@ Heavier toolchains live in ready-to-use Conda specs instead, so native dependenc
 - **`r`** — R 4.5 / tidyverse / data.table / ggplot2 / R Markdown / knitr / jsonlite / Pandoc.
 
 When `OPENAI4S_STAGE1_TRUSTED_DELIVERY=1`, startup also reports the
-`standard` profile's exact local readiness. The check compares the 32 direct
+`standard` profile's exact local readiness. The check compares the 33 direct
 Python and 8 direct R dependencies in the shipped manifests with package
 metadata from the discovered `python` and `r` environments. It starts no
 interpreter, imports no science package, contacts no network, and changes

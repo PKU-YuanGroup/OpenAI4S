@@ -322,11 +322,15 @@ The frontend deliberately treats absent routes as unavailable: controls are
 disabled or show an empty state rather than mutating history or pretending a
 backend action succeeded.
 
-## Demo session (seeded on first boot)
+## Example session (on demand)
 
-On first boot the app seeds a NIF3/DUF34 protein-family analysis that calls the
-real UniProt and RCSB PDB APIs plus a bundled MCP connector, running six
-deterministic Notebook Cells without an LLM key:
+When the session list is empty, the dashboard offers **Run the example
+analysis**; it posts `{"confirm": true}` to `POST /api/v1/example/session`. A
+fresh boot runs nothing unless `OPENAI4S_SEED_DEMO=1` is set (see
+[Configuration](configuration.md)), and either path seeds at most once. The
+example is a NIF3/DUF34 protein-family analysis that calls the real UniProt and
+RCSB PDB APIs plus a bundled MCP connector, running six deterministic Notebook
+Cells without an LLM key:
 
 1. UniProt sequence retrieval.
 2. A bundled MCP connector call.
