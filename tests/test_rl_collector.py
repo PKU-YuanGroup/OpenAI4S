@@ -694,3 +694,54 @@ def test_collector_real_kernel_phase_result_and_cleanup(tmp_path):
         assert list((tmp_path / "work").iterdir()) == []
     finally:
         store.close()
+
+
+def test_collector_runs_repository_less_rollout_workers(tmp_path) -> None:
+    """A generated request_id is collector bookkeeping, not a durability request.
+
+    Passing it to a RolloutWorker without a receipt repository made every
+    request fail with "request_id requires a receipt repository".
+    """
+    from openai4s.agent.engine import AgentEngine
+    from openai4s.agent.models import ExecutionOutcome
+    from openai4s.rl import RolloutEnvironment, RolloutWorker
+
+    class _Model:
+        def complete(self, _messages, _on_delta):
+            raise AssertionError("the sampler provides every reply")
+
+    class _Executor:
+        def execute(self, _action, _reply, _state):
+            return ExecutionOutcome(observation="ok")
+
+    class _Sampler:
+        def sample(self, _observation, *, tools=()):
+            return {"content": "```python\npass\n```"}
+
+    def factory(_request: dict) -> RolloutWorker:
+        return RolloutWorker(
+            RolloutEnvironment(
+                lambda _reset: AgentEngine(_Model(), _Executor(), max_turns=1),
+                workspace_root=tmp_path / "ws",
+            )
+        )
+
+    requests = [
+        {
+            "episode": Episode(f"bare-{index}", "t", "s", 1),
+            "messages": [{"role": "user", "content": "go"}],
+        }
+        for index in range(2)
+    ]
+
+    async def scenario() -> list:
+        collector = RolloutCollector(
+            factory, requests, lambda _request: _Sampler(), max_concurrency=1
+        )
+        results = await asyncio.wait_for(collector.collect(), 30)
+        await collector.aclose()
+        return results
+
+    results = asyncio.run(scenario())
+    assert [result.ok for result in results] == [True, True]
+    assert [result.error for result in results] == [None, None]

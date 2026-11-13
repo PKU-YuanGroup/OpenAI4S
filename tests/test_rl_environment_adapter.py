@@ -150,3 +150,66 @@ def test_environment_adapter_releases_before_resetting_another_episode():
 
     second = adapter.reset(_request("adapter-second", max_turns=1))
     assert second["episode"]["episode_id"] == "adapter-second"
+
+
+def test_non_durable_step_failure_ends_the_episode_instead_of_wedging():
+    """A step that raised after its decision was recorded cannot be retried.
+
+    Re-proposing the same turn conflicted with the recorded observation, so
+    the episode was stuck running forever. It now ends as failed, as
+    RolloutSession.run already does.
+    """
+
+    class _FailingOnce(_Executor):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def execute(self, action, reply, state):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("kernel transport hiccup")
+            return super().execute(action, reply, state)
+
+    executor = _FailingOnce()
+    adapter = EnvironmentAdapter(
+        RolloutEnvironment(
+            lambda _reset: AgentEngine(_NeverCalledModel(), executor, max_turns=2)
+        )
+    )
+    adapter.reset(_request("failing-episode"))
+    with pytest.raises(RuntimeError, match="kernel transport hiccup"):
+        adapter.step({"content": "```python\npass\n```"})
+    assert adapter.finished
+    with pytest.raises(RuntimeError, match="already finished"):
+        adapter.step({"content": "```python\npass\n```"})
+    assert adapter.release()["episode"]["status"] == "failed"
+    assert executor.calls == 1
+
+
+def test_durable_exact_retry_with_the_same_reply_object_returns_the_stored_step(
+    tmp_path,
+):
+    from openai4s.config import Config
+    from openai4s.store import get_store
+
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    try:
+        adapter = EnvironmentAdapter(
+            RolloutEnvironment(
+                lambda _reset: AgentEngine(
+                    _NeverCalledModel(), _Executor(), max_turns=2
+                ),
+                repository=store.rl,
+                workspace_root=tmp_path / "ws",
+            )
+        )
+        adapter.reset({**_request("retry-episode"), "request_id": "req-retry"})
+        reply = ModelReply(content="```python\npass\n```", extra={"policy_name": "p"})
+        first = adapter.step(reply, step_id="s0", expected_turn=0)
+        # The recorder must not write its join keys into the caller's reply:
+        # that changed the step fingerprint and turned the retry into a conflict.
+        assert reply.extra == {"policy_name": "p"}
+        assert adapter.step(reply, step_id="s0", expected_turn=0) == first
+    finally:
+        store.close()

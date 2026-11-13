@@ -416,3 +416,33 @@ def test_new_action_context_cannot_inherit_stale_segment_decision(tmp_path) -> N
         assert json.loads(payload)["segment_id"] is None
     finally:
         dispatcher.store.close()
+
+
+def test_segment_observations_respect_the_phase_owner(tmp_path) -> None:
+    """Observe/output pass the owner fence that resume and close enforce."""
+    dispatcher = build_dispatcher(Config(data_dir=tmp_path), frame_id="frame-owner")
+    try:
+        host = _Host(lambda method, args: dispatcher(method, args))
+        bound = {"episode_id": "ep-owner", "decision_id": "d1"}
+        with dispatcher.bind_action_context({**bound, "rl_owner_id": "owner-a"}):
+            phase = host.begin_segment("analysis", segment_id="phase-a")
+        with dispatcher.bind_action_context({**bound, "rl_owner_id": "owner-b"}):
+            refused = dispatcher(
+                "rl_segment_observe",
+                [
+                    {
+                        "segment_id": phase.segment_id,
+                        "episode_id": "ep-owner",
+                        "value": 1,
+                    }
+                ],
+            )
+        assert refused == {"error": "phase belongs to a different execution owner"}
+        with dispatcher.bind_action_context({**bound, "rl_owner_id": "owner-a"}):
+            accepted = dispatcher(
+                "rl_segment_output",
+                [{"segment_id": "phase-a", "episode_id": "ep-owner", "value": 2}],
+            )
+        assert accepted["ok"] is True
+    finally:
+        dispatcher.store.close()
