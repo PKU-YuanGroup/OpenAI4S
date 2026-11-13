@@ -316,17 +316,48 @@ def test_node_and_python_agree_on_the_supported_node_floor():
     assert declared == ">=18", declared
 
 
-def test_recipe_added_after_npm_020_uses_github_installation():
+def test_recipe_added_after_npm_030_uses_github_installation():
     """A current-only recipe must not advertise a failing published install."""
-    name = "single-cell-rna-analysis"
+    name = "molecular-dynamics"
     for lang, notice in (
-        ("README.md", "npm 0.2.0 does not include this recipe"),
-        ("README_zh.md", "npm 0.2.0 不包含本配方"),
+        ("README.md", "npm 0.3.0 does not include this recipe"),
+        ("README_zh.md", "npm 0.3.0 不包含本配方"),
     ):
         text = (SKILLS / name / lang).read_text(encoding="utf-8")
         assert notice in " ".join(text.split())
         assert f"npx github:PKU-YuanGroup/OpenAI4S install {name}" in text
         assert f"npx @pku-yuangroup/openai4s-skills install {name}" not in text
+
+
+def test_recipe_first_published_in_npm_030_advertises_the_npm_install():
+    """`single-cell-rna-analysis` is in the 0.3.0 tarball but not in 0.2.0.
+    An unversioned `npx @pku-yuangroup/openai4s-skills` resolves to 0.3.0, so
+    a page still saying npm does not include it sends readers the long way
+    round for a recipe one command away."""
+    name = "single-cell-rna-analysis"
+    for lang in ("README.md", "README_zh.md"):
+        text = " ".join((SKILLS / name / lang).read_text(encoding="utf-8").split())
+        assert f"npx @pku-yuangroup/openai4s-skills install {name} --target claude" in (
+            text
+        )
+        assert "does not include this recipe" not in text
+        assert "不包含本配方" not in text
+
+
+def test_skill_pages_describe_the_newest_published_npm_release():
+    """The frozen recipe set is read from one npm tarball. It must be the
+    newest release recorded as published, which is what an unversioned `npx`
+    resolves to: recording 0.3.0 as published while the pages still decided
+    availability from 0.2.0's set is how a recipe on npm got called absent."""
+    published = install_sections.PUBLISHED_NPM_VERSIONS
+    assert install_sections.NPM_SKILLS_RELEASE == max(published, key=_version_key)
+    for lang, claim in (
+        ("README.md", "release at 604 Skills (43 curated + 561 bioSkills)"),
+        ("README_zh.md", "包含 604 个 Skill（43 个精选 + 561 个 bioSkills）"),
+    ):
+        text = " ".join((SKILLS / lang).read_text(encoding="utf-8").split())
+        assert "`@pku-yuangroup/openai4s-skills@0.3.0`" in text
+        assert claim in text
 
 
 def _version_key(version: str) -> tuple[int, ...]:

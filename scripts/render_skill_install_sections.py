@@ -42,11 +42,16 @@ INDEX_EXAMPLES = ("alphafold2", "boltz")
 #: One real member each collection page names, keyed by collection directory.
 COLLECTION_EXAMPLE_MEMBER = {"bioskills": "bio-differential-expression-deseq2-basics"}
 
-#: Frozen curated names from the published npm 0.2.0 tarball, not the
-#: current checkout. Unknown/future recipes default to GitHub-only.
-#: Source: https://registry.npmjs.org/@pku-yuangroup/openai4s-skills/-/openai4s-skills-0.2.0.tgz
-#: SHA-256: c4c31b56e34e8d73c1fe73ee8a2c7246f7e9654c1e3ee0cec4138f449be94d47
-NPM_020_AVAILABLE_SKILLS = frozenset(
+#: The npm release the Skill pages describe: the newest one in
+#: `PUBLISHED_NPM_VERSIONS`, which is what an unversioned
+#: `npx @pku-yuangroup/openai4s-skills` resolves to.
+NPM_SKILLS_RELEASE = "0.3.0"
+#: Frozen curated names from that release's published tarball
+#: (`package/skills/<name>/SKILL.md`, `bioskills/` excluded), not the current
+#: checkout. Unknown/future recipes default to GitHub-only.
+#: Source: https://registry.npmjs.org/@pku-yuangroup/openai4s-skills/-/openai4s-skills-0.3.0.tgz
+#: SHA-256: cb857dacba41552157489e7cea0893a522f860cd61fc70c216b7fb2f9bacc34a
+NPM_AVAILABLE_SKILLS = frozenset(
     {
         "admet_genetic",
         "alphafold2",
@@ -86,12 +91,16 @@ NPM_020_AVAILABLE_SKILLS = frozenset(
         "rfdiffusion",
         "scgpt",
         "scvi-tools",
+        "single-cell-rna-analysis",
         "single-step-retrosynthesis",
         "solublempnn",
         "using-model-endpoint",
         "volcengine-datapro",
     }
 )
+#: The pinned bioSkills recipes the same tarball carries
+#: (`package/skills/bioskills/<name>/SKILL.md`).
+NPM_BIOSKILLS_COUNT = 561
 
 #: npm releases of `@pku-yuangroup/openai4s-skills` that are on the registry.
 #: Every `openai4s-skills@X.Y.Z` pin in the docs must name one of these, and
@@ -236,9 +245,9 @@ def render(
                 f"```bash\nnpx github:{repo} install {name} --target claude\n```",
                 _targets_en()
                 + (
-                    " npm 0.2.0 does not include this recipe. Use the GitHub "
+                    f" npm {NPM_SKILLS_RELEASE} does not include this recipe. Use the GitHub "
                     "installation command above."
-                    if name not in NPM_020_AVAILABLE_SKILLS
+                    if name not in NPM_AVAILABLE_SKILLS
                     else " For a recipe included in the npm release, "
                     f"`npx @pku-yuangroup/openai4s-skills install {name} --target claude` "
                     "installs the published copy. The npm catalog can differ from this "
@@ -267,8 +276,8 @@ def render(
                 f"```bash\nnpx github:{repo} install {name} --target claude\n```",
                 _targets_zh()
                 + (
-                    "npm 0.2.0 不包含本配方，请使用上面的 GitHub 安装命令。"
-                    if name not in NPM_020_AVAILABLE_SKILLS
+                    f"npm {NPM_SKILLS_RELEASE} 不包含本配方，请使用上面的 GitHub 安装命令。"
+                    if name not in NPM_AVAILABLE_SKILLS
                     else "对于 npm 发布版中包含的配方，可用 "
                     f"`npx @pku-yuangroup/openai4s-skills install {name} --target claude` "
                     "安装发布版本。npm 目录可能与当前仓库不同。"
@@ -356,6 +365,8 @@ def render(
             ]
     elif kind == "index":
         first, second, collection = facts["first"], facts["second"], facts["collection"]
+        npm_curated = len(NPM_AVAILABLE_SKILLS)
+        npm_total = npm_curated + NPM_BIOSKILLS_COUNT
         commands = (
             f"npx github:{repo} install --all --target claude\n"
             f"npx github:{repo} install --collection {collection} --target claude\n"
@@ -368,8 +379,10 @@ def render(
                 f"```bash\n{commands}\n```",
                 _targets_en() + " To install recipes included in the npm release, use "
                 "`npx @pku-yuangroup/openai4s-skills …`. The npm catalog can differ "
-                "from this repository; use `@pku-yuangroup/openai4s-skills@0.2.0` "
-                "to fix the release at 603 Skills (42 curated + 561 bioSkills).",
+                "from this repository; use "
+                f"`@pku-yuangroup/openai4s-skills@{NPM_SKILLS_RELEASE}` to fix the "
+                f"release at {npm_total} Skills ({npm_curated} curated + "
+                f"{NPM_BIOSKILLS_COUNT} bioSkills).",
                 "Without Node, one directory comes out of the source tarball on its "
                 "own, and `python3 -m zipfile -c <name>.zip <name>` turns it into "
                 "something an upload field will take. The tarball is the whole "
@@ -392,8 +405,9 @@ def render(
                 f"```bash\n{commands}\n```",
                 _targets_zh() + "对于 npm 发布版中包含的配方，可用 "
                 "`npx @pku-yuangroup/openai4s-skills …` 安装。npm 目录可能与当前仓库"
-                "不同；使用 `@pku-yuangroup/openai4s-skills@0.2.0` 可固定安装包含 "
-                "603 个 Skill（42 个精选 + 561 个 bioSkills）的发布版本。",
+                f"不同；使用 `@pku-yuangroup/openai4s-skills@{NPM_SKILLS_RELEASE}` "
+                f"可固定安装包含 {npm_total} 个 Skill（{npm_curated} 个精选 + "
+                f"{NPM_BIOSKILLS_COUNT} 个 bioSkills）的发布版本。",
                 "没有 Node 时，可以只从源码 tarball 里取出一个目录，再用 "
                 "`python3 -m zipfile -c <name>.zip <name>` 打成上传框认的压缩包。"
                 "tarball 是整个仓库（超过 100 MB），下面这条管道是 POSIX shell"
