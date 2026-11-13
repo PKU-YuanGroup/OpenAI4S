@@ -71,7 +71,9 @@ class TrajectoryRecorder:
             left.to_dict(), sort_keys=True, separators=(",", ":")
         ) == json.dumps(right.to_dict(), sort_keys=True, separators=(",", ":"))
 
-    def _put(self, target: dict[str, Record], key: str, value: Record) -> Record:
+    def _put(
+        self, target: dict[str, Record], key: str, value: Record, append: str
+    ) -> Record:
         current = target.get(key)
         if current is not None:
             if not self._same(current, value):
@@ -79,32 +81,31 @@ class TrajectoryRecorder:
                     f"record {key!r} was already stored with different content"
                 )
             return current
+        # Persist before caching: a failed append must not leave a cached copy
+        # that makes an identical retry report success without storing it.
+        if self.repository is not None:
+            getattr(self.repository, append)(value)
         target[key] = value
         return value
 
     def add_observation(self, value: Observation) -> Observation:
         with self._lock:
             self._check_episode(value.episode_id)
-            result = self._put(self._observations, value.observation_id, value)
-            if self.repository is not None and result is value:
-                self.repository.append_observation(value)
-            return result
+            return self._put(
+                self._observations, value.observation_id, value, "append_observation"
+            )
 
     def add_decision(self, value: PolicyDecision) -> PolicyDecision:
         with self._lock:
             self._check_episode(value.episode_id)
-            result = self._put(self._decisions, value.decision_id, value)
-            if self.repository is not None and result is value:
-                self.repository.append_decision(value)
-            return result
+            return self._put(
+                self._decisions, value.decision_id, value, "append_decision"
+            )
 
     def add_segment(self, value: Segment) -> Segment:
         with self._lock:
             self._check_episode(value.episode_id)
-            result = self._put(self._segments, value.segment_id, value)
-            if self.repository is not None and result is value:
-                self.repository.append_segment(value)
-            return result
+            return self._put(self._segments, value.segment_id, value, "append_segment")
 
     def transition_segment(
         self, segment: Segment, event: ExecutionEvent
@@ -181,18 +182,12 @@ class TrajectoryRecorder:
     def add_reward(self, value: RewardAnnotation) -> RewardAnnotation:
         with self._lock:
             self._check_episode(value.episode_id)
-            result = self._put(self._rewards, value.annotation_id, value)
-            if self.repository is not None and result is value:
-                self.repository.append_reward(value)
-            return result
+            return self._put(self._rewards, value.annotation_id, value, "append_reward")
 
     def add_cost(self, value: CostRecord) -> CostRecord:
         with self._lock:
             self._check_episode(value.episode_id)
-            result = self._put(self._costs, value.cost_id, value)
-            if self.repository is not None and result is value:
-                self.repository.append_cost(value)
-            return result
+            return self._put(self._costs, value.cost_id, value, "append_cost")
 
     def add_provider_cost(
         self,
@@ -337,6 +332,32 @@ class TrajectoryRecorder:
             if self.repository is not None:
                 self.repository.update_episode_status(self.episode.episode_id, status)
             return self.episode
+
+    def terminate(self, status: str, stop_reason: str) -> Episode:
+        """Finish an episode whose run ended without ``RunFinished``.
+
+        ``finish`` only sets the status. An aborted run still needs its open
+        segments closed and exactly one ``episode.finished`` fact, or dataset
+        snapshots and the completion contract refuse the episode.
+        """
+        with self._lock:
+            if self.episode.status == "running" and not any(
+                event.kind == "episode.finished" for event in self._events.values()
+            ):
+                self.add_event(
+                    ExecutionEvent(
+                        event_id=f"{self.episode.episode_id}:episode.finished",
+                        episode_id=self.episode.episode_id,
+                        kind="episode.finished",
+                        created_at=self.now_ms(),
+                        payload={
+                            "stop_reason": stop_reason,
+                            "completion": None,
+                            "turns": None,
+                        },
+                    )
+                )
+            return self.finish(status)
 
     def snapshot(self) -> Trajectory:
         with self._lock:

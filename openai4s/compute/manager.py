@@ -1201,10 +1201,11 @@ class ComputeManager:
     def _admit_resource(self, job_id: str, kw: dict) -> bool:
         """Reserve resources after the durable compute claim.
 
-        ``False`` means the request is waiting for capacity.  Waiting does not
-        consume an allocation; the compute claim is nevertheless closed as a
-        failed job so a caller cannot accidentally retry a provider operation
-        against an untracked row.
+        Admission runs before any provider contact, so a request that waits
+        for capacity, or an admission that fails (a lost revision CAS on a
+        shared ledger), is definitive: nothing was reserved or submitted. The
+        staging claim is dropped rather than closed, so a retry with the same
+        idempotency key is not refused as a duplicate.
         """
         request = self._resource_request(kw)
         if request is None:
@@ -1212,44 +1213,41 @@ class ComputeManager:
         try:
             result = self._resource_admission.admit(job_id, request)
         except Exception as exc:  # noqa: BLE001 - admission is fail-closed
-            self._persist(
-                job_id,
-                status=states.UNKNOWN,
-                reason=f"resource admission failed: {exc}",
-                termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+            self._discard_claim(
+                job_id, f"resource admission failed: {exc}", "resource_admission_error"
             )
             raise ComputeError(
                 f"resource admission failed: {exc}",
                 "resource_admission_error",
-                indeterminate=True,
+                indeterminate=False,
             ) from exc
         if result.status == "waiting":
-            landed = self._persist_terminal(
+            self._discard_claim(
                 job_id,
-                status=states.FAILED,
-                reason="resource admission waiting for capacity",
-                termination_reason="resource_admission_waiting",
-                terminal_at=_now_ms(),
+                "resource admission waiting for capacity",
+                "resource_admission_waiting",
             )
-            if not landed:
-                self._persist(
-                    job_id,
-                    status=states.UNKNOWN,
-                    reason="resource admission waiting could not be recorded",
-                    termination_reason=states.REASON_SUBMIT_INDETERMINATE,
-                )
-                raise ComputeError(
-                    "resource admission waiting could not be recorded",
-                    "resource_admission_error",
-                    indeterminate=True,
-                )
-            self._event(job_id, "resource_admission_waiting")
             raise ComputeError(
                 "requested resources are currently unavailable",
                 "resource_admission_waiting",
                 indeterminate=False,
             )
         return True
+
+    def _discard_claim(self, job_id: str, reason: str, termination: str) -> None:
+        """Drop a staging claim for which no provider was ever contacted."""
+        if self._store is None:
+            return
+        try:
+            self._store.delete_compute_job(job_id)
+        except Exception:  # noqa: BLE001 - close the claim definitively instead
+            self._persist_terminal(
+                job_id,
+                status=states.FAILED,
+                reason=reason,
+                termination_reason=termination,
+                terminal_at=_now_ms(),
+            )
 
     def _bind_and_start_resource(self, job_id: str, receipt: str) -> bool:
         """Bind a provider receipt and start accounting before reporting running."""
@@ -1310,6 +1308,11 @@ class ComputeManager:
                 if terminal_at is not None:
                     kwargs["terminal_at"] = terminal_at
                 self._resource_admission.finish(job_id, **kwargs)
+            elif record is not None and record.state == "reserved":
+                # An indeterminate submit never bound a receipt; release it now
+                # as restart reconciliation would, instead of holding it until
+                # the next restart.
+                self._resource_admission.release(job_id)
         except Exception as exc:  # noqa: BLE001 - terminal compute state remains
             self._event(
                 job_id,
@@ -2497,6 +2500,9 @@ class ComputeManager:
         self._confinement_gate(pid)
         creds = self._provider_creds(prov)
         input_versions = _declared_input_versions(kw.get("inputs"))
+        # Parsed before the claim and admission: a malformed value must not
+        # leave a staging row and a reservation nothing frees.
+        timeout_s = int(kw.get("timeout_seconds") or 14400)
         job_id = self._claim(
             f"byoc:{pid}",
             kw.get("idempotency_key"),
@@ -2506,7 +2512,6 @@ class ComputeManager:
         admitted = self._resource_enabled(kw)
         if admitted:
             self._admit_resource(job_id, kw)
-        timeout_s = int(kw.get("timeout_seconds") or 14400)
         sid: str | None = None
         try:
             with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
@@ -2625,6 +2630,8 @@ class ComputeManager:
                 "them explicitly before submit rather than running without them",
                 "invalid_request",
             )
+        # Parsed before the claim and admission (see _submit_byoc).
+        timeout_s = int(kw.get("timeout_seconds") or 0)
         job_id = self._claim(
             f"ssh:{alias}", kw.get("idempotency_key"), kw.get("outputs")
         )
@@ -2644,7 +2651,6 @@ class ComputeManager:
         # `timeout` is asked for by name rather than assumed: a host without it
         # would otherwise silently run an unbounded job while the caller
         # believes a limit is in force.
-        timeout_s = int(kw.get("timeout_seconds") or 0)
         body = "bash run.sh"
         marker = ""
         if timeout_s > 0:

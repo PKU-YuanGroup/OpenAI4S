@@ -83,9 +83,10 @@ def test_durable_projector_uses_exact_artifact_version_and_compute_receipt(tmp_p
         compute = projected["compute.job"]
         assert compute.payload["job_id"] == "job-projector"
         assert compute.payload["provider"] == "byoc:test"
-        assert compute.payload["receipt"] is None
         assert compute.payload["input_versions"] == ["v-old"]
-        assert compute.payload["artifact_manifest"] is None
+        # Mutable job columns are not projected; lifecycle arrives as events.
+        assert "receipt" not in compute.payload
+        assert "status" not in compute.payload
         assert compute.decision_id == "decision-1"
         assert compute.segment_id == "segment-1"
         assert [event.kind for event in trajectory.execution_events].count(

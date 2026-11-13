@@ -126,15 +126,19 @@ it does not calculate reward.
 cell outcome, segment lifecycle transition, or Host RPC lifecycle. It contains
 `event_id`, `episode_id`, `kind`, `created_at`, optional `decision_id`,
 `segment_id`, `source_id`, `sequence`, and JSON `payload`. Host RPC payloads
-contain argument/result hashes and an error category, not private arguments or
-results.
+contain the method and an error category, never private arguments or results.
+Argument/result digests are recorded only as keyed HMAC-SHA256 values when
+`OPENAI4S_RL_DIGEST_KEY` is set, and never for credential calls.
 
 The durable projector may append read-only `artifact.version`, `compute.job`,
 and `compute.job_event` references at export time. An Artifact reference carries
 the exact `version_id`, checksum, producing cell, and source event. A Compute
-reference carries the durable job ID, provider, status, receipt, input version
-IDs, artifact manifest, and source job events. It follows IDs already present in
-the trajectory and never resolves a mutable Artifact head or fabricates a cost.
+reference carries the durable job ID, provider, and input version IDs, which are
+fixed when the job is created, plus the job's events up to the episode's
+`episode.finished`. Status, receipt, and manifest arrive through those events,
+so a finished episode's projection, and its snapshot hash, do not change later.
+It follows IDs already present in the trajectory and never resolves a mutable
+Artifact head or fabricates a cost.
 
 `RewardAnnotation` is an independently produced score. It contains
 `annotation_id`, `episode_id`, finite `value`, `verifier`,

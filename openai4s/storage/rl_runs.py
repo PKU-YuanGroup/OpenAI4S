@@ -21,7 +21,11 @@ from openai4s.rl.requests import (
     decode_trajectory,
     request_fingerprint,
 )
-from openai4s.rl.segments import SEGMENT_METADATA, lifecycle_event
+from openai4s.rl.segments import (
+    SEGMENT_METADATA,
+    interrupted_status,
+    lifecycle_event,
+)
 from openai4s.storage.rl import RLRepository
 
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled", "interrupted"})
@@ -46,6 +50,9 @@ _RECEIPT_STATE_BY_EPISODE_STATUS = {
     "scientific_failure": "failed",
     "execution_failure": "failed",
     "verifier_failure": "failed",
+    # The local executor stops a cell it cannot confine (allowlist egress
+    # without a proven sandbox) before running it.
+    "egress_boundary_unavailable": "failed",
 }
 EPISODE_TERMINAL_STATUSES = frozenset(_RECEIPT_STATE_BY_EPISODE_STATUS)
 
@@ -690,11 +697,14 @@ class RunRepository(RLRepository):
             segments.values(),
             key=lambda item: (-depth(item, frozenset()), item.segment_id),
         )
+        # An unclosed phase is interrupted, never inferred successful: the
+        # same label the recorder path gives it, whatever the admission mode.
+        closed_status = interrupted_status(status)
         for segment in ordered:
-            closed = replace(segment, status=status)
+            closed = replace(segment, status=closed_status)
             self._connection.execute(
                 "UPDATE rl_segments SET status=?,payload=? WHERE segment_id=?",
-                (status, canonical_json(closed.to_dict()), segment.segment_id),
+                (closed_status, canonical_json(closed.to_dict()), segment.segment_id),
             )
             self._append_event_unlocked(
                 lifecycle_event(closed, started=False, at=now, reason=status)

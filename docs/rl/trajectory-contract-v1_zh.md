@@ -76,13 +76,15 @@ Host API 接受显式的 `parent_segment_id`，不会从相邻调用顺序推断
 `host.segment()` 只产生 Segment 生命周期、observation 和 output 事实，不计算 reward。
 
 `ExecutionEvent` 是有界执行事实，例如 action dispatch、Cell 结果、Segment 生命周期或
-Host RPC 生命周期。Host RPC 只记录参数/结果哈希与错误类别，不复制私有参数或结果。
+Host RPC 生命周期。Host RPC 只记录方法名与错误类别，不复制私有参数或结果。只有设置了
+`OPENAI4S_RL_DIGEST_KEY` 时才以带密钥的 HMAC-SHA256 记录参数/结果摘要，凭据调用一律不记录。
 
 导出时 durable projector 可以只读追加 `artifact.version`、`compute.job` 和
 `compute.job_event` 引用。Artifact 引用携带精确 `version_id`、checksum、producing cell
-和 source event；Compute 引用携带 durable job ID、provider、status、receipt、输入
-version、artifact manifest 和源 job events。它只跟随轨迹中已经存在的 ID，不解析可变
-Artifact head，也不伪造成本。
+和 source event；Compute 引用携带 job 创建时就固定的 durable job ID、provider 和输入
+version，以及截至该 episode `episode.finished` 的 job events。status、receipt 和
+manifest 通过这些事件体现，所以已结束 episode 的投影及其 snapshot 哈希之后不会再变。
+它只跟随轨迹中已经存在的 ID，不解析可变 Artifact head，也不伪造成本。
 
 `RewardAnnotation` 是独立产生的分数，包含 verifier 与版本、数值、组件、元数据、
 `evidence_refs`、可选的 `[0, 1]` `confidence` 和 `source`。同一 Episode 可以有多个

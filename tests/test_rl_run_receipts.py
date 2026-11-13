@@ -191,6 +191,9 @@ def test_receipt_state_mapping_is_closed() -> None:
         "scientific_failure": "failed",
         "execution_failure": "failed",
         "verifier_failure": "failed",
+        # A real LocalActionExecutor stop reason (allowlist egress without a
+        # proven sandbox); finalize must map it rather than raise.
+        "egress_boundary_unavailable": "failed",
     }
     assert EPISODE_TERMINAL_STATUSES == frozenset(expected)
     for status, receipt_state in expected.items():
@@ -332,7 +335,8 @@ def test_finalize_closes_segments_child_first_and_freezes_immutable_result(
         "request-1", owner, "ep-1", "completed", _terminal_event()
     )
     assert trajectory.episode.status == "completed"
-    assert {segment.status for segment in trajectory.segments} == {"completed"}
+    # Phases the agent never closed are interrupted, never inferred successful.
+    assert {segment.status for segment in trajectory.segments} == {"interrupted"}
 
     close_order = [
         json.loads(row["payload"])["segment_id"]

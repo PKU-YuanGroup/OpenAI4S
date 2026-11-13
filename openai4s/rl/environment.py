@@ -132,6 +132,7 @@ class RolloutEnvironment:
             max_turns = effective_turns
             owner_id = "rl-owner-" + uuid.uuid4().hex
             claimed = None
+            claim_fingerprint = ""
             reset_id = "reset-" + uuid.uuid4().hex
             workspace_id = "workspace-" + uuid.uuid4().hex
             if request_id is not None:
@@ -155,9 +156,7 @@ class RolloutEnvironment:
                     raise RunAlreadyTerminal(result)
                 if admitted["state"] == "running":
                     raise RuntimeError("rollout request is recovery_required")
-                claimed = self.repository.runs.claim(
-                    request_id, admitted["fingerprint"], owner_id
-                )
+                claim_fingerprint = admitted["fingerprint"]
                 reset_id = admitted["reset_metadata"]["reset_id"]
                 workspace_id = admitted["reset_metadata"]["workspace_id"]
                 max_turns = effective_turns
@@ -211,6 +210,14 @@ class RolloutEnvironment:
                 runtime_stack.callback(self.close_engine, engine)
             recorder = TrajectoryRecorder(effective_episode, repository=self.repository)
             recorder.owner_id = owner_id
+            if request_id is not None:
+                # Claim only once the workspace, engine and recorder exist: a
+                # failure before this point leaves the request accepted, so
+                # the same request can simply be retried.
+                assert self.repository is not None  # checked at admission
+                claimed = self.repository.runs.claim(
+                    request_id, claim_fingerprint, owner_id
+                )
             session = RolloutSession(
                 engine,
                 recorder,
@@ -442,6 +449,10 @@ class RolloutEnvironmentAdapter:
         prepared = None if observation is None else _messages(observation)
         if (step_id is None) != (expected_turn is None):
             raise ValueError("step_id and expected_turn must be supplied together")
+        if isinstance(reply, Mapping):
+            # Coerce the reply the way the Engine will before anything durable
+            # happens: a malformed reply must fail without claiming the turn.
+            ModelReply.from_mapping(reply)
         if step_id is not None:
             if session._run_owner is None or session.request_id is None:
                 raise ValueError(

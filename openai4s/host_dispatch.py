@@ -1615,9 +1615,18 @@ class HostDispatcher:
         ):
             # A segment is scoped to one outer policy decision. Do not let a
             # long-lived dispatcher carry it into the following decision.
-            context.pop("segment_id", None)
-            context.pop("_rl_segment_stack", None)
-            self._rl_context_local.value = context
+            if "_rl_base_context" in context:
+                # Segment or resumed-phase context abandoned by an earlier
+                # decision: return this thread to what it held before it.
+                base = context["_rl_base_context"]
+                context = dict(base) if isinstance(base, dict) else {}
+                self._set_rl_thread_context(base)
+            else:
+                context.pop("segment_id", None)
+                context.pop("_rl_segment_stack", None)
+                # Store a copy: the active phase filled in below must not
+                # stick to this thread after that phase closes.
+                self._rl_context_local.value = dict(context)
         for target, alias in aliases:
             # The action context is rebound for every outer execution. It must
             # supersede a segment context left on this long-lived dispatcher
@@ -1632,8 +1641,13 @@ class HostDispatcher:
                 context[target] = action[target]
             elif action.get(alias):
                 context[target] = action[alias]
+        # Without a rollout owner, a session's phases belong to its frame, so
+        # a dispatcher rebuilt after a daemon restart can still resume and
+        # close them instead of being fenced out forever.
         context["rl_owner_id"] = (
-            action.get("rl_owner_id") or context.get("rl_owner_id") or self._rl_owner_id
+            action.get("rl_owner_id")
+            or context.get("rl_owner_id")
+            or (f"host-owner-{self.frame_id}" if self.frame_id else self._rl_owner_id)
         )
         episode_id = context.get("episode_id")
         if episode_id:
@@ -1647,11 +1661,37 @@ class HostDispatcher:
                 phase = None
             if phase is not None and not context.get("_rl_segment_stack"):
                 context["segment_id"] = phase.segment_id
+            elif context.get("segment_id") and not context.get("_rl_segment_stack"):
+                # A phase named by the action may have closed during it (a
+                # phase.close() earlier in the same cell): stop attributing.
+                # A lexical segment's own close path manages the stack.
+                named = self.store.rl.get_segment(str(context["segment_id"]))
+                if named is not None and named.status != "open":
+                    context.pop("segment_id", None)
         if action.get("decision_id") or action.get("episode_id"):
             context["source_id"] = action.get("tool_call_id") or action.get("action_id")
         elif "source_id" not in context:
             context["source_id"] = None
         return context
+
+    def _set_rl_thread_context(self, value: Any) -> None:
+        if isinstance(value, dict):
+            self._rl_context_local.value = dict(value)
+        else:
+            try:
+                del self._rl_context_local.value
+            except AttributeError:
+                pass
+
+    def _rl_base_context(self) -> dict[str, Any] | None:
+        """What this thread held before RL segment state was layered on it."""
+        prior = getattr(self._rl_context_local, "value", None)
+        if not isinstance(prior, dict):
+            return None
+        if "_rl_base_context" in prior:
+            base = prior["_rl_base_context"]
+            return dict(base) if isinstance(base, dict) else None
+        return dict(prior)
 
     def _rl_episode(self, episode_id: str | None) -> str:
         """Resolve the episode bound to this Host call.
@@ -3692,6 +3732,10 @@ class HostDispatcher:
             segment_stack = current.get("_rl_segment_stack")
             if not isinstance(segment_stack, list):
                 segment_stack = []
+                # The outermost lexical segment remembers what this thread
+                # held before it, so closing it restores exactly that instead
+                # of leaving the merged episode/decision/source behind.
+                current.setdefault("_rl_base_context", self._rl_base_context())
             else:
                 segment_stack = list(segment_stack)
             segment_stack.append(current.get("segment_id"))
@@ -3723,6 +3767,9 @@ class HostDispatcher:
             ).resume(str(spec.get("segment_id") or ""))
             context = self._current_rl_context()
             context["segment_id"] = result["segment_id"]
+            # Restorable: the next decision, or closing this phase, returns
+            # the thread to what it held before the resume.
+            context.setdefault("_rl_base_context", self._rl_base_context())
             self._rl_context_local.value = context
             return result
         except (TypeError, ValueError, KeyError) as error:
@@ -3783,12 +3830,27 @@ class HostDispatcher:
             ):
                 from openai4s.rl.segments import HostSegments
 
-                return HostSegments(
+                result = HostSegments(
                     self.store.rl,
                     episode_id,
                     self._current_rl_context(),
                     str(self.frame_id),
                 ).close(spec)
+                value = getattr(self._rl_context_local, "value", None)
+                if (
+                    isinstance(value, dict)
+                    and value.get("segment_id") == segment.segment_id
+                    and not value.get("_rl_segment_stack")
+                ):
+                    # The phase attached to this thread by a resume just
+                    # closed: later calls must not stay attributed to it.
+                    if "_rl_base_context" in value:
+                        self._set_rl_thread_context(value["_rl_base_context"])
+                    else:
+                        value = dict(value)
+                        value.pop("segment_id", None)
+                        self._rl_context_local.value = value
+                return result
             context = self._current_rl_context()
             if segment is None:
                 return {"error": f"unknown segment {segment_id!r}"}
@@ -3815,7 +3877,14 @@ class HostDispatcher:
                     current["segment_id"] = previous
                 else:
                     current.pop("segment_id", None)
-                self._rl_context_local.value = current
+                if (
+                    current.get("_rl_segment_stack")
+                    or "_rl_base_context" not in current
+                ):
+                    self._rl_context_local.value = current
+                else:
+                    # The outermost lexical segment closed: restore the thread.
+                    self._set_rl_thread_context(current["_rl_base_context"])
             return closed
         except (TypeError, ValueError, KeyError) as error:
             return {"error": str(error)}

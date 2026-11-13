@@ -96,8 +96,9 @@ def test_resource_wait_is_refused_before_provider_submit(cfg, monkeypatch):
         )
     assert error.value.error_kind == "resource_admission_waiting"
     assert calls == []
-    rows = get_store(cfg.db_path).list_compute_jobs()
-    assert rows[0]["status"] == states.FAILED
+    # Nothing was reserved or submitted, so the staging claim is dropped
+    # rather than closed: a same-key retry is not refused as a duplicate.
+    assert get_store(cfg.db_path).list_compute_jobs() == []
 
 
 def test_provider_rejection_releases_reserved_resource(cfg, monkeypatch):

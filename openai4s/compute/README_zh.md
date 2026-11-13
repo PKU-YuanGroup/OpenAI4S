@@ -11,15 +11,17 @@ Python 的 [`host.compute` SDK](../sdk/compute.py) 把每次调用变成一个 `
 走 `byoc:*` 时，manager 到 `skills/remote-compute-<id>/` 下面找 provider shim，把 job 归档暂存好，再运行受限的 [`openai4s_compute_provider`](../../openai4s_compute_provider) helper，credential 从 stdin 递进去。走 `ssh:*` 时，它就是对着用户配置的 alias 调本地的 `ssh`/`scp`。回收下来的文件一律落在已配置数据目录下的 `hpc/<job_id>/`。
 
 dispatcher 可以显式配置 durable resource-admission controller。这样
-`submit_job` 和 native `compute_submit` 就可以接收带有
+`submit_job` 就可以接收带有
 `cpu_cores`、`gpu_count`、`gpu_memory_gb`、`max_wall_time_ms`、`priority`、
-`budget_group` 的 `resource_request`。manager 先占住 durable compute 行，
+`budget_group` 的 `resource_request`；面向模型的 `compute_submit` 工具不提供这个字段。
+manager 先占住 durable compute 行，
 再在调用 provider 前预留容量，并在把任务报告成 running 前绑定 provider
-receipt。容量不足时会得到 durable 的
-`termination_reason=resource_admission_waiting` failed job，并且不会调用
-provider。确定的 provider 拒绝会释放尚未启动的预留；终态任务会结束已经
-启动的 allocation；provider 状态不确定时则保守地保留 allocation，等待重启
-后的 reconciliation。没有配置 controller 时，原有 compute 调用保持不变。
+receipt。容量不足（`resource_admission_waiting`）或 admission 失败时不会调用
+provider，并删除这条 staging 行，所以同一个 idempotency key 可以重试。
+确定的 provider 拒绝会释放尚未启动的预留；终态任务会结束已经
+启动的 allocation；provider 状态不确定时则保守地保留 allocation，直到任务
+有结果，届时从未绑定 receipt 的 allocation 会被释放，与重启后的 reconciliation
+一致。没有配置 controller 时，原有 compute 调用保持不变。
 
 ## 文件
 

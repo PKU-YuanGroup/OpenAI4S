@@ -2385,12 +2385,11 @@ def _remote_gpu_runtime_context(user_text: str | None = None, *, data_dir: Path)
     if "proteinmpnn" in lower or "protein mpnn" in lower:
         requested_caps.add("proteinmpnn")
     task_needs_gpu = bool(user_text and _REMOTE_GPU_TASK_RE.search(user_text))
-    # Accelerator inventory is useful when a turn can actually use it. Do not
-    # append a machine-specific note to every ordinary analysis request just
-    # because the daemon happens to run on a GPU host; that makes prompts
-    # non-deterministic across otherwise identical rollouts and needlessly
-    # couples policy observations to the collector's hardware.
-    if not task_needs_gpu:
+    # Ordinary Web turns keep the accelerator note whenever this host has a
+    # local GPU or a registered remote one: a training request that names no
+    # GPU still needs to know one exists. RL rollouts never build this prompt,
+    # so rollout determinism is not a reason to drop it here.
+    if not local.get("available") and not hosts_reg and not task_needs_gpu:
         return ""
     if task_needs_gpu and not requested_caps:
         requested_caps.update(_REMOTE_GPU_CORE_CAPS)

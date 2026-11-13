@@ -28,7 +28,10 @@ R 分析 worker 从不导入本包，那边也没有 `host` 单例。
 `with host.segment(name)` 仍是 lexical 阶段。跨多个 Cell/PolicyDecision 的阶段使用
 `phase = host.begin_segment(name, segment_id=...)`，在后续 Cell 调用 `phase.observe(...)`、
 `phase.set_output(...)` 和 `phase.close()`。`host.resume_segment(id)` 只连接当前运行 owner
-的已有 open phase。这些接口只记录事实，不计算 Reward 或声明科学成功。
+的已有 open phase。调用方指定的 `segment_id` 按 episode 存储为 `<episode_id>:<id>`，
+共享同一 Store 的多个 rollout 不会冲突；`resume_segment` 两种写法都接受。对
+`begin_segment` 或 `resume_segment` 返回的句柄使用 `with`，退出时关闭的就是该 phase，
+不会另开一个。这些接口只记录事实，不计算 Reward 或声明科学成功。
 
 ## RPC 与完成契约
 

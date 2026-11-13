@@ -58,7 +58,7 @@ Broadcast = Callable[[str, dict[str, Any]], None]
 
 @lru_cache(maxsize=1)
 def _metadata_ctime_can_lag() -> bool:
-    """True on filesystems known to defer a ctime update within one tick.
+    """True on WSL, whose ext4-on-VHD can defer a ctime update within one tick.
 
     Cached because the answer must not vary inside a process: the ``before``
     and ``after`` fingerprints of an unchanged file have to compare equal, and
@@ -72,20 +72,47 @@ def _metadata_ctime_can_lag() -> bool:
         return False
     try:
         with open("/proc/sys/kernel/osrelease", "rb") as handle:
-            if b"microsoft" in handle.read(256).lower():
-                return True
+            return b"microsoft" in handle.read(256).lower()
     except OSError:
-        pass
-    # Container workspaces are commonly overlayfs. Its timestamp behaviour
-    # varies with the backing filesystem and kernel, and some layers preserve
-    # the original ctime when a same-size file is rewritten and utime is
-    # restored. Hash bounded files there just as on WSL; correctness of
-    # artifact provenance is more important than the metadata-only shortcut.
+        return False
+
+
+@lru_cache(maxsize=1)
+def _mount_table() -> tuple[tuple[str, str], ...]:
+    """``(mount point, fstype)`` pairs, longest mount point first (Linux)."""
+
+    if not sys.platform.startswith("linux"):
+        return ()
+    entries: list[tuple[str, str]] = []
     try:
         with open("/proc/mounts", encoding="utf-8") as mounts:
-            return any(line.split(" ")[2] == "overlay" for line in mounts)
-    except (OSError, IndexError):
-        return False
+            for line in mounts:
+                fields = line.split(" ")
+                if len(fields) > 2:
+                    point = re.sub(
+                        r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[1]
+                    )
+                    entries.append((point, fields[2]))
+    except OSError:
+        return ()
+    return tuple(sorted(entries, key=lambda item: len(item[0]), reverse=True))
+
+
+def _on_overlay(path: Path) -> bool:
+    """Whether ``path`` itself lives on overlayfs, by its own mount.
+
+    Container workspaces can be overlayfs, where some layers keep the original
+    ctime when a same-size file is rewritten and its utime restored. Only the
+    mount holding the file matters: an overlay root elsewhere (the shipped
+    image keeps workspaces on its /data volume) must not make every snapshot
+    hash every file.
+    """
+
+    text = str(path)
+    for point, fstype in _mount_table():
+        if text == point or text.startswith(point.rstrip("/") + "/"):
+            return fstype == "overlay"
+    return False
 
 
 _ARTIFACT_WRITER_LOCKS: dict[str, threading.RLock] = {}
@@ -3131,7 +3158,7 @@ class ArtifactManager:
         return result
 
     @staticmethod
-    def _content_fingerprints_required() -> bool:
+    def _content_fingerprints_required(path: Path | None = None) -> bool:
         """Whether the snapshot must read bytes rather than trust the metadata.
 
         The digest answers one filesystem. Everywhere else the kernel-owned
@@ -3152,7 +3179,7 @@ class ArtifactManager:
             return True
         if override in ("0", "false", "no", "off"):
             return False
-        return _metadata_ctime_can_lag()
+        return _metadata_ctime_can_lag() or (path is not None and _on_overlay(path))
 
     @staticmethod
     def _metadata_fingerprint(path: Path) -> WorkspaceFileState | None:
@@ -3211,9 +3238,10 @@ class ArtifactManager:
             if not status.st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH):
                 return ArtifactManager._metadata_fingerprint(path)
             digest = None
-            if (
-                int(status.st_size) <= _MAX_WORKSPACE_FINGERPRINT_BYTES
-                and ArtifactManager._content_fingerprints_required()
+            if int(
+                status.st_size
+            ) <= _MAX_WORKSPACE_FINGERPRINT_BYTES and ArtifactManager._content_fingerprints_required(
+                path
             ):
                 hasher = hashlib.sha256()
                 while True:

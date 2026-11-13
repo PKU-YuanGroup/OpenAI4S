@@ -29,7 +29,11 @@ The R analysis worker never imports this package and has no `host` singleton.
 Cells/PolicyDecisions, use `phase = host.begin_segment(name, segment_id=...)`,
 then `phase.observe(...)` / `phase.set_output(...)` and `phase.close()` in later
 Cells. `host.resume_segment(id)` validates an existing open phase under the same
-runtime owner. These methods record facts only, not rewards or scientific success.
+runtime owner. A chosen `segment_id` is stored scoped to its episode
+(`<episode_id>:<id>`), so rollouts sharing a Store cannot collide;
+`resume_segment` accepts either form. A `with` block around a handle from
+`begin_segment` or `resume_segment` closes that phase instead of starting
+another. These methods record facts only, not rewards or scientific success.
 
 ## RPC and completion contract
 

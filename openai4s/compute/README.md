@@ -11,15 +11,17 @@ The Python [`host.compute` SDK](../sdk/compute.py) turns every call into a `comp
 For `byoc:*`, the manager looks for provider shims under `skills/remote-compute-<id>/`, stages a job archive, and runs the confined [`openai4s_compute_provider`](../../openai4s_compute_provider) helper with credentials on stdin. For `ssh:*`, it shells out to local `ssh`/`scp` against a user-configured alias. Harvested files land below the configured data directory, in `hpc/<job_id>/`.
 
 An optional durable resource-admission controller can be passed to the
-dispatcher. `submit_job` and native `compute_submit` then accept a
-`resource_request` with `cpu_cores`, `gpu_count`, `gpu_memory_gb`,
-`max_wall_time_ms`, `priority`, and `budget_group`. The compute row is claimed
-before admission, capacity is reserved before provider submission, and the
-provider receipt is bound before the job is reported as running. A capacity
-wait is a durable failed job (`resource_admission_waiting`) and never reaches
-the provider. Terminal jobs finish their started allocation; a definite
+dispatcher. `submit_job` then accepts a `resource_request` with `cpu_cores`,
+`gpu_count`, `gpu_memory_gb`, `max_wall_time_ms`, `priority`, and
+`budget_group`; the model-facing `compute_submit` tool does not offer it. The
+compute row is claimed before admission, capacity is reserved before provider
+submission, and the provider receipt is bound before the job is reported as
+running. A capacity wait (`resource_admission_waiting`) or a failed admission
+never reaches the provider and drops the staging row, so the same idempotency
+key can be retried. Terminal jobs finish their started allocation; a definite
 provider rejection releases an unstarted one. Unknown provider state keeps the
-allocation reserved for conservative restart reconciliation. The request is
+allocation reserved until the job resolves, and an allocation that never bound
+a receipt is then released, as restart reconciliation does. The request is
 opt-in, so existing compute calls remain unchanged without a controller.
 
 ## Files

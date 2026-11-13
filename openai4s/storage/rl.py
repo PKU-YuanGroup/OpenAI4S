@@ -274,11 +274,13 @@ class RLRepository:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
                 yield
-            except BaseException:
-                self._connection.execute("ROLLBACK")
-                raise
-            else:
+                # Inside the guard: a COMMIT that fails (database is locked)
+                # leaves the transaction active and must be rolled back too.
                 self._connection.execute("COMMIT")
+            except BaseException:
+                if self._connection.in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
 
     def append_episode(self, episode: Episode) -> None:
         data = episode.to_dict()
@@ -796,10 +798,11 @@ class RLRepository:
         )
 
     def get_snapshot(self, snapshot_id: str) -> DatasetSnapshot:
-        row = self._connection.execute(
-            "SELECT payload FROM rl_dataset_snapshots WHERE snapshot_id=?",
-            (snapshot_id,),
-        ).fetchone()
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload FROM rl_dataset_snapshots WHERE snapshot_id=?",
+                (snapshot_id,),
+            ).fetchone()
         if row is None:
             raise KeyError(snapshot_id)
         return _snapshot_from_row(row)
@@ -1007,18 +1010,22 @@ class RLRepository:
 
     def load_budget_ledger(self, budget_id: str) -> dict[str, Any] | None:
         """Load one budget snapshot without exposing SQLite rows."""
-        row = self._connection.execute(
-            "SELECT budget_id,revision,limits,modes,used FROM rl_budget_ledgers "
-            "WHERE budget_id=?",
-            (budget_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        allocations = self._connection.execute(
-            "SELECT allocation_id,estimated,reserved_at,provider_receipt,state,actual "
-            "FROM rl_budget_allocations WHERE budget_id=? ORDER BY allocation_id",
-            (budget_id,),
-        ).fetchall()
+        # Both SELECTs must observe the same snapshot, as in
+        # load_resource_admission: a writer replaces the header and every
+        # allocation row in one transaction on this shared connection.
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT budget_id,revision,limits,modes,used FROM rl_budget_ledgers "
+                "WHERE budget_id=?",
+                (budget_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            allocations = self._connection.execute(
+                "SELECT allocation_id,estimated,reserved_at,provider_receipt,state,actual "
+                "FROM rl_budget_allocations WHERE budget_id=? ORDER BY allocation_id",
+                (budget_id,),
+            ).fetchall()
         return {
             "budget_id": str(row["budget_id"]),
             "revision": int(row["revision"]),

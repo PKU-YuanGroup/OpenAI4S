@@ -330,8 +330,12 @@ def test_persistent_phase_spans_decisions_in_existing_trainer_episode(tmp_path):
         calls = [
             e for e in trajectory.execution_events if e.kind == "host_call.started"
         ]
-        assert [e.segment_id for e in calls][::2] == ["phase", "phase"]
-        assert calls[1].segment_id != "phase"
+        # A caller-chosen id is scoped to its episode; resume accepts the raw id.
+        assert [e.segment_id for e in calls][::2] == [
+            "trainer-ep:phase",
+            "trainer-ep:phase",
+        ]
+        assert calls[1].segment_id != "trainer-ep:phase"
         assert all(e.decision_id == "d2" for e in calls)
         assert all(s.status == "completed" for s in trajectory.segments)
     finally:
@@ -373,18 +377,19 @@ def test_real_kernel_phase_spans_cells_and_dataset_decisions(monkeypatch, tmp_pa
         ).run("analyze")
         assert result["stop_reason"] == "submitted"
         trajectory = store.rl.load_trajectory("real-phase-ep")
-        phase = next(s for s in trajectory.segments if s.segment_id == "science-phase")
+        scoped = "real-phase-ep:science-phase"
+        phase = next(s for s in trajectory.segments if s.segment_id == scoped)
         assert phase.status == "completed"
         dataset = RolloutDataset.from_trajectory(
             trajectory, recorder.create_snapshot("phase-snapshot")
         )
-        assert all("science-phase" in sample.segment_ids for sample in dataset.samples)
+        assert all(scoped in sample.segment_ids for sample in dataset.samples)
         calls = [
             e
             for e in trajectory.execution_events
             if e.kind == "host_call.started" and e.payload["method"] == "artifacts"
         ]
-        assert len(calls) == 1 and calls[0].segment_id == "science-phase"
+        assert len(calls) == 1 and calls[0].segment_id == scoped
     finally:
         store.close()
 

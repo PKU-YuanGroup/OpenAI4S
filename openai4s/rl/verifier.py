@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any, Iterable, Protocol
 
 from .models import RewardAnnotation, Trajectory
@@ -40,6 +41,10 @@ def apply_verifier(
     known_evidence = _evidence_ids(before)
     known_decisions = {item.decision_id for item in before.decisions}
     known_segments = {item.segment_id for item in before.segments}
+    annotations = tuple(
+        _scope_segment_refs(item, before.episode.episode_id, known_segments)
+        for item in annotations
+    )
     seen: set[str] = set()
     for annotation in annotations:
         if not isinstance(annotation, RewardAnnotation):
@@ -89,6 +94,36 @@ def apply_verifier(
     for annotation in annotations:
         recorder.add_reward(annotation)
     return annotations
+
+
+def _scope_segment_refs(
+    annotation: Any, episode_id: str, known_segments: set[str]
+) -> Any:
+    """Map a caller-chosen phase name to its stored, episode-scoped id.
+
+    ``begin_segment(..., segment_id="x")`` stores ``"<episode>:x"``. A verifier
+    that names the phase as ``"x"`` means this episode's phase, so the
+    reference is resolved here rather than rejected as unknown.
+    """
+
+    if not isinstance(annotation, RewardAnnotation):
+        return annotation
+    prefix = f"{episode_id}:"
+
+    def scoped(value: str) -> str:
+        return (
+            prefix + value
+            if value not in known_segments and prefix + value in known_segments
+            else value
+        )
+
+    segment_id = annotation.segment_id
+    refs = tuple(scoped(ref) for ref in annotation.evidence_refs)
+    if segment_id is not None and scoped(segment_id) != segment_id:
+        annotation = replace(annotation, segment_id=scoped(segment_id))
+    if refs != tuple(annotation.evidence_refs):
+        annotation = replace(annotation, evidence_refs=refs)
+    return annotation
 
 
 def _identity(name: str, value: str) -> str:

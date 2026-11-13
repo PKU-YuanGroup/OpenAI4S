@@ -37,8 +37,9 @@ result = job.result()   # one non-blocking poll — call it again from a later c
 ### Optional resource admission
 
 Callers that configure a durable resource-admission controller on the session
-may attach a provider-neutral request to either the SDK or native
-`compute_submit` call:
+may attach a provider-neutral request to the SDK call. The model-facing
+`compute_submit` tool does not offer it, because no production dispatcher
+wires a controller:
 
 ```python
 job = c.submit_job(
@@ -59,12 +60,15 @@ The request is optional and ordinary compute calls keep their existing
 behavior when no controller is configured. With a controller, the manager
 claims the durable compute row first, reserves capacity before calling the
 provider, and binds the provider receipt before reporting `running`. A request
-that is waiting for capacity becomes a durable failed job with
-`termination_reason=resource_admission_waiting`; the provider is not called.
-Definite provider rejection releases an unstarted reservation. Terminal
-result, cancellation, and confirmed close finish a started reservation.
-Provider outcomes that are indeterminate retain the reservation so a restart
-or later reconciliation cannot oversubscribe the declared capacity.
+that is waiting for capacity (`resource_admission_waiting`), or whose admission
+fails (`resource_admission_error`), is refused before the provider is called;
+its staging row is dropped, so a retry with the same idempotency key is not
+refused as a duplicate. Definite provider rejection releases an unstarted
+reservation. Terminal result, cancellation, and confirmed close finish a
+started reservation. Provider outcomes that are indeterminate retain the
+reservation until the job resolves, so a restart or later reconciliation
+cannot oversubscribe the declared capacity; a reservation that never bound a
+receipt is then released, as restart reconciliation does.
 
 `max_wall_time_ms` is recorded as part of the admission contract. The remote
 deadline is still enforced by the existing `timeout_seconds` job option; the

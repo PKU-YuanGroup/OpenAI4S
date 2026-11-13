@@ -47,8 +47,15 @@ class HostSegments:
         if not isinstance(persistent, bool):
             raise ValueError("persistent must be a bool")
         parent_id = spec.get("parent_segment_id")
+        if parent_id:
+            parent_id = self._resolve(str(parent_id))
         active = self.repository.active_phase(self.episode_id, self.owner_id)
-        segment_id = str(spec.get("segment_id") or "seg-" + uuid.uuid4().hex[:16])
+        requested = spec.get("segment_id")
+        segment_id = (
+            self._scoped(str(requested))
+            if requested
+            else "seg-" + uuid.uuid4().hex[:16]
+        )
         if (
             persistent
             and active is not None
@@ -73,6 +80,8 @@ class HostSegments:
             metadata=metadata,
         )
         existing = self.repository.get_segment(segment_id)
+        if existing is not None and existing.episode_id != self.episode_id:
+            raise ValueError("segment belongs to a different episode")
         if existing is not None:
             # Opening decision/time are observed facts, not caller retry identity.
             segment = replace(
@@ -98,10 +107,12 @@ class HostSegments:
         if segment.status != "open" or not info.get("persistent"):
             raise ValueError("only an open persistent phase can be resumed")
         active = self.repository.active_phase(self.episode_id, self.owner_id)
-        if active is not None and active.segment_id != segment_id:
+        if active is not None and active.segment_id != segment.segment_id:
             raise ValueError("another phase is active")
-        self.repository.set_active_phase(self.episode_id, self.owner_id, segment_id)
-        return {"segment_id": segment_id, "episode_id": self.episode_id}
+        self.repository.set_active_phase(
+            self.episode_id, self.owner_id, segment.segment_id
+        )
+        return {"segment_id": segment.segment_id, "episode_id": self.episode_id}
 
     def close(self, spec: Mapping[str, Any]) -> dict[str, Any]:
         segment = self._segment(str(spec.get("segment_id") or ""))
@@ -140,8 +151,27 @@ class HostSegments:
         _, event = self.repository.transition_segment(closed, event)
         return {"ok": True, "status": status, "sequence": event.sequence}
 
+    def _scoped(self, segment_id: str) -> str:
+        """Scope a caller-chosen id to this episode, as inferred ids are.
+
+        Segment ids are Store-global keys, so the same documented name in
+        another rollout sharing the Store must not collide with this one.
+        """
+        prefix = f"{self.episode_id}:"
+        return segment_id if segment_id.startswith(prefix) else prefix + segment_id
+
+    def _resolve(self, segment_id: str) -> str:
+        """Return the stored id for a caller's raw or episode-scoped id."""
+        found = self.repository.get_segment(segment_id)
+        if found is not None and found.episode_id == self.episode_id:
+            return segment_id
+        scoped = self._scoped(segment_id)
+        if self.repository.get_segment(scoped) is not None:
+            return scoped
+        return segment_id
+
     def _segment(self, segment_id: str) -> Segment:
-        segment = self.repository.get_segment(segment_id)
+        segment = self.repository.get_segment(self._resolve(segment_id))
         if segment is None:
             raise ValueError(f"unknown segment {segment_id!r}")
         if segment.episode_id != self.episode_id:

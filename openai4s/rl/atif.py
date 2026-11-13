@@ -33,6 +33,7 @@ _STOP_REASON_FOR_STATUS = {
     "budget_exhausted": {"budget_exhausted"},
     "execution_failure": {"execution_failure"},
     "verifier_failure": {"verifier_failure"},
+    "egress_boundary_unavailable": {"egress_boundary_unavailable"},
 }
 _POST_TERMINAL_PROJECTIONS = frozenset(
     {"artifact.version", "compute.job", "compute.job_event"}

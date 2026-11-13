@@ -40,6 +40,51 @@ from .rpc import DEFAULT_MAX_LINE_BYTES, PROTOCOL
 
 _END = object()
 _OVERSIZED = object()
+# How long a normal close waits for the worker to exit on stdin EOF, so
+# `serve` runs its own release/abandon cleanup before being terminated.
+_GRACEFUL_EXIT_SECONDS = 5.0
+
+
+def _optional_timeout(name: str, value: Any) -> float | None:
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, (int, float))
+    ):
+        raise TypeError(f"{name} must be a positive number or null")
+    if value is not None and value <= 0:
+        raise ValueError(f"{name} must be positive or null")
+    return None if value is None else float(value)
+
+
+async def _read_line(reader: Any, max_bytes: int) -> Any:
+    """Read one line bounded by ``max_bytes``, not by the stream's own limit.
+
+    ``StreamReader.readline`` fails at the reader's limit (64 KiB unless the
+    caller raised it) and drops its buffer, though an export or step response
+    may be larger and still within ``max_line_bytes``.
+    """
+    readuntil = getattr(reader, "readuntil", None)
+    if not callable(readuntil):
+        return await reader.readline()
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        try:
+            chunk = await readuntil(b"\n")
+        except asyncio.IncompleteReadError as exc:
+            chunks.append(exc.partial)  # EOF, as readline would return it
+            break
+        except asyncio.LimitOverrunError as exc:
+            # The data stays buffered: take it and keep reading the line.
+            chunk = await reader.readexactly(exc.consumed)
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > max_bytes:
+                break  # the caller reports the oversized line
+            continue
+        chunks.append(chunk)
+        break
+    return b"".join(chunks)
+
 
 _RESET_KEYS = frozenset(
     {
@@ -328,6 +373,7 @@ class RolloutClient:
         env: Mapping[str, str] | None = None,
         cwd: str | None = None,
         close_streams: bool = True,
+        step_timeout: float | None = None,
     ) -> None:
         if argv is not None and (
             isinstance(argv, (str, bytes))
@@ -352,9 +398,13 @@ class RolloutClient:
             raise ValueError("max_line_bytes must be positive")
 
         self.timeout = None if timeout is None else float(timeout)
+        # A step runs a scientific cell of arbitrary length, so the transport
+        # timeout does not bound it unless the caller asks for that.
+        self.step_timeout = _optional_timeout("step_timeout", step_timeout)
         self.max_line_bytes = max_line_bytes
         self.close_streams = close_streams
         self._lock = threading.RLock()
+        self._shutdown_lock = threading.Lock()
         self._closed = False
         self._poisoned = False
         self._next_id = 0
@@ -458,10 +508,11 @@ class RolloutClient:
         if self._closed or self._poisoned:
             raise RolloutClientClosed("rollout client is closed")
 
-    def _shutdown(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+    def _shutdown(self, *, graceful: bool = False) -> None:
+        with self._shutdown_lock:
+            if self._closed:
+                return
+            self._closed = True
         self._closing.set()
         process = self._process
         if process is not None or self.close_streams:
@@ -471,8 +522,16 @@ class RolloutClient:
                 pass
         if process is not None:
             try:
-                process.terminate()
-                process.wait(timeout=5)
+                if graceful:
+                    # stdin EOF lets `serve` release or abandon its episode
+                    # itself; only a worker that does not exit is terminated.
+                    try:
+                        process.wait(timeout=_GRACEFUL_EXIT_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        pass
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
                 try:
@@ -504,16 +563,25 @@ class RolloutClient:
             and self._stderr_thread is not threading.current_thread()
         ):
             self._stderr_thread.join(timeout=2)
+        # The reader stops publishing once closing is set; wake a request that
+        # close() abandoned so it fails as state-unknown instead of hanging.
+        try:
+            self._frames.put_nowait(_END)
+        except queue.Full:
+            pass
 
     def _poison(self) -> None:
         self._poisoned = True
         self._shutdown()
 
     def close(self) -> None:
-        """Terminate the worker (if owned) and release the transport once."""
+        """Terminate the worker (if owned) and release the transport once.
 
-        with self._lock:
-            self._shutdown()
+        Never waits for an in-flight request: closing is how a caller abandons
+        a hung one, which then fails as state-unknown.
+        """
+
+        self._shutdown(graceful=True)
 
     def __enter__(self) -> "RolloutClient":
         return self
@@ -538,15 +606,16 @@ class RolloutClient:
                     f"{method} request could not be sent: {exc}",
                     state_unknown=True,
                 ) from exc
+            timeout = self.step_timeout if method == "step" else self.timeout
             try:
-                if self.timeout is None:
+                if timeout is None:
                     item = self._frames.get()
                 else:
-                    item = self._frames.get(timeout=self.timeout)
+                    item = self._frames.get(timeout=timeout)
             except queue.Empty:
                 self._poison()
                 raise RolloutTimeoutError(
-                    f"worker did not reply to {method} within {self.timeout}s",
+                    f"worker did not reply to {method} within {timeout}s",
                     state_unknown=True,
                 ) from None
             if item is _END:
@@ -661,6 +730,7 @@ class AsyncRolloutClient:
         timeout: float | None = 30.0,
         max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
         close_streams: bool = True,
+        step_timeout: float | None = None,
     ) -> None:
         if not callable(getattr(reader, "readline", None)):
             raise TypeError("reader must provide readline()")
@@ -681,6 +751,8 @@ class AsyncRolloutClient:
         self._reader = reader
         self._writer = writer
         self.timeout = None if timeout is None else float(timeout)
+        # As in RolloutClient: a step's cell may legitimately run for long.
+        self.step_timeout = _optional_timeout("step_timeout", step_timeout)
         self.max_line_bytes = max_line_bytes
         self.close_streams = close_streams
         self._lock = asyncio.Lock()
@@ -731,16 +803,17 @@ class AsyncRolloutClient:
             encoded = line.encode("utf-8")
             if len(encoded) > self.max_line_bytes:
                 raise ValueError("RPC request exceeds max_line_bytes")
+            timeout = self.step_timeout if method == "step" else self.timeout
             try:
                 self._writer.write(encoded)
-                if self.timeout is None:
+                if timeout is None:
                     await self._writer.drain()
                 else:
-                    await asyncio.wait_for(self._writer.drain(), timeout=self.timeout)
+                    await asyncio.wait_for(self._writer.drain(), timeout=timeout)
             except asyncio.TimeoutError as exc:
                 await self._poison()
                 raise RolloutTimeoutError(
-                    f"worker did not accept {method} within {self.timeout}s",
+                    f"worker did not accept {method} within {timeout}s",
                     state_unknown=True,
                 ) from exc
             except (ConnectionError, OSError, RuntimeError) as exc:
@@ -750,16 +823,15 @@ class AsyncRolloutClient:
                     state_unknown=True,
                 ) from exc
             try:
-                if self.timeout is None:
-                    raw = await self._reader.readline()
+                line_read = _read_line(self._reader, self.max_line_bytes)
+                if timeout is None:
+                    raw = await line_read
                 else:
-                    raw = await asyncio.wait_for(
-                        self._reader.readline(), timeout=self.timeout
-                    )
+                    raw = await asyncio.wait_for(line_read, timeout=timeout)
             except asyncio.TimeoutError as exc:
                 await self._poison()
                 raise RolloutTimeoutError(
-                    f"worker did not reply to {method} within {self.timeout}s",
+                    f"worker did not reply to {method} within {timeout}s",
                     state_unknown=True,
                 ) from exc
             except (ValueError, asyncio.LimitOverrunError) as exc:

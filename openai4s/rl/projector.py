@@ -111,9 +111,23 @@ class DurableFactProjector:
                     if isinstance(value, str) and value.strip():
                         version_sources.setdefault(value, ("initial", None, None))
 
+        # A terminal episode's projection must not change after it finished:
+        # compute lifecycle facts recorded later stay out of its trajectory.
+        cutoff = (
+            max(
+                (
+                    event.created_at
+                    for event in base
+                    if event.kind == "episode.finished"
+                ),
+                default=None,
+            )
+            if episode.status != "running"
+            else None
+        )
         projected: list[ExecutionEvent] = []
         projected.extend(self._artifacts(episode, version_sources, known))
-        projected.extend(self._compute(episode, job_sources, known))
+        projected.extend(self._compute(episode, job_sources, known, cutoff))
         if not projected:
             return base
         next_sequence = max((event.sequence or 0 for event in base), default=0) + 1
@@ -175,20 +189,22 @@ class DurableFactProjector:
         episode: Episode,
         job_sources: Mapping[str, tuple[str | None, str | None, str | None]],
         known: set[str],
+        cutoff: int | None = None,
     ) -> list[ExecutionEvent]:
         ids = tuple(job_sources)
         if not ids:
             return []
         marks = ",".join("?" for _ in ids)
         rows = self._connection.execute(
-            "SELECT job_id,provider,status,receipt,input_versions,artifact_manifest,"
-            "created_at,updated_at,submitted_at,terminal_at,termination_reason,reason "
+            "SELECT job_id,provider,input_versions,created_at "
             f"FROM compute_jobs WHERE job_id IN ({marks})",
             ids,
         ).fetchall()
         result: list[ExecutionEvent] = []
         for row in rows:
             job_id = str(row["job_id"])
+            # Only columns fixed at job creation: status, receipt, manifest
+            # and timestamps keep changing, so they arrive as job events.
             event = self._event(
                 f"projected:compute:{job_id}",
                 episode.episode_id,
@@ -197,15 +213,7 @@ class DurableFactProjector:
                 {
                     "job_id": job_id,
                     "provider": row["provider"],
-                    "status": row["status"],
-                    "receipt": row["receipt"],
                     "input_versions": _json_column(row["input_versions"], []),
-                    "artifact_manifest": _json_column(row["artifact_manifest"], None),
-                    "updated_at": row["updated_at"],
-                    "submitted_at": row["submitted_at"],
-                    "terminal_at": row["terminal_at"],
-                    "termination_reason": row["termination_reason"],
-                    "reason": row["reason"],
                     "source": "durable_compute_projection",
                 },
                 known,
@@ -215,8 +223,8 @@ class DurableFactProjector:
                 result.append(event)
             event_rows = self._connection.execute(
                 "SELECT seq,kind,at,payload FROM compute_job_events "
-                "WHERE job_id=? ORDER BY seq",
-                (job_id,),
+                "WHERE job_id=? AND (? IS NULL OR at<=?) ORDER BY seq",
+                (job_id, cutoff, cutoff),
             ).fetchall()
             for event_row in event_rows:
                 event = self._event(

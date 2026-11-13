@@ -1569,6 +1569,7 @@ class DelegationRunner:
         # decision as a join key, while leaving Action Ledger ownership with
         # the child Agent itself.
         trajectory_recorder = None
+        trajectory_episode = None
         trajectory_parent_decision_id: str | None = None
         child_rl_context: dict[str, Any] | None = None
         parent_rl = spec.get("_rl_parent_context")
@@ -1579,7 +1580,6 @@ class DelegationRunner:
             )
             if parent_episode_id:
                 from openai4s.rl.models import Episode
-                from openai4s.rl.recorder import TrajectoryRecorder
 
                 child_episode_id = str(
                     child_frame_id or f"{parent_episode_id}:worker:{child.child_id}"
@@ -1599,9 +1599,9 @@ class DelegationRunner:
                         "parent_decision_id": trajectory_parent_decision_id,
                     },
                 )
-                trajectory_recorder = TrajectoryRecorder(
-                    episode, repository=getattr(self.store, "rl", None)
-                )
+                # The recorder's durable episode write happens inside the
+                # guard below, so a failed write becomes this child's failure.
+                trajectory_episode = episode
                 child_rl_context = {"episode_id": child_episode_id}
 
         # Recording is unconditional whenever the child has a durable frame;
@@ -1635,6 +1635,12 @@ class DelegationRunner:
         try:
             from openai4s.agent.loop import Agent
 
+            if trajectory_episode is not None:
+                from openai4s.rl.recorder import TrajectoryRecorder
+
+                trajectory_recorder = TrajectoryRecorder(
+                    trajectory_episode, repository=getattr(self.store, "rl", None)
+                )
             agent_kwargs: dict[str, Any] = dict(
                 cfg=child_cfg,
                 max_turns=max_turns,
@@ -1690,7 +1696,7 @@ class DelegationRunner:
             if child.attach_agent(agent):
                 if trajectory_recorder is not None:
                     try:
-                        trajectory_recorder.finish("cancelled")
+                        trajectory_recorder.terminate("cancelled", "cancelled")
                     except Exception:  # noqa: BLE001 - trajectory is observational
                         pass
                 return child.stopped_result()
@@ -1698,9 +1704,10 @@ class DelegationRunner:
         except BaseException as error:  # noqa: BLE001 - child failure is a result
             if trajectory_recorder is not None:
                 try:
-                    trajectory_recorder.finish(
-                        "cancelled" if child.stop_event.is_set() else "failed"
-                    )
+                    if child.stop_event.is_set():
+                        trajectory_recorder.terminate("cancelled", "cancelled")
+                    else:
+                        trajectory_recorder.terminate("failed", "error")
                 except Exception:  # noqa: BLE001 - trajectory is observational
                     pass
             if child.stop_event.is_set():
@@ -1742,11 +1749,10 @@ class DelegationRunner:
             and trajectory_recorder.episode.status == "running"
         ):
             try:
-                trajectory_recorder.finish(
-                    "completed"
-                    if result.get("stop_reason") == "submitted"
-                    else "failed"
-                )
+                if result.get("stop_reason") == "submitted":
+                    trajectory_recorder.terminate("completed", "submitted")
+                else:
+                    trajectory_recorder.terminate("failed", "error")
             except Exception:  # noqa: BLE001 - trajectory is observational
                 pass
         if child.stop_event.is_set() or result.get("stop_reason") == "cancelled":
@@ -2043,12 +2049,21 @@ class DelegationRunner:
         """Spawn after trusted-capture admission has become exclusive."""
 
         child_specs = [_normalize_item(item, spec) for item in items]
+        # The enclosing call's value is dispatcher-owned: _m_delegate strips a
+        # caller-supplied one before attaching the bound RL context. Dropping
+        # it too would leave an RL-bound root's children without a parent.
+        trusted_parent = spec.get("_rl_parent_context")
+        parent_context = (
+            trusted_parent
+            if isinstance(trusted_parent, Mapping) and trusted_parent
+            else self.rl_context
+        )
         for child_spec in child_specs:
             # A fan-out item is untrusted input too; never preserve a forged
-            # parent pointer when this runner has no explicit RL context.
+            # parent pointer it carries.
             child_spec.pop("_rl_parent_context", None)
-            if self.rl_context:
-                child_spec["_rl_parent_context"] = dict(self.rl_context)
+            if parent_context:
+                child_spec["_rl_parent_context"] = dict(parent_context)
         if self.parent_child_id is not None:
             with self._tree.lock:
                 parent = self._tree.children.get(self.parent_child_id)

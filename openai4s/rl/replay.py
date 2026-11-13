@@ -380,18 +380,20 @@ def _artifact_refs(
 
     def visit(value: Any, source_event_id: str | None = None) -> None:
         if isinstance(value, Mapping):
+            checksum = (
+                value.get("checksum")
+                if isinstance(value.get("checksum"), str)
+                else None
+            )
             for version_id in _version_values(value):
-                refs.setdefault(
-                    version_id,
-                    (
-                        (
-                            value.get("checksum")
-                            if isinstance(value.get("checksum"), str)
-                            else None
-                        ),
-                        source_event_id,
-                    ),
-                )
+                current = refs.get(version_id)
+                if current is None:
+                    refs[version_id] = (checksum, source_event_id)
+                elif current[0] is None and checksum is not None:
+                    # A later reference carrying a checksum (the projected
+                    # artifact.version) fills in the earlier bare reference,
+                    # or checksum drift is never compared.
+                    refs[version_id] = (checksum, current[1])
             for item in value.values():
                 visit(item, source_event_id)
         elif isinstance(value, (list, tuple)):
