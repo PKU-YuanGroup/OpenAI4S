@@ -557,13 +557,13 @@ def _data_dir(cfg: Any) -> Check:
             mode = probe.stat().st_mode
         except OSError:
             mode = 0
-        # ``os.access`` answers whether the current process (including root)
-        # could bypass mode bits. Doctor reports whether the configured
-        # directory is explicitly writable for a normal daemon identity, so a
-        # mode such as 0500 must still be diagnosed as unwritable in a root-run
-        # test/container.
+        # ``os.access`` is the answer for an ordinary user, ACL grants
+        # included. Only root bypasses mode bits, so a root-run doctor (a test
+        # or container) also requires a write bit for a mode such as 0500.
+        geteuid = getattr(os, "geteuid", None)
+        is_root = callable(geteuid) and geteuid() == 0
         has_write_bit = bool(mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
-        if not has_write_bit or not os.access(probe, os.W_OK | os.X_OK):
+        if (is_root and not has_write_bit) or not os.access(probe, os.W_OK | os.X_OK):
             return Check(
                 "data",
                 FAIL,

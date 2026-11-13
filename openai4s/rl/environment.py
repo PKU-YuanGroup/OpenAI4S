@@ -500,7 +500,19 @@ class RolloutEnvironmentAdapter:
             )
         if self._released:
             raise RuntimeError("rollout episode has already been released")
-        result = session.step(reply, observation=prepared)
+        try:
+            result = session.step(reply, observation=prepared)
+        except Exception:
+            if step_id is None and not session.finished:
+                # The decision is already recorded and its action may have
+                # run, so a non-durable retry could only conflict or replay.
+                # End the episode as failed, as RolloutSession.run does; a
+                # durable step keeps its claim-once recovery_required answer.
+                try:
+                    session.finish("failed")
+                except Exception:  # noqa: BLE001 - report the step's own error
+                    pass
+            raise
         response = _step_response(session, result)
         if session.finished:
             response["status"] = "terminal"

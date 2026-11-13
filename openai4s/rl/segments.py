@@ -151,6 +151,18 @@ class HostSegments:
         _, event = self.repository.transition_segment(closed, event)
         return {"ok": True, "status": status, "sequence": event.sequence}
 
+    def require_open(self, segment_id: str) -> Segment:
+        """Return an open segment of this episode that this owner may write.
+
+        Observations and outputs pass the same existence, episode and owner
+        checks as resume/close, so a caller cannot append to another owner's
+        phase by naming it.
+        """
+        segment = self._segment(segment_id)
+        if segment.status != "open":
+            raise ValueError(f"segment is already {segment.status}")
+        return segment
+
     def _scoped(self, segment_id: str) -> str:
         """Scope a caller-chosen id to this episode, as inferred ids are.
 

@@ -224,20 +224,21 @@ class _FrameUsageEventSink:
     Action Ledger held the real numbers.
     """
 
+    # RL hooks pass through only when the wrapped sink has them. A wrapper that
+    # always answered would make the engine stamp synthetic decision ids and
+    # project tools on every turn for sinks that record neither.
+    _FORWARDED_HOOKS = frozenset(
+        {"propose_with_tools", "decision_id", "segment_id", "owner_id"}
+    )
+
     def __init__(self, inner: Any, record: Callable[[Mapping[str, Any]], None]):
         self.inner = inner
         self.record = record
 
-    def propose_with_tools(
-        self,
-        turn: int,
-        messages: Sequence[Mapping[str, Any]],
-        tools: Sequence[Mapping[str, Any]],
-    ) -> Any:
-        propose = getattr(self.inner, "propose_with_tools", None)
-        if callable(propose):
-            return propose(turn, messages, tools)
-        return self.propose(turn, messages)
+    def __getattr__(self, name: str) -> Any:
+        if name in _FrameUsageEventSink._FORWARDED_HOOKS:
+            return getattr(self.inner, name)
+        raise AttributeError(name)
 
     def propose(self, turn: int, messages: Sequence[Mapping[str, Any]]) -> Any:
         """Keep optional trajectory proposal hooks visible through metering."""
@@ -246,22 +247,6 @@ class _FrameUsageEventSink:
         if callable(propose):
             return propose(turn, messages)
         return None
-
-    @property
-    def owner_id(self) -> str | None:
-        return getattr(self.inner, "owner_id", None)
-
-    def segment_id(self, turn: int) -> str | None:
-        provider = getattr(self.inner, "segment_id", None)
-        return provider(turn) if callable(provider) else None
-
-    def decision_id(self, turn: int) -> str:
-        """Preserve the sink's namespaced join key through this wrapper."""
-
-        decision_id = getattr(self.inner, "decision_id", None)
-        if callable(decision_id):
-            return str(decision_id(turn))
-        return f"decision-{turn}"
 
     def emit(self, event: Any) -> None:
         if isinstance(event, ReplyReceived) and event.reply.usage:

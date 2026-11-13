@@ -145,6 +145,8 @@ class RolloutCollector:
         self._unconfirmed: list[str] = []
         self._quarantined_pools: set[str] = set()
         self._seen_requests: set[str] = set()
+        # Ids this collector made up for tracking, not ones a caller chose.
+        self._generated_request_ids: set[str] = set()
         self._seen_episodes: set[str] = set()
 
     @property
@@ -298,7 +300,16 @@ class RolloutCollector:
         try:
             worker = await _call_factory(self._worker_factory, request)
             sampler = await _maybe_await(self._sampler_factory(request))
-            trajectory = await _invoke_worker(worker, request, sampler)
+            # A generated id only tracks the request here; a local worker
+            # gets it only if it is durable, or a non-durable worker would
+            # refuse every request ("request_id requires a receipt repository").
+            pass_request_id = (
+                request_id not in self._generated_request_ids
+                or getattr(worker, "repository", None) is not None
+            )
+            trajectory = await _invoke_worker(
+                worker, request, sampler, pass_request_id=pass_request_id
+            )
             if not isinstance(trajectory, Trajectory):
                 raise CollectorError("worker.run_async must return a Trajectory")
             result = CollectedRollout(
@@ -386,6 +397,7 @@ class RolloutCollector:
         request_id = item.get("request_id")
         if request_id is None:
             request_id = "rl-req-" + uuid.uuid4().hex
+            self._generated_request_ids.add(request_id)
         elif not isinstance(request_id, str) or not request_id.strip():
             raise CollectorError("request_id must be a non-empty string")
         if request_id in self._seen_requests:
@@ -493,7 +505,13 @@ async def _call_factory(factory: Any, request: Mapping[str, Any]) -> Any:
     return await _maybe_await(value)
 
 
-async def _invoke_worker(worker: Any, request: Mapping[str, Any], sampler: Any) -> Any:
+async def _invoke_worker(
+    worker: Any,
+    request: Mapping[str, Any],
+    sampler: Any,
+    *,
+    pass_request_id: bool = True,
+) -> Any:
     runner = getattr(worker, "run_async", None)
     if not callable(runner):
         raise CollectorError("worker must provide run_async")
@@ -513,7 +531,7 @@ async def _invoke_worker(worker: Any, request: Mapping[str, Any], sampler: Any) 
                 "max_turns",
                 "request_id",
             )
-            if key in request
+            if key in request and (key != "request_id" or pass_request_id)
         }
         call = (request["episode"], request["messages"], sampler)
         kwargs = options

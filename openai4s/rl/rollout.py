@@ -70,9 +70,14 @@ class RolloutSession:
         self.receipt: RunReceipt | None = None
         self._run_owner: str | None = None
         self._terminal_result: Trajectory | None = None
+        base_sink: Any = engine.event_sink
+        if delegate_sink is None and isinstance(base_sink, TrajectoryEventSink):
+            # A reused engine still carries the previous session's sink: wrap
+            # what that sink wrapped, never another episode's recorder.
+            base_sink = base_sink.delegate
         self.sink = TrajectoryEventSink(
             recorder,
-            delegate=delegate_sink if delegate_sink is not None else engine.event_sink,
+            delegate=delegate_sink if delegate_sink is not None else base_sink,
             # RolloutSession is also a durable adapter.  Prefixing its
             # generated observation/decision/event IDs prevents two episodes
             # in the same Store from colliding on ``obs-0`` or

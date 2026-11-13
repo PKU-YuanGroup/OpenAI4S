@@ -310,7 +310,9 @@ class TrajectoryEventSink:
             raise RuntimeError(
                 "ActionRouted arrived before trajectory decision proposal"
             )
-        extra = reply.extra
+        # A copy: mutating the caller's reply would change its durable step
+        # fingerprint, so an exact retry with the same object would conflict.
+        extra = dict(reply.extra)
         # Carry the durable RL join keys through the existing execution
         # context. The executor/Kernel manager forwards these keys to the Host
         # Dispatcher; Host RPCs remain execution events, not new decisions.

@@ -3230,11 +3230,11 @@ class ArtifactManager:
             status = os.fstat(descriptor)
             if not stat.S_ISREG(status.st_mode):
                 return None
-            # Do not let a root daemon turn mode 000 into a readable artifact.
-            # The configured worker identity is denied by the file mode even
-            # when the test/container process has the privilege to bypass it;
-            # preserve the metadata-only identity expected for an unreadable
-            # regular file.
+            # A root daemon can read a mode-000 file that the worker identity
+            # cannot. Keep the metadata-only identity an unreadable file gets
+            # elsewhere, so its fingerprint does not depend on who runs the
+            # daemon. This only decides the snapshot identity; it does not
+            # stop the bytes from being captured.
             if not status.st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH):
                 return ArtifactManager._metadata_fingerprint(path)
             digest = None

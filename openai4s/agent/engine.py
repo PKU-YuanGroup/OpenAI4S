@@ -218,13 +218,15 @@ class AgentEngine:
         )
         state.messages[:] = [dict(message) for message in prepared]
         decision_hook = getattr(self.event_sink, "propose", None)
-        prepared_tools = (
-            self.prepare_tools(state)
-            if tools is None
-            else tuple(_detach_tool_spec(tool) for tool in tools)
-        )
         detailed_decision_hook = getattr(self.event_sink, "propose_with_tools", None)
         if callable(detailed_decision_hook):
+            # Tools are projected only for a sink that records them; ordinary
+            # runs would otherwise pay the projection on every turn.
+            prepared_tools = (
+                self.prepare_tools(state)
+                if tools is None
+                else tuple(_detach_tool_spec(tool) for tool in tools)
+            )
             detailed_decision_hook(turn, prepared, prepared_tools)
         elif callable(decision_hook):
             decision_hook(turn, prepared)
