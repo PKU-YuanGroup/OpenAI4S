@@ -212,16 +212,15 @@ class RolloutDataset:
             item.decision_id: [] for item in decisions
         }
         known_segment_ids = {item.segment_id for item in trajectory.segments}
+        # Every segment-only reward belongs in the envelope, whether or not a
+        # decision touched the segment; otherwise it is in no sample and no
+        # envelope at all.
         segment_rewards = tuple(
             item
             for item in selected_rewards
             if item.decision_id is None
             and item.segment_id is not None
             and item.segment_id in known_segment_ids
-            and not any(
-                item.segment_id in decision_segments
-                for decision_segments in segments_by_decision.values()
-            )
         )
         for reward in selected_rewards:
             if reward.decision_id in rewards_by_decision:

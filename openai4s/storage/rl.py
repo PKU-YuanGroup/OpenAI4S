@@ -471,39 +471,33 @@ class RLRepository:
                 raise
 
     def update_episode_status(self, episode_id: str, status: str) -> None:
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
+        # The transaction guard rolls back any failure, a failed COMMIT
+        # included, so the shared connection is never left mid-transaction.
+        with self._transaction():
             row = self._connection.execute(
                 "SELECT status FROM rl_episodes WHERE episode_id=?", (episode_id,)
             ).fetchone()
             if row is None:
-                self._connection.execute("ROLLBACK")
                 raise KeyError(episode_id)
             if row["status"] != "running" and row["status"] != status:
-                self._connection.execute("ROLLBACK")
                 raise ValueError(f"episode {episode_id!r} is already terminal")
             self._connection.execute(
                 "UPDATE rl_episodes SET status=?,updated_at=? WHERE episode_id=?",
                 (status, self._clock_ms(), episode_id),
             )
-            self._connection.execute("COMMIT")
 
     def update_segment_status(self, segment_id: str, status: str) -> None:
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
+        with self._transaction():
             row = self._connection.execute(
                 "SELECT status,payload FROM rl_segments WHERE segment_id=?",
                 (segment_id,),
             ).fetchone()
             if row is None:
-                self._connection.execute("ROLLBACK")
                 raise KeyError(segment_id)
             if row["status"] != "open" and row["status"] != status:
-                self._connection.execute("ROLLBACK")
                 raise ValueError(f"segment {segment_id!r} is already terminal")
             payload = json.loads(row["payload"])
             if not isinstance(payload, Mapping):
-                self._connection.execute("ROLLBACK")
                 raise ValueError(f"segment {segment_id!r} has invalid payload")
             # ``status`` is an indexed lifecycle projection, but the payload is
             # what durable trajectory reload decodes. Keep both projections in
@@ -515,7 +509,6 @@ class RLRepository:
                 "UPDATE rl_segments SET status=?,payload=? WHERE segment_id=?",
                 (status, _payload(updated_payload), segment_id),
             )
-            self._connection.execute("COMMIT")
 
     def _append(
         self, table: str, key: str, value: Any, columns: Mapping[str, Any]

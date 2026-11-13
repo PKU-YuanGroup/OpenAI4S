@@ -155,7 +155,10 @@ def test_dataset_projects_explicit_reward_joins_without_attributing_episode_rewa
     assert [item["annotation_id"] for item in dataset.episode_rewards] == [
         "reward-episode-v1"
     ]
+    # A segment reward is kept once, in the envelope, whether or not a
+    # decision touched its segment; it is never copied onto samples.
     assert [item["annotation_id"] for item in dataset.segment_rewards] == [
+        "reward-segment-v1",
         "reward-unbound-segment-v1",
     ]
     assert [item["cost_id"] for item in dataset.episode_costs] == ["cost-episode"]
