@@ -163,13 +163,12 @@ daemon 环境中移除。导入 `openai4s` 会调用可选参考宿主的幂等 
 `openai4s lab up`（或面板里的 **启动实验室**，或第一次 `openai4s lab add`）会启动端点，
 并在 `<数据目录>/mhs-lab/` 下写入：`mhs.json`（原生工具的设置；当你没有自己的
 `~/.openai4s/mhs.json` 时自动选用）、`mhs-connectors.json`（连接器行的 `--config`）、
-`devices.json`（已安装的设备）、`lab.json` 和 `LAB-CARD.md`（确切的工具名、参数和限值；
-operator reference). The project stores fixed discovery guidance; live driver metadata
-is read through screened tool results. Starting or installing the lab adds no
-global allow rules and removes legacy preview grants. Commands follow normal
-host permissions. Children do not inherit provider keys. `openai4s lab reset`
-clears lab state; `openai4s lab down` stops endpoints. After reboot, an operator
-can restore a previously running lab; a team member's status poll cannot restart it.
+`devices.json`（已安装的设备）、`lab.json` 和 `LAB-CARD.md`（确切的工具名、参数和限值，
+供操作员参考）。项目上下文只保存固定的发现指引；实时驱动元数据通过经过筛查的工具结果读取。
+安装或启动实验室不会添加全局放行规则，启动时还会移除旧预览版生成的授权；命令遵循常规的
+宿主权限策略。子进程拿到运行时路径与实验室目录，不继承供应商 Key。`openai4s lab reset`
+会清除实验室的证据、锁存与 LIMS；`openai4s lab down` 停止端点。重启后，操作员打开面板即可
+恢复之前在运行的实验室；团队成员的状态轮询不能重启它。
 
 
 实验室面板读取每个端点持久化的证据链（`--state-dir`），因此所有接入路径的回执都出现在

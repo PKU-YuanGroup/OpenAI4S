@@ -75,7 +75,8 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 ## 📣 更新
 
 - **`2026-11-12`** 🤖 **Agentic RL runtime** —— OpenAI4S 现在也可以作为强化学习的环境：外部 Trainer 负责采样策略，Agent 用真实的工具、权限与内核执行，新增的 `openai4s/rl` 包把每次 rollout 记录成版本化的 Science Trajectory，并导出确定性的 JSON/JSONL 训练数据，以及 Harbor 使用的 ATIF-v1.8 交换格式。Reward、Cost、准入与预算保持为独立的追加式记录；中断的 rollout 会 fail closed，而不是被重放。→ [RL runtime](openai4s/rl/README_zh.md)
-- **`2026-11-08`** 🔬 **`v1.0.0` 预发布 —— OpenMHS 实验室** —— 一次大版本更新：OpenAI4S 以 git 子模块的形式内置 [OpenMHS](https://mhs.openai4s.org)（开源的 Model Hardware Standard）。Notebook 旁新增 **实验室** 标签页：模拟仪器在端点强制的限值、急停与哈希链回执下运行；[OpenMHS 市场](https://mhs.openai4s.org/market/) 的 **746 台设备** 一键（或一条命令 `openai4s lab add <id>`）即可安装，可选原生 MHS 工具或 MCP 连接器接入。→ [OpenMHS 指南](docs/openmhs_zh.md)
+- **`2026-11`** 🔭 **`main` —— `v1.0.0` 之后** —— 新增可选的匿名 **Parallel Search**，作为免密钥的备用联网搜索引擎（默认关闭；`openai4s init --search parallel`）；**首次设置**新增**接入点模型发现**：「从端点获取模型」会列出 Ark/OpenAI 兼容、Responses、Anthropic、Gemini 或 Ollama 接入点实际提供的模型 id，不再靠猜默认值。→ [配置](docs/configuration.md)
+- **`2026-11-09`** 🔬 **[`v1.0.0`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0) —— OpenMHS 实验室** —— 一次大版本更新：OpenAI4S 以 git 子模块的形式内置 [OpenMHS](https://mhs.openai4s.org)（开源的 Model Hardware Standard）。Notebook 旁新增 **实验室** 标签页：模拟仪器在端点强制的限值、急停与哈希链回执下运行；[OpenMHS 市场](https://mhs.openai4s.org/market/) 的 **746 台设备** 一键（或一条命令 `openai4s lab add <id>`）即可安装，可选原生 MHS 工具或 MCP 连接器接入。本版还新增 **Ollama** 模型与网页工具、可选的 **You.com** 搜索、分子动力学 Skill（共 **612 个 Skill**），以及有读取上限的只读预览。Apple Silicon **DMG** 以 ad-hoc 签名镜像的形式回归，与 Linux、Windows/WSL2、PyPI 和 GHCR 渠道并列。数据库 schema 从 35 升到 36，首次启动前请阅读 **[升级到 1.0.0](docs/upgrading_zh.md)**。→ [OpenMHS 指南](docs/openmhs_zh.md)
 - **`2026-10-18`** 📁 **[`v0.3.1`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1) —— 本地项目文件夹与可携带的历史记录** —— 绑定源文件夹、浏览已保存的会话历史、导入带校验的科学数据集，并使用 **611 个内置 Skill**。Linux 与 Windows/WSL2 安装包通过 GitHub 发布，Python 包通过 PyPI 发布，公开容器镜像通过 GHCR 发布。macOS 签名与公证暂缓，当前请使用 PyPI。数据库 schema 从 32 升到 35，首次启动前请阅读 **[升级到 0.3.1](docs/upgrading_zh.md)**。
 - **`2026-09`** 🧭 **`v0.3.0` —— 新工作台，以及第一个 Windows 安装包** —— Preact/TypeScript 工作台取代 `app.js` 单体成为默认 UI，本次 release 也在 Linux tarball 之外首次发布 **Windows/WSL2 zip**。每个本地守护进程现在都要求访问令牌：`OPENAI4S_REQUIRE_TOKEN=0` 这个 loopback 豁免已被移除。交互式 HTML 报告运行在独立的沙箱源上；Notebook cell 保留自己产出的精确 Artifact 版本；长上下文压缩真正落地，并能在重启后恢复；委派的子代理继承父会话的环境，并留下持久、可导出的 cell 记录；Auto Mode 以原子方式准入预算，并会停下没有进展的运行。单细胞 RNA 分析 Skill 让总数达到 604。Apple Silicon 的 **macOS 镜像**是 ad-hoc 签名的预览版，未经公证。数据库 schema 从 27 升到 32，首次启动前请先阅读 **[从 0.2.x 升级](docs/upgrading_zh.md)**。
 - **`2026-08-24`** 🚀 **`v0.2.0` —— 多平台发布** —— 一个 release，两个桌面安装包：Apple Silicon **`.dmg`** 与内嵌同一套 Python 与科学栈的可移动 **Linux `x86_64` tarball**（Windows/WSL2 zip 已构建、正在稳定化，将随后续版本发布）。底层新增：带 Guardian 审查边界的 **Auto Mode**、诚实的**完成证据对账**（崩溃的 cell 不再可能渲染成干净的成功）、**MCP Streamable HTTP** 传输（含火山引擎 DataPro 连接器与豆包联网搜索）、**Anthropic Messages SSE 流式**、锁定的 **561 个 bioSkills 配方集合**（共 603 个 Skill，可用 `npx` 装到任何地方）、工作台的轨迹账本视图、Docker/Kubernetes 部署、`openai4s --version`，以及让运行中的 R cell 在每个平台都能可靠中断的信号修复系列。
@@ -91,13 +92,14 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 - **📒 Ledger-first 运行时** —— action group/event 和终止事实以追加方式记录；执行尝试、generation 生命周期、用量与 completion record 可持久和重建。
 - **🤖 Agentic RL runtime** —— 外部 Trainer 可以把 OpenAI4S 当作 RL 环境：它负责采样策略，Agent 用真实工具与内核执行，`openai4s/rl` 把过程记录成只追加的 Science Trajectory。导出为确定性 JSON/JSONL/ATIF 并带字节哈希；reward 与 cost 是独立的版本化记录，重新打分不会改写执行历史，中断的 rollout 会被如实报告而不是重放。
 - **🐍 纯标准库核心** —— 引擎**和** Web 服务器都是纯标准库(`http.server` + 手写 WebSocket，无框架、无依赖)。LLM 客户端仅用 `urllib` 直接对接 OpenAI / Anthropic / Gemini。
-- **🔌 一行切换多供应商** —— `ark`(doubao · glm · kimi · deepseek · minimax)加官方 `chatgpt · claude · gemini`,都由一个 `host.llm` 统一封装;在 UI 里即可切换。
+- **🔌 一行切换多供应商** —— `ark`（doubao · glm · kimi · deepseek · minimax）、官方 `chatgpt` · `openai_responses` · `claude` · `gemini`，以及 `ollama`（云端或本地），都由一个 `host.llm` 统一封装；在 UI 里即可切换。
+- **🔬 OpenMHS 模拟实验室** —— 实验室标签页可安装 OpenMHS 市场中的 746 台模拟设备，经原生 MHS 工具或 MCP 连接器接入，并受端点强制的限值、急停与哈希链回执约束。安装、启停与急停始终由人操作。→ [OpenMHS 指南](docs/openmhs_zh.md)
 - **🖥️ 科研工作台** —— 实时流式事件、版本化 Artifact、溯源、Action Timeline，以及**默认只读的 Notebook**。只有显式开启开发标志后，才能对共享 Python/R 内核输入多行代码。
 - **🔐 分层本地执行防护** —— 严格子进程环境 allowlist、持久审批、与 generation 绑定的一次性 `host.bash` capability，以及 macOS Seatbelt/Linux bubblewrap 沙箱适配器；降级与 fail-closed 状态会显式呈现。
 - **🔬 612 个内置 Skill** —— 51 份由 OpenAI4S 筛选维护的 GPU/模型科学、科研工作流与平台操作配方，加上固定版本、MIT 许可的 GPTomics/bioSkills 全部 561 份配方。Skill 是**代码配方**,不是 JSON schema；大型第三方集合按需搜索，在常驻 prompt 中只占一行。用户自撰的 Skill 只落在数据目录里，无法顶替内置 Skill 的信任等级。
 - **☁️ BYOC 远程计算** —— 在 provider 已配置且可达时，可通过 `ssh:<alias>` 或内置 **NVIDIA NIM** 集成投送 GPU 作业。通用远程计算仍属 Prototype；`host.fold` 遵守严格的不伪造策略。
 - **🔗 只读会话共享** —— 把一个会话发布成快照，拿到链接的人可以查看并导入自己的本地实例，全程经由**你自己运行**的 relay。守护进程从不监听公网端口，只向外拨号。记忆、权限状态与 Key 一律不外流，残留密钥会让发布 fail closed。→ [Web 共享](docs/webshare.md)
-- **🔎 带来源的科学检索** —— 七个规范化的公共数据库连接器（UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex）。检索到的记录自带来源与时间，但不带取回它的 API Key。
+- **🔎 带来源的科学检索** —— 十个规范化的公共数据库连接器（Zenodo · UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex · STRING · BindingDB），另有三个由功能开关管控（ClinVar · PubMed · ClinicalTrials.gov）。检索到的记录自带来源与时间，但不带取回它的 API Key。
 - **🧰 不止能跑，还能运维** —— 带版本的 `/api/v1`（keyset 分页、统一错误信封、correlation ID、可续传的 WebSocket 游标）、启动即要求本地凭据、脱敏的 `doctor` / `diagnostics` 支持包，以及默认关闭、一撤销就连同身份一起销毁的遥测。
 
 ---
@@ -110,7 +112,8 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 |---|---|
 | **控制与编排** | 基于类的原生 `Tool` · 追加式 Action Ledger · 带持久状态机的 plan/review · 会归档原始切片的上下文压缩 · 可中途叫停的并发子代理委派（fanout 48、depth 4）· 子代理无法自行放宽的 Specialist 白名单 · MCP 连接器 · 跨会话记忆 |
 | **科学执行** | 持久的 Python **与** R 内核 · cell 执行中途的同步 `host` RPC · 对象级数据血缘 · 版本化 Artifact · 按内核 *generation* 记录的环境溯源（绝不借用守护进程的）· 后台执行 · 612 个 Skill（51 个精选维护 + 561 个固定版本 bioSkills）· 带 ABA 安全看门狗恢复的 FIFO 执行协调器 |
-| **数据与检索** | 七个规范化公共数据库连接器（UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex），记录自带来源与时间 · 覆盖其中三个的每日金丝雀 · 以 Agent Plan Key 授权的**豆包搜索 Custom 版**作为联网搜索主选 · Tavily 与免密钥搜索作为备用 · 托管的 DataPro 专业数据集检索 |
+| **数据与检索** | 十个规范化公共数据库连接器（Zenodo · UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex · STRING · BindingDB），外加三个由开关管控的数据源（ClinVar · PubMed · ClinicalTrials.gov），记录自带来源与时间 · 覆盖其中三个的每日金丝雀 · 以 Agent Plan Key 授权的**豆包搜索 Custom 版**作为联网搜索主选 · 可调整顺序的备用引擎：Tavily、You.com、内置免密钥引擎，以及需手动开启的匿名 Parallel · 使用独立 Key 的 Ollama 联网搜索与抓取 · 托管的 DataPro 专业数据集检索 |
+| **实验室** | 自动发现的 OpenMHS 子模块 · 按 MHS/MCP 分组、带实时状态、急停锁存与回执图表的实验室标签页 · 746 台模拟设备的设备市场 · `openai4s lab`（`setup`、`add`、`remove`、`search`、`show`、`list`、`status`、`up`、`down`、`reset`）· 自动维护的 **OpenMHS Lab** 项目 |
 | **工作台** | 实时流式 · Action Timeline · 默认只读的 Notebook · 分支 fork/激活/revert · 带明确 Partial/Failed 状态的验证式恢复 · 锁定到所指版本的 `@file` 引用 · 2D 化学/基因组/序列/MSA/LaTeX 渲染器 · Markdown 与 `.ipynb` 导出 |
 | **Agentic RL** | 外部 Trainer 驱动真实的 Agent 循环 · 只追加的 Science Trajectory 记录 · 确定性 JSON/JSONL/ATIF（Harbor ATIF-v1.8）导出并带字节哈希 · 逐决策训练样本（含 prompt token ID 与 loss mask）· verifier、cost、准入与预算账本与执行事实分离 |
 | **共享与可移植** | 经由你自己运行的 relay 的只读会话共享 · 隔离的可移植 Session 包 · 可选的、接到同一批内核上的 Jupyter KernelSpec 桥 |
@@ -146,20 +149,21 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## ⚡ 快速开始
 
-**当前版本：[0.3.1](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1)。** 请按下表选择安装渠道。已有 0.3.0 或更早版本数据时，请先停止守护进程并备份整个数据目录，再安装；详见[升级指南](docs/upgrading_zh.md)。
+**当前版本：[1.0.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0)。** 请按下表选择安装渠道。已有 0.3.1 或更早版本数据时，请先停止守护进程并备份整个数据目录，再安装：1.0.0 会把数据库 schema 从 35 升到 36，且不支持退回。详见[升级指南](docs/upgrading_zh.md)。
 
-| 渠道 | 0.3.1 下载 |
+| 渠道 | 1.0.0 下载 |
 | --- | --- |
-| Linux x86_64 | [独立 tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-linux-x86_64.tar.gz) |
-| Windows x86_64，需 WSL2 | [完整 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-windows-x86_64.zip) |
-| Python，包括 macOS | [PyPI：openai4s 0.3.1](https://pypi.org/project/openai4s/0.3.1/) |
-| 容器（linux/amd64） | [GHCR：openai4s](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)，标签 `0.3.1` |
-| 下载验证 | [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS) · [构建与验证资料](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/openai4s-0.3.1-evidence.zip) |
+| macOS Apple Silicon | [DMG](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg)（[SHA-256](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg.sha256)），ad-hoc 签名，未经公证 |
+| Linux x86_64 | [独立 tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-linux-x86_64.tar.gz) |
+| Windows x86_64，需 WSL2 | [完整 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip) |
+| Python，包括 Intel Mac | [PyPI：openai4s 1.0.0](https://pypi.org/project/openai4s/1.0.0/) |
+| 容器（linux/amd64） | [GHCR：openai4s](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)，标签 `1.0.0` |
+| 下载验证 | [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/SHA256SUMS) · [构建与验证资料](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/openai4s-1.0.0-evidence.zip) · [macOS 验证记录](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64-validation.json) |
 
-从已发布的源码运行：
+从已发布的源码运行（`--recursive` 会一并拉取 OpenMHS 实验室子模块）：
 
 ```bash
-git clone --branch v0.3.1 --depth 1 https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
+git clone --recursive --branch v1.0.0 https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 ./setup.sh     # 一次性:用 uv 创建环境
 ./start.sh     # 启动 Web UI(http://127.0.0.1:8760/)
 ```
@@ -169,13 +173,21 @@ git clone --branch v0.3.1 --depth 1 https://github.com/PKU-YuanGroup/OpenAI4S &&
 ### macOS
 
 > [!NOTE]
-> **0.3.1 暂不提供 macOS DMG，Developer ID 签名与公证暂缓。** Apple Silicon 与 Intel 请使用 [PyPI 0.3.1](https://pypi.org/project/openai4s/0.3.1/)，或上面固定到标签的源码。旧预览镜像安装的是旧版本，历史说明保留在[上手指南](docs/startup-guide.md#zh)中。
+> **1.0.0 提供 ad-hoc 签名的 Apple Silicon DMG。** 它没有 Developer ID 签名，也未经 Apple 公证，所以首次启动会被 macOS 拦下，需要手动放行。Intel Mac，以及更想用虚拟环境的用户，请改用 [PyPI 1.0.0](https://pypi.org/project/openai4s/1.0.0/)。
 
-请从 PyPI 安装到一个单独的虚拟环境中。Apple Silicon 与 Intel 都适用，需要 Python 3.10 或更新版本：
+**Apple Silicon 应用。** 把 [OpenAI4S-1.0.0-macos-arm64.dmg](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg) 和它的 [SHA-256 文件](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg.sha256)下载到同一目录，然后校验：
+
+```bash
+shasum -a 256 -c OpenAI4S-1.0.0-macos-arm64.dmg.sha256   # 必须输出：OpenAI4S-1.0.0-macos-arm64.dmg: OK
+```
+
+打开 DMG，把 **OpenAI4S** 拖进「应用程序」，推出磁盘镜像后启动应用。如果首次启动被拦截，到「**系统设置 → 隐私与安全性**」点 **仍要打开**。应用内嵌 Python 3.13 与默认科学栈，会启动本地守护进程并在浏览器里打开工作台。
+
+**PyPI（Apple Silicon 与 Intel）。** 安装到一个单独的虚拟环境中，需要 Python 3.10 或更新版本：
 
 ```bash
 python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
-python -m pip install --upgrade "openai4s[science]==0.3.1"   # 需要 RDKit 时用 "openai4s[science,chemistry]==0.3.1"
+python -m pip install --upgrade "openai4s[science]==1.0.0"   # 需要 RDKit 时用 "openai4s[science,chemistry]==1.0.0"
 openai4s serve                    # 启动守护进程，并用访问令牌打开工作台
 ```
 
@@ -183,19 +195,19 @@ openai4s serve                    # 启动守护进程，并用访问令牌打�
 
 **首次运行 —— 先配模型，再配搜索。** 启动不带任何 Key，所以打开工作台之后：
 
-1. **模型 API** —— 打开 **设置 ⚙ → 模型**，选协议（**ark 兼容协议** 对应豆包/GLM/Kimi/DeepSeek/MiniMax，或 **OpenAI** / **Anthropic 兼容协议**），粘贴 **API Key**，点 **新增**，再点 **设为当前**。最省钱：用火山方舟 ¥9.9/月 套餐的 `ark` 协议。
-2. **搜索 API** *（可选、推荐）* —— 打开 **设置 ⚙ → 网络**，保持 **允许联网** 打开，把火山方舟 **Agent Plan Key** 粘进主选的**豆包搜索 Custom 版**卡片 → **保存凭证**。当前模型是火山方舟 **Agent Plan** 时可以跳过这一步：OpenAI4S 会把它的 Key 自动设为豆包搜索和 DataPro 专业数据库的默认凭证，之后换用别的模型也无需重新设置。Tavily 与免密钥引擎仍作为备用；豆包专用健康检查不会把备用结果冒充豆包成功。
+1. **模型 API** —— **首次设置**向导会一步步引导；之后也可以在 **设置 ⚙ → 模型** 里修改。选协议（**ark 兼容协议** 对应豆包/GLM/Kimi/DeepSeek/MiniMax，或 **OpenAI 兼容协议**、**OpenAI Responses 协议**、**Anthropic 兼容协议**、**Gemini 兼容协议**，以及对应云端或本地模型的 **Ollama**），粘贴 **API Key**，保存并设为当前配置。在向导里点「从端点获取模型」，会列出你的接入点实际提供的模型 id。最省钱：用火山方舟 ¥9.9/月 套餐的 `ark` 协议。
+2. **搜索 API** *（可选、推荐）* —— 打开 **设置 ⚙ → 网络**，保持 **允许联网** 打开，把火山方舟 **Agent Plan Key** 粘进主选的**豆包搜索 Custom 版**卡片 → **保存凭证**。当前模型是火山方舟 **Agent Plan** 时可以跳过这一步：OpenAI4S 会把它的 Key 自动设为豆包搜索和 DataPro 专业数据库的默认凭证，之后换用别的模型也无需重新设置。Tavily、You.com 与内置免密钥引擎仍是可调整顺序的备用引擎，匿名 Parallel 可以手动开启；豆包专用健康检查不会把备用结果冒充豆包成功。
 
-0.3.1 完整流程（安装 → 模型 → 搜索 → R 内核）见：**[上手指南](docs/startup-guide.md#zh)**。
+1.0.0 完整流程（安装 → 模型 → 搜索 → R 内核）见：**[上手指南](docs/startup-guide.md#zh)**。
 
 ### Linux 应用（无需任何工具链）
 
-将 [0.3.1 Linux tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-linux-x86_64.tar.gz) 与 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS) 下载到同一目录，校验后解包到任意位置运行。它内嵌自带的 Python 和预装科学栈，形态是一个可任意移动的目录：
+将 [1.0.0 Linux tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-linux-x86_64.tar.gz) 与 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/SHA256SUMS) 下载到同一目录，校验后解包到任意位置运行。它内嵌自带的 Python 和预装科学栈，形态是一个可任意移动的目录：
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS   # Linux tarball 必须显示 OK
-tar -xzf OpenAI4S-0.3.1-linux-x86_64.tar.gz
-cd OpenAI4S-0.3.1-linux-x86_64
+tar -xzf OpenAI4S-1.0.0-linux-x86_64.tar.gz
+cd OpenAI4S-1.0.0-linux-x86_64
 ./OpenAI4S          # 启动守护进程并打开 http://127.0.0.1:8760/
 ./install.sh        # 可选：把 `openai4s` 挂到 PATH，并注册应用菜单项
 ```
@@ -204,9 +216,9 @@ cd OpenAI4S-0.3.1-linux-x86_64
 
 ### Windows（经由 WSL2）
 
-下载[完整的 0.3.1 Windows ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-windows-x86_64.zip) 与 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS)，按 [Windows/WSL2 指南](docs/windows-wsl.md#中文)校验 ZIP 后，完整解压并双击 `OpenAI4S.cmd`，无需合并分卷。首次运行会检查 WSL2 与可工作的 bubblewrap 0.8.0+ 沙箱，校验并安装随包 Linux payload，创建 `~/.local/bin/openai4s`，在 WSL 中启动守护进程，再用 Windows 浏览器打开带本地登录引导的安全 URL。应用本体不下载、不 `pip`、不装工具链；支持基线是 Ubuntu 24.04，启动器可配置国内 PyPI/Conda 镜像以及 WSL 可访问的代理。
+下载[完整的 1.0.0 Windows ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip) 与 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/SHA256SUMS)，按 [Windows/WSL2 指南](docs/windows-wsl.md#中文)校验 ZIP 后，完整解压并双击 `OpenAI4S.cmd`，无需合并分卷。首次运行会检查 WSL2 与可工作的 bubblewrap 0.8.0+ 沙箱，校验并安装随包 Linux payload，创建 `~/.local/bin/openai4s`，在 WSL 中启动守护进程，再用 Windows 浏览器打开带本地登录引导的安全 URL。应用本体不下载、不 `pip`、不装工具链；支持基线是 Ubuntu 24.04，启动器可配置国内 PyPI/Conda 镜像以及 WSL 可访问的代理。
 
-**0.3.1 验证范围：**归档结构、启动器检查和内嵌 Linux payload 已通过验证；此版本未进行完整的 Windows/WSL2 运行验收。
+**1.0.0 验证范围：**公开的 x86_64 ZIP 在发布后于 Windows Server 2025 + Ubuntu 24.04 WSL2 上通过了运行验收：随包启动器、在 Windows Chromium 浏览器中通过认证打开工作台、九项科学与运行时检查（包括绘图、不可变 Artifact 与重启后回读）、status/stop，以及强制启用的 bubblewrap 隔离。这次验收没有使用模型凭据，启动器也仍未签名。Windows on ARM 与完整的 Windows 10/11 主机矩阵未经测试。
 
 `v0.3.0` 是第一个发布这个安装包的版本，它的验收证据只覆盖 x86_64 上的 WSL2 和测试所用的 Ubuntu 24.04 发行版。[WSL2 一致性审计](docs/windows-wsl-parity-audit_zh.md)的最后一节（「修复验收记录 — 2026-09-07」）列出以下尚未验证的范围：
 
@@ -229,37 +241,37 @@ openai4s lab add labs/tiagocoutinho__julabo   # 任意设备 id，见 https://mh
 openai4s serve                               # 实验室 → 设备市场 → 安装
 ```
 
-`third_party/OpenMHS` 子模块会被自动发现（无需 `PYTHONPATH`）。设备运行在模拟器或 fake 后端上；
+`third_party/OpenMHS` 子模块会被自动发现（无需 `PYTHONPATH`）。PyPI 与桌面安装包不内置 OpenMHS：需在装有 Git、能访问 GitHub 的环境里运行一次 `openai4s lab setup`，把固定版本下载到 `~/.openai4s/openmhs`。设备运行在模拟器或 fake 后端上；
 驱动真实硬件仍需操作员明确决定。详见 [OpenMHS 指南](docs/openmhs_zh.md)。
 
 ### 🐳 Docker 与 Kubernetes
 
-[公开 GHCR 包](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)无需登录即可拉取。安装本版请固定 `0.3.1`；`latest` 会随后续版本移动。镜像为 **linux/amd64**，ARM 主机需要 amd64 模拟支持。
+[公开 GHCR 包](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)无需登录即可拉取。安装本版请固定 `1.0.0`；`latest` 会随后续版本移动。镜像为 **linux/amd64**，ARM 主机需要 amd64 模拟支持。
 
 ```bash
-docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:0.3.1
+docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:1.0.0
 docker run -d --name openai4s --platform linux/amd64 \
   -p 127.0.0.1:8760:8760 \
   -v openai4s-data:/data \
   -e OPENAI4S_SECRET_LLM_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
-  ghcr.io/pku-yuangroup/openai4s:0.3.1
+  ghcr.io/pku-yuangroup/openai4s:1.0.0
 docker exec openai4s openai4s url   # 带令牌、可直接打开的 URL
 ```
 
-镜像包含 Debian-slim 上的 CPython、wheel 与 `science` extra，以非特权用户运行，只有一个挂在 `/data` 的卷。命令把当前 shell 的 `OPENAI4S_LLM_API_KEY` 传给容器的 `OPENAI4S_SECRET_LLM_LLM_API_KEY`；供应商和模型配置见[容器指南](docs/docker.md#zh)。凭据从环境读取。需要从检出的源码构建时，使用 `docker compose up -d --build`。使用 Kubernetes 时，先把 `deploy/kubernetes.yaml` 中的 `image: openai4s:local` 改为 `image: ghcr.io/pku-yuangroup/openai4s:0.3.1`，再部署到 amd64 节点；Secret、持久卷和访问 URL 也见指南。
+镜像包含 Debian-slim 上的 CPython、wheel 与 `science` extra，以非特权用户运行，只有一个挂在 `/data` 的卷。命令把当前 shell 的 `OPENAI4S_LLM_API_KEY` 传给容器的 `OPENAI4S_SECRET_LLM_LLM_API_KEY`；供应商和模型配置见[容器指南](docs/docker.md#zh)。凭据从环境读取。需要从检出的源码构建时，使用 `docker compose up -d --build`。使用 Kubernetes 时，先把 `deploy/kubernetes.yaml` 中的 `image: openai4s:local` 改为 `image: ghcr.io/pku-yuangroup/openai4s:1.0.0`，再部署到 amd64 节点；Secret、持久卷和访问 URL 也见指南。镜像既不含 OpenMHS 也不含 Git；要在容器里使用实验室，请挂载一份 OpenMHS 检出，并把 `OPENAI4S_OPENMHS` 指向它。
 
 发布版镜像通过 `container_smoke.sh` 后才会上传。在容器内绑定 `0.0.0.0` 会强制要求访问令牌，并关闭防 DNS 重绑定的 `Host` 白名单，因此请把对外发布的端口限制在 loopback。非特权容器无法给 bubblewrap 提供所需命名空间，内核沙箱会可见地降级，由容器充当边界；具体限制见**[容器指南](docs/docker.md#zh)**。
 
 ### 🧩 把 Skills 带去任何地方（`npx`）
 
-内置的 612 个 Skill 是配方——文字、代码，以及跑通它们所需的操作知识——其中没有任何东西是 OpenAI4S 专属的。npm 发布版 **`@pku-yuangroup/openai4s-skills@0.2.0`** 包含 **603 个 Skill：42 个精选 + 561 个固定版本 bioSkills**。以下命令固定安装该发布版本：
+内置的 612 个 Skill 是配方——文字、代码，以及跑通它们所需的操作知识——其中没有任何东西是 OpenAI4S 专属的。npm 上最新的发布版 **`@pku-yuangroup/openai4s-skills@0.3.0`** 包含 **604 个 Skill：43 个精选 + 561 个固定版本 bioSkills**。以下命令固定安装该发布版本：
 
 ```bash
-npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0：42 个精选 Skill
-npx @pku-yuangroup/openai4s-skills@0.2.0 install --collection bioskills # v0.2.0：561 个固定版生信配方
-npx @pku-yuangroup/openai4s-skills@0.2.0 install alphafold2 boltz --target claude
-npx @pku-yuangroup/openai4s-skills@0.2.0 list
-npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
+npx @pku-yuangroup/openai4s-skills@0.3.0 install --all                  # v0.3.0：43 个精选 Skill
+npx @pku-yuangroup/openai4s-skills@0.3.0 install --collection bioskills # v0.3.0：561 个固定版生信配方
+npx @pku-yuangroup/openai4s-skills@0.3.0 install alphafold2 boltz --target claude
+npx @pku-yuangroup/openai4s-skills@0.3.0 list
+npx @pku-yuangroup/openai4s-skills@0.3.0 uninstall --all
 ```
 
 `npx @pku-yuangroup/openai4s-skills <command>` 使用 npm 上的最新发布版。若要使用当前仓库目录（612 个 Skill：51 个精选 + 561 个 bioSkills），可直接从 GitHub 运行；这种写法跟随默认分支：
@@ -281,8 +293,9 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 
 | 文档 | 内容 |
 |---|---|
-| [**上手指南**](docs/startup-guide.md#zh) | macOS 0.3.1 全流程：Apple Silicon 与 Intel 通过 PyPI 安装、配置模型与豆包搜索；旧预览镜像保留作历史参考 |
-| [**升级**](docs/upgrading_zh.md) | 新的在前。0.3.1（schema 32 → 35）：首次启动前先停守护进程并复制数据目录，因为不支持退回。从 0.2.x 升级：在 schema 27 → 32 迁移之前备份数据库、为什么不支持退回 0.2.x，以及现在总是必需的访问令牌 |
+| [**上手指南**](docs/startup-guide.md#zh) | macOS 1.0.0 全流程：ad-hoc 签名的 Apple Silicon DMG，或在 Apple Silicon 与 Intel 上通过 PyPI 安装，再配置模型与豆包搜索 |
+| [**升级**](docs/upgrading_zh.md) | 新的在前。1.0.0（schema 35 → 36）：先备份；数据集校验回执，以及需主动启用的实验室。0.3.1（schema 32 → 35）：首次启动前先停守护进程并复制数据目录，因为不支持退回。从 0.2.x 升级：在 schema 27 → 32 迁移之前备份数据库、为什么不支持退回 0.2.x，以及现在总是必需的访问令牌 |
+| [**OpenMHS 实验室**](docs/openmhs_zh.md) | 模拟实验室：安装配置、设备市场、MHS 与 MCP 两种接入面、实验室文件与操作员动作 |
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
 | [**RL runtime**](openai4s/rl/README_zh.md) | 把 OpenAI4S 作为 agentic RL 环境：rollout 生命周期、JSONL Trainer 传输、轨迹导出与训练数据投影 |
 | [**后端扩展指南**](docs/backend-extension-guide.md) | 新 Tool、Host service、repository 与 session 行为应归属的位置 |
@@ -291,7 +304,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 | [**Skill 开发记录**](docs/skill-development_zh.md) | 我们开发的实证分析 Skill、方法选择、实现与验证记录 |
 | [**研究实验**](experiments/README_zh.md) | 独立保存数据与结果，使用面板预处理 Skill 复现范围明确的 DiD 官方示例 |
 | [**远程计算**](docs/compute.md) | BYOC GPU 作业、`host.fold`、自动预置 |
-| [**科学连接器**](docs/science-connectors.md) | 七个公共数据库、各自的过滤条件与检索溯源 |
+| [**科学连接器**](docs/science-connectors.md) | 十个默认公共数据库与三个由开关管控的数据源、各自的过滤条件与检索溯源 |
 | [**Web 应用**](docs/webapp.md) | UI 功能、Action Timeline、只读 Notebook、Artifact 与实现状态 |
 | [**Web 共享**](docs/webshare.md) | 只读会话共享、信任模型，以及如何运行自己的 relay |
 | [**Jupyter 适配器**](docs/jupyter.md) | 可选的独立 Python/R KernelSpec、安装命令与兼容边界 |
@@ -321,15 +334,18 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
   公开成绩仍在后面。
 - [x] 环境即事务（`openai4s env plan|apply|rollback`）：generation 全新构建、验证通过后
   才被原子地指向，因此 Artifact 的溯源可以指名一个不可变的环境。
+- [x] 模拟仪器实验室（`v1.0.0`）：OpenMHS 子模块、实验室标签页，以及 746 台设备的市场；
+  设备运行在模拟器或 fake 后端上，受端点强制的限值、急停与哈希链回执约束。
+- [x] DuckDuckGo 之外的免密钥 `web_search`：You.com 免费档与需手动开启的匿名 Parallel
+  Search，与内置引擎一起作为可调整顺序的备用引擎。
 
 ### 下一步
 
-- [ ] **经过公证的 macOS 镜像与 arm64 安装包。** Linux 安装包自 `v0.2.0` 起发布，Windows/WSL2 安装包自 `v0.3.0` 起发布，0.3.1 暂不提供 macOS DMG（旧版镜像仍是未经公证的预览版），Linux 与 Windows 也只发布 `x86_64`。有了 Developer ID 签名并经过公证的 `.dmg`，再加上 arm64 Linux 与 Windows on ARM 安装包，每个受支持的平台才都能免工具链安装。
+- [ ] **经过公证的 macOS 镜像与 arm64 安装包。** Linux 安装包自 `v0.2.0` 起发布，Windows/WSL2 安装包自 `v0.3.0` 起发布。1.0.0 的 Apple Silicon DMG 是 ad-hoc 签名、未经公证的镜像，Linux 与 Windows 也只发布 `x86_64`。有了 Developer ID 签名并经过公证的 `.dmg`，再加上 arm64 Linux 与 Windows on ARM 安装包，每个受支持的平台才都能免工具链安装。
 - [ ] **NVIDIA 科学计算套件** —— 在现有 NVIDIA NIM 集成之外，把 **BioNeMo**（生物分子基础模型）与 **Parabricks**（GPU 加速的基因组学流水线）作为一等公民接入 Skill 与 BYOC 后端。
 - [ ] 本地 GPU 模型服务,让结构/设计类 Skill 无需远程计算即可运行。
 - [ ] SSH + NVIDIA NIM 之外的更多 BYOC 提供方(Modal / SLURM)。
 - [ ] 在可用平台上加强 bubblewrap 之外的 Linux 隔离（例如 seccomp），并扩展打包后沙箱冒烟验证。
-- [ ] DuckDuckGo 之外的免密钥 `web_search`(抗限流)。
 
 ---
 
@@ -357,7 +373,7 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 
 - **新 Skill** —— 在 `skills/` 下放一个 `SKILL.md`(+ 可选 `kernel.py`)—— 代码配方,而非 schema。
 - **新供应商** —— 在 [`openai4s/llm/providers/`](openai4s/llm/providers/) 添加 wire adapter 并更新 provider definition/registry，或添加 BYOC 计算提供方。
-- **引擎与 UI** —— 核心是纯标准库、可读性强;Web 应用无框架。
+- **引擎与 UI** —— 核心是纯标准库、可读性强；工作台是 [`frontend/`](frontend/) 下的 Preact + TypeScript，构建产物提交在 `openai4s/server/webui/dist/`。
 
 请保持核心零依赖,把可选科学库导入包在 `try/except ImportError` 里,并在提 PR 前确保 `uv run pytest` 与 `uv run pre-commit run --all-files` 通过。
 

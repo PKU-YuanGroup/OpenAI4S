@@ -677,8 +677,9 @@ cannot meet. An `analysis_run` completion is unchanged.
 
 Scientific database breadth does not expand the model's tool count. The
 registry exposes only `science_list_dbs` and `science_search`; a connector
-service normalizes UniProt, RCSB PDB, Ensembl, ChEMBL, PubChem, arXiv, and
-OpenAlex records behind that pair. The same operations are available as
+service normalizes Zenodo, UniProt, RCSB PDB, Ensembl, ChEMBL, PubChem, arXiv,
+OpenAlex, STRING and BindingDB records behind that pair, plus ClinVar, PubMed
+and ClinicalTrials.gov when the Stage 10 connector flag is on. The same operations are available as
 `host.science.*` for loop/join-heavy code cells. Fixed HTTPS endpoints still
 pass through the normal network switch, SSRF and redirect guards, egress
 allowlist, permission/audit envelope, and untrusted-output screening. See
@@ -903,7 +904,7 @@ when those unsupported transformations require explicit input declarations.
 
 [`kernel/readiness.py`](../openai4s/kernel/readiness.py) is the Stage 1,
 local-only preflight for the shipped `standard` profile. It parses the direct
-dependency intent from `envs/python.yml` (32 normalized packages) and
+dependency intent from `envs/python.yml` (33 normalized packages) and
 `envs/r.yml` (8), discovers the existing `python` and `r` environments, and
 compares their package metadata without importing a science package, starting
 an interpreter, contacting the network, or mutating an environment. An

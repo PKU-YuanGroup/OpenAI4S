@@ -628,9 +628,10 @@ credential. Thus two data directories cannot overwrite the same physical
 Keychain or Secret Service slot, and copying a database does not copy authority
 to its credentials. The reference is not derived from the value, so it is safe
 to log and safe to sit in a row. Covered today: `llm_api_key`,
-`tavily_api_key`, the shared `agent_plan_key` used by DataPro and Doubao Search,
-the per-profile `api_key` of every saved model profile, and every connector
-`env` value.
+`tavily_api_key`, `you_api_key` (scope `search`), the shared `agent_plan_key`
+used by DataPro and Doubao Search, `ollama_web_api_key` (scope `ollama_web`),
+`typesafe_api_key` (scope `judgment`), the per-profile `api_key` of every saved
+model profile, and every connector `env` value.
 
 Legacy v1 system-keychain references contain no Store ownership evidence. They
 are never read, claimed, or deleted automatically; the UI reports the

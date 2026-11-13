@@ -34,8 +34,8 @@ Claude Science 首次启动自动准备 Python/R 环境并不完全相同。
 
 ### 密钥、分析环境和升级
 
-升级到 0.3.1 前，先停止旧服务并备份 WSL 内的整个 `~/.openai4s` 数据目录。
-本版会将 schema 从 32 升到 35，步骤与自定义数据目录说明见[升级指南](upgrading_zh.md)。
+升级到 1.0.0 前，先停止旧服务并备份 WSL 内的整个 `~/.openai4s` 数据目录。
+本版会将 schema 从 35 升到 36，步骤与自定义数据目录说明见[升级指南](upgrading_zh.md)。
 
 新 WSL 安装的模型密钥由当前 Windows 登录账户的 DPAPI 保护；已有可用的 Linux
 钥匙串会继续使用。无需为新安装手动配置 Linux 桌面钥匙串。DPAPI 密钥在 Windows 用户目录中加密保存，按 WSL 安装、Linux 用户和应用
@@ -93,13 +93,13 @@ bwrap --version
 
 ### 3. 启动 Windows 包
 
-从 [0.3.1 release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1) 下载
-[完整 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-windows-x86_64.zip)
-和 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS)，放到同一目录。
+从 [1.0.0 release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0) 下载
+[完整 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip)
+和 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/SHA256SUMS)，放到同一目录。
 在该目录打开 PowerShell，计算 ZIP 的 SHA-256：
 
 ```powershell
-Get-FileHash .\OpenAI4S-0.3.1-windows-x86_64.zip -Algorithm SHA256
+Get-FileHash .\OpenAI4S-1.0.0-windows-x86_64.zip -Algorithm SHA256
 ```
 
 将输出与 `SHA256SUMS` 中该 ZIP 对应的值逐字比较（忽略大小写），只有一致才继续。
@@ -109,8 +109,10 @@ Get-FileHash .\OpenAI4S-0.3.1-windows-x86_64.zip -Algorithm SHA256
 OpenAI4S.cmd
 ```
 
-**0.3.1 验证范围：**归档结构、启动器检查和内嵌 Linux payload 已通过验证；
-本版未进行完整的 Windows/WSL2 运行验收，启动器仍未签名。
+**1.0.0 验证范围：**公开的 x86_64 ZIP 在发布后于 Windows Server 2025 + Ubuntu 24.04 WSL2
+上通过了运行验收：随包启动器、在 Windows Chromium 浏览器中通过认证打开工作台、九项科学与
+运行时检查（包括绘图、不可变 Artifact 与重启后回读）、status/stop，以及强制启用的 bubblewrap
+隔离。验收未使用模型凭据，启动器仍未签名；Windows on ARM 与完整的 Windows 10/11 主机矩阵未经测试。
 
 启动器会依次完成：
 
@@ -282,8 +284,8 @@ $env:OPENAI4S_WSL_PROXY = 'http://172.24.128.1:7897'
 
 ### Credentials, analysis environments and updates
 
-Before upgrading to 0.3.1, stop the old service and back up the whole
-`~/.openai4s` data directory inside WSL. This version migrates schema 32 to 35;
+Before upgrading to 1.0.0, stop the old service and back up the whole
+`~/.openai4s` data directory inside WSL. This version migrates schema 35 to 36;
 see [Upgrading](upgrading.md) for the steps and custom data-directory handling.
 
 Fresh WSL installations use the current Windows login's DPAPI-protected storage;
@@ -325,22 +327,26 @@ no global WSL configuration change is needed.
    sudo apt install -y bubblewrap
    ```
 
-3. Download the [complete 0.3.1 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-windows-x86_64.zip)
-   and [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS)
-   from the [release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1)
+3. Download the [complete 1.0.0 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip)
+   and [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/SHA256SUMS)
+   from the [release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0)
    into the same directory. Open PowerShell there and calculate the ZIP's SHA-256:
 
    ```powershell
-   Get-FileHash .\OpenAI4S-0.3.1-windows-x86_64.zip -Algorithm SHA256
+   Get-FileHash .\OpenAI4S-1.0.0-windows-x86_64.zip -Algorithm SHA256
    ```
 
    Compare it with the ZIP's entry in `SHA256SUMS` (case-insensitively), and proceed
    only if they match. This is a complete ZIP; no `Restore-ZIP.cmd` or split-file
    restoration is needed. Extract all files, then double-click `OpenAI4S.cmd`.
 
-**0.3.1 validation:** archive structure, launcher checks, and the embedded Linux
-payload passed verification. Full Windows/WSL2 runtime acceptance was not performed
-for this version, and the launcher remains unsigned.
+**1.0.0 validation:** the public x86_64 ZIP passed a post-publication runtime run
+on Windows Server 2025 with Ubuntu 24.04 WSL2: the shipped launcher, the
+authenticated dashboard in a Windows Chromium browser, nine science and runtime
+checks (plots, immutable artifacts and restart read-back among them),
+status/stop, and enforced bubblewrap isolation. The run used no model
+credentials, and the launcher remains unsigned. Windows on ARM and the full
+Windows 10/11 host matrix were not exercised.
 
 The ZIP carries the complete Linux application, so first installation is
 offline. The launcher refuses WSL1, performs a real bubblewrap namespace test,

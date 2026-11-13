@@ -80,7 +80,7 @@ ahead of the guard, and the tests that pin both.
 Quotas are set per user or per project, per kind, per window:
 
 ```bash
-curl -X PUT .../api/v1/team/quotas -d '{"scope":"user","scope_id":"...",
+curl -X POST .../api/v1/team/quotas -d '{"scope":"user","scope_id":"...",
   "kind":"llm_output_tokens","limit_amount":2000000,"window":"month"}'
 ```
 

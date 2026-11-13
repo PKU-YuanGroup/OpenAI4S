@@ -5,16 +5,16 @@
 Copies OpenAI4S's bundled Skill library onto a machine — into Claude Code, into
 an OpenAI4S data directory, or into any directory named on the command line.
 
-The npm release `@pku-yuangroup/openai4s-skills@0.2.0` contains 603 Skills: 42 curated +
+The latest npm release, `@pku-yuangroup/openai4s-skills@0.3.0`, contains 604 Skills: 43 curated +
 561 pinned bioSkills. These commands fix the package version:
 
 ```bash
-npx @pku-yuangroup/openai4s-skills@0.2.0 list
-npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0: 42 curated Skills
-npx @pku-yuangroup/openai4s-skills@0.2.0 install --collection bioskills # v0.2.0: 561 pinned recipes
-npx @pku-yuangroup/openai4s-skills@0.2.0 install alphafold2 boltz --target claude
-npx @pku-yuangroup/openai4s-skills@0.2.0 installed
-npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
+npx @pku-yuangroup/openai4s-skills@0.3.0 list
+npx @pku-yuangroup/openai4s-skills@0.3.0 install --all                  # v0.3.0: 43 curated Skills
+npx @pku-yuangroup/openai4s-skills@0.3.0 install --collection bioskills # v0.3.0: 561 pinned recipes
+npx @pku-yuangroup/openai4s-skills@0.3.0 install alphafold2 boltz --target claude
+npx @pku-yuangroup/openai4s-skills@0.3.0 installed
+npx @pku-yuangroup/openai4s-skills@0.3.0 uninstall --all
 ```
 
 `npx @pku-yuangroup/openai4s-skills <command>` uses the latest npm release. To use the current

@@ -238,8 +238,9 @@ delegated child agents therefore never offer the tool to their model;
 fails after file publication, the action fails with `output_committed` to veto
 automatic replay; the workspace file may remain. Inspect the file and version
 history before explicitly retrying. The generic `web_download` and its SDK
-signature are unchanged. Dataset-specific workbench projection is tracked in
-#185's Stage 3.
+signature are unchanged. In the workbench, an Artifact's **Version history**
+shows the dataset source record saved with each version (see
+[Web app](webapp.md)).
 
 The opt-in acceptance test imports the real PaRoutes file through this native
 transaction and checks Store reopen:

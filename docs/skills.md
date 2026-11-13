@@ -44,6 +44,7 @@ packages and does not imply that every optional tool is ready locally.
 | **Single-cell analysis** (CPU) | `single-cell-rna-analysis` |
 | **Protein design** (GPU) | `rfdiffusion` · `proteinmpnn` · `ligandmpnn` · `solublempnn` · `protein-design-mcp` |
 | **Chemistry / materials** (GPU) | `catalyst_sar_screening` |
+| **Molecular simulation** | `molecular-dynamics` |
 | **Reaction chemistry** | `reaction-atom-mapping` · `reaction-condition-recommendation` · `reaction-forward-prediction` · `reaction-yield-estimation` · `single-step-retrosynthesis` |
 | **Research workflow** | `literature-review` · `pdf-explore` · `paper-narrative` · `figure-composer` · `figure-style` · `indication-dossier` · `evidence-walkthrough` · `retrosynthesis_planning` · `mineral_spectra_analysis` · `admet_genetic` · `protein-mutation-enhancement` · `target_druggability_screening` |
 | **ML methodology / benchmarks** | `plan-ml-experiment` · `audit-dataset` · `evaluate-model` · `bioprobench` · `text-features` |
@@ -63,7 +64,7 @@ the measurement and qualitative recipes derive from the individual MIT-licensed
 AlterLab modules, not its separately licensed core pipeline. `origin: openai4s`
 identifies bundled distribution, not original authorship. These recipes add no
 core dependencies, and installing them does not install optional R/Python
-statistics packages. They are included in source builds, not npm 0.2.0.
+statistics packages. They are included in source builds, not in npm 0.3.0 or earlier.
 
 `panel-data-preprocessing` profiles variable types and missingness, then applies
 explicit fit-only mean/median/KNN imputation and categorical/text encoding after
@@ -237,17 +238,17 @@ bundled Skills never expose a rollback action.
 
 A Skill is a recipe, not an OpenAI4S API object, so the library is useful to
 any agent that reads Markdown instructions. `tools/skills-installer/` is a
-zero-dependency Node CLI available on npm and directly from GitHub. The fixed
-npm release `@pku-yuangroup/openai4s-skills@0.2.0` includes 603 Skills: 42 curated Skills and
+zero-dependency Node CLI available on npm and directly from GitHub. The latest
+npm release, `@pku-yuangroup/openai4s-skills@0.3.0`, includes 604 Skills: 43 curated Skills and
 561 pinned bioSkills recipes.
 
 ```bash
-npx @pku-yuangroup/openai4s-skills@0.2.0 list
-npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0: 42 curated Skills
-npx @pku-yuangroup/openai4s-skills@0.2.0 install --collection bioskills # v0.2.0: 561 pinned recipes
-npx @pku-yuangroup/openai4s-skills@0.2.0 install alphafold2 --target claude
-npx @pku-yuangroup/openai4s-skills@0.2.0 installed
-npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
+npx @pku-yuangroup/openai4s-skills@0.3.0 list
+npx @pku-yuangroup/openai4s-skills@0.3.0 install --all                  # v0.3.0: 43 curated Skills
+npx @pku-yuangroup/openai4s-skills@0.3.0 install --collection bioskills # v0.3.0: 561 pinned recipes
+npx @pku-yuangroup/openai4s-skills@0.3.0 install alphafold2 --target claude
+npx @pku-yuangroup/openai4s-skills@0.3.0 installed
+npx @pku-yuangroup/openai4s-skills@0.3.0 uninstall --all
 ```
 
 `npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. The GitHub form
