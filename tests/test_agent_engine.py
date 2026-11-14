@@ -495,6 +495,87 @@ def test_native_call_without_a_displaced_cell_is_left_alone(content):
     assert model.calls[1][-1] == result_message
 
 
+_SEARCHED = "[Tool: web_search]\nresults (1)"
+
+
+def _run_native_reply(content, *, name="web_search", arguments=None):
+    """One native call whose reply says ``content``; returns what the model read."""
+    call = _call(name=name, arguments=arguments or {"query": "artemisinin"})
+    result_message = {"role": "tool", "tool_call_id": "call_1", "content": _SEARCHED}
+    engine, model, _, _, _, _, _ = _engine(
+        [_reply(content, tool_calls=[call]), _reply("Done.")],
+        [ExecutionOutcome(history_messages=(result_message,))],
+        max_turns=2,
+    )
+    engine.run([{"role": "user", "content": "find the data"}])
+    return model.calls[1][-1]["content"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Now I'll download the PDF in the kernel and extract its table.",
+        "I'll run this directly as a code cell.",
+        "Let me do it in a Python cell next.",
+        "Running it as a normal foreground cell instead.",
+        "我会在内核里下载并解析这个 PDF。",
+        "接下来用代码单元提取表格。",
+        # The wordings of the same promise that the first pattern missed.
+        "Now entering the Python kernel directly.",
+        "Now I'll execute Python: create scratch space, check PDF tooling.",
+        "Now I'll move into the Python runtime to download and parse the papers.",
+        "ACS blocks direct fetch. I'll switch to the Python runtime and retry.",
+        "Enough searching - entering the runtime now.",
+    ],
+)
+def test_native_call_that_promises_a_cell_says_no_code_ran(content):
+    # Doubao Seed 2.1 Pro said this in 30 of 48 consecutive replies and sent a
+    # web search each time; the results never told it that no code had run.
+    seen = _run_native_reply(content)
+
+    assert seen.startswith(_SEARCHED)
+    note = seen[len(_SEARCHED) :]
+    assert "carried no ```python cell, so no code ran" in note
+    assert "native tool calls cannot run Python" in note
+    assert "ONLY action of your next reply" in note
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Searching the literature for solubility tables.",
+        "Single-cell data and T cell markers are out of scope here.",
+        "The Linux kernel is not involved.",
+        "Let me read the 2024 paper and search for paclitaxel tables.",
+        "Checking what the search results say about solvent polarity.",
+        "",
+    ],
+)
+def test_native_call_that_does_not_promise_a_cell_is_left_alone(content):
+    assert _run_native_reply(content) == _SEARCHED
+
+
+def test_a_promise_next_to_a_tool_that_runs_code_is_not_a_broken_promise():
+    seen = _run_native_reply(
+        "I'll run this in the kernel as a background job.",
+        name="exec_background",
+        arguments={"code": "print(1)"},
+    )
+
+    assert seen == _SEARCHED
+
+
+def test_a_displaced_cell_gets_only_its_own_note():
+    seen = _run_native_reply(
+        "Running it in the kernel.\n```python\nprint(1)\n```",
+        name="write_file",
+        arguments=dict(_WRITE),
+    )
+
+    assert "It was NOT executed" in seen
+    assert "carried no ```python cell" not in seen
+
+
 def test_a_model_that_ignores_the_note_is_still_stopped_by_the_circuit():
     call = _call(name="write_file", arguments=dict(_WRITE))
     reply = _reply("```python\nprint(1)\n```", tool_calls=[call])
