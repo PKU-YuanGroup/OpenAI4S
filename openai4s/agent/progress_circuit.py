@@ -26,12 +26,14 @@ PROGRESS_REASON_SAME_ACTION = "same_action"
 PROGRESS_REASON_MALFORMED = "consecutive_malformed"
 PROGRESS_REASON_TOOL_ERROR = "similar_tool_error"
 PROGRESS_REASON_LONG_TEXT = "long_text_repeat"
+PROGRESS_REASON_EMPTY_REPLY = "empty_reply_repeat"
 PROGRESS_REASONS = frozenset(
     {
         PROGRESS_REASON_SAME_ACTION,
         PROGRESS_REASON_MALFORMED,
         PROGRESS_REASON_TOOL_ERROR,
         PROGRESS_REASON_LONG_TEXT,
+        PROGRESS_REASON_EMPTY_REPLY,
     }
 )
 
@@ -39,6 +41,12 @@ SAME_ACTION_THRESHOLD = 3
 MALFORMED_THRESHOLD = 2
 SIMILAR_ERROR_THRESHOLD = 2
 LONG_TEXT_THRESHOLD = 3
+#: Consecutive replies with no text, no tool call and no cell. A reasoning
+#: model that spends its whole completion budget thinking returns exactly that
+#: (`finish_reason: length`, `content: null`); the nudge it gets back changes
+#: nothing, so GLM 5.3 on the Ark Agent Plan looped, each turn costing a full
+#: budget, until the turn limit.
+EMPTY_REPLY_THRESHOLD = 2
 LONG_TEXT_MIN_CHARS = 400
 LONG_TEXT_NEAR_RATIO = 0.97
 LONG_TEXT_COMPARE_CHARS = 8000
@@ -201,6 +209,7 @@ class ProgressCircuit:
     error_streak: int = 0
     long_text_normalized: str | None = None
     long_text_streak: int = 0
+    empty_reply_streak: int = 0
     trip_reason: str | None = None
 
     @property
@@ -263,6 +272,8 @@ class ProgressCircuit:
     ) -> None:
         if not calls:
             return
+        # A call, even a malformed one, is not an empty reply.
+        self.empty_reply_streak = 0
         if all(_call_is_malformed(call) for call in calls):
             self.malformed_streak += 1
             self._maybe_trip()
@@ -288,10 +299,15 @@ class ProgressCircuit:
         self._maybe_trip()
 
     def observe_assistant_text(self, content: str) -> None:
-        # Anything shorter than the long-text floor -- an empty content with a
-        # reasoning insert included -- is not observed at all, so it neither
-        # counts as a repeat nor resets a streak.
+        # Anything shorter than the long-text floor is not observed as text:
+        # it neither counts as a repeat nor resets a streak. A reply with no
+        # text at all is the exception -- it is counted as an empty reply.
         normalized = _normalize_whitespace(content if isinstance(content, str) else "")
+        if not normalized:
+            self.empty_reply_streak += 1
+            self._maybe_trip()
+            return
+        self.empty_reply_streak = 0
         if len(normalized) < LONG_TEXT_MIN_CHARS:
             return
         previous = self.long_text_normalized
@@ -370,6 +386,7 @@ class ProgressCircuit:
         self.same_action_fingerprint = None
         self.same_result_digest = None
         self.same_action_streak = 0
+        self.empty_reply_streak = 0
 
     def _reset_error(self) -> None:
         self.error_fingerprint = None
@@ -389,6 +406,9 @@ class ProgressCircuit:
             return
         if self.long_text_streak >= LONG_TEXT_THRESHOLD:
             self.trip_reason = PROGRESS_REASON_LONG_TEXT
+            return
+        if self.empty_reply_streak >= EMPTY_REPLY_THRESHOLD:
+            self.trip_reason = PROGRESS_REASON_EMPTY_REPLY
 
 
 @dataclass(frozen=True)

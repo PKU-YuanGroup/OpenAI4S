@@ -16,8 +16,10 @@ from openai4s.config import (
     is_placeholder_api_key,
     provider_env_api_key,
 )
+from openai4s.datapro import is_agent_plan_endpoint
 from openai4s.endpoint_identity import normalize_endpoint
 from openai4s.llm.capabilities import (
+    CAPABILITY_PROBE_MAX_TOKENS,
     CAPABILITY_PROBE_TOOL,
     PROBE_VERSION,
     capability_probe_window,
@@ -36,10 +38,14 @@ from openai4s.llm.capabilities import (
     streaming_evidence,
     tool_call_matches_schema,
 )
-from openai4s.llm.catalog import ModelPreset, model_presets
+from openai4s.llm.catalog import SEEDED_PRESET_SIGNATURES, ModelPreset, model_presets
 from openai4s.llm.resolve import keyless_endpoint
 from openai4s.security.secret_broker import is_ref
-from openai4s.server.endpoint_models import EndpointModelError, EndpointModelFetcher
+from openai4s.server.endpoint_models import (
+    NO_LISTING_ROUTE,
+    EndpointModelError,
+    EndpointModelFetcher,
+)
 from openai4s.storage.model_capability_receipts import (
     EVIDENCE_FALSE,
     EVIDENCE_TRUE,
@@ -315,7 +321,36 @@ class ModelProfileService:
                 preferred_model=self.effective_model_id(provider, ""),
             )
         except EndpointModelError as error:
+            # Volcengine's Agent Plan gateway -- the `ark` default -- has no
+            # model-listing route: with a key it accepts, `/models` is a 404
+            # (without one, a 401). Its model set is the published plan table
+            # the Ark presets mirror, so offer that, labelled as the catalog
+            # and not as what the endpoint reported.
+            if (
+                provider == "ark"
+                and error.reason == NO_LISTING_ROUTE
+                and is_agent_plan_endpoint(base_url)
+            ):
+                catalog = self._ark_plan_catalog()
+                if catalog["models"]:
+                    return catalog
             raise ModelProfileError(str(error), error.status_code) from None
+
+    def _ark_plan_catalog(self) -> dict[str, Any]:
+        models = [
+            preset.model
+            for preset in self._presets()
+            if preset.provider == "ark" and preset.model
+        ]
+        preferred = self.effective_model_id("ark", "")
+        return {
+            "models": models,
+            "default_model": (
+                preferred if preferred in models else (models[0] if models else "")
+            ),
+            "count": len(models),
+            "source": "catalog",
+        }
 
     # --- credentials -----------------------------------------------------
     PROFILE_SCOPE = "model_profile"
@@ -934,7 +969,11 @@ class ModelProfileService:
                             ),
                         }
                     ],
-                    max_tokens=32,
+                    # Reasoning models spend completion tokens before the call:
+                    # at 32, Doubao Seed 2.1 Pro and DeepSeek V4 stop with
+                    # `finish_reason: length` mid-arguments and a working tool
+                    # call read as "unknown". 256 still bounds the probe.
+                    max_tokens=CAPABILITY_PROBE_MAX_TOKENS,
                     tools=[CAPABILITY_PROBE_TOOL],
                     tool_choice=(
                         None if provider == "ollama" else CAPABILITY_PROBE_TOOL["name"]
@@ -1211,10 +1250,14 @@ class ModelProfileService:
         if not self.store.get_setting("builtin_profiles_removed"):
             removed_ids: set[str] = set()
             if self.store.get_setting("builtin_profiles_seeded"):
+                # The rows were generated from the catalog of their day, so the
+                # frozen signatures of that catalog are matched as well as the
+                # current presets: a catalog update must not turn an old
+                # generated row into one that looks user-made.
                 seeded_signatures = {
                     (preset.profile_name, preset.provider, preset.model)
                     for preset in self._presets()
-                }
+                } | SEEDED_PRESET_SIGNATURES
 
                 def remove_seeded(profiles: list[dict[str, Any]]) -> None:
                     kept = []

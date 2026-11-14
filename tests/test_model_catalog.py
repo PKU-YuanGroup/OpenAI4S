@@ -139,7 +139,7 @@ def test_model_presets_are_extensible_and_builtins_are_immutable():
         llm.unregister_model_preset("lab_openai", "science-model")
     assert llm.model_presets() == before
     with pytest.raises(llm.CapabilityError, match="built-in model preset"):
-        llm.unregister_model_preset("ark", "doubao-seed-2.0-pro")
+        llm.unregister_model_preset("ark", "doubao-seed-2.1-pro")
 
 
 def _service(tmp_path, *, provider="ark"):
@@ -367,3 +367,51 @@ def test_the_default_model_survives_a_daemon_restart(tmp_path):
         assert payload["default_model_id"] in offered
     finally:
         runner.close()
+
+
+def test_ark_presets_are_models_the_agent_plan_serves():
+    """The plan gateway answers an id it does not serve with 404
+    `UnsupportedModel`. Through 1.0.0 the catalog -- and the provider default --
+    named doubao-seed-2.0-pro, which the plan had dropped, so a fresh Ark setup
+    failed on its first request."""
+    ark = [preset.model for preset in llm.model_presets("ark")]
+    assert ark[0] == "doubao-seed-2.1-pro"
+    assert llm.provider_specs()["ark"]["model"] == "doubao-seed-2.1-pro"
+    retired = {
+        "doubao-seed-2.0-pro",
+        "doubao-seed-2.0-code",
+        "doubao-seed-2.0-lite",
+        "minimax-m3",
+        "minimax-m2.7",
+    }
+    assert not retired & set(ark)
+    assert len(ark) == len(set(ark))
+    for preset in llm.model_presets("ark"):
+        assert preset.profile_name == f"Ark · {preset.label}"
+        assert preset.inherit_live_config
+
+
+def test_profile_cleanup_still_knows_the_rows_old_builds_seeded(tmp_path):
+    """Generated rows carry the catalog of the build that seeded them. A row
+    for a model the catalog has since dropped is still generated, not the
+    user's, and the one-time cleanup must remove it."""
+    from openai4s.llm.catalog import SEEDED_PRESET_SIGNATURES
+
+    store, service = _service(tmp_path)
+    assert ("Ark · MiniMax M3", "ark", "minimax-m3") in SEEDED_PRESET_SIGNATURES
+    assert not [p for p in llm.model_presets("ark") if p.model == "minimax-m3"]
+    retired = {
+        "id": "mp-retired",
+        "name": "Ark · MiniMax M3",
+        "provider": "ark",
+        "base_url": "",
+        "model": "minimax-m3",
+        "api_key": "",
+    }
+    renamed = {**retired, "id": "mp-renamed", "name": "My MiniMax"}
+    store.set_model_profiles([retired, renamed])
+    store.set_setting("builtin_profiles_seeded", "1")
+
+    payload, _selected = service.profiles_payload()
+
+    assert [p["id"] for p in payload["profiles"]] == ["mp-renamed"]

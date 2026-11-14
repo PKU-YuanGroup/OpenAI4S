@@ -21,6 +21,7 @@ from openai4s.agent.models import EngineResult, ExecutionOutcome, ModelReply, Ru
 from openai4s.agent.progress_circuit import (
     LONG_TEXT_MIN_CHARS,
     NO_PROGRESS_STOP_REASON,
+    PROGRESS_REASON_EMPTY_REPLY,
     PROGRESS_REASON_LONG_TEXT,
     PROGRESS_REASON_MALFORMED,
     PROGRESS_REASON_SAME_ACTION,
@@ -282,6 +283,65 @@ def test_long_text_three_times_trips():
     assert result.completion is None
     assert len(model.calls) == 3
     assert len(executor.calls) == 3
+
+
+def _exhausted_reply():
+    """What a reasoning model returns when thinking used the whole budget."""
+    reply = _reply("", reasoning="still thinking")
+    reply["finish_reason"] = "length"
+    reply["assistant_message"] = {"role": "assistant", "content": None}
+    return reply
+
+
+def test_empty_replies_twice_trip_without_a_third_provider_call():
+    """GLM 5.3 on the Ark Agent Plan spent each turn's whole completion budget
+    on reasoning and replied with nothing; the nudge changed nothing, and the
+    turn looped -- a full budget per call -- until the turn limit."""
+    engine, model, executor = _engine(
+        [_exhausted_reply() for _ in range(6)], max_turns=10
+    )
+
+    result = engine.run([{"role": "user", "content": "fetch and parse"}])
+
+    assert result.stop_reason == NO_PROGRESS_STOP_REASON
+    assert result.progress_reason == PROGRESS_REASON_EMPTY_REPLY
+    assert result.completion is None
+    assert len(model.calls) == 2
+
+
+def test_an_action_between_empty_replies_is_progress():
+    replies = [
+        _exhausted_reply(),
+        _reply(tool_calls=[_call("call_0", arguments={"path": "."})]),
+        _exhausted_reply(),
+        _reply(tool_calls=[_call("call_1", arguments={"path": "src"})]),
+        _exhausted_reply(),
+    ]
+    engine, model, executor = _engine(replies, max_turns=5)
+
+    result = engine.run([{"role": "user", "content": "look around"}])
+
+    assert result.stop_reason == "max_turns"
+    assert result.progress_reason is None
+    assert len(model.calls) == 5
+
+
+def test_empty_replies_rebuild_the_live_circuit(tmp_path):
+    store = Store(tmp_path / "empty-replies.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-empty")
+    user = {"role": "user", "content": "fetch and parse"}
+    ledger.append_user(user)
+    state = RunState([user], max_turns=10)
+    model = FakeModel([_exhausted_reply() for _ in range(6)])
+
+    result = AgentEngine(model, CountingExecutor(), event_sink=ledger).run(state)
+
+    assert result.progress_reason == PROGRESS_REASON_EMPTY_REPLY
+    restored = restore_progress_circuit(store, root)
+    assert restored == circuit_from_state(state)
+    assert restored.trip_reason == PROGRESS_REASON_EMPTY_REPLY
+    store.close()
 
 
 def test_different_arguments_do_not_trip():

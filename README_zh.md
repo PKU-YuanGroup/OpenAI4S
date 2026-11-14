@@ -92,7 +92,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 - **📒 Ledger-first 运行时** —— action group/event 和终止事实以追加方式记录；执行尝试、generation 生命周期、用量与 completion record 可持久和重建。
 - **🤖 Agentic RL runtime** —— 外部 Trainer 可以把 OpenAI4S 当作 RL 环境：它负责采样策略，Agent 用真实工具与内核执行，`openai4s/rl` 把过程记录成只追加的 Science Trajectory。导出为确定性 JSON/JSONL/ATIF 并带字节哈希；reward 与 cost 是独立的版本化记录，重新打分不会改写执行历史，中断的 rollout 会被如实报告而不是重放。
 - **🐍 纯标准库核心** —— 引擎**和** Web 服务器都是纯标准库(`http.server` + 手写 WebSocket，无框架、无依赖)。LLM 客户端仅用 `urllib` 直接对接 OpenAI / Anthropic / Gemini。
-- **🔌 一行切换多供应商** —— `ark`（doubao · glm · kimi · deepseek · minimax）、官方 `chatgpt` · `openai_responses` · `claude` · `gemini`，以及 `ollama`（云端或本地），都由一个 `host.llm` 统一封装；在 UI 里即可切换。
+- **🔌 一行切换多供应商** —— `ark`（doubao · glm · kimi · deepseek）、官方 `chatgpt` · `openai_responses` · `claude` · `gemini`，以及 `ollama`（云端或本地），都由一个 `host.llm` 统一封装；在 UI 里即可切换。
 - **🔬 OpenMHS 模拟实验室** —— 实验室标签页可安装 OpenMHS 市场中的 746 台模拟设备，经原生 MHS 工具或 MCP 连接器接入，并受端点强制的限值、急停与哈希链回执约束。安装、启停与急停始终由人操作。→ [OpenMHS 指南](docs/openmhs_zh.md)
 - **🖥️ 科研工作台** —— 实时流式事件、版本化 Artifact、溯源、Action Timeline，以及**默认只读的 Notebook**。只有显式开启开发标志后，才能对共享 Python/R 内核输入多行代码。
 - **🔐 分层本地执行防护** —— 严格子进程环境 allowlist、持久审批、与 generation 绑定的一次性 `host.bash` capability，以及 macOS Seatbelt/Linux bubblewrap 沙箱适配器；降级与 fail-closed 状态会显式呈现。

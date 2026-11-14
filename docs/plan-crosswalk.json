@@ -245,7 +245,7 @@
       "tests": "tests/test_auth_exit_matrix.py,tests/test_gateway_host_allowlist.py,tests/test_token_query_bootstrap.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "88903e3fec7ebba0629469e230ddb888435121d7a97a3ab7a66b596fb083badc"
+      "evidence_digest": "964c105e95dee176dd282152f1b0f3c47f050b3b157316c3c2529c5b392733e3"
     },
     {
       "source": "R3",
@@ -439,7 +439,7 @@
       "tests": "tests/test_token_query_bootstrap.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6f2484d2b4cc42bc48163f1f016ce66feac50d74d0153ceff7a7a59de75f050e"
+      "evidence_digest": "d8c6e64ddccb50308abe7720a43857f1538a2097fa410ccdca157152923d9029"
     },
     {
       "source": "R4",
@@ -537,7 +537,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_revision_binding.py,tests/test_model_binding_recovery.py,tests/test_model_catalog.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "7256e967c1b344b3482ba063ce37f616c2a42c10728161626ec46f31cb9d782c"
+      "evidence_digest": "2ceb2cca21f7cfab37ecf0e0daf162a1d862b8a83ba9528964b33444f5c471e0"
     },
     {
       "source": "R5",

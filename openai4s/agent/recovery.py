@@ -25,6 +25,10 @@ def recovery_message(
             "similar_tool_error": "tool calls repeatedly produced the same error",
             "consecutive_malformed": "consecutive tool calls had invalid arguments",
             "long_text_repeat": "the same analysis was repeated without an action",
+            "empty_reply_repeat": (
+                "replies came back empty, with no text or action (the model "
+                "may be spending its whole completion budget on reasoning)"
+            ),
         }.get(progress_reason or "", "repeated actions made no progress")
         names = list(
             dict.fromkeys(

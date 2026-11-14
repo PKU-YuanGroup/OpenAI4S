@@ -21,54 +21,62 @@ class ModelPreset:
         return (self.provider, self.model)
 
 
+# The Ark entries are the text models of Volcengine's Agent Plan (the default
+# `plan/v3` endpoint), in the order of its "supported models" table as of
+# 2026-11-11. The plan gateway answers any other id -- including the
+# doubao-seed-2.0-pro/-code/-lite and minimax ids this list carried through
+# 1.0.0 -- with HTTP 404 `UnsupportedModel`, so a stale entry here is a preset
+# that cannot run. kimi-k3 is left out: the plan lists it as being retired.
+_ARK_PLAN_PRESETS = (
+    ("doubao-seed-2.1-pro", "Doubao Seed 2.1 Pro"),
+    ("doubao-seed-evolving", "Doubao Seed Evolving"),
+    ("doubao-seed-2.1-lite", "Doubao Seed 2.1 Lite"),
+    ("doubao-seed-2.0-mini", "Doubao Seed 2.0 Mini"),
+    ("glm-5.3", "GLM 5.3"),
+    ("glm-5.3-flash", "GLM 5.3 Flash"),
+    ("kimi-k3.1-pro", "Kimi K3.1 Pro"),
+    ("kimi-k2.8-preview", "Kimi K2.8 Preview"),
+    ("deepseek-v4-pro", "DeepSeek V4 Pro"),
+    ("deepseek-v4-flash", "DeepSeek V4 Flash"),
+    ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
+    ("deepseek-v4.1-flash-economy", "DeepSeek V4.1 Flash Economy"),
+)
+
 _BUILTIN_PRESETS = (
-    ModelPreset(
-        "ark",
-        "doubao-seed-2.0-pro",
-        "Doubao Seed 2.0 Pro",
-        "Ark · Doubao Seed 2.0 Pro",
-        True,
+    *(
+        ModelPreset("ark", model, label, f"Ark · {label}", True)
+        for model, label in _ARK_PLAN_PRESETS
     ),
-    ModelPreset(
-        "ark",
-        "doubao-seed-2.0-code",
-        "Doubao Seed 2.0 Code",
-        "Ark · Doubao Seed 2.0 Code",
-        True,
-    ),
-    ModelPreset(
-        "ark",
-        "doubao-seed-2.0-lite",
-        "Doubao Seed 2.0 Lite",
-        "Ark · Doubao Seed 2.0 Lite",
-        True,
-    ),
-    ModelPreset(
-        "ark",
-        "doubao-seed-2.0-mini",
-        "Doubao Seed 2.0 Mini",
-        "Ark · Doubao Seed 2.0 Mini",
-        True,
-    ),
-    ModelPreset("ark", "glm-5.2", "GLM 5.2", "Ark · GLM 5.2", True),
-    ModelPreset(
-        "ark", "kimi-k2.7-code", "Kimi K2.7 Code", "Ark · Kimi K2.7 Code", True
-    ),
-    ModelPreset(
-        "ark", "deepseek-v4-pro", "DeepSeek V4 Pro", "Ark · DeepSeek V4 Pro", True
-    ),
-    ModelPreset(
-        "ark", "deepseek-v4-flash", "DeepSeek V4 Flash", "Ark · DeepSeek V4 Flash", True
-    ),
-    ModelPreset("ark", "minimax-m3", "MiniMax M3", "Ark · MiniMax M3", True),
-    ModelPreset("ark", "minimax-m2.7", "MiniMax M2.7", "Ark · MiniMax M2.7", True),
-    ModelPreset("ark", "kimi-k2.6", "Kimi K2.6", "Ark · Kimi K2.6", True),
     ModelPreset("chatgpt", "", "OpenAI GPT (official)", "OpenAI GPT (official)"),
     ModelPreset(
         "claude", "", "Anthropic Claude (official)", "Anthropic Claude (official)"
     ),
     ModelPreset("gemini", "", "Google Gemini (official)", "Google Gemini (official)"),
     ModelPreset("ollama", "", "Ollama Cloud", "Ollama Cloud · Gemma 4"),
+)
+
+# `(profile_name, provider, model)` of every preset a pre-0.1.0 build seeded
+# into the saved profile list. `ModelProfileService.profiles_payload` removes
+# those generated rows once; it must recognise the ids that were seeded then,
+# not only the ones this catalog offers now. Frozen: never edit it to follow
+# the catalog.
+SEEDED_PRESET_SIGNATURES: frozenset[tuple[str, str, str]] = frozenset(
+    {
+        ("Ark · Doubao Seed 2.0 Pro", "ark", "doubao-seed-2.0-pro"),
+        ("Ark · Doubao Seed 2.0 Code", "ark", "doubao-seed-2.0-code"),
+        ("Ark · Doubao Seed 2.0 Lite", "ark", "doubao-seed-2.0-lite"),
+        ("Ark · Doubao Seed 2.0 Mini", "ark", "doubao-seed-2.0-mini"),
+        ("Ark · GLM 5.2", "ark", "glm-5.2"),
+        ("Ark · Kimi K2.7 Code", "ark", "kimi-k2.7-code"),
+        ("Ark · DeepSeek V4 Pro", "ark", "deepseek-v4-pro"),
+        ("Ark · DeepSeek V4 Flash", "ark", "deepseek-v4-flash"),
+        ("Ark · MiniMax M3", "ark", "minimax-m3"),
+        ("Ark · MiniMax M2.7", "ark", "minimax-m2.7"),
+        ("Ark · Kimi K2.6", "ark", "kimi-k2.6"),
+        ("OpenAI GPT (official)", "chatgpt", ""),
+        ("Anthropic Claude (official)", "claude", ""),
+        ("Google Gemini (official)", "gemini", ""),
+    }
 )
 
 _LOCK = threading.RLock()
@@ -133,6 +141,7 @@ def unregister_model_preset(provider: str, model: str) -> bool:
 
 __all__ = [
     "ARK_PLAN_MODELS",
+    "SEEDED_PRESET_SIGNATURES",
     "ModelPreset",
     "model_presets",
     "register_model_preset",

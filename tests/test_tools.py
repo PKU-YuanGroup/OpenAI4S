@@ -501,6 +501,75 @@ def test_execute_schema_invalid_arguments_never_reach_dispatcher():
     assert "unknown property" in obs
 
 
+def test_a_long_web_fetch_result_says_how_to_read_the_rest():
+    """Kimi K3.1 Pro re-sent the same web_fetch (max_chars=1000000) three
+    times: the result was cut at the tool limit with a bare marker."""
+    tool = get_tool("web_fetch")
+    page = "\n".join(f'"line {i}": {i},' for i in range(5000))
+    result = {"url": "u", "truncated": False, "content": page, "raw_bytes": 81234}
+
+    obs = format_tool_result(tool, result)
+
+    assert len(obs) <= tool.output_limit
+    assert obs.startswith('[Tool: web_fetch]\n"line 0": 0,')
+    assert "The response is 81,234 bytes." in obs
+    assert "host.web_fetch(" in obs and "```python cell" in obs
+    assert obs.count("[truncated") == 1
+
+    cut_by_max_chars = format_tool_result(
+        tool, {"content": "short", "truncated": True, "raw_bytes": 900}
+    )
+    assert cut_by_max_chars.startswith("[Tool: web_fetch]\nshort\n… [truncated.")
+
+    whole = format_tool_result(tool, {"content": "short", "truncated": False})
+    assert whole == "[Tool: web_fetch]\nshort"
+    flagged = format_tool_result(
+        tool, {"content": "[SECURITY WARNING — x]\n\n" + page, "raw_bytes": 1}
+    )
+    assert flagged.startswith("[Tool: web_fetch]\n[SECURITY WARNING — x]")
+
+
+def test_a_refused_background_submission_points_back_to_the_foreground_cell():
+    """Doubao Seed 2.1 Pro answered a refusal with 'a normal foreground cell'
+    and called exec_background again until the error circuit stopped it."""
+    tool = get_tool("exec_background")
+
+    refused = format_tool_result(
+        tool, {"error": "Permission denied: approval timed out"}
+    )
+
+    assert refused.startswith(
+        "[Tool: exec_background]\nerror: Permission denied: approval timed out\n"
+    )
+    assert "reply with one fenced ```python cell and no tool calls" in refused
+    # Only a refusal is explained: any other error and a success are untouched.
+    other = format_tool_result(tool, {"error": "exec_background: worker busy"})
+    assert other == "[Tool: exec_background]\nerror: exec_background: worker busy"
+    started = format_tool_result(tool, {"exec_id": "e-1", "status": "running"})
+    assert "```python" not in started and "exec_id" in started
+
+
+def test_a_written_script_says_that_nothing_has_run_it():
+    """Doubao Seed 2.1 Pro wrote scratch_parse.py five times, said it would use
+    a code cell, and never sent one; the byte count was the only answer."""
+    tool = get_tool("write_file")
+
+    py = format_tool_result(tool, {"path": "scratch_parse.py", "bytes": 506})
+    assert py.startswith('[Tool: write_file]\n{\n  "path": "scratch_parse.py"')
+    assert "nothing has run it" in py
+    assert "reply with one fenced ```python cell and no tool calls" in py
+    assert "exec(open('scratch_parse.py').read())" in py
+
+    r = format_tool_result(tool, {"path": "dir/fit.R", "bytes": 9})
+    assert "```r cell" in r and "source('dir/fit.R')" in r
+
+    # Data files and every other result keep their plain rendering.
+    notes = format_tool_result(tool, {"path": "notes.txt", "bytes": 3})
+    assert notes == '[Tool: write_file]\n{\n  "path": "notes.txt",\n  "bytes": 3\n}'
+    failed = format_tool_result(tool, {"error": "write_file: path escapes"})
+    assert "nothing has run it" not in failed
+
+
 def test_execute_hostile_mapping_never_reraises_while_formatting_error():
     class BadCall(dict):
         def get(self, *args, **kwargs):
