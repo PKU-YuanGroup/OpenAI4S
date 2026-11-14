@@ -80,6 +80,22 @@ class WebFetchTool(Tool):
         """
         if not isinstance(result, dict) or not isinstance(result.get("content"), str):
             return None
+        content_type = str(result.get("content_type") or "").lower()
+        if content_type.startswith("application/pdf") or result["content"].startswith(
+            "%PDF-"
+        ):
+            # The raw PDF stream, cut at the tool limit, was all the model got:
+            # it spent turns trying to rebuild the file from the first 20 KB of
+            # a 1.6 MB response, and went looking for another place to get it.
+            size = result.get("raw_bytes")
+            how = f"{size:,} bytes" if isinstance(size, int) else "binary"
+            return (
+                f"[PDF, {how}] web_fetch cannot read a PDF as text; what it "
+                "returned is the raw file, not words. To read it, save it with "
+                "web_download (needs approval) and extract the text with pypdf "
+                "in a ```python cell. Otherwise look for an HTML or abstract "
+                "page of the same paper."
+            )
         from openai4s.tools.registry import _render_result_body
 
         header = len(f"[Tool: {self.name}]\n")

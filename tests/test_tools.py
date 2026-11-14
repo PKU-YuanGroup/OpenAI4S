@@ -529,6 +529,32 @@ def test_a_long_web_fetch_result_says_how_to_read_the_rest():
     assert flagged.startswith("[Tool: web_fetch]\n[SECURITY WARNING — x]")
 
 
+def test_a_fetched_pdf_says_what_it_is_instead_of_dumping_its_bytes():
+    """The model got the first 20 KB of a 1.6 MB PDF stream as text, tried to
+    rebuild the file from it, and went looking for the paper elsewhere."""
+    tool = get_tool("web_fetch")
+    raw = "%PDF-1.4\n1 0 obj\n<</Type/Catalog>>\nendobj\n" + "\x00\u00e9" * 9000
+
+    for ctype, body in (
+        ("application/pdf", raw),
+        ("application/pdf; charset=binary", raw),
+        ("text/plain", raw),  # a mislabelled PDF is still a PDF
+    ):
+        obs = format_tool_result(
+            tool,
+            {"url": "u", "content_type": ctype, "content": body, "raw_bytes": 1623404},
+        )
+        assert obs.startswith("[Tool: web_fetch]\n[PDF, 1,623,404 bytes]")
+        assert "%PDF" not in obs and "endobj" not in obs
+        assert "web_download" in obs and "pypdf" in obs
+
+    html = format_tool_result(
+        tool,
+        {"content_type": "text/html", "content": "Solubility table", "raw_bytes": 16},
+    )
+    assert html == "[Tool: web_fetch]\nSolubility table"
+
+
 def test_a_refused_background_submission_points_back_to_the_foreground_cell():
     """Doubao Seed 2.1 Pro answered a refusal with 'a normal foreground cell'
     and called exec_background again until the error circuit stopped it."""
