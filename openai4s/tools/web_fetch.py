@@ -69,6 +69,55 @@ class WebFetchTool(Tool):
     def resource_keys(self, arguments: Any) -> tuple[str, ...]:
         return (resource_key("network", self.permission_target(arguments)),)
 
+    def render_observation(self, result: Any) -> str | None:
+        """Say how to get the rest of a page the tool result cannot hold.
+
+        A tool result holds at most ``output_limit`` characters whatever
+        ``max_chars`` asks for, and the shared renderer cut a long page with a
+        bare marker. Kimi K3.1 Pro then repeated the identical call, asking for
+        a million characters each time, until the progress circuit stopped the
+        turn. A Python cell's ``host.web_fetch`` receives the whole content.
+        """
+        if not isinstance(result, dict) or not isinstance(result.get("content"), str):
+            return None
+        content_type = str(result.get("content_type") or "").lower()
+        if content_type.startswith("application/pdf") or result["content"].startswith(
+            "%PDF-"
+        ):
+            # The raw PDF stream, cut at the tool limit, was all the model got:
+            # it spent turns trying to rebuild the file from the first 20 KB of
+            # a 1.6 MB response, and went looking for another place to get it.
+            size = result.get("raw_bytes")
+            how = f"{size:,} bytes" if isinstance(size, int) else "binary"
+            return (
+                f"[PDF, {how}] web_fetch cannot read a PDF as text; what it "
+                "returned is the raw file, not words. To read it, save it with "
+                "web_download (needs approval) and extract the text with pypdf "
+                "in a ```python cell. Otherwise look for an HTML or abstract "
+                "page of the same paper."
+            )
+        from openai4s.tools.registry import _render_result_body
+
+        header = len(f"[Tool: {self.name}]\n")
+        body = _render_result_body(result)
+        if header + len(body) <= self.output_limit and not result.get("truncated"):
+            return None
+        size = result.get("raw_bytes")
+        whole = f"The response is {size:,} bytes. " if isinstance(size, int) else ""
+        note = (
+            f"\n… [truncated. {whole}A tool result holds at most "
+            f"{self.output_limit:,} characters whatever max_chars asks, so "
+            "repeating this call returns the same text. To use the whole "
+            "document, call host.web_fetch(url, format=..., max_chars=...) in a "
+            "```python cell and parse it there.]"
+        )
+        overflow = header + len(body) + len(note) - self.output_limit
+        if overflow > 0:
+            content = result["content"]
+            keep = max(0, len(content) - overflow)
+            body = _render_result_body({**result, "content": content[:keep]})
+        return body + note
+
     def execute(self, runtime: Any, arguments: dict) -> dict:
         from openai4s import egress, webtools
 

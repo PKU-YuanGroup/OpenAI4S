@@ -19,8 +19,14 @@ class SubmitBackgroundExecTool(Tool):
 
     name = "exec_background"
     host_method = "exec_background"
+    # The first sentences are what a tool-calling model reads when it looks for
+    # "a way to run Python": without them, models sent every short analysis --
+    # even a todo update -- through this approval-gated tool instead of a cell.
     description = (
-        "Submit a long-running Python cell to an independent background job. "
+        "Submit a long-running Python job (minutes or more) to an independent "
+        "background worker. Not for ordinary code: to run Python now, reply "
+        "with one fenced ```python cell and no tool calls; it runs in the "
+        "persistent foreground kernel. "
         "A Web session writes a persistent receipt (code SHA-256, not the "
         "source) before the worker starts and reports persistent true. A CLI or "
         "sub-agent job reports persistent false and stays in memory. After a "
@@ -42,6 +48,26 @@ class SubmitBackgroundExecTool(Tool):
     permission_target_key = "code"
     resource_key_prefix = "background"
     resource_target_default = "jobs"
+
+    def render_observation(self, result: Any) -> str | None:
+        """Send a refused submission back to the foreground cell.
+
+        Doubao Seed 2.1 Pro took this approval-gated tool for the way to run
+        Python. Refused, it announced "a normal foreground cell" and then
+        called the tool again with the next snippet, until the similar-error
+        circuit stopped the turn. The refusal now says what a foreground cell
+        is. A Python cell still receives the unmodified result.
+        """
+        if not isinstance(result, dict) or set(result) != {"error"}:
+            return None
+        message = str(result["error"])
+        if not message.startswith("Permission denied"):
+            return None
+        return (
+            f"error: {message}\n"
+            "This tool is only for jobs that take minutes. To run Python now, "
+            "reply with one fenced ```python cell and no tool calls."
+        )
 
     def execute(self, runtime: ControlToolContext, arguments: dict) -> dict:
         spec = {"code": arguments["code"]}

@@ -133,7 +133,15 @@ def _openai_reasoning_model(model: Any) -> bool:
     return bool(_OPENAI_REASONING_MODEL.match(str(model or "").strip().lower()))
 
 
+# Kimi K3.1 (Ark's `kimi-k3.1-pro`, dated `kimi-k3-1-pro-YYMMDD`) accepts only
+# its default sampling: an explicit temperature other than 1 is HTTP 400
+# "`temperature` only 1 is allowed for this model", so every turn failed.
+_FIXED_SAMPLING_MODEL = re.compile(r"kimi-k3[.-]1(?:$|[-.])")
+
+
 def _openai_temperature_supported(model: Any, effort: str | None) -> bool:
+    if _FIXED_SAMPLING_MODEL.match(str(model or "").strip().lower()):
+        return False
     if not _openai_reasoning_model(model):
         return True
     model_id = str(model).strip().lower()

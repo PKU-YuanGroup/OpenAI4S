@@ -93,6 +93,20 @@ def _lab():
     return activity
 
 
+def ensure_native_tools() -> None:
+    """Register the native ``mhs_*`` tools before a session's control plane is built.
+
+    A lab started from the CLI (``openai4s lab add``/``up``) while this daemon
+    was already running enabled the tools in a settings file no code in the
+    daemon re-read: registration happened only at import and on a Lab panel
+    action, so new sessions declared no ``mhs_*`` tools and the agent could
+    not reach the reactor or any device added ``--via mhs``. Each session's
+    tool catalog snapshots the registry when it is built, which is why this
+    runs then. Idempotent and cheap: one small settings read.
+    """
+    _ensure_native_tools()
+
+
 def _ensure_native_tools() -> None:
     """Register the native ``mhs_*`` tools in this daemon once the lab's settings enable them."""
     try:

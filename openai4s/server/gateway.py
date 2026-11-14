@@ -6214,6 +6214,9 @@ class SessionRunner:
         """Build the session control plane without acquiring a language worker."""
 
         def factory():
+            # The session's tool catalog snapshots the registry; a lab enabled
+            # from the CLI after this daemon started must be registered first.
+            mhs_lab_routes.ensure_native_tools()
             disp = build_dispatcher(
                 self.cfg,
                 frame_id=st.root_frame_id,
@@ -15516,13 +15519,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             401,
                         )
                         return
-                    if have_cookie or local_auth.matches(header_token, _auth_token):
-                        pass  # already authenticated
-                    elif (
+                    bootstrap = (
                         local_auth.matches(qtok, _auth_token)
                         and method == "GET"
                         and _is_bootstrap_path(path)
+                    )
+                    # A sign-in link is scrubbed even when a cookie already
+                    # authenticates the request. `serve` opens one on every
+                    # start, and now that the cookie outlives the browser
+                    # session it is usually still set: answering 200 there
+                    # left the credential in the address bar and the history.
+                    if not bootstrap and (
+                        have_cookie or local_auth.matches(header_token, _auth_token)
                     ):
+                        pass  # already authenticated
+                    elif bootstrap:
                         # The root-page bootstrap: set the cookie and redirect
                         # to the same page with the credential stripped, so it
                         # survives in neither the address bar, the history
@@ -15558,7 +15569,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         self.send_header(
                             "Set-Cookie",
                             f"os_token={_auth_token}; Path=/; HttpOnly; "
-                            "SameSite=Strict",
+                            "SameSite=Strict; "
+                            f"Max-Age={local_auth.COOKIE_MAX_AGE_S}",
                         )
                         self.send_header("Content-Length", "0")  # keep-alive
                         self.end_headers()

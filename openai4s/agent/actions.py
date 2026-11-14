@@ -28,6 +28,7 @@ effects on import).
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, TypeAlias
 
@@ -273,6 +274,40 @@ UNEXECUTED_CELL_NOTE = (
 )
 
 
+# Appended to the native results when the reply says it will run code in a cell
+# or the kernel but carries no cell at all. Doubao Seed 2.1 Pro wrote "Now I'll
+# download the PDF in the kernel and extract its table" in 30 of 48 consecutive
+# replies and sent a web search or a fetch each time: nothing in a tool result
+# showed that no code had run, so it never sent the cell.
+ANNOUNCED_CELL_NOTE = (
+    "\n[system] NOTE: your reply says it will run code in a cell or the "
+    "kernel, but it carried no ```python cell, so no code ran: native tool "
+    "calls cannot run Python. To run code, send one fenced ```python (or "
+    "```r) cell as the ONLY action of your next reply, with no tool calls."
+)
+
+# What such a reply says, in the two languages the Web UI is used in. The
+# phrasing varies from turn to turn ("in the kernel", "entering the Python
+# kernel", "execute Python", "move into the Python runtime"), so a verb of
+# going or running next to Python, the kernel or the runtime counts too. A noun
+# like "single-cell" or "T cell" does not match: the cell has to be code. A
+# false alarm costs one sentence in a tool result; a miss left a model
+# announcing the same step for thirty turns.
+_ANNOUNCED_CELL = re.compile(
+    r"\b(?:python|code|foreground|r)\s+cell\b"
+    r"|\b(?:in|into|inside|via|using|through|within|to)\s+(?:the\s+|a\s+)?"
+    r"(?:python\s+|r\s+)?(?:kernel|runtime)\b"
+    r"|\b(?:enter|entering|execute|executing|run|running|switch|switching|"
+    r"move|moving|go|going)\b[^.\n]{0,60}\b(?:python|kernel|runtime)\b"
+    r"|代码单元|python\s*单元|在内核|内核中|运行时",
+    re.IGNORECASE,
+)
+
+# Native tools that do run code: a reply that names a cell next to one of them
+# is not a promise it broke.
+_CODE_RUNNING_TOOLS = frozenset({"exec_background"})
+
+
 def unexecuted_cell_note(content: str, action: Action | None) -> str:
     """The note for a native action that displaced a cell, else ``""``.
 
@@ -285,3 +320,20 @@ def unexecuted_cell_note(content: str, action: Action | None) -> str:
     if cell is None:
         return ""
     return UNEXECUTED_CELL_NOTE.format(language=cell.language)
+
+
+def announced_cell_note(content: str, action: Action | None) -> str:
+    """The note for a native batch whose reply promised a cell it never sent.
+
+    The counterpart of :func:`unexecuted_cell_note`: that one fires when a
+    complete cell was displaced by native calls, this one when the reply names
+    a cell or the kernel and carries no executable cell at all.
+    """
+    if not isinstance(action, NativeToolBatch):
+        return ""
+    if any(call.name in _CODE_RUNNING_TOOLS for call in action.calls):
+        return ""
+    text = content if isinstance(content, str) else ""
+    if extract_action(text) is not None or not _ANNOUNCED_CELL.search(text):
+        return ""
+    return ANNOUNCED_CELL_NOTE

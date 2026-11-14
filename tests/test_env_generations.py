@@ -768,6 +768,10 @@ def test_the_cli_reports_a_failed_apply_without_moving_the_pointer(
 
     assert code == 1
     assert "FAILED" in out.err
+    # What broke is the package manager's own last words. They were captured
+    # and then dropped, so conda 26's "Terms of Service have not been accepted"
+    # read as a bare "conda exited 1".
+    assert "Solving environment: failed" in out.err
     assert "current environment is unchanged" in out.err
 
 

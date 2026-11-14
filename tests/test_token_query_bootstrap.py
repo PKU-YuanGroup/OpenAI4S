@@ -217,6 +217,27 @@ def test_the_redirect_strips_the_credential_and_keeps_the_rest(gate):
     assert token not in location
 
 
+def test_a_sign_in_link_is_scrubbed_even_with_a_cookie(gate):
+    """`serve` opens the sign-in link on every start, and the cookie now
+    outlives the browser session, so the link usually arrives with a valid
+    cookie. Answering it 200 kept the credential in the address bar and the
+    history; it gets the same scrubbing redirect, and a refreshed cookie."""
+    request, token = gate
+    response = request(
+        "GET", f"/?token={token}&panel=timeline", {"Cookie": f"{COOKIE_NAME}={token}"}
+    )
+    assert response.status == 303
+    assert response.header("Location") == "/?panel=timeline"
+    assert (response.header("Set-Cookie") or "").startswith(f"{COOKIE_NAME}={token}")
+
+
+def test_a_cookie_still_serves_the_shell_without_a_link(gate):
+    request, token = gate
+    response = request("GET", "/", {"Cookie": f"{COOKIE_NAME}={token}"})
+    assert response.status == 200
+    assert response.header("Set-Cookie") is None
+
+
 def test_no_response_header_but_the_cookie_carries_the_token(gate):
     """History, Referer and proxy logs all read the *URL*. The cookie is the
     one place the credential is allowed to land."""
@@ -238,6 +259,18 @@ def test_the_cookie_is_httponly_and_samesite_strict(gate):
     assert "HttpOnly" in cookie
     assert "SameSite=Strict" in cookie
     assert "Path=/" in cookie
+
+
+def test_the_cookie_outlives_a_browser_restart(gate):
+    """A session cookie made every browser restart a fresh sign-in through
+    `openai4s url`, although the token itself persists across restarts. The
+    cookie now carries an explicit lifetime; the token stays the gate."""
+    from openai4s.server.local_auth import COOKIE_MAX_AGE_S
+
+    request, token = gate
+    cookie = request("GET", f"/?token={token}").header("Set-Cookie") or ""
+    assert f"Max-Age={COOKIE_MAX_AGE_S}" in cookie
+    assert COOKIE_MAX_AGE_S > 24 * 3600
 
 
 def test_the_bootstrap_is_visible_in_the_access_log(gate):
