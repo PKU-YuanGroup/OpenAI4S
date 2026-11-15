@@ -28,12 +28,20 @@ _PROTOCOLS = frozenset(
 )
 
 
+#: `EndpointModelError.reason` when the endpoint answered the listing request
+#: with 404: it authenticated nothing wrong, it simply has no such route.
+NO_LISTING_ROUTE = "no_listing_route"
+
+
 class EndpointModelError(ValueError):
     """A safe, user-facing failure while fetching endpoint model metadata."""
 
-    def __init__(self, message: str, status_code: int = 502) -> None:
+    def __init__(
+        self, message: str, status_code: int = 502, *, reason: str = ""
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.reason = reason
 
 
 class EndpointModelFetcher:
@@ -220,7 +228,8 @@ def _http_model_error(error: HTTPError, *, keyed: bool) -> EndpointModelError:
         )
     if error.code == 404:
         return EndpointModelError(
-            "the endpoint does not expose a model-listing route for this protocol"
+            "the endpoint does not expose a model-listing route for this protocol",
+            reason=NO_LISTING_ROUTE,
         )
     if 500 <= error.code < 600:
         return EndpointModelError("the endpoint returned a server error")

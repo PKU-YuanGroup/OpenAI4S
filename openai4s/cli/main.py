@@ -2022,12 +2022,23 @@ def cmd_env_apply(args) -> int:
         else:
             failed += 1
             print(f"  [{name}] FAILED: {result.detail}", file=sys.stderr)
+            # The exit status alone says nothing actionable; the package
+            # manager's own last lines do (an unaccepted channel ToS, a solver
+            # conflict, a network failure), and they were captured but dropped.
+            for line in _stderr_tail_lines(result.stderr_tail):
+                print(f"  [{name}]   {line}", file=sys.stderr)
             print(
                 f"  [{name}] the current environment is unchanged "
                 f"({result.previous or 'none'})",
                 file=sys.stderr,
             )
     return 1 if failed else 0
+
+
+def _stderr_tail_lines(tail: str, limit: int = 20) -> list[str]:
+    """The last non-blank lines of a failed build's stderr, for the terminal."""
+    lines = [line.rstrip() for line in str(tail or "").splitlines() if line.strip()]
+    return lines[-limit:]
 
 
 def cmd_env_list(args) -> int:

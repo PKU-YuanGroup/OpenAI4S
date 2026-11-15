@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import Any, Callable, Iterable, Mapping, Sequence, cast
 
-from .actions import route_action, unexecuted_cell_note
+from .actions import announced_cell_note, route_action, unexecuted_cell_note
 from .events import (
     ActionRouted,
     OutcomeProduced,
@@ -265,7 +265,9 @@ class AgentEngine:
         if not isinstance(outcome, ExecutionOutcome):
             raise TypeError("executor must return ExecutionOutcome")
         outcome = self._note_unexecuted_cell(
-            outcome, unexecuted_cell_note(reply.content, action)
+            outcome,
+            unexecuted_cell_note(reply.content, action)
+            or announced_cell_note(reply.content, action),
         )
         circuit.observe_execution(action, outcome)
         state.messages.extend(dict(message) for message in outcome.history_messages)

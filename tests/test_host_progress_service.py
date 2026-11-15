@@ -32,6 +32,32 @@ def _service(store, state):
     )
 
 
+def test_an_unchanged_todo_list_tells_the_model_to_do_the_step(tmp_path):
+    """Doubao Seed 2.1 Pro re-sent the same list while its prose promised the
+    step; a bare ok=True left it nothing to act on until the circuit tripped."""
+    from openai4s.host.progress import TODO_UNCHANGED_NOTE
+    from openai4s.tools.progress import WriteTodosTool
+    from openai4s.tools.registry import format_tool_result
+
+    store = _store(tmp_path)
+    service = _service(store, {"frame_id": None, "sink": None})
+    todos = {"todos": [{"id": "s1", "content": "fetch", "status": "in_progress"}]}
+
+    first = service.todo_write(todos)
+    again = service.todo_write(todos)
+    changed = service.todo_write(
+        {"todos": [{"id": "s1", "content": "fetch", "status": "completed"}]}
+    )
+
+    assert "unchanged" not in first and "content" not in first
+    assert again["unchanged"] is True
+    assert again["todos"] == first["todos"]
+    assert TODO_UNCHANGED_NOTE in format_tool_result(WriteTodosTool(), again)
+    assert "unchanged" not in changed
+    assert service.todo_write({"todos": []}) == {"ok": True, "count": 0, "todos": []}
+    assert "unchanged" not in service.todo_write({"todos": []})
+
+
 def test_todos_normalize_replace_clear_and_remain_session_local(tmp_path):
     store = _store(tmp_path)
     state = {"frame_id": None, "sink": None}

@@ -338,6 +338,7 @@ _PROGRESS_REASONS = frozenset(
         "consecutive_malformed",
         "similar_tool_error",
         "long_text_repeat",
+        "empty_reply_repeat",
         "other",
     }
 )

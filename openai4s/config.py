@@ -209,8 +209,11 @@ class LLMConfig:
     # Secret: sourced from the environment (or the git-ignored .env). Empty
     # when unset; llm.chat then raises a clear error.
     api_key: str = field(default="", repr=False)
-    # Deep-thinking models: keep a conservative default output cap.
-    max_tokens: int = int(os.environ.get("OPENAI4S_LLM_MAX_TOKENS", "4096"))
+    # Bounded, but with room to think: reasoning models spend completion tokens
+    # on thinking before any text or tool call. At 4096, GLM 5.3 on the Ark
+    # Agent Plan (thinking cannot be disabled) ended every agent turn with
+    # `finish_reason: length` and nothing to act on, and the turn looped.
+    max_tokens: int = int(os.environ.get("OPENAI4S_LLM_MAX_TOKENS", "16384"))
     temperature: float = float(os.environ.get("OPENAI4S_LLM_TEMPERATURE", "0.7"))
     timeout_s: float = float(os.environ.get("OPENAI4S_LLM_TIMEOUT", "120"))
     # Left unparsed on purpose: a ``float()`` here runs inside ``__init__``,

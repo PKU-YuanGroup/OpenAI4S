@@ -33,6 +33,14 @@ class ProgressStore(Protocol):
     def get_setting(self, key: str, default: str | None = None) -> str | None: ...
 
 
+#: The tool-result text for a todo list re-sent without a change.
+TODO_UNCHANGED_NOTE = (
+    "The task list is unchanged; re-sending it is not progress. Do the "
+    "in-progress step itself now: the tool call that performs it, or one "
+    "```python cell with no tool calls in that reply."
+)
+
+
 class ProgressService:
     """Own one dispatcher's transient todos and persisted plan-step ticks."""
 
@@ -62,8 +70,17 @@ class ProgressService:
                     "priority": todo.get("priority", "medium"),
                 }
             )
+        unchanged = bool(clean) and clean == self._todos
         self._todos = clean
-        return {"ok": True, "count": len(clean), "todos": clean}
+        result: dict = {"ok": True, "count": len(clean), "todos": clean}
+        if unchanged:
+            # Doubao Seed 2.1 Pro re-sent an identical list turn after turn
+            # while its prose announced the step it never took. A bare
+            # `ok=True` gave it nothing to act on until the progress circuit
+            # stopped the turn; `content` is what the tool result shows.
+            result["unchanged"] = True
+            result["content"] = TODO_UNCHANGED_NOTE
+        return result
 
     def todo_read(self) -> dict:
         return {"todos": self._todos}

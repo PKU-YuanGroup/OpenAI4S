@@ -1399,7 +1399,7 @@
     }
   },
   {
-    "description": "Submit a long-running Python cell to an independent background job. A Web session writes a persistent receipt (code SHA-256, not the source) before the worker starts and reports persistent true. A CLI or sub-agent job reports persistent false and stays in memory. After a daemon restart an unfinished Web job reads as outcome_unknown and is not replayed.",
+    "description": "Submit a long-running Python job (minutes or more) to an independent background worker. Not for ordinary code: to run Python now, reply with one fenced ```python cell and no tool calls; it runs in the persistent foreground kernel. A Web session writes a persistent receipt (code SHA-256, not the source) before the worker starts and reports persistent true. A CLI or sub-agent job reports persistent false and stays in memory. After a daemon restart an unfinished Web job reads as outcome_unknown and is not replayed.",
     "name": "exec_background",
     "parameters": {
       "properties": {

@@ -8,14 +8,14 @@ One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_u
 
 | provider | wire | default model | vision |
 |---|---|---|:---:|
-| `ark` | openai | `doubao-seed-2.0-pro` (+10 more via plan/v3) | ✅ |
+| `ark` | openai | `doubao-seed-2.1-pro` (+11 more via plan/v3) | ✅ |
 | `chatgpt` | openai | `gpt-5` | ✅ |
 | `openai_responses` | responses | `gpt-5` | — |
 | `claude` | anthropic | `claude-sonnet-4-5` | ✅ |
 | `gemini` | gemini | `gemini-2.5-flash` | ✅ |
 | `ollama` | openai | `gemma4:31b` (cloud) | ✅ |
 
-`ark` is Volcengine's plan/v3 gateway — one endpoint + key serving `doubao-seed-2.0-{pro,code,lite,mini}`, `glm-5.2`, `kimi-k2.7-code`, `kimi-k2.6`, `deepseek-v4-{pro,flash}`, `minimax-{m3,m2.7}`. These are catalog presets, not saved profiles: no profile is pre-registered, so save one for each model you want to switch to (First-run setup can fetch the ids the endpoint actually serves). Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
+`ark` is Volcengine's Agent Plan gateway (the provider's default endpoint) — one endpoint + key serving the plan's text models: `doubao-seed-2.1-pro`, `doubao-seed-evolving`, `doubao-seed-2.1-lite`, `doubao-seed-2.0-mini`, `glm-5.3`, `glm-5.3-flash`, `kimi-k3.1-pro`, `kimi-k2.8-preview`, `deepseek-v4-{pro,flash}` and `deepseek-v4.1-flash` (plus its `-economy` variant), as listed in [the plan's model table](https://www.volcengine.com/docs/82379/2366394). The gateway answers any other id with HTTP 404 `UnsupportedModel`; 1.0.0's `doubao-seed-2.0-{pro,code,lite}` and `minimax-*` presets are no longer served. These are catalog presets, not saved profiles: no profile is pre-registered, so save one for each model you want to switch to. The plan gateway has no model-listing route, so First-run setup's **Fetch models** offers this catalog for it; other endpoints are asked for the ids they actually serve. Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
 
 Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
 

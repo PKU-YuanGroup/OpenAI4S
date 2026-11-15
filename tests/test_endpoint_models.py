@@ -316,3 +316,108 @@ def test_discovery_asks_where_and_as_whom_dispatch_would(tmp_path, monkeypatch):
 
     service.discover_models({"provider": "chatgpt", "api_key": "sk-typed"})
     assert seen[-1]["api_key"] == "sk-typed"
+
+
+def test_a_missing_listing_route_is_tagged_so_callers_can_tell_it_apart():
+    error = HTTPError("https://example/v1/models", 404, "no", {}, io.BytesIO())
+    with pytest.raises(EndpointModelError, match="model-listing route") as raised:
+        _raising(error).fetch(
+            provider="ark", base_url="https://example/v1", api_key="k"
+        )
+    assert raised.value.reason == "no_listing_route"
+
+
+def _discovery_service(tmp_path):
+    from openai4s.config import Config, LLMConfig
+    from openai4s.llm import provider_specs
+    from openai4s.server.model_profiles import ModelProfileService
+    from openai4s.store import get_store
+
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    return ModelProfileService(get_store(cfg.db_path), cfg, providers=provider_specs)
+
+
+@pytest.mark.stubbed_backend
+def test_the_agent_plan_gateway_offers_the_plan_catalog(tmp_path, monkeypatch):
+    """Volcengine's Agent Plan gateway, the `ark` default, has no `/models`
+    route: a key it accepts gets a 404 there. First-run setup's "Fetch models"
+    therefore failed for the default protocol every time. The plan's model set
+    is the published table the Ark presets mirror, so that is offered instead,
+    marked as the catalog rather than as what the endpoint listed."""
+    from openai4s import llm
+    from openai4s.server.endpoint_models import NO_LISTING_ROUTE
+
+    for name in ("OPENAI4S_ARK_BASE_URL", "OPENAI4S_LLM_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+    def _no_route(self, **_kwargs):
+        raise EndpointModelError(
+            "the endpoint does not expose a model-listing route for this protocol",
+            reason=NO_LISTING_ROUTE,
+        )
+
+    monkeypatch.setattr(EndpointModelFetcher, "fetch", _no_route)
+    service = _discovery_service(tmp_path)
+
+    result = service.discover_models({"provider": "ark", "api_key": "k"})
+
+    presets = [p.model for p in llm.model_presets("ark") if p.model]
+    assert result["source"] == "catalog"
+    assert result["models"] == presets
+    assert result["count"] == len(presets)
+    assert result["default_model"] == llm.provider_specs()["ark"]["model"]
+    assert result["default_model"] in presets
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "body",
+    [
+        # the platform (`/api/v3`) and Coding Plan gateways are not the plan
+        {"provider": "ark", "base_url": "https://ark.cn-beijing.volces.com/api/v3"},
+        {
+            "provider": "ark",
+            "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+        },
+        # an ark-compatible proxy is someone else's endpoint
+        {"provider": "ark", "base_url": "https://proxy.example/api/plan/v3"},
+        # another protocol at the plan host keeps its own answer
+        {
+            "provider": "chatgpt",
+            "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+        },
+    ],
+)
+def test_only_the_agent_plan_gateway_falls_back_to_the_catalog(
+    tmp_path, monkeypatch, body
+):
+    from openai4s.server.endpoint_models import NO_LISTING_ROUTE
+    from openai4s.server.model_profiles import ModelProfileError
+
+    def _no_route(self, **_kwargs):
+        raise EndpointModelError("no route", reason=NO_LISTING_ROUTE)
+
+    monkeypatch.setattr(EndpointModelFetcher, "fetch", _no_route)
+    with pytest.raises(ModelProfileError, match="no route"):
+        _discovery_service(tmp_path).discover_models({**body, "api_key": "k"})
+
+
+@pytest.mark.stubbed_backend
+def test_an_auth_refusal_at_the_agent_plan_gateway_is_not_papered_over(
+    tmp_path, monkeypatch
+):
+    """Without an accepted key the gateway answers 401, not 404: that must stay
+    the user's error, never become a catalog that looks like a success."""
+    from openai4s.server.model_profiles import ModelProfileError
+
+    def _refused(self, **_kwargs):
+        raise EndpointModelError("the endpoint rejected the API key")
+
+    monkeypatch.setattr(EndpointModelFetcher, "fetch", _refused)
+    with pytest.raises(ModelProfileError, match="rejected the API key"):
+        _discovery_service(tmp_path).discover_models(
+            {"provider": "ark", "api_key": "k"}
+        )

@@ -27,7 +27,13 @@ class CapabilityError(ValueError):
 SUPPORTED_WIRES = frozenset({"openai", "responses", "anthropic", "gemini"})
 
 #: Bump when the probe's tiny request shape changes so old receipts go stale.
-PROBE_VERSION = 1
+#: 2: the tool-call probe's completion budget rose from 32 to
+#: `CAPABILITY_PROBE_MAX_TOKENS`, so a version-1 "unknown" asks for a re-test.
+PROBE_VERSION = 2
+
+#: Completion budget of the tool-call probe. Reasoning models count their
+#: thinking against it before they emit the call's arguments.
+CAPABILITY_PROBE_MAX_TOKENS = 256
 
 #: The only tool a capability probe may name.  Schema is verified; the tool
 #: is never executed.
@@ -271,7 +277,7 @@ _BUILTIN_PROVIDERS: dict[str, ProviderCapabilities] = {
         provider="ark",
         wire="openai",
         default_base_url="https://ark.cn-beijing.volces.com/api/plan/v3",
-        default_model="doubao-seed-2.0-pro",
+        default_model="doubao-seed-2.1-pro",
         context_window_tokens=262_144,
         max_output_tokens=32_768,
         tool_calling=True,

@@ -41,6 +41,14 @@ TOKEN_HEADER = "X-OpenAI4S-Token"
 #: short enough to paste.
 _TOKEN_BYTES = 32
 
+#: Lifetime of the browser's `os_token` cookie. Without one it was a session
+#: cookie: the token persists across daemon restarts, but every browser restart
+#: dropped the cookie and sent the user back to `openai4s url` -- the macOS app
+#: has no `openai4s` on PATH to run it with. The token stays the gate: when it
+#: is rotated or the data directory is replaced, the old cookie simply stops
+#: matching.
+COOKIE_MAX_AGE_S = 30 * 24 * 3600
+
 
 def token_path(data_dir: Path | str) -> Path:
     return Path(data_dir).expanduser() / TOKEN_FILENAME

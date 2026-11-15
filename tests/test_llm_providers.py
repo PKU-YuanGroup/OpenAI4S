@@ -190,7 +190,7 @@ def test_openai_wire_url_and_auth(cap):
     llm.chat([{"role": "user", "content": "hi"}], c)
     assert cap.url == "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions"
     assert cap.headers["Authorization"] == "Bearer test-key"
-    assert cap.payload["model"] == "doubao-seed-2.0-pro"
+    assert cap.payload["model"] == "doubao-seed-2.1-pro"
 
 
 def test_anthropic_wire_url_and_auth(cap):
@@ -397,7 +397,9 @@ def test_unsupported_none_effort_does_not_enable_sampling(cap, monkeypatch, mode
         ("chatgpt", "gpt-5-chat-latest"),
         ("chatgpt", "gpt-4o"),
         ("chatgpt", "gpt-4.1-mini"),
-        ("ark", "doubao-seed-2.0-pro"),
+        ("ark", "doubao-seed-2.1-pro"),
+        ("ark", "kimi-k3"),
+        ("ark", "kimi-k2.8-preview"),
         ("ollama", "gpt-oss:20b"),
     ],
 )
@@ -411,6 +413,22 @@ def test_openai_wire_chat_models_keep_max_tokens_and_temperature(cap, provider, 
     assert cap.payload["max_tokens"] == 1234
     assert cap.payload["temperature"] == 0.2
     assert "max_completion_tokens" not in cap.payload
+
+
+@pytest.mark.parametrize(
+    "model", ["kimi-k3.1-pro", "kimi-k3-1-pro-261024", "KIMI-K3.1-PRO"]
+)
+def test_kimi_k3_1_gets_no_temperature(cap, model):
+    """Ark serves Kimi K3.1 with fixed sampling: any explicit temperature but 1
+    is HTTP 400, so every turn of a kimi-k3.1-pro profile failed."""
+    llm.chat(
+        [{"role": "user", "content": "hi"}],
+        _cfg("ark", model=model),
+        max_tokens=1234,
+        temperature=0.2,
+    )
+    assert "temperature" not in cap.payload
+    assert cap.payload["max_tokens"] == 1234
 
 
 @pytest.mark.parametrize(

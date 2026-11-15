@@ -38,7 +38,7 @@ def test_live_ark_stream_stop_and_next_call(monkeypatch):
     cfg = LLMConfig(
         provider="ark",
         base_url=endpoint,
-        model="doubao-seed-2.0-pro",
+        model="doubao-seed-2.1-pro",
         max_tokens=1024,
         timeout_s=30,
         total_timeout_s=90,

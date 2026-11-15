@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+from typing import Any
 
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
@@ -33,6 +34,37 @@ class WriteFileTool(Tool):
     side_effect_class = "workspace_write"
     resource_key_prefix = "workspace"
     resource_target_key = "path"
+
+    def render_observation(self, result: Any) -> str | None:
+        """Say that a script written here has not been run.
+
+        Doubao Seed 2.1 Pro wrote its analysis script with this tool, said it
+        would "use a code cell", and wrote the identical file again -- five
+        times, a byte count the only answer -- until the no-progress circuit
+        stopped the turn. Nothing but a cell runs a script, and the result
+        gave no sign that it had not. A Python cell still receives the plain
+        ``{path, bytes}``.
+        """
+        path = result.get("path") if isinstance(result, dict) else None
+        if not isinstance(path, str):
+            return None
+        lowered = path.lower()
+        if lowered.endswith(".py"):
+            run = f"exec(open({path!r}).read())"
+            fence = "python"
+        elif lowered.endswith(".r"):
+            run = f"source({path!r})"
+            fence = "r"
+        else:
+            return None
+        from openai4s.tools.registry import _render_result_body
+
+        return (
+            f"{_render_result_body(result)}\n"
+            "The file is written; nothing has run it. To run it now, reply "
+            f"with one fenced ```{fence} cell and no tool calls, for example "
+            f"`{run}`."
+        )
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
         relative = arguments.get("path", "")
