@@ -6,9 +6,9 @@ a ``Retry-After`` is now distinguishable from a 401 without parsing English.
 
 The retry policy is deliberately narrow:
 
-  * only failures whose reply delivered nothing — a whole-response POST and a
-    connection/response-header failure can be replayed; a stream that already
-    delivered events cannot, because the caller has seen those bytes;
+  * only statuses that are retryable *and* whose request committed nothing —
+    a whole-response POST can be replayed; a stream that already delivered
+    events cannot, because the caller has seen those bytes;
   * bounded attempts with exponential backoff and jitter (many clients hitting
     one rate-limited endpoint must not resynchronise on the same schedule);
   * ``Retry-After`` wins over the computed backoff when the server sent one;
@@ -687,10 +687,6 @@ def post_json(
 
     def attempt() -> dict:
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        # Set once the status line and headers arrived. A failure after that
-        # point is a body read: the provider already produced (and billed) the
-        # reply, so it must not join the connection/header replay below.
-        headers_received = False
         try:
             with _exchange(state, timeout, provider, "post_json") as exchange:
                 try:
@@ -707,7 +703,6 @@ def post_json(
                         state=state,
                     ) from e
                 state.sent = True
-                headers_received = True
                 with resp:
                     body = _read_body(
                         resp,
@@ -732,23 +727,17 @@ def post_json(
             ) from e
         except (OSError, http.client.HTTPException) as error:
             state.remaining(provider, "post_json")
-            # A whole-response call is all-or-nothing: the caller only sees a
-            # reply once the body is complete, so replaying a connection or
-            # header failure here cannot duplicate visible output. A dropped
-            # connection / reset is a transient upstream condition, not a
-            # permanent refusal, so it joins the bounded backoff loop instead
-            # of failing the turn on the first blip. A reset or truncation
-            # while reading the body also lands here, but by then the reply
-            # was generated; that stays a single attempt, like ``on_truncated``.
+            # Never replayed. urllib reports a failure to connect or to write
+            # the request as ``URLError`` (handled above), so a raw error here
+            # comes from ``getresponse`` or the body read: the provider already
+            # has the whole request and may be generating -- and billing -- the
+            # reply. "Nothing reached the caller" is not "nothing was sent"; a
+            # replay would buy a second generation that no usage ledger sees.
             raise TransportError(
-                (
-                    "LLM connection or response headers failed"
-                    if not headers_received
-                    else "LLM response body read failed"
-                ),
+                "LLM connection or response headers failed",
                 provider=provider,
                 operation="post_json",
-                retryable=not headers_received,
+                retryable=False,
             ) from error
 
     return _retry_loop(
@@ -791,10 +780,10 @@ def post_sse(
     rows. Tool calls are control-plane actions, so a malformed non-empty event
     is surfaced instead of being silently discarded.
 
-    Only opening the response (connect, status line, headers) is retried. The
-    moment an event reaches ``on_event`` the caller has observed output, and
-    replaying the request would re-emit it — so any failure from that point
-    carries ``output_committed=True`` and is raised as-is.
+    Only the *connect* is retried. The moment an event reaches ``on_event`` the
+    caller has observed output, and replaying the request would re-emit it —
+    so any failure from that point carries ``output_committed=True`` and is
+    raised as-is.
     """
     data = json.dumps(payload).encode("utf-8")
     state = call_state or CallState(
@@ -838,17 +827,15 @@ def post_sse(
             ) from e
         except (OSError, http.client.HTTPException) as error:
             state.remaining(provider, "post_sse")
-            # This branch is reached while opening the response, before any
-            # event has been handed to ``on_event`` -- a read failure inside
-            # the stream is turned into ``StreamReadError`` by ``_consume``
-            # and keeps its own no-replay rule. Nothing visible was committed
-            # here, so a connection reset / dropped header is retried within
-            # the same bounded attempt, budget and deadline as a 503.
+            # Never replayed, for the reason given in ``post_json``: this raw
+            # error comes from ``getresponse``, after the request was written.
+            # No event reached ``on_event`` yet, but the provider may already
+            # be generating -- and billing -- the reply.
             raise TransportError(
                 "LLM connection or response headers failed",
                 provider=provider,
                 operation="post_sse",
-                retryable=True,
+                retryable=False,
             ) from error
 
     return _retry_loop(

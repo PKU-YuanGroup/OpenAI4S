@@ -356,15 +356,17 @@ def test_connection_error_is_retryable(monkeypatch):
         http.client.BadStatusLine("not http"),
     ],
 )
-def test_connection_or_header_failure_is_retried_on_whole_response(
-    monkeypatch, failure
+@pytest.mark.parametrize("stream", [False, True])
+def test_header_failure_after_the_request_was_written_is_not_replayed(
+    monkeypatch, failure, stream
 ):
-    """The generic ``OSError``/``HTTPException`` branch used to be a hard
-    first-attempt failure ("LLM connection or response headers failed").
+    """urllib raises these raw only from ``getresponse``, after the whole
+    request was written (a connect or send failure arrives as ``URLError``).
 
-    A whole-response POST commits nothing until its body is complete, so a
-    dropped connection or a malformed status line is a transient upstream
-    condition worth the same bounded retry as a 503.
+    Nothing reached the caller yet, but the provider already has the request
+    and may be generating -- and billing -- the reply: a replay would buy a
+    second generation that no usage ledger records. So, like a reset during
+    the send, it is a single attempt.
     """
     state = []
 
@@ -375,8 +377,17 @@ def test_connection_or_header_failure_is_retried_on_whole_response(
         return _Resp(b'{"ok":1}')
 
     monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
-    assert post_json("https://x.invalid", {}, {}, 5, sleep=_Recorder()) == {"ok": 1}
-    assert len(state) == 2
+    sleeper = _Recorder()
+    with pytest.raises(TransportError) as caught:
+        if stream:
+            post_sse("https://x.invalid", {}, {}, 5, lambda _e: None, sleep=sleeper)
+        else:
+            post_json("https://x.invalid", {}, {}, 5, sleep=sleeper)
+    assert caught.value.retryable is False
+    assert caught.value.output_committed is False
+    assert caught.value.__cause__ is failure
+    assert len(state) == 1
+    assert sleeper.slept == []
 
 
 @pytest.mark.parametrize(
@@ -429,28 +440,6 @@ def test_sse_connect_failure_is_retried(monkeypatch):
         state.append(1)
         if len(state) == 1:
             raise _http_error(503)
-        return iter([b'data: {"delta":"hi"}\n', b"\n"])
-
-    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
-    seen = []
-    post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
-    assert seen == [{"delta": "hi"}]
-    assert len(state) == 2
-
-
-def test_sse_header_failure_is_retried_before_any_event(monkeypatch):
-    """A connection/header failure before the first event committed nothing.
-
-    The generic branch in ``post_sse`` runs while opening the response, so no
-    event has reached ``on_event``; ``_consume`` has its own no-replay rule
-    for read failures after this point. Retrying here cannot duplicate output.
-    """
-    state = []
-
-    def urlopen(*a, **k):
-        state.append(1)
-        if len(state) == 1:
-            raise ConnectionResetError("reset before headers")
         return iter([b'data: {"delta":"hi"}\n', b"\n"])
 
     monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
