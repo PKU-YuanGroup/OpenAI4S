@@ -280,11 +280,15 @@ def _deactivate_openmhs_native_surface() -> None:
     enabled adapter. Clean both sides of the function boundary so later
     registry/catalog contracts see the built-in surface only.
     """
-    module = sys.modules.get("openai4s_mhs")
-    if module is not None:
-        deactivate = getattr(module, "deactivate", None)
+    # The pinned adapter keeps ``deactivate`` in ``openai4s_mhs.tools``; its
+    # package exports only ``install``. The manual sweep below cannot reset the
+    # adapter's install mark or its ``_m_mhs_*`` handlers, and with the mark
+    # left set the next ``install()`` returns True without registering a tool.
+    for name in ("openai4s_mhs", "openai4s_mhs.tools"):
+        deactivate = getattr(sys.modules.get(name), "deactivate", None)
         if callable(deactivate):
             deactivate()
+            break
 
     from openai4s.tools import registry
 
@@ -461,8 +465,10 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     try:
         _quiesce_judgment_shadows()
     finally:
-        _deactivate_openmhs_native_surface()
-        reset_singletons()
+        try:
+            _deactivate_openmhs_native_surface()
+        finally:
+            reset_singletons()
     # Not drained at setup: higher-scoped fixtures this test instantiated ran
     # before this fixture did, and their refusals belong to this test.
     _fail_on_real_data_dir_violations()

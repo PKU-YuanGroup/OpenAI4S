@@ -687,6 +687,10 @@ def post_json(
 
     def attempt() -> dict:
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        # Set once the status line and headers arrived. A failure after that
+        # point is a body read: the provider already produced (and billed) the
+        # reply, so it must not join the connection/header replay below.
+        headers_received = False
         try:
             with _exchange(state, timeout, provider, "post_json") as exchange:
                 try:
@@ -703,6 +707,7 @@ def post_json(
                         state=state,
                     ) from e
                 state.sent = True
+                headers_received = True
                 with resp:
                     body = _read_body(
                         resp,
@@ -732,12 +737,18 @@ def post_json(
             # header failure here cannot duplicate visible output. A dropped
             # connection / reset is a transient upstream condition, not a
             # permanent refusal, so it joins the bounded backoff loop instead
-            # of failing the turn on the first blip.
+            # of failing the turn on the first blip. A reset or truncation
+            # while reading the body also lands here, but by then the reply
+            # was generated; that stays a single attempt, like ``on_truncated``.
             raise TransportError(
-                "LLM connection or response headers failed",
+                (
+                    "LLM connection or response headers failed"
+                    if not headers_received
+                    else "LLM response body read failed"
+                ),
                 provider=provider,
                 operation="post_json",
-                retryable=True,
+                retryable=not headers_received,
             ) from error
 
     return _retry_loop(
@@ -780,10 +791,10 @@ def post_sse(
     rows. Tool calls are control-plane actions, so a malformed non-empty event
     is surfaced instead of being silently discarded.
 
-    Only the *connect* is retried. The moment an event reaches ``on_event`` the
-    caller has observed output, and replaying the request would re-emit it —
-    so any failure from that point carries ``output_committed=True`` and is
-    raised as-is.
+    Only opening the response (connect, status line, headers) is retried. The
+    moment an event reaches ``on_event`` the caller has observed output, and
+    replaying the request would re-emit it — so any failure from that point
+    carries ``output_committed=True`` and is raised as-is.
     """
     data = json.dumps(payload).encode("utf-8")
     state = call_state or CallState(

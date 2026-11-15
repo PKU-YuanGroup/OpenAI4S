@@ -285,7 +285,8 @@ def test_named_stop_returns_adapter_failures_as_soft_errors(route):
 
 
 @pytest.mark.parametrize(
-    "mode", ["absent", "broken", "dependency_missing", "disabled", "enabled"]
+    "mode",
+    ["absent", "broken", "dependency_missing", "disabled", "adapter_off", "enabled"],
 )
 def test_optional_import_hook_reports_broken_installed_hosts(tmp_path, mode):
     script = """

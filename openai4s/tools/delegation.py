@@ -113,20 +113,26 @@ class DelegateTaskTool(Tool):
         detail = super().declared_failure(result)
         if detail is not None:
             return detail
-        if isinstance(result, list) and result:
-            # A fan-out is a failed call only when no child produced a usable
-            # result; one failed sibling must not hide the others.
-            reasons = [_child_failure_reason(item) for item in result]
-            if all(reason is not None for reason in reasons):
-                return reasons[0]
-            return None
+        # One child per call: the schema types ``request`` as a string, so the
+        # runner's list (fan-out) answer cannot reach this tool.
         return _child_failure_reason(result)
 
 
 def _child_failure_reason(result: Any) -> str | None:
     if not isinstance(result, dict):
         return None
-    if result.get("task_status") != "failed" and result.get("stop_reason") != "error":
+    # The Step card's precedence (``host_dispatch._delegate_result_status``):
+    # a declared task_status is authoritative, so a max_turns child kept at
+    # ``partial`` is not a failure; without one, an error stop or a failed
+    # lifecycle snapshot (a reused terminal child with no stored envelope) is.
+    task_status = result.get("task_status")
+    if isinstance(task_status, str):
+        failed = task_status == "failed"
+    else:
+        failed = (
+            result.get("stop_reason") == "error" or result.get("status") == "failed"
+        )
+    if not failed:
         return None
     detail = result.get("error")
     return str(detail) if detail else "sub-agent failed"

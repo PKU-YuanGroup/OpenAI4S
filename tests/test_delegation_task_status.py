@@ -1435,14 +1435,17 @@ def test_single_child_soft_fail_still_counts():
     assert DelegateTaskTool().declared_failure({"error": "boom"}) == "boom"
 
 
-def test_a_fanout_fails_only_when_every_child_failed():
+def test_failure_follows_the_step_card_precedence():
+    """The tool's ok must agree with the Step card's ``_delegate_result_status``."""
+
     tool = DelegateTaskTool()
-    bad = _failed_child()
-    good = {"task_status": "completed", "stop_reason": "submitted", "output": "ok"}
-    assert (
-        tool.declared_failure([bad, bad]) == "LLM connection or response headers failed"
-    )
-    assert tool.declared_failure([good, bad]) is None
+    # A reused terminal child with no stored envelope answers with its
+    # lifecycle snapshot: no task_status, ``status: failed`` -- an error card.
+    snapshot = {"status": "failed", "task_status": None, "error": "boom"}
+    assert tool.declared_failure(snapshot) == "boom"
+    # The same snapshot of a max_turns child kept at partial is a warning card.
+    kept = {"status": "failed", "task_status": "partial", "error": "max_turns"}
+    assert tool.declared_failure(kept) is None
 
 
 def test_execute_tool_call_marks_a_transport_failed_child_as_an_error():

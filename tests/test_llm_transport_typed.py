@@ -379,6 +379,43 @@ def test_connection_or_header_failure_is_retried_on_whole_response(
     assert len(state) == 2
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionResetError("reset mid-body"),
+        http.client.IncompleteRead(b'{"partial":'),
+    ],
+)
+def test_whole_response_body_failure_after_headers_is_not_replayed(
+    monkeypatch, failure
+):
+    """Headers arrived, so the provider already generated (and billed) the reply.
+
+    The same generic ``OSError``/``HTTPException`` branch also catches a reset
+    or truncation raised while the body is read. Replaying that buys the same
+    answer again, so it stays a single attempt, like a clean short read.
+    """
+
+    class _BrokenBody(_Resp):
+        def read1(self, *_args):
+            raise failure
+
+        read = read1
+
+    state = []
+
+    def urlopen(*a, **k):
+        state.append(1)
+        return _BrokenBody(b'{"partial":')
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    with pytest.raises(TransportError) as caught:
+        post_json("https://x.invalid", {}, {}, 5, sleep=_Recorder())
+    assert caught.value.retryable is False
+    assert caught.value.__cause__ is failure
+    assert len(state) == 1
+
+
 # --------------------------------------------------------------------------
 # streams: the no-retry-after-output rule
 # --------------------------------------------------------------------------
