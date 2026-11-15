@@ -2,11 +2,81 @@
 
 [中文说明](upgrading_zh.md)
 
-An install that is already on 0.3.1 reads the next section before the first
-start of 1.0.0. An install that is already on 0.3.0 reads the section after it
-before the first start of 0.3.1. A database still on 0.2.x is migrated by 0.3.1
-straight to schema 35 in one open: read the later section for the
-steps up to schema 32 and the next section for 33 through 35.
+An install that is already on 1.0.0 reads the next section before the first
+start of 1.0.1. An install that is already on 0.3.1 reads "Upgrading to 1.0.0"
+before the first start of 1.0.0; one that goes straight to 1.0.1 reads that
+section and "Upgrading to 1.0.1", and its first open migrates schema 35 to 43.
+An install that is already on 0.3.0 reads "Upgrading to 0.3.1" before the first
+start of 0.3.1. A database still on 0.2.x is migrated by 0.3.1 straight to
+schema 35 in one open: read "Upgrading from 0.2.x to 0.3.0" for the steps up to
+schema 32 and "Upgrading to 0.3.1" for 33 through 35.
+
+## Upgrading to 1.0.1 (schema 36 → 43)
+
+Stop the daemon (`openai4s stop`, then check `openai4s status`) and copy the
+whole data directory while nothing is running, including any
+`openai4s.db-wal` or `openai4s.db-journal` file:
+
+```bash
+cp -a ~/.openai4s ~/.openai4s-before-1.0.1
+```
+
+The data directory is `~/.openai4s` unless `OPENAI4S_DATA_DIR` names another
+one. The container image keeps its data at `/data` (`OPENAI4S_DATA_DIR=/data`):
+that is the `openai4s-data` named volume in `compose.yaml`, or the
+`openai4s-data` PersistentVolumeClaim in `deploy/kubernetes.yaml`. Stop the
+container, or scale the Deployment to zero, and back up the volume or the PVC
+before you start the 1.0.1 image.
+
+For an existing PyPI installation, activate its environment and run
+`python -m pip install --upgrade "openai4s[science]==1.0.1"`. For a source
+checkout, `git fetch --tags && git checkout v1.0.1 && git submodule update --init third_party/OpenMHS`,
+then `./setup.sh`.
+
+The first command that opens the database migrates it from schema 36 to 43.
+`doctor` and `diagnostics` inspect the schema without upgrading it: `doctor`
+reports the pending upgrade as a warning, and `diagnostics` records it in its
+bundle. Migrations 37 through 43 belong to the agentic RL runtime (see
+[rl/README.md](rl/README.md)). They create `rl_*` tables and indexes, which
+start empty, and record themselves in `schema_migrations`; no table, index or
+row that 1.0.0 stored is altered or removed. Each one adds:
+
+| Version | Adds |
+| --- | --- |
+| 37 | `rl_runtime`: the trajectory tables (episodes, observations, decisions, segments, execution events, reward annotations, cost records) and the run receipts table |
+| 38 | `rl_dataset_snapshots`: dataset snapshot metadata |
+| 39 | `rl_segment_parent`: the `parent_segment_id` column of `rl_segments`, and its index |
+| 40 | `rl_budget_ledger`: budget ledgers and their allocations |
+| 41 | `rl_resource_admission`: resource admissions and their allocations |
+| 42 | `rl_phase_bindings`: owner-fenced phase bindings |
+| 43 | `rl_run_results`: run requests, frozen run results and step receipts |
+
+The only `ALTER TABLE` among them is in migration 39. It adds
+`parent_segment_id` to `rl_segments` when the column is missing, and
+`rl_segments` is a table that migration 37 creates in the same upgrade. The
+table definitions are in `openai4s/storage/rl.py` and
+`openai4s/storage/rl_runs.py`.
+
+Before it changes anything, the migration copies the database to a file named
+for the schema it is leaving (`openai4s.db.v36.bak` for a 1.0.0 database). A
+successful migration deletes that copy, so it is not a way back. If a step
+fails, the database is rolled back to schema 36, the copy is kept, and the
+command stops with one `error:` line that names it; `openai4s serve` and
+`openai4s run` then exit with status 2, and re-running the upgrade is safe.
+Until an upgrade succeeds, `doctor` fails its data check (exit 2) and names the
+kept copy.
+
+Downgrade is unsupported. A 1.0.0 daemon pointed at the upgraded database stops
+before it writes and reports `future_schema` with both version numbers. That
+stop does not restore the previous rows. Stop 1.0.1 first. The way back is the
+directory copy you made before upgrading:
+
+```bash
+mv ~/.openai4s ~/.openai4s-1.0.1
+cp -a ~/.openai4s-before-1.0.1 ~/.openai4s
+```
+
+Anything created under 1.0.1 is absent from that copy.
 
 ## Upgrading to 1.0.0 (schema 35 → 36)
 
@@ -70,12 +140,11 @@ That is the `openai4s-data` named volume in `compose.yaml`, or the
 container, or scale the Deployment to zero, and back up the volume or the PVC
 before you start the 0.3.1 image.
 
-The current development tree opens schema **43**. Migration 36 adds the
+This release stops at schema 35. Later releases go further: 1.0.0 opens
+schema **36** and 1.0.1 opens schema **43**. Migration 36 adds the
 `dataset_verification_receipts` table (see the 1.0.0 section above); migrations
-37 through 43 add RL trajectories, snapshots, budgets, resource admissions,
-owner-fenced phases, and immutable run/step receipts. All of them are additive
-after the 0.3.1 schema-35 boundary. Old run receipts lack protocol-2 proof that work has not started and
-are never automatically resumed; missing original results stay unavailable.
+37 through 43 add the `rl_*` tables of the agentic RL runtime (see the 1.0.1
+section above). All of them are additive after the 0.3.1 schema-35 boundary.
 
 ### Install 0.3.1 after the backup
 
@@ -137,7 +206,7 @@ old data.
 | 34 | `background_exec_receipts`: add the table; existing rows stay as they are |
 | 35 | `project_source_folder`: add nullable `projects.folder_path`; existing projects have no folder attached |
 
-An unreleased checkout of this repository also advances to schema **36** with
+Release 1.0.0 also advances to schema **36** with
 `dataset_verification_receipts`. It creates an empty Host-owned receipt table;
 historical source metadata does not gain inferred verification. The published
 0.3.1 package stops at schema 35.
