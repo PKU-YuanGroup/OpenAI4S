@@ -184,6 +184,13 @@ for _name in (
     "OPENAI4S_BUNDLE_ID",
 ):
     os.environ.pop(_name, None)
+# Importing the package installs an importable OpenMHS adapter's native tools
+# into the process-global registry and HostDispatcher, so with the submodule
+# checked out every test would inherit them and the suite would answer
+# differently on a machine that has it. Discovery is floored off, as the
+# response captures already run it; a lab run opts back in by exporting the
+# checkout path (``OPENAI4S_OPENMHS=third_party/OpenMHS``).
+os.environ.setdefault("OPENAI4S_OPENMHS", "off")
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
@@ -276,10 +283,15 @@ def _deactivate_openmhs_native_surface() -> None:
 
     The OpenMHS developer-preview installer mutates OpenAI4S's process-global
     registry and HostDispatcher class. Some lab routes intentionally call it
-    during a test; xdist can also fork after collection has already imported an
-    enabled adapter. Clean both sides of the function boundary so later
-    registry/catalog contracts see the built-in surface only.
+    during a test, and a run that opts into OpenMHS (see the floor above) has
+    already installed it while importing the package. Clean both sides of the
+    function boundary so later registry/catalog contracts see the built-in
+    surface only.
     """
+    if sys.modules.get("openai4s_mhs") is None:
+        # Nothing imported the adapter, so nothing installed its tools: leave
+        # the registry, and any tool a wider-scoped fixture registered, alone.
+        return
     # The pinned adapter keeps ``deactivate`` in ``openai4s_mhs.tools``; its
     # package exports only ``install``. The manual sweep below cannot reset the
     # adapter's install mark or its ``_m_mhs_*`` handlers, and with the mark
@@ -367,9 +379,10 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     import openai4s.config as config_mod
     import openai4s.store as store_mod
 
-    # Optional OpenMHS is discovered while importing the package, before this
-    # function-scoped fixture can run. Clear that process-global overlay first,
-    # then clear it again in teardown for tests that explicitly enable the lab.
+    # A run that opts into OpenMHS installs it while importing the package,
+    # before this function-scoped fixture can run. Clear that process-global
+    # overlay first, then again in teardown for tests that install it
+    # themselves. Without the adapter loaded both calls return at once.
     _deactivate_openmhs_native_surface()
 
     def reset_singletons():

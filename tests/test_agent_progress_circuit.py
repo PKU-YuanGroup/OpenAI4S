@@ -268,6 +268,90 @@ def test_similar_tool_error_twice_trips():
     assert len(model.calls) == 2
 
 
+class DelegatingExecutor(CountingExecutor):
+    """Runs ``delegate_task`` through the real tool seam against a child result."""
+
+    def __init__(self, child_error: str):
+        super().__init__()
+        self.child_error = child_error
+
+    def execute(self, action, reply, state):
+        from openai4s.tools.registry import execute_tool_call
+
+        del reply, state
+        self.calls.append(action)
+        history = []
+        for call in action.calls:
+            self.dispatched.append(call)
+            text, ok = execute_tool_call(
+                lambda _method, _args: {
+                    "child_id": f"child-{call.id}",
+                    "task_status": "failed",
+                    "stop_reason": "error",
+                    "output": None,
+                    "error": self.child_error,
+                },
+                {"name": call.name, "arguments": call.arguments},
+            )
+            history.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "wire_id": call.wire_id,
+                    "name": call.name,
+                    "content": text,
+                    "is_error": not ok,
+                }
+            )
+        return ExecutionOutcome(tuple(history))
+
+
+def _distinct_delegations(count: int):
+    return [
+        _reply(
+            tool_calls=[
+                _call(f"call_{index}", "delegate_task", {"request": f"task {index}"})
+            ]
+        )
+        for index in range(count)
+    ]
+
+
+def test_children_failing_on_the_llm_transport_are_not_no_progress():
+    """A delegated child that died on the provider connection is a transient.
+
+    The child's failure now reaches the parent as an ``is_error`` result, and
+    the transport's own message carries no status or socket text the provider
+    markers used to recognise -- so two distinct delegations hitting one blip
+    ended the parent's turn as ``similar_tool_error``.
+    """
+    engine, model, executor = _engine(
+        _distinct_delegations(4),
+        DelegatingExecutor("LLM connection or response headers failed"),
+        max_turns=4,
+    )
+
+    result = engine.run([{"role": "user", "content": "delegate the analyses"}])
+
+    assert result.stop_reason == "max_turns"
+    assert result.progress_reason is None
+    assert len(executor.dispatched) == 4
+
+
+def test_children_failing_on_their_own_error_still_trip():
+    engine, model, executor = _engine(
+        _distinct_delegations(4),
+        DelegatingExecutor("KeyError: 'sample_id'"),
+        max_turns=4,
+    )
+
+    result = engine.run([{"role": "user", "content": "delegate the analyses"}])
+
+    assert result.stop_reason == NO_PROGRESS_STOP_REASON
+    assert result.progress_reason == PROGRESS_REASON_TOOL_ERROR
+    assert len(executor.dispatched) == 2
+
+
 def test_long_text_three_times_trips():
     text = _long_text()
     engine, model, executor = _engine(

@@ -72,6 +72,11 @@ _PROVIDER_TRANSIENT_MARKERS = (
     "provider error",
     "econnreset",
     "connection reset",
+    # The LLM transport's own connection failures (``llm/transport.py``) name
+    # neither a status nor the socket error, and a delegated child that died
+    # on one reaches the parent only through this message.
+    "llm connection error",
+    "llm connection or response headers failed",
 )
 
 
