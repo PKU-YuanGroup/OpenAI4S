@@ -109,11 +109,11 @@ and [web search/fetch](https://docs.ollama.com/capabilities/web-search).
 
 ### Model resource limits / 模型资源边界
 
-`LLMConfig.total_timeout_s` / `OPENAI4S_LLM_TOTAL_TIMEOUT` defaults to 600 seconds and accepts finite values from 1 to 3600. Each logical call shares one absolute deadline across sends, backoff, headers, body, stream processing, text backpressure and cancelled-call usage draining. `OPENAI4S_LLM_TIMEOUT` remains the network idle limit; each phase uses the smaller idle/remaining budget. Child configurations inherit the duration and each child call starts its own deadline. A blocked system DNS resolver can outlive the owner; it retains its detached-call slot until it returns and cannot start an expired or cancelled connection.
+`LLMConfig.total_timeout_s` / `OPENAI4S_LLM_TOTAL_TIMEOUT` defaults to 900 seconds and accepts finite values from 1 to 3600. Each logical call shares one absolute deadline across sends, backoff, headers, body, stream processing, text backpressure and cancelled-call usage draining. `OPENAI4S_LLM_TIMEOUT` remains the network idle limit; each phase uses the smaller idle/remaining budget. Child configurations inherit the duration and each child call starts its own deadline. A blocked system DNS resolver can outlive the owner; it retains its detached-call slot until it returns and cannot start an expired or cancelled connection.
 
 JSON bodies are capped at 32 MiB and error bodies at 64 KiB. SSE limits are 1 MiB per line, 4 MiB per event and 64 MiB total, including heartbeats. Queued text is capped at 1 MiB UTF-8 bytes. Local failures use `llm_deadline_exceeded` or `llm_response_too_large`. Complete provider usage is retained separately from display defaults: missing or invalid counters are unknown, not zero. Auto Mode keeps unknown reservations charged. Existing team-quota-protected call paths record unknown-call counters and refuse further calls under the affected quota window until that window expires; installations without team quotas are unaffected. Stopping a metered call discards its output while draining final usage within the same deadline, attributed once to its original call.
 
-总期限默认 600 秒，仅接受 1–3600 秒的有限值；同一次逻辑调用的发送、退避、响应头、正文、流式处理、文本背压和停止后的计费排空共用一个绝对期限。原网络空闲超时保持独立，各阶段取空闲上限与剩余总时间的较小值。子任务继承期限长度，每次调用独立计时。系统 DNS 若仍阻塞，继续占用遗留调用名额；返回后不会建立已经过期或取消的连接。
+总期限默认 900 秒，仅接受 1–3600 秒的有限值；同一次逻辑调用的发送、退避、响应头、正文、流式处理、文本背压和停止后的计费排空共用一个绝对期限。原网络空闲超时保持独立，各阶段取空闲上限与剩余总时间的较小值。子任务继承期限长度，每次调用独立计时。系统 DNS 若仍阻塞，继续占用遗留调用名额；返回后不会建立已经过期或取消的连接。
 
 ### Retries / 重试
 

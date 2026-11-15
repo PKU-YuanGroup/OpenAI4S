@@ -225,6 +225,19 @@ class Tool:
         """
         return None
 
+    def declared_failure(self, result: Any) -> str | None:
+        """The failure this result declares about itself, if any.
+
+        The Host soft-fail contract is a single-key ``{"error": ...}`` dict,
+        and that is the default here. A tool whose result is a structured
+        envelope overrides this to read its own machine-readable status, so a
+        failed call reaches the model and the no-progress circuit as an error
+        without collapsing the envelope's details.
+        """
+        if isinstance(result, dict) and set(result.keys()) == {"error"}:
+            return str(result.get("error") or "failed")
+        return None
+
     def permission_target(self, arguments: Any) -> str:
         """Return the value matched by the permission broker.
 
