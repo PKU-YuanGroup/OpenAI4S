@@ -258,6 +258,53 @@ def test_a_failed_child_projects_error_end_to_end(dispatcher):
     assert "child raised" in end["output"]["error"]
 
 
+@pytest.mark.parametrize(
+    ("envelope", "audit_ok", "rl_kind"),
+    [
+        (
+            {"task_status": "failed", "stop_reason": "error", "error": "child raised"},
+            0,
+            "host_call.failed",
+        ),
+        (
+            {"task_status": "partial", "stop_reason": "max_turns"},
+            1,
+            "host_call.completed",
+        ),
+    ],
+)
+def test_the_audit_row_and_rl_agree_with_the_tool_verdict(
+    dispatcher, envelope, audit_ok, rl_kind
+):
+    """A failed child is a failed call everywhere, not only in the tool result.
+
+    ``execute_tool_call`` reads the envelope through ``declared_failure``; the
+    dispatcher's own ``ok`` only knew the single-key soft-fail, so the audit
+    row and the RL lifecycle recorded the same call as a success.
+    """
+    dispatcher._delegate_fn = lambda spec: _envelope(**envelope)
+    steps: list[dict] = []
+    dispatcher.on_step = steps.append
+
+    with dispatcher.bind_rl_context({"episode_id": "f-root", "decision_id": "d-1"}):
+        dispatcher("delegate", [{"request": "do it", "name": "helper", "wait": True}])
+
+    row = dispatcher.store._conn.execute(
+        "SELECT ok FROM host_call_log WHERE method='delegate'"
+    ).fetchone()
+    assert row["ok"] == audit_ok
+    kinds = [
+        kind
+        for (kind,) in dispatcher.store._conn.execute(
+            "SELECT kind FROM rl_execution_events WHERE episode_id='f-root' "
+            "ORDER BY sequence"
+        ).fetchall()
+    ]
+    assert kinds == ["host_call.started", rl_kind]
+    # The Step card keeps the structured projection either way.
+    assert _end_step(steps)["output"]["task_status"] == envelope["task_status"]
+
+
 def _leaky_child(data_dir: str) -> dict:
     """A child result whose host paths would fill the card's raw budget.
 

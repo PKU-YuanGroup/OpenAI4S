@@ -18,6 +18,7 @@ Tests inject `sleep` rather than actually sleeping; the delay is asserted as a
 value, which is also the only way to pin the Retry-After/backoff precedence.
 """
 
+import http.client
 import io
 import urllib.error
 
@@ -345,6 +346,85 @@ def test_connection_error_is_retryable(monkeypatch):
 
     monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     assert post_json("https://x.invalid", {}, {}, 5, sleep=_Recorder()) == {"ok": 1}
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionResetError("connection reset by peer"),
+        http.client.RemoteDisconnected("remote end closed connection"),
+        http.client.BadStatusLine("not http"),
+    ],
+)
+@pytest.mark.parametrize("stream", [False, True])
+def test_header_failure_after_the_request_was_written_is_not_replayed(
+    monkeypatch, failure, stream
+):
+    """urllib raises these raw only from ``getresponse``, after the whole
+    request was written (a connect or send failure arrives as ``URLError``).
+
+    Nothing reached the caller yet, but the provider already has the request
+    and may be generating -- and billing -- the reply: a replay would buy a
+    second generation that no usage ledger records. So, like a reset during
+    the send, it is a single attempt.
+    """
+    state = []
+
+    def urlopen(*a, **k):
+        state.append(1)
+        if len(state) == 1:
+            raise failure
+        return _Resp(b'{"ok":1}')
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    sleeper = _Recorder()
+    with pytest.raises(TransportError) as caught:
+        if stream:
+            post_sse("https://x.invalid", {}, {}, 5, lambda _e: None, sleep=sleeper)
+        else:
+            post_json("https://x.invalid", {}, {}, 5, sleep=sleeper)
+    assert caught.value.retryable is False
+    assert caught.value.output_committed is False
+    assert caught.value.__cause__ is failure
+    assert len(state) == 1
+    assert sleeper.slept == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionResetError("reset mid-body"),
+        http.client.IncompleteRead(b'{"partial":'),
+    ],
+)
+def test_whole_response_body_failure_after_headers_is_not_replayed(
+    monkeypatch, failure
+):
+    """Headers arrived, so the provider already generated (and billed) the reply.
+
+    The same generic ``OSError``/``HTTPException`` branch also catches a reset
+    or truncation raised while the body is read. Replaying that buys the same
+    answer again, so it stays a single attempt, like a clean short read.
+    """
+
+    class _BrokenBody(_Resp):
+        def read1(self, *_args):
+            raise failure
+
+        read = read1
+
+    state = []
+
+    def urlopen(*a, **k):
+        state.append(1)
+        return _BrokenBody(b'{"partial":')
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    with pytest.raises(TransportError) as caught:
+        post_json("https://x.invalid", {}, {}, 5, sleep=_Recorder())
+    assert caught.value.retryable is False
+    assert caught.value.__cause__ is failure
+    assert len(state) == 1
 
 
 # --------------------------------------------------------------------------

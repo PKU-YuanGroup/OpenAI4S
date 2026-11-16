@@ -2352,6 +2352,10 @@ class HostDispatcher:
                 except Exception:  # noqa: BLE001
                     step_id = None
         ok = True
+        # A structured result that declares its own failure (a failed child's
+        # delegate envelope). ``ok`` keeps the soft-fail meaning the Step card
+        # and the replay tape read; the audit row and RL use both.
+        declared_failed = False
         result = None
         deferred_step = False
         permission_decision_id = None
@@ -2638,6 +2642,12 @@ class HostDispatcher:
             if isinstance(result, dict) and set(result.keys()) == {"error"}:
                 ok = False  # soft-fail contract
             else:
+                # The verdict ``execute_tool_call`` gives the model, so the
+                # audit row and the RL lifecycle cannot call it a success.
+                declared_failed = (
+                    control_tool is not None
+                    and control_tool.declared_failure(result) is not None
+                )
                 if method == "authorize_bash" and isinstance(result, dict):
                     deferred_step = self._bash_authorization.attach_step(
                         str(result.get("token") or ""),
@@ -2657,7 +2667,7 @@ class HostDispatcher:
         finally:
             self._rl_call_end(
                 rl_handle,
-                ok=ok,
+                ok=ok and not declared_failed,
                 result=result,
                 error=raised_exception,
             )
@@ -2665,7 +2675,7 @@ class HostDispatcher:
             self.store.log_host_call(
                 method=method,
                 args=args,
-                ok=ok,
+                ok=ok and not declared_failed,
                 frame_id=self.frame_id,
                 result=result,
                 action_group_id=action_context.get("action_group_id"),

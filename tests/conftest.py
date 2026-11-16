@@ -184,6 +184,13 @@ for _name in (
     "OPENAI4S_BUNDLE_ID",
 ):
     os.environ.pop(_name, None)
+# Importing the package installs an importable OpenMHS adapter's native tools
+# into the process-global registry and HostDispatcher, so with the submodule
+# checked out every test would inherit them and the suite would answer
+# differently on a machine that has it. Discovery is floored off, as the
+# response captures already run it; a lab run opts back in by exporting the
+# checkout path (``OPENAI4S_OPENMHS=third_party/OpenMHS``).
+os.environ.setdefault("OPENAI4S_OPENMHS", "off")
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
@@ -270,6 +277,46 @@ class _RealDataDirGuard:
 
 _REAL_DATA_DIR_GUARD = _RealDataDirGuard(_real_data_dirs())
 
+
+def _deactivate_openmhs_native_surface() -> None:
+    """Remove optional OpenMHS native tools leaked across a test boundary.
+
+    The OpenMHS developer-preview installer mutates OpenAI4S's process-global
+    registry and HostDispatcher class. Some lab routes intentionally call it
+    during a test, and a run that opts into OpenMHS (see the floor above) has
+    already installed it while importing the package. Clean both sides of the
+    function boundary so later registry/catalog contracts see the built-in
+    surface only.
+    """
+    if sys.modules.get("openai4s_mhs") is None:
+        # Nothing imported the adapter, so nothing installed its tools: leave
+        # the registry, and any tool a wider-scoped fixture registered, alone.
+        return
+    # The pinned adapter keeps ``deactivate`` in ``openai4s_mhs.tools``; its
+    # package exports only ``install``. The manual sweep below cannot reset the
+    # adapter's install mark or its ``_m_mhs_*`` handlers, and with the mark
+    # left set the next ``install()`` returns True without registering a tool.
+    for name in ("openai4s_mhs", "openai4s_mhs.tools"):
+        deactivate = getattr(sys.modules.get(name), "deactivate", None)
+        if callable(deactivate):
+            deactivate()
+            break
+
+    from openai4s.tools import registry
+
+    for tool in tuple(registry.REGISTRY):
+        if type(tool) not in registry.TOOL_TYPES:
+            registry._unregister_tool(tool.name)
+    registry.BUILTIN_CONTROL_HOST_METHODS = frozenset(
+        tool.host_method for tool in registry.REGISTRY
+    )
+    host_dispatch = sys.modules.get("openai4s.host_dispatch")
+    if host_dispatch is not None:
+        host_dispatch.BUILTIN_CONTROL_HOST_METHODS = (
+            registry.BUILTIN_CONTROL_HOST_METHODS
+        )
+
+
 # The per-test redirect in `isolated_openai4s_home` is function-scoped, but
 # collection imports every test module first and pytest sets up module- and
 # session-scoped fixtures before any function-scoped one. In that window the
@@ -331,6 +378,12 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     """Keep tests off the developer's real ~/.openai4s database."""
     import openai4s.config as config_mod
     import openai4s.store as store_mod
+
+    # A run that opts into OpenMHS installs it while importing the package,
+    # before this function-scoped fixture can run. Clear that process-global
+    # overlay first, then again in teardown for tests that install it
+    # themselves. Without the adapter loaded both calls return at once.
+    _deactivate_openmhs_native_surface()
 
     def reset_singletons():
         for st in list(store_mod._STORES.values()):
@@ -425,7 +478,10 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     try:
         _quiesce_judgment_shadows()
     finally:
-        reset_singletons()
+        try:
+            _deactivate_openmhs_native_surface()
+        finally:
+            reset_singletons()
     # Not drained at setup: higher-scoped fixtures this test instantiated ran
     # before this fixture did, and their refusals belong to this test.
     _fail_on_real_data_dir_violations()

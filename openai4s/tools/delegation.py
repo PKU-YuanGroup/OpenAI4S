@@ -100,6 +100,43 @@ class DelegateTaskTool(Tool):
         spec.setdefault("wait", True)
         return runtime.invoke(self.host_method, spec)
 
+    def declared_failure(self, result: Any) -> str | None:
+        """A child envelope that declares failure is a failed tool call.
+
+        The Host answers a failed child with a structured envelope rather
+        than the single-key soft-fail dict: it carries ``task_status``,
+        ``stop_reason``, artifacts and environment alongside ``error``. Read
+        that envelope instead of collapsing it, so a transport-failed child
+        reaches the model and the no-progress circuit as an error while the
+        Step card keeps its structured detail.
+        """
+        detail = super().declared_failure(result)
+        if detail is not None:
+            return detail
+        # One child per call: the schema types ``request`` as a string, so the
+        # runner's list (fan-out) answer cannot reach this tool.
+        return _child_failure_reason(result)
+
+
+def _child_failure_reason(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    # The Step card's precedence (``host_dispatch._delegate_result_status``):
+    # a declared task_status is authoritative, so a max_turns child kept at
+    # ``partial`` is not a failure; without one, an error stop or a failed
+    # lifecycle snapshot (a reused terminal child with no stored envelope) is.
+    task_status = result.get("task_status")
+    if isinstance(task_status, str):
+        failed = task_status == "failed"
+    else:
+        failed = (
+            result.get("stop_reason") == "error" or result.get("status") == "failed"
+        )
+    if not failed:
+        return None
+    detail = result.get("error")
+    return str(detail) if detail else "sub-agent failed"
+
 
 class ListChildrenTool(Tool):
     name = "list_children"

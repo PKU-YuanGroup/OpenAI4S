@@ -170,7 +170,7 @@ class CallState:
     sent: bool = False
     spent: float = 0.0
     last_error: TransportError | None = None
-    total_timeout_s: float = 600.0
+    total_timeout_s: float = 900.0
     #: Ceiling on one computed backoff wait (never on a ``Retry-After``).
     max_delay: float = DEFAULT_MAX_BACKOFF
     #: Retries allowed after a failed send, separately from ``max_attempts``
@@ -203,7 +203,7 @@ class CallState:
             ),
             should_cancel=should_cancel,
             total_timeout_s=_positive_seconds(
-                getattr(cfg, "total_timeout_s", None), 600.0, allow_zero=False
+                getattr(cfg, "total_timeout_s", None), 900.0, allow_zero=False
             ),
             max_delay=_positive_seconds(
                 getattr(cfg, "retry_max_delay_s", None),
@@ -727,6 +727,12 @@ def post_json(
             ) from e
         except (OSError, http.client.HTTPException) as error:
             state.remaining(provider, "post_json")
+            # Never replayed. urllib reports a failure to connect or to write
+            # the request as ``URLError`` (handled above), so a raw error here
+            # comes from ``getresponse`` or the body read: the provider already
+            # has the whole request and may be generating -- and billing -- the
+            # reply. "Nothing reached the caller" is not "nothing was sent"; a
+            # replay would buy a second generation that no usage ledger sees.
             raise TransportError(
                 "LLM connection or response headers failed",
                 provider=provider,
@@ -821,6 +827,10 @@ def post_sse(
             ) from e
         except (OSError, http.client.HTTPException) as error:
             state.remaining(provider, "post_sse")
+            # Never replayed, for the reason given in ``post_json``: this raw
+            # error comes from ``getresponse``, after the request was written.
+            # No event reached ``on_event`` yet, but the provider may already
+            # be generating -- and billing -- the reply.
             raise TransportError(
                 "LLM connection or response headers failed",
                 provider=provider,
