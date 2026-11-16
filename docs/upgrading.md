@@ -9,7 +9,11 @@ section and "Upgrading to 1.0.1", and its first open migrates schema 35 to 43.
 An install that is already on 0.3.0 reads "Upgrading to 0.3.1" before the first
 start of 0.3.1. A database still on 0.2.x is migrated by 0.3.1 straight to
 schema 35 in one open: read "Upgrading from 0.2.x to 0.3.0" for the steps up to
-schema 32 and "Upgrading to 0.3.1" for 33 through 35.
+schema 32 and "Upgrading to 0.3.1" for 33 through 35. Any jump across releases
+works the same way: the first open runs every migration in between, so read
+each section from the release after yours up to the one you install. A 0.3.0
+install that goes straight to 1.0.1 also crosses schema 33, which rewrites
+stored judge rows (see "Upgrading to 0.3.1").
 
 ## Upgrading to 1.0.1 (schema 36 → 43)
 
@@ -45,24 +49,25 @@ row that 1.0.0 stored is altered or removed. Each one adds:
 | --- | --- |
 | 37 | `rl_runtime`: the trajectory tables (episodes, observations, decisions, segments, execution events, reward annotations, cost records) and the run receipts table |
 | 38 | `rl_dataset_snapshots`: dataset snapshot metadata |
-| 39 | `rl_segment_parent`: the `parent_segment_id` column of `rl_segments`, and its index |
+| 39 | `rl_segment_parent`: the `parent_segment_id` column of `rl_segments` and its index, only where they are missing; migration 37 already creates both, so on this upgrade it adds nothing |
 | 40 | `rl_budget_ledger`: budget ledgers and their allocations |
 | 41 | `rl_resource_admission`: resource admissions and their allocations |
 | 42 | `rl_phase_bindings`: owner-fenced phase bindings |
 | 43 | `rl_run_results`: run requests, frozen run results and step receipts |
 
-The only `ALTER TABLE` among them is in migration 39. It adds
-`parent_segment_id` to `rl_segments` when the column is missing, and
-`rl_segments` is a table that migration 37 creates in the same upgrade. The
+The only `ALTER TABLE` among them is in migration 39, and it runs only when
+`rl_segments` lacks `parent_segment_id`. Migration 37 creates `rl_segments`
+with that column in the same upgrade, so the `ALTER TABLE` does not run. The
 table definitions are in `openai4s/storage/rl.py` and
 `openai4s/storage/rl_runs.py`.
 
 Before it changes anything, the migration copies the database to a file named
 for the schema it is leaving (`openai4s.db.v36.bak` for a 1.0.0 database). A
 successful migration deletes that copy, so it is not a way back. If a step
-fails, the database is rolled back to schema 36, the copy is kept, and the
-command stops with one `error:` line that names it; `openai4s serve` and
-`openai4s run` then exit with status 2, and re-running the upgrade is safe.
+fails, the database is rolled back to the schema it had (36 for a 1.0.0
+database), the copy is kept, and the command stops with one `error:` line that
+names it; `openai4s serve` and `openai4s run` then exit with status 2, and
+re-running the upgrade is safe.
 Until an upgrade succeeds, `doctor` fails its data check (exit 2) and names the
 kept copy.
 
@@ -76,7 +81,11 @@ mv ~/.openai4s ~/.openai4s-1.0.1
 cp -a ~/.openai4s-before-1.0.1 ~/.openai4s
 ```
 
-Anything created under 1.0.1 is absent from that copy.
+Install 1.0.0 again before anything opens the restored copy: for PyPI,
+`python -m pip install "openai4s[science]==1.0.0"`; for a source checkout, the
+`v1.0.0` steps in the next section; for a container, the 1.0.0 image on the
+restored volume. A 1.0.1 command that opens the copy migrates it to schema 43
+again. Anything created under 1.0.1 is absent from that copy.
 
 ## Upgrading to 1.0.0 (schema 35 → 36)
 
@@ -205,11 +214,6 @@ old data.
 | 33 | `redact_judge_host_call_args`: rewrite stored `judge` rows in `host_call_log` |
 | 34 | `background_exec_receipts`: add the table; existing rows stay as they are |
 | 35 | `project_source_folder`: add nullable `projects.folder_path`; existing projects have no folder attached |
-
-Release 1.0.0 also advances to schema **36** with
-`dataset_verification_receipts`. It creates an empty Host-owned receipt table;
-historical source metadata does not gain inferred verification. The published
-0.3.1 package stops at schema 35.
 
 During the rewrite the connection sets `PRAGMA secure_delete = ON`, then
 restores the previous mode by name (`OFF`, `ON`, or `FAST`) before the

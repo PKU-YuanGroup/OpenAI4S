@@ -2,7 +2,7 @@
 
 [English](upgrading.md)
 
-已经装了 1.0.0、要升到 1.0.1 的，先读下一节。已经装了 0.3.1、要升到 1.0.0 的，读「升级到 1.0.0」；从 0.3.1 直接升到 1.0.1 的，「升级到 1.0.0」和「升级到 1.0.1」两节都要读，第一次打开数据库时会把 schema 从 35 一次迁到 43。已经装了 0.3.0、要升到 0.3.1 的，读「升级到 0.3.1」。数据库仍在 0.2.x 的，0.3.1 会在一次打开里把它一直迁到 schema 35：到 schema 32 为止的步骤读「从 0.2.x 升级到 0.3.0」，33 到 35 读「升级到 0.3.1」。
+已经装了 1.0.0、要升到 1.0.1 的，先读下一节。已经装了 0.3.1、要升到 1.0.0 的，读「升级到 1.0.0」；从 0.3.1 直接升到 1.0.1 的，「升级到 1.0.0」和「升级到 1.0.1」两节都要读，第一次打开数据库时会把 schema 从 35 一次迁到 43。已经装了 0.3.0、要升到 0.3.1 的，读「升级到 0.3.1」。数据库仍在 0.2.x 的，0.3.1 会在一次打开里把它一直迁到 schema 35：到 schema 32 为止的步骤读「从 0.2.x 升级到 0.3.0」，33 到 35 读「升级到 0.3.1」。跨多个版本升级也是一样：第一次打开会跑完中间所有的迁移，所以要从你所装版本的下一个版本那一节读起，一直读到要安装的版本。从 0.3.0 直接升到 1.0.1 的，也会经过改写已落盘 judge 行的 schema 33（见「升级到 0.3.1」）。
 
 ## 升级到 1.0.1（schema 36 → 43）
 
@@ -22,15 +22,15 @@ cp -a ~/.openai4s ~/.openai4s-before-1.0.1
 | --- | --- |
 | 37 | `rl_runtime`：trajectory 相关的表（episode、observation、decision、segment、执行事件、reward 标注、成本记录）和 run receipt 表 |
 | 38 | `rl_dataset_snapshots`：数据集 snapshot 元数据 |
-| 39 | `rl_segment_parent`：`rl_segments` 的 `parent_segment_id` 列及其索引 |
+| 39 | `rl_segment_parent`：`rl_segments` 的 `parent_segment_id` 列及其索引，只在缺失时添加；迁移 37 已经建好了这两者，所以这次升级里它什么也不加 |
 | 40 | `rl_budget_ledger`：预算账本及其 allocation |
 | 41 | `rl_resource_admission`：resource admission 及其 allocation |
 | 42 | `rl_phase_bindings`：带 owner 校验（owner-fenced）的阶段绑定 |
 | 43 | `rl_run_results`：run request、冻结的 run 结果和 step receipt |
 
-其中唯一的 `ALTER TABLE` 在迁移 39：列缺失时，它给 `rl_segments` 加上 `parent_segment_id`，而 `rl_segments` 是迁移 37 在同一次升级里创建的表。表定义在 `openai4s/storage/rl.py` 和 `openai4s/storage/rl_runs.py`。
+其中唯一的 `ALTER TABLE` 在迁移 39，只在 `rl_segments` 缺少 `parent_segment_id` 时执行。迁移 37 在同一次升级里创建的 `rl_segments` 已经带着这一列，所以这条 `ALTER TABLE` 不会执行。表定义在 `openai4s/storage/rl.py` 和 `openai4s/storage/rl_runs.py`。
 
-迁移改动任何东西之前，会先把数据库复制成以正在离开的 schema 命名的文件（1.0.0 的库是 `openai4s.db.v36.bak`）。迁移成功后会删除这份副本，所以它不是退路。某一步失败时，数据库回滚到 schema 36，副本保留，命令以一行 `error:` 停止，并给出副本位置；此时 `openai4s serve` 和 `openai4s run` 的退出码是 2，重新跑升级是安全的。升级成功之前，`doctor` 的 data 检查会失败（退出码 2），并指出保留下来的副本。
+迁移改动任何东西之前，会先把数据库复制成以正在离开的 schema 命名的文件（1.0.0 的库是 `openai4s.db.v36.bak`）。迁移成功后会删除这份副本，所以它不是退路。某一步失败时，数据库回滚到升级前的 schema（1.0.0 的库是 36），副本保留，命令以一行 `error:` 停止，并给出副本位置；此时 `openai4s serve` 和 `openai4s run` 的退出码是 2，重新跑升级是安全的。升级成功之前，`doctor` 的 data 检查会失败（退出码 2），并指出保留下来的副本。
 
 不支持降级。把 1.0.0 的守护进程指到已升级的数据库上时，它会在写入之前停下，并报告 `future_schema` 和两个版本号。这次停下不会恢复以前的行。先停掉 1.0.1。要回到升级前的数据，只能用你自己在升级前复制的那份数据目录：
 
@@ -39,7 +39,7 @@ mv ~/.openai4s ~/.openai4s-1.0.1
 cp -a ~/.openai4s-before-1.0.1 ~/.openai4s
 ```
 
-在 1.0.1 里创建的内容都不在那份副本里。
+在任何命令打开恢复后的副本之前，先重新装回 1.0.0：PyPI 安装运行 `python -m pip install "openai4s[science]==1.0.0"`；源码检出按下一节的 `v1.0.0` 步骤操作；容器用恢复后的卷启动 1.0.0 镜像。1.0.1 的命令一打开这份副本，就会再次把它迁到 schema 43。在 1.0.1 里创建的内容都不在那份副本里。
 
 ## 升级到 1.0.0（schema 35 → 36）
 
@@ -113,10 +113,6 @@ Linux 与 Windows/WSL2 安装包、`SHA256SUMS` 和验证资料归档均在 [Git
 | 33 | `redact_judge_host_call_args`：改写 `host_call_log` 里已经落盘的 `judge` 行 |
 | 34 | `background_exec_receipts`：新增表；已有行保持原样 |
 | 35 | `project_source_folder`：新增可为空的 `projects.folder_path` 列；已有项目默认不绑定文件夹 |
-
-1.0.0 版本还会升级到 schema **36**，新增
-`dataset_verification_receipts`。这一步创建空的、由 Host 持有的凭据表；
-不会根据历史来源元数据推断核验已通过。已发布的 0.3.1 安装包止于 schema 35。
 
 改写期间连接会执行 `PRAGMA secure_delete = ON`，并在事务提交前按名字恢复原先的模式（`OFF`、`ON` 或 `FAST`）。开着 `secure_delete` 时，SQLite 会用零覆盖这次 `UPDATE` 换下来的旧字节。
 
