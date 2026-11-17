@@ -85,8 +85,9 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 
 ## 📣 News
 
+- **`2026-11-17`** 🛠️ **[`v1.0.1`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1) — the current Ark Agent Plan, and the agentic RL runtime** — the Volcengine Ark Agent Plan retired 1.0.0's default model, so a fresh Ark setup failed on its first message; the default is now `doubao-seed-2.1-pro` and the presets follow the plan's model table. The default completion budget rises from 4,096 to 16,384 tokens so reasoning models have room to answer, and two empty replies in a row stop the turn as `no_progress` instead of looping. Failed sub-agents now reach their parent as failures, and the local sign-in lasts 30 days instead of one browser session. The release also ships the agentic RL runtime, optional anonymous **Parallel Search**, and **endpoint model discovery** in First-run setup. The database moves from schema 36 to 43; read **[Upgrading to 1.0.1](docs/upgrading.md)** before the first start.
 - **`2026-11-12`** 🤖 **Agentic RL runtime** — OpenAI4S now doubles as an environment for reinforcement learning. An external trainer samples the policy; the agent executes with its real tools, permissions, and kernels; and the new `openai4s/rl` package records each rollout as a versioned Science Trajectory and exports deterministic JSON/JSONL training data plus the ATIF-v1.8 interchange format used by Harbor. Rewards, costs, admission, and budget stay in separate append-only records, and interrupted rollouts fail closed instead of being replayed. → [RL runtime](openai4s/rl/README.md)
-- **`2026-11`** 🔭 **`main` — after `v1.0.0`** — optional anonymous **Parallel Search** as a keyless backup web-search engine (off by default; `openai4s init --search parallel`), and **endpoint model discovery** in First-run setup: **Fetch models from endpoint** lists the model ids an Ark/OpenAI-compatible, Responses, Anthropic, Gemini or Ollama endpoint actually serves, instead of guessing a default. → [Configuration](docs/configuration.md)
+- **`2026-11`** 🔭 **`main` — after `v1.0.0`** — optional anonymous **Parallel Search** as a keyless backup web-search engine (off by default; `openai4s init --search parallel`), and **endpoint model discovery** in First-run setup: **Fetch models from endpoint** lists the model ids an Ark/OpenAI-compatible, Responses, Anthropic, Gemini or Ollama endpoint actually serves, instead of guessing a default. Both ship in `v1.0.1` above. → [Configuration](docs/configuration.md)
 - **`2026-11-09`** 🔬 **[`v1.0.0`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0) — the OpenMHS lab** — a major update: OpenAI4S now ships [OpenMHS](https://mhs.openai4s.org) (the open-source Model Hardware Standard) as a git submodule. The new **Lab** tab beside the Notebook runs simulated instruments under endpoint-enforced limits, e-stops and hash-chained receipts, and installs any of **746 devices** from the [OpenMHS market](https://mhs.openai4s.org/market/) in one click or one command (`openai4s lab add <id>`), through native MHS tools or an MCP connector. The release also adds **Ollama** models and web tools, an optional **You.com** search, a molecular-dynamics Skill (**612 Skills**), and bounded read-only previews. The Apple Silicon **DMG** is back as an ad-hoc-signed image beside the Linux, Windows/WSL2, PyPI and GHCR channels. The database moves from schema 35 to 36; read **[Upgrading to 1.0.0](docs/upgrading.md)** before the first start. → [OpenMHS guide](docs/openmhs.md)
 - **`2026-10-18`** 📁 **[`v0.3.1`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1) — local project folders and portable history** — link source folders, browse saved conversation history, import scientific datasets with checksum verification, and work with **611 bundled Skills**. Linux and Windows/WSL2 packages are on GitHub, Python packages on PyPI, and the public container image on GHCR. macOS uses PyPI while signing and notarization are deferred. The database moves from schema 32 to 35; read **[Upgrading to 0.3.1](docs/upgrading.md)** before the first start.
 - **`2026-09`** 🧭 **`v0.3.0` — the new workbench, and the first Windows package** — the Preact/TypeScript workbench replaces the `app.js` monolith as the default UI, and the release adds the first **Windows/WSL2 zip** beside the Linux tarball. Every local daemon now requires its access token: the `OPENAI4S_REQUIRE_TOKEN=0` loopback opt-out is gone. Interactive HTML reports run on a separate sandboxed origin, Notebook cells keep the exact artifact versions they produced, long-context compaction actually lands and survives a restart, delegated sub-agents inherit their environment and leave durable, exportable cell records, and Auto Mode admits budget atomically and stops a run that makes no progress. The single-cell RNA analysis Skill brings the total to 604. The Apple Silicon **macOS image** is an ad-hoc-signed preview, not a notarized one. The database schema moves from 27 to 32, so read **[Upgrading from 0.2.x](docs/upgrading.md)** before the first start.
@@ -161,21 +162,21 @@ States. → [Experimental semantic judgment](docs/experimental-judgment.md)
 
 ## ⚡ Quickstart
 
-**Current release: [1.0.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0).** Choose an installation channel below. If you already have data from 0.3.1 or earlier, stop the daemon and back up the whole data directory before installing: 1.0.0 migrates the database from schema 35 to 36, and going back is unsupported. See [Upgrading](docs/upgrading.md).
+**Current release: [1.0.1](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1).** Choose an installation channel below. If you already have data from 1.0.0 or earlier, stop the daemon and back up the whole data directory before installing: 1.0.1 migrates the database to schema 43 (1.0.0 used 36), and going back is unsupported. See [Upgrading](docs/upgrading.md).
 
-| Channel | 1.0.0 download |
+| Channel | 1.0.1 download |
 | --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg) ([SHA-256](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg.sha256)), ad-hoc signed, not notarized |
-| Linux x86_64 | [Standalone tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-linux-x86_64.tar.gz) |
-| Windows x86_64 with WSL2 | [Complete ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip) |
-| Python, including Intel Macs | [PyPI: openai4s 1.0.0](https://pypi.org/project/openai4s/1.0.0/) |
-| Containers (linux/amd64) | [GHCR: openai4s](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s), tag `1.0.0` |
-| Download verification | [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/SHA256SUMS) · [Build and validation evidence](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/openai4s-1.0.0-evidence.zip) · [macOS validation record](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64-validation.json) |
+| macOS Apple Silicon | [DMG](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg) ([SHA-256](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg.sha256)), ad-hoc signed, not notarized |
+| Linux x86_64 | [Standalone tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-linux-x86_64.tar.gz) |
+| Windows x86_64 with WSL2 | [Complete ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-windows-x86_64.zip) |
+| Python, including Intel Macs | [PyPI: openai4s 1.0.1](https://pypi.org/project/openai4s/1.0.1/) |
+| Containers (linux/amd64) | [GHCR: openai4s](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s), tag `1.0.1` |
+| Download verification | [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/SHA256SUMS) · [Build and validation evidence](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/openai4s-1.0.1-evidence.zip) · [macOS validation record](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64-validation.json) |
 
 To run the released source (`--recursive` also fetches the OpenMHS lab submodule):
 
 ```bash
-git clone --recursive --branch v1.0.0 https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
+git clone --recursive --branch v1.0.1 https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 ./setup.sh     # one-time: build the environment with uv
 ./start.sh     # launch the web UI at http://127.0.0.1:8760/
 ```
@@ -185,12 +186,12 @@ git clone --recursive --branch v1.0.0 https://github.com/PKU-YuanGroup/OpenAI4S 
 ### macOS
 
 > [!NOTE]
-> **1.0.0 ships an ad-hoc-signed Apple Silicon DMG.** It has no Developer ID signature and no Apple notarization, so macOS blocks its first launch until you allow it. Intel Macs, and anyone who prefers a virtual environment, install [PyPI 1.0.0](https://pypi.org/project/openai4s/1.0.0/) instead.
+> **1.0.1 ships an ad-hoc-signed Apple Silicon DMG.** It has no Developer ID signature and no Apple notarization, so macOS blocks its first launch until you allow it. Intel Macs, and anyone who prefers a virtual environment, install [PyPI 1.0.1](https://pypi.org/project/openai4s/1.0.1/) instead.
 
-**Apple Silicon app.** Download [OpenAI4S-1.0.0-macos-arm64.dmg](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg) and its [SHA-256 file](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-macos-arm64.dmg.sha256) into one folder and check it:
+**Apple Silicon app.** Download [OpenAI4S-1.0.1-macos-arm64.dmg](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg) and its [SHA-256 file](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg.sha256) into one folder and check it:
 
 ```bash
-shasum -a 256 -c OpenAI4S-1.0.0-macos-arm64.dmg.sha256   # must print: OpenAI4S-1.0.0-macos-arm64.dmg: OK
+shasum -a 256 -c OpenAI4S-1.0.1-macos-arm64.dmg.sha256   # must print: OpenAI4S-1.0.1-macos-arm64.dmg: OK
 ```
 
 Open the DMG, drag **OpenAI4S** into **Applications**, eject the disk image, and launch the app. If macOS blocks the first launch, open **System Settings → Privacy & Security** and choose **Open Anyway**. The app embeds Python 3.13 and the default science stack, starts the local daemon, and opens the workbench in your browser.
@@ -199,7 +200,7 @@ Open the DMG, drag **OpenAI4S** into **Applications**, eject the disk image, and
 
 ```bash
 python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
-python -m pip install --upgrade "openai4s[science]==1.0.0"   # use "openai4s[science,chemistry]==1.0.0" for RDKit
+python -m pip install --upgrade "openai4s[science]==1.0.1"   # use "openai4s[science,chemistry]==1.0.1" for RDKit
 openai4s serve                    # starts the daemon and opens the workbench with its access token
 ```
 
@@ -210,16 +211,16 @@ Data lives in `~/.openai4s`. If you close the tab, `openai4s url` prints the aut
 1. **Model API** — the **First-run setup** wizard walks you through it, or open **Settings ⚙ → Models** later. Pick a protocol (**Ark-compatible** for Doubao/GLM/Kimi/DeepSeek/MiniMax, **OpenAI-compatible**, **OpenAI Responses**, **Anthropic-compatible**, **Gemini-compatible**, or **Ollama** for cloud or local models), paste your **API Key**, and save the profile as the active one. In the wizard, **Fetch models from endpoint** lists the model ids your endpoint actually serves. Cheapest path: the `ark` protocol on Volcengine Ark's ¥9.9/mo plan.
 2. **Search API** *(optional, recommended)* — open **Settings ⚙ → Network**, keep **Allow network access** on, and paste your Ark **Agent Plan Key** into the primary **Doubao Search Custom** card → **Save credential**. If the active model is an Ark **Agent Plan**, you can skip this step: OpenAI4S saves that key as the default for both Doubao Search and DataPro professional datasets, and they keep working after you switch to another model. Tavily, You.com and the built-in keyless engines remain reorderable backups, and anonymous Parallel can be switched on; the dedicated Doubao health check never reports a fallback result as Doubao.
 
-Full 1.0.0 walkthrough (install → model → search → R kernel): **[Startup guide](docs/startup-guide.md)**.
+Full 1.0.1 walkthrough (install → model → search → R kernel): **[Startup guide](docs/startup-guide.md)**.
 
 ### Linux app (no toolchain required)
 
-Download the [1.0.0 Linux tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-linux-x86_64.tar.gz) and [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/SHA256SUMS) into the same directory. Verify it, unpack it anywhere, and run it. It embeds its own Python and the pre-baked science stack, as a relocatable directory:
+Download the [1.0.1 Linux tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-linux-x86_64.tar.gz) and [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/SHA256SUMS) into the same directory. Verify it, unpack it anywhere, and run it. It embeds its own Python and the pre-baked science stack, as a relocatable directory:
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS   # the Linux tarball must report OK
-tar -xzf OpenAI4S-1.0.0-linux-x86_64.tar.gz
-cd OpenAI4S-1.0.0-linux-x86_64
+tar -xzf OpenAI4S-1.0.1-linux-x86_64.tar.gz
+cd OpenAI4S-1.0.1-linux-x86_64
 ./OpenAI4S          # starts the daemon and opens http://127.0.0.1:8760/
 ./install.sh        # optional: `openai4s` on your PATH + an application-menu entry
 ```
@@ -228,9 +229,9 @@ cd OpenAI4S-1.0.0-linux-x86_64
 
 ### Windows (via WSL2)
 
-Download the [complete 1.0.0 Windows ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/OpenAI4S-1.0.0-windows-x86_64.zip) and [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.0/SHA256SUMS), verify the ZIP as described in the [Windows/WSL2 guide](docs/windows-wsl.md#english), then extract all files and double-click `OpenAI4S.cmd`. No split-file restoration is needed. The first run checks WSL2 and a working bubblewrap 0.8.0+ sandbox, verifies and installs the bundled Linux payload, creates `~/.local/bin/openai4s`, starts the daemon there, and opens an authenticated local URL in your Windows browser. No application download, no `pip`, no toolchain. Ubuntu 24.04 is the supported baseline; mainland PyPI/Conda mirrors and an optional WSL-reachable proxy can be configured by the launcher.
+Download the [complete 1.0.1 Windows ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-windows-x86_64.zip) and [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/SHA256SUMS), verify the ZIP as described in the [Windows/WSL2 guide](docs/windows-wsl.md#english), then extract all files and double-click `OpenAI4S.cmd`. No split-file restoration is needed. The first run checks WSL2 and a working bubblewrap 0.8.0+ sandbox, verifies and installs the bundled Linux payload, creates `~/.local/bin/openai4s`, starts the daemon there, and opens an authenticated local URL in your Windows browser. No application download, no `pip`, no toolchain. Ubuntu 24.04 is the supported baseline; mainland PyPI/Conda mirrors and an optional WSL-reachable proxy can be configured by the launcher.
 
-**1.0.0 validation:** the public x86_64 ZIP passed a post-publication runtime run on Windows Server 2025 with Ubuntu 24.04 WSL2: the shipped launcher, the authenticated dashboard in a Windows Chromium browser, nine science and runtime checks (plots, immutable artifacts and restart read-back among them), status/stop, and enforced bubblewrap isolation. That run used no model credentials, and the launcher is still unsigned. Windows on ARM and the full Windows 10/11 host matrix were not exercised.
+**Windows validation:** the 1.0.0 x86_64 ZIP passed a post-publication runtime run on Windows Server 2025 with Ubuntu 24.04 WSL2: the shipped launcher, the authenticated dashboard in a Windows Chromium browser, nine science and runtime checks (plots, immutable artifacts and restart read-back among them), status/stop, and enforced bubblewrap isolation. That run used no model credentials, and the launcher is still unsigned. Windows on ARM and the full Windows 10/11 host matrix were not exercised. 1.0.1 ships the same launcher and packaging scripts; its ZIP passed the release workflow's `verify_windows_zip.py`, and the Windows host run has not been repeated for it.
 
 `v0.3.0` is the first release that ships this package. Its acceptance evidence covers WSL2 on x86_64 with the tested Ubuntu 24.04 distribution. The last section of the [WSL2 parity audit](docs/windows-wsl-parity-audit.md) ("Fix verification — 2026-09-07") leaves the following unverified:
 
@@ -258,19 +259,19 @@ hardware stays an explicit operator decision. Details: [OpenMHS guide](docs/open
 
 ### 🐳 Docker and Kubernetes
 
-The [public GHCR package](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s) can be pulled without signing in. Pin `1.0.0` for this release; `latest` follows future releases. The image is **linux/amd64**; ARM hosts require amd64 emulation.
+The [public GHCR package](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s) can be pulled without signing in. Pin `1.0.1` for this release; `latest` follows future releases. The image is **linux/amd64**; ARM hosts require amd64 emulation.
 
 ```bash
-docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:1.0.0
+docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:1.0.1
 docker run -d --name openai4s --platform linux/amd64 \
   -p 127.0.0.1:8760:8760 \
   -v openai4s-data:/data \
   -e OPENAI4S_SECRET_LLM_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
-  ghcr.io/pku-yuangroup/openai4s:1.0.0
+  ghcr.io/pku-yuangroup/openai4s:1.0.1
 docker exec openai4s openai4s url   # the URL, token included
 ```
 
-The image contains Debian-slim CPython, the wheel, and the `science` extra, and runs as an unprivileged user with one volume at `/data`. The command forwards the model key from your shell's `OPENAI4S_LLM_API_KEY` to the container's `OPENAI4S_SECRET_LLM_LLM_API_KEY`; configure the provider and model as described in the [container guide](docs/docker.md). Credentials are read from the environment. To build from the checkout instead, use `docker compose up -d --build`. For Kubernetes, replace `image: openai4s:local` in `deploy/kubernetes.yaml` with `image: ghcr.io/pku-yuangroup/openai4s:1.0.0` before applying it to amd64 nodes; the guide covers the Secret, persistent volume, and access URL. The image bundles neither OpenMHS nor Git; to use the lab in a container, mount an OpenMHS checkout and point `OPENAI4S_OPENMHS` at it.
+The image contains Debian-slim CPython, the wheel, and the `science` extra, and runs as an unprivileged user with one volume at `/data`. The command forwards the model key from your shell's `OPENAI4S_LLM_API_KEY` to the container's `OPENAI4S_SECRET_LLM_LLM_API_KEY`; configure the provider and model as described in the [container guide](docs/docker.md). Credentials are read from the environment. To build from the checkout instead, use `docker compose up -d --build`. For Kubernetes, replace `image: openai4s:local` in `deploy/kubernetes.yaml` with `image: ghcr.io/pku-yuangroup/openai4s:1.0.1` before applying it to amd64 nodes; the guide covers the Secret, persistent volume, and access URL. The image bundles neither OpenMHS nor Git; to use the lab in a container, mount an OpenMHS checkout and point `OPENAI4S_OPENMHS` at it.
 
 Release images pass `container_smoke.sh` before publication. Binding `0.0.0.0` inside the container makes the access token mandatory and switches the DNS-rebind `Host` allowlist off, so keep the published port on loopback. An unprivileged container cannot give bubblewrap the namespaces it needs, so the kernel sandbox degrades visibly and the container becomes the boundary; **[the container guide](docs/docker.md)** explains these limits.
 
@@ -305,8 +306,8 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 
 | doc | what's inside |
 |---|---|
-| [**Startup guide**](docs/startup-guide.md) | macOS 1.0.0 walkthrough: the ad-hoc-signed Apple Silicon DMG or PyPI on Apple Silicon and Intel, model setup, and Doubao Search |
-| [**Upgrading**](docs/upgrading.md) | Newest first. 1.0.0 (schema 35 → 36): back up first; dataset verification receipts, and the opt-in lab. 0.3.1 (schema 32 → 35): stop the daemon and copy the data directory before the first start, because going back is unsupported. From 0.2.x: back up the database before the 27 → 32 schema migration, why going back to 0.2.x is unsupported, and the access token that is now always required |
+| [**Startup guide**](docs/startup-guide.md) | macOS 1.0.1 walkthrough: the ad-hoc-signed Apple Silicon DMG or PyPI on Apple Silicon and Intel, model setup, and Doubao Search |
+| [**Upgrading**](docs/upgrading.md) | Newest first. 1.0.1 (schema 36 → 43): back up first; the `rl_*` tables of the agentic RL runtime. 1.0.0 (schema 35 → 36): back up first; dataset verification receipts, and the opt-in lab. 0.3.1 (schema 32 → 35): stop the daemon and copy the data directory before the first start, because going back is unsupported. From 0.2.x: back up the database before the 27 → 32 schema migration, why going back to 0.2.x is unsupported, and the access token that is now always required |
 | [**OpenMHS lab**](docs/openmhs.md) | the simulated lab: setup, the device market, MHS and MCP surfaces, lab files, and operator actions |
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**RL runtime**](openai4s/rl/README.md) | running OpenAI4S as an agentic-RL environment: the rollout lifecycle, JSONL trainer transport, trajectory exports, and training-data projection |
@@ -362,7 +363,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 
 ### Next
 
-- [ ] **A notarized macOS image and arm64 packages.** The Linux package ships from `v0.2.0` and the Windows/WSL2 package from `v0.3.0`. The 1.0.0 Apple Silicon DMG is ad-hoc signed, not notarized, and only `x86_64` is published for Linux and Windows. A Developer ID-signed, notarized `.dmg` plus arm64 Linux and Windows-on-ARM packages would let every supported platform install without a toolchain.
+- [ ] **A notarized macOS image and arm64 packages.** The Linux package ships from `v0.2.0` and the Windows/WSL2 package from `v0.3.0`. The 1.0.1 Apple Silicon DMG is ad-hoc signed, not notarized, and only `x86_64` is published for Linux and Windows. A Developer ID-signed, notarized `.dmg` plus arm64 Linux and Windows-on-ARM packages would let every supported platform install without a toolchain.
 - [ ] **NVIDIA scientific computing suites** — bring **BioNeMo** (biomolecular foundation models) and **Parabricks** (GPU-accelerated genomics pipelines) in as first-class Skills and BYOC backends, beyond today's NVIDIA NIM integration.
 - [ ] Local GPU model serving so structure/design Skills run without remote compute.
 - [ ] More BYOC providers (Modal / SLURM) beyond SSH + NVIDIA NIM.

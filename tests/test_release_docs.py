@@ -400,13 +400,13 @@ def test_no_install_doc_sends_a_mac_user_to_the_latest_release_for_a_dmg():
     assert not offenders, f"DMG download pointed at the latest release: {offenders}"
 
 
-#: The release the install docs present as current. v1.0.0 was published by
+#: The release the install docs present as current. v1.0.1 was published by
 #: `release.yml`, which omits macOS; its DMG was then built locally from the
 #: unchanged tag and attached by hand, ad-hoc signed and not notarized (its
-#: supplemental validation record says so). v0.3.1, the release before it,
-#: had no image at all. A fact about a release that exists, so it is a
-#: constant rather than the tree's version.
-CURRENT_RELEASE = "1.0.0"
+#: supplemental validation record says so), as v1.0.0's was. v0.3.1 had no
+#: image at all. A fact about a release that exists, so it is a constant
+#: rather than the tree's version.
+CURRENT_RELEASE = "1.0.1"
 
 #: Per install doc, the words each of its language halves uses to say the
 #: current release's image is ad-hoc signed rather than notarized.
@@ -461,7 +461,8 @@ def test_install_docs_pin_every_dmg_to_its_own_release():
             ), f"{path.name} names the {version} image without its release"
             assert "ad-hoc" in text, path.name
     guide = _normalised(ROOT / "docs" / "startup-guide.md")
-    assert "/releases/tag/v0.3.0" in guide and "/releases/tag/v0.2.0" in guide
+    for older in ("v1.0.0", "v0.3.0", "v0.2.0"):
+        assert f"/releases/tag/{older}" in guide, older
     assert (
         f"must not open a data directory that {CURRENT_RELEASE} has upgraded" in guide
     )
@@ -484,7 +485,7 @@ def test_platforms_does_not_claim_a_notarized_dmg_ships():
     assert "No release has met that gate yet" in text
     assert f"{CURRENT_RELEASE}'s is ad-hoc signed" in text
     assert (
-        f"v0.2.0, v0.3.0 and {CURRENT_RELEASE} each carry an ad-hoc-signed image"
+        f"v0.2.0, v0.3.0, 1.0.0 and {CURRENT_RELEASE} each carry an ad-hoc-signed image"
         in text
     )
     assert "v0.3.0 publishes no DMG" not in text
