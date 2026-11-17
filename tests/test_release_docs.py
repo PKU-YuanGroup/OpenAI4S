@@ -239,23 +239,22 @@ def test_the_upgrade_guide_says_what_old_records_and_a_failed_upgrade_look_like(
 #: when a newer section is added above it.
 TO_031_EN = "## Upgrading to 0.3.1 (schema 32 → 35)"
 TO_031_ZH = "## 升级到 0.3.1（schema 32 → 35）"
+#: The schema the published 0.3.1 package opens: a released fact, like
+#: V020_SCHEMA. The schema this tree opens is the newest section's job.
+V031_SCHEMA = 35
 
 
 def test_the_031_upgrade_section_names_the_migration_the_backup_and_no_downgrade():
-    """The section a 0.3.0 operator reads names the schema this tree actually
-    opens, says the migration's own schema-32 copy is removed after success,
+    """The section a 0.3.0 operator reads names the schema 0.3.1 opens, says
+    the migration's own schema-32 copy is removed after success,
     says downgrade is unsupported, points single-user sign-in at
     `openai4s url`, and records that delegation children omit `result` and
     `output`. Each sentence is scoped to the new section, so a phrase that
     also lives in the 0.2.x section cannot keep this green."""
-    current = int(
-        re.search(r"^SCHEMA_VERSION = (\d+)$", MIGRATIONS.read_text("utf-8"), re.M)[1]
-    )
-    assert current >= 35, "the 0.3.1 section names a schema this tree does not reach"
     english = " ".join(_section(UPGRADING, TO_031_EN).split())
     chinese = " ".join(_section(UPGRADING_ZH, TO_031_ZH).split())
     for text in (english, chinese):
-        assert f"schema **{current}**" in text
+        assert f"schema **{V031_SCHEMA}**" in text
     deletes = _migration_deletes_its_backup_on_success()
     backup_en = "A successful migration deletes `openai4s.db.v32.bak`."
     backup_zh = "迁移成功后会删除 `openai4s.db.v32.bak`。"
@@ -306,6 +305,60 @@ def test_the_031_section_quotes_the_strings_the_code_returns():
             assert f"`{reason}`" in text, reason
         assert "`unattributed`" in text
         assert '`[{"state": "<redacted judge state>"}]`' in text
+
+
+# -- upgrading to 1.0.1 (schema 36 → 43) --------------------------------------
+
+TO_101_EN = "## Upgrading to 1.0.1 (schema 36 → 43)"
+TO_101_ZH = "## 升级到 1.0.1（schema 36 → 43）"
+
+
+def test_the_newest_upgrade_section_names_the_schema_this_tree_opens():
+    """An operator on the latest release reads the first section, so that is
+    the one that names the schema this tree opens. A schema bump fails here
+    until a newer section is written above it, instead of until a section
+    about an older release is edited to mention it."""
+    current = int(
+        re.search(r"^SCHEMA_VERSION = (\d+)$", MIGRATIONS.read_text("utf-8"), re.M)[1]
+    )
+    for path in (UPGRADING, UPGRADING_ZH):
+        newest = next(
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith("## ")
+        )
+        assert re.search(rf"schema \d+ → {current}[)）]$", newest), newest
+
+
+def test_the_101_section_matches_the_migrations_it_describes():
+    """Each claim is read from the code that makes it true: the step names in
+    the table are the ones the Store registers for 37 through 43, the migration
+    still deletes its copy on success, and an older release refuses the
+    upgraded database with `future_schema`. Changing one of them fails here
+    until both halves are corrected."""
+    from openai4s.storage.migrations import FutureSchemaError
+
+    registered = {
+        int(number): name
+        for number, name in re.findall(
+            r'^\s*(\d+): \(\s*"([a-z0-9_]+)"',
+            (ROOT / "openai4s" / "store.py").read_text("utf-8"),
+            re.M,
+        )
+    }
+    english = " ".join(_section(UPGRADING, TO_101_EN).split())
+    chinese = " ".join(_section(UPGRADING_ZH, TO_101_ZH).split())
+    deletes = _migration_deletes_its_backup_on_success()
+    for text in (english, chinese):
+        for number in range(37, 44):
+            assert f"| {number} | `{registered[number]}`" in text, number
+        assert "`openai4s.db.v36.bak`" in text
+        assert f"`{FutureSchemaError.code}`" in text
+        assert 'python -m pip install "openai4s[science]==1.0.0"' in text
+    assert deletes == ("A successful migration deletes that copy" in english)
+    assert deletes == ("迁移成功后会删除这份副本" in chinese)
+    assert "exit with status 2" in english
+    assert "退出码是 2" in chinese
 
 
 # -- what each platform can actually download ----------------------------------
