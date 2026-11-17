@@ -476,6 +476,51 @@ def admit_load(
     )
 
 
+def load_needs_posture(frame_id: str | None, candidate: SkillNetworkBinding) -> bool:
+    """Whether admitting ``candidate`` into the frame depends on a posture.
+
+    Only a declared ``host_only`` requirement does, the frame's or the
+    candidate's. ``raw_required`` is refused on any posture, and it is
+    refused first.
+    """
+
+    modes = {
+        item.capability.mode
+        for item in (*bindings_for(frame_id), candidate)
+        if item.capability.declaration == "declared"
+    }
+    return "host_only" in modes and "raw_required" not in modes
+
+
+def unstarted_kernel_posture() -> dict[str, Any] | None:
+    """The posture this daemon gives a new Kernel, measured without one.
+
+    A native ``load_skill`` is served outside any worker, so there is no
+    worker posture to read. This builds the sandbox a Kernel would get, in a
+    temp workspace it removes, which runs the same self-test. ``None`` when
+    it cannot be built.
+
+    It answers one question: whether to hand the recipe over. It admits no
+    code. Every execution sink still measures the worker it actually runs on,
+    and that worker can differ from this one (a cluster node, a workspace the
+    self-test fails in).
+    """
+
+    import tempfile
+
+    from openai4s.security.sandbox import create_kernel_sandbox
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="openai4s-load-posture-") as probe:
+            sandbox = create_kernel_sandbox(probe)
+            try:
+                return dict(sandbox.status.to_dict())
+            finally:
+                sandbox.close()
+    except Exception:  # noqa: BLE001 - an unbuildable sandbox proves nothing
+        return None
+
+
 def _admit_bindings(
     bindings: Sequence[SkillNetworkBinding],
     *,

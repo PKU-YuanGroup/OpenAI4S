@@ -1787,6 +1787,47 @@ class HostDispatcher:
 
         return hasattr(self._sandbox_status_local, "value")
 
+    def _posture_outside_a_worker(self) -> dict[str, Any] | None:
+        """The posture to judge a Skill load by when no worker is calling.
+
+        A worker this session already started is the evidence when one is on
+        record: it may run on a cluster node the daemon's sandbox does not
+        reach, and the weakest one decides. Before any worker exists, the
+        daemon's own self-test of the sandbox a new Kernel gets stands in.
+        Either way this only decides whether the recipe is handed over.
+        """
+
+        from openai4s.security.sandbox import boundary_holds
+        from openai4s.server.skill_network_admission import unstarted_kernel_posture
+
+        recorded: list[dict[str, Any]] = []
+        try:
+            root = str(
+                self.store.resolve_frame_scope(self.frame_id).get("root_frame_id") or ""
+            )
+            if root:
+                branch = self.store.active_session_branch(root)
+                for language in ("python", "r"):
+                    generation = self.store.latest_kernel_generation(
+                        root, language, branch_id=branch
+                    )
+                    environment = (generation or {}).get("environment")
+                    status = (
+                        environment.get("sandbox")
+                        if isinstance(environment, Mapping)
+                        else None
+                    )
+                    if isinstance(status, Mapping):
+                        recorded.append(dict(status))
+        except Exception:  # noqa: BLE001 - no record to read is not a posture
+            recorded = []
+        if not recorded:
+            return unstarted_kernel_posture()
+        for status in recorded:
+            if not boundary_holds(status):
+                return status
+        return recorded[0]
+
     @contextmanager
     def bind_download_cancellation(
         self, cancelled: Callable[[], bool]
@@ -3372,6 +3413,7 @@ class HostDispatcher:
             admit_load,
             bind_skill_load,
             load_event_metadata,
+            load_needs_posture,
             skill_binding,
         )
 
@@ -3401,27 +3443,24 @@ class HostDispatcher:
         # is recorded. Bound and committed first, a refused load withheld the
         # recipe and kept its manifest: the frame's Host requests stayed
         # narrowed to a Skill nobody had been given, across restarts too.
+        candidate = skill_binding(**binding)
+        posture = self._current_sandbox_status()
+        if not self._sandbox_status_bound() and load_needs_posture(
+            self.frame_id, candidate
+        ):
+            # A native tool call is served outside any worker, so there is no
+            # worker posture to read, and reading none refused every such load.
+            posture = self._posture_outside_a_worker()
         decision = admit_load(
             frame_id=self.frame_id,
-            candidate=skill_binding(**binding),
-            sandbox_status=self._current_sandbox_status(),
+            candidate=candidate,
+            sandbox_status=posture,
         )
         if not decision.allowed:
-            refusal = (
+            return (
                 f"{decision.refusal_message()} "
                 "(the load is refused, not just the next Cell)"
             )
-            if (
-                "raw_network" not in decision.blocked_on
-                and not self._sandbox_status_bound()
-            ):
-                # A native tool call has no worker, so nothing was measured.
-                refusal += (
-                    ". No Cell is running, so no worker sandbox was measured "
-                    "for this call: load it inside a Python Cell with "
-                    f"host.load_skill({skill.name!r}), where it is"
-                )
-            return refusal
         metadata = load_event_metadata(
             binding_frame_id=self.frame_id,
             **binding,

@@ -1049,27 +1049,160 @@ def test_a_refused_load_leaves_no_requirement_behind(tmp_path, mode):
         dispatcher.store.close()
 
 
-def test_a_load_outside_any_cell_says_no_sandbox_was_measured(tmp_path):
-    """A native `load_skill` call has no worker, so no posture to read.
+_REMOTE = {
+    "enforced": False,
+    "self_test_passed": False,
+    "network_policy": "unproven",
+    "backend": "remote",
+}
 
-    "The measured sandbox does not confine the kernel" was the whole message
-    there too, though nothing had been measured. The posture exists inside a
-    Cell, so that is where the refusal sends the caller. A worker that was
-    measured and found degraded gets no such pointer: retrying changes nothing.
+
+def _never_probed():
+    raise AssertionError("the daemon-side self-test was consulted")
+
+
+def test_a_native_load_is_decided_by_the_daemons_own_self_test(tmp_path, monkeypatch):
+    """A native `load_skill` has no worker, so it had no posture to read.
+
+    Every such load of a `host_only` Skill was refused as "the measured
+    sandbox does not confine the kernel", though nothing had been measured:
+    73255df3 assumed a load always arrives from a Cell. The daemon can build
+    and self-test the same sandbox a new Kernel gets, so that decides whether
+    to hand the recipe over. It decides nothing else: a Cell is still
+    admitted against the worker it actually runs on.
     """
 
-    disp = _host_only_dispatcher(tmp_path)
-    disp.frame_id = "frame-native-load"
-    refused = disp._m_load_skill("lit")
-    assert set(refused) == {"error"}, refused
-    assert "host.load_skill" in refused["error"]
-    assert "import requests" not in str(refused)
-    assert bindings_for("frame-native-load") == ()
+    from openai4s.server import skill_network_admission as admission
 
+    disp = _host_only_dispatcher(tmp_path)
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+    disp.frame_id = "frame-native-enforced"
+    loaded = disp._m_load_skill("lit")
+    assert loaded.get("name") == "lit", loaded
+    assert [item.skill_id for item in bindings_for("frame-native-enforced")] == ["lit"]
+    assert not admit_cell(
+        frame_id="frame-native-enforced", sandbox_status=_DEGRADED
+    ).allowed
+    assert admit_cell(
+        frame_id="frame-native-enforced", sandbox_status=_enforced_sandbox()
+    ).allowed
+
+    for name, posture in (("degraded", dict(_DEGRADED)), ("unbuildable", None)):
+        monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda p=posture: p)
+        disp.frame_id = f"frame-native-{name}"
+        refused = disp._m_load_skill("lit")
+        assert set(refused) == {"error"}, (name, refused)
+        assert "does not confine the kernel" in refused["error"]
+        assert "import requests" not in str(refused)
+        assert bindings_for(f"frame-native-{name}") == ()
+
+    # Inside a worker's host_call the worker's own posture is the only
+    # evidence, including when it is unknown.
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", _never_probed)
+    disp.frame_id = "frame-in-cell-unknown"
+    with disp.bind_sandbox_status(None):
+        refused = disp._m_load_skill("lit")
+    assert set(refused) == {"error"}, refused
+    disp.frame_id = "frame-in-cell-degraded"
     with disp.bind_sandbox_status(_DEGRADED):
-        degraded = disp._m_load_skill("lit")
-    assert "host.load_skill" not in degraded["error"]
+        refused = disp._m_load_skill("lit")
+    assert set(refused) == {"error"}, refused
     disp.store.close()
+
+
+def test_the_self_test_runs_only_for_a_load_that_needs_a_posture(tmp_path, monkeypatch):
+    """`none` needs no network and `raw_required` is refused on any posture."""
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    skills = tmp_path / "skills"
+    for name, mode in (("plain", "none"), ("raw", "raw_required")):
+        (skills / name).mkdir(parents=True)
+        (skills / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: d\norigin: openai4s\n"
+            f"capabilities:\n  network:\n    mode: {mode}\n    domains: []\n---\n# x\n",
+            "utf-8",
+        )
+    disp = build_dispatcher(Config(data_dir=tmp_path / "data", skills_dir=skills))
+    disp.frame_id = "frame-no-posture-needed"
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", _never_probed)
+
+    assert disp._m_load_skill("plain").get("name") == "plain"
+    refused = disp._m_load_skill("raw")
+    assert set(refused) == {"error"} and "raw kernel network" in refused["error"]
+    disp.store.close()
+
+
+def test_a_worker_the_session_already_started_outranks_the_self_test(
+    tmp_path, monkeypatch
+):
+    """The daemon's sandbox says nothing about a worker on another machine.
+
+    A session bound to a cluster worker records `backend: remote` for its
+    kernel. Judged by the daemon's own self-test, its native load would be
+    admitted and every Cell after it refused. Once a session has a worker on
+    record, that worker is the evidence, and the self-test is not consulted.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+    from openai4s.store import get_store
+
+    skills = tmp_path / "skills"
+    (skills / "lit").mkdir(parents=True)
+    (skills / "lit" / "SKILL.md").write_text(
+        "---\nname: lit\ndescription: d\norigin: openai4s\n"
+        "capabilities:\n  network:\n    mode: host_only\n"
+        "    domains:\n      - api.openalex.org\n---\n# recipe\n",
+        "utf-8",
+    )
+    cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
+    store = get_store(cfg.db_path)
+    remote = store.new_frame(kind="turn", project_id="science")
+    local = store.new_frame(kind="turn", project_id="science")
+    store.create_kernel_generation(
+        root_frame_id=remote, language="python", environment={"sandbox": _REMOTE}
+    )
+    # One confined worker and one that is not: the weaker one decides.
+    mixed = store.new_frame(kind="turn", project_id="science")
+    for language, posture in (("python", _ENFORCED), ("r", _DEGRADED)):
+        store.create_kernel_generation(
+            root_frame_id=mixed, language=language, environment={"sandbox": posture}
+        )
+    store.create_kernel_generation(
+        root_frame_id=local, language="python", environment={"sandbox": _ENFORCED}
+    )
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+    for frame in (remote, mixed):
+        refused = build_dispatcher(cfg, frame_id=frame)._m_load_skill("lit")
+        assert set(refused) == {"error"}, refused
+        assert bindings_for(frame) == ()
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", _never_probed)
+    loaded = build_dispatcher(cfg, frame_id=local)._m_load_skill("lit")
+    assert loaded.get("name") == "lit", loaded
+    store.close()
+
+
+def test_the_self_test_reports_what_a_new_kernel_would_get(monkeypatch):
+    """Real construction, no stub: `off` is the one posture every host agrees on."""
+
+    from openai4s.server.skill_network_admission import unstarted_kernel_posture
+
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "off")
+    disabled = unstarted_kernel_posture()
+    assert disabled is not None and disabled["enforced"] is False
+    assert host_only_boundary_holds(disabled) is False
+
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "not-a-mode")
+    assert unstarted_kernel_posture() is None
+
+    monkeypatch.delenv("OPENAI4S_KERNEL_SANDBOX")
+    measured = unstarted_kernel_posture()
+    assert measured is None or {"enforced", "network_policy"} <= set(measured)
 
 
 def test_search_blocked_by_a_bound_manifest_does_not_blame_rate_limits(monkeypatch):
