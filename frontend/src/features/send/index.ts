@@ -58,6 +58,7 @@ export {
 } from "./candidate";
 export type { CandidateResolution } from "./candidate";
 export {
+  bootEnvironmentReadiness,
   handleEnvironmentReadinessTerminal,
   isEnvironmentReadinessError,
   refreshEnvironmentStatus,

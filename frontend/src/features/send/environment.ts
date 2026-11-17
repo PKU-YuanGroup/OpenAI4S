@@ -9,7 +9,7 @@ import {
   environmentStatus,
   standardProfileReadiness,
 } from "../../stores/customize";
-import { t } from "../../i18n/runtime";
+import { i18nReady, onLanguageChange, t } from "../../i18n/runtime";
 import {
   sanitizeStandardProfileReadiness,
   type StandardReadiness,
@@ -91,6 +91,33 @@ export async function refreshEnvironmentStatus(): Promise<unknown> {
   } finally {
     _environmentStatusPromise.value = null;
   }
+}
+
+let readinessBooted = false;
+
+/**
+ * The load-time readiness fetch. app.js ran `await refreshEnvironmentStatus()`
+ * during init; the port kept the function and dropped that call, so the banner
+ * had nothing to show until a send was refused or the Compute tab was opened.
+ *
+ * Two things the legacy call did not need to care about:
+ *
+ * - The banner is written through `t()`. A fetch that beat the locale chunk
+ *   would leave bare keys on screen, so this waits for the dictionaries (and
+ *   fetches anyway if they fail -- a banner in the wrong words still says the
+ *   environment is not ready).
+ * - Nothing repainted the banner on a language switch, so its text stayed in
+ *   whichever language was active when it was painted.
+ *
+ * Not awaited by the caller: the banner is advisory and the first view must
+ * not wait on it. A failed fetch leaves the banner hidden.
+ */
+export function bootEnvironmentReadiness(): void {
+  if (readinessBooted) return;
+  readinessBooted = true;
+  onLanguageChange(() => renderEnvironmentReadinessBanner());
+  const fetchOnce = () => void refreshEnvironmentStatus();
+  void i18nReady().then(fetchOnce, fetchOnce);
 }
 
 export function handleEnvironmentReadinessTerminal(detail: unknown): boolean {

@@ -5,9 +5,36 @@ import { bindWorkbench } from "../../features/sessions/boot";
 import { routesToWorkspace } from "../../features/sessions/dom";
 import { projectFilesCopy } from "../../features/sessions/copy";
 import { browseProjectFolder } from "../../features/sessions/project-files";
+import { callLane } from "../../features/send/host";
 import { DashHeroText } from "./DashHero";
 import { ModelSelect } from "./ModelSelect";
 import "./dashboard.css";
+
+/**
+ * The standard-profile readiness banner. `renderEnvironmentReadinessBanner`
+ * fills and shows every node of this class; the legacy shell painted one on
+ * the dashboard and one above the conversation, and this one painted neither,
+ * so the banner the send lane kept updating was never on the page.
+ *
+ * A plain function, not a component: the Shell's own tests walk the returned
+ * tree, and a component boundary would hide these nodes from them.
+ */
+function readinessBanner() {
+  return (
+    <div class="environment-readiness-banner hidden" role="status" aria-live="polite">
+      <div class="environment-readiness-copy">
+        <strong data-environment-readiness-title="" />
+        <span data-environment-readiness-summary="" />
+      </div>
+      <button
+        class="outline-btn small"
+        data-open-environment-readiness=""
+        type="button"
+        onClick={() => callLane("openCust", "compute")}
+      />
+    </div>
+  );
+}
 
 export function Shell() {
   useEffect(() => {
@@ -94,6 +121,7 @@ export function Shell() {
             </div>
           </div>
         </section>
+        {readinessBanner()}
         <section id="dash-running" class="dash-running hidden" />
         <div class="dash-grid">
           <section class="dash-col">
@@ -271,6 +299,7 @@ export function Shell() {
                 />
               </div>
             </div>
+            {readinessBanner()}
             <HistoryLoadStatus />
             <div id="messages" class="messages" />
             <div class="composer-wrap">
@@ -294,6 +323,11 @@ export function Shell() {
                   </div>
                 </div>
                 <div class="nb-card">
+                  {/* `updateAnnotBadge` paints the pinned-comment chip here.
+                      Open comments ride along with the next message whether or
+                      not this node exists, so without it they were sent with
+                      nothing on screen saying so and no way to discard them. */}
+                  <div id="annot-bar" class="annot-bar hidden" />
                   <textarea
                     id="composer"
                     rows={1}
@@ -339,6 +373,18 @@ export function Shell() {
                         data-icon-size="20"
                         type="button"
                       />
+                      {/* `bindMic` looks this up at boot. With the tools on the
+                          left rather than where legacy had it, so the composer
+                          still ends in the send button. */}
+                      <button
+                        id="mic-btn"
+                        class="nb-icon"
+                        data-i18n-title="composer.voice"
+                        title="语音输入"
+                        data-icon="mic"
+                        data-icon-size="20"
+                        type="button"
+                      />
                     </div>
                     <div class="nb-right">
                       <button
@@ -367,6 +413,9 @@ export function Shell() {
                   </div>
                 </div>
               </div>
+              {/* `renderQueueStrip` lists queued follow-ups here, each with the
+                  only control that cancels one. */}
+              <div id="queue-strip" class="queue-strip hidden" />
               <div id="composer-refs" class="composer-refs hidden" />
               <div
                 class="composer-hint"
