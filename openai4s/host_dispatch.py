@@ -1782,6 +1782,11 @@ class HostDispatcher:
         value = getattr(self._sandbox_status_local, "value", None)
         return dict(value) if isinstance(value, dict) else None
 
+    def _sandbox_status_bound(self) -> bool:
+        """Whether this thread is serving a worker's ``host_call``."""
+
+        return hasattr(self._sandbox_status_local, "value")
+
     @contextmanager
     def bind_download_cancellation(
         self, cancelled: Callable[[], bool]
@@ -3364,10 +3369,10 @@ class HostDispatcher:
         if skill is None:
             return None
         from openai4s.server.skill_network_admission import (
-            LOAD_SINK,
-            admit,
+            admit_load,
             bind_skill_load,
             load_event_metadata,
+            skill_binding,
         )
 
         context = self._current_action_context()
@@ -3375,14 +3380,51 @@ class HostDispatcher:
         capability = getattr(skill, "network", None)
         if capability is None:
             return None
+        binding: dict[str, Any] = {
+            "action_group_id": str(action_group_id) if action_group_id else None,
+            "skill_id": skill.name,
+            "version": str(getattr(skill, "version", "") or ""),
+            "document_digest": str(getattr(skill, "document_sha256", "") or ""),
+            "capability": capability,
+            "source": source,
+        }
+        # Full admission, not just the version-wide `raw_required` freeze.
+        # `host_only` genuinely depends on measured posture -- and inside a
+        # Cell the posture is available: every `host_call` runs inside
+        # `bind_sandbox_status(self.sandbox_status)`, which the manager reads
+        # from the worker executing this very Cell. Refusing only
+        # `raw_required` here left `host_only` on a degraded sandbox refused
+        # for every subsequent Cell and permitted for the one that loaded it
+        # -- the load-then-use shape, i.e. the one that matters.
+        #
+        # It runs on the requirement this load *would* bind, before anything
+        # is recorded. Bound and committed first, a refused load withheld the
+        # recipe and kept its manifest: the frame's Host requests stayed
+        # narrowed to a Skill nobody had been given, across restarts too.
+        decision = admit_load(
+            frame_id=self.frame_id,
+            candidate=skill_binding(**binding),
+            sandbox_status=self._current_sandbox_status(),
+        )
+        if not decision.allowed:
+            refusal = (
+                f"{decision.refusal_message()} "
+                "(the load is refused, not just the next Cell)"
+            )
+            if (
+                "raw_network" not in decision.blocked_on
+                and not self._sandbox_status_bound()
+            ):
+                # A native tool call has no worker, so nothing was measured.
+                refusal += (
+                    ". No Cell is running, so no worker sandbox was measured "
+                    "for this call: load it inside a Python Cell with "
+                    f"host.load_skill({skill.name!r}), where it is"
+                )
+            return refusal
         metadata = load_event_metadata(
-            skill_id=skill.name,
-            version=str(getattr(skill, "version", "") or ""),
-            document_digest=str(getattr(skill, "document_sha256", "") or ""),
-            capability=capability,
-            action_group_id=str(action_group_id) if action_group_id else None,
-            source=source,
             binding_frame_id=self.frame_id,
+            **binding,
         )
         # Persist the requirement before returning executable guidance. If the
         # daemon crashes after this commit, dispatcher construction restores
@@ -3393,36 +3435,13 @@ class HostDispatcher:
             "skill_loaded",
             metadata=metadata,
         )
-        bind_skill_load(
-            frame_id=self.frame_id,
-            action_group_id=str(action_group_id) if action_group_id else None,
-            skill_id=skill.name,
-            version=str(getattr(skill, "version", "") or ""),
-            document_digest=str(getattr(skill, "document_sha256", "") or ""),
-            capability=capability,
-            source=source,
-        )
+        bind_skill_load(frame_id=self.frame_id, **binding)
         loaded_dict = loaded if isinstance(loaded, dict) else None
         if loaded_dict is not None:
             loaded_dict["skill_id"] = skill.name
             loaded_dict["action_group_id"] = metadata["action_group_id"]
             loaded_dict["manifest_digest"] = metadata["manifest_digest"]
             loaded_dict["document_digest"] = metadata["document_digest"]
-        # Full admission, not just the version-wide `raw_required` freeze.
-        # `host_only` genuinely depends on measured posture -- and at load
-        # time the posture is available: every `host_call` runs inside
-        # `bind_sandbox_status(self.sandbox_status)`, which the manager reads
-        # from the worker executing this very Cell. Refusing only
-        # `raw_required` here left `host_only` on a degraded sandbox refused
-        # for every subsequent Cell and permitted for the one that loaded it
-        # -- the load-then-use shape, i.e. the one that matters.
-        decision = admit(
-            sink=LOAD_SINK,
-            frame_id=self.frame_id,
-            sandbox_status=self._current_sandbox_status(),
-        )
-        if not decision.allowed:
-            return f"{decision.refusal_message()} (the load is refused, not just the next Cell)"
         return None
 
     def _m_remember(self, spec: dict) -> dict:
