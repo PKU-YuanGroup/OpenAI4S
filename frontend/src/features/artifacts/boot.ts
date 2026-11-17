@@ -3,6 +3,7 @@ import { mountFilesPanel } from "../../components/artifacts/FilesPanel";
 import { parseTable } from "../csv/csv";
 import { setArtifactCreatedSideEffects, setLoadArtifactsImpl } from "../ws/handlers";
 import { artifactCreatedSideEffects } from "./events";
+import { bindArtifactLinks } from "./links";
 import { loadArtifacts, setRenderConversationArtifactsImpl, setRenderFilesGridImpl } from "./load";
 import { renderSheet } from "./sheet";
 import {
@@ -54,6 +55,9 @@ export function installArtifacts(target?: Target): void {
 
 export function bootArtifacts(target?: Target): void {
   installArtifacts(target);
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    bindArtifactLinks(document);
+  }
 }
 
 /**

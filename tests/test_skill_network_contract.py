@@ -462,21 +462,29 @@ def test_load_skill_refuses_a_blocked_skill_instead_of_only_the_next_cell(tmp_pa
 
 
 def test_background_execution_is_a_sink_too(tmp_path):
-    """`exec_background` spawns its own worker; the freeze has to reach it."""
+    """`exec_background` spawns its own worker; the freeze has to reach it.
+
+    The requirement is bound directly. Loading a `raw_required` Skill is
+    refused and a refused load binds nothing, so the rows this sink still
+    answers to are the ones an older build persisted.
+    """
 
     from openai4s.host_dispatch import build_dispatcher
 
     skills = tmp_path / "skills"
-    (skills / "raw").mkdir(parents=True)
-    (skills / "raw" / "SKILL.md").write_text(
-        "---\nname: raw\ndescription: d\norigin: openai4s\n"
-        "capabilities:\n  network:\n    mode: raw_required\n    domains: []\n---\n# x\n",
-        "utf-8",
-    )
+    skills.mkdir()
     cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
     disp = build_dispatcher(cfg)
     disp.frame_id = "frame-raw-bg"
-    disp._m_load_skill("raw")
+    bind_skill_load(
+        frame_id="frame-raw-bg",
+        action_group_id="ag-1",
+        skill_id="raw",
+        version="1",
+        document_digest="b" * 64,
+        capability=declared_capability("raw_required", [], source="frontmatter"),
+        source="load_skill",
+    )
 
     out = disp._m_exec_background({"code": "print(1)"})
     assert set(out) == {"error"}, out
@@ -604,8 +612,6 @@ def test_cli_host_only_refuses_before_first_python_or_r_user_code(
 def test_raw_required_is_refused_without_any_measured_posture():
     """The refusal that must not depend on a live kernel."""
 
-    from openai4s.server.skill_network_admission import raw_required_binding
-
     assert raw_required_binding("frame-with-no-bindings") is None
 
 
@@ -638,12 +644,13 @@ def test_restart_restores_skill_network_binding_to_exact_loading_frame(tmp_path)
     from openai4s.host_dispatch import build_dispatcher
     from openai4s.store import get_store
 
+    # An admitted load: a refused one binds nothing, so has nothing to restore.
     skills = tmp_path / "skills"
-    (skills / "raw-demo").mkdir(parents=True)
-    (skills / "raw-demo" / "SKILL.md").write_text(
-        "---\nname: raw-demo\ndescription: d\norigin: openai4s\n"
-        "capabilities:\n  network:\n    mode: raw_required\n    domains: []\n"
-        "---\n# x\n",
+    (skills / "host-demo").mkdir(parents=True)
+    (skills / "host-demo" / "SKILL.md").write_text(
+        "---\nname: host-demo\ndescription: d\norigin: openai4s\n"
+        "capabilities:\n  network:\n    mode: host_only\n"
+        "    domains:\n      - doi.org\n---\n# x\n",
         "utf-8",
     )
     cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
@@ -652,17 +659,19 @@ def test_restart_restores_skill_network_binding_to_exact_loading_frame(tmp_path)
     child = store.new_frame(parent_id=root, kind="delegate", project_id="science")
     sibling = store.new_frame(parent_id=root, kind="delegate", project_id="science")
     child_dispatcher = build_dispatcher(cfg, frame_id=child)
-    child_dispatcher._m_load_skill("raw-demo")
-    assert raw_required_binding(child) is not None
+    with child_dispatcher.bind_sandbox_status(_enforced_sandbox()):
+        loaded = child_dispatcher._m_load_skill("host-demo")
+    assert loaded.get("name") == "host-demo", loaded
+    assert [item.skill_id for item in bindings_for(child)] == ["host-demo"]
 
     reset_bindings()
     store.close()
     parent_dispatcher = build_dispatcher(cfg, frame_id=root)
-    assert raw_required_binding(root) is None
+    assert bindings_for(root) == ()
     sibling_dispatcher = build_dispatcher(cfg, frame_id=sibling)
-    assert raw_required_binding(sibling) is None
+    assert bindings_for(sibling) == ()
     restored_child = build_dispatcher(cfg, frame_id=child)
-    assert raw_required_binding(child) is not None
+    assert [item.skill_id for item in bindings_for(child)] == ["host-demo"]
     for dispatcher in (
         child_dispatcher,
         parent_dispatcher,
@@ -990,6 +999,344 @@ def test_reading_a_skill_file_is_gated_like_loading_it(tmp_path):
         allowed = disp._m_skills_read({"name": "lit"})
     assert isinstance(allowed, str) and "import requests" in allowed
     disp.store.close()
+
+
+@pytest.mark.parametrize("mode", ["host_only", "raw_required"])
+def test_a_refused_load_leaves_no_requirement_behind(tmp_path, mode):
+    """A refusal withholds the recipe, so it has to withhold the requirement.
+
+    The manifest was bound, and its `skill_loaded` row committed, before
+    admission ran. A refused `host_only` load therefore kept narrowing every
+    later Host request in the frame to its declared domains -- the search
+    engines came back empty and blamed rate limiting -- and a refused
+    `raw_required` load kept refusing every later Cell. Neither recipe had
+    been handed over, and a restart restored the same requirement.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.store import get_store
+
+    domains = (
+        "    domains:\n      - api.openalex.org\n"
+        if mode == "host_only"
+        else "    domains: []\n"
+    )
+    skills = tmp_path / "skills"
+    (skills / "blocked").mkdir(parents=True)
+    (skills / "blocked" / "SKILL.md").write_text(
+        "---\nname: blocked\ndescription: d\norigin: openai4s\n"
+        f"capabilities:\n  network:\n    mode: {mode}\n{domains}---\n# recipe\n",
+        "utf-8",
+    )
+    cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
+    store = get_store(cfg.db_path)
+    frame = store.new_frame(kind="turn", project_id="science")
+    disp = build_dispatcher(cfg, frame_id=frame)
+    with disp.bind_sandbox_status(_DEGRADED):
+        refused = disp._m_load_skill("blocked")
+    assert set(refused) == {"error"}, refused
+
+    assert bindings_for(frame) == ()
+    with frame_scope(frame):
+        assert constrain_check_url("https://html.duckduckgo.com/html/") is None
+    assert admit_cell(frame_id=frame, sandbox_status=_enforced_sandbox()).allowed
+
+    reset_bindings()
+    store.close()
+    restarted = build_dispatcher(cfg, frame_id=frame)
+    assert bindings_for(frame) == ()
+    for dispatcher in (disp, restarted):
+        dispatcher.store.close()
+
+
+_REMOTE = {
+    "enforced": False,
+    "self_test_passed": False,
+    "network_policy": "unproven",
+    "backend": "remote",
+}
+
+
+def _never_probed():
+    raise AssertionError("the daemon-side self-test was consulted")
+
+
+def test_a_native_load_is_decided_by_the_daemons_own_self_test(tmp_path, monkeypatch):
+    """A native `load_skill` has no worker, so it had no posture to read.
+
+    Every such load of a `host_only` Skill was refused as "the measured
+    sandbox does not confine the kernel", though nothing had been measured:
+    73255df3 assumed a load always arrives from a Cell. The daemon can build
+    and self-test the same sandbox a new Kernel gets, so that decides whether
+    to hand the recipe over. It decides nothing else: a Cell is still
+    admitted against the worker it actually runs on.
+    """
+
+    from openai4s.server import skill_network_admission as admission
+
+    disp = _host_only_dispatcher(tmp_path)
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+    disp.frame_id = "frame-native-enforced"
+    loaded = disp._m_load_skill("lit")
+    assert loaded.get("name") == "lit", loaded
+    assert [item.skill_id for item in bindings_for("frame-native-enforced")] == ["lit"]
+    assert not admit_cell(
+        frame_id="frame-native-enforced", sandbox_status=_DEGRADED
+    ).allowed
+    assert admit_cell(
+        frame_id="frame-native-enforced", sandbox_status=_enforced_sandbox()
+    ).allowed
+
+    for name, posture in (("degraded", dict(_DEGRADED)), ("unbuildable", None)):
+        monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda p=posture: p)
+        disp.frame_id = f"frame-native-{name}"
+        refused = disp._m_load_skill("lit")
+        assert set(refused) == {"error"}, (name, refused)
+        assert "does not confine the kernel" in refused["error"]
+        assert "import requests" not in str(refused)
+        assert bindings_for(f"frame-native-{name}") == ()
+
+    # Inside a worker's host_call the worker's own posture is the only
+    # evidence, including when it is unknown.
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", _never_probed)
+    disp.frame_id = "frame-in-cell-unknown"
+    with disp.bind_sandbox_status(None):
+        refused = disp._m_load_skill("lit")
+    assert set(refused) == {"error"}, refused
+    disp.frame_id = "frame-in-cell-degraded"
+    with disp.bind_sandbox_status(_DEGRADED):
+        refused = disp._m_load_skill("lit")
+    assert set(refused) == {"error"}, refused
+    disp.store.close()
+
+
+def test_the_self_test_runs_only_for_a_load_that_needs_a_posture(tmp_path, monkeypatch):
+    """`none` needs no network and `raw_required` is refused on any posture."""
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    skills = tmp_path / "skills"
+    for name, mode in (("plain", "none"), ("raw", "raw_required")):
+        (skills / name).mkdir(parents=True)
+        (skills / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: d\norigin: openai4s\n"
+            f"capabilities:\n  network:\n    mode: {mode}\n    domains: []\n---\n# x\n",
+            "utf-8",
+        )
+    disp = build_dispatcher(Config(data_dir=tmp_path / "data", skills_dir=skills))
+    disp.frame_id = "frame-no-posture-needed"
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", _never_probed)
+
+    assert disp._m_load_skill("plain").get("name") == "plain"
+    refused = disp._m_load_skill("raw")
+    assert set(refused) == {"error"} and "raw kernel network" in refused["error"]
+    disp.store.close()
+
+
+def _recorded_worker_fixture(tmp_path):
+    from openai4s.store import get_store
+
+    skills = tmp_path / "skills"
+    (skills / "lit").mkdir(parents=True)
+    (skills / "lit" / "SKILL.md").write_text(
+        "---\nname: lit\ndescription: d\norigin: openai4s\n"
+        "capabilities:\n  network:\n    mode: host_only\n"
+        "    domains:\n      - api.openalex.org\n---\n# recipe\n",
+        "utf-8",
+    )
+    cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
+    return cfg, get_store(cfg.db_path)
+
+
+def _session_with_workers(store, *workers, ended=False):
+    frame = store.new_frame(kind="turn", project_id="science")
+    for language, posture in workers:
+        generation = store.create_kernel_generation(
+            root_frame_id=frame, language=language, environment={"sandbox": posture}
+        )
+        if ended:
+            store.finish_kernel_generation(
+                generation["generation_id"], state="released", reason="idle"
+            )
+    return frame
+
+
+def test_a_live_worker_of_the_session_outranks_the_self_test(tmp_path, monkeypatch):
+    """A worker the session is running is better evidence than a prediction.
+
+    The weaker of a Python and an R worker decides, and the self-test is not
+    consulted at all while a worker is alive.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    cfg, store = _recorded_worker_fixture(tmp_path)
+    degraded = _session_with_workers(store, ("python", _DEGRADED))
+    mixed = _session_with_workers(store, ("python", _ENFORCED), ("r", _DEGRADED))
+    confined = _session_with_workers(store, ("python", _ENFORCED))
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+    for frame in (degraded, mixed):
+        refused = build_dispatcher(cfg, frame_id=frame)._m_load_skill("lit")
+        assert set(refused) == {"error"}, refused
+        assert bindings_for(frame) == ()
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", _never_probed)
+    loaded = build_dispatcher(cfg, frame_id=confined)._m_load_skill("lit")
+    assert loaded.get("name") == "lit", loaded
+    store.close()
+
+
+def test_a_worker_that_has_ended_decides_nothing(tmp_path, monkeypatch):
+    """`latest_kernel_generation` is the newest row, alive or not.
+
+    Read without that distinction, a released worker's record kept deciding:
+    a dead "confined" row admitted a load on a host that had since degraded,
+    and a dead "not confined" row kept refusing after the sandbox was fixed
+    and the daemon restarted. Once the worker is gone the next one is a new
+    Kernel, which is exactly what the self-test measures.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    cfg, store = _recorded_worker_fixture(tmp_path)
+    was_confined = _session_with_workers(store, ("python", _ENFORCED), ended=True)
+    was_degraded = _session_with_workers(store, ("python", _DEGRADED), ended=True)
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_DEGRADED))
+    refused = build_dispatcher(cfg, frame_id=was_confined)._m_load_skill("lit")
+    assert set(refused) == {"error"}, refused
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+    loaded = build_dispatcher(cfg, frame_id=was_degraded)._m_load_skill("lit")
+    assert loaded.get("name") == "lit", loaded
+    store.close()
+
+
+def test_a_cluster_bound_session_is_not_judged_by_the_daemons_sandbox(
+    tmp_path, monkeypatch
+):
+    """The daemon's sandbox says nothing about a worker on another machine.
+
+    A session bound to a workload runs its kernel on a cluster node, or
+    refuses to run at all. The binding is what the gateway reads to choose
+    that kernel, so it is read here too: before the first worker, after one
+    was swept, and while one is alive, the answer is the same.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    cfg, store = _recorded_worker_fixture(tmp_path)
+    never_started = _session_with_workers(store)
+    swept = _session_with_workers(store, ("python", _REMOTE), ended=True)
+    running = _session_with_workers(store, ("python", _REMOTE))
+    for index, frame in enumerate((never_started, swept, running)):
+        store.leases.bind_session(frame, f"workload-{index}")
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+    for frame in (never_started, swept, running):
+        refused = build_dispatcher(cfg, frame_id=frame)._m_load_skill("lit")
+        assert set(refused) == {"error"}, refused
+        assert bindings_for(frame) == ()
+    store.close()
+
+
+def test_a_record_that_cannot_be_read_is_not_an_absent_worker(tmp_path, monkeypatch):
+    """A failed lookup fell through to the self-test, which can admit.
+
+    "No worker on record" and "the record could not be read" are different
+    answers. The second may be hiding a worker that is not confined, so it is
+    refused instead of handed to a prediction about a different worker.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    cfg, store = _recorded_worker_fixture(tmp_path)
+    frame = _session_with_workers(store, ("python", _REMOTE))
+    disp = build_dispatcher(cfg, frame_id=frame)
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+
+    def unreadable(*_args, **_kwargs):
+        raise RuntimeError("database is locked")
+
+    for name in ("latest_kernel_generation", "active_session_branch"):
+        with monkeypatch.context() as patch:
+            patch.setattr(disp.store, name, unreadable)
+            refused = disp._m_load_skill("lit")
+        assert set(refused) == {"error"}, (name, refused)
+        assert bindings_for(frame) == ()
+    with monkeypatch.context() as patch:
+        patch.setattr(disp.store.leases, "workload_for_session", unreadable)
+        refused = disp._m_load_skill("lit")
+    assert set(refused) == {"error"}, refused
+    store.close()
+
+
+def test_the_self_test_reports_what_a_new_kernel_would_get(monkeypatch):
+    """Real construction, no stub: `off` is the one posture every host agrees on."""
+
+    from openai4s.server.skill_network_admission import unstarted_kernel_posture
+
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "off")
+    disabled = unstarted_kernel_posture()
+    assert disabled is not None and disabled["enforced"] is False
+    assert host_only_boundary_holds(disabled) is False
+
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "not-a-mode")
+    assert unstarted_kernel_posture() is None
+
+    monkeypatch.delenv("OPENAI4S_KERNEL_SANDBOX")
+    measured = unstarted_kernel_posture()
+    assert measured is None or {"enforced", "network_policy"} <= set(measured)
+
+
+def test_search_blocked_by_a_bound_manifest_does_not_blame_rate_limits(monkeypatch):
+    """A bound `host_only` Skill narrows Host requests to its declared domains.
+
+    The search engines are outside that list, so every one of them is refused
+    before a connection. The empty result said "they may be rate-limiting;
+    retry shortly", and a model did exactly that, twelve times.
+    """
+
+    from openai4s import webtools
+
+    monkeypatch.setenv("OPENAI4S_ALLOW_NETWORK", "1")
+    monkeypatch.setattr(webtools.time, "sleep", lambda *_a, **_k: None)
+
+    def refused_by_egress(url, **_kwargs):
+        check_url(url)
+        return None
+
+    monkeypatch.setattr(webtools, "_http_get", refused_by_egress)
+
+    unbound = webtools.web_search("KRAS G12C resistance", engines=("builtin",))
+    assert unbound["count"] == 0 and "rate-limiting" in unbound["note"]
+
+    bind_skill_load(
+        frame_id="frame-narrowed-search",
+        action_group_id="ag-1",
+        skill_id="literature-review",
+        version="1",
+        document_digest="a" * 64,
+        capability=declared_capability(
+            "host_only", ["api.openalex.org", "doi.org"], source="frontmatter"
+        ),
+        source="load_skill",
+    )
+    with frame_scope("frame-narrowed-search"):
+        narrowed = webtools.web_search("KRAS G12C resistance", engines=("builtin",))
+    assert narrowed["count"] == 0
+    assert "rate-limiting" not in narrowed["note"]
+    # The domains the note names, compared whole rather than searched for.
+    named = narrowed["note"].split("Host requests to ", 1)[1]
+    named = named.split(", and the search engines", 1)[0]
+    assert named.split(", ") == ["api.openalex.org", "doi.org"]
 
 
 def _one_python_cell(_messages, _cfg, **_kwargs):

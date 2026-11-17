@@ -1124,17 +1124,38 @@ def web_search(
                 out["note"] = note
             return out
     failed = f" Failed: {'; '.join(failures)}." if failures else ""
-    return {
-        "query": query,
-        "count": 0,
-        "results": [],
-        "note": (
-            f"no results from any engine ({', '.join(tried) or 'none reached'}) "
+    reached = ", ".join(tried) or "none reached"
+    narrowed = _skill_declared_domains()
+    if narrowed is not None:
+        # Every engine was refused before a connection, so "rate-limiting;
+        # retry shortly" sent the caller into a loop that could not succeed.
+        note = (
+            f"no results from any engine ({reached}): a loaded Skill's network "
+            "manifest limits this session's Host requests to "
+            f"{', '.join(narrowed) or 'no domain at all'}, and the search "
+            "engines are outside that list, so retrying will not help. Use "
+            "the Skill's own lookup helpers, or host.web_fetch on one of "
+            f"those domains.{failed}"
+        )
+    else:
+        note = (
+            f"no results from any engine ({reached}) "
             "— they may be rate-limiting; retry shortly with different "
             "terms, or use host.web_fetch on a known URL / a specific "
             f"database API instead.{failed}"
-        ),
-    }
+        )
+    return {"query": query, "count": 0, "results": [], "note": note}
+
+
+def _skill_declared_domains() -> tuple[str, ...] | None:
+    """Domains a bound ``host_only`` Skill narrows this frame's requests to."""
+
+    try:
+        from openai4s.server.skill_network_admission import active_host_only_domains
+
+        return active_host_only_domains()
+    except Exception:  # noqa: BLE001 - this only words a note
+        return None
 
 
 def _builtin_search(

@@ -27,6 +27,8 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`files-index.ts`](files-index.ts) | B-06 `GET .../artifact-index` only. Filter fingerprint drops stale cursors. |
 | [`http-stub.ts`](http-stub.ts) | JSON `Response` stand-in for Vitest, with a real body stream so bounded reads behave as in the browser. |
 | [`index.ts`](index.ts) | Public re-exports. |
+| [`links.test.ts`](links.test.ts) | A plain click on a session Artifact link opens the Viewer; modified clicks, other sessions' Artifacts, exact-version and external links stay the browser's. |
+| [`links.ts`](links.ts) | One delegated click listener: an Artifact link in rendered markdown (a completion's "Artifacts:" list) opens the in-app Viewer instead of the raw bytes. |
 | [`load.ts`](load.ts) | `loadArtifacts` / `loadProjectArtifacts` / `setFilesScope`. |
 | [`partial.ts`](partial.ts) | The F3 `partial` contract in one place: `partialNotice` (persistent `role="status"` notice, `data-state="partial"`), `downloadLink` and `previewDownload` (the exact-version download), shared by the renderers, the notebook, the science-search view and the legacy table fallback. |
 | [`preview.ts`](preview.ts) | Scoped exact-version grant upgrade with a per-version grant cache, the retargeted caption, and the inert `/preview/<id-or-version>` fallback once a grant is refused. |

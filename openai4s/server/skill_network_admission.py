@@ -111,9 +111,8 @@ def reset_bindings(frame_id: str | None = None) -> None:
         _BINDINGS.pop(str(frame_id), None)
 
 
-def bind_skill_load(
+def skill_binding(
     *,
-    frame_id: str | None,
     action_group_id: str | None,
     skill_id: str,
     version: str,
@@ -121,7 +120,9 @@ def bind_skill_load(
     capability: NetworkCapability,
     source: str,
 ) -> SkillNetworkBinding:
-    binding = SkillNetworkBinding(
+    """The requirement one load would bind, built without binding it."""
+
+    return SkillNetworkBinding(
         skill_id=str(skill_id or ""),
         version=str(version or ""),
         document_digest=str(document_digest or ""),
@@ -132,6 +133,26 @@ def bind_skill_load(
         action_group_id=str(action_group_id) if action_group_id else None,
         capability=capability,
         source=str(source or "load_skill"),
+    )
+
+
+def bind_skill_load(
+    *,
+    frame_id: str | None,
+    action_group_id: str | None,
+    skill_id: str,
+    version: str,
+    document_digest: str,
+    capability: NetworkCapability,
+    source: str,
+) -> SkillNetworkBinding:
+    binding = skill_binding(
+        action_group_id=action_group_id,
+        skill_id=skill_id,
+        version=version,
+        document_digest=document_digest,
+        capability=capability,
+        source=source,
     )
     key = str(frame_id or "").strip()
     if not key:
@@ -425,7 +446,89 @@ def admit(
 ) -> AdmissionDecision:
     """Intersect bound manifests with measured posture and Host egress."""
 
-    bindings = bindings_for(frame_id)
+    return _admit_bindings(
+        bindings_for(frame_id),
+        sink=sink,
+        sandbox_status=sandbox_status,
+        command_domains=command_domains,
+        urls=urls,
+    )
+
+
+def admit_load(
+    *,
+    frame_id: str | None,
+    candidate: SkillNetworkBinding,
+    sandbox_status: Mapping[str, Any] | None,
+) -> AdmissionDecision:
+    """Decide a load against the frame's requirements plus ``candidate``.
+
+    The candidate is judged before it is bound. A refused load hands over no
+    recipe, so it must leave no requirement behind either: bound first, a
+    refused ``host_only`` manifest kept narrowing every later Host request in
+    the frame, and a refused ``raw_required`` one kept refusing every Cell.
+    """
+
+    return _admit_bindings(
+        (*bindings_for(frame_id), candidate),
+        sink=LOAD_SINK,
+        sandbox_status=sandbox_status,
+    )
+
+
+def load_needs_posture(frame_id: str | None, candidate: SkillNetworkBinding) -> bool:
+    """Whether admitting ``candidate`` into the frame depends on a posture.
+
+    Only a declared ``host_only`` requirement does, the frame's or the
+    candidate's. ``raw_required`` is refused on any posture, and it is
+    refused first.
+    """
+
+    modes = {
+        item.capability.mode
+        for item in (*bindings_for(frame_id), candidate)
+        if item.capability.declaration == "declared"
+    }
+    return "host_only" in modes and "raw_required" not in modes
+
+
+def unstarted_kernel_posture() -> dict[str, Any] | None:
+    """The posture this daemon gives a new Kernel, measured without one.
+
+    A native ``load_skill`` is served outside any worker, so there is no
+    worker posture to read. This builds the sandbox a Kernel would get, in a
+    temp workspace it removes, which runs the same self-test. ``None`` when
+    it cannot be built.
+
+    It answers one question: whether to hand the recipe over. It admits no
+    code. Every execution sink still measures the worker it actually runs on,
+    and that worker can differ from this one (a cluster node, a workspace the
+    self-test fails in).
+    """
+
+    import tempfile
+
+    from openai4s.security.sandbox import create_kernel_sandbox
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="openai4s-load-posture-") as probe:
+            sandbox = create_kernel_sandbox(probe)
+            try:
+                return dict(sandbox.status.to_dict())
+            finally:
+                sandbox.close()
+    except Exception:  # noqa: BLE001 - an unbuildable sandbox proves nothing
+        return None
+
+
+def _admit_bindings(
+    bindings: Sequence[SkillNetworkBinding],
+    *,
+    sink: str,
+    sandbox_status: Mapping[str, Any] | None,
+    command_domains: Sequence[str] = (),
+    urls: Sequence[str] = (),
+) -> AdmissionDecision:
     if sink == HOST_FETCH_SINK:
         return _admit_host_fetch(bindings, urls)
     if not bindings:

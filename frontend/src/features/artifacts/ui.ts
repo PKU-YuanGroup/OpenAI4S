@@ -350,7 +350,7 @@ function viewerVersionFor(a: ArtifactRow): VersionResolve {
     : { status: "latest", artifact: a, versionId: a.version_id || a.latest_version_id || null };
 }
 
-function presentViewer(a: ArtifactRow): void {
+export function presentViewer(a: ArtifactRow): void {
   viewerRequest += 1;
   rememberViewerVersion(viewerVersionFor(a));
   dockArtifact.value = a;

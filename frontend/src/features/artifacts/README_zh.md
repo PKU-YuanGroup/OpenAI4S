@@ -27,6 +27,8 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`files-index.ts`](files-index.ts) | 只走 B-06 `GET .../artifact-index`。filter fingerprint 丢弃旧 cursor。 |
 | [`http-stub.ts`](http-stub.ts) | Vitest 用的 JSON `Response` 替身，带真实 body 流，使有界读取与浏览器一致。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
+| [`links.test.ts`](links.test.ts) | 普通点击会话内的制品链接会打开 Viewer；带修饰键的点击、其他会话的制品、精确版本链接与外部链接仍交给浏览器。 |
+| [`links.ts`](links.ts) | 一个委托点击监听：渲染后的 Markdown（完成摘要的“产物”列表）里的制品链接在应用内 Viewer 打开，而不是跳到原始字节。 |
 | [`load.ts`](load.ts) | `loadArtifacts` / `loadProjectArtifacts` / `setFilesScope`。 |
 | [`partial.ts`](partial.ts) | F3 `partial` 约定集中于此：`partialNotice`（持续可见的 `role="status"` 提示，`data-state="partial"`）、`downloadLink` 与 `previewDownload`（确切版本下载），由各渲染器、notebook、科学检索视图与旧版表格回退共用。 |
 | [`preview.ts`](preview.ts) | 精确版本的 scoped grant 升级（按版本缓存 grant、改写说明文字），以及 grant 被拒后回退到惰性的 `/preview/<id-or-version>`。 |

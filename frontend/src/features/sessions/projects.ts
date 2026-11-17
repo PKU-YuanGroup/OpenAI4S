@@ -436,6 +436,7 @@ export function openProjectModal(proj?: ProjectLike | null): void {
   if (desc) desc.value = p ? p.description || "" : "";
   if (ctx) ctx.value = p ? p.context || p.agent_context || "" : "";
   resetProjectFolderPicker(p?.folder_path || "");
+  showProjectModalError("");
   const create = $("#pm-create");
   if (create) create.textContent = t(p ? "common.save" : "projModal.create");
   $("#pm-delete")?.classList.toggle("hidden", !p);
@@ -443,11 +444,27 @@ export function openProjectModal(proj?: ProjectLike | null): void {
   requestAnimationFrame(() => name?.focus());
 }
 
+/**
+ * A refused save is shown inside the dialog. It went to the composer hint,
+ * which sits under this dialog in a session and is not laid out at all on the
+ * dashboard, so Create looked like a button that did nothing.
+ */
+function showProjectModalError(text: string): void {
+  const box = $("#pm-error");
+  if (!box) {
+    if (text) hint(text, true);
+    return;
+  }
+  box.textContent = text;
+  box.classList.toggle("hidden", !text);
+}
+
 export async function submitProjectModal(): Promise<void> {
   const btn = $("#pm-create") as HTMLButtonElement | null;
   const nameEl = $("#pm-name") as HTMLInputElement | null;
   const name = (nameEl?.value || "").trim() || t("palette.action.newProject");
   if (btn) btn.disabled = true;
+  showProjectModalError("");
   try {
     if (editingProject.value) {
       const folderPath = ($("#pm-folder") as HTMLInputElement | null)?.value.trim() || "";
@@ -478,7 +495,7 @@ export async function submitProjectModal(): Promise<void> {
       closeProjectModal();
     }
   } catch (e) {
-    hint(t("artifact.save.err", apiErrorText(e)), true);
+    showProjectModalError(t("artifact.save.err", apiErrorText(e)));
   } finally {
     if (btn) btn.disabled = false;
   }
