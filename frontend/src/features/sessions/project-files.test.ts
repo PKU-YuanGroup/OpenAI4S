@@ -80,7 +80,7 @@ beforeEach(() => {
   vi.mocked(hint).mockClear();
   nodes = Object.fromEntries([
     "#modal", "#modal-body", "#modal-title", "#modal-download", "#proj-modal", "#pm-folder", "#pm-folder-picker",
-    "#pm-name", "#pm-desc", "#pm-ctx", "#pm-create", "#pm-delete", "#proj-modal .modal-head span",
+    "#pm-name", "#pm-desc", "#pm-ctx", "#pm-create", "#pm-delete", "#pm-error", "#proj-modal .modal-head span",
     "#proj-menu", "#proj-folder-path", "#proj-current",
   ].map((key) => [key, new Node()]));
   vi.stubGlobal("document", { createElement: (tag: string) => new Node(tag), querySelector: (sel: string) => nodes[sel] ?? null });
@@ -339,6 +339,24 @@ describe("project folder persistence", () => {
     expect(url).toBe("/projects/p");
     expect(request!.method).toBe("PATCH");
     expect(JSON.parse(String(request!.body)).folder_path).toBe(folderPath);
+  });
+
+  it("shows a refused save inside the dialog instead of the composer hint", async () => {
+    // The dashboard has no laid-out composer: the hint there is a 0x0 box, so
+    // a folder outside the allowed roots made Create look like it did nothing.
+    openProjectModal(null);
+    nodes["#pm-folder"]!.value = "/private/tmp/screen";
+    vi.mocked(api).mockRejectedValueOnce("project folders must be inside your home directory");
+    await submitProjectModal();
+    const box = nodes["#pm-error"]!;
+    expect(box.textContent).toContain("project folders must be inside your home directory");
+    expect(box.classList.contains("hidden")).toBe(false);
+    expect(hint).not.toHaveBeenCalled();
+    expect(nodes["#pm-create"]!.disabled).toBe(false);
+
+    openProjectModal(null);
+    expect(box.textContent).toBe("");
+    expect(box.classList.contains("hidden")).toBe(true);
   });
 
   it("does not resend an unchanged folder, so a rename never revalidates it", async () => {

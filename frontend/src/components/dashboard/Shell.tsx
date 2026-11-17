@@ -495,6 +495,7 @@ export function Shell() {
               data-i18n-ph="projModal.ctx.placeholder"
               placeholder="Included in every agent's prompt for this project"
             />
+            <p id="pm-error" class="project-folder-error hidden" role="alert" />
             <div class="form-actions">
               <button id="pm-delete" class="outline-btn danger hidden" data-i18n="common.delete" type="button">
                 Delete
