@@ -1790,43 +1790,57 @@ class HostDispatcher:
     def _posture_outside_a_worker(self) -> dict[str, Any] | None:
         """The posture to judge a Skill load by when no worker is calling.
 
-        A worker this session already started is the evidence when one is on
-        record: it may run on a cluster node the daemon's sandbox does not
-        reach, and the weakest one decides. Before any worker exists, the
-        daemon's own self-test of the sandbox a new Kernel gets stands in.
+        In order. A session bound to a cluster workload is not the daemon's
+        to measure: its kernel runs on another machine or not at all. A
+        worker the session is running is the evidence, the weakest one
+        deciding. With neither, the next worker is a new Kernel, which is
+        what the daemon's own self-test measures; a worker that has ended
+        decides nothing. A record that cannot be read is none of these and
+        proves nothing.
+
         Either way this only decides whether the recipe is handed over.
         """
 
         from openai4s.security.sandbox import boundary_holds
         from openai4s.server.skill_network_admission import unstarted_kernel_posture
 
-        recorded: list[dict[str, Any]] = []
+        live: list[dict[str, Any]] = []
         try:
             root = str(
                 self.store.resolve_frame_scope(self.frame_id).get("root_frame_id") or ""
             )
             if root:
+                # The binding the gateway reads to pick the cluster kernel.
+                if self.store.leases.workload_for_session(root):
+                    return {
+                        "enforced": False,
+                        "backend": "remote",
+                        "self_test_passed": False,
+                        "network_policy": "unproven",
+                    }
                 branch = self.store.active_session_branch(root)
                 for language in ("python", "r"):
                     generation = self.store.latest_kernel_generation(
                         root, language, branch_id=branch
                     )
-                    environment = (generation or {}).get("environment")
+                    if not generation or generation.get("ended_at") is not None:
+                        continue
+                    environment = generation.get("environment")
                     status = (
                         environment.get("sandbox")
                         if isinstance(environment, Mapping)
                         else None
                     )
-                    if isinstance(status, Mapping):
-                        recorded.append(dict(status))
-        except Exception:  # noqa: BLE001 - no record to read is not a posture
-            recorded = []
-        if not recorded:
+                    # Alive with no recorded posture is unknown, not absent.
+                    live.append(dict(status) if isinstance(status, Mapping) else {})
+        except Exception:  # noqa: BLE001 - unreadable is not "no worker"
+            return None
+        if not live:
             return unstarted_kernel_posture()
-        for status in recorded:
+        for status in live:
             if not boundary_holds(status):
                 return status
-        return recorded[0]
+        return live[0]
 
     @contextmanager
     def bind_download_cancellation(

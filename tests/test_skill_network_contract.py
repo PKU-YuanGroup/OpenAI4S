@@ -1135,19 +1135,7 @@ def test_the_self_test_runs_only_for_a_load_that_needs_a_posture(tmp_path, monke
     disp.store.close()
 
 
-def test_a_worker_the_session_already_started_outranks_the_self_test(
-    tmp_path, monkeypatch
-):
-    """The daemon's sandbox says nothing about a worker on another machine.
-
-    A session bound to a cluster worker records `backend: remote` for its
-    kernel. Judged by the daemon's own self-test, its native load would be
-    admitted and every Cell after it refused. Once a session has a worker on
-    record, that worker is the evidence, and the self-test is not consulted.
-    """
-
-    from openai4s.host_dispatch import build_dispatcher
-    from openai4s.server import skill_network_admission as admission
+def _recorded_worker_fixture(tmp_path):
     from openai4s.store import get_store
 
     skills = tmp_path / "skills"
@@ -1159,31 +1147,134 @@ def test_a_worker_the_session_already_started_outranks_the_self_test(
         "utf-8",
     )
     cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
-    store = get_store(cfg.db_path)
-    remote = store.new_frame(kind="turn", project_id="science")
-    local = store.new_frame(kind="turn", project_id="science")
-    store.create_kernel_generation(
-        root_frame_id=remote, language="python", environment={"sandbox": _REMOTE}
-    )
-    # One confined worker and one that is not: the weaker one decides.
-    mixed = store.new_frame(kind="turn", project_id="science")
-    for language, posture in (("python", _ENFORCED), ("r", _DEGRADED)):
-        store.create_kernel_generation(
-            root_frame_id=mixed, language=language, environment={"sandbox": posture}
+    return cfg, get_store(cfg.db_path)
+
+
+def _session_with_workers(store, *workers, ended=False):
+    frame = store.new_frame(kind="turn", project_id="science")
+    for language, posture in workers:
+        generation = store.create_kernel_generation(
+            root_frame_id=frame, language=language, environment={"sandbox": posture}
         )
-    store.create_kernel_generation(
-        root_frame_id=local, language="python", environment={"sandbox": _ENFORCED}
-    )
+        if ended:
+            store.finish_kernel_generation(
+                generation["generation_id"], state="released", reason="idle"
+            )
+    return frame
+
+
+def test_a_live_worker_of_the_session_outranks_the_self_test(tmp_path, monkeypatch):
+    """A worker the session is running is better evidence than a prediction.
+
+    The weaker of a Python and an R worker decides, and the self-test is not
+    consulted at all while a worker is alive.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    cfg, store = _recorded_worker_fixture(tmp_path)
+    degraded = _session_with_workers(store, ("python", _DEGRADED))
+    mixed = _session_with_workers(store, ("python", _ENFORCED), ("r", _DEGRADED))
+    confined = _session_with_workers(store, ("python", _ENFORCED))
 
     monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
-    for frame in (remote, mixed):
+    for frame in (degraded, mixed):
         refused = build_dispatcher(cfg, frame_id=frame)._m_load_skill("lit")
         assert set(refused) == {"error"}, refused
         assert bindings_for(frame) == ()
 
     monkeypatch.setattr(admission, "unstarted_kernel_posture", _never_probed)
-    loaded = build_dispatcher(cfg, frame_id=local)._m_load_skill("lit")
+    loaded = build_dispatcher(cfg, frame_id=confined)._m_load_skill("lit")
     assert loaded.get("name") == "lit", loaded
+    store.close()
+
+
+def test_a_worker_that_has_ended_decides_nothing(tmp_path, monkeypatch):
+    """`latest_kernel_generation` is the newest row, alive or not.
+
+    Read without that distinction, a released worker's record kept deciding:
+    a dead "confined" row admitted a load on a host that had since degraded,
+    and a dead "not confined" row kept refusing after the sandbox was fixed
+    and the daemon restarted. Once the worker is gone the next one is a new
+    Kernel, which is exactly what the self-test measures.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    cfg, store = _recorded_worker_fixture(tmp_path)
+    was_confined = _session_with_workers(store, ("python", _ENFORCED), ended=True)
+    was_degraded = _session_with_workers(store, ("python", _DEGRADED), ended=True)
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_DEGRADED))
+    refused = build_dispatcher(cfg, frame_id=was_confined)._m_load_skill("lit")
+    assert set(refused) == {"error"}, refused
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+    loaded = build_dispatcher(cfg, frame_id=was_degraded)._m_load_skill("lit")
+    assert loaded.get("name") == "lit", loaded
+    store.close()
+
+
+def test_a_cluster_bound_session_is_not_judged_by_the_daemons_sandbox(
+    tmp_path, monkeypatch
+):
+    """The daemon's sandbox says nothing about a worker on another machine.
+
+    A session bound to a workload runs its kernel on a cluster node, or
+    refuses to run at all. The binding is what the gateway reads to choose
+    that kernel, so it is read here too: before the first worker, after one
+    was swept, and while one is alive, the answer is the same.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    cfg, store = _recorded_worker_fixture(tmp_path)
+    never_started = _session_with_workers(store)
+    swept = _session_with_workers(store, ("python", _REMOTE), ended=True)
+    running = _session_with_workers(store, ("python", _REMOTE))
+    for index, frame in enumerate((never_started, swept, running)):
+        store.leases.bind_session(frame, f"workload-{index}")
+
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+    for frame in (never_started, swept, running):
+        refused = build_dispatcher(cfg, frame_id=frame)._m_load_skill("lit")
+        assert set(refused) == {"error"}, refused
+        assert bindings_for(frame) == ()
+    store.close()
+
+
+def test_a_record_that_cannot_be_read_is_not_an_absent_worker(tmp_path, monkeypatch):
+    """A failed lookup fell through to the self-test, which can admit.
+
+    "No worker on record" and "the record could not be read" are different
+    answers. The second may be hiding a worker that is not confined, so it is
+    refused instead of handed to a prediction about a different worker.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.server import skill_network_admission as admission
+
+    cfg, store = _recorded_worker_fixture(tmp_path)
+    frame = _session_with_workers(store, ("python", _REMOTE))
+    disp = build_dispatcher(cfg, frame_id=frame)
+    monkeypatch.setattr(admission, "unstarted_kernel_posture", lambda: dict(_ENFORCED))
+
+    def unreadable(*_args, **_kwargs):
+        raise RuntimeError("database is locked")
+
+    for name in ("latest_kernel_generation", "active_session_branch"):
+        with monkeypatch.context() as patch:
+            patch.setattr(disp.store, name, unreadable)
+            refused = disp._m_load_skill("lit")
+        assert set(refused) == {"error"}, (name, refused)
+        assert bindings_for(frame) == ()
+    with monkeypatch.context() as patch:
+        patch.setattr(disp.store.leases, "workload_for_session", unreadable)
+        refused = disp._m_load_skill("lit")
+    assert set(refused) == {"error"}, refused
     store.close()
 
 
