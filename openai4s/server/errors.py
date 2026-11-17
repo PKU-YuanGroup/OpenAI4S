@@ -179,11 +179,6 @@ def _secret_store_unavailable(exc: BaseException) -> bool:
     return isinstance(exc, SecretStoreUnavailable)
 
 
-#: Long enough to identify a failure, short enough that a diagnostic cannot
-#: become a channel for the data the exception was carrying.
-_DIAGNOSTIC_CHARS = 600
-
-
 #: What an unknown failure is allowed to say on a record that outlives the
 #: request. It says nothing about *this* failure on purpose: the pair
 #: (`surface`, `error_class`) is the identity, and the message is the part that

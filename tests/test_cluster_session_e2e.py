@@ -94,7 +94,12 @@ put in_queue '1'
   sh "{s}/job_script" > "{s}/job.out" 2>&1
   put acct_state 'COMPLETED'
   put in_queue '0'
-) &
+) > /dev/null 2>&1 &
+# The redirect above is what makes this behave like `sbatch`: without it the
+# backgrounded job inherits this script's stdout and stderr, so the broker's
+# `subprocess.run(capture_output=True)` waited on those pipes until its 30 s
+# control timeout and every bring-up went through the timed-out-submission
+# recovery path instead of the ordinary acknowledgement.
 echo "$jid"
 """,
         "squeue": f"""

@@ -77,7 +77,64 @@ def project_branch_records(
     local_cache: dict[str, list[Record]] = {}
     checkpoint_cache: dict[str, tuple[list[Record], int | None]] = {}
     get_branch = getattr(store, "get_session_branch", None)
-    get_checkpoint = getattr(store, "get_session_checkpoint", None)
+    read_checkpoint = getattr(store, "get_session_checkpoint", None)
+    checkpoint_rows: dict[str, dict[str, Any] | None] = {}
+    warming: set[str] = set()
+
+    def get_checkpoint(checkpoint_id: str) -> dict[str, Any] | None:
+        # Checkpoints are immutable, and each one was read twice per call (as
+        # itself, then again as its child's parent). One read each.
+        if checkpoint_id not in checkpoint_rows:
+            checkpoint_rows[checkpoint_id] = read_checkpoint(checkpoint_id)
+        return checkpoint_rows[checkpoint_id]
+
+    def warm_parent_chain(checkpoint_id: str) -> None:
+        """Project a checkpoint's ancestors oldest-first, without recursion.
+
+        `checkpoint_projection` recurses once per checkpoint, and a checkpoint
+        is taken for every user message and every Cell. A branch with about a
+        thousand of them raised `RecursionError` from every reader of the
+        conversation, the Notebook and the provider history. Walking the plain
+        parent chain here and projecting it from the root down means each
+        ancestor finds its parent already cached, so the recursion below never
+        goes deeper than one revert target at a time.
+
+        The walk stops at a revert checkpoint: its projection comes from its
+        target, not its parent, so anything above it is not this chain's to
+        evaluate (and must not start raising for a history nobody reads). It
+        also stops at a checkpoint that fails its own validation, so a damaged
+        history still reports the same first error the top-down recursion did.
+        """
+        chain: list[str] = []
+        current: Any = checkpoint_id
+        while (
+            isinstance(current, str)
+            and current
+            and current not in checkpoint_cache
+            and current not in warming
+        ):
+            checkpoint = get_checkpoint(current)
+            if checkpoint is None or checkpoint.get("root_frame_id") != root_frame_id:
+                break
+            warming.add(current)
+            chain.append(current)
+            branch_text = checkpoint.get("branch_id")
+            if not isinstance(branch_text, str) or not branch_text.strip():
+                break
+            metadata = checkpoint.get("metadata")
+            metadata = metadata if isinstance(metadata, Mapping) else {}
+            projection = metadata.get("history_projection")
+            projection = projection if isinstance(projection, Mapping) else {}
+            target = projection.get("base_checkpoint_id") or metadata.get("reverted_to")
+            if isinstance(target, str) and target:
+                break
+            current = checkpoint.get("parent_checkpoint_id")
+        try:
+            # `chain[0]` is the caller's own checkpoint; it projects that one.
+            for ancestor in reversed(chain[1:]):
+                checkpoint_projection(ancestor, frozenset())
+        finally:
+            warming.difference_update(chain)
 
     def local(selected: str) -> list[Record]:
         rows = local_cache.get(selected)
@@ -111,6 +168,7 @@ def project_branch_records(
             return (list(cached[0]), cached[1])
         if checkpoint_id in visiting:
             raise ValueError("session checkpoint projection contains a cycle")
+        warm_parent_chain(checkpoint_id)
         checkpoint = get_checkpoint(checkpoint_id)
         if checkpoint is None or checkpoint.get("root_frame_id") != root_frame_id:
             raise ValueError("branch has no valid checkpoint projection")
@@ -171,7 +229,7 @@ def project_branch_records(
         checkpoint_cache[checkpoint_id] = result
         return (list(result[0]), result[1])
 
-    if not callable(get_branch) or not callable(get_checkpoint):
+    if not callable(get_branch) or not callable(read_checkpoint):
         if branch_id != root_frame_id:
             raise ValueError("branch projection requires checkpoint repository access")
         return list(local(branch_id))

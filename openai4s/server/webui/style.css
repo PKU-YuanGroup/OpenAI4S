@@ -2230,6 +2230,13 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .nb-model:hover{background:var(--bg-100);color:var(--text-000)}
 .nb-model select{font-size:14px;font-weight:500;max-width:220px}
 .nb-model .ic{color:var(--text-400)}
+/* The model picker is the one flexible item in the composer's bottom row: at
+   phone width it gives way and ellipsizes, so the row cannot push the send
+   button out of the card and the page past the viewport. */
+.nb-foot{gap:8px}
+.nb-left,.nb-right>.nb-icon,.nb-send,.nb-model .ic{flex:none}
+.nb-right,.nb-model{min-width:0}
+.nb-model select{min-width:0;text-overflow:ellipsis}
 .composer-hint{margin-top:8px;font-size:12px;color:var(--text-400)}
 .composer-refs{padding:8px 2px 0}
 .msg-ref-chip{padding:2px 9px;border:0;border-radius:999px;background:var(--bg-200);color:var(--text-200);font-size:12px}

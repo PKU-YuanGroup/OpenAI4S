@@ -718,3 +718,60 @@ def test_recovery_pipeline_factory_persists_every_phase(tmp_path):
     ]
     assert service.recovery_status(root)["state"] == "active"
     store.close()
+
+
+def test_a_long_checkpoint_chain_projects_without_recursing_per_checkpoint():
+    """A checkpoint is taken for every user message and every Cell.
+
+    The projector recursed once per checkpoint in the parent chain, so a branch
+    with about a thousand of them raised `RecursionError` from every reader of
+    the conversation, the Notebook and the provider history. It also read each
+    checkpoint twice -- as itself, then again as its child's parent.
+    """
+    import sys
+
+    from openai4s.storage.branch_projection import project_branch_records
+
+    depth = sys.getrecursionlimit() * 3
+    checkpoints: dict[str, dict] = {}
+    previous = None
+    for index in range(depth):
+        checkpoint_id = f"cp-{index}"
+        checkpoints[checkpoint_id] = {
+            "checkpoint_id": checkpoint_id,
+            "root_frame_id": "root",
+            "branch_id": "root",
+            "parent_checkpoint_id": previous,
+            "metadata": {},
+            "cell_revision": index,
+        }
+        previous = checkpoint_id
+    reads: list[str] = []
+
+    class _Store:
+        @staticmethod
+        def get_session_branch(branch_id):
+            return {
+                "branch_id": branch_id,
+                "root_frame_id": "root",
+                "head_checkpoint_id": previous,
+            }
+
+        @staticmethod
+        def get_session_checkpoint(checkpoint_id):
+            reads.append(checkpoint_id)
+            return checkpoints.get(checkpoint_id)
+
+    rows = [{"revision": index} for index in range(depth + 2)]
+
+    projected = project_branch_records(
+        _Store(),
+        "root",
+        "root",
+        list_local=lambda _branch: rows,
+        record_position=lambda row: row["revision"],
+        cursor_key="cell_revision",
+    )
+
+    assert projected == rows
+    assert len(reads) == depth

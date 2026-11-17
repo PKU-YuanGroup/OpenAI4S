@@ -32,7 +32,6 @@ from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
 from openai4s.observability import (
-    _looks_opaque,
     fingerprint,
     redact,
     redact_identities,

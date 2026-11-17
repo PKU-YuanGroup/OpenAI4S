@@ -6069,10 +6069,21 @@ class Store:
             f"""CREATE TEMP VIEW my_frames AS
                 SELECT * FROM main.frames
                  WHERE frame_id = {root_sql} OR root_frame_id = {root_sql}""",
+            # An environment snapshot has no frame of its own: it is content
+            # addressed and an artifact version points at it. This view joined
+            # on `s.frame_id`, a column `env_snapshots` has never had -- SQLite
+            # accepts that in `CREATE VIEW` and refuses it at the first SELECT,
+            # so the only permitted route to environment provenance failed on
+            # every use. Scoped through the versions that name the snapshot,
+            # as a membership test so one snapshot shared by several versions
+            # is still one row.
             f"""CREATE TEMP VIEW my_env_snapshots AS
                 SELECT s.* FROM main.env_snapshots s
-                  JOIN main.frames f ON f.frame_id = s.frame_id
-                 WHERE f.frame_id = {root_sql} OR f.root_frame_id = {root_sql}""",
+                 WHERE s.snapshot_id IN (
+                       SELECT v.env_snapshot_id FROM main.artifact_versions v
+                         JOIN main.artifacts a ON a.artifact_id = v.artifact_id
+                        WHERE a.root_frame_id = {root_sql}
+                          AND a.project_id = {project_sql})""",
             # Both tables carry `root_frame_id` themselves, so this is a
             # filter and not a join. The join was tried first and returned
             # nothing: a message's `frame_id` is nullable (a turn's messages

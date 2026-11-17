@@ -858,7 +858,6 @@ def _sha256(path: Path) -> str:
 # bounded payload, canonical-length, opcode, and RSV/FIN checks the old inline
 # reader lacked. The share tunnel/relay use the same module in strict role-aware
 # mode. Aliases keep gateway call sites and existing tests unchanged.
-_WS_GUID = ws_frames.WS_GUID
 _ws_accept = ws_frames.ws_accept
 
 # Server frames are never masked; ``ws_encode`` defaults mask=False.
@@ -4658,26 +4657,8 @@ class SessionRunner:
         self.project_history_autosave.close(workspaces=history_workspaces)
 
     # --- artifact version snapshots --------------------------------------
-    def _versions_dir(self) -> Path:
-        return self.artifacts.versions_dir()
-
     def live_artifact_path(self, a: dict) -> Path:
         return self.artifacts.live_path(a)
-
-    def _write_version_snapshot(
-        self,
-        version_id: str,
-        filename: str,
-        *,
-        src_path: Path | None = None,
-        data: bytes | None = None,
-    ) -> None:
-        self.artifacts.write_version_snapshot(
-            version_id, filename, src_path=src_path, data=data
-        )
-
-    def _protect_latest_version_snapshots(self, st: SessionState) -> None:
-        self.artifacts.protect_latest(st)
 
     @contextmanager
     def _external_project_artifact_mutation(self, project_id: str):
@@ -9233,9 +9214,6 @@ class SessionRunner:
         finally:
             self.recovery.touch(st)
 
-    def _capture_env_snapshot(self, st=None) -> str | None:
-        return self.artifacts.capture_environment(self._remote_provenance_drain(st))
-
     @staticmethod
     def _remote_provenance_drain(st):
         dispatcher = getattr(st, "dispatcher", None)
@@ -12805,17 +12783,11 @@ class SessionRunner:
     ) -> dict | None:
         return self.plans.write_artifact(st, plan, artifact_id, emit)
 
-    def _emit_plan_ready(self, emit, rid: str, plan: dict | None) -> None:
-        self.plans.emit_ready(emit, rid, plan)
-
     def get_plan_state(self, root_frame_id: str) -> dict:
         return self.plans.get_state(root_frame_id)
 
     def discard_plan(self, root_frame_id: str) -> dict:
         return self.plans.discard(root_frame_id)
-
-    def _plan_exec_seed(self, plan: dict) -> str:
-        return self.plans.execution_seed(plan)
 
     def run_plan_execution(
         self,
@@ -13722,29 +13694,6 @@ def _memory_scope(store, raw: Any) -> str:
 # --- user skill authoring helpers ------------------------------------------
 def _skill_slug(name: str) -> str:
     return SkillCustomizationService.slug(name)
-
-
-def _parse_skill_md(content: str) -> tuple[dict, str]:
-    return SkillCustomizationService.parse_document(content)
-
-
-def _write_user_skill(
-    loader, name: str, description: str, body: str, existing: bool = False
-) -> dict:
-    return SkillCustomizationService(loader).create_or_update(
-        name,
-        description,
-        body,
-        existing=existing,
-    )
-
-
-def _read_user_skill(loader, name: str) -> dict:
-    return SkillCustomizationService(loader).get(name)
-
-
-def _delete_user_skill(loader, name: str) -> dict:
-    return SkillCustomizationService(loader).delete(name)
 
 
 def _connector_launch_config(cfg: Config, store, connector: dict) -> dict:
@@ -19466,7 +19415,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m:
                 nm = unquote(m.group(1))
                 if method == "GET":
-                    a = store.get_agent(nm)
+                    # The list and the PUT/DELETE below all see a disabled
+                    # custom specialist; without the flag this one answered
+                    # 404 for it, so the editor could not open what it listed.
+                    a = store.get_agent(nm, include_disabled=True)
                     self._json(a or {"error": "not found"}, 200 if a else 404)
                     return
                 if method in ("PUT", "PATCH"):
@@ -20782,6 +20734,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         msg = json.loads(data.decode("utf-8") or "{}")
                     except (ValueError, UnicodeDecodeError):
                         continue
+                    if not isinstance(msg, dict):
+                        # `[]`, `null` and `5` are valid JSON with no `type`.
+                        # `msg.get` raised out of this loop, and the HTTP
+                        # catch-all then wrote a 500 body into the upgraded
+                        # socket.
+                        continue
+                    for _key in ("root_frame_id", "frame_id"):
+                        # A session id is a string. A list or dict here passed
+                        # the single-user visibility check and then failed as
+                        # an unhashable subscription key, the same way.
+                        if msg.get(_key) is not None and not isinstance(msg[_key], str):
+                            msg[_key] = str(msg[_key])
                     t = msg.get("type")
                     if t == "ping":
                         conn.send_json({"type": "pong"})

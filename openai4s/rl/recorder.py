@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from dataclasses import replace
-from typing import Any, Iterable, TypeVar
+from typing import Any, TypeVar
 
 from .models import (
     CostRecord,
@@ -237,7 +237,6 @@ class TrajectoryRecorder:
             value = DatasetSnapshot.from_trajectory(
                 self.snapshot(), snapshot_id, created_at=effective_created_at
             )
-            current = current
             if current is not None:
                 if current != value:
                     raise ValueError(

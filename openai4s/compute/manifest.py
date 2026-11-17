@@ -161,9 +161,8 @@ def reconcile(
             unmatched.append(pattern)
     # Preserve manifest order and drop duplicates from overlapping patterns.
     seen = set()
-    ordered = [
-        p for p in paths if p in set(featured) and not (p in seen or seen.add(p))
-    ]
+    wanted = set(featured)
+    ordered = [p for p in paths if p in wanted and not (p in seen or seen.add(p))]
     return ordered, unmatched
 
 

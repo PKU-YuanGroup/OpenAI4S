@@ -1417,13 +1417,6 @@ class ArtifactManager:
             if descriptor is not None:
                 os.close(descriptor)
 
-    @staticmethod
-    def _read_exact_upload_live(path: Path, directory: _PinnedUploadDirectory) -> bytes:
-        """Read the exact regular inode below the already-pinned parent."""
-
-        with _PinnedUploadFile.open_existing(directory, path) as pinned:
-            return pinned.verified_bytes()
-
     def _write_upload_journal(self, journal: Path, payload: dict[str, Any]) -> None:
         encoded = json.dumps(
             payload,

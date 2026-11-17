@@ -571,7 +571,7 @@ def structure_summary(content: str, filename: str = "") -> dict[str, Any]:
 def is_benzene(summary: Mapping[str, Any]) -> bool:
     if summary.get("format") == "smiles":
         compact = re.sub(r"\s+", "", str(summary.get("smiles") or ""))
-        return compact in {"c1ccccc1", "C1=CC=CC=C1", "c1ccccc1"}
+        return compact in {"c1ccccc1", "C1=CC=CC=C1"}
     if int(summary.get("carbon_count") or 0) != 6:
         return False
     bonds = list(summary.get("bonds") or [])

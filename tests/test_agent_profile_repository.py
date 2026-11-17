@@ -323,3 +323,51 @@ def test_the_specialist_edit_route_updates_without_widening(tmp_path):
         handler._api("PUT", "/specialists/never-created")
     assert raised.value.code == 404
     assert runner.store.get_agent("never-created") is None
+
+
+def test_a_disabled_custom_specialist_can_still_be_opened_for_editing(tmp_path):
+    """The list and the PUT/DELETE see a disabled specialist; the GET did not.
+
+    `GET /specialists` lists it, the editor loads it through
+    `GET /specialists/<name>`, and that one route called `get_agent` without
+    `include_disabled` -- so disabling a specialist made it impossible to open
+    the thing the list still showed.
+    """
+    from openai4s.config import LLMConfig
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    runner.store.upsert_agent(
+        name="shelved", description="kept for later", system_prompt="p"
+    )
+
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    replies: list = []
+    handler._query = lambda: {}
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+
+    handler._body = lambda: {"enabled": False}
+    handler._api("PUT", "/agents/shelved/enabled")
+    assert replies[-1][0] == 200
+    assert runner.store.get_agent("shelved") is None  # disabled for real
+
+    handler._body = lambda: {}
+    handler._api("GET", "/specialists/shelved")
+
+    code, body = replies[-1]
+    assert code == 200
+    assert body["name"] == "shelved"
+    assert body["description"] == "kept for later"

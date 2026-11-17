@@ -7563,22 +7563,6 @@ class AutoModeRepository:
                 ),
             )
 
-    def _audit_public_summary(self, audit_id: str) -> str | None:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT public_summary FROM review_runs WHERE audit_id=?",
-                (audit_id,),
-            ).fetchone()
-            if row is None:
-                row = self._connection.execute(
-                    "SELECT public_summary FROM permission_review_assessments "
-                    "WHERE audit_id=?",
-                    (audit_id,),
-                ).fetchone()
-        if row is None or not isinstance(row["public_summary"], str):
-            return None
-        return str(row["public_summary"])[:_MAX_TEXT]
-
     def _append_event_locked(
         self,
         run: sqlite3.Row,

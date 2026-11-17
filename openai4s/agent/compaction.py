@@ -567,14 +567,6 @@ def _summary_preamble(prev: str | None) -> str:
     return _PREVIOUS_HANDOFF_PREFIX + prev + "\n\n" if prev else ""
 
 
-def _summary_user_content(
-    batch: Sequence[Mapping[str, Any]],
-    metadata: CompactionArchiveMetadata,
-    prev: str | None,
-) -> str:
-    return _summary_preamble(prev) + _summary_input(batch, metadata)
-
-
 def _content_chars(content: Any) -> int:
     return len(content) if isinstance(content, str) else len(_json_text(content))
 

@@ -127,6 +127,45 @@ def test_independent_read_only_calls_run_in_parallel_with_ordered_results():
     ]
 
 
+def test_a_parallel_wave_sees_the_callers_context():
+    """A pool thread starts with an empty context.
+
+    The execution principal travels in a ContextVar, so a team-mode `frames`
+    call batched with another read-only call lost it and failed with
+    `PrincipalRequired`, while the same call alone -- run on the caller's
+    thread -- worked.
+    """
+    import contextvars
+
+    marker: contextvars.ContextVar[str] = contextvars.ContextVar(
+        "marker", default="unset"
+    )
+    calls = NativeToolBatch(tuple(_call(index) for index in range(3)))
+    both_running = threading.Barrier(3, timeout=1)
+
+    def invoke(call):
+        both_running.wait()  # proves these ran on pool threads, concurrently
+        return marker.get(), True
+
+    token = marker.set("the-callers-value")
+    try:
+        outcome = execute_native_batch(
+            calls,
+            invoke,
+            validate=lambda _name, _arguments: None,
+            parallel_policy=lambda call: (
+                True,
+                (f"artifact:version-{call.ordinal}",),
+            ),
+        )
+    finally:
+        marker.reset(token)
+
+    assert [item["content"] for item in outcome.history_messages] == [
+        "the-callers-value"
+    ] * 3
+
+
 def test_conflicting_read_only_resources_are_serialized():
     calls = NativeToolBatch(tuple(_call(index) for index in range(3)))
     active = 0

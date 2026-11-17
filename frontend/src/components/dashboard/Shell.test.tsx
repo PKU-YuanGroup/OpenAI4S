@@ -118,3 +118,93 @@ describe("the Shell before the first route", () => {
     }
   });
 });
+
+/** Every node carrying `className`, with the class lists of its ancestors. */
+function withClass(
+  tree: unknown,
+  className: string,
+  trail: string[][] = [],
+  found: { node: VNode; trail: string[][] }[] = [],
+): { node: VNode; trail: string[][] }[] {
+  if (Array.isArray(tree)) {
+    tree.forEach((child) => withClass(child, className, trail, found));
+    return found;
+  }
+  if (!tree || typeof tree !== "object") return found;
+  const node = tree as VNode;
+  if (classes(node).includes(className)) found.push({ node, trail });
+  withClass(node.props?.children, className, [...trail, classes(node)], found);
+  return found;
+}
+
+/**
+ * The islands were ported with their `$("#…")` lookups intact, and each one
+ * returns quietly when its node is missing. The Shell rendered none of these
+ * four, so the features behind them were unreachable in the default workbench
+ * while every island test -- which builds its own node -- stayed green.
+ */
+describe("the nodes the ported islands look up", () => {
+  it("puts the pinned-comment chip inside the composer card, above the textarea", () => {
+    const tree = paintAt("/");
+    expect(classes(byId(tree, "annot-bar"))).toEqual(["annot-bar", "hidden"]);
+    const card = withClass(tree, "nb-card")[0]?.node;
+    const children = (card?.props?.children as VNode[]).filter(
+      (child) => child && typeof child === "object" && child.props,
+    );
+    expect(children.map((child) => child.props?.id)).toEqual(
+      expect.arrayContaining(["annot-bar", "composer"]),
+    );
+    const ids = children.map((child) => child.props?.id);
+    expect(ids.indexOf("annot-bar")).toBeLessThan(ids.indexOf("composer"));
+  });
+
+  it("puts the queued follow-up strip under the composer, outside the card", () => {
+    const tree = paintAt("/");
+    expect(classes(byId(tree, "queue-strip"))).toEqual(["queue-strip", "hidden"]);
+    const trail = ancestry(tree, "queue-strip") || [];
+    expect(trail.some((cls) => cls.includes("composer-wrap"))).toBe(true);
+    expect(trail.some((cls) => cls.includes("nb-card"))).toBe(false);
+  });
+
+  it("offers voice input among the composer tools, leaving send last", () => {
+    const tree = paintAt("/");
+    const mic = byId(tree, "mic-btn");
+    expect(mic?.props?.["data-icon"]).toBe("mic");
+    expect(mic?.props?.["data-i18n-title"]).toBe("composer.voice");
+    const trail = ancestry(tree, "mic-btn") || [];
+    expect(trail.some((cls) => cls.includes("nb-left"))).toBe(true);
+    const right = withClass(tree, "nb-right")[0]?.node;
+    const last = ([] as VNode[]).concat(right?.props?.children as VNode[]).at(-1);
+    expect(last?.props?.id).toBe("send-btn");
+  });
+
+  it("paints the readiness banner on the dashboard and above the conversation", () => {
+    const tree = paintAt("/");
+    const banners = withClass(tree, "environment-readiness-banner");
+    expect(banners).toHaveLength(2);
+    for (const { node } of banners) {
+      expect(classes(node)).toContain("hidden");
+      const slots = JSON.stringify(node.props?.children);
+      expect(slots).toContain("data-environment-readiness-title");
+      expect(slots).toContain("data-environment-readiness-summary");
+      expect(slots).toContain("data-open-environment-readiness");
+    }
+    const homes = banners.map(({ trail }) =>
+      trail.some((cls) => cls.includes("dashboard")) ? "dashboard" : "workspace",
+    );
+    expect(homes.sort()).toEqual(["dashboard", "workspace"]);
+  });
+
+  it("opens Customize on Compute from the readiness banner", () => {
+    const opened: unknown[] = [];
+    vi.stubGlobal("openCust", (tab: unknown) => opened.push(tab));
+    const tree = paintAt("/");
+    for (const { node } of withClass(tree, "environment-readiness-banner")) {
+      const button = ([] as VNode[])
+        .concat(node.props?.children as VNode[])
+        .find((child) => child?.props && "data-open-environment-readiness" in child.props);
+      (button?.props?.onClick as () => void)();
+    }
+    expect(opened).toEqual(["compute", "compute"]);
+  });
+});

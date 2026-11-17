@@ -414,6 +414,13 @@ class _ProvFileReader:
         for ln in self._fh:
             yield _tag_scalar(ln, self._tags)
 
+    def __next__(self) -> Any:
+        # `header = next(f)` is the ordinary way to skip a header line. Special
+        # methods are looked up on the type, so `__getattr__` below never
+        # supplied this one: the call raised "object is not an iterator" for a
+        # tracked file while the same cell worked on an untracked one.
+        return _tag_scalar(next(self._fh), self._tags)
+
     def __getattr__(self, item: str) -> Any:
         return getattr(self._fh, item)
 

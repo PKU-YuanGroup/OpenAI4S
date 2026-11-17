@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from openai4s.host.files import MAX_SCAN_ENTRIES, MAX_SCAN_SECONDS, is_secret_path
+from openai4s.host.files import MAX_SCAN_ENTRIES, MAX_SCAN_SECONDS
 from openai4s.project_folders import (
     ProjectFolderError,
     ReadOnlyProjectFiles,

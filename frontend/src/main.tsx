@@ -16,7 +16,7 @@ import "./features/sessions";
 import "./i18n";
 import "./features/md";
 import "./features/messages";
-import { bindComposer } from "./features/send";
+import { bindComposer, bootEnvironmentReadiness } from "./features/send";
 import "./features/timeline";
 import "./features/autocomplete";
 import "./features/table";
@@ -39,5 +39,8 @@ render(<App />, mount);
 // F-11: installSend() ran at import, before #composer existed. render() is
 // synchronous, so Shell has committed the composer by now.
 bindComposer();
+// The Shell has rendered both readiness banners by now; app.js fetched the
+// status at this point in its own init.
+bootEnvironmentReadiness();
 bootChrome();
 bootAttention();

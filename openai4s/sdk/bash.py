@@ -474,12 +474,22 @@ class BashExecutor:
             # never switched to match.
             deadline = time.monotonic() + timeout_s
             try:
-                proc.wait(timeout=timeout_s)
-            except subprocess.TimeoutExpired:
-                pass
-            remaining = deadline - time.monotonic()
-            if remaining > 0 and group_alive(pgid):
-                await_group_exit(proc, pgid, remaining)
+                try:
+                    proc.wait(timeout=timeout_s)
+                except subprocess.TimeoutExpired:
+                    pass
+                remaining = deadline - time.monotonic()
+                if remaining > 0 and group_alive(pgid):
+                    await_group_exit(proc, pgid, remaining)
+            except BaseException:
+                # A Stop reaches a cell that is inside `host.bash` as a
+                # KeyboardInterrupt raised out of this wait. The command runs
+                # in its own session (see above), so the kernel's own group
+                # signals never reach it and nothing else holds its pid: the
+                # cell reported "interrupted" while `python train.py` kept the
+                # GPU. Stop the group before letting the interrupt go on.
+                stop_process_group(proc, pgid)
+                raise
             if proc.poll() is None or group_alive(pgid):
                 status = "timed_out"
                 stop_process_group(proc, pgid)
@@ -596,14 +606,6 @@ class BashExecutor:
                 self._used_tokens.discard(oldest)
             self._used_tokens.add(token)
             self._used_token_order.append(token)
-
-    @staticmethod
-    def _coerce_output(value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-        return str(value)
 
 
 __all__ = ["BashExecutor", "HostCall", "validate_capability"]

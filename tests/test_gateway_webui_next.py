@@ -243,3 +243,15 @@ def test_favicon_clamps_frame_interval():
     )
     assert "var MIN_FRAME_MS = 100;" in src
     assert "Math.max(MIN_FRAME_MS," in src
+    # A tab opened in the background must not animate until it is first shown.
+    assert "var hidden = document.hidden;" in src
+
+
+def test_the_shell_links_the_shared_stylesheet_once():
+    """It was linked twice, so the 223 KB sheet was parsed and applied twice."""
+    for path in (
+        ROOT / "frontend" / "index.html",
+        ROOT / "openai4s" / "server" / "webui" / "dist" / "index.html",
+    ):
+        html = path.read_text(encoding="utf-8")
+        assert html.count('href="/static/style.css"') == 1, path

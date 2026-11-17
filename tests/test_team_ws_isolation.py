@@ -353,3 +353,45 @@ def test_a_live_stream_stops_when_the_subscription_is_revoked(daemon):
 
     finally:
         ws.close()
+
+
+def test_a_frame_that_is_not_a_json_object_does_not_end_the_connection(daemon):
+    """`[]`, `null` and `5` are valid JSON with no `type`.
+
+    `msg.get` raised `AttributeError` out of the read loop, the HTTP catch-all
+    answered by writing a 500 JSON body into the upgraded socket, and the
+    connection was gone.
+    """
+    b = _login(daemon, "bob", "fake-pw-b")
+    ws = _WSClient(daemon.port, b)
+    try:
+        for junk in ([], None, 5, "text"):
+            ws.send(junk)
+        ws.send({"type": "ping"})
+        assert ws.recv_json() == {"type": "pong"}
+    finally:
+        ws.close()
+
+
+def test_a_session_id_that_is_not_a_string_does_not_end_the_connection(daemon):
+    """An admin passes the visibility check for any id, including a list.
+
+    The list then reached the hub as a subscription key and failed as
+    unhashable, taking the socket with it.
+    """
+    daemon.seed_user("root", "fake-pw-r", role="admin")
+    ws = _WSClient(daemon.port, _login(daemon, "root", "fake-pw-r"))
+    try:
+        ws.send({"type": "view_session", "root_frame_id": ["f-1"]})
+        ws.send({"type": "ping"})
+        seen = []
+        while len(seen) < 8:
+            reply = ws.recv_json()
+            if reply is None:
+                break
+            seen.append(reply.get("type"))
+            if reply.get("type") == "pong":
+                break
+        assert "pong" in seen, seen
+    finally:
+        ws.close()

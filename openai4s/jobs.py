@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import signal
 import subprocess
 import sys
 import threading
@@ -26,10 +25,6 @@ from pathlib import Path
 # executor. Two would have disagreed about the case that matters -- the shell
 # exits, the work it started does not.
 from openai4s.execution.budget import channel_counters
-from openai4s.execution.process_group import TERM_GRACE_S as _TERM_GRACE_S
-from openai4s.execution.process_group import await_group_exit as _await_group_exit
-from openai4s.execution.process_group import group_alive as _group_alive
-from openai4s.execution.process_group import signal_group as _signal_group
 from openai4s.execution.process_group import stop_process_group as _stop_process_group
 from openai4s.kernel.environment import build_kernel_environment
 from openai4s.observability import carry_context

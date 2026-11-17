@@ -57,11 +57,6 @@ def _to_snake(camel: str) -> str:
     return "".join(out)
 
 
-def _wire(**kwargs: Any) -> dict:
-    """Build a wire dict: snake->camel on keys, drop any key whose value is None."""
-    return {_to_camel(k): v for k, v in kwargs.items() if v is not None}
-
-
 def encode_args(args: list) -> list:
     """Encode an args list for the wire (SDK side).
 

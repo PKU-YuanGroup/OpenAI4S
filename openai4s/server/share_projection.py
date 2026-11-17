@@ -19,7 +19,6 @@ neither serializer re-reads the live Store, workspace, or artifact repository.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass

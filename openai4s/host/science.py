@@ -136,7 +136,6 @@ DATABASES: tuple[ScienceDatabase, ...] = (
     ),
 )
 
-_DATABASE_BY_ID = {database.id: database for database in DATABASES}
 _DOMAINS = frozenset({"all", "biology", "chemistry", "literature", "ml", "physics"})
 _FILTERS = frozenset(
     {

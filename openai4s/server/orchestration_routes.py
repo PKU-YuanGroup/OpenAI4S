@@ -21,7 +21,6 @@ from __future__ import annotations
 from typing import Any
 
 from openai4s.orchestration.models import (
-    Phase,
     Reason,
     ResourceProfile,
     WorkloadKind,

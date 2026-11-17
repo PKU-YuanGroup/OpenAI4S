@@ -14,7 +14,7 @@ import json
 import threading
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields, replace
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterator, Mapping
 from urllib.parse import urlsplit
 
 from openai4s.endpoint_identity import endpoint_sha256, normalize_endpoint

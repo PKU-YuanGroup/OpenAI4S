@@ -35,7 +35,9 @@
   var canvas = document.createElement("canvas");
   canvas.width = canvas.height = SIZE;
   var ctx = canvas.getContext("2d");
-  var hidden = false;
+  // A tab opened in the background is hidden from the start; `false` here
+  // animated it until its first visibility change.
+  var hidden = document.hidden;
   document.addEventListener("visibilitychange", function () {
     hidden = document.hidden;
   });
