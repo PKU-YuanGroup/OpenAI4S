@@ -2378,6 +2378,89 @@ def test_artifact_bytes_carry_an_inline_disposition_with_the_artifact_filename(
         runner.close()
 
 
+def test_text_artifact_bytes_declare_utf8(tmp_path):
+    """A report opened from its completion link has to read as it was written.
+
+    The row stores a bare ``text/markdown``. With no charset a browser decodes
+    the bytes as Windows-1252, so ``IC50 (µM) × R² ≥ 0.97`` arrived as
+    ``IC50 (ÂµM) Ã— RÂ² â‰¥ 0.97``. HTML keeps the encoding its own document
+    declares, and bytes that are not text are not given one.
+    """
+    import http.client
+
+    from openai4s.server import local_auth
+    from tests._ports import bound_gateway_server
+
+    httpd, port = bound_gateway_server()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+        host="127.0.0.1",
+        port=port,
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+    cfg.ensure_dirs()
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    httpd.RequestHandlerClass = gateway_mod.make_handler(cfg, _Hub(), runner)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    token = local_auth.load_or_mint(cfg.data_dir)
+
+    def content_type(ident, *, exact=False):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            prefix = "artifacts/versions" if exact else "artifacts"
+            conn.request(
+                "GET",
+                f"{API_ROOT}/{prefix}/{quote(ident, safe='')}",
+                headers={local_auth.TOKEN_HEADER: token},
+            )
+            response = conn.getresponse()
+            body = response.read()
+            assert response.status == 200, (ident, response.status, body[:200])
+            return response.getheader("Content-Type"), body
+        finally:
+            conn.close()
+
+    try:
+        fid = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+        st = gateway_mod.SessionState(fid, "default", runner.workspace_for(fid))
+        text = "IC50 (µM) × R² ≥ 0.97 — 4PL\n"
+        files = {}
+        for name, payload in (
+            ("report.md", text.encode("utf-8")),
+            ("ic50.csv", "compound,IC50_µM\nCPD-001,0.05\n".encode("utf-8")),
+            ("page.html", b"<!doctype html><meta charset=gbk><p>x</p>"),
+            ("fig.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 16),
+        ):
+            target = st.workspace / name
+            target.write_bytes(payload)
+            files[name] = runner._register_file(st, target, "cell-1", lambda e: None)
+
+        for name in ("report.md", "ic50.csv"):
+            head, head_body = content_type(files[name]["artifact_id"])
+            exact, exact_body = content_type(files[name]["version_id"], exact=True)
+            for ctype in (head, exact):
+                assert ctype.lower().endswith("charset=utf-8"), (name, ctype)
+                assert ctype.lower().count("charset=") == 1, (name, ctype)
+            assert head_body == exact_body
+        assert (
+            content_type(files["report.md"]["artifact_id"])[1].decode("utf-8") == text
+        )
+
+        for name in ("page.html", "fig.png"):
+            head, _ = content_type(files[name]["artifact_id"])
+            exact, _ = content_type(files[name]["version_id"], exact=True)
+            assert "charset" not in head.lower(), (name, head)
+            assert "charset" not in exact.lower(), (name, exact)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+        runner.close()
+
+
 def _install_artifact_submission(
     monkeypatch,
     runner,

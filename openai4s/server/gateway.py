@@ -668,6 +668,23 @@ def _guess_ctype(name: str) -> str:
     return "application/octet-stream"
 
 
+def _declare_text_charset(ctype: str) -> str:
+    """Name UTF-8 on a text type that names no charset.
+
+    An Artifact row stores a bare ``text/markdown`` or ``text/csv``. Served
+    like that, a browser decodes the bytes as Windows-1252, so the ``µM``,
+    ``×`` and ``R²`` of a report opened from its link arrive as mojibake.
+    HTML and XML are left alone: they declare an encoding in the document,
+    and a header would override it.
+    """
+    low = ctype.lower()
+    if not low.startswith("text/") or "charset=" in low:
+        return ctype
+    if low.split(";", 1)[0].strip() in {"text/html", "text/xml"}:
+        return ctype
+    return f"{ctype}; charset=utf-8"
+
+
 def _sanitize_header_value(value: str) -> str:
     """Remove CR/LF from an HTTP header value so a user-influenced value cannot
     inject extra headers or split the response (CWE-113)."""
@@ -16149,8 +16166,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     record_diagnostic(error, surface="artifact:exact_version_read")
                     self._json({"error": "artifact not found"}, 404)
                     return
-                ctype = meta.get("content_type") or _guess_ctype(
-                    str(meta.get("filename") or decoded_ident)
+                ctype = _declare_text_charset(
+                    meta.get("content_type")
+                    or _guess_ctype(str(meta.get("filename") or decoded_ident))
                 )
                 if force_html:
                     ctype = "text/html; charset=utf-8"
@@ -16217,7 +16235,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # dispatched before _api, and version-/filename-addressed serves
             # are invisible to the path-based scope guard — both reach here.
             self._team_guard_served_artifact(meta)
-            ctype = (meta or {}).get("content_type") or _guess_ctype(Path(path).name)
+            ctype = _declare_text_charset(
+                (meta or {}).get("content_type") or _guess_ctype(Path(path).name)
+            )
             if force_html:
                 ctype = "text/html; charset=utf-8"
             # Named after the Artifact, not the URL's last segment: the path
