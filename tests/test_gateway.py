@@ -5405,7 +5405,9 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
     handler._api("GET", f"/artifacts/{rec1['version_id']}")
     code, body, ctype, _security = sends[-1]
     assert (code, body) == (200, b"v1")
-    assert ctype == store.version_meta(rec1["version_id"])["content_type"]
+    # The row's own type, with the charset a bare text type is served with.
+    stored = store.version_meta(rec1["version_id"])["content_type"]
+    assert ctype == f"{stored}; charset=utf-8"
 
     # Trusted completion uses a reserved exact-version namespace. It returns
     # the same immutable bytes, but unlike the compatibility route it can
