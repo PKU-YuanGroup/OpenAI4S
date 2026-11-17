@@ -1109,7 +1109,10 @@ def test_search_blocked_by_a_bound_manifest_does_not_blame_rate_limits(monkeypat
         narrowed = webtools.web_search("KRAS G12C resistance", engines=("builtin",))
     assert narrowed["count"] == 0
     assert "rate-limiting" not in narrowed["note"]
-    assert "api.openalex.org" in narrowed["note"] and "doi.org" in narrowed["note"]
+    # The domains the note names, compared whole rather than searched for.
+    named = narrowed["note"].split("Host requests to ", 1)[1]
+    named = named.split(", and the search engines", 1)[0]
+    assert named.split(", ") == ["api.openalex.org", "doi.org"]
 
 
 def _one_python_cell(_messages, _cfg, **_kwargs):
