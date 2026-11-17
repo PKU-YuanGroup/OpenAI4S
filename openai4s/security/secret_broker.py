@@ -804,16 +804,6 @@ class SecretBroker:
         }
 
 
-_warned: set[str] = set()
-
-
-def _warn_degraded(message: str) -> None:
-    if message in _warned:
-        return
-    _warned.add(message)
-    print(f"OPENAI4S SECURITY WARNING: {message}", file=sys.stderr)
-
-
 __all__ = [
     "KeychainBackend",
     "MemoryBackend",

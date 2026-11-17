@@ -157,6 +157,11 @@ def test_setup_only_accepts_each_documented_environment(name):
         (["jupyter", "export", "--help"], "--language"),
         (["jupyter", "install", "--help"], "--prefix"),
         (["inspect-package", "--help"], "--json"),
+        # `lab` forwards its tail to the lab's own parser. A leading option
+        # used to stop at the outer parser as "unrecognized arguments".
+        (["lab", "--help"], "usage: openai4s lab"),
+        (["lab", "-h"], "usage: openai4s lab"),
+        (["lab", "status", "--help"], "--json"),
     ],
 )
 def test_subcommand_help_advertises_supported_options(argv, expected_fragment, capsys):
@@ -2082,3 +2087,75 @@ def test_store_opening_commands_refuse_a_future_schema_without_a_traceback(
     assert "future_schema" in captured.err
     assert "Traceback" not in captured.err
     assert cfg.db_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [TimeoutError("timed out"), b"<html>bad gateway</html>"],
+    ids=["read-timeout", "non-json-body"],
+)
+def test_status_reports_a_daemon_that_does_not_answer_health(
+    failure, tmp_path, monkeypatch, capsys
+):
+    """A read timeout or a non-JSON body is not a `URLError`.
+
+    Both escaped `cmd_status` as a traceback and exit 1, where a refused
+    connection got the "alive but /health unreachable" line and exit 2.
+    """
+    module = _cli_module()
+    config = _live_darwin_daemon(tmp_path)
+    _as_darwin(module, monkeypatch, _darwin_kinfo_record())
+    monkeypatch.setattr(module, "get_config", lambda: config)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read():
+            if isinstance(failure, BaseException):
+                raise failure
+            return failure
+
+    monkeypatch.setattr(module, "_open_daemon", lambda request, *, timeout: Response())
+
+    assert module.cmd_status(SimpleNamespace()) == 2
+    assert "alive but /health unreachable" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("action", "success_text"),
+    [
+        ("submit", "submitted"),
+        ("list", "no jobs"),
+        ("profiles", "no cluster.toml configured"),
+    ],
+)
+def test_cluster_prints_a_refusal_as_an_error_not_as_a_result(
+    action, success_text, monkeypatch, capsys
+):
+    """An HTTP error body used to be rendered through the success branches."""
+    module = _cli_module()
+    monkeypatch.setattr(module, "get_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(module, "_require_daemon", lambda cfg: True)
+    monkeypatch.setattr(
+        module,
+        "_daemon_request",
+        lambda cfg, method, path, body=None: (403, {"error": "profile refused"}),
+    )
+    args = SimpleNamespace(
+        cluster_action=action,
+        command=["true"],
+        profile="default",
+        backend=None,
+        workdir=None,
+        json=False,
+    )
+
+    assert module.cmd_cluster(args) == 2
+    captured = capsys.readouterr()
+    assert "profile refused" in captured.err
+    assert success_text not in captured.out

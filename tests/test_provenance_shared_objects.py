@@ -472,3 +472,22 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
     assert {name: inputs(name) for name in unrelated} == {
         name: [] for name in unrelated
     }, "a file named an input it never read"
+
+
+def test_next_on_a_tracked_handle_reads_one_tagged_line(lineage):
+    """`header = next(f)` is the ordinary way to skip a header line.
+
+    Special methods are looked up on the type, so the read wrapper's
+    `__getattr__` never supplied `__next__`: the call raised `TypeError: ...
+    object is not an iterator` for a tracked file, while the same cell worked
+    on an untracked one.
+    """
+    lineage.tracked.write_text("header\nrow-1\nrow-2\n")
+    with provenance._prov_open(lineage.tracked) as handle:
+        header = next(handle)
+        rows = list(handle)
+
+    assert header == "header\n"
+    assert rows == ["row-1\n", "row-2\n"]
+    _write(lineage, header, "header-copy.txt")
+    assert _inputs(lineage) == [[TRACKED]]

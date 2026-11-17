@@ -3225,9 +3225,6 @@ class HostDispatcher:
     def _workspace(self) -> Path:
         return self._files.workspace()
 
-    def _rel(self, path: Path) -> str | None:
-        return self._files.relative(path)
-
     def _resolve(self, rel: str, *, must_exist: bool = False) -> Path:
         return self._files.resolve(rel, must_exist=must_exist)
 
@@ -3374,12 +3371,6 @@ class HostDispatcher:
         return self._progress_service.review_status()
 
     # --- environments / dependencies (reference 'list/create env' steps) -----
-    def _current_env_name(self) -> str:
-        """Best-effort compatibility helper for the active Python env name."""
-        if self.active_env_bin:
-            return Path(self.active_env_bin).parent.name
-        return "base"
-
     def _m_env_list(self, spec: dict | None = None) -> dict:
         return self._execute_control_tool("env_list", spec or {})
 
@@ -3804,12 +3795,14 @@ class HostDispatcher:
             return {"error": str(error)}
 
     def _m_rl_segment_observe(self, spec: dict) -> dict:
-        return self._m_rl_segment_event(spec, "segment.observation", spec.get("value"))
+        return self._rl_segment_event(spec, "segment.observation", spec.get("value"))
 
     def _m_rl_segment_output(self, spec: dict) -> dict:
-        return self._m_rl_segment_event(spec, "segment.output", spec.get("value"))
+        return self._rl_segment_event(spec, "segment.output", spec.get("value"))
 
-    def _m_rl_segment_event(self, spec: dict, kind: str, value: Any) -> dict:
+    # Not `_m_`-prefixed: every `_m_<name>` is a host method a cell can call by
+    # name with its own arguments, and this helper takes the event `kind`.
+    def _rl_segment_event(self, spec: dict, kind: str, value: Any) -> dict:
         try:
             from openai4s.rl.segments import HostSegments
 

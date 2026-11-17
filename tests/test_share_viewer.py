@@ -22,6 +22,41 @@ def test_real_viewer_assets_load():
     assert "scientific_renderers.js" in assets
 
 
+def test_no_command_sits_inside_a_node_the_viewer_retranslates():
+    """`applyI18n` replaces the `textContent` of every `[data-i18n]` node.
+
+    Step 1 of "Run locally" carried `data-i18n` on the whole `<li>`, so on
+    every load the label was translated and the `<code>pip install openai4s
+    && openai4s serve</code>` beside it was deleted -- in both languages.
+    """
+    from html.parser import HTMLParser
+
+    void = {"br", "hr", "img", "input", "link", "meta"}
+
+    class Scan(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack: list[bool] = []
+            self.lost: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "code" and any(self.stack):
+                self.lost.append(self.getpos().__repr__())
+            if tag not in void:
+                self.stack.append("data-i18n" in dict(attrs))
+
+        def handle_endtag(self, tag):
+            if tag not in void and self.stack:
+                self.stack.pop()
+
+    html = _load_share_assets()["share.html"].decode("utf-8")
+    scan = Scan()
+    scan.feed(html)
+
+    assert scan.lost == []
+    assert "pip install openai4s &amp;&amp; openai4s serve" in html
+
+
 def test_router_serves_real_viewer_shell(tmp_path):
     store = Store(tmp_path / "openai4s.db")
 

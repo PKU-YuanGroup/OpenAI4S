@@ -13,7 +13,6 @@ from openai4s.agent.actions import (
     CodeCell,
     FinalizeAction,
     NativeToolBatch,
-    NativeToolCall,
 )
 from openai4s.agent.events import (
     ActionRouted,

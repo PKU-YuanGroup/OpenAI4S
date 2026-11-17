@@ -120,7 +120,13 @@ def chat(
                 and any(part.get("type") == "image" for part in message["content"])
                 for message in messages
             ),
-            streaming=on_delta is not None,
+            # `on_delta` is deliberately not passed as `streaming=`. A delta
+            # callback means "deliver deltas if this wire can", not "refuse
+            # unless you stream": the Web turn always supplies one, so as a
+            # hard requirement it made every turn on a blocking wire raise
+            # `CapabilityError` before a request was sent. The Gemini adapter
+            # accepts the callback and returns the whole reply, which is what
+            # the configuration guide says it does.
             max_output_tokens=max_tokens,
         )
         wire = spec["wire"]

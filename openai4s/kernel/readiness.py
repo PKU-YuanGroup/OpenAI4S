@@ -116,10 +116,6 @@ def _dependency_entry(value: str) -> tuple[str, bool]:
     return normalized, bool(marker.strip())
 
 
-def _dependency_name(value: str) -> str:
-    return _dependency_entry(value)[0]
-
-
 def _parse_direct_dependencies(path: Path, expected_name: str) -> tuple[str, ...]:
     """Parse the direct dependencies from one shipped, line-oriented spec.
 

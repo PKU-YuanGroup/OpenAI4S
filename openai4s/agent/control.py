@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Mapping
 
+from openai4s.observability import carry_context
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
     finalize_tool_batch,
@@ -250,8 +251,15 @@ def _execute_read_only_waves(
                 max_workers=min(worker_limit, len(wave)),
                 thread_name_prefix="openai4s-tool-read",
             ) as pool:
+                # One wrapper *per call*: a pool thread starts with an empty
+                # context, so the execution principal and correlation id set
+                # for this turn were gone inside a parallel wave -- in team
+                # mode `frames` batched with another read failed with
+                # `PrincipalRequired`, and alone (run on this thread) it worked.
                 futures = {
-                    index: pool.submit(_safe_invoke, calls[index], invoke)
+                    index: pool.submit(
+                        carry_context(_safe_invoke), calls[index], invoke
+                    )
                     for index in wave
                 }
                 # Resolve in provider order even when physical completion order

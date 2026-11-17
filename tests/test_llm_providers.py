@@ -228,6 +228,25 @@ def test_gemini_wire_url_and_auth(cap):
     assert roles == ["model", "user"]
 
 
+def test_a_delta_callback_does_not_refuse_a_blocking_wire(cap):
+    """The Web turn always passes `on_delta`.
+
+    It was forwarded as a hard `streaming` requirement, and Gemini is declared
+    non-streaming, so every Web turn on a Gemini profile raised
+    `CapabilityError` before any request left. The adapter takes the callback
+    and returns the whole reply; that is the documented behaviour.
+    """
+    deltas: list[str] = []
+
+    out = llm.chat(
+        [{"role": "user", "content": "hi"}], _cfg("gemini"), on_delta=deltas.append
+    )
+
+    assert out["content"] == "ok"
+    assert cap.url.endswith(":generateContent")
+    assert deltas == []
+
+
 def test_config_base_url_override(cap):
     c = _cfg("chatgpt", base_url="https://proxy.local/v1")
     llm.chat([{"role": "user", "content": "hi"}], c)

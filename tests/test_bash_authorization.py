@@ -494,6 +494,67 @@ def test_a_shell_that_exits_first_does_not_escape_the_deadline(tmp_path, monkeyp
         time.sleep(0.1)
 
 
+def test_an_interrupted_command_does_not_outlive_its_cell(tmp_path, monkeypatch):
+    """Stop reaches a cell inside `host.bash` as a KeyboardInterrupt in the wait.
+
+    The command is spawned in its own session so the deadline can reach what
+    the shell started -- which also means the kernel's own group signals never
+    reach it. Only `TimeoutExpired` was handled, so an interrupt left the wait
+    with the command still running and nothing holding its pid: the cell said
+    "interrupted" and the work carried on.
+
+    Real processes, and an exception raised asynchronously in the calling
+    thread, because that is the shape SIGINT has by the time it gets here.
+    """
+    import ctypes
+    import threading
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI4S_WORKSPACE", str(tmp_path))
+    started = tmp_path / "started.txt"
+    marker = tmp_path / "survived.txt"
+    host = build_host(
+        lambda method, args: None, bash_authorizer=_real_authorizer(tmp_path)
+    )
+    raised: list[BaseException] = []
+
+    def cell():
+        try:
+            host.bash(
+                f"echo started > {started}; sleep 3; echo survived > {marker}",
+                timeout=60,
+            )
+        except BaseException as exc:  # noqa: BLE001 - the interrupt is the result
+            raised.append(exc)
+
+    thread = threading.Thread(target=cell)
+    thread.start()
+    deadline = time.time() + 15
+    while not started.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    assert started.exists(), "the command never started"
+
+    assert (
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(thread.ident), ctypes.py_object(KeyboardInterrupt)
+        )
+        == 1
+    )
+    thread.join(timeout=30)
+    assert not thread.is_alive(), "the interrupted call never returned"
+    assert raised and isinstance(raised[0], KeyboardInterrupt), raised
+
+    # The command is gone rather than merely unobserved. Polled past the point
+    # where it would have finished.
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if marker.exists():
+            raise AssertionError(
+                "the interrupted command kept running and finished its work"
+            )
+        time.sleep(0.1)
+
+
 def test_command_output_is_bounded_as_it_is_produced(tmp_path, monkeypatch):
     """`capture_output=True` held both whole streams before any slice ran.
 

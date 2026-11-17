@@ -22222,6 +22222,51 @@
         "type": "object"
       }
     },
+    "GET /specialists/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "connectors": {
+            "type": "null"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "skill_names": {
+            "type": "null"
+          },
+          "system_prompt": {
+            "type": "string"
+          },
+          "unrestricted": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "connectors",
+          "created_at",
+          "description",
+          "enabled",
+          "name",
+          "skill_names",
+          "system_prompt",
+          "unrestricted",
+          "updated_at"
+        ],
+        "type": "object"
+      }
+    },
     "GET /team/audit [error]": {
       "schema": {
         "properties": {

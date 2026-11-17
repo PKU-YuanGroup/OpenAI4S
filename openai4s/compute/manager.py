@@ -2107,7 +2107,7 @@ class ComputeManager:
         if not registry.is_known_alias(safe, Path(self.cfg.data_dir)):
             raise ComputeError(
                 f"ssh alias {safe!r} is not registered with this daemon; add it "
-                "with `openai4s host add` or to your ~/.ssh/config before an "
+                "in Settings → Compute or to your ~/.ssh/config before an "
                 "agent can reach it",
                 "unknown_alias",
             )
@@ -2825,7 +2825,14 @@ class ComputeManager:
                 termination_reason=states.REASON_SUBMIT_INDETERMINATE,
                 reason="ssh submit produced no job acknowledgement",
             )
-            self._event(job_id, "submit_indeterminate", {"stdout": proc.stdout[:200]})
+            # `proc.stdout` is bytes. Passed as-is it made `json.dumps` raise
+            # inside `_event`, which swallows it, so this event -- the only
+            # record of what the remote printed -- was never written.
+            self._event(
+                job_id,
+                "submit_indeterminate",
+                {"stdout": proc.stdout[:200].decode("utf-8", "replace")},
+            )
             raise ComputeError(
                 f"ssh submit to {alias} exited 0 without acknowledging a job "
                 f"id; something may be running in {workdir}",

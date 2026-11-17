@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Protocol

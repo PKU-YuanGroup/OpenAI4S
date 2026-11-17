@@ -74,7 +74,7 @@ services:
       # Provider and model are ordinary settings, not secrets — set them here or
       # in the UI. The daemon boots with neither.
       # OPENAI4S_LLM_PROVIDER: ark
-      # OPENAI4S_LLM_MODEL: doubao-seed-2.0-pro
+      # OPENAI4S_LLM_MODEL: doubao-seed-2.1-pro
 
       # --- kernel isolation ---------------------------------------------------
       # Left at the default `auto` on purpose. An unprivileged container cannot

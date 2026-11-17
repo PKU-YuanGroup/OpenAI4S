@@ -1212,7 +1212,11 @@ def cmd_status(args) -> int:
         # over HTTP.
         print(f"  data_dir : {cfg.data_dir}")
         return 0
-    except urllib.error.URLError:
+    except (OSError, ValueError):
+        # `URLError` is an `OSError`, but it is not the only way this fails: a
+        # daemon that accepts the connection and then never answers raises a
+        # bare `TimeoutError` from the read, and a non-JSON body is a
+        # `ValueError`. Both used to escape as a traceback and exit 1.
         print(f"daemon: pid {pid} alive but /health unreachable")
         return 2
 
@@ -2468,6 +2472,12 @@ def cmd_cluster(args) -> int:
 
     if getattr(args, "json", False):
         print(json.dumps(rec, indent=2))
+    elif int(status) >= 400:
+        # A refusal is not a result. Rendered through the branches below, a
+        # refused submit printed "submitted None (None)" and a 401 on `list`
+        # printed "no jobs", with the daemon's own explanation nowhere.
+        detail = rec.get("error") if isinstance(rec, dict) else None
+        print(f"error: {detail or rec or f'HTTP {status}'}", file=sys.stderr)
     elif action == "list":
         jobs = (rec or {}).get("jobs") or []
         for job in jobs:
@@ -3025,7 +3035,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if is_wsl():
         os.environ["PATH"] = linux_path(os.environ.get("PATH", os.defpath))
-    args = build_parser().parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == ["lab"]:
+        # `lab` hands its whole tail to the lab's own parser, but
+        # `argparse.REMAINDER` does not capture a *leading* option: `openai4s
+        # lab --help` -- the command the lab's own errors point people at --
+        # died here as "unrecognized arguments: --help", exit 2.
+        args = argparse.Namespace(cmd="lab", fn=cmd_lab, lab_args=raw[1:])
+    else:
+        args = build_parser().parse_args(raw)
     try:
         return args.fn(args)
     except MigrationError as exc:

@@ -32,7 +32,6 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any
 
 _LOCK = threading.RLock()
 _FILE = "remote_compute.json"

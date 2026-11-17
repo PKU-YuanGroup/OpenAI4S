@@ -224,6 +224,71 @@ def test_capture_observation_view_returns_only_the_callers_scope(two_projects):
     assert foreign["artifact_id"] not in repr(rows)
 
 
+def test_every_published_view_can_actually_be_read(two_projects):
+    """A view SQLite accepted is not a view that works.
+
+    `CREATE VIEW` does not resolve column names, so `my_env_snapshots` joining
+    on a column its table never had was created without complaint and raised
+    `no such column` at the first SELECT. Nothing read it, so nothing noticed.
+    """
+    from openai4s.store import _SCOPED_VIEWS
+
+    _cfg, store, _service, ours, _foreign = two_projects
+    mine = store.get_artifact(ours["artifact_id"])
+    scope = {
+        "root_frame_id": mine["root_frame_id"],
+        "project_id": mine["project_id"],
+    }
+    for view in sorted(_SCOPED_VIEWS):
+        rows = store.query(f"SELECT COUNT(*) AS n FROM {view}", scope=scope)
+        assert isinstance(rows[0]["n"], int), view
+
+
+def test_env_snapshot_view_returns_only_the_callers_environments(two_projects):
+    cfg, store, _service, ours, foreign = two_projects
+    mine = store.get_artifact(ours["artifact_id"])
+    theirs = store.get_artifact(foreign["artifact_id"])
+
+    def _version_with_environment(artifact, filename, environment_name):
+        snapshot_id = store.upsert_env_snapshot(
+            {"kind": "python", "environment_name": environment_name}
+        )
+        payload = environment_name.encode("utf-8")
+        versions = Path(cfg.data_dir) / "artifact-versions"
+        snapshot = versions / f"env-{uuid.uuid4().hex[:8]}__{filename}"
+        snapshot.write_bytes(payload)
+        store.record_cell_artifact(
+            path=str(snapshot),
+            filename=filename,
+            content_type="text/csv",
+            size_bytes=len(payload),
+            checksum=hashlib.sha256(payload).hexdigest(),
+            producing_cell_id=f"cell-env-{filename}",
+            frame_id=artifact["root_frame_id"],
+            root_frame_id=artifact["root_frame_id"],
+            project_id=artifact["project_id"],
+            snapshot_path=str(snapshot),
+            env_snapshot_id=snapshot_id,
+        )
+        return snapshot_id
+
+    ours_env = _version_with_environment(mine, "ours-env.csv", "env-of-mine")
+    # A second version naming the same snapshot must not duplicate the row.
+    assert _version_with_environment(mine, "ours-env-2.csv", "env-of-mine") == ours_env
+    foreign_env = _version_with_environment(theirs, "their-env.csv", "env-of-theirs")
+
+    rows = store.query(
+        "SELECT snapshot_id, environment_name FROM my_env_snapshots",
+        scope={
+            "root_frame_id": mine["root_frame_id"],
+            "project_id": mine["project_id"],
+        },
+    )
+
+    assert rows == [{"snapshot_id": ours_env, "environment_name": "env-of-mine"}]
+    assert foreign_env not in repr(rows)
+
+
 def test_completion_delivery_ledger_is_never_agent_readable(two_projects):
     _cfg, store, service, _ours, _foreign = two_projects
     assert "completion_deliveries" not in store.schema()

@@ -140,7 +140,7 @@ That's it — the workbench now runs on your model.
 
 | Protocol in the UI | Provider it talks to | Where to get the key |
 |---|---|---|
-| **Ark-compatible** | Volcengine Ark (火山方舟) — one key serves **Doubao · GLM · Kimi · DeepSeek · MiniMax** | [console.volcengine.com/ark](https://console.volcengine.com/ark) — the entry **"Small" agent plan is ¥9.9 / month (≈ US$1.4)** |
+| **Ark-compatible** | Volcengine Ark (火山方舟) — one key serves **Doubao · GLM · Kimi · DeepSeek** | [console.volcengine.com/ark](https://console.volcengine.com/ark) — the entry **"Small" agent plan is ¥9.9 / month (≈ US$1.4)** |
 | **OpenAI-compatible** | OpenAI (`gpt-5`) or any OpenAI-compatible endpoint | your OpenAI / vendor dashboard |
 | **OpenAI Responses** | OpenAI's Responses API (`gpt-5`) | your OpenAI dashboard |
 | **Anthropic-compatible** | Anthropic Claude (`claude-sonnet-4-5`) | [console.anthropic.com](https://console.anthropic.com) |
@@ -318,7 +318,7 @@ OpenAI4S 只复用 Ark CLI 已选定的 Project，不会假设账号一定存在
 
 | UI 里的协议 | 对接的供应商 | 在哪里拿 Key |
 |---|---|---|
-| **ark 兼容协议** | 火山方舟 Volcengine Ark —— 一个 Key 覆盖 **豆包 · GLM · Kimi · DeepSeek · MiniMax** | [console.volcengine.com/ark](https://console.volcengine.com/ark) —— 入门 **「Small」Agent 套餐仅 ¥9.9 / 月** |
+| **ark 兼容协议** | 火山方舟 Volcengine Ark —— 一个 Key 覆盖 **豆包 · GLM · Kimi · DeepSeek** | [console.volcengine.com/ark](https://console.volcengine.com/ark) —— 入门 **「Small」Agent 套餐仅 ¥9.9 / 月** |
 | **OpenAI 兼容协议** | OpenAI（`gpt-5`）或任何 OpenAI 兼容接入点 | 你的 OpenAI / 厂商控制台 |
 | **OpenAI Responses 协议** | OpenAI Responses API（`gpt-5`） | 你的 OpenAI 控制台 |
 | **Anthropic 兼容协议** | Anthropic Claude（`claude-sonnet-4-5`） | [console.anthropic.com](https://console.anthropic.com) |
