@@ -116,6 +116,73 @@ describe("follow-scroll", () => {
   });
 });
 
+describe("following through content that grows by itself", () => {
+  it("content that grew below the view does not stop following; a reader moving up does", () => {
+    // At the bottom (inside the pad): following.
+    host.listeners.scroll!();
+    flushScrollNow();
+    expect(_messagesFollow.value).toBe(true);
+
+    // A gallery's images arrive: 400px more below, nobody scrolled. The
+    // browser may still fire a scroll event (anchoring); it is not a move up.
+    host.scrollHeight = 1400;
+    host.listeners.scroll!();
+    flushScrollNow();
+    expect(_messagesFollow.value).toBe(true);
+    down();
+    flushScrollNow();
+    expect(host.scrollTop).toBe(1400);
+
+    // The reader moves up: following stops, and new content does not pull.
+    host.scrollTop = 300;
+    host.listeners.scroll!();
+    flushScrollNow();
+    expect(_messagesFollow.value).toBe(false);
+    down();
+    flushScrollNow();
+    expect(host.scrollTop).toBe(300);
+  });
+
+  it("a row that grows keeps a following view at the bottom, and leaves a reader who moved up alone", () => {
+    unbindMessageScroll();
+    const observed: unknown[] = [];
+    let onResize: (() => void) | null = null;
+    class FakeResizeObserver {
+      constructor(cb: () => void) {
+        onResize = cb;
+      }
+      observe(node: unknown) {
+        observed.push(node);
+      }
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const row = { nodeType: 1 };
+    const grown = Object.assign(fakeHost(500), { children: [row] });
+    vi.stubGlobal("document", {
+      querySelector: (sel: string) => (sel === "#messages" ? grown : sel === "#jump-pill" ? pill : null),
+    });
+    bindMessageScroll(grown as unknown as HTMLElement);
+    expect(observed).toEqual([row]);
+
+    // Following at the bottom; a figure in the row loads and it grows.
+    grown.scrollHeight = 1600;
+    onResize!();
+    flushScrollNow();
+    expect(grown.scrollTop).toBe(1600);
+
+    // Scrolled up to read: growth no longer moves the view.
+    grown.scrollTop = 300;
+    grown.listeners.scroll!();
+    flushScrollNow();
+    grown.scrollHeight = 2000;
+    onResize!();
+    flushScrollNow();
+    expect(grown.scrollTop).toBe(300);
+  });
+});
+
 describe("one follow-scroll implementation", () => {
   it("is what sessions/dom exports, so the jump pill and every caller share it", async () => {
     const sessionsDom = await import("../sessions/dom");

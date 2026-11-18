@@ -87,12 +87,21 @@ function paintPillMode(pill: HTMLElement, toApproval: boolean): void {
   pill.title = t("conv.jumpLast");
 }
 
+/** Where the last flush left the view, to tell a reader's move from growth. */
+let lastScrollTop = 0;
+
 function flushScroll(): void {
   scrollRaf = 0;
   const m = messagesHost();
   if (!m) return;
   if (pendingMeasure) {
-    _messagesFollow.value = messagesAtBottom(m);
+    // Following stops only when the reader moves up. Content that grew below
+    // the view (a gallery's images arriving, a step card opening) leaves the
+    // view short of the bottom without anyone scrolling; measuring "at the
+    // bottom?" then dropped follow, and the stream stopped following until
+    // the user pressed "Latest" again.
+    if (messagesAtBottom(m)) _messagesFollow.value = true;
+    else if (m.scrollTop < lastScrollTop - 1) _messagesFollow.value = false;
     pendingMeasure = false;
   }
   const follow = pendingDown;
@@ -106,6 +115,7 @@ function flushScroll(): void {
     m.scrollTop = m.scrollHeight;
     _messagesFollow.value = true;
   }
+  lastScrollTop = m.scrollTop;
   paintJumpPill();
 }
 
@@ -158,11 +168,48 @@ export function bindMessageScroll(host?: HTMLElement | null): void {
   if (m) {
     m.addEventListener("scroll", onMessagesScroll, { passive: true });
     boundHost = m;
+    lastScrollTop = m.scrollTop || 0;
+    watchGrowth(m);
   }
   if (pill) {
     pill.addEventListener("click", onJumpPillClick);
     boundPill = pill;
   }
+}
+
+let growthObserver: ResizeObserver | null = null;
+let childObserver: MutationObserver | null = null;
+
+/** While following, a transcript row that grows keeps the view at the bottom. */
+function keepFollowing(): void {
+  if (_messagesFollow.value !== false) down();
+}
+
+/**
+ * Content that grows without a new chunk -- a figure loading, a gallery
+ * filling in, a step card opening -- left a following view short of the
+ * bottom. Every row of the transcript is watched for a size change, and rows
+ * added later are watched as they arrive.
+ */
+function watchGrowth(m: HTMLElement): void {
+  if (typeof ResizeObserver !== "function") return;
+  const resize = new ResizeObserver(keepFollowing);
+  growthObserver = resize;
+  const watch = (node: Node): void => {
+    if (node && node.nodeType === 1) resize.observe(node as Element);
+  };
+  const kids = (m as { children?: ArrayLike<Node> }).children;
+  if (kids) Array.from(kids).forEach(watch);
+  if (typeof MutationObserver !== "function") return;
+  childObserver = new MutationObserver((records) => {
+    for (const record of records) {
+      record.addedNodes.forEach(watch);
+      record.removedNodes.forEach((node) => {
+        if (node.nodeType === 1) resize.unobserve(node as Element);
+      });
+    }
+  });
+  childObserver.observe(m, { childList: true });
 }
 
 export function unbindMessageScroll(): void {
@@ -174,6 +221,10 @@ export function unbindMessageScroll(): void {
     boundPill.removeEventListener("click", onJumpPillClick);
     boundPill = null;
   }
+  growthObserver?.disconnect();
+  growthObserver = null;
+  childObserver?.disconnect();
+  childObserver = null;
   cancelFrame(scrollRaf);
   scrollRaf = 0;
   pendingDown = false;
