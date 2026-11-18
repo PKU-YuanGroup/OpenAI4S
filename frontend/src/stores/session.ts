@@ -125,6 +125,8 @@ export const historyContent = field(() => null as {
   fid: string;
   messages: Array<Record<string, unknown>>;
   steps: Array<Record<string, unknown>>;
+  /** Stored approval decisions (`GET /frames/{fid}/approvals`). */
+  approvals?: Array<Record<string, unknown>>;
 } | null);
 export function noteHistoryMutation(): void {
   historyMutation.value += 1;

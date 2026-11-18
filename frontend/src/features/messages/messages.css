@@ -17,6 +17,15 @@
   margin: 6px 0;
 }
 
+/* A denied approval's reason (send/permission.ts), on its own row of the
+   compact resolved card. */
+.perm-card .perm-reason {
+  flex: 1 0 100%;
+  color: var(--text-200);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 /*
  * The marker that ends a stopped turn, live and on reopen (messages/stopped.ts),
  * and a reopened plan execution seed (messages/planPrompt.ts).

@@ -11,7 +11,7 @@
  */
 
 import { isReady } from "../../compat/stub";
-import { setRenderStoredStepImpl } from "../messages/list";
+import { setRenderStoredPermissionImpl, setRenderStoredStepImpl } from "../messages/list";
 import { setFrameUpdateTurnHandler } from "../ws/handlers";
 import {
   admissionSettled,
@@ -21,6 +21,7 @@ import {
   rememberAdmission,
 } from "./admission";
 import { handleFrameUpdateTurn, registerSendHandlers } from "./handlers";
+import { renderStoredPermission, type StoredApproval } from "./permission";
 import { send } from "./send";
 import {
   buildStepCard,
@@ -74,8 +75,10 @@ export {
   permActionLine,
   permScopeCn,
   renderPermissionCard,
+  renderStoredPermission,
   resolvePermissionCard,
 } from "./permission";
+export type { StoredApproval } from "./permission";
 export {
   PLAN_SETTLED_STEP_STATUSES,
   approvePlan,
@@ -157,6 +160,7 @@ export function installSend(
   registerSendHandlers();
   setFrameUpdateTurnHandler(handleFrameUpdateTurn);
   setRenderStoredStepImpl((step, host) => renderStoredStep(step as Step, host));
+  setRenderStoredPermissionImpl((stored, host) => renderStoredPermission(stored as StoredApproval, host));
   // Explicit `target.name =` lines (not a loop) so the duplicate-name
   // scan `target.[A-Za-z_]* =` can see every assignment.
   target.send = send;

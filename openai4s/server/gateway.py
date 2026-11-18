@@ -1456,13 +1456,26 @@ class WSHub:
             # no execution id today, so taking the field verbatim would wipe
             # the id the `processing` boundary just established and hand the
             # window straight back to whichever late event arrived next.
+            inherited = event_execution or (
+                str(buf.get("execution_id") or "") if buf else ""
+            )
+            # The turn's own request was broadcast between its `processing`
+            # boundary and this reset. Starting the window over without it
+            # would leave a reconnecting tab that missed it with a hole it can
+            # only fill by refetching history, which a running turn defers.
+            carried = [
+                event
+                for event in ((buf.get("events") or []) if buf else [])
+                if buf.get("running")
+                and event.get("type") == "user_message"
+                and str(event.get("execution_id") or "") == inherited
+            ]
             self._install_live_buffer(
                 rid,
                 self._new_live_buffer(
-                    [obj],
+                    [*carried, obj],
                     scope="turn",
-                    execution_id=event_execution
-                    or (str(buf.get("execution_id") or "") if buf else ""),
+                    execution_id=inherited,
                 ),
             )
             return
@@ -1593,6 +1606,7 @@ class WSHub:
             buf.setdefault("active_cell_sizes", {}).pop(cell_id, None)
         if t in (
             "text_chunk",
+            "user_message",
             "notebook_cell_start",
             "notebook_cell_finished",
             "kernel_status",
@@ -10716,6 +10730,40 @@ class SessionRunner:
                     stored_user_message["message_id"],
                     {"artifact_refs": message_refs},
                 )
+            # The request is part of the stream, not only of the sender's DOM.
+            # The sending tab inserted its own bubble before the POST, but every
+            # other tab viewing this session learned about the turn only from
+            # its narration, and a queued follow-up never appeared anywhere but
+            # in the tab that typed it -- until a reload read the stored row.
+            # `request_id` is the id the 202 returned (the sender's own
+            # `X-Request-Id`), so the sender can recognise its optimistic bubble;
+            # `message_id` lets a reopened transcript skip the row it already
+            # rendered from REST.
+            emit(
+                {
+                    "type": "user_message",
+                    "frame_id": root_frame_id,
+                    "message_id": stored_user_message.get("message_id"),
+                    "role": "user",
+                    "content": user_text,
+                    "created_at": _iso(stored_user_message.get("created_at")),
+                    "request_id": turn_request_id,
+                    **(
+                        {"execution_id": execution.execution_id}
+                        if getattr(execution, "execution_id", "")
+                        else {}
+                    ),
+                    **(
+                        {
+                            "artifact_refs": _message_artifact_refs(
+                                {"metadata": {"artifact_refs": message_refs}}
+                            )
+                        }
+                        if message_refs
+                        else {}
+                    ),
+                }
+            )
             remote_ctx = _remote_gpu_runtime_context(
                 user_text, data_dir=self.cfg.data_dir
             )
@@ -18047,6 +18095,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 self._json(resolution)
                 return
+            # ---- approval history: every request this session asked, in order ----
+            m = re.fullmatch(r"/frames/([^/]+)/approvals", sub)
+            if m and method == "GET":
+                fr = store.get_frame(m.group(1))
+                if fr is None:
+                    raise GatewayError(404, "session not found")
+                root = fr.get("root_frame_id") or m.group(1)
+                self._json(
+                    {
+                        "root_frame_id": root,
+                        "approvals": [
+                            _approval_json(row)
+                            for row in store.list_permission_requests(
+                                root_frame_id=root
+                            )
+                        ],
+                    }
+                )
+                return
             # ---- permission rules: list (per conversation) / upsert / delete ----
             m = re.fullmatch(r"/frames/([^/]+)/permissions", sub)
             if m and method == "GET":
@@ -20917,6 +20984,54 @@ def _frame_json(f: dict | None, store: Store) -> dict:
     # column the list leaves out would read as "unpinned" for a pinned session.
     out["model_profile_id"] = f.get("model_profile_id") or None
     out["model_profile_revision"] = f.get("model_profile_revision") or None
+    return out
+
+
+#: The approval-card fields a history read may republish from a request's
+#: stored `await_permission` payload. An allowlist: the payload also carries
+#: ledger identities (action group, tool call, resource keys) that the card
+#: never showed and no client needs.
+_APPROVAL_CARD_FIELDS = (
+    "tool",
+    "kind",
+    "title",
+    "input",
+    "target",
+    "suggested_patterns",
+    "scopes",
+    "sub_agent",
+    "dangerous",
+    "choices",
+    "policy_review_kind",
+    "resolved_file_path",
+)
+
+
+def _approval_json(row: dict) -> dict:
+    """One durable approval request as the transcript shows it.
+
+    The live card came from the `await_permission` event and its outcome from
+    `permission_resolved`; neither was part of the stored history, so a reload
+    lost every decision -- including a denial and the reason typed with it --
+    and each tab showed only the cards it happened to be open for.
+    """
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    out: dict = {
+        "decision_id": row.get("decision_id"),
+        "frame_id": payload.get("frame_id") or row.get("root_frame_id"),
+        "state": row.get("state"),
+        "scope": row.get("scope"),
+        "message": row.get("message"),
+        "resolution_context": row.get("resolution_context"),
+        "created_at": _iso(row.get("created_at")),
+        "resolved_at": _iso(row.get("resolved_at")),
+    }
+    for key in _APPROVAL_CARD_FIELDS:
+        if key in payload:
+            out[key] = payload[key]
+    out["tool"] = out.get("tool") or row.get("tool")
+    out["target"] = out.get("target") or row.get("target") or ""
+    out["dangerous"] = bool(out.get("dangerous") or row.get("dangerous"))
     return out
 
 

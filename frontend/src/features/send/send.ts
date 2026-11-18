@@ -178,6 +178,19 @@ function mintAdmissionId(): string {
   return "resv-" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * This send's correlation id. It only has to tell this tab's bubbles apart
+ * (the server bounds and sanitises it), so a non-CSPRNG fallback is enough
+ * where the platform has none -- unlike the admission id above.
+ */
+export function newRequestId(): string {
+  const bytes = new Uint8Array(12);
+  const cryptoObj = (globalThis as { crypto?: Crypto }).crypto;
+  if (cryptoObj && cryptoObj.getRandomValues) cryptoObj.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return "web-" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** How long an unanswered POST /message keeps its optimistic bubble protected. */
 export const SUBMISSION_GRACE_MS = 5000;
 
@@ -383,7 +396,11 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   const es = $(".empty-session");
   if (es) es.remove();
   const confirmHistorySubmission = beginHistorySubmission();
+  // Sent as `X-Request-Id`: the turn's `user_message` event carries it back,
+  // so this tab recognises its own bubble instead of showing the question twice.
+  const requestId = newRequestId();
   const w = el("div", "msg user");
+  w.dataset.requestId = requestId;
   const b = el("div", "bubble");
   b.textContent = text || t("send.imageAnnotationFallback");
   w.appendChild(b);
@@ -443,6 +460,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   try {
     const accepted = (await api(`/frames/${dispatchFrameId}/message`, {
       method: "POST",
+      headers: { "content-type": "application/json", "X-Request-Id": requestId },
       body: JSON.stringify({
         input_data: { request: payload },
         plan: planNow,

@@ -52,6 +52,7 @@ function deferred<T>() {
 function body(path: string): unknown {
   if (path.includes("/messages?")) return { messages: [{ role: "assistant", content: "confirmed", seq: 1 }], has_earlier: false };
   if (path.endsWith("/steps")) return { steps: [] };
+  if (path.endsWith("/approvals")) return { approvals: [] };
   if (path.endsWith("/status")) return { running: false, status: "completed" };
   return {};
 }
@@ -129,12 +130,12 @@ describe("history reads", () => {
     ]));
     expect(paint.empty).not.toHaveBeenCalled();
     expect(_replayGap.value).toBe("f");
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher).toHaveBeenCalledTimes(4);
     for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
     const retry = server((path) => path.endsWith("/steps") ? response({ steps: [storedStep] }) : undefined);
     expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(_replayGap.value).toBeNull();
-    expect(retry).toHaveBeenCalledTimes(3);
+    expect(retry).toHaveBeenCalledTimes(4);
     for (const [, init] of retry.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
   });
   it.each([
@@ -198,7 +199,7 @@ describe("history reads", () => {
     const one = recoverConversation("f");
     const two = recoverConversation("f");
     expect(two).toBe(one);
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher).toHaveBeenCalledTimes(4);
     gate.resolve(response({ steps: [] }));
     expect(await one).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(fetcher.mock.calls.map(([path]) => String(path))).toEqual(expect.arrayContaining([
@@ -295,7 +296,7 @@ describe("history reads", () => {
     gate.resolve(response({ messages: [] }));
     expect(await reading).toMatchObject({ messagesLoaded: false });
     await vi.waitFor(() => expect(session.historyLoad.value?.status).toBe("loaded"));
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher).toHaveBeenCalledTimes(8);
   });
 
   it("an old admission cannot settle a submission after navigating away and back", () => {

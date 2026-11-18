@@ -236,6 +236,15 @@ async function fetchSteps(fid: string): Promise<Array<Record<string, unknown>>> 
   }
   return rows;
 }
+/**
+ * Every approval this session asked for, decided or not. Optional history: a
+ * failed read keeps the cards already confirmed rather than failing the
+ * transcript, which is complete without them.
+ */
+async function fetchApprovals(fid: string): Promise<Array<Record<string, unknown>>> {
+  const rows = recordRows(await apiGet(`/frames/${encodeURIComponent(fid)}/approvals`), "approvals");
+  return rows.filter((row) => typeof row.decision_id === "string" && !!row.decision_id);
+}
 async function fetchRunState(fid: string): Promise<{ running: boolean; status?: string }> {
   const raw = await apiGet(`/frames/${encodeURIComponent(fid)}/status`);
   if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
@@ -282,10 +291,11 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
   // first, then fetch a fresh transcript after the authoritative stopped
   // response; a parallel transcript could still precede the final write.
   const historyReady = streamAtRead ? runStateRead.then(() => {}, () => {}) : null;
-  const [page, steps, runState] = await Promise.allSettled([
+  const [page, steps, runState, approvals] = await Promise.allSettled([
     historyReady ? historyReady.then(() => fetchRecentMessages(fid, MESSAGE_PAGE_SIZE)) : fetchRecentMessages(fid, MESSAGE_PAGE_SIZE),
     historyReady ? historyReady.then(() => fetchSteps(fid)) : fetchSteps(fid),
     runStateRead,
+    historyReady ? historyReady.then(() => fetchApprovals(fid)) : fetchApprovals(fid),
   ]);
   if (!current(fid, gen)) return obsolete();
   const result = {
@@ -331,23 +341,27 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
     const earlierCursor = prefix.length ? msgCursor.value : page.value.next_before_seq ?? null;
     const hasEarlier = prefix.length ? msgHasEarlier.value : !!page.value.has_earlier;
     const stepRows = steps.status === "fulfilled" ? steps.value : cached?.steps || [];
+    const approvalRows = approvals.status === "fulfilled" ? approvals.value : cached?.approvals || [];
     const stage = typeof document !== "undefined" ? document.createDocumentFragment() : null;
     const host = messagesHost();
     const stagedSteps: Record<string, unknown> = Object.create(null);
+    const stagedPerms: Record<string, unknown> = Object.create(null);
     await new Promise<void>((resolve, reject) => {
-      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], stepRows), {
+      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], stepRows, approvalRows), {
         host: stage,
         stillCurrent: unchanged,
         onCancel: resolve,
         onDone: resolve,
         onError: reject,
         renderItem: (item, target) => {
-          // The step renderer's compatibility registry must keep pointing at
-          // live cards while an off-DOM batch is being prepared.
+          // The step and approval renderers' compatibility registries must
+          // keep pointing at live cards while an off-DOM batch is prepared.
           const liveSteps = stepEls.value;
+          const livePerms = permCards.value;
           stepEls.value = stagedSteps;
+          permCards.value = stagedPerms;
           try { renderHistoryItem(item, target); }
-          finally { stepEls.value = liveSteps; }
+          finally { stepEls.value = liveSteps; permCards.value = livePerms; }
         },
       });
     });
@@ -362,12 +376,14 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
         // repaint them, unlike a full openConversation.
         const keep = (host.children ? Array.from(host.children) : []).filter((node) =>
           !node.classList?.contains("msg") && !node.classList?.contains("step") &&
+          !node.classList?.contains("perm-card") &&
           node.id !== "msgs-earlier" && !node.classList?.contains("empty-session") &&
           node !== (streamAtRead as LiveStream | null)?.wrap);
         host.replaceChildren(stage, ...keep);
       }
       stepEls.value = stagedSteps;
-      historyContent.value = { fid, messages, steps: stepRows };
+      permCards.value = stagedPerms;
+      historyContent.value = { fid, messages, steps: stepRows, approvals: approvalRows };
       msgCursor.value = earlierCursor;
       msgHasEarlier.value = hasEarlier;
       callLane("paintEarlierControl");

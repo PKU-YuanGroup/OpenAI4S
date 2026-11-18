@@ -119,6 +119,26 @@ function choiceCopy(key: string): string {
   return CHOICE_COPY[LANG === "zh" ? "zh" : "en"][key] || key;
 }
 
+/** Outcomes a stored request can have that the live allow/deny copy cannot say. */
+const OUTCOME_COPY: Record<"en" | "zh", Record<string, string>> = {
+  en: {
+    timed_out: "Timed out · not run",
+    cancelled: "Cancelled with the turn · not run",
+    failed: "Could not be recorded · not run",
+    reason: "Reason: {0}",
+  },
+  zh: {
+    timed_out: "已超时 · 未执行",
+    cancelled: "已随任务取消 · 未执行",
+    failed: "未能记录 · 未执行",
+    reason: "原因：{0}",
+  },
+};
+
+function outcomeCopy(key: string, arg = ""): string {
+  return (OUTCOME_COPY[LANG === "zh" ? "zh" : "en"][key] || key).replace("{0}", arg);
+}
+
 function statusLine(card: HTMLElement): HTMLElement {
   let st = card.querySelector(".perm-status") as HTMLElement | null;
   if (!st) {
@@ -160,7 +180,11 @@ export function markPermCard(
   const st = statusLine(h.card);
   const res = rec(resolution);
   const afterRestart = res.resolution_context === "after_restart";
-  st.textContent = afterRestart
+  const outcome = !allowed && typeof res.state === "string" &&
+    ["timed_out", "cancelled", "failed"].includes(res.state) ? res.state : "";
+  st.textContent = outcome
+    ? outcomeCopy(outcome)
+    : afterRestart
     ? allowed
       ? t("perm.status.afterRestartAllowed")
       : t("perm.status.afterRestartDenied")
@@ -169,6 +193,12 @@ export function markPermCard(
         ? t("perm.status.allowedScope", permScopeCn(scope))
         : t("perm.status.allowed")
       : t("perm.status.denied");
+  // A denial's reason is part of the decision: every tab, and a reload, shows
+  // the one the deciding user typed (it used to survive only in that tab's
+  // input box).
+  const reason = !allowed && !outcome && typeof res.message === "string" ? res.message.trim() : "";
+  h.card.querySelector(".perm-reason")?.remove();
+  if (reason) st.after(el("div", "perm-reason", outcomeCopy("reason", reason)));
   const oldContinue = h.card.querySelector(".perm-continue");
   if (oldContinue) oldContinue.remove();
   if (allowed && res.requires_continue === true) {
@@ -206,7 +236,46 @@ export function renderPermissionCard(m: PermEvent): void {
     host = document.getElementById("messages");
   }
   if (!host) return;
+  const handle = buildPermissionCard(m);
+  host.appendChild(handle.card);
+  reg[id] = handle;
+  down();
+}
+
+/** A durable approval request as `GET /frames/{fid}/approvals` returns it. */
+export type StoredApproval = PermEvent & {
+  state?: string | null;
+  message?: string | null;
+  created_at?: string | null;
+  resolution_context?: string | null;
+};
+
+/**
+ * One stored decision, where history places it. A reload used to drop every
+ * card -- the live events were their only source -- so a transcript kept no
+ * trace of what was allowed or denied, and each tab showed only the cards it
+ * had been open for. A pending one stays answerable.
+ */
+export function renderStoredPermission(
+  stored: StoredApproval,
+  target?: ParentNode | null,
+): HTMLElement | null {
+  const id = String(stored.decision_id || "");
+  if (!id) return null;
+  const handle = buildPermissionCard(stored);
+  handle.card.dataset.ts = String(new Date(String(stored.created_at || "")).getTime() || 0);
+  registry()[id] = handle;
+  const state = String(stored.state || "pending");
+  if (state !== "pending") markPermCard(id, state === "allowed", stored.scope || null, stored);
+  const host = target || (typeof document !== "undefined" ? document.getElementById("messages") : null);
+  host?.appendChild(handle.card);
+  return handle.card;
+}
+
+function buildPermissionCard(m: PermEvent): PermHandle {
+  const id = String(m.decision_id || "");
   const card = el("div", "perm-card");
+  card.dataset.decisionId = id;
   const head = el("div", "perm-head");
   head.appendChild(iconEl("lock", 15, "perm-ic"));
   const fallback = m.tool === SEARCH_FALLBACK;
@@ -339,17 +408,15 @@ export function renderPermissionCard(m: PermEvent): void {
       hint(t("toast.submitFailed", apiErrorText(e)), true);
       return;
     }
-    markPermCard(id, ok, scope, resolution);
+    // The reason box hides with the buttons; the card keeps what was typed.
+    markPermCard(id, ok, scope, ok ? resolution : { ...rec(resolution), message: body.message });
   };
   allow.onclick = () => void submit(true);
   deny.onclick = () => void submit(false);
   btns.appendChild(allow);
   btns.appendChild(deny);
   card.appendChild(btns);
-
-  host.appendChild(card);
-  reg[id] = { card, allow, deny, resolved: false };
-  down();
+  return { card, allow, deny, resolved: false };
 }
 
 export function resolvePermissionCard(m: PermEvent): void {

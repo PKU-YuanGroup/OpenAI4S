@@ -524,6 +524,7 @@ streams，验证真实 RPC worker 重启后原结果恢复且不重放 action。
 | [`test_contract_inventory.py`](test_contract_inventory.py) | 每个对外 route 与 event 都被契约清单覆盖。 |
 | [`test_frame_pagination.py`](test_frame_pagination.py) | 会话列表的 keyset 分页。 |
 | [`test_ws_resume_cursor.py`](test_ws_resume_cursor.py) | 单调事件序号，以及重连客户端可用的 resume cursor。 |
+| [`test_realtime_sync.py`](test_realtime_sync.py) | 同一会话的每个标签页以及刷新后的版本收敛到同一份转录：回合广播其已存储的用户消息（在 `text_reset` 之前，带 202 的 `request_id` 与该行的 `message_id`），重放窗口跨过 `text_reset` 仍保留它，`GET /frames/{fid}/approvals` 返回每个审批决定及其状态与拒绝原因。 |
 | [`browser_admission_fault.mjs`](browser_admission_fault.mjs) | 只有浏览器能证明的那条：页面丢掉了自己的应答之后还能自恰。POST 真的打到 daemon 并成功，只有返回的响应被销毁，所以这一轮是真的被接受了。刷新之后，页面必须凭它在**发出请求之前**就存好的 id 去和服务端对账——既不能重发这一轮，也不能把正在运行的那一轮已经带走的批注重新标成待发送。 |
 | [`browser_matrix.mjs`](browser_matrix.mjs) | 工作台在三个引擎里被真实驱动，而不只是那个友好的。一个在 Chromium 正常、在 WebKit 悄悄失败的渲染器，对用它的那一半用户来说就是坏的产品，而只有真实引擎能说清是哪一半。 |
 | [`test_benchmark_workflows.py`](test_benchmark_workflows.py) | 带版本的工作流基准真的会跑：[`../workflows/`](../workflows/README_zh.md) 里每份清单都能加载、每个 step 名都能解析，声明结果与观察结果双向比对——期望 `failure` 的用例在跑出干净成功时判失败。它还用版本加规范化 digest 冻结 Stage 0 验收 manifest，在执行前拒绝调用方删减 probe 或弱化嵌套期望的 pack，检查精确的 claim／execution／断言结构，证明失败的 Cell／Reviewer／duplicate 尝试仍留在分母中，让观测到的 Reviewer workspace 写入打红冻结 contract，将离线 contract 指标与零样本为 `null` 的 live observation 从结构上分开，遵守 production 全局 network deny，并验证真实 loopback Ketcher 探针不会从 CLI 流泄漏临时凭据。 |
