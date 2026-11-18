@@ -706,6 +706,23 @@ def test_modules_written_to_the_working_directory_are_importable(tmp_path):
         assert "ModuleNotFoundError" in leaked["error"]
 
 
+def test_a_worker_that_exits_mid_cell_reports_its_status_and_output():
+    """RUN-5: the exit status and the already-streamed stdout survive a crash."""
+    from openai4s.kernel.errors import KernelWorkerExited
+
+    chunks: list[str] = []
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        with pytest.raises(KernelWorkerExited) as caught:
+            k.execute(
+                "import os\nprint('before', flush=True)\nos._exit(3)",
+                on_chunk=chunks.append,
+            )
+    assert "kernel worker exited unexpectedly" in str(caught.value)
+    assert caught.value.exit_code == 3
+    assert caught.value.partial_stdout == "before\n"
+    assert "".join(chunks) == "before\n"
+
+
 def test_error_lineno():
     with Kernel(dispatcher=_echo_dispatcher) as k:
         r = k.execute("a = 1\nb = 2\nraise ValueError('boom')")

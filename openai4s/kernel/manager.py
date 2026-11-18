@@ -21,7 +21,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from openai4s.kernel.environment import build_kernel_environment
-from openai4s.kernel.errors import KernelBusyError, KernelInterruptUnavailable
+from openai4s.kernel.errors import (
+    KernelBusyError,
+    KernelInterruptUnavailable,
+    KernelWorkerExited,
+)
 from openai4s.kernel.font_cache import seed_kernel_font_cache
 from openai4s.kernel.sink_drain import CAP_BYTES as _SINK_CAP
 from openai4s.kernel.sink_drain import SinkCapture, SinkDirectory
@@ -608,7 +612,11 @@ class Kernel:
                                 f"{tail.seen_bytes} bytes kept, "
                                 f"{tail.dropped_bytes} dropped)"
                             )
-                        raise RuntimeError(f"kernel worker exited unexpectedly: {err}")
+                        raise KernelWorkerExited(
+                            f"kernel worker exited unexpectedly: {err}",
+                            exit_code=self._exit_code_after_eof(),
+                            partial_stdout="".join(stdout_chunks),
+                        )
                     ftype = frame.get("type")
                     if ftype == "response":
                         if capture is not None and frame.get("sink_capture"):
@@ -1119,6 +1127,22 @@ class Kernel:
 
     def is_alive(self) -> bool:
         return self._transport.alive()
+
+    def _exit_code_after_eof(self) -> int | None:
+        """The local worker's exit status once its stdout closed, if known.
+
+        Bounded: EOF normally means the process is exiting, but one that closed
+        stdout and kept running must not hold up the cell's failure. A remote
+        worker has no local process, so its status is unknown.
+        """
+        process = getattr(self._transport, "process", None)
+        if process is None or not callable(getattr(process, "wait", None)):
+            return None
+        try:
+            code = process.wait(timeout=1.0)
+        except Exception:  # noqa: BLE001 - still running, or not ours to reap
+            return None
+        return code if isinstance(code, int) else None
 
     def shutdown(self) -> None:
         try:

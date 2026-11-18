@@ -1165,6 +1165,68 @@ def test_a_dead_worker_does_not_publish_its_stderr():
     assert "kernel_execution_failed" in published
 
 
+def test_a_crashed_kernel_keeps_the_cells_output_and_says_what_happened(tmp_path):
+    """RUN-5: an OOM kill erased the output already shown and said only
+    "the kernel did not finish this cell"."""
+    from openai4s.kernel.errors import KernelWorkerExited
+
+    harness = Harness()
+
+    def run(session, request, cell_id, on_chunk, lease):
+        del session, request, cell_id, lease
+        harness.order.append("run")
+        on_chunk("allocated 512 MB\n")
+        raise KernelWorkerExited(
+            "kernel worker exited unexpectedly: /Users/alice/private/x.py",
+            exit_code=-9,
+        )
+
+    service = CellExecutionService(
+        replace(harness.ports(), run=run), id_factory=lambda: "cell-oom"
+    )
+    events = []
+    with pytest.raises(RuntimeError, match="worker exited unexpectedly"):
+        service.execute(
+            _session(tmp_path),
+            CellRequest("x = bytearray(10**12)", "user"),
+            events.append,
+        )
+
+    finished = [e for e in events if e["type"] == "notebook_cell_finished"][-1]
+    assert finished["stdout"] == "allocated 512 MB\n"
+    error = finished["error"]
+    assert error.startswith("the kernel process exited before this cell finished")
+    assert "exit code -9" in error and "out of memory" in error
+    assert "the next cell starts a fresh kernel" in error
+    assert "/Users/alice" not in error
+    assert harness.records[0]["result"]["stdout"] == "allocated 512 MB\n"
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "expected"),
+    [
+        (137, "exit code 137: killed with SIGKILL"),
+        (1, "(exit code 1)"),
+        (-11, "killed by signal 11 (SIGSEGV)"),
+        (None, "exit status unknown"),
+    ],
+)
+def test_a_kernel_exit_names_its_status(exit_code, expected):
+    from openai4s.kernel.errors import KernelWorkerExited
+    from openai4s.server.cell_run import _worker_failure_text
+    from openai4s.server.errors import public_exception
+
+    exc = KernelWorkerExited(
+        "kernel worker exited unexpectedly: x", exit_code=exit_code
+    )
+    public, _status = public_exception(
+        exc, surface="cell:worker", error_code="kernel_execution_failed"
+    )
+    published = _worker_failure_text(exc, public)
+    assert expected in published
+    assert "kernel_execution_failed" in published
+
+
 def test_a_timeout_still_says_the_kernel_was_reset():
     """The refusal must not cost the user the actionable half."""
     from openai4s.server.cell_run import _worker_failure_text

@@ -24,7 +24,8 @@ import { actionTimeline, branchState } from "../../stores/timeline";
 import { resetStoreFields } from "../../stores/signal-field";
 import { notebookDisplayEntries } from "./cells";
 import { forkPending, invalidateKernelCache, kernelView } from "./kernel";
-import { CellActions, CellList, CellOutput, KernelChips, NotebookDock, StatusStrip } from "./Notebook";
+import { CellActions, CellList, CellOutput, KernelChips, NotebookDock, StatusStrip, kernelExitText } from "./Notebook";
+import { nbT } from "./copy";
 
 type VNode = {
   type?: unknown;
@@ -238,5 +239,40 @@ describe("Notebook reading gate", () => {
     } finally {
       dispose();
     }
+  });
+});
+
+describe("Notebook after a kernel crash", () => {
+  it("explains a dead kernel in the reader's language, with its exit status", () => {
+    const oom =
+      "the kernel process exited before this cell finished (exit code -9: killed with " +
+      "SIGKILL, which usually means it ran out of memory); variables from earlier cells " +
+      "are lost and the next cell starts a fresh kernel (kernel_execution_failed req-1)";
+    expect(kernelExitText(oom)).toBe(nbT("nb.crash.notice", nbT("nb.crash.oom", "-9")));
+    const segv = oom.replace(/\(exit code -9[^)]*\)/, "(killed by signal 11 (SIGSEGV))");
+    expect(kernelExitText(segv)).toBe(nbT("nb.crash.notice", nbT("nb.crash.signal", "11 (SIGSEGV)")));
+    expect(kernelExitText("NameError: name 'x' is not defined")).toBeNull();
+  });
+
+  it("marks where a new kernel generation starts, per language", () => {
+    const cell = (id: string, generation: string, language = "python") => ({
+      producing_cell_id: id,
+      cell_index: id,
+      generation_id: generation,
+      language,
+      status: "ok",
+    });
+    const tree = CellList({
+      entries: [
+        cell("a", "gen-1"),
+        cell("r1", "r-gen-1", "r"),
+        cell("b", "gen-1"),
+        cell("c", "gen-2"),
+        cell("r2", "r-gen-1", "r"),
+      ],
+    });
+    const keys = listed(tree).map((node) => String(node.key));
+    expect(keys).toEqual(["a", "r1", "b", "gen:c", "c", "r2"]);
+    expect(textOf(listed(tree)[3])).toBe(nbT("nb.generation.divider"));
   });
 });

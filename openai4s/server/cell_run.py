@@ -7,6 +7,7 @@ transaction is only an observation; it never decides that an agent task is done.
 
 from __future__ import annotations
 
+import signal
 import threading
 import time
 import uuid
@@ -29,6 +30,7 @@ from openai4s.execution.watchdog import (
     KernelResetUnavailableTimeout,
 )
 from openai4s.kernel import KernelLease, KernelSupervisor
+from openai4s.kernel.errors import KernelWorkerExited
 from openai4s.server.artifacts import ArtifactOperationError, artifact_receipt_map
 
 NOTEBOOK_DIVIDER = "----- output -----"
@@ -130,6 +132,9 @@ class _LiveCellStream:
         self._batcher = _LiveOutputBatcher(deliver)
         self._streamed_chars = 0
         self._truncated = False
+        #: What was shown live, bounded like the stream itself, so a cell
+        #: whose kernel dies keeps it (see the worker-failure path).
+        self._shown: list[str] = []
 
     def __call__(self, text: str) -> None:
         if self._truncated:
@@ -141,10 +146,14 @@ class _LiveCellStream:
             self._truncated = True
         self._streamed_chars += min(len(str(text or "")), remaining)
         if value:
+            self._shown.append(value)
             self._batcher.push(value)
 
     def close(self) -> None:
         self._batcher.close()
+
+    def streamed_text(self) -> str:
+        return "".join(self._shown)
 
 
 def _runtime_files_read(result: dict[str, Any]) -> list[str]:
@@ -291,6 +300,36 @@ class CellExecutionPorts:
 #: the actionable half of what the watchdog knows -- that the kernel was reset,
 #: so earlier variables are gone -- without quoting it.
 KERNEL_FAILURE_MESSAGE = "the kernel did not finish this cell"
+#: The worker process itself ended mid-cell. Worded once here because the
+#: Notebook recognises it to show the same explanation in the reader's language.
+KERNEL_EXITED_MESSAGE = (
+    "the kernel process exited before this cell finished ({detail}); variables "
+    "from earlier cells are lost and the next cell starts a fresh kernel"
+)
+
+
+def _kernel_exit_detail(exit_code: int | None) -> str:
+    """Say what an exit status means, without quoting anything the worker wrote.
+
+    `-9` is Popen's spelling of SIGKILL and `137` a wrapper's (128 + 9); on a
+    workstation that is almost always the out-of-memory killer.
+    """
+    if exit_code is None:
+        return "exit status unknown"
+    if exit_code in (-9, 137):
+        return (
+            f"exit code {exit_code}: killed with SIGKILL, which usually means it "
+            "ran out of memory"
+        )
+    if exit_code < 0:
+        try:
+            name = signal.Signals(-exit_code).name
+        except ValueError:
+            name = ""
+        return f"killed by signal {-exit_code}" + (f" ({name})" if name else "")
+    return f"exit code {exit_code}"
+
+
 CELL_TIMEOUT_MESSAGE = (
     "the cell exceeded its time limit and was stopped; the kernel was reset, so "
     "variables from earlier cells were cleared"
@@ -357,6 +396,8 @@ def _worker_failure_text(exc: BaseException, public: dict) -> str:
         base = CELL_TIMEOUT_RESET_UNAVAILABLE_MESSAGE
     elif isinstance(exc, TimeoutError):
         base = CELL_TIMEOUT_MESSAGE
+    elif isinstance(exc, KernelWorkerExited):
+        base = KERNEL_EXITED_MESSAGE.format(detail=_kernel_exit_detail(exc.exit_code))
     else:
         base = KERNEL_FAILURE_MESSAGE
     code = str(public.get("code") or "")
@@ -670,6 +711,15 @@ class CellExecutionService:
                 exc, surface="cell:worker", error_code=code
             )
             failed_result = _error_result(cell_id, _worker_failure_text(exc, public))
+            # What the cell printed before the kernel died. The live view
+            # showed it, and the terminal record used to replace it with an
+            # empty stdout -- so a crash erased the very output that says how
+            # far the cell got.
+            partial = getattr(exc, "partial_stdout", "") or (
+                on_chunk.streamed_text() if on_chunk is not None else ""
+            )
+            if partial:
+                failed_result["stdout"] = partial
             try:
                 # A worker/protocol failure is still an immutable Cell
                 # transaction.  Persist its source and terminal observation so

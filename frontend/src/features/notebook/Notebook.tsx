@@ -68,6 +68,8 @@ import { filesT } from "../artifacts/copy";
 import { applyArtifactDeepLink } from "../artifacts/ui";
 import { iconSvg } from "../icons/paths";
 import type { KernelEnvRow, KernelStatus, NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
+import { nbT } from "./copy";
+import "./notebook.css";
 
 function notebookCellState(cell: NotebookCell): {
   key: string;
@@ -161,6 +163,36 @@ function CodeBlock(opts: {
       </pre>
     </div>
   );
+}
+
+const KERNEL_EXITED = "the kernel process exited before this cell finished (";
+
+/**
+ * The reader-language explanation of a cell whose kernel process died. The
+ * server's sentence (cell_run `KERNEL_EXITED_MESSAGE`) is English and stays in
+ * the record; this says the same thing, with the exit status read from it.
+ */
+export function kernelExitText(error: string): string | null {
+  const at = String(error || "").indexOf(KERNEL_EXITED);
+  if (at < 0) return null;
+  const detail = String(error).slice(at + KERNEL_EXITED.length);
+  let m: RegExpExecArray | null;
+  let what: string;
+  if ((m = /^exit code (-?\d+): killed with SIGKILL/.exec(detail))) what = nbT("nb.crash.oom", m[1]);
+  else if ((m = /^killed by signal (\d+)(?: \((\w+)\))?/.exec(detail)))
+    what = nbT("nb.crash.signal", m[2] ? `${m[1]} (${m[2]})` : m[1]);
+  else if ((m = /^exit code (-?\d+)/.exec(detail))) what = nbT("nb.crash.exitCode", m[1]);
+  else what = nbT("nb.crash.unknown");
+  return nbT("nb.crash.notice", what);
+}
+
+function KernelExitNotice({ error }: { error: string }) {
+  const text = kernelExitText(error);
+  return text ? (
+    <div class="nbc-kernel-exit" role="alert">
+      {text}
+    </div>
+  ) : null;
 }
 
 function ErrorBlock({ raw }: { raw: string }) {
@@ -362,6 +394,7 @@ function CellView({ cell }: { cell: NotebookCell }) {
       <CellCode cell={cell} live={live} />
       <CellStream cell={cell} stream="stdout" live={live} />
       <CellStream cell={cell} stream="stderr" live={live} />
+      {cell.error ? <KernelExitNotice error={cell.error} /> : null}
       {cell.error ? <ErrorBlock raw={cell.error} /> : null}
       <CellFiguresSlot cell={cell} live={live} />
       {csvs.map((f) => (
@@ -392,6 +425,19 @@ function TableMount({ fname, cell }: { fname: string; cell: NotebookCell }) {
 
 const MemoCellView = memo(CellView);
 
+function GenerationDivider() {
+  return (
+    <div class="nb-generation-divider" role="note">
+      <span>{nbT("nb.generation.divider")}</span>
+    </div>
+  );
+}
+
+/** The kernel slot a cell ran in: R cells share one, every Python env the other. */
+function cellSlot(cell: NotebookCell): string {
+  return /^r\b/i.test(String(cell.language || cell.kernel_id || "python")) ? "r" : "python";
+}
+
 /** Paints the entries it is handed (the reading gate's list), never the cell stores. */
 export function CellList({ entries }: { entries: NotebookCell[] }) {
   const filter = kernelFilter.value;
@@ -399,13 +445,23 @@ export function CellList({ entries }: { entries: NotebookCell[] }) {
     ? entries.filter((e) => (e.kernel_id || "python") === filter)
     : entries;
   if (!shown.length) return <div class="dock-empty">{t("nb.empty")}</div>;
-  return (
-    <>
-      {shown.map((cell) => (
-        <MemoCellView key={nbCellKey(cell)} cell={cell} />
-      ))}
-    </>
-  );
+  // A cell that ran in a different kernel generation from the previous cell
+  // of its language starts a fresh namespace: after a crash, a restart or an
+  // environment switch. The NameError that follows used to be the only sign.
+  const generations: Record<string, string> = {};
+  const items: ComponentChildren[] = [];
+  for (const cell of shown) {
+    const key = nbCellKey(cell);
+    const slot = cellSlot(cell);
+    const generation = publicText(cell.generation_id, 96);
+    const previous = generations[slot];
+    if (generation) {
+      if (previous && previous !== generation) items.push(<GenerationDivider key={"gen:" + key} />);
+      generations[slot] = generation;
+    }
+    items.push(<MemoCellView key={key} cell={cell} />);
+  }
+  return <>{items}</>;
 }
 
 function toggleExecutedCodeLocal(): void {
