@@ -91,9 +91,18 @@ function rec(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function openArt(meta: { artifact_id?: unknown; filename?: unknown; content_type?: unknown; size_bytes?: unknown }): void {
+function openArt(meta: {
+  artifact_id?: unknown;
+  version_id?: unknown;
+  filename?: unknown;
+  content_type?: unknown;
+  size_bytes?: unknown;
+}): void {
   if (!meta || !meta.artifact_id) return;
   dockOpen();
+  // ART-4: a step card shows the version that step produced; opening it must
+  // show that version too, not whatever a later cell overwrote it with.
+  const version = typeof meta.version_id === "string" && meta.version_id ? meta.version_id : "";
   // openViewer may resolve a version first; a failure there belongs to this
   // click, not to an unhandled rejection.
   void Promise.resolve(
@@ -103,6 +112,7 @@ function openArt(meta: { artifact_id?: unknown; filename?: unknown; content_type
       filename: meta.filename != null ? String(meta.filename) : undefined,
       content_type: meta.content_type != null ? String(meta.content_type) : undefined,
       size_bytes: typeof meta.size_bytes === "number" ? meta.size_bytes : undefined,
+      ...(version ? { version_id: version, _exactVersion: true } : {}),
     } as ArtifactRow),
   ).catch((error: unknown) => hint(t("toast.failed", apiErrorText(error)), true));
 }
@@ -637,7 +647,13 @@ export function stepBody(step: Step): HTMLElement {
         const fig = el("figure", "s-fig");
         fig.title = t("step.artifact.openArtifact");
         const im = el("img") as HTMLImageElement;
-        im.src = artUrl({ id: String(a.artifact_id) } as ArtifactRow);
+        // ART-4: the head URL plus a cache-buster served the LATEST bytes, so
+        // an old card silently changed once the figure was redrawn.
+        im.src = artUrl(
+          (typeof a.version_id === "string" && a.version_id
+            ? { id: String(a.artifact_id), version_id: a.version_id, _exactVersion: true }
+            : { id: String(a.artifact_id) }) as ArtifactRow,
+        );
         im.alt = String(a.filename || t("step.fig.altFallback"));
         im.loading = "lazy";
         fig.appendChild(im);

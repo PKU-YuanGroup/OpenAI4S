@@ -268,6 +268,25 @@ describe("artifact step card", () => {
     expect(viewer.open).toHaveBeenCalledWith(expect.objectContaining({ id: "a-1", filename: "fig.png" }));
     expect(hintBox.textContent).toContain(t("toast.failed", "version lookup failed"));
   });
+
+  it("shows and opens the version this step produced, not the latest (ART-4)", async () => {
+    viewer.open.mockReturnValue(Promise.resolve());
+    const handle = buildStepCard({
+      step_id: "s-2",
+      kind: "artifact",
+      status: "done",
+      output: { artifacts: [{ filename: "volcano.png", artifact_id: "a-9", version_id: "v-old" }] },
+    });
+    const card = open(handle);
+    const img = card.querySelector("img") as unknown as { src?: string } | null;
+    expect(String(img?.src || "")).toContain("/artifacts/versions/v-old");
+    const name = card.querySelector(".s-fn.clk")!;
+    name.onclick!();
+    await settle();
+    expect(viewer.open).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "a-9", version_id: "v-old", _exactVersion: true }),
+    );
+  });
 });
 
 describe("a loaded Skill's network limit", () => {
