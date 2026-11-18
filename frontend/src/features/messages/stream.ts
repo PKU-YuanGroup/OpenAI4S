@@ -32,6 +32,7 @@ import { markCardRunning } from "./cardState";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { down } from "./scroll";
 import { appendLiveStoppedMarker, cancelledIdentity } from "./stopped";
+import { embedArtifactFigures } from "./figures";
 
 export const TOOL_LABELS: Record<string, string> = {
   run_python: "toolLabel.runPython",
@@ -122,6 +123,7 @@ export function flushRender(st: LiveStream | null, finalRender?: boolean): void 
   st._lastFlush = performance.now();
   if (finalRender) {
     st.md.innerHTML = renderMd(text);
+    embedArtifactFigures(st.md);
     resetMdState(st);
     return;
   }

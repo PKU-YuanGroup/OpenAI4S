@@ -35,6 +35,7 @@ import { iconEl } from "../sessions/icon";
 import { historyT } from "./copy";
 import { el, messagesHost } from "./dom";
 import { failureMeta } from "./failure";
+import { embedArtifactFigures } from "./figures";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { planModeRequestText, planSeed, planSeedMarker } from "./planPrompt";
@@ -377,6 +378,7 @@ export function renderStored(
   } else {
     const md = el("div", "md");
     md.innerHTML = renderMd(text);
+    embedArtifactFigures(md);
     w.appendChild(md);
     if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
     const review = m.review_status || (m.metadata && m.metadata.review_status);

@@ -158,3 +158,6 @@
     min-height: 40px;
   }
 }
+
+/* ART-8: a finished answer's key figures, under their links. */
+.md img.msg-fig{display:block;max-width:min(100%,520px);max-height:360px;margin:8px 0 4px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-000)}
