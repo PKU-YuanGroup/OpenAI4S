@@ -7,7 +7,13 @@
   display: contents;
 }
 
+/* Sits in the transcript's own column (`.msg` is `max-width: var(--col)`,
+   centred), not flush against the conversation pane's left edge. */
 .history-load-status {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: calc(var(--col) + 32px);
+  margin: 0 auto;
   padding: 12px 16px;
   overflow-wrap: anywhere;
   flex-shrink: 0;

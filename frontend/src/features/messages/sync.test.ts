@@ -11,15 +11,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLang } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
-import { permCards } from "../../stores/stream";
+import { _replayGap, _seqSeen, _streamEpoch, permCards, stream } from "../../stores/stream";
 import { installSend } from "../send";
 import { resetSendHandlers } from "../send/handlers";
 import { newRequestId } from "../send/send";
 import { renderStoredPermission } from "../send/permission";
+import { handleIncomingMessage } from "../ws/connect";
 import { registerBuiltinHandlers } from "../ws/handlers";
 import { onEvent, resetWsHandlers } from "../ws/registry";
 import { registerMessageHandlers } from "./handlers";
 import { interleaveHistory, renderStored } from "./list";
+import type { LiveStream } from "./stream";
 
 // --------------------------------------------------------------------------
 // Just enough DOM for the transcript (Vitest runs in node, with no jsdom).
@@ -101,7 +103,7 @@ class FakeEl {
       return on;
     },
   };
-  constructor(public tagName: string, private root: { body: FakeEl } | null = null) {
+  constructor(public tagName: string) {
     this.tagName = tagName.toUpperCase();
   }
   get className(): string {
@@ -466,5 +468,92 @@ describe("approval decisions are history", () => {
     // The registry knows the history cards, so a later live event resolves one.
     onEvent({ type: "permission_resolved", root_frame_id: "f-1", decision_id: "perm-open", allow: true, scope: "once" });
     expect(open?.classList.contains("allowed")).toBe(true);
+  });
+});
+
+// --------------------------------------------------------------------------
+// SYNC-2: a reconnect resumes; it does not re-append
+// --------------------------------------------------------------------------
+
+function wire(event: Record<string, unknown>): void {
+  handleIncomingMessage(JSON.stringify({ root_frame_id: "f-1", frame_id: "f-1", ...event }));
+}
+
+function narration(): string {
+  return (stream.value as LiveStream | null)?.full || "";
+}
+
+function json(body: unknown, status = 200): Response {
+  return { ok: status < 400, status, text: async () => JSON.stringify(body) } as Response;
+}
+
+describe("a reconnect after a gap", () => {
+  it("keeps its cursor, so a replay of what is on screen is dropped", () => {
+    _streamEpoch.value = "epoch-1";
+    wire({ type: "text_reset", seq: 7 });
+    wire({ type: "text_chunk", block_type: "text", chunk: "Reading the plate. ", seq: 8 });
+    wire({ type: "text_chunk", block_type: "text", chunk: "Fitting. ", seq: 9 });
+    expect(_seqSeen.value["f-1"]).toBe(9);
+
+    // The first reconnect is declared a gap with nothing to replay: an
+    // approval decided meanwhile (seq 10) was never buffered.
+    wire({ type: "replay_begin", from_seq: 9, to_seq: 9, epoch: "epoch-1", gap: true });
+    wire({ type: "replay_end", to_seq: 9 });
+    expect(_replayGap.value).toBe("f-1");
+    // Still the dedupe line: everything up to it is on screen.
+    expect(_seqSeen.value["f-1"]).toBe(9);
+
+    // A cursor reset to 0 made the next reconnect ask for the whole buffer,
+    // and the server re-sent the turn from its text_reset. On screen once.
+    wire({ type: "replay_begin", from_seq: 7, to_seq: 11, epoch: "epoch-1", gap: false });
+    wire({ type: "text_reset", seq: 7 });
+    wire({ type: "text_chunk", block_type: "text", chunk: "Reading the plate. ", seq: 8 });
+    wire({ type: "text_chunk", block_type: "text", chunk: "Fitting. ", seq: 9 });
+    wire({ type: "text_chunk", block_type: "text", chunk: "Plotting. ", seq: 11 });
+    wire({ type: "replay_end", to_seq: 11 });
+    expect(narration()).toBe("Reading the plate. Fitting. Plotting. ");
+    expect(messages().querySelectorAll(":scope > .msg.assistant")).toHaveLength(1);
+  });
+
+  it("drops every cursor when the daemon restarted (a new epoch)", () => {
+    _streamEpoch.value = "epoch-1";
+    wire({ type: "text_chunk", block_type: "text", chunk: "old", seq: 40 });
+    wire({ type: "replay_begin", from_seq: 40, to_seq: 40, epoch: "epoch-2", gap: true });
+    wire({ type: "replay_end", to_seq: 40 });
+    wire({ type: "text_chunk", block_type: "text", chunk: " new", seq: 1 });
+    expect(narration()).toBe("old new");
+  });
+
+  it("settles an approval decided in another tab while this one was away", async () => {
+    permCards.value = Object.create(null);
+    renderStoredPermission({ decision_id: "perm-1", frame_id: "f-1", tool: "bash", title: "Run", state: "pending" });
+    const fetcher = vi.fn(async (input: unknown) =>
+      String(input).endsWith("/frames/f-1/approvals")
+        ? json({ approvals: [{ decision_id: "perm-1", state: "allowed", scope: "once" }] })
+        : json({}, 404),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    wire({ type: "replay_begin", from_seq: 0, to_seq: 0, epoch: "epoch-1", gap: false });
+    wire({ type: "replay_end", to_seq: 0 });
+    const card = messages().querySelector(".perm-card") as HTMLElement;
+    await vi.waitFor(() => expect(card.classList.contains("allowed")).toBe(true));
+    expect(card.querySelector(".perm-status")?.textContent).toBe("Allowed");
+  });
+
+  it("an Allow on a card decided elsewhere shows that decision instead of an error", async () => {
+    permCards.value = Object.create(null);
+    renderStoredPermission({ decision_id: "perm-2", frame_id: "f-1", tool: "bash", title: "Run", state: "pending" });
+    const card = messages().querySelector(".perm-card") as HTMLElement;
+    vi.stubGlobal("fetch", vi.fn(async (input: unknown) => {
+      const path = String(input);
+      if (path.endsWith("/decision")) {
+        return json({ ok: false, error: "decision is already denied", code: "decision_already_resolved" }, 409);
+      }
+      return json({ approvals: [{ decision_id: "perm-2", state: "denied", scope: "once", message: "use the copy" }] });
+    }));
+    (card.querySelector(".perm-allow") as unknown as { onclick: () => void }).onclick();
+    await vi.waitFor(() => expect(card.classList.contains("denied")).toBe(true));
+    expect(card.querySelector(".perm-reason")?.textContent).toBe("Reason: use the copy");
+    expect(document.getElementById("composer-hint")?.textContent).toContain("already decided elsewhere");
   });
 });

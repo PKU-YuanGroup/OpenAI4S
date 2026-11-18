@@ -64,7 +64,9 @@ describe("WS protocol handlers", () => {
     expect(_seqSeen.value.f).toBe(9);
   });
 
-  it("replay_begin gap on the open session zeros that cursor and flags reload", () => {
+  it("replay_begin gap on the open session keeps that cursor and flags reload", () => {
+    // The transcript up to the cursor stays on screen, so the cursor stays
+    // the dedupe line; zeroing it made the next reconnect re-append the turn.
     currentId.value = "f";
     _streamEpoch.value = "epoch-a";
     _seqSeen.value.f = 9;
@@ -74,7 +76,7 @@ describe("WS protocol handlers", () => {
       root_frame_id: "f",
       gap: true,
     });
-    expect(_seqSeen.value.f).toBe(0);
+    expect(_seqSeen.value.f).toBe(9);
     expect(_replayGap.value).toBe("f");
   });
 

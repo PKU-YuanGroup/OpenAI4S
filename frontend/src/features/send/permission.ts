@@ -126,12 +126,14 @@ const OUTCOME_COPY: Record<"en" | "zh", Record<string, string>> = {
     cancelled: "Cancelled with the turn · not run",
     failed: "Could not be recorded · not run",
     reason: "Reason: {0}",
+    decidedElsewhere: "This approval was already decided elsewhere; the card now shows that decision.",
   },
   zh: {
     timed_out: "已超时 · 未执行",
     cancelled: "已随任务取消 · 未执行",
     failed: "未能记录 · 未执行",
     reason: "原因：{0}",
+    decidedElsewhere: "该审批已在别处处理，卡片已更新为该决定。",
   },
 };
 
@@ -402,7 +404,15 @@ function buildPermissionCard(m: PermEvent): PermHandle {
         throw new Error(String(recRes.error || "permission decision was not accepted"));
       }
     } catch (e) {
-      const err = e as { body?: { output_committed?: unknown } } | null;
+      const err = e as { body?: { output_committed?: unknown }; code?: unknown } | null;
+      if (err && (err.code === "decision_already_resolved" || err.code === "decision_expired")) {
+        // Answered in another tab (or timed out) while this card still looked
+        // open: show what was decided rather than offering the buttons again.
+        if (await reconcilePermissionCards(String(m.frame_id || ""), [id])) {
+          hint(outcomeCopy("decidedElsewhere"));
+          return;
+        }
+      }
       const committed = !!(err && err.body && err.body.output_committed);
       if (!committed) allow.disabled = deny.disabled = false;
       hint(t("toast.submitFailed", apiErrorText(e)), true);
@@ -425,4 +435,41 @@ export function resolvePermissionCard(m: PermEvent): void {
   if (!Object.prototype.hasOwnProperty.call(reg, id)) return;
   const h = reg[id];
   if (h && !h.resolved) markPermCard(id, !!m.allow, m.scope || null, m);
+}
+
+/**
+ * Settle the cards this tab still shows as open from the stored decisions.
+ * A decision made while the socket was down arrives neither in the replay
+ * nor in the pending-approval snapshot, so after a reconnect the card kept
+ * its buttons and an Allow answered "decision is already allowed". `only`
+ * limits the check to those cards. True when at least one card settled.
+ */
+export async function reconcilePermissionCards(fid: string, only?: string[]): Promise<boolean> {
+  const open = (): string[] => {
+    const reg = registry();
+    return Object.keys(reg).filter((id) => {
+      const h = reg[id];
+      return !!h && !h.resolved && (!only || only.includes(id));
+    });
+  };
+  if (!fid || !open().length) return false;
+  let rows: unknown;
+  try {
+    rows = await api(`/frames/${encodeURIComponent(fid)}/approvals`);
+  } catch {
+    return false;
+  }
+  const list = rec(rows).approvals;
+  if (!Array.isArray(list)) return false;
+  const pending = new Set(open());
+  let settled = false;
+  for (const raw of list) {
+    const row = rec(raw);
+    const id = String(row.decision_id || "");
+    const state = String(row.state || "");
+    if (!pending.has(id) || !state || state === "pending") continue;
+    markPermCard(id, state === "allowed", typeof row.scope === "string" ? row.scope : null, row);
+    settled = true;
+  }
+  return settled;
 }
