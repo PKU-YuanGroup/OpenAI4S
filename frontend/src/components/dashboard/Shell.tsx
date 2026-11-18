@@ -279,6 +279,9 @@ export function Shell() {
                 </button>
               </div>
               <div class="conv-head-actions">
+                {/* The session's token use so far (send/progress.ts); opens the
+                    usage breakdown. */}
+                <button id="session-usage" class="session-usage hidden" type="button" />
                 <button
                   id="session-menu-btn"
                   class="icon-ghost"
@@ -386,6 +389,8 @@ export function Shell() {
                       />
                     </div>
                     <div class="nb-right">
+                      {/* How long the running turn has been going (send/progress.ts). */}
+                      <span id="turn-clock" class="turn-clock hidden" role="timer" aria-live="off" />
                       {/* Shown beside Send while a turn runs, never in its
                           place: Send stays clickable and queues the draft. */}
                       <button

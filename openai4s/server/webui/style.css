@@ -2712,6 +2712,15 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
    beside it, never in its place: Send stays clickable and queues the draft ---- */
 .nb-right>.nb-model{order:1}
 .nb-right>#cancel-btn,.nb-right>.nb-send{order:2}
+/* the running turn's elapsed time, just before Stop (send/progress.ts) */
+.nb-right>.turn-clock{order:2;flex:none;padding:0 2px;font-size:12.5px;color:var(--text-400);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* the session's token use so far, in the conversation header */
+.session-usage{flex:none;height:28px;padding:0 10px;border:1px solid var(--border);border-radius:999px;background:transparent;color:var(--text-300);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
+.session-usage:hover{background:var(--bg-100);color:var(--text-000)}
+@media (max-width:480px){.session-usage{display:none}}
+/* a running cell's elapsed time on its card (messages/cardState.ts), before the chevron */
+.activity .a-head .chev-t{order:1}
+.activity .a-head .a-time{flex:none;color:var(--text-400);font-size:12px;font-variant-numeric:tabular-nums}
 .nb-send{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;padding:0;border:0;border-radius:999px;background:var(--clay);color:#fff;cursor:pointer}
 .nb-send:active{background:var(--clay-em)}
 .nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--line);color:var(--text-400);cursor:default}

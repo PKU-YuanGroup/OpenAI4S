@@ -65,12 +65,55 @@ export function cardSettled(card: HTMLElement): boolean {
 }
 
 function settle(card: HTMLElement, state: string, icon: string): void {
+  paintElapsed(card);
   card.classList.remove("running");
   card.classList.add(state);
   card.dataset.state = state;
   const glyph = glyphOf(card);
   if (glyph) paintIcon(glyph, icon, 16);
   retitle(card);
+}
+
+/**
+ * A running cell's elapsed time on its card. A long cell with no output used
+ * to show one still glyph for minutes; the time keeps moving while it runs and
+ * stays as the cell's duration once it ends. Shown from two seconds on.
+ */
+function paintElapsed(card: HTMLElement, now: number = Date.now()): void {
+  const started = Number(card.dataset.startedAt || 0);
+  if (!started) return;
+  const head = card.querySelector(".a-head") as HTMLElement | null;
+  if (!head) return;
+  let label = head.querySelector(".a-time") as HTMLElement | null;
+  const ms = Math.max(0, now - started);
+  if (ms < 2000) return;
+  if (!label) {
+    label = document.createElement("span");
+    label.className = "a-time";
+    head.appendChild(label);
+  }
+  label.textContent = formatElapsed(ms);
+}
+
+function formatElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const ss = String(total % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+
+function tickElapsed(): void {
+  const running = liveCards().filter((card) => card.dataset.state === "running");
+  if (!running.length && elapsedTimer) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+    return;
+  }
+  const now = Date.now();
+  running.forEach((card) => paintElapsed(card, now));
 }
 
 /**
@@ -85,6 +128,8 @@ export function markCardRunning(card: HTMLElement, event?: WsMessage | null): vo
   if (event && event.cell_index != null) card.dataset.cellIndex = String(event.cell_index).slice(0, 32);
   const glyph = glyphOf(card);
   if (glyph) paintIcon(glyph, "loader", 16);
+  card.dataset.startedAt = String(Date.now());
+  if (!elapsedTimer && typeof setInterval === "function") elapsedTimer = setInterval(tickElapsed, 1000);
 }
 
 /** Stop glyph, neutral bar, "Stopped · N lines". Idempotent; an outcome wins. */

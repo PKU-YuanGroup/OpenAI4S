@@ -11,7 +11,8 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`failure.ts`](failure.ts) | 实时与重开会话共用的失败提示；流式中断或重复动作停止后提供显式继续入口。 |
 | [`approval.ts`](approval.ts) | 等待批准是独立状态：当前会话里未作答的卡片决定输入框状态行、标签页标题前缀、会话行徽标（其他会话行用服务端的 `awaiting_approval`）和跳转按钮，并在卡片出现、会话打开时停在卡片上、以及从首页「去批准」进入时，把卡片的按钮滚到跳转按钮上方可见处。叶子模块：不引用 `sessions/` 或 `scroll.ts`。功能内文案。 |
 | [`approval.test.ts`](approval.test.ts) | 标题、状态行和会话行徽标随未作答卡片及其答复变化；卡片滚入视野且不被跳转按钮遮住；卡片不在视野时跳转按钮指向它，之后恢复「最新」。 |
-| [`cardState.ts`](cardState.ts) | 实时活动卡片的状态：新的单元卡片显示进度图标（而非成功对勾）并记录 `producing_cell_id`；`notebook_cell_finished`（由 Notebook 的处理器转发）把该卡片标为失败（x 图标、错误色边条、"失败 · N 行"）、成功或已停止；因 Host 调用被拒绝而结束的单元标为中性的「已拒绝」（锁图标，"你拒绝了 · 未执行"），等待批准时被停止的标为已停止；`turnDone` 把仍在运行的卡片收尾为中性的"已结束"。单元结束后，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"，单元自带标题保留。功能内文案。 |
+| [`cardState.ts`](cardState.ts) | 实时活动卡片的状态：新的单元卡片显示进度图标（而非成功对勾）并记录 `producing_cell_id`；`notebook_cell_finished`（由 Notebook 的处理器转发）把该卡片标为失败（x 图标、错误色边条、"失败 · N 行"）、成功或已停止；因 Host 调用被拒绝而结束的单元标为中性的「已拒绝」（锁图标，"你拒绝了 · 未执行"），等待批准时被停止的标为已停止；`turnDone` 把仍在运行的卡片收尾为中性的"已结束"。运行中的卡片显示已运行时间（满两秒起，共用一个 1 秒计时器），结束后保留为该单元的运行时长。单元结束后，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"，单元自带标题保留。功能内文案。 |
+| [`cardState.test.ts`](cardState.test.ts) | 单元结束后卡片保留其运行时长；不到两秒的单元不显示。 |
 | [`copy.ts`](copy.ts) | 当前UI所属的双语历史恢复与“会话不存在”文案；不改自动提取的语言文件。 |
 | [`declined.ts`](declined.ts) | 拒绝不是失败：识别被拒绝的 Host 调用（步骤的 `output.error` "Permission denied: …"，或单元最后抛出的 "bash: / host.X error: Permission denied: …"，从不把系统 `PermissionError` 算进来），区分你拒绝的、规则拒绝的、等待批准时被「停止」取消的和审批超时的，并用界面语言给出状态与原因（功能内文案）。 |
 | [`declined.test.ts`](declined.test.ts) | 步骤与单元的拒绝分类、卡片上填写的原因算作你的拒绝、系统 `PermissionError` 与被捕获后又失败的单元仍算失败、中英文文案。 |
