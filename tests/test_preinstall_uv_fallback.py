@@ -333,3 +333,24 @@ def test_an_install_gets_the_kernels_scrubbed_env_not_the_daemons(monkeypatch):
     assert seen["cwd"] != os.getcwd() and seen["cwd_existed"]
     assert not os.path.exists(seen["cwd"]), "the install workdir was left behind"
     assert seen["stdin"] is subprocess.DEVNULL
+
+
+def test_the_pip_probe_on_a_foreign_interpreter_runs_confined(monkeypatch):
+    """`_target_has_pip` runs the kernel env's interpreter, whose `.pth` files
+    and sitecustomize run first. It goes through the confined probe (scrubbed
+    env, OS boundary) like `freeze_for`, never a bare subprocess with the
+    daemon's environment."""
+    probes: list[list[str]] = []
+
+    def confined(argv, *, timeout, stop=None):
+        probes.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout="pip 25.0", stderr="")
+
+    def bare(*_args, **_kwargs):
+        raise AssertionError("the pip probe ran unconfined")
+
+    monkeypatch.setattr(preinstall, "run_confined_probe", confined)
+    monkeypatch.setattr(preinstall.subprocess, "run", bare)
+
+    assert preinstall._target_has_pip("/envs/lab/bin/python") is True
+    assert probes == [["/envs/lab/bin/python", "-m", "pip", "--version"]]

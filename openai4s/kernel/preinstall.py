@@ -138,15 +138,21 @@ def _has_pip() -> bool:
 
 
 def _target_has_pip(python: str) -> bool:
-    """Whether a *foreign* interpreter can run ``python -m pip``."""
+    """Whether a *foreign* interpreter can run ``python -m pip``.
+
+    This runs that interpreter, so its ``.pth`` files and sitecustomize run
+    too. It is a probe like `freeze_for`'s and is confined the same way
+    (scrubbed child env and the OS boundary), never run with the daemon's
+    environment and the provider keys in it.
+    """
+    from openai4s.security.sandbox import SandboxConfigurationError
+
     try:
-        proc = subprocess.run(
-            [python, "-m", "pip", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError):
+        proc = run_confined_probe([python, "-m", "pip", "--version"], timeout=60)
+    except SandboxConfigurationError:
+        # A mistyped boundary is never a reason to degrade; see `_confined_probe`.
+        raise
+    except Exception:  # noqa: BLE001 - no boundary under enforce, or no pip
         return False
     return proc.returncode == 0
 
