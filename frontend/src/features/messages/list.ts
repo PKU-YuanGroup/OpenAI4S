@@ -56,6 +56,8 @@ export type StoredMessage = {
   message_id?: string;
   fork_checkpoint_id?: string | null;
   artifact_refs?: unknown;
+  /** The pins the message was sent with (SYNC-5). */
+  annotations?: unknown;
   failure?: { request_id?: unknown; code?: unknown; output_committed?: unknown } | null;
   cancelled?: { request_id?: unknown; execution_id?: unknown; reason?: unknown } | null;
   review_status?: unknown;
@@ -365,9 +367,10 @@ export function renderStored(
   (w as HTMLElement & { _messageText?: string })._messageText = text;
   if (m.role === "user") {
     const b = el("div", "bubble");
-    b.textContent = planModeRequestText(text);
+    b.textContent = userBubbleText(planModeRequestText(text));
     w.appendChild(b);
     renderMessageRefChips(w, m.artifact_refs);
+    renderAnnotationChip(w, m.annotations);
     if (canForkFromMessage(m) && typeof m.message_id === "string") {
       w.appendChild(forkMessageControl(m.message_id));
     }
@@ -687,9 +690,40 @@ export function showLiveUserMessage(
       created_at: m.created_at,
       message_id: id || undefined,
       artifact_refs: m.artifact_refs,
+      annotations: m.annotations,
     },
     host,
   );
+}
+
+/**
+ * Rows stored before SYNC-5 carry the product's annotation instructions after
+ * the user's words ("【图像标注反馈】…"); the bubble shows only the user's part.
+ */
+const INJECTED_ANNOTATION_BLOCK = /(?:^|\n\n)【(?:图像|Workbench )标注反馈】[\s\S]*$/;
+
+export function userBubbleText(text: string): string {
+  const own = text.replace(INJECTED_ANNOTATION_BLOCK, "").trim();
+  return own || (INJECTED_ANNOTATION_BLOCK.test(text) ? t("send.imageAnnotationFallback") : text);
+}
+
+/** The pins a stored user message was sent with: the chip the live bubble shows. */
+function renderAnnotationChip(w: HTMLElement, raw: unknown): void {
+  if (!Array.isArray(raw) || !raw.length) return;
+  const box = el("div", "annot-attach");
+  box.appendChild(iconEl("message-square", 13));
+  box.appendChild(el("span", "annot-attach-t", t("annot.attachCount", raw.length)));
+  const list = el("div", "annot-attach-list");
+  for (const item of raw) {
+    const an = (item || {}) as { number?: unknown; artifact_name?: unknown; body?: unknown };
+    const row = el("div", "annot-attach-row");
+    row.appendChild(el("span", "annot-attach-pin", an.number == null ? "" : String(an.number)));
+    row.appendChild(el("span", "annot-attach-file", String(an.artifact_name || "artifact")));
+    row.appendChild(el("span", "annot-attach-body", "· " + String(an.body || "")));
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+  w.appendChild(box);
 }
 
 setMessageForkRefresh(() => {

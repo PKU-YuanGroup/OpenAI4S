@@ -10947,6 +10947,17 @@ class SessionRunner:
                 )
             # resolve @filename references → inject the artifact content (M4)
             resolved, message_refs = self._resolve_mentions(st, user_text)
+            if annos:
+                # The pins the user sent with this message, for the bubble's
+                # attachment chip after a reload (SYNC-5); the instructions
+                # built from them go only into the model's copy below.
+                self.store.update_message_metadata(
+                    stored_user_message["message_id"],
+                    {"annotations": _annotation_summaries(annos)},
+                )
+                block = _format_annotations_block(annos)
+                if block:
+                    resolved = (resolved + "\n\n" + block).strip()
             if message_refs:
                 # Stamped after the row exists, not passed at INSERT: resolving
                 # can materialise a sibling session's file into this workspace,
@@ -10989,6 +11000,19 @@ class SessionRunner:
                             )
                         }
                         if message_refs
+                        else {}
+                    ),
+                    **(
+                        {
+                            "annotations": _message_annotations(
+                                {
+                                    "metadata": {
+                                        "annotations": _annotation_summaries(annos)
+                                    }
+                                }
+                            )
+                        }
+                        if annos
                         else {}
                     ),
                 }
@@ -17854,6 +17878,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 if _message_review_gate(mm)
                                 else {}
                             ),
+                            # The pins a message was sent with (SYNC-5), so a
+                            # reload shows the same attachment chip the live
+                            # bubble did instead of instruction text.
+                            **(
+                                {"annotations": _message_annotations(mm)}
+                                if _message_annotations(mm)
+                                else {}
+                            ),
                             **_message_candidate_identity(mm),
                         }
                         for mm in msgs
@@ -18018,9 +18050,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "admission_replayed",
                         )
 
-                    block = _format_annotations_block(annos)
-                    if block:
-                        req = (req + "\n\n" + block).strip() if req.strip() else block
+                    # SYNC-5: the request stays the user's own words. The
+                    # instruction block used to be concatenated here, so after
+                    # a reload the bubble showed the product's injected
+                    # instructions as if the user had typed them; run_message
+                    # now adds the block to the model's copy only. A pin-only
+                    # send keeps the user's comments as its text.
+                    if not req.strip():
+                        req = _annotation_comments_text(annos)
                 # The job id the refusal path must be able to retract,
                 # recorded BEFORE the write rather than after it.
                 #
@@ -21474,6 +21511,37 @@ def _completion_separator(assistant_visible: list) -> str:
     return ""
 
 
+def _message_annotations(message: dict) -> list[dict[str, Any]]:
+    """The pins a user message carried, projected for the attachment chip.
+
+    Allowlisted like the other metadata projections: a number, the file's
+    display name, the comment and its kind -- the user's own words, nothing
+    the product added.
+    """
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, dict) or not isinstance(raw.get("annotations"), list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw["annotations"][:100]:
+        if not isinstance(item, dict):
+            continue
+        number = item.get("number")
+        out.append(
+            {
+                "number": number if isinstance(number, int) else None,
+                "kind": str(item.get("kind") or "image")[:16],
+                "artifact_name": str(item.get("artifact_name") or "artifact")[:255],
+                "body": str(item.get("body") or "")[:2000],
+            }
+        )
+    return out
+
+
 def _message_failure(message: dict) -> dict | None:
     """The failure identity stored on one message, projected safely.
 
@@ -21802,6 +21870,37 @@ def _figure_with_pins(raw: bytes, pins: list) -> tuple[str | None, str]:
     return base64.b64encode(buf.getvalue()).decode("ascii"), "image/png"
 
 
+def _annotation_comments_text(annos: list) -> str:
+    """The user's own pinned comments, as the text of a pin-only message."""
+    lines = []
+    for item in annos or []:
+        if not item:
+            continue
+        body = str(item.get("body") or "").strip()
+        if body:
+            lines.append(f"[{item.get('number')}] {body}")
+    return "\n".join(lines)
+
+
+def _annotation_summaries(annos: list) -> list[dict[str, Any]]:
+    """What a stored user message records about the pins it carried."""
+    out: list[dict[str, Any]] = []
+    for item in annos or []:
+        if not item:
+            continue
+        out.append(
+            {
+                "annotation_id": item.get("annotation_id") or item.get("id"),
+                "number": item.get("number"),
+                "kind": str(item.get("kind") or "image"),
+                "artifact_id": item.get("artifact_id"),
+                "artifact_name": item.get("artifact_name") or "artifact",
+                "body": str(item.get("body") or "")[:2000],
+            }
+        )
+    return out
+
+
 def _format_annotations_block(annos: list) -> str:
     """Render pinned image annotations as a compact feedback block the agent can
     act on: which file, where on it (fraction + rough zone), and the comment.
@@ -21835,14 +21934,17 @@ def _format_annotations_block(annos: list) -> str:
     lines = [
         "【图像标注反馈】用户直接在生成的图像上用图钉标注了修改意见。"
         "本条消息随附了标注后的图像（红色圆圈=图钉位置，圈内数字=下列标注编号）——"
-        "请先看图、对照红圈确认要改的元素，再修改并重新出图：",
+        "请先看图、对照红圈确认每条标注指的是哪个元素。",
+        "标注若是提问（例如问某个点或某条线是什么），直接回答，不要修改或覆盖图像。",
+        "标注若是修改意见，再按下面的步骤改图：",
         "1) 先定位生成下述图像的代码——查看本会话此前的代码单元与工作区文件；"
         "若不确定，用 host.glob/host.grep 按文件名或绘图关键字（savefig/plt/matplotlib）搜索。"
         "自动截图名形如 figure_cellN_*.png，其中 N 是生成它的代码单元序号。",
         "2) 逐条应用标注意见。以随附图上的红圈为准定位对应的子图/柱子/标签/元素；"
         "文字里的百分比坐标 (x 向右, y 向下) 仅作辅助。",
-        "3) 重新运行绘图代码，覆盖写回同名图像文件（不要改文件名），确保每条改动在新图上可见；完成后简述改了什么。",
-        "需要修改的图像：",
+        "3) 重新运行绘图代码，写回同名图像文件（不要改文件名，旧版本会保留在版本历史里），"
+        "确保每条改动在新图上可见；完成后简述改了什么。",
+        "被标注的图像：",
     ]
     for (art_id, name), items in by_art.items():
         mm = re.search(r"figure_cell(\d+)_", str(name or ""))

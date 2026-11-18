@@ -407,7 +407,10 @@ def test_an_already_sent_pin_does_not_re_enter_a_prompt(client):
     real = client.runner.submit_message
 
     def spy(frame, project, text, *args, **kwargs):
-        seen.append(text)
+        # Pins travel as `annos` (SYNC-5 keeps them out of the stored text).
+        seen.append(
+            text + "".join(str(a.get("body")) for a in kwargs.get("annos") or [])
+        )
         return real(frame, project, text, *args, **kwargs)
 
     client.runner.submit_message = spy  # type: ignore[method-assign]
@@ -426,7 +429,10 @@ def test_a_repeated_id_is_carried_once(client):
     real = client.runner.submit_message
 
     def spy(frame, project, text, *args, **kwargs):
-        seen.append(text)
+        # Pins travel as `annos` (SYNC-5 keeps them out of the stored text).
+        seen.append(
+            text + "".join(str(a.get("body")) for a in kwargs.get("annos") or [])
+        )
         return real(frame, project, text, *args, **kwargs)
 
     client.runner.submit_message = spy  # type: ignore[method-assign]
@@ -457,7 +463,9 @@ def test_two_concurrent_requests_do_not_both_carry_one_pin(client):
 
     def spy(frame, project, text, *args, **kwargs):
         with lock:
-            carried.append(text)
+            carried.append(
+                text + "".join(str(a.get("body")) for a in kwargs.get("annos") or [])
+            )
         return real(frame, project, text, *args, **kwargs)
 
     client.runner.submit_message = spy  # type: ignore[method-assign]

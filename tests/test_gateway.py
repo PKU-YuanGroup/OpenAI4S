@@ -7738,3 +7738,70 @@ def test_the_session_dispatcher_gets_the_key_the_install_configures(
         assert runner._ensure_runtime(st).cfg.llm.api_key == "rotated-key"
     finally:
         runner.close()
+
+
+def test_an_annotated_message_is_stored_as_the_user_wrote_it(tmp_path, monkeypatch):
+    """SYNC-5: the annotation instructions were concatenated into the user's
+    message, so after a reload the bubble showed the product's injected
+    "【图像标注反馈】…覆盖写回同名图像文件" as if the user had typed it. The stored
+    row now holds the user's words, its metadata records the pins (for the
+    attachment chip), and only the model's copy carries the instructions --
+    which no longer demand an overwrite for a question."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    store = runner.store
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    pin = store.add_annotation(
+        root_frame_id=fid,
+        artifact_id="fx-1",
+        artifact_name="volcano.png",
+        rel_x=0.5,
+        rel_y=0.5,
+        body="这个点是什么基因？",
+    )
+    seen: dict = {}
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def fake_loop(state, emit, visible):
+        seen["model_user"] = state.messages[-1]["content"]
+        return "max_turns"
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", fake_loop)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+    try:
+        runner.run_message(
+            fid,
+            "default",
+            "请看一下这张图",
+            annos=[store.get_annotation(pin["annotation_id"])],
+        )
+        stored = [m for m in store.list_messages(fid) if m["role"] == "user"][-1]
+        assert stored["content"] == "请看一下这张图"
+        metadata = stored.get("metadata")
+        metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+        assert [
+            (a["number"], a["artifact_name"], a["body"])
+            for a in metadata["annotations"]
+        ] == [(1, "volcano.png", "这个点是什么基因？")]
+        model_text = seen["model_user"]
+        if isinstance(model_text, list):  # a vision provider gets parts
+            model_text = "".join(
+                p.get("text", "") for p in model_text if isinstance(p, dict)
+            )
+        assert "请看一下这张图" in model_text
+        assert "【图像标注反馈】" in model_text and "这个点是什么基因？" in model_text
+        assert "直接回答，不要修改或覆盖图像" in model_text
+    finally:
+        runner.close()
+
+
+def test_a_pin_only_message_keeps_the_users_comments_as_its_text():
+    text = gateway_mod._annotation_comments_text(
+        [{"number": 1, "body": "标题改大一点"}, {"number": 2, "body": " "}, None]
+    )
+    assert text == "[1] 标题改大一点"
