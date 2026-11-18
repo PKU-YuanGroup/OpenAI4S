@@ -81,7 +81,7 @@ tests/test_text_features_skill.py
 
 `skills/literature-review/kernel.py`
 
-- Module docstring auto-load list: drop `screen_passages, check_claims`. Keep
+- Module docstring helper list: drop `screen_passages, check_claims`. Keep
   `verify_dois, crossref_lookup, search_openalex, expand_citations,
   extract_dois, style_pass`.
 - Delete from the comment

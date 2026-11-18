@@ -95,6 +95,56 @@ def test_workspace_blob_is_retrievable_without_absolute_paths(tmp_path):
     assert loaded == original
 
 
+def test_workspace_text_copy_is_read_a_window_of_lines_at_a_time(tmp_path):
+    """A long skill document came back as one escaped JSON string.
+
+    The model read it with json.load(...)['content'][n:m] across four Cells.
+    A plain-text sibling keeps the line breaks, so the ordinary file tools
+    page through it.
+    """
+
+    lines = [f"recipe line {index}" for index in range(400)]
+    original = "[Observation]\n" + "\n".join(lines) + "\n" + ("z" * 20_000)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    projected = externalize_large_outputs(
+        _observation_messages(original),
+        tmp_path / "compaction",
+        workspace=workspace,
+    )
+    message = projected[2]
+    digest = message["content_archive"]["sha256"]
+    text_ref = f".openai4s/context/{digest}.txt"
+    text = message["content"]
+    assert f"read_text_file(path={text_ref!r}, offset=0, limit=200)" in text
+    assert f"host.read_file({text_ref!r}, offset=0, limit=200)" in text
+    # The JSON route stays for R and for a whole-text read.
+    assert f".openai4s/context/{digest}.json" in text
+    _assert_marker_has_no_host_paths(text, message["content_archive"], tmp_path)
+    copy = (workspace / text_ref).read_text(encoding="utf-8")
+    assert copy == original
+    assert copy.splitlines()[1:3] == ["recipe line 0", "recipe line 1"]
+
+
+def test_a_foreign_file_at_the_text_path_is_left_alone(tmp_path):
+    original = "[Observation]\n" + ("m" * 20_000)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    first = externalize_large_outputs(
+        _observation_messages(original), tmp_path / "compaction", workspace=workspace
+    )
+    digest = first[2]["content_archive"]["sha256"]
+    planted = workspace / ".openai4s" / "context" / f"{digest}.txt"
+    planted.write_text("a cell wrote this", encoding="utf-8")
+
+    again = externalize_large_outputs(
+        _observation_messages(original), tmp_path / "compaction", workspace=workspace
+    )
+    assert planted.read_text(encoding="utf-8") == "a cell wrote this"
+    assert ".txt" not in again[2]["content"]
+    assert "read the full text" in again[2]["content"]
+
+
 def test_workspace_none_matches_pre_retrieval_baseline(tmp_path):
     projected = externalize_large_outputs(
         _observation_messages(_BASELINE_OBSERVATION),

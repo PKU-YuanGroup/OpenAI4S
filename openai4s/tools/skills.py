@@ -477,6 +477,14 @@ def load_notes(result: Any) -> list[str]:
             + ". A request to any other host is refused before it is sent, "
             "and approving it cannot widen the limit."
         )
+    import_hint = result.get("import")
+    if isinstance(import_hint, str) and import_hint.strip():
+        notes.append(
+            "[helpers] This Skill's helper functions live in its kernel.py and "
+            "are not in the kernel until you import them. In a ```python cell, "
+            f"run: {import_hint.strip()} -- then use its functions. Do not "
+            "read or exec kernel.py by hand."
+        )
     return notes
 
 

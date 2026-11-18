@@ -129,7 +129,9 @@ job = c.submit_job(
 print(job.job_id) # cell ends here — kernel never blocks on compute
 ```
 
-`h5ad_safe_obs` is auto-loaded into the **local** analysis kernel only — in
+`h5ad_safe_obs` lives in this skill's `kernel.py`, importable (not
+auto-imported) in the **local** analysis kernel only with
+`import importlib; importlib.import_module("scvi-tools.kernel").h5ad_safe_obs` — in
 `pipeline.py` running on the NVIDIA NIM job, paste the helper at the top of the script
 (or inline the `pd.Index(np.asarray(..., dtype=object))` coercion) before
 `.write_h5ad`.

@@ -1,4 +1,7 @@
-"""Text-feature helpers. Auto-loaded into the python kernel when the skill loads:
+"""Text-feature helpers. Importable in the python kernel once the skill is
+loaded, but not imported for you (see SKILL.md):
+
+ from importlib import import_module; tf = import_module("text-features.kernel")
 
  propose_questions, featurize, run_feature_study
 

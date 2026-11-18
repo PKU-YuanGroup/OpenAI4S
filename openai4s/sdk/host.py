@@ -1049,7 +1049,9 @@ class _Host:
     def load_skill(self, name: str) -> dict:
         """Load a skill's full SKILL.md guidance by name (fuzzy). Surfaces a
         'Loading <skill> skill guidance' step. Returns {name, description,
-        content}. Read it, then follow it while doing the analysis."""
+        content, ...}; a skill with kernel.py helpers also carries `import`,
+        the line that imports them -- they are not imported for you. Read
+        it, then follow it while doing the analysis."""
         return self._call("load_skill", [name])
 
     # --- opencode-parity harness tools -----------------------------------
