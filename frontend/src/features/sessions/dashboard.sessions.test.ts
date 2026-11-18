@@ -76,7 +76,8 @@ import {
 } from "./dashboard";
 import { attentionCards } from "../attention/state";
 import type { AttentionCardModel } from "../attention/types";
-import { dashCopy } from "./copy";
+import { dashCopy, displayProjectName } from "./copy";
+import { LANG, setLang } from "../../i18n/runtime";
 
 /** Every text painted under `node`. */
 function texts(node: FakeEl | null | undefined): string[] {
@@ -261,6 +262,23 @@ describe("one place per session on the home page", () => {
       "qPCR project · Fit a standard curve",
     );
     expect(runCardSubtitle({ task_summary: "Fit a standard curve" }, null)).toBe("");
+  });
+});
+
+// I18N-1: the seeded project read "Example project" with an "Example" tag in
+// a Chinese UI. Shown in the UI language while it keeps the seeded name.
+describe("the seeded example project's name", () => {
+  it("is said in the UI language until the user renames it", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      expect(displayProjectName({ project_id: "proj_example", name: "Example project" })).toBe("示例项目");
+      expect(displayProjectName({ project_id: "proj_example", name: "我的示例" })).toBe("我的示例");
+      expect(displayProjectName({ project_id: "p-2", name: "Example project" })).toBe("Example project");
+      expect(dashCopy("dash.example.tag")).toBe("示例");
+    } finally {
+      await setLang(original);
+    }
   });
 });
 

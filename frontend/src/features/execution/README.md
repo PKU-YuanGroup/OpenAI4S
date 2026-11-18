@@ -17,7 +17,7 @@ Does not edit `stores/` or `compat/window-exports.ts` above the lane-additions m
 | [`conflict.ts`](conflict.ts) | Fork 409 presentation: no retry, server sentence intact. |
 | [`lineage.ts`](lineage.ts) | Provenance chain transforms (cell / captures / env honesty). `envPackageCount` is null when the record's list was never read (`packages_unavailable` with no packages). |
 | [`exec.ts`](exec.ts) | `execSourcesState` / `toggleExecutedCode` / `buildExecutedCodeView` (app.js:10148-10229). |
-| [`inspector.ts`](inspector.ts) | Variable inspector (app.js:10265-10332). |
+| [`inspector.ts`](inspector.ts) | Variable inspector (app.js:10265-10332). Labels through the Notebook's `nbLabelT` (变量查看器 in Chinese). |
 | [`provenance.ts`](provenance.ts) | Provenance tab (app.js:10631-10833). An unread package list shows "Packages unknown" ("n/a" for a non-Python kernel) and no "No packages to report."; the reason stays as the warn note. |
 | [`branch.ts`](branch.ts) | Fork / recovery REST with 409 presentation. |
 | [`boot.ts`](boot.ts) | Window names + notebook/viewer composition. |

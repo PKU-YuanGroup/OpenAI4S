@@ -7,6 +7,7 @@
  */
 
 import { agoMs } from "../chrome/dom";
+import { displayProjectName } from "../sessions/copy";
 import { publicText } from "../scrub/scrub";
 import { attentionT } from "./copy";
 import { navigationFromTarget } from "./navigate";
@@ -84,7 +85,7 @@ export function projectNameFor(
 ): string {
   if (!projectId || !projects) return "";
   const hit = projects.find((p) => (p.project_id || p.id) === projectId);
-  return (hit && hit.name) || "";
+  return displayProjectName(hit);
 }
 
 export function actionLabelFor(hint: string): string {

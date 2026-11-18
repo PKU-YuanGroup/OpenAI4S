@@ -9,7 +9,7 @@
  * `_timelineView` identity and the window-exported function names.
  */
 
-import { LANG, t, tOptional } from "../../i18n/runtime";
+import { LANG, tOptional } from "../../i18n/runtime";
 import { provenanceT } from "../execution/copy";
 import { publicText } from "../scrub/scrub";
 import { pendingReplIdentity } from "../../stores/notebook";
@@ -55,7 +55,13 @@ import {
 import { renderQueueStrip } from "./queue";
 import { S } from "./s";
 import { ago, localDateTime } from "../chrome/dom";
-import { computeRecordsT, workbenchT } from "./copy";
+import { computeRecordsT, timelineT, workbenchT } from "./copy";
+
+/**
+ * The island's lookup: the dictionary, except where the Timeline's own table
+ * replaces an English-in-Chinese or jargon label (I18N-1, `timelineT`).
+ */
+const t = timelineT;
 import {
   branchUndoFromProjection,
   carryRevertPreview,

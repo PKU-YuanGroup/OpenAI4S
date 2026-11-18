@@ -22,17 +22,35 @@ import type { WsMessage } from "../ws/types";
 import { messagesHost } from "./dom";
 
 /** Feature-local copy: en.ts / zh.ts are generated extracts. */
-const COPY: Record<"en" | "zh", Record<"cardTitle" | "stopped" | "failed", string>> = {
-  en: { cardTitle: "Analysis · cell {0}", stopped: "Stopped", failed: "Failed" },
-  zh: { cardTitle: "分析 · 单元 {0}", stopped: "已停止", failed: "失败" },
+type CardCopyKey = "cardTitle" | "runningTitle" | "stopped" | "failed";
+const COPY: Record<"en" | "zh", Record<CardCopyKey, string>> = {
+  en: {
+    cardTitle: "Analysis · cell {0}",
+    runningTitle: "Running analysis · cell {0}",
+    stopped: "Stopped",
+    failed: "Failed",
+  },
+  zh: { cardTitle: "分析 · 单元 {0}", runningTitle: "正在分析 · 单元 {0}", stopped: "已停止", failed: "失败" },
 };
 
-function copy(key: "cardTitle" | "stopped" | "failed"): string {
+function copy(key: CardCopyKey): string {
   return (COPY[LANG === "zh" ? "zh" : "en"] || COPY.en)[key];
 }
 
 /** `cell_run.activity_title` for a cell with no leading comment of its own. */
 const DEFAULT_CELL_TITLE = /^Running analysis · cell (\d+)$/;
+
+/**
+ * The cell number of a card whose title the server generated, or null when
+ * the title is the cell's own. The running title is shown in the UI language
+ * (I18N-1: "Running analysis · cell 1" in a Chinese UI until the cell ended),
+ * so the number is kept on the card rather than read back from the label.
+ */
+function generatedCellNumber(card: HTMLElement, label: HTMLElement | null): string | null {
+  if (card.dataset.generatedCell) return card.dataset.generatedCell;
+  const match = label ? DEFAULT_CELL_TITLE.exec(String(label.textContent || "").trim()) : null;
+  return match ? match[1] || null : null;
+}
 
 /** Every settled state a card can reach; "running" is the only unsettled one. */
 const SETTLED = new Set(["ok", "failed", "stopped", "ended"]);
@@ -47,8 +65,8 @@ function glyphOf(card: HTMLElement): HTMLElement | null {
  */
 function retitle(card: HTMLElement): void {
   const label = card.querySelector(".lbl") as HTMLElement | null;
-  const generated = label ? DEFAULT_CELL_TITLE.exec(String(label.textContent || "").trim()) : null;
-  if (label && generated) label.textContent = copy("cardTitle").replace("{0}", generated[1] || "");
+  const cell = generatedCellNumber(card, label);
+  if (label && cell != null) label.textContent = copy("cardTitle").replace("{0}", cell);
 }
 
 function prefixMeta(card: HTMLElement, word: string): void {
@@ -79,6 +97,12 @@ function settle(card: HTMLElement, state: string, icon: string): void {
 export function markCardRunning(card: HTMLElement, event?: WsMessage | null): void {
   card.classList.add("running");
   card.dataset.state = "running";
+  const label = card.querySelector(".lbl") as HTMLElement | null;
+  const cell = generatedCellNumber(card, label);
+  if (label && cell != null) {
+    card.dataset.generatedCell = cell;
+    label.textContent = copy("runningTitle").replace("{0}", cell);
+  }
   const id = event && (event.producing_cell_id || event.cell_id);
   if (id) card.dataset.cellId = String(id).slice(0, 128);
   if (event && event.cell_index != null) card.dataset.cellIndex = String(event.cell_index).slice(0, 32);

@@ -17,7 +17,7 @@ F-14 已用 `isReady` 门控 `toggleExecutedCode` / `buildExecutedCodeView`。F-
 | [`conflict.ts`](conflict.ts) | Fork 409 呈现：不重试，保留服务端原句。 |
 | [`lineage.ts`](lineage.ts) | Provenance 链变换（cell / captures / 环境诚实性三态）。记录中的包列表从未读取（有 `packages_unavailable` 且无包）时，`envPackageCount` 返回 null。 |
 | [`exec.ts`](exec.ts) | `execSourcesState` / `toggleExecutedCode` / `buildExecutedCodeView`（app.js:10148-10229）。 |
-| [`inspector.ts`](inspector.ts) | 变量检查器（app.js:10265-10332）。 |
+| [`inspector.ts`](inspector.ts) | 变量检查器（app.js:10265-10332）。 文案通过 Notebook 的 `nbLabelT` 获取（中文显示「变量查看器」）。 |
 | [`provenance.ts`](provenance.ts) | Provenance tab（app.js:10631-10833）。未读取的包列表显示为"Packages 未知"（非 Python kernel 为"不适用"），不显示"没有可报告的包"；原因仍作为警告说明保留。 |
 | [`branch.ts`](branch.ts) | Fork / recovery REST 与 409 呈现。 |
 | [`boot.ts`](boot.ts) | window 名 + notebook/viewer 组合。 |

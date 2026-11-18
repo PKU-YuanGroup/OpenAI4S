@@ -9,7 +9,7 @@ import { unsub } from "../ws/connect";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys, reportFailure } from "./chrome";
-import { dashCopy, sessionCopy } from "./copy";
+import { dashCopy, displayProjectName, sessionCopy } from "./copy";
 import { $, ago, el, navURL, syncMobileChrome } from "./dom";
 import {
   canLoadMoreProjects,
@@ -345,8 +345,9 @@ export function renderDashProjects(): void {
   list.forEach((p) => {
     const row = el("div", "d-row");
     const main = el("div", "d-main");
-    main.appendChild(el("div", "d-name", p.name || t("dash.project.untitled")));
-    if (/example/i.test(p.name || "")) main.appendChild(el("span", "d-tag", "Example"));
+    main.appendChild(el("div", "d-name", displayProjectName(p) || t("dash.project.untitled")));
+    if ((p.project_id || p.id) === "proj_example" || /example/i.test(p.name || ""))
+      main.appendChild(el("span", "d-tag", dashCopy("dash.example.tag")));
     if (p.running_count) {
       const b = el("span", "d-run");
       b.appendChild(el("span", "d-run-dot"));
@@ -473,7 +474,7 @@ export function renderDashRecent(frames: SessionLike[]): void {
     const pj = (projects.value as ProjectLike[]).find(
       (p) => (p.project_id || p.id) === f.project_id,
     );
-    if (pj) main.appendChild(el("div", "d-sub", pj.name || ""));
+    if (pj) main.appendChild(el("div", "d-sub", displayProjectName(pj)));
     row.appendChild(main);
     if (f.running) {
       const b = el("span", "d-run");
@@ -501,7 +502,7 @@ export function runCardSubtitle(f: SessionLike, project?: ProjectLike | null): s
   const summary = String(f.task_summary || "").trim();
   const repeats =
     !summary || !name || summary === name || summary.startsWith(name) || name.startsWith(summary);
-  return [project ? project.name || "" : "", repeats ? "" : summary].filter(Boolean).join(" · ");
+  return [displayProjectName(project), repeats ? "" : summary].filter(Boolean).join(" · ");
 }
 
 export function renderDashRunning(frames: SessionLike[]): void {

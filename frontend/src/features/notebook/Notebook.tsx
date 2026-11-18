@@ -74,7 +74,7 @@ import { applyArtifactDeepLink } from "../artifacts/ui";
 import { openCustomize } from "../customize";
 import { iconSvg } from "../icons/paths";
 import type { KernelEnvRow, KernelStatus, NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
-import { nbT } from "./copy";
+import { nbLabelT, nbT } from "./copy";
 import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent, type EditorState } from "./editor";
 import { envLanguage, envSelectable, envSourceLabel } from "./envmenu";
 import "./notebook.css";
@@ -406,7 +406,7 @@ function CellShell({
           class={"nbc-state " + cellState.cls}
           title={(cellState.reasons || []).map((r) => publicText(r, 240)).filter(Boolean).join("\n")}
         >
-          {t("nb.cell." + cellState.key)}
+          {nbLabelT("nb.cell." + cellState.key)}
         </span>
         {cell.state_revision != null ? <span class="nbc-revision">{"S" + cell.state_revision}</span> : null}
       </div>
@@ -668,7 +668,7 @@ function OwnerChips() {
             class={"nb-owner-chip" + (active ? " active" : "")}
             title={active && active.execution_id ? active.execution_id : kind}
           >
-            {t("nb.owner." + kind)}
+            {nbLabelT("nb.owner." + kind)}
           </span>
         );
       })}
@@ -702,7 +702,7 @@ function kernelTitle(st: KernelStatus): string {
     kernelLabel(kernelIdFromEnv(env)) +
     " kernel · " +
     t("nb.kernel.shared") +
-    (st.generation_id ? " · " + t("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
+    (st.generation_id ? " · " + nbLabelT("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
     (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "")
   );
 }
@@ -1031,7 +1031,7 @@ export function cellNode(e: NotebookCell): HTMLElement {
   const idx = e.cell_index != null ? e.cell_index : "…";
   const cellState = notebookCellState(e);
   const cellMeta = el("div", "nbc-cell-meta");
-  cellMeta.appendChild(el("span", "nbc-state " + cellState.cls, t("nb.cell." + cellState.key)));
+  cellMeta.appendChild(el("span", "nbc-state " + cellState.cls, nbLabelT("nb.cell." + cellState.key)));
   c.appendChild(cellMeta);
   const wrap = el("div", "os-code");
   const head = el("div", "oc-head");

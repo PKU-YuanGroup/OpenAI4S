@@ -32,6 +32,7 @@ import {
   renderSecurityPanel,
 } from "./island";
 import { timelineLocalClock, timelineOverviewExactTime } from "./model";
+import { timelineT } from "./copy";
 import { renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
@@ -1192,6 +1193,26 @@ describe("scheduled workbench refresh", () => {
     reads.release();
     await vi.advanceTimersByTimeAsync(10);
     expect(reads.paths.slice(first)).toEqual(["/frames/frame-q/delegations"]);
+  });
+});
+
+// I18N-1: the Timeline's titles, kinds and panel names were English in a
+// Chinese UI ("Action Timeline", "Python Cell", "Branch · Checkpoint").
+describe("timeline words", () => {
+  it("are Chinese in a Chinese UI where the generated dictionary has English", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      expect(timelineT("timeline.title")).toBe("行动时间线");
+      expect(timelineT("timeline.kind.python")).toBe("Python 单元");
+      expect(timelineT("branch.forkDefault", "x")).toBe("分叉 x");
+      // Keys the table does not name are the dictionary's.
+      expect(timelineT("timeline.refresh")).toBe(t("timeline.refresh"));
+      await setLang("en");
+      expect(timelineT("timeline.title")).toBe(t("timeline.title"));
+    } finally {
+      await setLang(original);
+    }
   });
 });
 

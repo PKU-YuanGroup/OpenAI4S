@@ -114,6 +114,8 @@ export const dashCopy = copyLookup({
     "dash.example.open": "Open the example session",
     "dash.example.dismiss": "Dismiss",
     "dash.sessions.allAbove": "Running sessions and the ones waiting for you are listed above.",
+    "dash.example.project": "Example project",
+    "dash.example.tag": "Example",
   },
   zh: {
     "dash.example.runningNote": "示例分析正在运行，大约需要一两分钟。可以打开会话看它运行。",
@@ -123,8 +125,28 @@ export const dashCopy = copyLookup({
     "dash.example.open": "打开示例会话",
     "dash.example.dismiss": "知道了",
     "dash.sessions.allAbove": "正在运行和等你处理的会话显示在上方。",
+    "dash.example.project": "示例项目",
+    "dash.example.tag": "示例",
   },
 });
+
+/** The project the daemon seeds on first boot, under the name it seeds it with. */
+const SEEDED_EXAMPLE = { id: "proj_example", name: "Example project" };
+
+/**
+ * A project's name as shown. The seeded example project is stored as
+ * "Example project" (I18N-1: English in a Chinese UI); while it still has that
+ * name it is shown in the UI language. A renamed project shows its own name.
+ */
+export function displayProjectName(
+  project: { project_id?: string; id?: string; name?: string } | null | undefined,
+): string {
+  if (!project) return "";
+  const name = project.name || "";
+  return (project.project_id || project.id) === SEEDED_EXAMPLE.id && name === SEEDED_EXAMPLE.name
+    ? dashCopy("dash.example.project")
+    : name;
+}
 
 /** Feature-owned copy; the frozen legacy dictionaries remain generated. */
 export function sessionCopy(key: "sessionsError" | "foldersError" | "retry"): string {

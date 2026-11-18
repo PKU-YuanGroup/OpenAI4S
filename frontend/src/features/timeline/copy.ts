@@ -6,7 +6,7 @@
  * on any hand edit. Feature-local tables are the established home for copy
  * the frozen shell never carried (`computeT`, `ot`, `judgmentT`).
  */
-import { copyLookup, type CopyTable } from "../../i18n/copy";
+import { copyLookup, overrideLookup, type CopyTable } from "../../i18n/copy";
 
 const COPY: CopyTable = {
   en: {
@@ -100,3 +100,73 @@ const WORKBENCH: CopyTable = {
 };
 
 export const workbenchT = copyLookup(WORKBENCH);
+
+/**
+ * I18N-1: the Timeline's words where the generated zh dictionary is English
+ * ("Action Timeline", "Python Cell", "Owner", "Branch · Checkpoint", "Kernel
+ * Recovery") or mixes in English ("创建 checkpoint"), and the few that are
+ * developer jargon in both languages ("Safe projection of the durable Action
+ * Ledger…"). For these keys the table wins; every other key is the
+ * dictionary's, so `timelineT` can stand in for `t` across the island.
+ */
+const TIMELINE_OVERRIDES: CopyTable = {
+  zh: {
+    "timeline.title": "行动时间线",
+    "timeline.subtitle": "智能体在这个会话里做的每一步：运行的代码、调用的工具、等待的批准。点一行查看详情。",
+    "timeline.empty": "还没有可显示的行动。Notebook 只保留科研代码单元，完整的执行过程会显示在这里。",
+    "timeline.noBranch": "还没有分支与检查点信息。",
+    "timeline.noContext": "还没有上下文信息。",
+    "timeline.noSecurity": "还没有沙盒与权限信息。",
+    "timeline.owner": "执行者",
+    "timeline.generation": "内核代次",
+    "timeline.replay": "重放",
+    "timeline.tokens": "Token 用量",
+    "timeline.turnBoundary": "回合",
+    "timeline.turn.summary": "回合 · 当前可见 {0} 条记录",
+    "timeline.search.scope": "只搜索已加载的 {0} 条记录，更早的记录不在结果中。搜索时会暂时展开折叠的回合，清空后恢复。",
+    "timeline.kind.native_tool": "工具调用",
+    "timeline.kind.python": "Python 单元",
+    "timeline.kind.r": "R 单元",
+    "timeline.kind.dynamic_tool": "动态工具",
+    "timeline.kind.delegate": "子代理",
+    "timeline.kind.background": "后台 / 远程任务",
+    "timeline.kind.permission": "等待批准",
+    "timeline.kind.recovery": "恢复事件",
+    "timeline.kind.finalize": "最终回复",
+    "timeline.kind.action": "行动",
+    "timeline.panel.branches": "分支与检查点",
+    "branch.actionFailed": "分支操作失败：{0}",
+    "branch.checkpoint": "创建检查点",
+    "branch.diff": "消息 {0} · Notebook {1} · 文件写入 {2} / 删除 {3} · 产物 +{4}/-{5}",
+    "branch.fork": "分叉",
+    "branch.forkDefault": "分叉 {0}",
+    "branch.forked": "已从检查点 {0} 创建分支",
+    "branch.head": "当前位置 {0}",
+    "branch.internalCheckpoints": "内部检查点（{0}）",
+    "branch.previewTitle": "回退预览",
+    "context.artifacts": "{0} 个产物引用",
+    "context.compaction": "压缩",
+    "context.handoff": "交接",
+    "context.savings": "{0} → {1} 个 token",
+    "context.tokens": "{0} 个 token",
+    "recovery.title": "内核恢复",
+    "recovery.checkpoint": "检查点 {0}",
+    "recovery.action.restore": "恢复到检查点",
+    "recovery.action.unavailable": "当前服务没有提供这个恢复操作。",
+    "recovery.action.currentOnly": "只能恢复本会话当前的分支。",
+    "recovery.action.failed": "恢复操作失败：{0}",
+    "recovery.action.done": "恢复已完成，状态和记录已刷新。",
+    "runtime.branch": "分支",
+    "runtime.revision": "状态版本",
+    "runtime.owner": "执行者",
+    "runtime.queue": "排队",
+  },
+  en: {
+    "timeline.subtitle": "Every step the agent took in this session: code it ran, tools it called, approvals it waited for. Click a row for details.",
+    "timeline.noBranch": "No branch or checkpoint information yet.",
+    "timeline.noContext": "No context information yet.",
+    "timeline.noSecurity": "No sandbox or permission information yet.",
+  },
+};
+
+export const timelineT = overrideLookup(TIMELINE_OVERRIDES);

@@ -1,4 +1,4 @@
-import { copyLookup, type CopyTable } from "../../i18n/copy";
+import { copyLookup, overrideLookup, type CopyTable } from "../../i18n/copy";
 
 /**
  * Notebook strings the generated `i18n/en.ts` / `zh.ts` extract does not
@@ -97,3 +97,26 @@ const COPY: CopyTable = {
 };
 
 export const nbT = copyLookup(COPY);
+
+/**
+ * I18N-1: Notebook labels the generated zh dictionary has in English -- the
+ * cell state ("Current", "Stale"), the owner chips ("Agent", "Repair",
+ * "Review scratch") and the Variable Inspector. `nbLabelT` reads these from
+ * here and every other key from the dictionary.
+ */
+export const nbLabelT = overrideLookup({
+  zh: {
+    "nb.cell.current": "当前",
+    "nb.cell.stale": "已过期",
+    "nb.cell.nonReplayable": "不可重放",
+    "nb.cell.statusRunning": "运行中",
+    "nb.owner.agent": "智能体",
+    "nb.owner.repair": "自动修复",
+    "nb.owner.review_scratch": "审阅草稿",
+    "nb.owner.generation": "内核 {0}",
+    "nb.variables.title": "变量查看器",
+    "nb.variables.generation": "内核 {0}",
+    "nb.variables.revision": "状态版本 S{0}",
+    "nb.variables.state.busy": "内核正在执行，变量查看器暂不可用。",
+  },
+});
