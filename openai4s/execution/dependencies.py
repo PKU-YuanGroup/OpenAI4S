@@ -645,7 +645,7 @@ def _cell_id(cell: Mapping[str, Any], index: int) -> str:
 #: The final exception of a Python cell that never compiled.
 _COMPILE_FAILURE = re.compile(r"^(?:SyntaxError|IndentationError|TabError)\b", re.M)
 #: A frame inside the cell itself: the cell's code was running when it failed.
-_CELL_FRAME = re.compile(r'File "<kernel:\d+>", line \d+, in ')
+_CELL_FRAME = re.compile(r'File "<(?:kernel:\d+|cell \d+(?:\.\d+)?)>", line \d+, in ')
 
 
 def _cell_never_ran(cell: Mapping[str, Any]) -> bool:

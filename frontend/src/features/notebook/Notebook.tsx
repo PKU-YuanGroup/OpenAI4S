@@ -407,7 +407,13 @@ function CellShell({
         >
           {t("nb.cell." + cellState.key)}
         </span>
-        {cell.state_revision != null ? <span class="nbc-revision">{"S" + cell.state_revision}</span> : null}
+        {/* NB-9: one number per cell. The state revision equals the cell number
+            except on a branch or a replay; only then is it a second, labelled fact. */}
+        {cell.state_revision != null && cell.state_revision !== cell.cell_index ? (
+          <span class="nbc-revision" title={nbT("nb.cell.stateRevisionTip")}>
+            {nbT("nb.cell.stateRevision", cell.state_revision)}
+          </span>
+        ) : null}
       </div>
       {children}
     </div>

@@ -1186,10 +1186,18 @@ def _run_cell(
     origin: str = "agent",
     *,
     kernel_mode: str | None = None,
+    label: str | None = None,
 ) -> dict:
     global _CELL_SEQ
     _CELL_SEQ += 1
     tag = f"<kernel:{_CELL_SEQ}>"
+    # NB-9: the host's cell number, so a traceback says `<cell 12>` like the
+    # chat card and the Notebook instead of this worker's own counter (which
+    # also counts system cells). Linecache keys must stay unique per cell.
+    if isinstance(label, str) and label.isdigit() and len(label) <= 9:
+        tag = f"<cell {label}>"
+        if tag in _LIVE_TAGS:
+            tag = f"<cell {label}.{_CELL_SEQ}>"
     _register_cell(code, tag)
     _ACTIVE_CELL_ID[0] = cell_id
     _ACTIVE_CELL_ORIGIN[0] = origin
@@ -1920,6 +1928,7 @@ def main() -> None:
                 req.get("code", ""),
                 req.get("id", "unknown"),
                 req.get("origin", "agent"),
+                label=req.get("label"),
             )
             _write_frame(resp)
         elif rtype == "inspect_variables":

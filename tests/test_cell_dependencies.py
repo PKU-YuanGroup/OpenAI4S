@@ -165,6 +165,29 @@ def test_a_syntax_error_raised_while_the_cell_ran_still_counts():
     assert "unknown namespace state" in projection[0]["stale_reasons"][0]
 
 
+def test_a_runtime_error_inside_a_numbered_cell_still_counts():
+    """NB-9 renamed a cell's code `<cell N>`; the frame that proves the cell
+    ran must still be recognised, or a ran-then-failed cell would read as
+    never having run."""
+    cells = _rows(
+        ("a", "x = 1"),
+        (
+            "dynamic",
+            "exec('x = (')",
+            "python",
+            {
+                "status": "error",
+                "error": "Traceback (most recent call last):\n"
+                '  File "<cell 2>", line 1, in <module>\n'
+                '  File "<string>", line 1\nSyntaxError: invalid syntax\n',
+            },
+        ),
+    )
+    projection = compute_stale_cells(cells)
+    assert projection[0]["stale"] is True
+    assert "unknown namespace state" in projection[0]["stale_reasons"][0]
+
+
 def test_python_and_r_cells_do_not_share_a_namespace():
     """NB-8: an R `wt <- ...` superseded the Python `wt`."""
     cells = _rows(

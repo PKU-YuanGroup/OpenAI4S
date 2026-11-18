@@ -656,6 +656,27 @@ def test_user_tracebacks_start_at_the_cell_not_the_worker():
         assert "During handling" not in syntax["error"]
 
 
+def test_a_numbered_cell_is_named_by_its_number_in_tracebacks():
+    """NB-9: one cell had three numbers -- the chat's "cell 12", the Notebook's
+    "[30]" and the traceback's `<kernel:23>` (this worker's own counter, which
+    also counts system cells). The host's number now names the cell's code,
+    so a traceback points at the cell the user can see; line numbers and the
+    failing line still resolve, and a reused number stays unique."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        k.execute("print('system cell')")  # advances the worker's own counter
+        failed = k.execute("x = 1\n1 / 0", cell_label=12)
+        assert 'File "<cell 12>", line 2, in <module>' in failed["error"]
+        assert failed["trace"]["error_lineno"] == 2
+        k.execute("def f():\n    return 1 / 0", cell_label=13)
+        nested = k.execute("f()", cell_label=14)
+        assert 'File "<cell 13>", line 2, in f' in nested["error"]
+        assert "return 1 / 0" in nested["error"]  # linecache still serves the source
+        again = k.execute("1 / 0", cell_label=12)
+        assert 'File "<cell 12.' in again["error"]  # unique per compiled cell
+        plain = k.execute("1 / 0")
+        assert 'File "<kernel:' in plain["error"]
+
+
 def test_ipython_syntax_fails_with_a_hint():
     with Kernel(dispatcher=_echo_dispatcher) as k:
         shell = k.execute("!ls -la")["error"]

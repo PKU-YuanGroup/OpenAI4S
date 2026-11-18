@@ -42,6 +42,8 @@ const COPY: CopyTable = {
     "nb.env.selectedIdle": "已选择 {0} 环境，第一次运行 Python 代码时在其中启动内核",
     "nb.env.rSelected": "R 单元将在 {0} 环境中运行（下一个 R 单元会启动新的 R 内核）",
     "nb.env.selectTitle": "选择运行环境：内置环境由 OpenAI4S 提供，本机环境是在这台电脑上发现的。切换 Python 环境会重启内核并清空变量，Notebook 与文件保留。",
+    "nb.cell.stateRevision": "状态 {0}",
+    "nb.cell.stateRevisionTip": "会话状态的版本号。它通常等于单元编号；在分支或重放后，同一个单元可能对应另一个状态版本。",
   },
   en: {
     "nb.crash.notice":
@@ -81,6 +83,8 @@ const COPY: CopyTable = {
     "nb.env.selectedIdle": "Selected {0}; the Python kernel starts there with the first cell",
     "nb.env.rSelected": "R cells will run in {0} (the next R cell starts a fresh R kernel)",
     "nb.env.selectTitle": "Choose the runtime environment: built-in ones ship with OpenAI4S, local ones were found on this computer. Switching the Python environment restarts the kernel and clears its variables; the Notebook and files are kept.",
+    "nb.cell.stateRevision": "state {0}",
+    "nb.cell.stateRevisionTip": "The session state's version number. It usually equals the cell number; after a branch or a replay one cell can map to another state version.",
   },
 };
 

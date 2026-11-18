@@ -90,8 +90,9 @@ export function bindStreamingPre(
 
 /** Feature-local copy: app.js hard-coded the meta line in English. */
 const META_COPY: Record<"en" | "zh", { lines: string; done: string }> = {
-  en: { lines: "{0} lines", done: "done" },
-  zh: { lines: "{0} 行", done: "完成" },
+  // NB-9: these are lines the cell printed, not lines of code.
+  en: { lines: "{0} output lines", done: "done" },
+  zh: { lines: "输出 {0} 行", done: "完成" },
 };
 
 /** app.js:5495 meta line: the line count once there is more than one, else "done". */

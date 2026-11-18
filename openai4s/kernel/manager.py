@@ -529,6 +529,7 @@ class Kernel:
         *,
         cell_id: str | None = None,
         action_context: dict[str, Any] | None = None,
+        cell_label: str | int | None = None,
     ) -> dict:
         """Run one cell; block until the response frame, servicing host_calls.
 
@@ -576,6 +577,10 @@ class Kernel:
                     "code": code,
                     "origin": origin,
                 }
+                if cell_label is not None and str(cell_label).isdigit():
+                    # The number the chat and the Notebook show; the worker
+                    # names the cell's code `<cell N>` for tracebacks.
+                    request["label"] = str(cell_label)[:9]
                 if self._sinks is not None:
                     # Opened before the request is sent, so the worker's
                     # blocking open finds a reader already waiting and never

@@ -96,15 +96,15 @@ describe("liveOutputDelta / truncation", () => {
     expect(handle.text).toBe(pushes[0]);
   });
 
-  it("toolMetaLabel keeps the original n>1 / done wording, in the UI language", async () => {
+  it("toolMetaLabel says the lines are output lines (NB-9), in the UI language", async () => {
     await setLang("en");
     expect(toolMetaLabel(0)).toBe("done");
     expect(toolMetaLabel(1)).toBe("done");
-    expect(toolMetaLabel(2)).toBe("2 lines");
-    expect(toolMetaLabel(5)).toBe("5 lines");
+    expect(toolMetaLabel(2)).toBe("2 output lines");
+    expect(toolMetaLabel(5)).toBe("5 output lines");
     await setLang("zh");
     expect(toolMetaLabel(1)).toBe("完成");
-    expect(toolMetaLabel(5)).toBe("5 行");
+    expect(toolMetaLabel(5)).toBe("输出 5 行");
     await setLang("en");
   });
 });

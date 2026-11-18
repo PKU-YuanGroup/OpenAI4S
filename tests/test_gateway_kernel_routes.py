@@ -652,3 +652,36 @@ def test_the_quarantine_guard_still_covers_the_mutating_routes(spec, tmp_path):
     with pytest.raises(gateway_mod.GatewayError) as raised:
         _call(handler, spec.method, path, body={"code": "1"})
     assert raised.value.code == 423, f"{spec.name} is not write-protected"
+
+
+def test_a_session_cell_traceback_uses_the_cell_number_the_notebook_shows(tmp_path):
+    """NB-9: through the real runner and kernel, a failed cell's traceback
+    names `<cell N>` with N the cell_index the Notebook and the chat card show,
+    not the worker's private counter."""
+    runner, _handler, fid = _setup(tmp_path, notebook_repl=True)
+    try:
+        runner.run_repl(fid, "proj-kernel", "a = 1")
+        outcome = runner.run_repl(fid, "proj-kernel", "b = 2\n1 / 0")
+        cell = outcome["cell"]
+        index = cell.get("cell_index")
+        assert isinstance(index, int) and index >= 2
+        assert f'File "<cell {index}>", line 2, in <module>' in cell["error"]
+    finally:
+        runner.close()
+
+
+def test_the_cell_number_is_only_offered_to_kernels_that_take_it():
+    class _Takes:
+        def execute(
+            self, code, origin="agent", on_chunk=None, *, cell_id=None, cell_label=None
+        ):
+            return {}
+
+    class _Fake:
+        def execute(self, code, origin="agent", on_chunk=None, *, cell_id=None):
+            return {}
+
+    assert gateway_mod._cell_label_kwargs(_Takes(), 7) == {"cell_label": "7"}
+    assert gateway_mod._cell_label_kwargs(_Fake(), 7) == {}
+    assert gateway_mod._cell_label_kwargs(_Takes(), None) == {}
+    assert gateway_mod._cell_label_kwargs(_Takes(), True) == {}

@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import inspect
 import io
 import json
 import mimetypes
@@ -12697,6 +12698,10 @@ class SessionRunner:
         def run_cell(kernel):
             binder = getattr(kernel, "bind_action_context", None)
             receipt_binder = getattr(st.dispatcher, "bind_artifact_receipt_scope", None)
+            # NB-9: the session's cell number, so the kernel names this cell's
+            # code `<cell N>` in tracebacks -- the number the chat card and the
+            # Notebook show. Only for kernels whose execute takes it.
+            label = _cell_label_kwargs(kernel, getattr(st, "cell_index", None))
             with (
                 receipt_binder() if callable(receipt_binder) else nullcontext([])
             ) as artifact_receipts:
@@ -12707,6 +12712,7 @@ class SessionRunner:
                             origin=origin,
                             on_chunk=on_chunk,
                             cell_id=cell_id,
+                            **label,
                         )
                 else:
                     result = kernel.execute(
@@ -12714,6 +12720,7 @@ class SessionRunner:
                         origin=origin,
                         on_chunk=on_chunk,
                         cell_id=cell_id,
+                        **label,
                     )
             if artifact_receipts:
                 result["_openai4s_artifact_receipts"] = list(artifact_receipts)
@@ -21868,6 +21875,21 @@ def _figure_with_pins(raw: bytes, pins: list) -> tuple[str | None, str]:
     buf = io.BytesIO()
     im.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii"), "image/png"
+
+
+def _cell_label_kwargs(kernel: Any, index: Any) -> dict[str, str]:
+    """``{"cell_label": "N"}`` when ``kernel.execute`` accepts it, else ``{}``."""
+    if not isinstance(index, int) or isinstance(index, bool) or index < 1:
+        return {}
+    try:
+        params = inspect.signature(kernel.execute).parameters
+    except (TypeError, ValueError, AttributeError):
+        return {}
+    if "cell_label" in params or any(
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+    ):
+        return {"cell_label": str(index)}
+    return {}
 
 
 def _annotation_comments_text(annos: list) -> str:
