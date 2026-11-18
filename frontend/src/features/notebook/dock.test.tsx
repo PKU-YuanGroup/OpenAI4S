@@ -34,6 +34,7 @@ import {
   kernelExitText,
   outputIsLong,
   outputLabel,
+  writtenImages,
 } from "./Notebook";
 import { nbT } from "./copy";
 
@@ -298,5 +299,18 @@ describe("Notebook cell output disclosure", () => {
     expect(outputLabel(long, false, false)).toBe(nbT("nb.output.long", nbT("nb.output.stdout"), 200));
     // A running cell is never labelled (or collapsed) as long.
     expect(outputLabel(long, false, true)).toBe(nbT("nb.output.stdout"));
+  });
+});
+
+describe("Notebook images a cell wrote", () => {
+  it("shows saved image files inline, once, beside captured figures", () => {
+    const cell = {
+      producing_cell_id: "c-img",
+      figures: ["figure_cell3_1.png"],
+      files_written: ["figure_cell3_1.png", "plots/volcano.png", "Rplot_2_01.png", "table.csv", "Rplots.pdf"],
+    };
+    expect(writtenImages(cell)).toEqual(["plots/volcano.png", "Rplot_2_01.png"]);
+    const many = { files_written: Array.from({ length: 20 }, (_, i) => `p${i}.png`) };
+    expect(writtenImages(many)).toHaveLength(8);
   });
 });

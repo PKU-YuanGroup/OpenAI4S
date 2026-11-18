@@ -416,6 +416,21 @@ function CellFiguresSlot({ cell, live }: { cell: NotebookCell; live: boolean }) 
   return <CellFigures cell={cell} names={names} />;
 }
 
+const INLINE_IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+const MAX_INLINE_IMAGES = 8;
+
+/**
+ * Image files the cell wrote itself -- `plt.savefig("x.png")`, an R plot --
+ * shown like the figures the kernel captured. Only those appeared inline; a
+ * saved image was a file-name chip to click through.
+ */
+export function writtenImages(cell: NotebookCell): string[] {
+  const captured = new Set(cell.figures || []);
+  return (cell.files_written || [])
+    .filter((name) => INLINE_IMAGE.test(name) && !captured.has(name))
+    .slice(0, MAX_INLINE_IMAGES);
+}
+
 /**
  * One component for a cell from its first chunk to its final record. A live
  * cell and a finished one used to be different components under the same
@@ -425,6 +440,7 @@ function CellFiguresSlot({ cell, live }: { cell: NotebookCell; live: boolean }) 
 function CellView({ cell }: { cell: NotebookCell }) {
   const live = !!(cell.live || cell.draft);
   const csvs = live ? [] : (cell.files_written || []).filter((f) => /\.(csv|tsv)$/i.test(f)).slice(0, 4);
+  const images = live ? [] : writtenImages(cell);
   return (
     <CellShell cell={cell}>
       <CellCode cell={cell} live={live} />
@@ -433,6 +449,7 @@ function CellView({ cell }: { cell: NotebookCell }) {
       {cell.error ? <KernelExitNotice error={cell.error} /> : null}
       {cell.error ? <ErrorBlock raw={cell.error} /> : null}
       <CellFiguresSlot cell={cell} live={live} />
+      {images.length ? <CellFigures cell={cell} names={images} /> : null}
       {csvs.map((f) => (
         <TableMount key={f} fname={f} cell={cell} />
       ))}

@@ -404,6 +404,7 @@ lockBinding(".oai4s_lineage", .oai4s_private)
 
   err <- NULL; lineno <- NULL; callname <- NULL; interrupted <- FALSE
   files_read <- character(0); observing_reads <- TRUE
+  .oai4s_plots$cell <- .oai4s_plots$cell + 1L
   t0 <- Sys.time(); p0 <- proc.time()
   .oai4s_lineage$begin()
   on.exit({
@@ -469,6 +470,9 @@ lockBinding(".oai4s_lineage", .oai4s_private)
   files_read <- .oai4s_lineage$finish()
   observing_reads <- FALSE
 
+  # Written to disk now, inside the cell, so the host sees the PNGs among the
+  # files this cell wrote; a dev.off() message still lands in its sinks.
+  .oai4s_close_plots()
   .oai4s_unwind_sinks()
   # Closed BEFORE the response frame, so that by the time the host learns the
   # cell is over the fifos are already at EOF and its readers end on that
@@ -731,6 +735,32 @@ assign("quit", function(...) stop("quit() is disabled inside openai4s R cells; t
 assign("q", function(...) stop("q() is disabled inside openai4s R cells; the kernel stays alive"),
        envir = .oai4s_guards)
 lockEnvironment(.oai4s_guards, bindings = TRUE)
+
+# Plots a cell draws on the default device become PNG files in the working
+# directory -- Rplot_<cell>_<page>.png -- closed when the cell ends, so the
+# Notebook shows them inline as it does a matplotlib figure. Rscript's default
+# device wrote every plot of the session into one Rplots.pdf, which the
+# Notebook could only offer as a link. Devices a cell opens itself (pdf(),
+# png(...)) are untouched. Only where this R build can write PNG at all.
+.oai4s_plots <- new.env(parent = emptyenv())
+.oai4s_plots$cell <- 0L
+.oai4s_plots$devices <- integer(0)
+if (isTRUE(tryCatch(capabilities("png"), error = function(e) FALSE))) {
+  options(device = function(...) {
+    grDevices::png(filename = sprintf("Rplot_%d_%%02d.png", .oai4s_plots$cell),
+                   width = 900L, height = 650L, res = 110L)
+    .oai4s_plots$devices <- c(.oai4s_plots$devices, grDevices::dev.cur())
+    invisible(NULL)
+  })
+}
+.oai4s_close_plots <- function() {
+  for (d in rev(.oai4s_plots$devices)) {
+    if (d %in% grDevices::dev.list()) {
+      tryCatch(grDevices::dev.off(which = d), error = function(e) NULL)
+    }
+  }
+  .oai4s_plots$devices <- integer(0)
+}
 
 # parse one line and dispatch it; returns "shutdown" | "ok"
 .oai4s_handle_line <- function(line) {
