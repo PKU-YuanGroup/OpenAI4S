@@ -322,6 +322,37 @@ describe("a loaded Skill's network limit", () => {
     expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
   });
 
+  it("a shell command the limit refused says so instead of a bare failure", async () => {
+    await setLang("zh");
+    const reason =
+      "skill host_only manifest does not declare destination 'eutils.ncbi.nlm.nih.gov': the loaded literature-review Skill limits this session's network to 3 domains";
+    const card = buildStepCard({
+      step_id: "b-1",
+      kind: "bash",
+      title: "Running curl",
+      status: "error",
+      summary: "failed: " + reason,
+      input: { command: "curl -s https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi" },
+      output: {
+        error: reason,
+        blocked: {
+          by: "skill_network",
+          skills: ["literature-review"],
+          domains: DOMAINS,
+          destination: "eutils.ncbi.nlm.nih.gov",
+          search: false,
+        },
+      },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能的联网限制拦下");
+    const text = card.querySelector(".s-net-text")!.textContent;
+    expect(text).toContain("literature-review 把本会话联网限定为 3 个域名");
+    expect(text).toContain("eutils.ncbi.nlm.nih.gov 不在其中");
+    expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
+    // The server's own words stay available below the explanation.
+    expect(card.querySelector(".s-net-blocked")!.querySelector("pre")!.textContent).toBe(reason);
+  });
+
   it("an ordinary load card keeps the server's summary", () => {
     const card = buildStepCard({
       step_id: "l-2",

@@ -151,3 +151,138 @@ def test_the_model_reads_the_limit_before_the_recipe(tmp_path):
     assert "approving it cannot widen the limit" in head
     assert "# Literature review" in text
     disp.store.close()
+
+
+# --- SEC-6: refused before an approval card, with the real reason -----------
+
+
+class _RecordingBroker:
+    """A permission broker that records whether anyone was asked."""
+
+    def __init__(self) -> None:
+        self.asked: list[dict] = []
+
+    def gate(self, **kwargs):
+        self.asked.append(kwargs)
+        return {"allow": False, "message": "denied in test"}
+
+
+def _lit_session(tmp_path, monkeypatch, frame_id: str):
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.store import get_store
+
+    cfg = Config(data_dir=tmp_path / "data")
+    store = get_store(cfg.db_path)
+    store.seed_default_permission_rules()
+    frame = store.new_frame(kind="turn")
+    disp = build_dispatcher(cfg, frame_id=frame)
+    steps: list[dict] = []
+    disp.on_step = steps.append
+    recorder = _RecordingBroker()
+    monkeypatch.setattr("openai4s.permissions.broker", lambda: recorder)
+    with disp.bind_sandbox_status(_ENFORCED):
+        loaded = disp("load_skill", [{"name": "literature-review"}])
+    assert loaded.get("name") == "literature-review", loaded
+    steps.clear()
+    return disp, steps, recorder
+
+
+def _bash_proposal(command: str) -> dict:
+    return {
+        "command": command,
+        "cwd": "/",
+        "challenge": "c" * 24,
+        "generation": "worker:test",
+        "timeout": 60,
+    }
+
+
+def test_a_command_the_skill_limit_refuses_never_asks_for_approval(
+    tmp_path, monkeypatch
+):
+    """The approval card read "allowed" beside the refusal; now nobody is asked."""
+
+    disp, steps, recorder = _lit_session(tmp_path, monkeypatch, "frame-bash")
+    with disp.bind_sandbox_status(_ENFORCED):
+        refused = disp(
+            "authorize_bash",
+            [_bash_proposal("curl -s https://www.nejm.org/doi/full/10.1056/x")],
+        )
+    assert recorder.asked == []
+    assert set(refused) == {"error"}
+    reason = refused["error"]
+    assert "does not declare destination 'www.nejm.org'" in reason
+    assert "literature-review Skill limits this session's network" in reason
+    assert "eutils.ncbi.nlm.nih.gov" in reason
+    assert "approving it cannot widen" in reason
+
+    end = next(step for step in steps if step.get("phase") == "end")
+    assert end["status"] == "error"
+    blocked = end["output"]["blocked"]
+    assert blocked["by"] == "skill_network"
+    assert blocked["destination"] == "www.nejm.org"
+    assert blocked["skills"] == ["literature-review"]
+    assert "eutils.ncbi.nlm.nih.gov" in blocked["domains"]
+    assert blocked["search"] is False
+
+    # A declared destination still goes to the user for approval as before.
+    with disp.bind_sandbox_status(_ENFORCED):
+        asked = disp(
+            "authorize_bash",
+            [_bash_proposal("curl -s https://eutils.ncbi.nlm.nih.gov/entrez/x")],
+        )
+    assert len(recorder.asked) == 1
+    assert asked == {"error": "Permission denied: denied in test"}
+    disp.store.close()
+
+
+@pytest.mark.parametrize(
+    ("method", "spec"),
+    [
+        ("web_download", {"url": "https://www.nejm.org/a.pdf", "path": "a.pdf"}),
+        ("request_network_access", {"domain": "www.nejm.org", "reason": "paper"}),
+    ],
+)
+def test_a_network_request_the_skill_limit_refuses_is_not_put_to_the_user(
+    tmp_path, monkeypatch, method, spec
+):
+    disp, _steps, recorder = _lit_session(tmp_path, monkeypatch, f"frame-{method}")
+    refused = disp(method, [spec])
+    assert recorder.asked == []
+    assert set(refused) == {"error"}
+    assert "does not declare destination 'www.nejm.org'" in refused["error"]
+    disp.store.close()
+
+
+def test_the_cell_hears_the_hosts_reason_not_authorization_unavailable():
+    from openai4s.sdk.bash import BashExecutor
+
+    reason = (
+        "skill host_only manifest does not declare destination 'www.nejm.org': "
+        "the loaded literature-review Skill limits this session's network"
+    )
+
+    def worker_host_call(method, _args):
+        # How the worker's Host channel raises a soft-fail answer.
+        raise RuntimeError(f"host.{method} error: {reason}")
+
+    executor = BashExecutor(worker_host_call, generation="worker:test")
+    with pytest.raises(RuntimeError) as refused:
+        executor.run("curl -s https://www.nejm.org/x")
+    assert str(refused.value) == f"bash: {reason}; command was not executed"
+
+    def denied_by_user(method, _args):
+        raise RuntimeError(f"host.{method} error: Permission denied: denied by user")
+
+    with pytest.raises(RuntimeError) as denied:
+        BashExecutor(denied_by_user, generation="worker:test").run("ls")
+    assert "Permission denied: denied by user" in str(denied.value)
+
+    def legacy(method, _args):
+        raise RuntimeError(f"host.{method} error: unknown host method: {method!r}")
+
+    with pytest.raises(RuntimeError) as unavailable:
+        BashExecutor(legacy, generation="worker:test").run("ls")
+    assert str(unavailable.value) == (
+        "bash: host authorization unavailable; command was not executed"
+    )

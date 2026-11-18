@@ -121,6 +121,32 @@ def _within(path: Path, root: Path) -> bool:
         return False
 
 
+#: How the worker's Host channel words a soft-fail ``{"error": ...}`` answer.
+_AUTHORIZE_ERROR_PREFIX = "host.authorize_bash error: "
+#: Host answers that mean no authorization service exists at all.
+_NO_AUTHORIZER = ("unknown host method", "no host dispatcher")
+
+
+def _authorization_failure(exc: BaseException) -> str:
+    """What the Cell is told when the Host did not issue a capability.
+
+    Every failure used to read "host authorization unavailable", including a
+    Host that answered with a reason -- a loaded Skill's network limit, a
+    user's denial, the egress allowlist -- so the model and the user saw two
+    different explanations of one refusal. A real refusal keeps its reason;
+    only a Host with no authorization service at all is "unavailable".
+    """
+
+    text = str(exc)
+    if text.startswith(_AUTHORIZE_ERROR_PREFIX):
+        reason = " ".join(text[len(_AUTHORIZE_ERROR_PREFIX) :].split())
+        if reason and not reason.lower().startswith(_NO_AUTHORIZER):
+            if reason.startswith("bash"):
+                return f"{reason}; command was not executed"
+            return f"bash: {reason}; command was not executed"
+    return "bash: host authorization unavailable; command was not executed"
+
+
 def _capability_error(result: Any, fallback: str) -> RuntimeError:
     if isinstance(result, dict) and result.get("error"):
         return RuntimeError(str(result["error"]))
@@ -374,9 +400,7 @@ class BashExecutor:
             # network and cannot widen egress by omitting that check.
             raw_capability = self._authorization_call("authorize_bash", [binding])
         except Exception as exc:  # noqa: BLE001 — legacy dispatcher: deny
-            raise RuntimeError(
-                "bash: host authorization unavailable; command was not executed"
-            ) from exc
+            raise RuntimeError(_authorization_failure(exc)) from exc
         capability = validate_capability(
             raw_capability,
             command=command,

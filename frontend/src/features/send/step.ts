@@ -26,6 +26,8 @@ import { appendSemanticSkillSearch } from "../judgment/chips";
 import { sendCopy } from "./copy";
 import { icon, iconEl } from "./icon";
 import {
+  blockedBody,
+  blockedView,
   loadView,
   marksNetworkLimit,
   networkNoticeBody,
@@ -362,6 +364,15 @@ export function stepBody(step: Step): HTMLElement {
   ) {
     if (inp.request) box.appendChild(clipPre(inp.request, "s-cmd"));
     box.appendChild(delegateStepBody(inp, out));
+    return box;
+  }
+  const blocked = blockedView(step);
+  if (blocked) {
+    if (inp.command) {
+      box.appendChild(codeBlock(String(inp.command), { term: true, lang: "bash", langLabel: "shell" }));
+    } else if (inp.query) box.appendChild(el("div", "s-q", "“" + String(inp.query) + "”"));
+    else if (inp.url) box.appendChild(el("div", "s-q", String(inp.url)));
+    box.appendChild(blockedBody(blocked, out.error != null ? String(out.error) : ""));
     return box;
   }
   if (out.error) {

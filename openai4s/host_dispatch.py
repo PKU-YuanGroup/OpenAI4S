@@ -983,7 +983,9 @@ def _delegate_step_projection(result: Any, ok: bool) -> tuple[dict, str, str]:
     return ({"raw": _short(safe, 2000)}, "malformed result", "error")
 
 
-def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]:
+def _step_end(
+    method: str, kind: str, result: Any, ok: bool, *, frame_id: str | None = None
+) -> tuple[dict, str]:
     """(output, one-line summary) for a finished step."""
     if kind == "delegate":
         # Before the generic declared-failure read: a max_turns envelope
@@ -999,7 +1001,15 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
         # Timeline) nothing to act on.
         reason = " ".join(str(err).split()) if err else ""
         summary = "failed" if not reason else f"failed: {reason[:160]}"
-        return ({"error": str(err)[:600] if err else "failed"}, summary)
+        failure: dict[str, Any] = {"error": str(err)[:600] if err else "failed"}
+        # A loaded Skill's network limit refused it: the card says so, not a
+        # bare failure (a refused search used to read "0 results").
+        from openai4s.server.skill_network_admission import refusal_view
+
+        blocked = refusal_view(reason, frame_id)
+        if blocked is not None:
+            failure["blocked"] = blocked
+        return (failure, summary)
     r = result if isinstance(result, dict) else {}
     if kind == "search":
         raw = result if isinstance(result, list) else r.get("results")
@@ -2596,6 +2606,15 @@ class HostDispatcher:
                 ok = False
                 return result
             if requires_approval:
+                # A refusal no approval can change is answered before anyone
+                # is asked. A loaded Skill's network manifest refused the
+                # request only after the user had approved it, so the card
+                # read "allowed" beside the failure.
+                policy_refusal = self._refusal_before_approval(method, args)
+                if policy_refusal is not None:
+                    result = {"error": policy_refusal}
+                    ok = False
+                    return result
                 permission_method = "bash" if method == "authorize_bash" else method
                 target = _gate_target(permission_method, args)
                 from openai4s.permissions import broker
@@ -2759,7 +2778,9 @@ class HostDispatcher:
                     step_result = result
                     if step_result is None and raised_error is not None:
                         step_result = {"error": raised_error}
-                    output, summary = _step_end(method, view[0], step_result, ok)
+                    output, summary = _step_end(
+                        method, view[0], step_result, ok, frame_id=self.frame_id
+                    )
                     if view[0] == "delegate":
                         # Delegate-specific status read at the decision site:
                         # the envelope's task_status is authoritative, and the
@@ -3259,6 +3280,19 @@ class HostDispatcher:
         """Audit the worker-reported result; never execute or replay the command."""
 
         return self._bash_authorization.record_result(spec or {})
+
+    def _refusal_before_approval(self, method: str, args: list) -> str | None:
+        """The policy refusal a gated call would get, asked before the gate."""
+
+        spec = args[0] if args and isinstance(args[0], dict) else {}
+        try:
+            if method == "authorize_bash":
+                return self._bash_authorization.policy_refusal(spec)
+            from openai4s.server.skill_network_admission import request_refusal
+
+            return request_refusal(method, spec)
+        except Exception:  # noqa: BLE001 - the handler still enforces the policy
+            return None
 
     def _m_egress_check(self, spec: dict) -> dict:
         """Read-only egress verdict for domains the kernel-local host.bash saw.

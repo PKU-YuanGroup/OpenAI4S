@@ -6,7 +6,9 @@
  *
  * - its own notice card (`kind: "network"`, `output.notice: "skill_network"`),
  *   emitted once per manifest by whichever call bound it;
- * - the Skill's load card (`output.session_network`).
+ * - the Skill's load card (`output.session_network`);
+ * - a request the limit refused (`output.blocked`), which is refused before
+ *   any approval is asked for.
  *
  * The server's summary and title are English; these helpers give the card
  * its words in the UI language and the domain list on expand.
@@ -25,6 +27,10 @@ const COPY: CopyTable = {
     "net.notice.skills": "限制来自技能：{0}",
     "net.domains": "允许的域名（{0} 个）",
     "net.load.meta": "已加载 · 本会话联网限定为 {0} 个域名",
+    "net.blocked.meta": "被技能的联网限制拦下",
+    "net.blocked.explain": "{0} 把本会话联网限定为 {1} 个域名，{2} 不在其中，这个请求没有发出，也不需要你批准。",
+    "net.blocked.unnamed": "已加载的技能",
+    "net.blocked.reason": "原始原因",
   },
   en: {
     "net.notice.title": "Loaded {0}: this session's network is limited to {1}",
@@ -34,6 +40,11 @@ const COPY: CopyTable = {
     "net.notice.skills": "Limited by: {0}",
     "net.domains": "Allowed domains ({0})",
     "net.load.meta": "loaded · network limited to {0}",
+    "net.blocked.meta": "blocked by a Skill's network limit",
+    "net.blocked.explain":
+      "{0} limits this session's network to {1}; {2} is not one of them, so the request was not sent and needs no approval.",
+    "net.blocked.unnamed": "A loaded Skill",
+    "net.blocked.reason": "Original reason",
   },
 };
 
@@ -88,6 +99,27 @@ export function loadView(step: StepLike): SkillNetworkView | null {
   return { skill, skills: skills.length ? skills : [skill], domains };
 }
 
+export type BlockedView = SkillNetworkView & {
+  /** The refused destination; empty when the refusal named none. */
+  destination: string;
+  /** A web search none of whose engines the limit allows. */
+  search: boolean;
+};
+
+/** A request the session's Skill limit refused, or null. */
+export function blockedView(step: StepLike): BlockedView | null {
+  const blocked = rec(rec(step.output).blocked);
+  if (blocked.by !== "skill_network") return null;
+  const skills = strings(blocked.skills);
+  return {
+    skill: skills.join(", "),
+    skills,
+    domains: strings(blocked.domains),
+    destination: String(blocked.destination || ""),
+    search: blocked.search === true,
+  };
+}
+
 /** The localized card title, when the step is a notice. */
 export function stepNetworkLabel(step: StepLike): string | null {
   const view = noticeView(step);
@@ -97,6 +129,7 @@ export function stepNetworkLabel(step: StepLike): string | null {
 
 /** The localized one-line status, when the step is about the Skill limit. */
 export function stepNetworkMeta(step: StepLike): string | null {
+  if (blockedView(step)) return netT("net.blocked.meta");
   const notice = noticeView(step);
   if (notice) return netT("net.notice.meta", domainCount(notice.domains.length));
   const load = loadView(step);
@@ -106,7 +139,7 @@ export function stepNetworkMeta(step: StepLike): string | null {
 
 /** True when the card should carry the network-limit accent. */
 export function marksNetworkLimit(step: StepLike): boolean {
-  return !!(noticeView(step) || loadView(step));
+  return !!(noticeView(step) || loadView(step) || blockedView(step));
 }
 
 function domainList(domains: string[]): HTMLElement {
@@ -126,5 +159,23 @@ export function networkNoticeBody(view: SkillNetworkView): HTMLElement {
     box.appendChild(el("div", "s-net-text", netT("net.notice.skills", view.skills.join(", "))));
   }
   box.appendChild(domainList(view.domains));
+  return box;
+}
+
+/** What a refused request's card says, with the server's reason kept below. */
+export function blockedBody(view: BlockedView, reason: string): HTMLElement {
+  const box = el("div", "s-net s-net-blocked");
+  const who = view.skill || netT("net.blocked.unnamed");
+  const count = domainCount(view.domains.length);
+  box.appendChild(
+    el("div", "s-net-text", netT("net.blocked.explain", who, count, view.destination || "?")),
+  );
+  if (view.domains.length) box.appendChild(domainList(view.domains));
+  if (reason) {
+    box.appendChild(el("div", "s-net-head", netT("net.blocked.reason")));
+    const pre = el("pre", "s-pre d-del");
+    pre.textContent = reason.slice(0, 14000);
+    box.appendChild(pre);
+  }
   return box;
 }

@@ -658,9 +658,7 @@ def _admit_shell_domains(
         if not domain_in_declared(host, declared):
             return _deny(
                 sink=SHELL_SINK,
-                reason=(
-                    f"skill host_only manifest does not declare destination {host!r}"
-                ),
+                reason=undeclared_destination_reason(host, host_only),
                 blocked_on=("undeclared_domain",),
                 bindings=host_only,
                 sandbox=sandbox_status,
@@ -700,9 +698,7 @@ def _admit_host_fetch(
         if not domain_in_declared(host, declared):
             return _deny(
                 sink=HOST_FETCH_SINK,
-                reason=(
-                    f"skill host_only manifest does not declare destination {host!r}"
-                ),
+                reason=undeclared_destination_reason(host, host_only),
                 blocked_on=("undeclared_domain",),
                 bindings=host_only,
                 sandbox=None,
@@ -735,6 +731,125 @@ def domain_in_declared(host: str, declared: Sequence[str]) -> bool:
         if candidate == allowed or candidate.endswith("." + allowed):
             return True
     return False
+
+
+#: Every Skill-limit refusal names its cause with this phrase. The phrase is
+#: also how a Step card recognizes the refusal (``refusal_view``); both come
+#: from this module, so the wording and the recognizer cannot drift apart.
+UNDECLARED_MARK = "skill host_only manifest does not declare"
+_LISTED_DOMAINS = 24
+
+
+def _limit_clause(bindings: Sequence[SkillNetworkBinding]) -> str:
+    host_only = _declared_host_only(bindings)
+    skills = list(dict.fromkeys(item.skill_id for item in host_only))
+    declared = host_only_declared_domains_from(host_only)
+    if not skills:
+        subject = "a loaded Skill limits"
+    elif len(skills) == 1:
+        subject = f"the loaded {skills[0]} Skill limits"
+    else:
+        subject = f"the loaded {', '.join(skills)} Skills limit"
+    shown = ", ".join(declared[:_LISTED_DOMAINS])
+    if len(declared) > _LISTED_DOMAINS:
+        shown += ", …"
+    count = f"{len(declared)} domain" + ("" if len(declared) == 1 else "s")
+    return f"{subject} this session's network to {count}" + (
+        f" ({shown})" if shown else ""
+    )
+
+
+def undeclared_destination_reason(
+    host: str, bindings: Sequence[SkillNetworkBinding]
+) -> str:
+    """Why a request to ``host`` is refused, in words a person can act on.
+
+    It used to be only the first clause, which named neither the Skill nor
+    the domains it allows, and the Cell then rewrote it to "host authorization
+    unavailable". Approval is named because the request is refused whatever
+    anyone approves.
+    """
+
+    return (
+        f"{UNDECLARED_MARK} destination {host!r}: {_limit_clause(bindings)}. "
+        "The request was not sent, and approving it cannot widen a Skill's "
+        "network limit; use one of those domains or the Skill's own helpers."
+    )
+
+
+def undeclared_destination_reason_for_frame(
+    host: str, frame_id: str | None = None
+) -> str:
+    """``undeclared_destination_reason`` for the current (or given) frame."""
+
+    key = str(frame_id or _CURRENT_FRAME.get() or "").strip()
+    return undeclared_destination_reason(host, bindings_for(key))
+
+
+def refusal_view(reason: str, frame_id: str | None) -> dict[str, Any] | None:
+    """The structured "blocked by a Skill's network limit" view of a refusal.
+
+    ``None`` unless ``reason`` is one this module worded. The Skill and domain
+    lists come from the frame's bindings, not from parsing the text, which
+    elides a long domain list.
+    """
+
+    text = str(reason or "")
+    if UNDECLARED_MARK not in text:
+        return None
+    summary = narrowing_summary(frame_id) or {"skills": [], "domains": []}
+    destination = ""
+    marker = f"{UNDECLARED_MARK} destination "
+    start = text.find(marker)
+    if start >= 0:
+        rest = text[start + len(marker) :]
+        if rest[:1] in {"'", '"'}:
+            end = rest.find(rest[0], 1)
+            if end > 0:
+                destination = rest[1:end]
+    return {
+        "by": "skill_network",
+        "skills": list(summary["skills"]),
+        "domains": list(summary["domains"]),
+        "destination": destination,
+        "search": f"{UNDECLARED_MARK} any enabled search engine" in text,
+    }
+
+
+#: Host methods whose single target a Skill limit can refuse up front.
+_TARGET_KEYS = {
+    "web_fetch": "url",
+    "web_download": "url",
+    "request_network_access": "domain",
+}
+
+
+def request_refusal(method: str, spec: Any) -> str | None:
+    """A Skill-limit refusal for a request that would otherwise ask for approval.
+
+    The approval gate ran before the handler, so a request the bound manifest
+    was always going to refuse first asked the user, and the "allowed" answer
+    then failed. Answering here, before the gate, keeps the user from being
+    asked to approve something that cannot happen. Granting network access to
+    an undeclared domain is the same case: the grant cannot widen a Skill's
+    limit. Uses the frame scope the dispatcher has already entered.
+    """
+
+    key = _TARGET_KEYS.get(method)
+    if key is None or not isinstance(spec, Mapping):
+        return None
+    target = str(spec.get(key) or "").strip()
+    if not target:
+        return None
+    from openai4s.egress import domain_of
+
+    declared = active_host_only_domains()
+    if declared is None:
+        return None
+    host = domain_of(target)
+    if not host or domain_in_declared(host, declared):
+        return None
+    return undeclared_destination_reason_for_frame(host)
 
 
 def raw_required_binding(frame_id: str | None) -> SkillNetworkBinding | None:
