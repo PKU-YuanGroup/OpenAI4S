@@ -31,3 +31,33 @@
   flex: 0 1 auto;
   text-align: center;
 }
+
+/* Interrupt the running REPL cell: an icon and a word, not an unlabeled dot. */
+.nb-interrupt-slot {
+  display: inline-flex;
+}
+.nbc-live-actions {
+  padding: 6px 12px 8px;
+}
+.nb-interrupt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0.5px solid var(--danger);
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nb-interrupt:hover {
+  filter: brightness(0.96);
+}
+.nb-interrupt-icon {
+  font-size: 10px;
+  line-height: 1;
+}

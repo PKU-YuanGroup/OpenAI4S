@@ -14,7 +14,12 @@ import { hasWsHandler, registerWsHandler } from "../ws/registry";
 import type { WsHandler, WsMessage } from "../ws/types";
 import { mountLiveNotebookFigure, highlightTraceback, notebookExportLink } from "./chrome";
 import { loadExecutionLog, nbCellDraft, nbCellFinished, nbCellStart, nbCellChunk } from "./cells";
-import { handleKernelStatus, reconcilePendingRepl, scheduleWorkbenchRefresh } from "./kernel";
+import {
+  handleKernelStatus,
+  invalidateKernelCache,
+  reconcilePendingRepl,
+  scheduleWorkbenchRefresh,
+} from "./kernel";
 import { watchNotebookVisibility } from "./scroll";
 import type { WindowTarget } from "./types";
 
@@ -27,7 +32,12 @@ export function registerNotebookHandlers(): void {
     if (mine(eventFrameId(m))) nbCellDraft(m);
   });
   registerUnless("notebook_cell_start", (m: WsMessage) => {
-    if (mine(eventFrameId(m))) nbCellStart(m);
+    if (mine(eventFrameId(m))) {
+      // The kernel row read before this cell said "not started" or named the
+      // previous generation (a respawn, a crash) for as long as the cell ran.
+      invalidateKernelCache();
+      nbCellStart(m);
+    }
   });
   registerUnless("notebook_cell_chunk", (m: WsMessage) => {
     if (mine(eventFrameId(m))) nbCellChunk(m);
@@ -36,6 +46,7 @@ export function registerNotebookHandlers(): void {
     if (mine(eventFrameId(m))) {
       // The chat's activity card shows the same outcome (one handler per type).
       settleLiveCellCard(m);
+      invalidateKernelCache();
       nbCellFinished(m);
       if (currentId.value) void loadExecutionLog(currentId.value);
       scheduleWorkbenchRefresh();

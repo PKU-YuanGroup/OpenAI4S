@@ -15,6 +15,12 @@ const COPY: CopyTable = {
     "nb.output.stdout": "输出",
     "nb.output.stderr": "标准错误（stderr）",
     "nb.output.long": "{0} · {1} 行",
+    "nb.interrupt.label": "中断",
+    "nb.interrupt.title": "中断正在运行的单元（相当于 KeyboardInterrupt，内核和变量保留）",
+    "nb.kernel.action.restart": "正在重启…",
+    "nb.kernel.action.stop": "正在停止…",
+    "nb.kernel.action.start": "正在启动…",
+    "nb.kernel.restartWaits": "智能体正在使用内核，重启会在它当前的执行结束后进行。",
   },
   en: {
     "nb.crash.notice":
@@ -27,6 +33,12 @@ const COPY: CopyTable = {
     "nb.output.stdout": "Output",
     "nb.output.stderr": "stderr",
     "nb.output.long": "{0} · {1} lines",
+    "nb.interrupt.label": "Interrupt",
+    "nb.interrupt.title": "Interrupt the running cell (a KeyboardInterrupt; the kernel and its variables are kept)",
+    "nb.kernel.action.restart": "Restarting…",
+    "nb.kernel.action.stop": "Stopping…",
+    "nb.kernel.action.start": "Starting…",
+    "nb.kernel.restartWaits": "The agent is using the kernel; the restart runs when its current execution ends.",
   },
 };
 

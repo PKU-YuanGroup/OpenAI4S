@@ -11,6 +11,7 @@ import {
   _kc,
   artifactWorkbench,
   pendingReplIdentity,
+  variableInspector,
   type KernelCache,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
@@ -39,6 +40,7 @@ import {
   notebookFetch,
   notifyLoadArtifacts,
 } from "./cells";
+import { nbT } from "./copy";
 import { nbRender } from "./scroll";
 import type { KernelEnvRow, KernelStatus, NotebookCell } from "./types";
 
@@ -319,15 +321,37 @@ export const replBusy = computed(() => {
 export const forkPending = field<string | null>(() => null);
 export const forkBusy = computed(() => !!forkPending.value && forkPending.value === currentId.value);
 
+/**
+ * A Stop/Start/Restart in flight for a session. The header showed the old
+ * generation and "Busy" until the request returned, with nothing saying a
+ * restart had been asked for -- and a restart waits its turn behind whatever
+ * owns the kernel.
+ */
+export const kernelAction = field<{ sid: string; action: string } | null>(() => null);
+
 /** app.js:9911-9918 */
 export async function kernelCtl(action: string): Promise<void> {
-  if (!currentId.value) return;
+  const sid = currentId.value;
+  if (!sid) return;
   if (action === "restart" && !globalThis.confirm(t("nb.kernel.restartConfirm"))) return;
   if (action === "stop" && !globalThis.confirm(t("nb.kernel.stopConfirm"))) return;
+  const ticket = { sid, action };
+  kernelAction.value = ticket;
+  if (dockIsNotebook()) nbRender();
   try {
-    await notebookFetch(`/frames/${currentId.value}/kernel/${action}`, { method: "POST" });
+    if (action === "restart") {
+      // A restart queues behind the execution that owns the kernel. The
+      // user's own running cell is about to lose its namespace anyway, so
+      // interrupt it rather than make the restart wait for it to finish; an
+      // agent turn is not the restart button's to stop, so say it waits.
+      if (identityForOwner(executionQueue.value, "user_repl")) await interruptRepl();
+      else if (identityForOwner(executionQueue.value, "agent")) hint(nbT("nb.kernel.restartWaits"));
+    }
+    await notebookFetch(`/frames/${sid}/kernel/${action}`, { method: "POST" });
   } catch (e) {
     hint(t("nb.kernel.opFailed", apiErrorText(e)), true);
+  } finally {
+    if (kernelAction.value === ticket) kernelAction.value = null;
   }
   invalidateKernelCache();
   if (dockIsNotebook()) nbRender();
@@ -524,6 +548,24 @@ export async function nbSwitchEnv(name: string): Promise<void> {
   if (dockIsNotebook()) nbRender();
 }
 
+/**
+ * Forget the Variable Inspector's reads that describe a namespace that is
+ * gone. It went on listing a restarted kernel's variables as if current.
+ */
+function dropInspectedNamespaces(languages: string[]): void {
+  const state = variableInspector.value;
+  if (!state || !state.results) return;
+  const results = { ...state.results };
+  let changed = false;
+  for (const language of languages) {
+    if (language in results) {
+      delete results[language];
+      changed = true;
+    }
+  }
+  if (changed) variableInspector.value = { ...state, results };
+}
+
 /** kernel_status WS body. app.js:5347-5356 */
 export function handleKernelStatus(m: WsMessage): void {
   if (m.status === "restarted") hint(t("kernel.restarted", m.generation || "?"));
@@ -533,6 +575,9 @@ export function handleKernelStatus(m: WsMessage): void {
     const env = m.env as { name?: string } | undefined;
     hint(t("kernel.envChanged", (env && env.name) || t("kernel.envChanged.default")));
   }
+  // A restart also drops the R kernel (the next R cell starts a fresh one).
+  if (m.status === "restarted" || m.status === "stopped") dropInspectedNamespaces(["python", "r"]);
+  else if (m.status === "env_changed") dropInspectedNamespaces(["python"]);
   invalidateKernelCache();
   if (m.sandbox) {
     // Scrubbed like every other security write, and only the sandbox half:

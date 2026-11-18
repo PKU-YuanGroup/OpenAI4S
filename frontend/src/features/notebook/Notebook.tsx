@@ -45,6 +45,7 @@ import {
   forkNotebookCell,
   identityForOwner,
   interruptRepl,
+  kernelAction,
   kernelCtl,
   kernelIdFromEnv,
   kernelLabel,
@@ -454,8 +455,33 @@ function CellView({ cell }: { cell: NotebookCell }) {
         <TableMount key={f} fname={f} cell={cell} />
       ))}
       {live ? null : <CellIo cell={cell} />}
+      {live && cell.origin === "user" && !cell.draft ? <InterruptButton inCell /> : null}
       {live || cell.draft ? null : <CellActions cell={cell} />}
     </CellShell>
+  );
+}
+
+/**
+ * Interrupt the running REPL cell. It was a dark dot with no icon, text or
+ * accessible name at the bottom of the panel -- below the fold once there
+ * were a few cells -- beside a prominent "Stop" that stops the kernel.
+ */
+function InterruptButton({ inCell = false }: { inCell?: boolean }) {
+  return (
+    <div class={inCell ? "nbc-actions nbc-live-actions" : "nb-interrupt-slot"}>
+      <button
+        class="nb-interrupt"
+        data-action={inCell ? "interrupt-cell" : "interrupt-repl"}
+        title={nbT("nb.interrupt.title")}
+        aria-label={nbT("nb.interrupt.title")}
+        onClick={() => void interruptRepl()}
+      >
+        <span class="nb-interrupt-icon" aria-hidden="true">
+          ■
+        </span>
+        {nbT("nb.interrupt.label")}
+      </button>
+    </div>
   );
 }
 
@@ -719,6 +745,8 @@ function ReplPanel() {
   const quarantined = !!(st && st.view_only === true && st.trust_state === "quarantined");
   const reviveHidden = !st || !!(st.alive || st.turn_running || quarantined);
   const busy = replBusy.value;
+  const pendingAction = kernelAction.value && kernelAction.value.sid === sid ? kernelAction.value.action : "";
+  const shownState = pendingAction ? { text: nbT("nb.kernel.action." + pendingAction), cls: "kstate run" } : state;
   const lang = _replLanguage.value === "r" ? "r" : "python";
   const drafts = _replDrafts.value || { python: "", r: "" };
   return (
@@ -727,14 +755,14 @@ function ReplPanel() {
         <span class="nb-kernel-title">{st ? kernelTitle(st) : "kernel"}</span>
         <div class="nb-repl-actions">
           <EnvSelect />
-          <span class={state.cls}>{state.text}</span>
-          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("stop")}>
+          <span class={shownState.cls}>{shownState.text}</span>
+          <button class="kchip" disabled={!sid || !!pendingAction} title={t("nb.kernel.stopTitle")} onClick={() => void kernelCtl("stop")}>
             {t("nb.kernel.stopLabel")}
           </button>
-          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("start")}>
+          <button class="kchip" disabled={!sid || !!pendingAction} title={t("nb.kernel.startTitle")} onClick={() => void kernelCtl("start")}>
             {t("nb.kernel.startLabel")}
           </button>
-          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("restart")}>
+          <button class="kchip" disabled={!sid || !!pendingAction} title={t("nb.kernel.restartTitle")} onClick={() => void kernelCtl("restart")}>
             {t("nb.kernel.restartLabel")}
           </button>
         </div>
@@ -781,11 +809,7 @@ function ReplPanel() {
             >
               {t("nb.repl.run")}
             </button>
-            <button
-              class={"repl-stop" + (busy ? "" : " hidden")}
-              title={t("nb.repl.interruptTitle")}
-              onClick={() => void interruptRepl()}
-            />
+            {busy ? <InterruptButton /> : null}
           </div>
         </div>
         <textarea

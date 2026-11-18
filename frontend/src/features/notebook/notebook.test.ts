@@ -23,13 +23,14 @@ import {
   cells,
   liveCells,
   pendingReplIdentity,
+  variableInspector,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { bytes, PREVIEW_READ_MAX_BYTES } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { resetStoreFields } from "../../stores/signal-field";
 import { _replayGap, running } from "../../stores/stream";
-import { branchState, securityState } from "../../stores/timeline";
+import { branchState, executionQueue, securityState } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { t } from "../../i18n/runtime";
 import { copyFailedText } from "../chrome/clipboard";
@@ -71,6 +72,9 @@ import {
   currentKernelStatus,
   executeNotebookCode,
   forkNotebookCell,
+  handleKernelStatus,
+  kernelAction,
+  kernelCtl,
   forkPending,
   invalidateKernelCache,
   kernelView,
@@ -553,6 +557,42 @@ describe("F-14 Notebook", () => {
       await tick();
       expect(replBusy.value).toBe(false);
       expect(pendingReplIdentity.value).toBeNull();
+    });
+
+    it("Restart interrupts the user's own running cell instead of queueing behind it", async () => {
+      // NB-10: a restart waited for the running REPL cell, and the header kept
+      // the old generation and "Busy" with nothing saying a restart was asked.
+      vi.stubGlobal("confirm", () => true);
+      vi.stubGlobal("hint", () => undefined);
+      executionQueue.value = {
+        owner: { execution_id: "repl-1", owner: { kind: "user_repl", id: "repl-1" } },
+        queue: [],
+      };
+      const paths: string[] = [];
+      let seenAction: unknown = "unset";
+      setNotebookApi(async (path) => {
+        paths.push(path);
+        if (path.endsWith("/kernel/restart")) seenAction = kernelAction.value;
+        return { ok: true };
+      });
+      await kernelCtl("restart");
+      expect(paths).toEqual(["/frames/frame-1/kernel/interrupt", "/frames/frame-1/kernel/restart"]);
+      expect(seenAction).toEqual({ sid: "frame-1", action: "restart" });
+      expect(kernelAction.value).toBeNull();
+    });
+
+    it("a restart or stop drops the Variable Inspector's read of the old namespace", () => {
+      variableInspector.value = {
+        language: "python",
+        results: { python: { variables: [{ name: "v" }] }, r: { variables: [] } },
+        loading: null,
+        error: "",
+        request: 1,
+      };
+      handleKernelStatus({ type: "kernel_status", status: "env_changed" });
+      expect(Object.keys(variableInspector.value.results)).toEqual(["r"]);
+      handleKernelStatus({ type: "kernel_status", status: "restarted", generation: 2 });
+      expect(variableInspector.value.results).toEqual({});
     });
 
     it("Fork sends one request while one is out, and says when the branch exists", async () => {
