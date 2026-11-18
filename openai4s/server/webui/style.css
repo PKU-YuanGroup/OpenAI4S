@@ -2234,6 +2234,8 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-card.allowed,.perm-card.denied{border-color:var(--border)}
 .perm-card.allowed .perm-status{color:var(--text-200)}
 .perm-card.allowed .perm-status::before{content:"✓ "}
+/* a denial is the user's own answer (or a Stop's), not an error: no red */
+.perm-card.denied .perm-status{color:var(--text-200)}
 .perm-status{margin:8px 0 0;font-size:13px;font-weight:500}
 .perm-card.resolved .perm-status{margin:0 0 0 auto}
 .perm-sec-h{font-size:14px;font-weight:500}
