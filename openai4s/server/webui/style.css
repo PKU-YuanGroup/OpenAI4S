@@ -2240,6 +2240,18 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .nb-icon.on,html[data-theme="dark"] .nb-icon.on{border-color:var(--ink);background:var(--ink);color:var(--bg)}
 #cancel-btn.nb-icon{border-color:var(--ink);background:var(--ink);color:var(--bg)}
 #cancel-btn.nb-icon svg{width:12px;height:12px}
+/* An active plan / explore mode: a labelled chip beside the composer tools
+   for as long as it shapes the next message; a click turns it off. */
+.nb-mode{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 9px 0 10px;border:1px solid var(--ink);border-radius:999px;background:var(--ink);color:var(--bg);font-size:12.5px;font-weight:500;white-space:nowrap;cursor:pointer;flex:none}
+.nb-mode .ic{display:inline-flex}
+.nb-mode .nb-mode-x{opacity:.7}
+.nb-mode:hover .nb-mode-x{opacity:1}
+@media (max-width:480px){.nb-mode>span:not(.ic){display:none}}
+/* a menu row that explains itself (sessions/chrome.ts `desc`) */
+.ctx-item.has-desc{align-items:flex-start;padding-top:7px;padding-bottom:7px;height:auto}
+.ctx-item.has-desc .ic{margin-top:2px}
+.ctx-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ctx-desc{max-width:280px;font-size:12px;line-height:1.4;color:var(--text-400);white-space:normal}
 .nb-model{height:32px;padding:0 8px;gap:6px;border-radius:var(--radius);color:var(--text-200);font-size:14px;font-weight:500}
 .nb-model:hover{background:var(--bg-100);color:var(--text-000)}
 .nb-model select{font-size:14px;font-weight:500;max-width:220px}

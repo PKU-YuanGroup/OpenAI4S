@@ -21,6 +21,7 @@ import { openConversation, resumeWatch } from "./conversation";
 // so Stop sent no request at all and `turnDone` never ran. `turnDone` is a
 // hoisted function declaration, so the sessions<->send cycle resolves at call time.
 import { turnDone } from "../send/turn";
+import { sendCopy } from "../send/copy";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { queueT } from "../timeline/copy";
 import { queuedFollowUpCount } from "../timeline/queue";
@@ -216,13 +217,18 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
         }
       },
     },
+    // The two modes used to be bare names here, explained only by a hint that
+    // flashed when one was switched on. Each says what it does, and an active
+    // one stays visible as a chip beside the composer (send.ts bindComposer).
     {
       label: checked(!!planMode.value) + t("composer.planMode"),
+      desc: sendCopy("planDesc"),
       icon: "grid",
       onClick: () => $("#plan-toggle")?.click(),
     },
     {
       label: checked(!!exploreMode.value) + t("composer.exploreMode"),
+      desc: sendCopy("exploreDesc"),
       icon: "compass",
       onClick: () => $("#explore-toggle")?.click(),
     },

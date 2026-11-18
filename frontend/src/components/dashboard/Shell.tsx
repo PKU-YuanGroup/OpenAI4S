@@ -359,24 +359,19 @@ export function Shell() {
                         data-icon-size="18"
                         type="button"
                       />
-                      <button
-                        id="plan-toggle"
-                        class="nb-icon hidden"
-                        data-i18n-title="composer.planMode"
-                        title="计划模式"
-                        data-icon="grid"
-                        data-icon-size="20"
-                        type="button"
-                      />
-                      <button
-                        id="explore-toggle"
-                        class="nb-icon hidden"
-                        data-i18n-title="composer.exploreMode"
-                        title="自主探索"
-                        data-icon="compass"
-                        data-icon-size="20"
-                        type="button"
-                      />
+                      {/* Switched on from the session options menu; while a
+                          mode is on its chip stays here, saying so, and a
+                          click turns it off (send.ts bindComposer). */}
+                      <button id="plan-toggle" class="nb-mode hidden" type="button">
+                        <span class="ic" data-icon="grid" data-icon-size="14" />
+                        <span data-i18n="composer.planMode">计划模式</span>
+                        <span class="ic nb-mode-x" data-icon="x" data-icon-size="12" />
+                      </button>
+                      <button id="explore-toggle" class="nb-mode hidden" type="button">
+                        <span class="ic" data-icon="compass" data-icon-size="14" />
+                        <span data-i18n="composer.exploreMode">自主探索</span>
+                        <span class="ic nb-mode-x" data-icon="x" data-icon-size="12" />
+                      </button>
                       {/* `bindMic` looks this up at boot. With the tools on the
                           left rather than where legacy had it, so the composer
                           still ends in the send button. */}

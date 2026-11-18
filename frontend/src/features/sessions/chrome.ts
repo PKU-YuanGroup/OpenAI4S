@@ -54,9 +54,18 @@ export function reportFailure(error: unknown): void {
  * which is why it is not a button that closes the menu on click.
  */
 export type MenuItem =
-  | { sep: true; label?: undefined; icon?: undefined; danger?: undefined; onClick?: undefined; node?: undefined }
-  | { sep?: false; label: string; icon?: string; danger?: boolean; onClick?: () => void; node?: undefined }
-  | { node: HTMLElement; sep?: undefined; label?: undefined; icon?: undefined; danger?: undefined; onClick?: undefined };
+  | { sep: true; label?: undefined; icon?: undefined; danger?: undefined; onClick?: undefined; node?: undefined; desc?: undefined }
+  | {
+      sep?: false;
+      label: string;
+      icon?: string;
+      danger?: boolean;
+      onClick?: () => void;
+      node?: undefined;
+      /** One muted line under the label saying what the item does. */
+      desc?: string;
+    }
+  | { node: HTMLElement; sep?: undefined; label?: undefined; icon?: undefined; danger?: undefined; onClick?: undefined; desc?: undefined };
 
 let menuAnchor: Element | null = null;
 
@@ -120,7 +129,13 @@ export function openMenu(anchor: Element, items: MenuItem[]): void {
       ic.innerHTML = icon(it.icon, 16);
       b.appendChild(ic);
     }
-    b.appendChild(el("span", null, it.label));
+    if (it.desc) {
+      const text = el("span", "ctx-text");
+      text.appendChild(el("span", null, it.label));
+      text.appendChild(el("span", "ctx-desc", it.desc));
+      b.appendChild(text);
+      b.classList.add("has-desc");
+    } else b.appendChild(el("span", null, it.label));
     b.onclick = (e) => {
       e.stopPropagation();
       closeMenu();

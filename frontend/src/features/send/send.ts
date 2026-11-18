@@ -729,6 +729,29 @@ function settleRefusedBubble(w: HTMLElement, text: string): void {
 type ComposerDispatch = (text: string) => unknown;
 
 /**
+ * Plan mode and explore mode are switched on from the session options menu,
+ * and their composer buttons used to be hidden for good: once on, nothing on
+ * screen said a mode was shaping the next message. While a mode is on its
+ * chip shows beside the composer tools, with what it does in its title, and a
+ * click turns it off. Repainted on every change of the mode and of language.
+ */
+function bindModeChip(
+  chip: HTMLElement,
+  isOn: () => boolean,
+  nameKey: string,
+  descKey: "planDesc" | "exploreDesc",
+): void {
+  const paint = () => {
+    const on = isOn();
+    chip.classList.toggle("hidden", !on);
+    chip.classList.toggle("on", on);
+    chip.title = sendCopy("modeChipTitle", t(nameKey), sendCopy(descKey));
+  };
+  effect(paint);
+  onLanguageChange(paint);
+}
+
+/**
  * Bind the composer keydown and the two mode toggles. `main.tsx` calls this
  * right after `render(<App/>)`, the same post-render slot as `bootChrome()`:
  * `installSend()` runs at module import, before Shell has rendered
@@ -752,6 +775,7 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       planToggle.classList.toggle("on", planMode.value);
       hint(planMode.value ? t("plan.toggle.on") : "");
     };
+    bindModeChip(planToggle, () => !!planMode.value, "composer.planMode", "planDesc");
   }
   const exploreToggle = document.getElementById("explore-toggle");
   if (exploreToggle && !exploreToggle.dataset.sendBound) {
@@ -765,6 +789,7 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       exploreToggle.classList.toggle("on", exploreMode.value);
       hint(exploreMode.value ? t("explore.toggle.on") : "");
     };
+    bindModeChip(exploreToggle, () => !!exploreMode.value, "composer.exploreMode", "exploreDesc");
   }
   const sendBtn = document.getElementById("send-btn");
   if (sendBtn && !sendBtn.dataset.sendBound) {

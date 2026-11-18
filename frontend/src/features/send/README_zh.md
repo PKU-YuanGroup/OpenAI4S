@@ -11,7 +11,7 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`admission.ts`](admission.ts) | Admission 追踪器。独立键 `openai4s.admission.{fid}.{id}`；legacy key 迁移；60 秒 grace。 |
 | [`admission.test.ts`](admission.test.ts) | 前缀、legacy 迁移、grace 窗口、settled 状态。 |
 | [`bind.test.ts`](bind.test.ts) | `bindComposer` 只绑一次；`installSend` 不碰 DOM；Enter 和点击 `#send-btn` 都派发文本；两者合计同一时刻只有一个 dispatch 在途。 |
-| [`copy.ts`](copy.ts) | `sendCopy`：不进生成词典的文案——发送按钮的提示、审阅进行中（"正在审阅"）以及无标题的审阅发现。 |
+| [`copy.ts`](copy.ts) | `sendCopy`：不进生成词典的文案——发送按钮的提示（以及回合运行中的「加入队列」）、审阅进行中（"正在审阅"）、无标题的审阅发现，以及计划模式/自主探索的说明。 |
 | [`candidate.ts`](candidate.ts) | Review 门控三态时序：`markCandidateReady` → `applyCandidateResolution` → `applyFinalReviewStatus`。 |
 | [`candidate.test.ts`](candidate.test.ts) | 三态顺序、禁止把 verified 降级、durable 回执规则。 |
 | [`first-send.test.ts`](first-send.test.ts) | 新会话的第一条消息只在共享创建流程打开对话之后才派发，`openConversation` 的重置不会落在回合中间；票据与运行态得以保留。 |
@@ -29,7 +29,7 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`plan.test.ts`](plan.test.ts) | 结束态计划卡：带着进行中步骤的已完成计划不显示为完成；执行中仍保留实时图标；步骤全部有结论的计划照常显示完成。草稿计划的修改意见未能派发（已有回合在运行、请求失败）时会放回输入框。丢弃计划的请求在用户打开另一个会话之后才返回时，不动那个会话的计划卡与计划状态。旧版审批卡只在计划模式回合正常结束后出现：被停止、被 guardian 拦截或失败的回合不弹卡，也不给下一回合留下待审批状态。 |
 | [`problems.ts`](problems.ts) | 附件问题卡（客户端文案）与 @-引用问题卡（服务端文案）。 |
 | [`send.test.ts`](send.test.ts) | 拒绝与首条消息之外的 `send()` 行为：程序化发送（权限卡的继续、批准计划）不动输入框里用户无关的草稿，而输入框自己的文字发送后会被清空；技能目录读取失败后，下一次发送的 `/skill` 仍会带上技能指令。 |
-| [`send.ts`](send.ts) | 作曲框发送全链。计划模式 payload 走 F-07 `planModePayload`。`bindComposer`（由 `main.tsx` 在 `render` 之后调用）把 Enter 和发送按钮绑到同一个派发锁上。每次发送带自己的 `X-Request-Id`（`newRequestId`），并标在乐观气泡上，回合的 `user_message` 事件据此认出是本标签页发出的。 |
+| [`send.ts`](send.ts) | 作曲框发送全链。计划模式 payload 走 F-07 `planModePayload`。`bindComposer`（由 `main.tsx` 在 `render` 之后调用）把 Enter 和发送按钮绑到同一个派发锁上；回合运行中发送按钮仍在「停止」旁边可点，提示为加入队列；开启的计划模式/自主探索以标签形式常驻在输入框工具旁，点击即关闭。每次发送带自己的 `X-Request-Id`（`newRequestId`），并标在乐观气泡上，回合的 `user_message` 事件据此认出是本标签页发出的。 |
 | [`skill-network.ts`](skill-network.ts) | 时间线上已加载 Skill 的联网限制：`host_only` 加载发出的 `network` 提示卡和该 Skill 的加载卡（`output.session_network`）按界面语言给出标题与状态（本功能自带文案表），展开后列出允许的域名。被该限制拒绝的请求（`output.blocked`）显示「被技能的联网限制拦下」，用锁形图标和警示色（而不是红色失败），说明是哪个技能、哪个目的地——网页检索则说明没有允许的搜索引擎、检索没有发出，而不是「0 条结果」——并在下方保留服务端原文。 |
 | [`step.ts`](step.ts) | 语义活动步骤、`buildStepCard`、`searchResultHttpUrl`。从步骤里打开产物失败时用提示报告。历史与实时更新中折叠的卡片在第一次展开时才构建正文；`buildStepCard` 本身（window 契约）立即构建。重开时由 REST 渲染的卡片，在其 `step` 事件重放时被移入实时回合的对应位置（`adoptIntoLiveStream`），重开运行中的会话因而保持实时顺序，而不是把所有步骤叠在回合正文上方。 |
 | [`step.test.ts`](step.test.ts) | 步骤卡片：重开运行中的会话时，重放的回合更新已存的卡片而不是再添一张，并把它移入重放的回合；折叠的历史卡片或被更新的卡片在展开前没有正文，展开后显示最新的步骤；自动展开的卡片与 `buildStepCard` 立即构建；输出开关、审阅中状态与无标题的审阅发现随界面语言显示；查看器打不开产物时会报告，而不是留下未处理的 rejection；Skill 联网限制的提示卡与其加载卡按界面语言给出标题，并列出允许的域名。 |

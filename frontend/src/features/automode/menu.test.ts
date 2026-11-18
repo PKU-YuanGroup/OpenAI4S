@@ -139,6 +139,19 @@ describe("the menu block", () => {
     expect(labels).toContain(t("composer.option.reviewerModel"));
   });
 
+  it("says what plan mode and explore mode do, in the row itself", async () => {
+    // They were bare names, explained only by a hint that flashed on switching.
+    const { items } = await openOptions();
+    const plan = items.find((item) => item.label?.endsWith(t("composer.planMode")));
+    const explore = items.find((item) => item.label?.endsWith(t("composer.exploreMode")));
+    expect(plan?.desc).toMatch(/plan/i);
+    expect(explore?.desc).toMatch(/report/i);
+    expect(plan?.desc).not.toBe(explore?.desc);
+    await setLang("zh");
+    const zh = (await openOptions()).items;
+    expect(zh.find((item) => item.label?.endsWith(t("composer.planMode")))?.desc).toContain("批准");
+  });
+
   it("shows the worked example as three separate facts, in English", async () => {
     const { block } = await openOptions();
     expect(lineValue(block, "availability")).toBe("Storage off");
