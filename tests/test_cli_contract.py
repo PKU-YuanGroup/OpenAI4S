@@ -323,7 +323,25 @@ def test_url_ignores_a_recorded_endpoint_when_the_pid_is_not_live(
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: False)
 
     assert module.cmd_url(SimpleNamespace()) == 0
-    assert capsys.readouterr().out.strip() == "http://127.0.0.1:8760/"
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "http://127.0.0.1:8760/"
+    # NAV-5: a link to a port nothing listens on used to be printed with no
+    # hint at all. stdout stays the bare URL for scripts; the warning is on
+    # stderr and names the data dir it looked in.
+    assert "no OpenAI4S daemon is running" in captured.err
+    assert str(tmp_path) in captured.err
+    assert "OPENAI4S_DATA_DIR" in captured.err
+
+
+def test_url_does_not_warn_when_the_daemon_is_live(tmp_path, monkeypatch, capsys):
+    module = _cli_module()
+    config = _recorded_daemon_config(tmp_path)
+    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
+    monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
+
+    assert module.cmd_url(SimpleNamespace()) == 0
+    assert capsys.readouterr().err == ""
 
 
 def _plant_token(data_dir: Path) -> str:

@@ -420,26 +420,56 @@ def _wants_html(headers) -> bool:
     return "text/html" in accept
 
 
-def _unauthorized_page() -> bytes:
+def _unauthorized_page(accept_language: str = "") -> bytes:
     """What a first-run user sees instead of `{"error": "unauthorized"}`.
 
     No token in it, and nothing fetched: the page is the whole recovery path,
-    because every asset it could load is behind the same gate.
+    because every asset it could load is behind the same gate. It follows the
+    browser's first language (Chinese or English) because the SPA's language
+    setting is one of those gated assets.
     """
-    return (
-        "<!doctype html><meta charset=utf-8>"
-        "<title>OpenAI4S — access token required</title>"
+    first = str(accept_language or "").split(",")[0].strip().casefold()
+    style = (
         "<style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;"
         "max-width:34rem;margin:12vh auto;padding:0 1.5rem;color:#222}"
         "code{background:#f4f4f5;padding:.15em .4em;border-radius:4px;"
         "font:13px ui-monospace,SFMono-Regular,Menlo,monospace}"
         "p{margin:.9em 0}@media(prefers-color-scheme:dark){body{background:#18181b;"
         "color:#e4e4e7}code{background:#27272a}}</style>"
-        "<h1>Access token required</h1>"
+    )
+    if first.startswith("zh"):
+        return (
+            "<!doctype html><html lang=zh-CN><meta charset=utf-8>"
+            "<title>OpenAI4S \u2014 需要访问令牌</title>"
+            + style
+            + "<h1>需要访问令牌</h1>"
+            "<p>这个服务可以执行代码，所以没有凭据时不会响应——即使在本机上也一样。</p>"
+            "<p>在终端运行下面的命令，然后打开它打印出的链接：</p>"
+            "<p><code>openai4s url</code></p>"
+            "<p>如果终端提示 <code>command not found</code>，请在 OpenAI4S "
+            "文件夹里改用 <code>uv run openai4s url</code>（或 "
+            "<code>.venv/bin/openai4s url</code>）。如果启动时设置过 "
+            "<code>OPENAI4S_DATA_DIR</code> 或 <code>OPENAI4S_PORT</code>，"
+            "运行这条命令时也要带上同样的变量。</p>"
+            "<p>用这个链接打开一次后，浏览器会记住登录，之后不用再输入。</p>"
+            "<p>如果你用的是桌面应用，退出后重新打开即可，应用打开的页面已经登录。</p>"
+            "<p>在容器里运行时，请执行 "
+            "<code>docker exec &lt;container&gt; openai4s url</code>。</p>"
+        ).encode("utf-8")
+    return (
+        "<!doctype html><html lang=en><meta charset=utf-8>"
+        "<title>OpenAI4S \u2014 access token required</title>"
+        + style
+        + "<h1>Access token required</h1>"
         "<p>This daemon can execute code, so it does not answer without a "
         "credential \u2014 even on this machine.</p>"
         "<p>Run this in a terminal and open the URL it prints:</p>"
         "<p><code>openai4s url</code></p>"
+        "<p>If the terminal says <code>command not found</code>, run it from "
+        "the OpenAI4S folder as <code>uv run openai4s url</code> (or "
+        "<code>.venv/bin/openai4s url</code>). If OpenAI4S was started with "
+        "<code>OPENAI4S_DATA_DIR</code> or <code>OPENAI4S_PORT</code>, set the "
+        "same variables for this command.</p>"
         "<p>Opening that link once sets a cookie for this browser; you will "
         "not need it again.</p>"
         "<p>If you launched the desktop app, quit it and open it again. The "
@@ -15558,7 +15588,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             # names `openai4s url`, and the desktop-app and
                             # container recoveries that actually work.
                             self._send(
-                                401, _unauthorized_page(), "text/html; charset=utf-8"
+                                401,
+                                _unauthorized_page(
+                                    self.headers.get("Accept-Language", "")
+                                ),
+                                "text/html; charset=utf-8",
                             )
                             return
                         self._json(

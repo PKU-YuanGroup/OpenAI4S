@@ -545,7 +545,12 @@ def _sign_in_hint(cfg, *, endpoint=None, team_mode=None) -> str:
         team_mode = bool(getattr(cfg, "team_mode", False))
     if team_mode:
         return "sign in: " + _sign_in_url(cfg, endpoint=endpoint, team_mode=True)
-    return "sign in: run `openai4s url` to print a sign-in link"
+    # ./setup.sh installs into the checkout's .venv, which is not on PATH in a
+    # new terminal, so the bare command alone answered "command not found".
+    return (
+        "sign in: run `openai4s url` to print a sign-in link "
+        "(in the OpenAI4S folder without it on PATH: `uv run openai4s url`)"
+    )
 
 
 def _print_already_running(cfg, pid: int) -> None:
@@ -1343,6 +1348,21 @@ def cmd_url(args) -> int:
             team_mode=_live_team_mode(cfg),
         )
     )
+    # The URL still goes to stdout (scripts read it, and a daemon may be about
+    # to start), but a link to a port nothing listens on is a dead end for a
+    # person: say so on stderr, and name the usual cause — a daemon started
+    # with a different data dir or port than this shell has.
+    pid = _read_pid(cfg) if getattr(cfg, "pidfile", None) is not None else None
+    if getattr(cfg, "pidfile", None) is not None and not (
+        pid and _daemon_alive(cfg, pid)
+    ):
+        print(
+            "warning: no OpenAI4S daemon is running for data dir "
+            f"{cfg.data_dir}; start it with ./start.sh or `openai4s serve`. If "
+            "it was started with OPENAI4S_DATA_DIR or OPENAI4S_PORT, run this "
+            "command with the same variables.",
+            file=sys.stderr,
+        )
     return 0
 
 
