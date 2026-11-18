@@ -54,7 +54,7 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`types.ts`](types.ts) | Artifact DTO, page size 50/100, TEXT_EXT / MOL_EXT. |
 | [`ui.ts`](ui.ts) | Files grid, dock tabs, `openViewer`, deep links; `renderViewer` delegates to the islands Viewer. Provided `version_id` never silent-latest. |
 | [`ui.test.ts`](ui.test.ts) | Deep-link apply / `openViewer` exact pin / stale does not open latest. |
-| [`editor.ts`](editor.ts) | Version-bound drafts, bounded UTF-8 storage, checksum reads and conditional saves. |
+| [`editor.ts`](editor.ts) | Version-bound drafts, bounded UTF-8 storage, checksum reads and conditional saves. A UTF-8 BOM is kept out of the textarea and restored first on save (ART-13), so typing at the top never lands before it. |
 | [`editor-view.ts`](editor-view.ts) | Editor controls and read-only conflict/unknown-result recovery. |
 | [`editor.test.ts`](editor.test.ts) | Load, version, save, reconciliation and draft capacity contracts. |
 
