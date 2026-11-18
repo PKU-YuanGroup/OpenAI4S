@@ -222,6 +222,15 @@ install the sandbox refused gets a one-line hint in its Observation saying so.
 This is guidance, not enforcement: what a Cell can actually read or reach is
 still decided only by the OS sandbox.
 
+That install route asks every time (`env_setup` defaults to `ask`), and the
+card names the packages and the environment they go into. It installs into
+the interpreter the session kernel runs, not the daemon's own, and pins every
+package that interpreter already has, so an install can add packages but never
+move an existing one: a resolver conflict is reported as a refused version
+change. A requested name that pip would read as an option (one starting with
+`-`, such as `--index-url=…` or `-r file`) or that carries a control character
+is refused before anything runs.
+
 A durable card is not a replay token. While the daemon is still running, a
 decision wakes the exact blocked call. After a daemon restart that thread is
 gone: approving the surviving card records that the old operation **did not

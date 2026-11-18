@@ -261,3 +261,40 @@ def test_a_resolver_conflict_is_reported_as_a_refused_version_change(monkeypatch
     error = result["failed"][0]["error"]
     assert "would change the version of a package already installed" in error
     assert "pandas<3" in error
+
+
+def test_a_package_pip_would_read_as_an_option_is_refused_before_anything_runs(
+    monkeypatch,
+):
+    """Each name is one argv element after `install`: `--index-url=…` or
+    `-r file` would change where everything installs from, not add a package.
+    The agent's env_create passes its strings straight through, so the shared
+    install path refuses them, with nothing started."""
+    spy = SpyRun()
+    monkeypatch.setattr(preinstall.subprocess, "run", spy)
+    monkeypatch.setattr(
+        preinstall, "freeze_for", lambda _python: [{"name": "x", "version": "1"}]
+    )
+    for hostile in (
+        ["--index-url=https://evil.example/simple"],
+        ["pandas", "-r", "requirements.txt"],
+        ["-e", "git+https://evil.example/pkg.git"],
+        ["numpy\n--target=/tmp/x"],
+    ):
+        result = preinstall.install(
+            hostile, python=sys.executable, preserve_installed=True
+        )
+        assert result["ok"] is False, hostile
+        assert result["installed"] == []
+        assert "pip would read it as an option" in result["failed"][0]["error"]
+    assert spy.commands == []
+
+
+def test_ordinary_requirement_specifiers_still_reach_pip(monkeypatch):
+    spy = SpyRun()
+    monkeypatch.setattr(preinstall, "_has_pip", lambda: True)
+    monkeypatch.setattr(preinstall.subprocess, "run", spy)
+    specs = ["pandas", "numpy==2.0.1", "scikit-learn>=1.4", "lifelines[all]"]
+    result = preinstall.install(specs)
+    assert result["ok"] is True
+    assert spy.commands and spy.commands[0][-len(specs) :] == specs

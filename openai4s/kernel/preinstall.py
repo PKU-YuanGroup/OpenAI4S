@@ -256,6 +256,17 @@ def _keep_installed_constraints(python: str) -> tuple[str | None, str | None]:
     return handle.name, None
 
 
+def _pip_option_like(spec: str) -> bool:
+    """A requested package that pip (or ``uv pip``) would read as an option.
+
+    Each name is one argv element after ``install``, so ``--index-url=…``,
+    ``-r file``, ``-e git+…`` or ``--target …`` would change *where from* or
+    *where to* everything installs rather than naming a package. A control
+    character has no place in a requirement either.
+    """
+    return spec.startswith("-") or any(ord(ch) < 32 or ord(ch) == 127 for ch in spec)
+
+
 def install(
     pip_names: list[str],
     *,
@@ -280,6 +291,22 @@ def install(
             "installed": [],
             "failed": [],
             "log": "nothing to do",
+            "interpreter": target,
+        }
+    option_like = [name for name in pip_names if _pip_option_like(name)]
+    if option_like:
+        refusal = (
+            f"refused {', '.join(repr(name) for name in option_like)}: a package "
+            "to install cannot start with '-' or contain a control character, "
+            "because pip would read it as an option (an index URL, a "
+            "requirements file, an install target) instead of a package. "
+            "Nothing was installed."
+        )
+        return {
+            "ok": False,
+            "installed": [],
+            "failed": [{"name": ", ".join(option_like), "error": refusal}],
+            "log": refusal,
             "interpreter": target,
         }
     constraints = None
