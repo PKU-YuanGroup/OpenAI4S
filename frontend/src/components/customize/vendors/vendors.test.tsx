@@ -210,6 +210,74 @@ describe("Doubao card on Network", () => {
     expect(credential(card).props!.class).not.toContain("bad");
     expect(find(card, (node) => node.props?.["data-action"] === "doubao-search-save-key")!.props!.disabled).toBe(false);
   });
+
+  it("says a model key from the environment is not shared, rather than plain 'not configured'", async () => {
+    routes({
+      "GET /preferences/builtin-allowlist": () => Promise.resolve(response({ enabled: false, groups: [] })),
+      "GET /doubao-search/config": () =>
+        Promise.resolve(response({ key_configured: false, ark_key_reused: false })),
+    });
+    renderCard(NetworkTab, DoubaoSearchCard);
+    await settle();
+    const card = renderCard(NetworkTab, DoubaoSearchCard);
+    const state = text(credential(card));
+    expect(state).toContain("OPENAI4S_ARK_API_KEY");
+    expect(state).not.toBe("cust.doubao.keyMissing");
+    expect(credential(card).props!.class).toContain("bad");
+  });
+});
+
+describe("the allowlist on Network", () => {
+  const head = (tree: Node) =>
+    find(tree, (node) => String(node.props?.class || "").includes("allowlist-head"))!;
+
+  it("says what the domain groups are and that they do not apply while egress is off", async () => {
+    routes({
+      "GET /preferences/builtin-allowlist": () =>
+        Promise.resolve(
+          response({
+            enabled: true,
+            egress_mode: "off",
+            granted: [],
+            groups: [{ name: "Web search", domains: Array.from({ length: 14 }, (_, i) => `d${i}.org`) }],
+          }),
+        ),
+    });
+    hooks.begin("tab");
+    NetworkTab();
+    await settle();
+    hooks.begin("tab");
+    const tree = NetworkTab() as Node;
+    expect(head(tree).props!["data-egress-mode"]).toBe("off");
+    expect(text(head(tree))).toContain("OPENAI4S_EGRESS=off");
+    expect(text(head(tree))).toContain("literature-review");
+    // Fourteen domains: twelve pills and a count, not a silent cut at twelve.
+    const pills = text(find(tree, (node) => String(node.props?.title || "").startsWith("d0.org"))!);
+    expect(pills).toContain("d11.org");
+    expect(pills).not.toContain("d12.org");
+    expect(pills).toMatch(/(2 more|还有 2 个)$/);
+  });
+
+  it("says the groups are enforced under allowlist and lists approved domains", async () => {
+    routes({
+      "GET /preferences/builtin-allowlist": () =>
+        Promise.resolve(
+          response({
+            enabled: true,
+            egress_mode: "allowlist",
+            granted: ["www.nejm.org"],
+            groups: [{ name: "Web search", domains: ["bing.com"] }],
+          }),
+        ),
+    });
+    hooks.begin("tab");
+    NetworkTab();
+    await settle();
+    hooks.begin("tab");
+    const tree = NetworkTab() as Node;
+    expect(text(head(tree))).toContain("OPENAI4S_EGRESS=allowlist");
+    expect(text(head(tree))).toContain("www.nejm.org");
+  });
 });
 
 describe("Independent Ollama web key on Network", () => {
