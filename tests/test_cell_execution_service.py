@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -489,6 +490,66 @@ def test_live_cell_output_is_bounded_once_for_notebook_and_activity(
     assert notebook_chunks == expected
     assert activity_chunks == expected
     assert "must-not-appear" not in "".join(notebook_chunks + activity_chunks)
+
+
+def test_a_burst_of_small_writes_streams_as_a_few_events_before_the_terminal(
+    tmp_path,
+):
+    """NB-2: 5000 `print` lines were 40,000 WebSocket events and dropped the
+    client before the cell's terminal events arrived."""
+    harness = Harness()
+    lines = [f"{i} {'x' * 80}\n" for i in range(5000)]
+
+    def run(session, request, cell_id, on_chunk, lease):
+        del session, request, cell_id, lease
+        harness.order.append("run")
+        for line in lines:
+            # print(i, 'x' * 80) is four writes.
+            number, rest = line.split(" ", 1)
+            for part in (number, " ", rest[:-1], "\n"):
+                on_chunk(part)
+        harness.completion = {"ok": True}
+        return dict(harness.run_result)
+
+    service = CellExecutionService(
+        replace(harness.ports(), run=run), id_factory=lambda: "cell-burst"
+    )
+    events = []
+    service.execute(
+        _session(tmp_path), CellRequest("print('burst')", "user"), events.append
+    )
+
+    chunks = [e for e in events if e["type"] == "notebook_cell_chunk"]
+    assert "".join(e["chunk"] for e in chunks) == "".join(lines)
+    # 20,000 writes; a slow runner adds at most one timer delivery per window.
+    assert len(chunks) < 500
+    last_chunk = max(
+        i for i, e in enumerate(events) if e["type"] == "notebook_cell_chunk"
+    )
+    finished = [
+        i for i, e in enumerate(events) if e["type"] == "notebook_cell_finished"
+    ]
+    assert finished and finished[0] > last_chunk
+
+
+def test_live_output_written_before_a_quiet_spell_is_still_delivered():
+    """A batch must not wait for the next write: a line printed before a long
+    computation shows within the window, without the cell having to finish."""
+    delivered: list[str] = []
+    batcher = cell_run._LiveOutputBatcher(delivered.append, window_s=0.05)
+    batcher.push("first\n")  # after a quiet window: delivered at once
+    assert delivered == ["first\n"]
+    batcher.push("second\n")  # inside the window: held for the timer
+    assert delivered == ["first\n"]
+    deadline = time.monotonic() + 5
+    while len(delivered) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert delivered == ["first\n", "second\n"]
+    batcher.push("third\n")
+    batcher.close()  # whatever is left goes before the terminal events
+    assert "".join(delivered) == "first\nsecond\nthird\n"
+    batcher.push("late\n")  # after close: delivered directly, never dropped
+    assert delivered[-1] == "late\n"
 
 
 def test_finished_event_is_bounded_without_mutating_result_or_record(
@@ -1120,6 +1181,68 @@ def test_a_dead_worker_does_not_publish_its_stderr():
     for leaked in ("/Users/alice", "patients.py", "AK-2026-88", "Traceback"):
         assert leaked not in published, published
     assert published.startswith("the kernel did not finish this cell")
+    assert "kernel_execution_failed" in published
+
+
+def test_a_crashed_kernel_keeps_the_cells_output_and_says_what_happened(tmp_path):
+    """RUN-5: an OOM kill erased the output already shown and said only
+    "the kernel did not finish this cell"."""
+    from openai4s.kernel.errors import KernelWorkerExited
+
+    harness = Harness()
+
+    def run(session, request, cell_id, on_chunk, lease):
+        del session, request, cell_id, lease
+        harness.order.append("run")
+        on_chunk("allocated 512 MB\n")
+        raise KernelWorkerExited(
+            "kernel worker exited unexpectedly: /Users/alice/private/x.py",
+            exit_code=-9,
+        )
+
+    service = CellExecutionService(
+        replace(harness.ports(), run=run), id_factory=lambda: "cell-oom"
+    )
+    events = []
+    with pytest.raises(RuntimeError, match="worker exited unexpectedly"):
+        service.execute(
+            _session(tmp_path),
+            CellRequest("x = bytearray(10**12)", "user"),
+            events.append,
+        )
+
+    finished = [e for e in events if e["type"] == "notebook_cell_finished"][-1]
+    assert finished["stdout"] == "allocated 512 MB\n"
+    error = finished["error"]
+    assert error.startswith("the kernel process exited before this cell finished")
+    assert "exit code -9" in error and "out of memory" in error
+    assert "the next cell starts a fresh kernel" in error
+    assert "/Users/alice" not in error
+    assert harness.records[0]["result"]["stdout"] == "allocated 512 MB\n"
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "expected"),
+    [
+        (137, "exit code 137: killed with SIGKILL"),
+        (1, "(exit code 1)"),
+        (-11, "killed by signal 11 (SIGSEGV)"),
+        (None, "exit status unknown"),
+    ],
+)
+def test_a_kernel_exit_names_its_status(exit_code, expected):
+    from openai4s.kernel.errors import KernelWorkerExited
+    from openai4s.server.cell_run import _worker_failure_text
+    from openai4s.server.errors import public_exception
+
+    exc = KernelWorkerExited(
+        "kernel worker exited unexpectedly: x", exit_code=exit_code
+    )
+    public, _status = public_exception(
+        exc, surface="cell:worker", error_code="kernel_execution_failed"
+    )
+    published = _worker_failure_text(exc, public)
+    assert expected in published
     assert "kernel_execution_failed" in published
 
 

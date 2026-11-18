@@ -68,7 +68,10 @@ export type KernelStatus = {
 
 export type KernelEnvRow = {
   name: string;
+  language?: string;
   runnable?: boolean;
+  /** False for an environment discovered on this machine rather than shipped. */
+  builtin?: boolean;
   notable?: string[];
   description?: string;
 };

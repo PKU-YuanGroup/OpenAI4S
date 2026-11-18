@@ -484,9 +484,13 @@ async function correctnessScenes(projectId) {
     await page.evaluate(() => window.setActiveTab("notebook"));
     const cell1 = page.locator(`.notebook-cell[data-producing-cell="${first.producing_cell_id}"]`).first();
     await cell1.waitFor();
-    await cell1.locator("img.nbc-fig").waitFor();
-    assert.equal(await cell1.locator("img.nbc-fig").getAttribute("src"), image1.url);
-    assert.ok(await cell1.locator("img.nbc-fig").evaluate((node) => node.complete && node.naturalWidth > 0));
+    // The captured figure, picked by name: the image the cell saved itself
+    // (history.png) is shown inline beside it (NB-11).
+    const figure1 = cell1.locator(`img.nbc-fig[alt="${autoFigureName}"]`);
+    await figure1.waitFor();
+    assert.equal(await figure1.getAttribute("src"), image1.url);
+    assert.ok(await figure1.evaluate((node) => node.complete && node.naturalWidth > 0));
+    assert.equal(await cell1.locator('img.nbc-fig[alt="history.png"]').count(), 1, "a saved image is inline too");
     assert.match(await cell1.innerText(), /11/);
     assert.doesNotMatch(await cell1.locator("table.nbc-table").first().innerText(), /22/);
     for (const out of first.output_artifacts) {

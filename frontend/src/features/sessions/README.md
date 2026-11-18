@@ -8,7 +8,7 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 
 | File | Responsibility |
 | --- | --- |
-| [`actions.ts`](actions.ts) | Session menu, import/export, title, cancel. app.js:7411-7793. |
+| [`actions.ts`](actions.ts) | Session menu, import/export, title, cancel. app.js:7411-7793. The session options menu carries the runtime-environment picker (`notebook/envmenu.ts`). |
 | [`api.ts`](api.ts) | `API`, `ApiError`, `api()`, `apiErrorText`. app.js:84-119. |
 | [`binds.ts`](binds.ts) | Late bindings so dashboard and conversation do not import each other. |
 | [`boot.ts`](boot.ts) | Window exports, `setLoadSessionsImpl`, workbench click wiring. Binds the Shell at once, but routes to the first view only once the locale chunks have loaded (or failed, or `I18N_ROUTE_WAIT_MS` ran out): the dashboard lists, sidebar and an opened session render through `t()` and are not repainted when the dictionaries land. If the wait runs out, those lists (dashboard, sidebar, empty session) are re-rendered once when the dictionaries do arrive. A language switch (app.js `rerenderI18n`) repaints the dashboard lists, project menu, sidebar, unnamed title, empty session, composer placeholder (a running turn keeps its queueing text), queue strip, the transcript's file strips and the dock from what they hold, without new reads. |

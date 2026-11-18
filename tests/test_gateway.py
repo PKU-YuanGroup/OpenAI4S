@@ -6375,11 +6375,17 @@ def test_notebook_repl_execute_route_gated_by_flag(monkeypatch, tmp_path):
     handler._body = lambda: {"code": "print(1)"}
     handler._json = lambda obj, code=200: replies.append((code, obj))
 
-    for action in ("execute", "env", "restart", "stop", "start", "interrupt"):
+    for action in ("execute", "restart", "stop", "start", "interrupt"):
         handler._api("POST", f"/frames/{fid}/kernel/{action}")
         assert replies[-1][0] == 403
         assert "disabled" in replies[-1][1]["error"]
     assert called == []  # the gate fired before the kernel path
+    # Choosing the runtime environment runs no code and is offered from the
+    # session options menu, so it is not behind the manual-cells gate (ENV-6).
+    runner.set_env = lambda *a, **k: called.append(("env", a)) or {"ok": True}
+    handler._api("POST", f"/frames/{fid}/kernel/env")
+    assert replies[-1][0] == 200 and called and called[-1][0] == "env"
+    called.clear()
 
     # enabled (OPENAI4S_NOTEBOOK_REPL=1) → queues and returns immediately
     monkeypatch.setenv("OPENAI4S_NOTEBOOK_REPL", "1")

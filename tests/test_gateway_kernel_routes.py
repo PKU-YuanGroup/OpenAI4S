@@ -246,6 +246,54 @@ def test_selecting_an_environment_passes_the_requested_name_through(tmp_path):
 
 
 @pytest.mark.stubbed_backend
+def test_choosing_an_environment_is_not_gated_by_the_manual_cells_switch(tmp_path):
+    """ENV-6: the session options menu offers the runtime environment whether
+    or not manual Notebook cells are on; choosing one runs no code."""
+    runner, handler, fid = _setup(tmp_path)
+    assert runner.cfg.notebook_repl is False
+    seen = []
+    runner.set_env = lambda frame, name, project: seen.append(name) or {"ok": True}
+
+    code, payload = _call(
+        handler, "POST", f"/frames/{fid}/kernel/env", body={"env": "struct"}
+    )
+
+    assert (code, payload) == (200, {"ok": True})
+    assert seen == ["struct"]
+
+
+def test_an_r_environment_retargets_the_r_channel_without_starting_it(
+    tmp_path, monkeypatch
+):
+    """ENV-6: picking an R environment used to be refused outright."""
+    from openai4s.kernel import environments as envmod
+
+    runner, _handler, fid = _setup(tmp_path)
+    r_only = SimpleNamespace(
+        name="r-lab", language="r", interpreter=None, rscript="/opt/r/bin/Rscript"
+    )
+    real = envmod.get_environment
+    monkeypatch.setattr(
+        envmod,
+        "get_environment",
+        lambda name: r_only if name == "r-lab" else real(name),
+    )
+
+    result = runner.set_env(fid, "r-lab", "proj-kernel")
+
+    assert result["ok"] is True and result["language"] == "r"
+    assert result["env"] == "r-lab"
+    assert runner.list_environments(fid)["current_r"] == "r-lab"
+    assert runner.kernel_status(fid)["alive"] is False  # nothing was started
+
+    no_runtime = SimpleNamespace(
+        name="empty", language="r", interpreter=None, rscript=None
+    )
+    monkeypatch.setattr(envmod, "get_environment", lambda name: no_runtime)
+    assert "neither a Python nor an R" in runner.set_env(fid, "empty", "p")["error"]
+
+
+@pytest.mark.stubbed_backend
 def test_the_environment_name_may_arrive_under_either_key(tmp_path):
     """`b.get("env") or b.get("name")`. Two spellings, one route -- a detail
     that is invisible unless someone writes it down before moving it."""
@@ -260,14 +308,12 @@ def test_the_environment_name_may_arrive_under_either_key(tmp_path):
     assert seen == ["struct", "r", ""]
 
 
-@pytest.mark.parametrize(
-    "action", ["execute", "env", "restart", "stop", "start", "interrupt"]
-)
-def test_the_six_repl_routes_stay_gated_when_the_notebook_is_read_only(
+@pytest.mark.parametrize("action", ["execute", "restart", "stop", "start", "interrupt"])
+def test_the_five_repl_routes_stay_gated_when_the_notebook_is_read_only(
     tmp_path, action
 ):
     """Already covered elsewhere, repeated here because the extraction moves
-    all six gates at once and the group needs its own regression."""
+    the gates at once and the group needs its own regression."""
     runner, handler, fid = _setup(tmp_path)
     assert runner.cfg.notebook_repl is False
 
@@ -275,6 +321,69 @@ def test_the_six_repl_routes_stay_gated_when_the_notebook_is_read_only(
 
     assert code == 403
     assert "disabled" in payload["error"]
+
+
+def test_the_settings_switch_turns_manual_cells_on_and_off(tmp_path):
+    """NB-5: manual Notebook cells were reachable only through an env var."""
+    runner, handler, fid = _setup(tmp_path)
+
+    code, payload = _call(handler, "GET", "/notebook/settings")
+    assert (code, payload) == (
+        200,
+        {"repl_enabled": False, "env_forced": False, "can_change": True},
+    )
+    assert _call(handler, "POST", f"/frames/{fid}/kernel/stop")[0] == 403
+
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": True}
+    )
+    assert code == 200 and payload["repl_enabled"] is True
+    assert runner.kernel_status(fid)["repl_enabled"] is True
+    assert _call(handler, "POST", f"/frames/{fid}/kernel/stop")[0] == 200
+
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": False}
+    )
+    assert payload["repl_enabled"] is False
+    code, payload = _call(handler, "POST", f"/frames/{fid}/kernel/stop")
+    assert code == 403
+    assert "Settings" in payload["error"]
+
+
+def test_the_switch_takes_a_boolean_and_cannot_turn_off_the_environment(tmp_path):
+    from openai4s.server.errors import GatewayError
+
+    _runner, handler, _fid = _setup(tmp_path, notebook_repl=True)
+    with pytest.raises(GatewayError) as refused:
+        _call(handler, "PUT", "/notebook/settings", body={"repl_enabled": "false"})
+    assert refused.value.code == 400
+
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": False}
+    )
+    assert (code, payload) == (
+        200,
+        {"repl_enabled": True, "env_forced": True, "can_change": False},
+    )
+
+
+def test_members_read_the_switch_but_only_an_admin_changes_it(tmp_path):
+    from openai4s.server.errors import GatewayError
+
+    _runner, handler, _fid = _setup(tmp_path)
+    handler._team_identity = SimpleNamespace(is_admin=False, user_id="member")
+    code, payload = _call(handler, "GET", "/notebook/settings")
+    assert code == 200 and payload["can_change"] is False
+    with pytest.raises(GatewayError) as refused:
+        _call(handler, "PUT", "/notebook/settings", body={"repl_enabled": True})
+    assert refused.value.code == 403
+    assert refused.value.error_code == "admin_only"
+
+    handler._team_identity = SimpleNamespace(is_admin=True, user_id="admin")
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": True}
+    )
+    assert code == 200 and payload["repl_enabled"] is True
 
 
 @pytest.mark.stubbed_backend

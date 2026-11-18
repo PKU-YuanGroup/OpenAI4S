@@ -1,0 +1,79 @@
+/* Notebook additions. Uses existing style.css tokens; no new custom properties. */
+
+/* A cell whose kernel process died: what happened, in the reader's language. */
+.nbc-kernel-exit {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: var(--hair);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Between two cells that ran in different kernel generations. */
+.nb-generation-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 2px;
+  color: var(--text-400);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.nb-generation-divider::before,
+.nb-generation-divider::after {
+  content: "";
+  flex: 1 1 24px;
+  border-top: 1px dashed var(--border);
+}
+.nb-generation-divider span {
+  flex: 0 1 auto;
+  text-align: center;
+}
+
+/* Interrupt the running REPL cell: an icon and a word, not an unlabeled dot. */
+.nb-interrupt-slot {
+  display: inline-flex;
+}
+.nbc-live-actions {
+  padding: 6px 12px 8px;
+}
+.nb-interrupt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0.5px solid var(--danger);
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nb-interrupt:hover {
+  filter: brightness(0.96);
+}
+.nb-interrupt-icon {
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* The REPL input's editing keys, under the multi-line hint. */
+.nb-repl-keys {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-400);
+  font-size: 11px;
+}
+
+/* A group title inside a context menu (the environment picker's Python / R). */
+.ctx-heading {
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-400);
+}

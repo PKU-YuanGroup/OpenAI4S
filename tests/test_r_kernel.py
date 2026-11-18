@@ -593,6 +593,30 @@ def test_real_r_inspector_and_quit_guard_do_not_live_in_the_user_namespace(
 
 
 @pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_plots_are_png_files_written_when_the_cell_ends(tmp_path):
+    """NB-11: `plot()` wrote one session-long Rplots.pdf the Notebook could
+    only link to; each cell's plots are now PNGs it can show inline."""
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        drawn = kernel.execute("plot(1:10)\nhist(c(1, 2, 2, 3, 3, 3))")
+        assert drawn["error"] is None, drawn
+        assert sorted(p.name for p in tmp_path.glob("Rplot_*.png")) == [
+            "Rplot_1_01.png",
+            "Rplot_1_02.png",
+        ]
+        assert not (tmp_path / "Rplots.pdf").exists()
+        # A device the cell opens itself stays the cell's own.
+        assert kernel.execute("pdf('mine.pdf'); plot(1:3)")["error"] is None
+        assert kernel.execute("invisible(dev.off())")["error"] is None
+        assert (tmp_path / "mine.pdf").stat().st_size > 0
+        assert sorted(p.name for p in tmp_path.glob("Rplot_*.png"))[-1] == (
+            "Rplot_1_02.png"
+        )
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
 def test_real_r_worker_survives_hostile_cells(tmp_path):
     """The adversarially-verified kill scenarios: each of these used to halt
     the non-interactive interpreter (fatal uncaught condition) or poison the

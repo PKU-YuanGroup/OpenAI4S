@@ -38,6 +38,7 @@ import {
   canRerun,
   copyNotebookCell,
   currentKernelEnvs,
+  editAsNewCell,
   currentKernelStatus,
   envChoice,
   executeNotebookCode,
@@ -45,6 +46,7 @@ import {
   forkNotebookCell,
   identityForOwner,
   interruptRepl,
+  kernelAction,
   kernelCtl,
   kernelIdFromEnv,
   kernelLabel,
@@ -52,6 +54,8 @@ import {
   promoteNotebookCell,
   replBusy,
   replEnabled,
+  replHistory,
+  replLoad,
   runtimeBadge,
   shortRuntime,
   syncKernel,
@@ -66,8 +70,13 @@ import {
 import { bytes } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { applyArtifactDeepLink } from "../artifacts/ui";
+import { openCustomize } from "../customize";
 import { iconSvg } from "../icons/paths";
 import type { KernelEnvRow, KernelStatus, NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
+import { nbT } from "./copy";
+import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent, type EditorState } from "./editor";
+import { envLanguage, envSelectable, envSourceLabel } from "./envmenu";
+import "./notebook.css";
 
 function notebookCellState(cell: NotebookCell): {
   key: string;
@@ -103,23 +112,59 @@ function BinaryElided({ length }: { length: number }) {
   );
 }
 
+/** Past either bound an output that is already complete starts collapsed. */
+const LONG_OUTPUT_LINES = 60;
+const LONG_OUTPUT_CHARS = 6000;
+
+/** Lines in an output, counted only as far as the bound needs. */
+function outputLines(text: string, stopAt = Infinity): number {
+  let lines = 1;
+  for (let at = text.indexOf("\n"); at >= 0 && at < text.length - 1; at = text.indexOf("\n", at + 1)) {
+    lines += 1;
+    if (lines > stopAt) break;
+  }
+  return lines;
+}
+
+export function outputIsLong(text: string): boolean {
+  return text.length > LONG_OUTPUT_CHARS || outputLines(text, LONG_OUTPUT_LINES) > LONG_OUTPUT_LINES;
+}
+
+/** The disclosure's label: which stream it is, and how much a collapsed one holds. */
+export function outputLabel(text: string, isError: boolean, live: boolean): string {
+  const name = nbT(isError ? "nb.output.stderr" : "nb.output.stdout");
+  return !live && outputIsLong(text) ? nbT("nb.output.long", name, outputLines(text)) : name;
+}
+
 /**
  * One output block for a running and a finished cell. It used to be two
  * components, and the switch at completion remounted the block, so an output
  * the reader had opened snapped shut. A running cell appends its chunks; a
  * finished one shows its final record exactly.
+ *
+ * Open when it first appears -- a running cell's progress is visible as it
+ * prints -- except a long output that is already complete. After that the
+ * reader's choice stands: `open` is set once, never passed as a prop, so a
+ * re-render cannot snap it back.
  */
 export function CellOutput({ text, isError, live }: { text: string; isError: boolean; live: boolean }) {
   const preRef = useRef<HTMLPreElement>(null);
+  const boxRef = useRef<HTMLDetailsElement>(null);
   const seen = useRef(0);
+  const opened = useRef(false);
   useLayoutEffect(() => {
     seen.current = paintStreamedText(preRef.current, seen.current, text, !live);
+    const box = boxRef.current;
+    if (box && !opened.current) {
+      opened.current = true;
+      box.open = live || !outputIsLong(text);
+    }
   }, [text, live]);
   if (!text) return null;
   if (looksBinary(text)) return <BinaryElided length={text.length} />;
   return (
-    <details class={"nbc-disclosure" + (isError ? " error" : "")}>
-      <summary>output</summary>
+    <details ref={boxRef} class={"nbc-disclosure" + (isError ? " error" : "")}>
+      <summary>{outputLabel(text, isError, live)}</summary>
       <pre ref={preRef} class={isError ? "nbc-err" : "nbc-out"} />
     </details>
   );
@@ -161,6 +206,36 @@ function CodeBlock(opts: {
       </pre>
     </div>
   );
+}
+
+const KERNEL_EXITED = "the kernel process exited before this cell finished (";
+
+/**
+ * The reader-language explanation of a cell whose kernel process died. The
+ * server's sentence (cell_run `KERNEL_EXITED_MESSAGE`) is English and stays in
+ * the record; this says the same thing, with the exit status read from it.
+ */
+export function kernelExitText(error: string): string | null {
+  const at = String(error || "").indexOf(KERNEL_EXITED);
+  if (at < 0) return null;
+  const detail = String(error).slice(at + KERNEL_EXITED.length);
+  let m: RegExpExecArray | null;
+  let what: string;
+  if ((m = /^exit code (-?\d+): killed with SIGKILL/.exec(detail))) what = nbT("nb.crash.oom", m[1]);
+  else if ((m = /^killed by signal (\d+)(?: \((\w+)\))?/.exec(detail)))
+    what = nbT("nb.crash.signal", m[2] ? `${m[1]} (${m[2]})` : m[1]);
+  else if ((m = /^exit code (-?\d+)/.exec(detail))) what = nbT("nb.crash.exitCode", m[1]);
+  else what = nbT("nb.crash.unknown");
+  return nbT("nb.crash.notice", what);
+}
+
+function KernelExitNotice({ error }: { error: string }) {
+  const text = kernelExitText(error);
+  return text ? (
+    <div class="nbc-kernel-exit" role="alert">
+      {text}
+    </div>
+  ) : null;
 }
 
 function ErrorBlock({ raw }: { raw: string }) {
@@ -248,6 +323,8 @@ function CellIo({ cell }: { cell: NotebookCell }) {
 export function CellActions({ cell }: { cell: NotebookCell }) {
   const appendable =
     canRerun.value && !replBusy.value && !cell.live && !!String(cell.source || "").trim();
+  // Loading code into the input runs nothing, so it does not wait for the REPL.
+  const editable = canRerun.value && !cell.live && !!String(cell.source || "").trim();
   const canFork =
     !cell.live && canForkFromCell.value && !!publicText(cell.fork_checkpoint_id, 96);
   return (
@@ -264,6 +341,17 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
         }}
       >
         {t("nb.action.rerun")}
+      </button>
+      <button
+        class="nbc-action"
+        data-action="edit-as-new-cell"
+        disabled={!editable}
+        title={editable ? nbT("nb.action.editTitle") : t("nb.action.unavailable")}
+        onClick={() => {
+          if (editable) editAsNewCell(cell);
+        }}
+      >
+        {nbT("nb.action.edit")}
       </button>
       {canFork ? (
         <button class="nbc-action" disabled={forkBusy.value} onClick={() => void forkNotebookCell(cell)}>
@@ -348,6 +436,21 @@ function CellFiguresSlot({ cell, live }: { cell: NotebookCell; live: boolean }) 
   return <CellFigures cell={cell} names={names} />;
 }
 
+const INLINE_IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+const MAX_INLINE_IMAGES = 8;
+
+/**
+ * Image files the cell wrote itself -- `plt.savefig("x.png")`, an R plot --
+ * shown like the figures the kernel captured. Only those appeared inline; a
+ * saved image was a file-name chip to click through.
+ */
+export function writtenImages(cell: NotebookCell): string[] {
+  const captured = new Set(cell.figures || []);
+  return (cell.files_written || [])
+    .filter((name) => INLINE_IMAGE.test(name) && !captured.has(name))
+    .slice(0, MAX_INLINE_IMAGES);
+}
+
 /**
  * One component for a cell from its first chunk to its final record. A live
  * cell and a finished one used to be different components under the same
@@ -357,19 +460,47 @@ function CellFiguresSlot({ cell, live }: { cell: NotebookCell; live: boolean }) 
 function CellView({ cell }: { cell: NotebookCell }) {
   const live = !!(cell.live || cell.draft);
   const csvs = live ? [] : (cell.files_written || []).filter((f) => /\.(csv|tsv)$/i.test(f)).slice(0, 4);
+  const images = live ? [] : writtenImages(cell);
   return (
     <CellShell cell={cell}>
       <CellCode cell={cell} live={live} />
       <CellStream cell={cell} stream="stdout" live={live} />
       <CellStream cell={cell} stream="stderr" live={live} />
+      {cell.error ? <KernelExitNotice error={cell.error} /> : null}
       {cell.error ? <ErrorBlock raw={cell.error} /> : null}
       <CellFiguresSlot cell={cell} live={live} />
+      {images.length ? <CellFigures cell={cell} names={images} /> : null}
       {csvs.map((f) => (
         <TableMount key={f} fname={f} cell={cell} />
       ))}
       {live ? null : <CellIo cell={cell} />}
+      {live && cell.origin === "user" && !cell.draft ? <InterruptButton inCell /> : null}
       {live || cell.draft ? null : <CellActions cell={cell} />}
     </CellShell>
+  );
+}
+
+/**
+ * Interrupt the running REPL cell. It was a dark dot with no icon, text or
+ * accessible name at the bottom of the panel -- below the fold once there
+ * were a few cells -- beside a prominent "Stop" that stops the kernel.
+ */
+function InterruptButton({ inCell = false }: { inCell?: boolean }) {
+  return (
+    <div class={inCell ? "nbc-actions nbc-live-actions" : "nb-interrupt-slot"}>
+      <button
+        class="nb-interrupt"
+        data-action={inCell ? "interrupt-cell" : "interrupt-repl"}
+        title={nbT("nb.interrupt.title")}
+        aria-label={nbT("nb.interrupt.title")}
+        onClick={() => void interruptRepl()}
+      >
+        <span class="nb-interrupt-icon" aria-hidden="true">
+          ■
+        </span>
+        {nbT("nb.interrupt.label")}
+      </button>
+    </div>
   );
 }
 
@@ -392,6 +523,19 @@ function TableMount({ fname, cell }: { fname: string; cell: NotebookCell }) {
 
 const MemoCellView = memo(CellView);
 
+function GenerationDivider() {
+  return (
+    <div class="nb-generation-divider" role="note">
+      <span>{nbT("nb.generation.divider")}</span>
+    </div>
+  );
+}
+
+/** The kernel slot a cell ran in: R cells share one, every Python env the other. */
+function cellSlot(cell: NotebookCell): string {
+  return /^r\b/i.test(String(cell.language || cell.kernel_id || "python")) ? "r" : "python";
+}
+
 /** Paints the entries it is handed (the reading gate's list), never the cell stores. */
 export function CellList({ entries }: { entries: NotebookCell[] }) {
   const filter = kernelFilter.value;
@@ -399,13 +543,23 @@ export function CellList({ entries }: { entries: NotebookCell[] }) {
     ? entries.filter((e) => (e.kernel_id || "python") === filter)
     : entries;
   if (!shown.length) return <div class="dock-empty">{t("nb.empty")}</div>;
-  return (
-    <>
-      {shown.map((cell) => (
-        <MemoCellView key={nbCellKey(cell)} cell={cell} />
-      ))}
-    </>
-  );
+  // A cell that ran in a different kernel generation from the previous cell
+  // of its language starts a fresh namespace: after a crash, a restart or an
+  // environment switch. The NameError that follows used to be the only sign.
+  const generations: Record<string, string> = {};
+  const items: ComponentChildren[] = [];
+  for (const cell of shown) {
+    const key = nbCellKey(cell);
+    const slot = cellSlot(cell);
+    const generation = publicText(cell.generation_id, 96);
+    const previous = generations[slot];
+    if (generation) {
+      if (previous && previous !== generation) items.push(<GenerationDivider key={"gen:" + key} />);
+      generations[slot] = generation;
+    }
+    items.push(<MemoCellView key={key} cell={cell} />);
+  }
+  return <>{items}</>;
 }
 
 function toggleExecutedCodeLocal(): void {
@@ -449,6 +603,14 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
   });
   const filter = kernelFilter.value;
   const badgeMode = runtimeBadge.value;
+  // "Ended · view only" for a session whose kernel never ran was wrong.
+  const kernelNow = currentKernelStatus();
+  const badgeText =
+    badgeMode === "ended" && kernelNeverStarted(kernelNow)
+      ? nbT("nb.kernel.notStarted")
+      : badgeMode === "ended" && kernelNow && kernelExited(kernelNow)
+        ? nbT("nb.kernel.stateExited")
+        : t("runtime.status." + badgeMode);
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   return (
     <div class="kernel-chips">
@@ -475,7 +637,7 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
       ))}
       <div class={"nb-live-badge " + badgeMode}>
         <span class="ld" />
-        <span>{t("runtime.status." + badgeMode)}</span>
+        <span>{badgeText}</span>
       </div>
       {currentId.value ? <ExportMount frameId={currentId.value} /> : null}
       {currentId.value ? (
@@ -525,7 +687,13 @@ function kernelStateLabel(st: KernelStatus): { text: string; cls: string } {
     stopped: t("nb.kernel.stateStopped"),
     none: t("nb.kernel.stateNone"),
   };
-  const label = st.turn_running ? t("dash.badge.running") : names[st.state || ""] || st.state;
+  // After a crash the slot is "none" again but a generation ran: "exited",
+  // not "not started".
+  const label = st.turn_running
+    ? t("dash.badge.running")
+    : kernelExited(st)
+      ? nbT("nb.kernel.stateExited")
+      : names[st.state || ""] || st.state;
   return {
     text: String(label || "") + (st.generation ? t("nb.kernel.generation", st.generation) : ""),
     cls: "kstate " + (st.turn_running ? "run" : st.state || ""),
@@ -543,18 +711,32 @@ function kernelTitle(st: KernelStatus): string {
   );
 }
 
-function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {
-  const env = st.env || {};
-  const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
-  const live = !!st.turn_running;
-  const ready = !live && !!st.alive;
-  return {
-    text: live ? t("nb.status.live", rt) : ready ? t("nb.status.ready", rt) : t("nb.status.ended", rt),
-    cls: live ? "live" : ready ? "ready" : "ended",
-  };
+/** No kernel has run in this session yet: not the same as one that ended. */
+export function kernelNeverStarted(st: KernelStatus | null): boolean {
+  return !!st && !st.alive && !st.turn_running && (st.state || "none") === "none" && !st.generation_id;
 }
 
-/** The read-only status line; its text is the session's last kernel read. */
+/** A kernel ran and its process is gone (a crash): the next cell starts a new one. */
+export function kernelExited(st: KernelStatus): boolean {
+  return !st.alive && !st.turn_running && (st.state || "none") === "none" && !!st.generation_id;
+}
+
+export function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {
+  const env = st.env || {};
+  const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
+  if (st.turn_running) return { text: t("nb.status.live", rt), cls: "live" };
+  if (st.alive) return { text: t("nb.status.ready", rt), cls: "ready" };
+  // A fresh session said "ended — view only" before any cell had run.
+  if (st.state === "stopped") return { text: nbT("nb.status.stopped", rt), cls: "ended" };
+  if (st.state === "ended") return { text: t("nb.status.ended", rt), cls: "ended" };
+  if (st.generation_id) return { text: nbT("nb.status.exited", rt), cls: "ended" };
+  return { text: nbT("nb.status.notStarted", rt), cls: "idle" };
+}
+
+/**
+ * The read-only Notebook's status line and what it is. It never said that
+ * manual cells exist or where to turn them on.
+ */
 export function StatusStrip() {
   const st = currentKernelStatus();
   const line = st ? kernelStatusLine(st) : null;
@@ -562,13 +744,19 @@ export function StatusStrip() {
     <div class="nb-status">
       <div class={"nb-status-line" + (line ? " " + line.cls : "")}>{line ? line.text : "…"}</div>
       <div class="nb-status-hint">{t("nb.status.hint")}</div>
+      <div class="nb-status-hint nb-readonly-hint">
+        {nbT("nb.readonly.hint")}{" "}
+        <button type="button" class="nbc-action" data-action="open-notebook-settings" onClick={() => void openCustomize("general")}>
+          {nbT("nb.readonly.openSettings")}
+        </button>
+      </div>
     </div>
   );
 }
 
 function envOptionLabel(e: KernelEnvRow): string {
   const notable = e.notable && e.notable.length ? " — " + e.notable.slice(0, 4).join("/") : "";
-  return e.name + (e.runnable ? "" : " · R") + notable;
+  return e.name + (envLanguage(e) === "r" ? " · R" : "") + " · " + envSourceLabel(e) + notable;
 }
 
 /** Options from the session's last environment read; a pick shows until the next read answers. */
@@ -580,14 +768,14 @@ function EnvSelect() {
   return (
     <select
       class="nb-env-select"
-      title={t("nb.env.selectTitle")}
+      title={nbT("nb.env.selectTitle")}
       disabled={!sid || !!(picked && picked.posting)}
       value={picked ? picked.name : cur || undefined}
       onChange={(ev) => void nbSwitchEnv((ev.currentTarget as HTMLSelectElement).value)}
     >
       {envs ? (
         envs.map((e) => (
-          <option key={e.name} value={e.name} disabled={!e.runnable} title={e.description || ""}>
+          <option key={e.name} value={e.name} disabled={!envSelectable(e)} title={e.description || ""}>
             {envOptionLabel(e)}
           </option>
         ))
@@ -598,8 +786,29 @@ function EnvSelect() {
   );
 }
 
+function readEditor(box: HTMLTextAreaElement): EditorState {
+  return { value: box.value, start: box.selectionStart, end: box.selectionEnd };
+}
+
+/** The last `replLoad` a panel applied: a remount must not re-apply an old one. */
+let appliedReplLoad = 0;
+
 function ReplPanel() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const history = useRef(new ReplHistory());
+  // Escape releases the next Tab to move focus, so the box is not a trap.
+  const tabReleased = useRef(false);
+  const load = replLoad.value;
+  useLayoutEffect(() => {
+    const box = inputRef.current;
+    if (!box || !load || load.seq === appliedReplLoad) return;
+    appliedReplLoad = load.seq;
+    box.value = load.code;
+    history.current.reset();
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+    if (typeof box.scrollIntoView === "function") box.scrollIntoView({ block: "nearest" });
+  }, [load]);
   const sid = currentId.value;
   const st = currentKernelStatus();
   const state = !sid
@@ -610,6 +819,8 @@ function ReplPanel() {
   const quarantined = !!(st && st.view_only === true && st.trust_state === "quarantined");
   const reviveHidden = !st || !!(st.alive || st.turn_running || quarantined);
   const busy = replBusy.value;
+  const pendingAction = kernelAction.value && kernelAction.value.sid === sid ? kernelAction.value.action : "";
+  const shownState = pendingAction ? { text: nbT("nb.kernel.action." + pendingAction), cls: "kstate run" } : state;
   const lang = _replLanguage.value === "r" ? "r" : "python";
   const drafts = _replDrafts.value || { python: "", r: "" };
   return (
@@ -618,14 +829,14 @@ function ReplPanel() {
         <span class="nb-kernel-title">{st ? kernelTitle(st) : "kernel"}</span>
         <div class="nb-repl-actions">
           <EnvSelect />
-          <span class={state.cls}>{state.text}</span>
-          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("stop")}>
+          <span class={shownState.cls}>{shownState.text}</span>
+          <button class="kchip" disabled={!sid || !!pendingAction} title={t("nb.kernel.stopTitle")} onClick={() => void kernelCtl("stop")}>
             {t("nb.kernel.stopLabel")}
           </button>
-          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("start")}>
+          <button class="kchip" disabled={!sid || !!pendingAction} title={t("nb.kernel.startTitle")} onClick={() => void kernelCtl("start")}>
             {t("nb.kernel.startLabel")}
           </button>
-          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("restart")}>
+          <button class="kchip" disabled={!sid || !!pendingAction} title={t("nb.kernel.restartTitle")} onClick={() => void kernelCtl("restart")}>
             {t("nb.kernel.restartLabel")}
           </button>
         </div>
@@ -639,7 +850,10 @@ function ReplPanel() {
           {t("nb.revive.startBtn")}
         </button>
       </div>
-      <div class="nb-repl-body">{t("nb.repl.multilineHint")}</div>
+      <div class="nb-repl-body">
+        {t("nb.repl.multilineHint")}
+        <span class="nb-repl-keys">{nbT("nb.repl.keys")}</span>
+      </div>
       <div class="nb-live-input">
         <div class="nb-live-input-bar">
           <label class="nb-language-label">
@@ -672,11 +886,7 @@ function ReplPanel() {
             >
               {t("nb.repl.run")}
             </button>
-            <button
-              class={"repl-stop" + (busy ? "" : " hidden")}
-              title={t("nb.repl.interruptTitle")}
-              onClick={() => void interruptRepl()}
-            />
+            {busy ? <InterruptButton /> : null}
           </div>
         </div>
         <textarea
@@ -688,13 +898,47 @@ function ReplPanel() {
           disabled={!sid || busy}
           defaultValue={drafts[lang] || ""}
           onInput={(ev) => {
+            history.current.reset();
             drafts[_replLanguage.value] = (ev.currentTarget as HTMLTextAreaElement).value;
           }}
           onKeyDown={(event) => {
             if (event.isComposing || event.keyCode === 229) return;
-            if (event.key === "Enter" && event.shiftKey) {
+            const box = event.currentTarget as HTMLTextAreaElement;
+            const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
+            if (event.key === "Enter" && (event.shiftKey || event.ctrlKey || event.metaKey)) {
               event.preventDefault();
               void runDraft();
+              return;
+            }
+            if (event.key === "Escape") {
+              tabReleased.current = true;
+              return;
+            }
+            if (event.key === "Tab" && plain) {
+              if (tabReleased.current) {
+                tabReleased.current = false;
+                return;
+              }
+              event.preventDefault();
+              const next = indent(readEditor(box), event.shiftKey);
+              box.value = next.value;
+              box.setSelectionRange(next.start, next.end);
+              drafts[_replLanguage.value] = next.value;
+              return;
+            }
+            tabReleased.current = false;
+            const language = _replLanguage.value === "r" ? "r" : "python";
+            let recalled: string | null = null;
+            if (event.key === "ArrowUp" && plain && !event.shiftKey && caretOnFirstLine(readEditor(box))) {
+              recalled = history.current.older(replHistory(language), box.value);
+            } else if (event.key === "ArrowDown" && plain && !event.shiftKey && caretOnLastLine(readEditor(box))) {
+              recalled = history.current.newer(replHistory(language));
+            }
+            if (recalled != null) {
+              event.preventDefault();
+              box.value = recalled;
+              box.setSelectionRange(recalled.length, recalled.length);
+              drafts[language] = recalled;
             }
           }}
         />
@@ -710,6 +954,7 @@ function ReplPanel() {
     if (ok) {
       drafts[currentLanguage] = "";
       if (box) box.value = "";
+      history.current.reset();
     }
     requestAnimationFrame(() => box && box.focus());
   }
@@ -813,19 +1058,21 @@ export function cellNode(e: NotebookCell): HTMLElement {
   wrap.appendChild(pre);
   c.appendChild(wrap);
   if (e.stdout) {
-    const details = el("details", "nbc-disclosure");
-    details.appendChild(el("summary", null, "output"));
+    const details = el("details", "nbc-disclosure") as HTMLDetailsElement;
+    details.appendChild(el("summary", null, outputLabel(e.stdout, false, false)));
     const out = el("pre", "nbc-out");
     out.textContent = e.stdout;
     details.appendChild(out);
+    details.open = !outputIsLong(e.stdout);
     c.appendChild(details);
   }
   if (e.stderr) {
-    const details = el("details", "nbc-disclosure error");
-    details.appendChild(el("summary", null, "output"));
+    const details = el("details", "nbc-disclosure error") as HTMLDetailsElement;
+    details.appendChild(el("summary", null, outputLabel(e.stderr, true, false)));
     const out = el("pre", "nbc-err");
     out.textContent = e.stderr;
     details.appendChild(out);
+    details.open = !outputIsLong(e.stderr);
     c.appendChild(details);
   }
   if (e.error) {

@@ -8305,7 +8305,7 @@ class SessionRunner:
             "cell_count": (st.cell_index if st else 0),
             "manual_stop": bool(supervisor_status and supervisor_status["manual_stop"]),
             "env": self._env_summary(st),
-            "repl_enabled": official_notebook_enabled(self.cfg),
+            "repl_enabled": official_notebook_enabled(self.cfg, self.store),
             "artifact_workbench": official_workbench_enabled(self.cfg),
             "view_only": bool(quarantine),
             "trust_state": "quarantined" if quarantine else "trusted",
@@ -8569,9 +8569,16 @@ class SessionRunner:
 
         st = self._sessions.get(root_frame_id) if root_frame_id else None
         current = self._selected_env_name(st) if st else envmod.default_env_name()
+        # The R channel's selection (host.env.use or a user's pick), else the
+        # env its live kernel resolved against; None is the default resolution.
+        dispatcher = getattr(st, "dispatcher", None) if st else None
+        current_r = (
+            getattr(dispatcher, "active_r_env", None) if dispatcher else None
+        ) or (getattr(st, "r_env_name", None) if st else None)
         return {
             "environments": envmod.list_environments(with_packages=True),
             "current": current,
+            "current_r": current_r,
             "default": envmod.default_env_name(),
             "pending": (st.pending_env if st else None),
         }
@@ -8591,12 +8598,12 @@ class SessionRunner:
         if env is None:
             return {"error": f"unknown environment: {env_name!r}"}
         if env.interpreter is None:
+            if env.rscript:
+                return self._select_r_env(root_frame_id, env, project_id)
             return {
                 "error": (
-                    f"'{env_name}' is a {env.language} environment with "
-                    "no Python — the notebook kernel needs a Python "
-                    "interpreter. R-only envs run ```r cells (the agent can "
-                    'pin one with host.env.use("' + env_name + '")).'
+                    f"'{env_name}' has neither a Python nor an R interpreter "
+                    "and cannot run cells; pick another environment."
                 )
             }
         if self.store.leases.workload_for_session(root_frame_id):
@@ -8657,6 +8664,46 @@ class SessionRunner:
             "generation_id": lease.generation_id if lease else None,
             "language": env.language,
             "python_version": env.python_version(),
+            "frame_id": root_frame_id,
+        }
+
+    def _select_r_env(self, root_frame_id: str, env, project_id: str) -> dict:
+        """A user's pick of an R environment for this session's R cells.
+
+        Retargets the R channel the way `host.env.use` does: the next R cell's
+        `_ensure_r_kernel` starts (or replaces) the R kernel in this
+        environment. Nothing starts now, and the Python kernel is untouched.
+        It used to be refused, so an R environment could not be chosen at all.
+        """
+        if self.store.leases.workload_for_session(root_frame_id):
+            return {
+                "error": (
+                    "environment switching is unavailable while a cluster "
+                    "compute session is bound; release it and request a new "
+                    "allocation with the desired environment"
+                )
+            }
+        st = self._state(root_frame_id, project_id)
+        dispatcher = self._ensure_runtime(st)
+        dispatcher.active_r_env = env.name
+        status = st.kernels.status("r")
+        self.hub.emitter(root_frame_id)(
+            {
+                "type": "kernel_status",
+                "frame_id": root_frame_id,
+                "status": "env_changed",
+                "language": "r",
+                "env": {"name": env.name, "language": "r"},
+            }
+        )
+        return {
+            "ok": True,
+            "state": status["state"],
+            "env": env.name,
+            "generation": status["generation"],
+            "generation_id": status.get("generation_id"),
+            "language": "r",
+            "python_version": None,
             "frame_id": root_frame_id,
         }
 
@@ -20453,6 +20500,34 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
 
             # ---- memory ----
+            if sub == "/notebook/settings":
+                # The Settings switch for manual Notebook cells. Instance-wide
+                # (team_policy.INSTANCE_CONFIG_PATHS: admins change it), read
+                # by everyone; the environment variable still forces it on.
+                from openai4s.server.notebook_lineage import (
+                    notebook_settings,
+                    set_notebook_repl,
+                )
+
+                if method in ("PUT", "PATCH"):
+                    want = self._body().get("repl_enabled")
+                    if not isinstance(want, bool):
+                        raise GatewayError(
+                            400,
+                            "repl_enabled must be a JSON boolean",
+                            "invalid_repl_enabled",
+                        )
+                    set_notebook_repl(store, want)
+                elif method != "GET":
+                    raise GatewayError(405, "method not allowed")
+                self._json(
+                    notebook_settings(
+                        cfg,
+                        store,
+                        can_change=team_policy.may_change_instance_config(self),
+                    )
+                )
+                return
             if sub == "/memory/enabled":
                 if method == "GET":
                     self._json({"enabled": _memory_enabled(store), "override": None})

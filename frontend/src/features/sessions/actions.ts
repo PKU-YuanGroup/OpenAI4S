@@ -3,6 +3,7 @@
 import { t } from "../../i18n";
 import { validateSessionArtifacts } from "../artifacts/validation";
 import { autoModeMenuItem, beginAutoModeStatusRead } from "../automode";
+import { environmentMenuItem } from "../notebook/envmenu";
 import { openCustomize } from "../customize";
 import { nestedEditor, type SkillSeed } from "../customize/state";
 import { artifacts } from "../../stores/artifacts";
@@ -247,6 +248,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     { label: t("composer.option.memory"), icon: "book", onClick: () => callLane("openCust", "memory") },
     { label: t("composer.option.specialist"), icon: "users", onClick: () => callLane("openCust", "specialists") },
     { label: t("composer.option.compute"), icon: "terminal", onClick: () => callLane("openCust", "compute") },
+    environmentMenuItem(anchor),
     // Read-only, and separate from the Auto review row above: that row is the
     // old post-completion Reviewer switch and still talks only to
     // review-settings; this block is availability, saved selection and run.

@@ -29,6 +29,8 @@ Protocol (JSON-per-line):
 
 from __future__ import annotations
 
+import ast
+import builtins
 import hashlib
 import io
 import json
@@ -258,6 +260,17 @@ def _setup_protocol_channels() -> None:
     # Alias fd 1 -> fd 2: stray writes to stdout now hit stderr, never the wire.
     try:
         os.dup2(2, 1)
+    except OSError:
+        pass
+    # And fd 0 -> /dev/null, for the same reason in the other direction. It was
+    # still the protocol pipe, so `input()` in a cell -- or any subprocess that
+    # inherited stdin -- blocked on it forever, and would have consumed the
+    # next protocol frame had one arrived. Reading stdin now sees EOF at once.
+    try:
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        if devnull != 0:  # 0 itself when fd 0 was closed: already in place
+            os.dup2(devnull, 0)
+            os.close(devnull)
     except OSError:
         pass
 
@@ -775,6 +788,143 @@ def _error_lineno(tb, tag: str) -> tuple[int | None, str | None]:
     return lineno, (None if call in (None, "<module>") else call)
 
 
+def _compile_cell(code: str, tag: str):
+    """Compile a cell the way Jupyter runs one; return ``(body, last_expr)``.
+
+    Everything except a final expression statement runs as a module, and that
+    expression is evaluated on its own so its value can be shown. The previous
+    rule -- the whole cell as `eval`, else the whole cell as `exec` -- echoed
+    `2 + 2` but silently dropped `df.describe()` on the last line of any
+    multi-line cell, and a cell that failed both compiles reported the first
+    SyntaxError chained under the second, with this file's `compile` line as
+    its first frame.
+    """
+    try:
+        tree = compile(code, tag, "exec", ast.PyCF_ONLY_AST)
+    except SyntaxError as exc:
+        hint = _ipython_syntax_hint(exc)
+        if hint is None:
+            raise
+        raise SyntaxError(
+            f"{exc.msg} -- {hint}",
+            (
+                exc.filename,
+                exc.lineno,
+                exc.offset,
+                exc.text,
+                exc.end_lineno,
+                exc.end_offset,
+            ),
+        ) from None
+    last = None
+    if (
+        tree.body
+        and isinstance(tree.body[-1], ast.Expr)
+        and not _display_suppressed(code, tree.body[-1])
+    ):
+        last = ast.Expression(tree.body.pop().value)
+    body = compile(tree, tag, "exec")
+    return body, (compile(last, tag, "eval") if last is not None else None)
+
+
+def _display_suppressed(code: str, node: ast.stmt) -> bool:
+    """IPython's rule: a final expression followed by `;` is not displayed."""
+    lines = code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    end_line, end_col = node.end_lineno, node.end_col_offset
+    if end_line is None or end_col is None or not 0 < end_line <= len(lines):
+        return False
+    # Column offsets in the AST count UTF-8 bytes, not characters.
+    rest = lines[end_line - 1].encode("utf-8")[end_col:].decode("utf-8", "replace")
+    return rest.lstrip().startswith(";")
+
+
+_INSTALLER_COMMANDS = frozenset({"pip", "pip3", "conda", "mamba", "micromamba", "uv"})
+
+
+def _ipython_syntax_hint(exc: SyntaxError) -> str | None:
+    """Name the IPython-only syntax behind a SyntaxError, and what to do instead.
+
+    `!pip install x`, `%timeit f()` and `df?` are the first things a Jupyter
+    user types; each used to fail as a bare "invalid syntax".
+    """
+    line = (exc.text or "").strip()
+    if not line:
+        return None
+    if line.startswith(("!", "%")):
+        words = line.lstrip("!%").split()
+        if words and words[0].lower() in _INSTALLER_COMMANDS:
+            return (
+                "installing packages from a cell is not supported; ask the agent "
+                "to install them (each install asks for your approval)"
+            )
+        if line.startswith("!"):
+            return (
+                "'!' shell commands are IPython syntax, not Python; use "
+                "subprocess.run([...], capture_output=True, text=True) instead"
+            )
+        return (
+            "IPython magics (%timeit, %time, %matplotlib, ...) are not available "
+            "here; use plain Python, e.g. time.perf_counter() or the timeit "
+            "module (figures are captured automatically)"
+        )
+    name = line.rstrip("?")
+    if line.endswith("?") and name and name.replace(".", "_").isidentifier():
+        return f"'{line}' is IPython help syntax; use help({name}) instead"
+    return None
+
+
+def display(*objs: object) -> None:
+    """A minimal IPython ``display``: each object's repr on its own line.
+
+    Matplotlib figures are skipped rather than printed: every open figure is
+    captured as an image after the cell, so its repr would only be noise.
+    """
+    for obj in objs:
+        kind = type(obj)
+        if kind.__name__ == "Figure" and kind.__module__.startswith("matplotlib"):
+            continue
+        print(repr(obj))
+
+
+_NS["display"] = display
+
+
+class StdinNotImplementedError(EOFError):
+    """`input()` in a cell: nobody is at a terminal to answer it.
+
+    An EOFError, so code that already handles end-of-input (`except EOFError`)
+    takes its no-input path; IPython's kernel raises an error of this name.
+    """
+
+
+def _no_interactive_input(prompt: object = "") -> str:
+    raise StdinNotImplementedError(
+        "input() is not supported: OpenAI4S cells have no interactive input. "
+        "Set the value in the code instead, e.g. name = 'sample_1'."
+    )
+
+
+def _put_working_directory_on_sys_path() -> None:
+    """Make modules saved in the working directory importable, as in Jupyter.
+
+    Run as a script, this worker started with its own directory,
+    `openai4s/kernel`, as `sys.path[0]`: a module the agent wrote into the
+    workspace raised ModuleNotFoundError, while the kernel's internal modules
+    (`errors`, `protocol`, ...) were importable by bare name and shadowed a
+    workspace file called the same. `""` is the interactive interpreter's
+    entry for the current directory. Run after the protocol imports, which
+    resolve through the package and never needed the script directory.
+    """
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    sys.path[:] = [
+        entry
+        for entry in sys.path
+        if not (entry and os.path.realpath(entry) == script_dir)
+    ]
+    if "" not in sys.path:
+        sys.path.insert(0, "")
+
+
 def _drain_skill_sidecar_loads() -> list[dict]:
     """Return worker-generated successful imports not reported by prior Cells.
 
@@ -1006,7 +1156,14 @@ def _bounded_format_exc(exc: BaseException) -> str:
     """
     buf = _BoundedBuffer()
     try:
-        chunks = traceback.TracebackException.from_exception(exc).format()
+        # The traceback starts in `_run_cell`, which is product code, not the
+        # user's: show it from the cell's own first frame. A SyntaxError in the
+        # cell keeps no frame at all; its location is part of the exception.
+        tb = exc.__traceback__
+        own_file = _bounded_format_exc.__code__.co_filename
+        while tb is not None and tb.tb_frame.f_code.co_filename == own_file:
+            tb = tb.tb_next
+        chunks = traceback.TracebackException(type(exc), exc, tb).format()
         for chunk in chunks:
             buf.write(chunk)
             if buf.full:
@@ -1101,33 +1258,27 @@ def _run_cell(
     cpu0 = _cpu_seconds()
     _begin_file_read_observation(tag)
     try:
-        try:
-            compiled = compile(code, tag, "eval")
-            is_expr = True
-        except SyntaxError:
-            compiled = compile(code, tag, "exec")
-            is_expr = False
+        body, last_expr = _compile_cell(code, tag)
 
         _in_user_code[0] = True
         # From here the handler may raise. Everything before it -- the guard
-        # phase, both `compile()` calls, whose cost scales with the source --
+        # phase, the `compile()` calls, whose cost scales with the source --
         # could only latch, so anything the host sent while this cell was
         # getting ready is owed to it, and is owed before the first user
         # statement runs. The comment this replaces called the gap "the
         # 1-bytecode arming window", which it has not been for a long time.
         _raise_if_sigint_pending()
-        if is_expr:
-            result = eval(compiled, _NS)  # noqa: S307 - intentional in kernel
+        exec(body, _NS)  # noqa: S102 - intentional in kernel
+        if last_expr is not None:
+            result = eval(last_expr, _NS)  # noqa: S307 - intentional in kernel
             if result is not None:
                 # Inside user code on purpose. `repr()` runs the object's own
                 # `__repr__`, and this print is the ONLY stdout an expression
-                # cell produces -- clearing the flag first made every chunk a
-                # host can see for such a cell arrive in the one state where an
+                # produces -- clearing the flag first made every chunk a host
+                # can see for such a cell arrive in the one state where an
                 # interrupt could not be raised. The `finally` below clears it
                 # unconditionally, so nothing here needs to.
                 print(repr(result))
-        else:
-            exec(compiled, _NS)  # noqa: S102 - intentional in kernel
     except KeyboardInterrupt as e:
         _in_user_code[0] = False
         if _sigint_delivered[0]:
@@ -1460,6 +1611,9 @@ def _inspect_namespace(limit: int) -> dict:
         if type(name) is str
         and name not in _INSPECT_HIDDEN
         and not name.startswith(_INSPECT_HIDDEN_PREFIXES)
+        # The kernel's own `display`, not a user variable; a user rebinding
+        # the name gets it listed like any other.
+        and dict.__getitem__(_NS, name) is not display
     )
     selected = names[:limit]
     return {
@@ -1721,6 +1875,10 @@ def main() -> None:
     _setup_protocol_channels()
     if not _initialize_manager_attestation():
         return
+    # stdin is /dev/null now (see `_setup_protocol_channels`); make `input()`
+    # say why it cannot work instead of failing with a bare EOFError.
+    builtins.input = _no_interactive_input
+    _put_working_directory_on_sys_path()
     # Kernel mode is process identity established by the manager at spawn.
     # Capture both it and the runner object in this driver frame. This keeps
     # ordinary cell mutations of ``os.environ`` and ``__main__`` globals from

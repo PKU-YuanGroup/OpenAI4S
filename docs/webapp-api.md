@@ -817,10 +817,11 @@ The first Agent/user Cell starts only the selected language; a native-tool or
 | `POST /frames/{fid}/kernel/stop` | → `{"ok":true,"state":"stopped"|"none","frame_id"}`. In team mode this is owner/admin only. |
 | `POST /frames/{fid}/kernel/start` | → `{"ok":true,"state":"running","generation","frame_id",…}`. In team mode this is owner/admin only. |
 | `POST /frames/{fid}/kernel/interrupt` | Exact ticket stop. Body `{execution_id,owner:{kind,id}}` (or owner aliases) identifies one ticket: a queued ticket is cancelled without touching the active writer; an active ticket requests a signal only for its frozen lease. The result's `interrupted` flag says whether a lease was actually signalled. Missing identity returns HTTP 400; stale/wrong-owner requests return `ok:false`. The shipped Notebook Stop control selects only `user_repl` tickets. In team mode this is owner/admin only. |
-| `GET /frames/{fid}/kernel` | Kernel status: `{frame_id,state("none"|"running"|"stopped"|"ended"),alive,generation,generation_id,generation_ordinal,last_activity_at,ended_reason,turn_running,cell_count,manual_stop,repl_enabled,env:{name,language,python_version,pending,kernel_id}}`. `repl_enabled` mirrors `OPENAI4S_NOTEBOOK_REPL`. |
+| `GET /frames/{fid}/kernel` | Kernel status: `{frame_id,state("none"|"running"|"stopped"|"ended"),alive,generation,generation_id,generation_ordinal,last_activity_at,ended_reason,turn_running,cell_count,manual_stop,repl_enabled,env:{name,language,python_version,pending,kernel_id}}`. `repl_enabled` is the manual-cells switch: `OPENAI4S_NOTEBOOK_REPL` forces it on, otherwise `GET /notebook/settings` decides. |
+| `GET/PUT /notebook/settings` | The Settings switch for manual Notebook cells: `{repl_enabled, env_forced, can_change}`. `PUT {"repl_enabled": true|false}` (a JSON boolean, else `400`) persists it; `env_forced` is true when `OPENAI4S_NOTEBOOK_REPL` forces it on, and then the switch cannot turn it off. Instance-wide: in team mode `PUT` is admin-only (`403 admin_only`) and `can_change` is false for members. |
 | `POST /frames/{fid}/kernel/install` | Body `{packages:[…]}` or `{package}` (+`restart`, default true) → pip-install report (`{ok,installed,…,restarted}`). In team mode this is admin only, including when the caller owns the session, because the installation changes a shared runtime environment. |
-| `GET /frames/{fid}/environments` | `{"environments":[…],"current","default","pending"}`. |
-| `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. In team mode this is owner/admin only. |
+| `GET /frames/{fid}/environments` | `{"environments":[…],"current","current_r","default","pending"}`. `current_r` is the R environment the session's R cells use (`null`: the default resolution). |
+| `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. An R-only env retargets the session's R cells instead (`language: "r"`; the next R cell starts there). Not gated by the manual-cells switch. In team mode this is owner/admin only. |
 
 When Stage 1 trusted delivery is enabled, `kernel/execute` also performs the
 standard-profile admission before allocating a Cell id/index/state revision,
@@ -831,10 +832,15 @@ failure through its job/terminal projection; a synchronous caller receives the
 corresponding refusal directly.
 
 **Notebook REPL gate:** the Notebook is a **read-only execution trace** by
-default. The mutating `kernel/*` routes — `execute`, `env`, `restart`, `stop`,
-`start`, `interrupt` — return `403 {"error":…}` unless
-`OPENAI4S_NOTEBOOK_REPL` is set. `kernel/install` is intentionally not gated:
-it backs Customize → Compute rather than arbitrary Notebook execution. The
+default. The mutating `kernel/*` routes — `execute`, `restart`, `stop`,
+`start`, `interrupt` — return `403 {"error":…}` unless manual cells are on
+(Settings → General, `PUT /notebook/settings`, or `OPENAI4S_NOTEBOOK_REPL`). `kernel/install` is intentionally not gated:
+it backs Customize → Compute rather than arbitrary Notebook execution. Neither
+is `kernel/env`: choosing the session's environment (the session options menu)
+runs no code. An R-only environment retargets the session's R cells (the next
+R cell starts its kernel there; nothing starts now); `GET
+/frames/{fid}/environments` reports that choice as `current_r` (`null` for the
+default R resolution). The
 read-only `GET /frames/{fid}/kernel` and `GET /frames/{fid}/execution-log` stay available.
 The REPL flag is not an authorization grant: project members may read a
 project-visible session, but only its owner or an admin may Stop, Restart,

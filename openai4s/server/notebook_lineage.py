@@ -15,17 +15,59 @@ from typing import Any
 
 _SKIP_PREFIXES = ("http://", "https://", "s3://", "ftp://")
 NOTEBOOK_OWNERS = ("agent", "user_repl", "repair", "review_scratch")
+#: The Settings switch for manual Notebook cells, persisted in the store.
+#: Off unless someone turns it on; `OPENAI4S_NOTEBOOK_REPL` still forces it on.
+NOTEBOOK_REPL_SETTING = "notebook_repl_enabled"
 
 
-def official_notebook_enabled(config: Any) -> bool:
-    """Whether the live Notebook is a first-class execution path."""
+def notebook_repl_setting(store: Any) -> bool | None:
+    """The stored switch, or None when it was never set (or cannot be read)."""
 
+    reader = getattr(store, "get_setting", None)
+    if not callable(reader):
+        return None
+    try:
+        value = reader(NOTEBOOK_REPL_SETTING)
+    except Exception:  # noqa: BLE001 - an unreadable switch is an unset one
+        return None
+    if value is None:
+        return None
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _forced_on(config: Any) -> bool:
     flags = getattr(config, "roadmap_features", None)
     if flags is not None and bool(
         getattr(flags, "stage8_live_notebook_lineage", False)
     ):
         return True
     return bool(getattr(config, "notebook_repl", False))
+
+
+def official_notebook_enabled(config: Any, store: Any = None) -> bool:
+    """Whether the live Notebook is a first-class execution path.
+
+    The environment (or the Stage 8 flag) forces it on; otherwise it follows
+    the Settings switch in ``store``, which defaults to off.
+    """
+
+    return _forced_on(config) or bool(notebook_repl_setting(store))
+
+
+def notebook_settings(config: Any, store: Any, *, can_change: bool) -> dict:
+    """``GET /notebook/settings``: the switch, and whether this caller may flip it."""
+
+    forced = _forced_on(config)
+    return {
+        "repl_enabled": official_notebook_enabled(config, store),
+        # On by environment/flag: the switch cannot turn it off.
+        "env_forced": forced,
+        "can_change": bool(can_change) and not forced,
+    }
+
+
+def set_notebook_repl(store: Any, enabled: bool) -> None:
+    store.set_setting(NOTEBOOK_REPL_SETTING, "1" if enabled else "0")
 
 
 def _resolve_input_version(
