@@ -1,6 +1,8 @@
 import { isReady } from "../../compat/stub";
 import { parseTable } from "../csv/csv";
+import { typesetMath } from "../md/math";
 import { renderMd } from "../md/render";
+import { resolveRelativeImages } from "./markdown-assets";
 import { publicText } from "../scrub/scrub";
 import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
 import { applyPdfFrame } from "../../islands/frames";
@@ -131,8 +133,12 @@ export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, u
       // the end of the report.
       if (slice.truncated) partialNotice(container, slice.shown.length);
       const markdown = el("div", "md renderer-markdown");
-      markdown.innerHTML = renderMd(slice.shown);
+      // ART-2: TeX becomes inert `.md-math` placeholders typeset by a lazily
+      // loaded KaTeX, and `![](growth.png)` resolves to the sibling Artifact.
+      markdown.innerHTML = renderMd(slice.shown, { math: true, relativeImages: true });
       container.appendChild(markdown);
+      void typesetMath(markdown);
+      resolveRelativeImages(markdown, a);
       if (slice.truncated) {
         partialNotice(container, slice.shown.length);
         previewDownload(container, a, url);

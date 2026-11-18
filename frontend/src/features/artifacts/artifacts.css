@@ -172,3 +172,29 @@
   height: auto;
   border-radius: var(--radius, 8px);
 }
+
+/* ART-2: TeX in Markdown Artifacts. The source stays visible (monospace)
+   until KaTeX's lazy chunk replaces it, and when a formula cannot render. */
+.renderer-markdown .md-math:not(.md-math-done) {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.92em;
+  white-space: pre-wrap;
+}
+.renderer-markdown .md-math-block {
+  display: block;
+  margin: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.renderer-markdown .md-math-block.md-math-done {
+  text-align: center;
+}
+.renderer-markdown .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.renderer-markdown .md-relimg-missing {
+  color: var(--text-400, #6c6a64);
+  font-size: 0.92em;
+}

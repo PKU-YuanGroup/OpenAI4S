@@ -228,3 +228,77 @@ describe("notebook-only resource-free rendering (F7)", () => {
     );
   });
 });
+
+describe("Markdown Artifact math (ART-2)", () => {
+  const on = { math: true };
+
+  it("leaves math as text on every surface that did not opt in", () => {
+    expect(renderMd("$x^2$ and $$y$$")).toBe("<p>$x^2$ and $$y$$</p>");
+  });
+
+  it("tokenizes inline math before escaping and emphasis touch it", () => {
+    const html = renderMd("Let $a_1 < b_2$ and *c*.", on);
+    expect(html).toBe(
+      '<p>Let <span class="md-math" data-display="0">a_1 &lt; b_2</span> and <em>c</em>.</p>',
+    );
+    expect(renderMd("\\(x \\cdot y\\)", on)).toContain(
+      '<span class="md-math" data-display="0">x \\cdot y</span>',
+    );
+  });
+
+  it("keeps currency, escaped dollars and code spans as text", () => {
+    expect(renderMd("It costs $5 and $10 today.", on)).toBe("<p>It costs $5 and $10 today.</p>");
+    expect(renderMd("a \\$ sign", on)).toBe("<p>a $ sign</p>");
+    expect(renderMd("`$x$` stays code", on)).toBe("<p><code>$x$</code> stays code</p>");
+    expect(renderMd("$ spaced $ is not math", on)).not.toContain("md-math");
+  });
+
+  it("renders display blocks, single-line and multi-line, and never a div inside a paragraph", () => {
+    const block = renderMd(["Before", "$$", "\\frac{a}{b} & c", "$$", "After"].join("\n"), on);
+    expect(block).toBe(
+      '<p>Before</p><div class="md-math md-math-block" data-display="1">\\frac{a}{b} &amp; c</div><p>After</p>',
+    );
+    expect(renderMd("$$E = mc^2$$", on)).toBe(
+      '<div class="md-math md-math-block" data-display="1">E = mc^2</div>',
+    );
+    expect(renderMd("\\[\na^2+b^2\n\\]", on)).toContain('data-display="1">a^2+b^2</div>');
+    const inline = renderMd("where $$x$$ holds", on);
+    expect(inline).toContain('<span class="md-math" data-display="1">x</span>');
+    expect(inline).not.toContain("<div");
+  });
+
+  it("does not let an unclosed block swallow the document", () => {
+    const html = renderMd(["$$", "a + b", "", "# Next", "text"].join("\n"), on);
+    expect(html).not.toContain("md-math");
+    expect(html).toContain("<h1>Next</h1>");
+  });
+
+  it("bounds the scan on a long run of dollars", () => {
+    const started = Date.now();
+    renderMd("$a ".repeat(20000), on);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe("Markdown Artifact relative images (ART-2)", () => {
+  const on = { relativeImages: true };
+
+  it("turns a relative image into an unresolved placeholder", () => {
+    expect(renderMd("![growth](growth.png)", on)).toBe(
+      '<p><img class="md-relimg" alt="growth" data-md-src="growth.png"></p>',
+    );
+    expect(renderMd("![f](figures/a%20b.png)", on)).toContain('data-md-src="figures/a%20b.png"');
+  });
+
+  it("never turns a scheme, an absolute path or a fragment into a placeholder", () => {
+    for (const src of ["javascript:alert(1)", "data:text/html,x", "/api/v1/x.png", "#top", "//evil/x.png"]) {
+      expect(renderMd(`![x](${src})`, on)).not.toContain("<img");
+    }
+    expect(renderMd('![a"b](x.png)', on)).toContain('alt="a&quot;b"');
+  });
+
+  it("is off by default and in the no-resources mode", () => {
+    expect(renderMd("![g](growth.png)")).toBe("<p>![g](growth.png)</p>");
+    expect(renderMd("![g](growth.png)", { resources: "none", relativeImages: true })).toBe("<p>g</p>");
+  });
+});

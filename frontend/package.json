@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@preact/signals": "^2.3.2",
+    "katex": "^0.19.1",
     "preact": "^10.26.9"
   },
   "devDependencies": {
