@@ -60,8 +60,20 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
   closeX.onclick = close;
 
   const state = String(status.state || "");
-  if (state === "unconfigured") {
-    box.appendChild(para(t("share.unconfigured")));
+  // No relay configured — the default install. "Sharing is off." with only a
+  // Close button was a dead end (and the docs pointed at a settings tab that
+  // does not exist), so both states say how to get from here to a link.
+  if (state === "unconfigured" || (state === "disabled" && !status.configured)) {
+    box.appendChild(para(shareCopy("setupIntro")));
+    const steps = document.createElement("ol");
+    steps.className = "share-setup";
+    for (const key of ["setupEnv", "setupRestart", "setupEnable"] as const) {
+      const li = document.createElement("li");
+      li.textContent = shareCopy(key);
+      steps.appendChild(li);
+    }
+    box.appendChild(steps);
+    box.appendChild(para(shareCopy("setupDocs")));
     const closeBtn = mkBtn(t("share.close"), close);
     box.appendChild(actions(closeBtn));
     finish(closeBtn);

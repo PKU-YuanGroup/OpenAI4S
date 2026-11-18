@@ -2634,6 +2634,8 @@ html[data-theme="dark"] #dash-project-search{background-image:url("data:image/sv
 .share-close:hover{background:var(--bg-100)}
 .share-text{margin:0;font-size:15px;line-height:1.6;color:var(--text-200)}
 .share-scope{margin:0;padding:14px 16px;border-radius:var(--radius);background:var(--bg-200);font-size:14px;line-height:1.55;color:var(--text-200)}
+.share-setup{margin:0;padding-left:1.4em;font-size:14px;line-height:1.6;color:var(--text-200)}
+.share-setup li{margin:.35em 0}
 .share-label{font-size:14px;font-weight:500;color:var(--text-000)}
 .share-box>.share-label{margin-bottom:-12px}
 .share-url-row{display:flex;gap:8px}

@@ -107,7 +107,9 @@ The token is named `*_AUTH_TOKEN` on purpose so the session-package secret
 scanners treat it as a secret and never let it leave in a bundle. It is never
 written to the database.
 
-Then enable sharing (once): Customize → Sharing, or `openai4s share enable`.
+Then restart the daemon and enable sharing (once): session menu → *Share* →
+*Enable sharing*, or `openai4s share enable`. Until a relay is configured, the
+Share dialog lists these same steps.
 
 ## Use it
 

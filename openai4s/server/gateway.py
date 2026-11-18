@@ -16527,7 +16527,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if share_create and method == "POST":
                 if not runner._share_enabled():
                     raise GatewayError(
-                        403, "sharing is disabled; enable it in Settings"
+                        403,
+                        "sharing is disabled; enable it in the Share dialog "
+                        "(session menu → Share) or with `openai4s share enable`",
                     )
                 if not cfg.share.configured:
                     raise GatewayError(
