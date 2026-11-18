@@ -34246,7 +34246,22 @@
             "type": "string"
           },
           "result": {
-            "type": "null"
+            "properties": {
+              "cells": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "cells",
+              "failed"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
           },
           "running": {
             "type": "boolean"
