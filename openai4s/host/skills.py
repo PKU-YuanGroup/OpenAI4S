@@ -163,6 +163,12 @@ class SkillService:
             "version": getattr(skill, "version", "") or "",
             "document_sha256": getattr(skill, "document_sha256", "") or "",
         }
+        # A kernel.py sidecar is importable, not imported: say how. Without
+        # this the recipe's own helper names were all the model had, and it
+        # spent minutes finding and exec-ing kernel.py by hand.
+        import_hint = getattr(skill, "import_hint", None)
+        if isinstance(import_hint, str) and import_hint:
+            payload["import"] = import_hint
         if network is not None:
             payload["capabilities"] = network.public_dict()
             payload["network_manifest_digest"] = network.digest

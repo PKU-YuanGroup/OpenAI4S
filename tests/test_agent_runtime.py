@@ -1395,20 +1395,43 @@ def test_egress_outcome_reads_the_decision_below_a_wrapper():
     assert outcome.stop_reason == "egress_boundary_unavailable"
 
 
-def test_format_observation_explains_a_sandboxed_network_denial():
+def test_format_observation_explains_a_sandboxed_network_denial(monkeypatch):
     """ENV-3: pip inside a sandboxed cell fails at DNS resolution, which reads
-    like an outage; the observation must say the denial is policy."""
-    observation = format_observation(
-        {
-            "stdout": "returncode: 1\nWARNING: Retrying ... NameResolutionError("
-            "\"HTTPSConnection(host='pypi.org', port=443): Failed to resolve "
-            "'pypi.org' ([Errno 8] nodename nor servname provided, or not known)\")",
-            "stderr": "",
-            "error": None,
-        }
-    )
+    like an outage; the observation must say the denial is policy -- but only
+    when the kernel really is sandboxed without network, and only once even
+    when the install hint also matches."""
+    import openai4s.kernel.constraints as constraints
+
+    sandboxed = {"mode": "auto", "backend": "macOS Seatbelt", "raw_network": False}
+    monkeypatch.setattr(constraints, "expected_posture", lambda **_k: sandboxed)
+    dns = {
+        "stdout": "returncode: 1\nWARNING: Retrying ... NameResolutionError("
+        "\"HTTPSConnection(host='pypi.org', port=443): Failed to resolve "
+        "'pypi.org' ([Errno 8] nodename nor servname provided, or not known)\")",
+        "stderr": "",
+        "error": None,
+    }
+    observation = format_observation(dns)
     assert "kernel sandbox denies direct network from cells" in observation
     assert "host.env.create" in observation
 
     quiet = format_observation({"stdout": "ok", "stderr": "", "error": None})
     assert "sandbox" not in quiet
+
+    # An install the sandbox refused matches both; the specific hint wins.
+    both = format_observation(
+        {
+            "stdout": "",
+            "stderr": "$ pip install lifelines\nWARNING: Retrying ... "
+            "Temporary failure in name resolution\nERROR: Could not install "
+            "packages due to an OSError",
+            "error": None,
+        }
+    )
+    assert both.count("[system]") == 1
+    assert "Installing packages from a Cell is refused here" in both
+
+    # Without a sandbox the same words are an outage, not policy.
+    unsandboxed = {"mode": "off", "backend": None, "raw_network": False}
+    monkeypatch.setattr(constraints, "expected_posture", lambda **_k: unsandboxed)
+    assert "[system]" not in format_observation(dns)

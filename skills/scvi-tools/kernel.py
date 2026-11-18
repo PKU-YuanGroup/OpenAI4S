@@ -1,6 +1,8 @@
 """
-scvi-tools kernel helpers. Auto-loaded into the python kernel by the host
-when the skill loads:
+scvi-tools kernel helpers. Importable in the python kernel once the skill is
+loaded, but not imported for you:
+
+ import importlib; sv = importlib.import_module("scvi-tools.kernel")
 
  h5ad_safe_obs
 

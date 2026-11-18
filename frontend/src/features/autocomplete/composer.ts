@@ -3,7 +3,10 @@
  * branch at 13403-13411.
  *
  * `@` files (one artifact-index page + this session, version-pinned),
- * `#` sessions, `/` skills. Popup is `#composer-ac`. `ac` is the live
+ * `#` sessions, `/` skills (every match ranked by name, description and
+ * Chinese keywords, scrolling, with a count or a "no match" line; `/` also
+ * opens straight after CJK text). Popup is `#composer-ac`, hung above the
+ * composer card so it never covers the line being typed. `ac` is the live
  * controller hung on window so F-11's send() keydown can see `ac.open`.
  * `acPending()` is true while an `@` search is debouncing or in flight;
  * Enter and Tab wait for that page instead of sending a bare `@name`.
@@ -25,12 +28,15 @@ import { effProject } from "../customize/host";
 import { $, el, grow } from "../sessions/dom";
 import { renderComposerRefChips } from "../sessions/transcript";
 import { loadSkillsCatalog } from "./catalog";
+import { acT } from "./copy";
 import { acDetectFrom, type ComposerDetect } from "./detect";
 import {
   artifactToAcItem,
   mergeArtifactCandidates,
   rankComposerItems,
+  rankSkillItems,
   sessionToAcItem,
+  SKILL_AC_ROWS,
   skillToAcItem,
   type AcItem,
   type ArtifactLike,
@@ -86,6 +92,8 @@ type AcDecision =
  */
 let acSeq = 0;
 let acNotice: AcNotice | null = null;
+/** The `/` picker's count or empty-state line, shown under its rows. */
+let acFooter: string | null = null;
 let acTimer: ReturnType<typeof setTimeout> | null = null;
 let acAbort: AbortController | null = null;
 let debounceResolve: (() => void) | null = null;
@@ -285,6 +293,7 @@ function hidePopup(): void {
   ac.items = [];
   ac.idx = 0;
   acNotice = null;
+  acFooter = null;
   const b = $("#composer-ac");
   if (!b) return;
   b.classList.add("hidden");
@@ -363,15 +372,54 @@ function syncHint(): void {
   box.classList.remove("hidden");
 }
 
+function setAttr(node: HTMLElement, name: string, value: string): void {
+  if (typeof node.setAttribute === "function") node.setAttribute(name, value);
+}
+
+/**
+ * Hang the popup above the composer card, whatever its height.
+ *
+ * A fixed `bottom` assumed a one-line composer with nothing below it, so the
+ * popup's last row covered the line being typed into.
+ */
+function placeAboveComposer(box: HTMLElement): void {
+  const composer = document.getElementById("composer");
+  const card =
+    (composer && typeof composer.closest === "function" && composer.closest(".nb-card")) ||
+    composer;
+  const host = box.offsetParent;
+  if (
+    !card ||
+    !host ||
+    typeof card.getBoundingClientRect !== "function" ||
+    typeof host.getBoundingClientRect !== "function"
+  ) {
+    return;
+  }
+  const top = card.getBoundingClientRect().top;
+  const bottom = host.getBoundingClientRect().bottom - top + 6;
+  if (!Number.isFinite(bottom) || bottom <= 0) return;
+  box.style.bottom = `${Math.round(bottom)}px`;
+  // The room above the card, so a tall list scrolls instead of leaving the screen.
+  if (Number.isFinite(top)) box.style.maxHeight = `${Math.round(Math.max(120, Math.min(360, top - 12)))}px`;
+}
+
 export function acRender(): void {
   const box = ensureComposerAc();
   if (!box) return;
   box.innerHTML = "";
   const list = el("div", "ac-list");
+  setAttr(list, "role", "listbox");
   ac.items.forEach((it, i) => {
     const row = el("div", "ac-item" + (i === ac.idx ? " on" : ""));
+    setAttr(row, "role", "option");
+    setAttr(row, "aria-selected", i === ac.idx ? "true" : "false");
     row.appendChild(el("span", "ac-lbl", ac.trigger + (it.label || "")));
-    if (it.sub) row.appendChild(el("span", "ac-sub", it.sub));
+    if (it.sub) {
+      row.appendChild(el("span", "ac-sub", it.sub));
+      // The description is cut to one line; the whole of it on hover.
+      row.title = it.sub;
+    }
     row.onmousedown = (e) => {
       e.preventDefault();
       acPick(i);
@@ -380,7 +428,9 @@ export function acRender(): void {
   });
   box.appendChild(list);
   if (acNotice) box.appendChild(el("div", "ac-hint", filesT(NOTICE_KEY[acNotice])));
+  if (acFooter) box.appendChild(el("div", "ac-hint", acFooter));
   box.classList.remove("hidden");
+  placeAboveComposer(box);
   // The list is rebuilt each render; keep the highlighted row in view.
   const on = list.children[ac.idx] as HTMLElement | undefined;
   if (on && typeof on.scrollIntoView === "function") on.scrollIntoView({ block: "nearest" });
@@ -393,7 +443,10 @@ export function acPick(i: number): void {
   if (!c) return;
   const val = c.value;
   const pos = c.selectionStart;
-  const token = ac.trigger + it.insert + " ";
+  // A `/` picked straight after CJK text gets a space before it: `send()`
+  // reads a `/skill` token only at a word boundary.
+  const glued = ac.trigger === "/" && ac.start > 0 && !/\s/.test(val.charAt(ac.start - 1));
+  const token = (glued ? " " : "") + ac.trigger + it.insert + " ";
   c.value = val.slice(0, ac.start) + token + val.slice(pos);
   const np = ac.start + token.length;
   c.setSelectionRange(np, np);
@@ -519,8 +572,13 @@ async function finishOther(seq: number, d: ComposerDetect): Promise<void> {
     acClose();
     return;
   }
-  items = rankComposerItems(items, now.query);
   acNotice = null;
+  if (now.trigger === "/") {
+    showSkillPopup(items, now);
+    return;
+  }
+  acFooter = null;
+  items = rankComposerItems(items, now.query);
   if (!items.length) {
     acClose();
     return;
@@ -534,6 +592,45 @@ async function finishOther(seq: number, d: ComposerDetect): Promise<void> {
   acRender();
 }
 
+function skillFooter(total: number, matches: number, shown: number, query: string): string {
+  if (!query) {
+    return shown < total ? acT("ac.skills.allMore", total, shown) : acT("ac.skills.all", total);
+  }
+  if (shown < matches) return acT("ac.skills.matchesMore", matches, shown);
+  return matches === 1 ? acT("ac.skills.one") : acT("ac.skills.matches", matches);
+}
+
+/**
+ * The `/` picker: every match ranked, the first `SKILL_AC_ROWS` in a
+ * scrolling list, and a line saying how many there are -- or that there are
+ * none. It used to show eight rows of a 612-skill catalog with no count, and
+ * vanish when nothing matched.
+ */
+function showSkillPopup(catalog: AcItem[], now: ComposerDetect): void {
+  if (!catalog.length) {
+    // An unread or empty catalog: nothing to say "no match" against.
+    acClose();
+    return;
+  }
+  const ranked = rankSkillItems(catalog, now.query);
+  if (!ranked.length && now.afterCjk && /^[^\x00-\x7f]/.test(now.query)) {
+    // "和/或" is prose, not a skill lookup that failed.
+    acClose();
+    return;
+  }
+  const shown = ranked.slice(0, SKILL_AC_ROWS);
+  acFooter = ranked.length
+    ? skillFooter(catalog.length, ranked.length, shown.length, now.query)
+    : acT("ac.skills.none", now.query);
+  const keep = sameAnchor(now);
+  ac.open = shown.length > 0;
+  ac.idx = nextIndex(shown, keep);
+  ac.items = shown;
+  ac.trigger = now.trigger;
+  ac.start = now.start;
+  acRender();
+}
+
 export function acUpdate(): Promise<void> {
   acAcceptArmed = false;
   const seq = ++acSeq;
@@ -542,6 +639,8 @@ export function acUpdate(): Promise<void> {
     acClose();
     return Promise.resolve();
   }
+  // The skill picker's count line belongs to a `/` token only.
+  if (d.trigger !== "/") acFooter = null;
   if (d.trigger !== "@") {
     cancelFileSearch();
     acNotice = null;
@@ -553,7 +652,7 @@ export function acUpdate(): Promise<void> {
 function onComposerKeydown(e: KeyboardEvent): void {
   if (e.isComposing || e.keyCode === 229) return;
   const pending = acPending();
-  if (e.key === "Escape" && (ac.open || acNotice || pending)) {
+  if (e.key === "Escape" && (ac.open || acNotice || acFooter || pending)) {
     e.preventDefault();
     e.stopImmediatePropagation();
     acClose();
@@ -573,8 +672,8 @@ function onComposerKeydown(e: KeyboardEvent): void {
       return;
     }
     // Send clears the composer without an input event. A notice-only popup
-    // would otherwise stay up over the empty box.
-    if (e.key === "Enter" && !e.shiftKey && acNotice) acClose();
+    // (or the picker's "no match" line) would otherwise stay up over the box.
+    if (e.key === "Enter" && !e.shiftKey && (acNotice || acFooter)) acClose();
     return;
   }
   if (!ac.open || ac.items.length === 0) return;

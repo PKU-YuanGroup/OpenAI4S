@@ -1052,7 +1052,9 @@ def _delegate_step_projection(result: Any, ok: bool) -> tuple[dict, str, str]:
     return ({"raw": _short(safe, 2000)}, "malformed result", "error")
 
 
-def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]:
+def _step_end(
+    method: str, kind: str, result: Any, ok: bool, *, frame_id: str | None = None
+) -> tuple[dict, str]:
     """(output, one-line summary) for a finished step."""
     if kind == "delegate":
         # Before the generic declared-failure read: a max_turns envelope
@@ -1068,7 +1070,15 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
         # Timeline) nothing to act on.
         reason = " ".join(str(err).split()) if err else ""
         summary = "failed" if not reason else f"failed: {reason[:160]}"
-        return ({"error": str(err)[:600] if err else "failed"}, summary)
+        failure: dict[str, Any] = {"error": str(err)[:600] if err else "failed"}
+        # A loaded Skill's network limit refused it: the card says so, not a
+        # bare failure (a refused search used to read "0 results").
+        from openai4s.server.skill_network_admission import refusal_view
+
+        blocked = refusal_view(reason, frame_id)
+        if blocked is not None:
+            failure["blocked"] = blocked
+        return (failure, summary)
     r = result if isinstance(result, dict) else {}
     if kind == "search":
         raw = result if isinstance(result, list) else r.get("results")
@@ -1174,14 +1184,19 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
                 {"content": text[:24000], "chars": len(text)},
                 _plural(len(text), "char") + " read",
             )
-        return (
-            {
-                "name": r.get("name"),
-                "description": r.get("description"),
-                "content": (r.get("content") or "")[:24000],
-            },
-            "loaded",
-        )
+        card = {
+            "name": r.get("name"),
+            "description": r.get("description"),
+            "content": (r.get("content") or "")[:24000],
+        }
+        # A host_only Skill narrows every later Host request in the session;
+        # the card has to say so, not just "loaded".
+        session_network = r.get("session_network")
+        if isinstance(session_network, dict) and session_network.get("domains"):
+            card["session_network"] = session_network
+            count = len(session_network["domains"])
+            return (card, f"loaded · network limited to {_plural(count, 'domain')}")
+        return (card, "loaded")
     if kind == "env":
         used = r.get("env")
         if isinstance(used, dict) and used.get("name"):  # env_use → switch
@@ -2666,6 +2681,15 @@ class HostDispatcher:
                 ok = False
                 return result
             if requires_approval:
+                # A refusal no approval can change is answered before anyone
+                # is asked. A loaded Skill's network manifest refused the
+                # request only after the user had approved it, so the card
+                # read "allowed" beside the failure.
+                policy_refusal = self._refusal_before_approval(method, args)
+                if policy_refusal is not None:
+                    result = {"error": policy_refusal}
+                    ok = False
+                    return result
                 permission_method = "bash" if method == "authorize_bash" else method
                 target = _gate_target(permission_method, args)
                 from openai4s.permissions import broker
@@ -2829,7 +2853,9 @@ class HostDispatcher:
                     step_result = result
                     if step_result is None and raised_error is not None:
                         step_result = {"error": raised_error}
-                    output, summary = _step_end(method, view[0], step_result, ok)
+                    output, summary = _step_end(
+                        method, view[0], step_result, ok, frame_id=self.frame_id
+                    )
                     if view[0] == "delegate":
                         # Delegate-specific status read at the decision site:
                         # the envelope's task_status is authoritative, and the
@@ -3330,6 +3356,19 @@ class HostDispatcher:
 
         return self._bash_authorization.record_result(spec or {})
 
+    def _refusal_before_approval(self, method: str, args: list) -> str | None:
+        """The policy refusal a gated call would get, asked before the gate."""
+
+        spec = args[0] if args and isinstance(args[0], dict) else {}
+        try:
+            if method == "authorize_bash":
+                return self._bash_authorization.policy_refusal(spec)
+            from openai4s.server.skill_network_admission import request_refusal
+
+            return request_refusal(method, spec)
+        except Exception:  # noqa: BLE001 - the handler still enforces the policy
+            return None
+
     def _m_egress_check(self, spec: dict) -> dict:
         """Read-only egress verdict for domains the kernel-local host.bash saw.
 
@@ -3494,6 +3533,8 @@ class HostDispatcher:
             bind_skill_load,
             load_event_metadata,
             load_needs_posture,
+            narrowing_notice,
+            narrowing_summary,
             skill_binding,
         )
 
@@ -3554,14 +3595,57 @@ class HostDispatcher:
             "skill_loaded",
             metadata=metadata,
         )
+        notice = narrowing_notice(self.frame_id, candidate)
         bind_skill_load(frame_id=self.frame_id, **binding)
+        if notice is not None:
+            self._announce_skill_network(notice)
         loaded_dict = loaded if isinstance(loaded, dict) else None
         if loaded_dict is not None:
             loaded_dict["skill_id"] = skill.name
             loaded_dict["action_group_id"] = metadata["action_group_id"]
             loaded_dict["manifest_digest"] = metadata["manifest_digest"]
             loaded_dict["document_digest"] = metadata["document_digest"]
+            session_network = narrowing_summary(self.frame_id)
+            if session_network is not None and (
+                capability.mode == "host_only" and capability.declaration == "declared"
+            ):
+                loaded_dict["session_network"] = session_network
         return None
+
+    def _announce_skill_network(self, notice: dict[str, Any]) -> None:
+        """Put "this Skill now narrows the session's network" on the timeline.
+
+        A host_only manifest holds every later Host request in the frame to
+        its domains, and nothing told the user: the load card said "loaded"
+        and the first sign was a refused request. Its own card, emitted by
+        every path that binds (native load, a Cell's load, a Skill file read).
+        """
+
+        if self.on_step is None:
+            return
+        step_id = "s-" + uuid.uuid4().hex[:12]
+        count = len(notice.get("domains") or ())
+        try:
+            self.on_step(
+                {
+                    "phase": "begin",
+                    "step_id": step_id,
+                    "kind": "network",
+                    "title": f"{notice.get('skill')} limits this session's network",
+                    "input": {"skill": notice.get("skill")},
+                }
+            )
+            self.on_step(
+                {
+                    "phase": "end",
+                    "step_id": step_id,
+                    "status": "done",
+                    "output": dict(notice),
+                    "summary": f"limited to {_plural(count, 'domain')}",
+                }
+            )
+        except Exception:  # noqa: BLE001 - a notice must never break a load
+            pass
 
     def _m_remember(self, spec: dict) -> dict:
         """Persist a durable memory the daemon injects into future sessions

@@ -1,6 +1,6 @@
 """
-Literature-review helpers. Auto-loaded into the python kernel by the host
-when the skill loads:
+Literature-review helpers; importable once the skill is loaded, not imported
+for you: lr = importlib.import_module("literature-review.kernel"), then lr.*:
 
  verify_dois, crossref_lookup, search_openalex, expand_citations,
  extract_dois, style_pass, screen_passages, check_claims

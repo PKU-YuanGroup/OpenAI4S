@@ -9,6 +9,7 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { filesT } from "../artifacts/copy";
 import { bindComposer } from "../send/send";
 import { loadSkillsCatalog } from "./catalog";
+import { acT } from "./copy";
 import {
   AC_DEBOUNCE_MS,
   AC_INDEX_LIMIT,
@@ -1061,5 +1062,77 @@ describe("a pending @ search across entry points and engines", () => {
     await first;
     expect(composer.value).toBe("@plot");
     expect(ac.open).toBe(true);
+  });
+});
+
+describe("the / skill picker", () => {
+  function catalog(rows: Array<Record<string, unknown>>): void {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ skills: rows })),
+      }),
+    );
+  }
+
+  const LIT = {
+    name: "literature-review",
+    description: "Find, verify, and synthesize scientific literature.",
+  };
+
+  it("lists more than eight rows, scrolling, and says how many there are", async () => {
+    const many = Array.from({ length: 75 }, (_, i) => ({
+      name: `skill-${String(i).padStart(2, "0")}`,
+      description: "d",
+    }));
+    catalog(many);
+    type("/");
+    await acUpdate();
+    expect(ac.open).toBe(true);
+    expect(ac.items).toHaveLength(60);
+    expect(hintText()).toBe(acT("ac.skills.allMore", 75, 60));
+    type("/skill-7");
+    await acUpdate();
+    expect(ac.items[0]!.insert).toBe("skill-70");
+    expect(hintText()).toBe(acT("ac.skills.matches", ac.items.length));
+  });
+
+  it("says nothing matched instead of vanishing, and Escape closes that line", async () => {
+    catalog([LIT]);
+    const { fire } = bindKeys();
+    type("/zzz");
+    await acUpdate();
+    expect(ac.open).toBe(false);
+    expect(hintText()).toBe(acT("ac.skills.none", "zzz"));
+    fire(fakeKey("Escape"));
+    expect(hintText()).toBe("");
+  });
+
+  it("finds a skill by a Chinese keyword and its description", async () => {
+    catalog([{ name: "figure-style", description: "Figure rules." }, LIT]);
+    type("/文献");
+    await acUpdate();
+    expect(ac.items.map((item) => item.insert)).toEqual(["literature-review"]);
+    type("/synthesize");
+    await acUpdate();
+    expect(ac.items.map((item) => item.insert)).toEqual(["literature-review"]);
+  });
+
+  it("opens straight after Chinese text and inserts the skill as its own word", async () => {
+    catalog([LIT]);
+    type("请用/lit");
+    await acUpdate();
+    expect(ac.open).toBe(true);
+    acPick(0);
+    expect(composer.value).toBe("请用 /literature-review ");
+  });
+
+  it("leaves Chinese prose with a slash in it alone", async () => {
+    catalog([LIT]);
+    type("和/或");
+    await acUpdate();
+    expect(ac.open).toBe(false);
+    expect(hintText()).toBe("");
   });
 });

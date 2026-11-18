@@ -2618,9 +2618,10 @@ needed; do not use `list_dir` or `write_file`; do not use `read_text_file` or \
 `exec_background`.
 4. GET DATA / RUN: to READ a paper, abstract, web page, or HTTP/JSON API (e.g. the \
 GEO/PubMed/UniProt record behind an accession), use `host.web_fetch(url)` — it renders a \
-visible "Reading …" card and IS the research step the user wants to see. Reserve \
-`host.bash("curl -L ...")` for downloading BINARY or large data files (.gz, .h5, .tar, \
-archives) that web_fetch would mangle; do NOT use curl/`requests` to read pages you could \
+visible "Reading …" card and IS the research step the user wants to see. Download \
+BINARY or large data files (.gz, .h5, .tar, archives) that web_fetch would mangle with \
+`host.web_download(url, path)` (curl in `host.bash` works only where the kernel has \
+direct network); do NOT use curl/`requests` to read pages you could \
 `host.web_fetch`. Then run normal Python cells (import the domain packages and run the \
 real pipeline). Emit those cells directly as fenced assistant content.
 5. WRITE THE REPORT with `host.write_file("summary_report.md", ...)` and refine it \
@@ -2669,8 +2670,10 @@ kernel only when NO prebuilt env has the package.
 - `host.search_skills("...")` — find relevant skills; `host.load_skill("name")` — load \
 one skill's full protocol (SKILL.md) and follow it.
 - `host.bash(cmd, timeout=..., workdir=...)` — run a shell command INSIDE the kernel \
-process, in your working directory (networking is on: curl/wget/git/pip all work; the \
-host itself never executes shell — only your python/R cells do).
+process, in your working directory. It has the kernel's limits (see "Kernel \
+environment" below): where the sandbox blocks direct network, curl/wget/pip/git \
+fetches fail there too. The host itself never executes shell — only your python/R \
+cells do.
 - `host.read_file / host.write_file / host.edit_file / host.glob / host.grep / \
 host.list_dir` — file tools scoped to your working directory (edit_file does an exact \
 string replace; grep/glob search your files).
@@ -2684,8 +2687,9 @@ supplies an existing local checkpoint path, import it into the confined session 
 and hash it. A staged asset is not admitted until a real backend inference canary succeeds.
 - `host.delegate(request, name="SPECIALIST")` — hand a self-contained sub-task to a \
 specialist; `host.mcp.call(server, tool, args)` — call a connector (MCP) tool.
-`import requests`/`httpx` and raw Python are available too, but they do NOT replace \
-`host.web_search`/`host.web_fetch`/`host.bash` for looking things up: the host tools \
+`import requests`/`httpx` reach the network only where the kernel has direct \
+network (see "Kernel environment"), and they do NOT replace \
+`host.web_search`/`host.web_fetch` for looking things up: the host tools \
 render as activity cards, go through the network + provenance layer, and are what the \
 user expects to SEE happen. For any external lookup, reach for `host.web_search` FIRST — \
 do not silently substitute a raw-Python script for the visible research step.
@@ -6225,6 +6229,19 @@ class SessionRunner:
                     "already has what you need over pip-installing:\n"
                     + "\n".join(lines)
                 )
+        except Exception:  # noqa: BLE001
+            pass
+        # What a Cell cannot do here (no direct network, no installs into an
+        # environment, workspace-only writes) and which R/Python it runs on,
+        # so the model does not find out by probing the machine.
+        try:
+            from openai4s.kernel import environments as envmod
+            from openai4s.kernel.constraints import kernel_constraints_note
+
+            ctx += "\n\n" + kernel_constraints_note(
+                python_env_name=st.env_name or envmod.default_env_name(),
+                r_env_name=getattr(st, "r_env_name", None),
+            )
         except Exception:  # noqa: BLE001
             pass
         # The Action Ledger, rather than UI prose/execution-log projections,

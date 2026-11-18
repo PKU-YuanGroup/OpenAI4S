@@ -11,8 +11,26 @@ capabilities:
       - api.openalex.org
       - doi.org
       - pubmed.ncbi.nlm.nih.gov
+      # PubMed E-utilities (esearch/efetch/esummary), the API behind "a
+      # PubMed query" in the Grounding section below.
+      - eutils.ncbi.nlm.nih.gov
       - europepmc.org
+      - clinicaltrials.gov
       - api.typesafe.ai
+      # web_search: the hosts of every engine it can be configured to use,
+      # so loading this Skill does not switch web search off. Subdomains
+      # match by suffix (www.bing.com, html./lite.duckduckgo.com,
+      # www.mojeek.com). export.arxiv.org answers arXiv-id queries.
+      - ollama.com
+      - open.feedcoopapi.com
+      - api.tavily.com
+      - api.you.com
+      - ydc-index.io
+      - mcp.parallel.ai
+      - duckduckgo.com
+      - bing.com
+      - mojeek.com
+      - export.arxiv.org
 metadata:
   # Non-biomodel: sends user's query (and contact email when configured) to
   # Crossref and OpenAlex for literature lookup.
@@ -85,7 +103,7 @@ Cite inline as a markdown link — `[Author Year](https://doi.org/10.xxxx/xxxxxx
 
 ## Style pass before saving
 
-Before saving the artifact, run `style_pass(draft)` once on the full markdown. Fix the issues it lists in a single editing pass, then save; do not call it a second time and do not loop until it returns ok. It is a lint, not a gate, and a clean draft on the first pass is normal. It is shipped in this skill's `kernel.py` and auto-loaded; if `style_pass` is not in `dir`, read `kernel.py` from this skill's directory and exec it.
+Before saving the artifact, run `style_pass(draft)` once on the full markdown. Fix the issues it lists in a single editing pass, then save; do not call it a second time and do not loop until it returns ok. It is a lint, not a gate, and a clean draft on the first pass is normal. It is shipped in this skill's `kernel.py`, which is importable but not imported for you: run `import importlib; lr = importlib.import_module("literature-review.kernel")` once in a python cell and call `lr.style_pass(draft)` (the other helpers are `lr.verify_dois`, `lr.search_openalex`, and so on). Do not read or exec `kernel.py` by hand.
 
 ## Semantic evidence check (experimental)
 

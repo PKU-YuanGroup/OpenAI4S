@@ -59,7 +59,7 @@ def control_tool_specs(tools: Iterable[Tool] | None = None) -> tuple[ToolSpec, .
         if tool.name in _NEVER_NATIVE or tool.host_method in _NEVER_NATIVE:
             continue
         _validate_portable_name(tool.name)
-        schema = tool.input_schema()
+        schema = tool.provider_input_schema()
         specs.append(
             ToolSpec(
                 name=tool.name,

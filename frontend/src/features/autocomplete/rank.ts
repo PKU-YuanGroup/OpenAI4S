@@ -75,12 +75,168 @@ export function skillToAcItem(s: {
   displayName?: string | null;
   name?: string | null;
   description?: string | null;
+  collection?: unknown;
 }): AcItem {
-  return {
+  const item: AcItem = {
     label: s.displayName || s.name || "",
     insert: s.name || "",
     sub: s.description || "",
   };
+  skillFacts.set(item, { curated: !s.collection });
+  return item;
+}
+
+/** Collection membership per skill row, kept off the shared `AcItem` shape. */
+const skillFacts = new WeakMap<AcItem, { curated: boolean }>();
+
+/** Rows the `/` popup renders at once; the rest are counted, not dropped silently. */
+export const SKILL_AC_ROWS = 60;
+
+/**
+ * What a query term also means in skill names and descriptions, which are
+ * English: Chinese research vocabulary, plus a few English words that name a
+ * task rather than appear in a description ("pubmed" is a literature search).
+ * A Chinese key matches anywhere in the typed term ("文献综述" hits both).
+ */
+const SKILL_TERMS: Record<string, readonly string[]> = {
+  文献: ["literature", "citation", "paper"],
+  综述: ["review", "literature"],
+  引用: ["citation", "literature"],
+  引文: ["citation", "literature"],
+  检索: ["search", "retriev", "literature"],
+  搜索: ["search"],
+  论文: ["paper", "manuscript", "literature"],
+  稿件: ["manuscript", "paper"],
+  荟萃: ["meta-analy"],
+  元分析: ["meta-analy"],
+  单细胞: ["single-cell", "scrna"],
+  空间: ["spatial"],
+  转录组: ["transcriptom", "rna-seq"],
+  基因组: ["genom"],
+  测序: ["sequencing", "seq"],
+  变异: ["variant"],
+  差异表达: ["differential expression", "deseq"],
+  蛋白质组: ["proteom"],
+  蛋白: ["protein"],
+  结构: ["structure"],
+  折叠: ["fold"],
+  对接: ["docking"],
+  分子动力学: ["molecular dynamics"],
+  药物: ["drug"],
+  靶点: ["target"],
+  化学: ["chem"],
+  反应: ["reaction"],
+  逆合成: ["retrosynthesis"],
+  突变: ["mutation", "mutant"],
+  序列: ["sequence"],
+  进化: ["phylo", "evolution"],
+  系统发育: ["phylo"],
+  代谢: ["metabol"],
+  富集: ["enrichment"],
+  通路: ["pathway"],
+  聚类: ["cluster"],
+  降维: ["dimension", "umap"],
+  统计: ["statistic"],
+  生存: ["survival"],
+  临床: ["clinical"],
+  试验: ["trial"],
+  绘图: ["figure", "plot"],
+  作图: ["figure", "plot"],
+  图表: ["figure", "plot", "chart"],
+  配图: ["figure"],
+  数据集: ["dataset"],
+  机器学习: ["machine learning"],
+  模型: ["model"],
+  评估: ["evaluat"],
+  实验设计: ["experiment", "design"],
+  问卷: ["survey"],
+  量表: ["survey", "measurement"],
+  访谈: ["interview", "qualitative"],
+  质性: ["qualitative"],
+  面板: ["panel"],
+  双重差分: ["difference-in-differences"],
+  质控: ["quality control", "qc"],
+  远程: ["remote"],
+  适应症: ["indication"],
+  pubmed: ["literature", "citation"],
+  citation: ["literature"],
+  citations: ["literature"],
+  paper: ["literature", "paper"],
+  papers: ["literature", "paper"],
+  meta: ["meta-analy"],
+  plot: ["figure"],
+};
+
+function skillTerms(token: string): string[] {
+  const out = [token];
+  for (const [key, also] of Object.entries(SKILL_TERMS)) {
+    const cjk = /[^\x00-\x7f]/.test(key);
+    if (cjk ? token.includes(key) : token === key) out.push(...also);
+  }
+  return out;
+}
+
+/** Lowercase, with spaces and underscores read as the hyphen skill names use. */
+function normalizeSkillText(text: string): string {
+  return text.toLowerCase().replace(/[\s_]+/g, "-");
+}
+
+function wordStarts(words: string[], term: string): boolean {
+  return words.some((word) => word.startsWith(term));
+}
+
+/** -1 for no match; otherwise higher is better. */
+function scoreSkill(item: AcItem, query: string): number {
+  const name = normalizeSkillText(item.insert || item.label || "");
+  const label = normalizeSkillText(item.label || "");
+  const description = (item.sub || "").toLowerCase();
+  const nameWords = name.split(/[-:/.]+/).filter(Boolean);
+  const descWords = description.split(/[^a-z0-9㐀-鿿]+/).filter(Boolean);
+  let score = 0;
+  if (name === query || label === query) score += 1000;
+  else if (name.startsWith(query) || label.startsWith(query)) score += 600;
+  // Every term must match somewhere: "literature review" is two of them.
+  for (const token of query.split("-").filter(Boolean)) {
+    let best = 0;
+    for (const term of skillTerms(token)) {
+      const plain = term.replace(/\s+/g, "-");
+      if (wordStarts(nameWords, plain) || name.startsWith(plain)) best = Math.max(best, 80);
+      else if (name.includes(plain)) best = Math.max(best, 30);
+      else if (wordStarts(descWords, term) || description.includes(" " + term)) {
+        best = Math.max(best, 20);
+      } else if (description.includes(term)) best = Math.max(best, 8);
+    }
+    if (best === 0) return -1;
+    score += best;
+  }
+  return score;
+}
+
+/**
+ * Every skill matching `query`, best first. A name match beats a word-start
+ * match beats a description match, so `/lit` puts literature-review ahead of
+ * is-qualitative-analysis (qua-lit-ative). Matches the description, Chinese
+ * research vocabulary and hyphen/space/underscore spellings; ties keep the
+ * catalog's order with curated skills before collection members. Nothing is
+ * capped here: the popup shows the first `SKILL_AC_ROWS` and counts the rest.
+ */
+export function rankSkillItems(items: AcItem[], query: string): AcItem[] {
+  const q = normalizeSkillText((query || "").trim()).replace(/^-+|-+$/g, "");
+  const scored = items.map((item, index) => ({
+    item,
+    index,
+    curated: skillFacts.get(item)?.curated !== false,
+    score: q ? scoreSkill(item, q) : 0,
+  }));
+  return scored
+    .filter((row) => row.score >= 0)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        Number(b.curated) - Number(a.curated) ||
+        a.index - b.index,
+    )
+    .map((row) => row.item);
 }
 
 /** Filter by substring on label or insert, then cap. */

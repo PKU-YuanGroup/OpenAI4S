@@ -26,12 +26,13 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`NestedEditor.tsx`](NestedEditor.tsx) | Skill / specialist / connector / job-output overlay. An edit form cannot save until its first read has succeeded. |
 | [`NestedEditor.test.tsx`](NestedEditor.test.tsx) | A failed Skill or specialist read is shown with Retry and blocks Save, so blank fields are never saved over the server copy. |
 | [`SkillImport.test.tsx`](SkillImport.test.tsx) | Import review shows requirements, network mode, and readiness before enable; the Skills list behind it re-reads as soon as the import lands, however the review is dismissed. |
-| [`NetworkTab.tsx`](NetworkTab.tsx) | Doubao card, allowlist, Tavily backup, telemetry drain. |
+| [`NetworkTab.tsx`](NetworkTab.tsx) | Doubao card, allowlist, Tavily backup, telemetry drain. The allowlist section says what the domain groups are and whether they apply (`egress_mode` off vs `allowlist`), lists approved domains, names the groups in the UI language (`allowlistGroupName`), and counts the domains past the first twelve instead of cutting them silently. |
 | [`PermissionsTab.tsx`](PermissionsTab.tsx) | Per-scope approval rules. A rule's decision is optimistic and goes back when the server refuses it. |
 | [`SearchEngines.tsx`](SearchEngines.tsx) | Network tab's search-engine order: Doubao pinned on top, backups reorderable (drag or arrows) and switchable, Tavily / You.com keys. |
 | [`PermissionsTab.test.tsx`](PermissionsTab.test.tsx) | A decision the server took stays shown; a refused one goes back to the rule's decision (a render is asked for, so the select resets). |
 | [`refresh.test.tsx`](refresh.test.tsx) | A write that answers after the user moved to another tab, or opened another nested editor, leaves them where they are; a write on the tab still shown re-reads it in place without remounting it. |
-| [`SkillsTab.tsx`](SkillsTab.tsx) | Personal / project / collection skills. |
+| [`SkillsTab.tsx`](SkillsTab.tsx) | Personal / project / collection skills. A search box ranks every skill, collection members included, the way the `/` picker does (name, description, Chinese keyword, declared domain); a `host_only` skill is marked with the number of domains it limits a session to and lists them on expand. |
+| [`SkillsTab.test.tsx`](SkillsTab.test.tsx) | Skills-tab search finds a skill by name, description word, Chinese keyword or declared domain, reaches collection members, and finds nothing for a miss; only a `host_only` skill gets a network-limit badge. |
 | [`SpecialistsTab.tsx`](SpecialistsTab.tsx) | Custom specialists and builtin roles. |
 | [`switches.test.tsx`](switches.test.tsx) | The Network egress and Memory switches stay disabled until the first read lands, ignore a click while a write is in flight, and go back to the confirmed value when a write fails. The Skill, specialist and connector row switches show what a later read brings and keep a write the server took over an older read. |
 | [`customize.css`](customize.css) | Lane-local modal chrome until F-21 ports `style.css`. |

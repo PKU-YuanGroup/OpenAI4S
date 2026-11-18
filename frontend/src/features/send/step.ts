@@ -25,6 +25,16 @@ import { publicList } from "../timeline/sanitize";
 import { appendSemanticSkillSearch } from "../judgment/chips";
 import { sendCopy } from "./copy";
 import { icon, iconEl } from "./icon";
+import {
+  blockedBody,
+  blockedView,
+  loadView,
+  marksNetworkLimit,
+  networkNoticeBody,
+  noticeView,
+  stepNetworkLabel,
+  stepNetworkMeta,
+} from "./skill-network";
 
 export type Step = {
   step_id?: string;
@@ -68,6 +78,7 @@ const STEP_ICON: Record<string, string> = {
   mcp: "link",
   fold: "box",
   code: "terminal",
+  network: "lock",
 };
 
 export function stepIcon(kind: string | undefined): string {
@@ -355,8 +366,22 @@ export function stepBody(step: Step): HTMLElement {
     box.appendChild(delegateStepBody(inp, out));
     return box;
   }
+  const blocked = blockedView(step);
+  if (blocked) {
+    if (inp.command) {
+      box.appendChild(codeBlock(String(inp.command), { term: true, lang: "bash", langLabel: "shell" }));
+    } else if (inp.query) box.appendChild(el("div", "s-q", "“" + String(inp.query) + "”"));
+    else if (inp.url) box.appendChild(el("div", "s-q", String(inp.url)));
+    box.appendChild(blockedBody(blocked, out.error != null ? String(out.error) : ""));
+    return box;
+  }
   if (out.error) {
     box.appendChild(clipPre(out.error, "d-del"));
+    return box;
+  }
+  const notice = noticeView(step);
+  if (notice) {
+    box.appendChild(networkNoticeBody(notice));
     return box;
   }
   if (k === "review") {
@@ -456,6 +481,8 @@ export function stepBody(step: Step): HTMLElement {
   }
   if (k === "skill") {
     if (appendSemanticSkillSearch(box, out)) return box;
+    const limited = loadView(step);
+    if (limited) box.appendChild(networkNoticeBody(limited));
     if (out.content) {
       const md = el("div", "md s-skill");
       md.innerHTML = renderMd(String(out.content));
@@ -645,21 +672,37 @@ function paintStepBody(handle: StepHandle): void {
 export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
   const { card, meta, ic, step } = handle;
   const status = step.status || "running";
+  // Refused by a loaded Skill's network limit: not a crash, and not "0 results".
+  const blocked = status !== "running" && !!blockedView(step);
   card.classList.toggle("running", status === "running");
-  card.classList.toggle("err", status === "error");
-  card.classList.toggle("warn", status === "warning");
+  card.classList.toggle("err", status === "error" && !blocked);
+  card.classList.toggle("warn", status === "warning" || blocked);
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
     meta.textContent = step.kind === "review" ? sendCopy("reviewing") : "";
   } else {
     ic.innerHTML = icon(
-      status === "error" ? "x" : status === "warning" ? "alert-triangle" : stepIcon(step.kind),
+      blocked
+        ? "lock"
+        : status === "error"
+          ? "x"
+          : status === "warning"
+            ? "alert-triangle"
+            : stepIcon(step.kind),
       14,
     );
     meta.textContent =
+      stepNetworkMeta(step) ||
       (step.summary != null ? String(step.summary) : "") ||
       (step.output && rec(step.output).error ? t("step.status.failed") : "");
   }
+  // A loaded Skill's network limit: the server words these in English.
+  const netLabel = stepNetworkLabel(step);
+  if (netLabel) {
+    const label = card.querySelector(".s-lbl");
+    if (label) label.textContent = netLabel;
+  }
+  card.classList.toggle("s-net-limited", marksNetworkLimit(step));
   if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") {
     card.classList.add("open");
   }

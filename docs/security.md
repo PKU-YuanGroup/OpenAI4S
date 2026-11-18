@@ -202,6 +202,26 @@ absence of a browser subscriber never silently allows a request. Outside an
 explicitly enabled Stage 7 `auto_review`, headless execution defaults to deny
 unless the operator explicitly sets `OPENAI4S_UNATTENDED_APPROVAL=allow`.
 
+A refusal that no approval can change is answered before the approval gate,
+so nobody is asked to approve a request that would then fail: for `host.bash`,
+the static safety precheck, secret paths, the egress allowlist and a loaded
+Skill's `host_only` network manifest; for `web_fetch`, `web_download` and
+`request_network_access`, a destination the bound manifest does not declare.
+The refusal names the Skill and the domains it allows, and the Cell receives
+that reason, not a generic "host authorization unavailable". `authorize_bash`
+still runs the same checks at issuance, where they are the boundary.
+
+The model is told the kernel's limits before it meets them. The Web and CLI
+system prompts carry a "Kernel environment" paragraph built from the sandbox
+configuration (`openai4s/kernel/constraints.py`; no worker, no self-test):
+whether direct network from Cells and `host.bash` is blocked, that installs
+into an existing environment are refused and `env_setup` / `host.env.create`
+is the route instead, that writes are confined to the workspace, and which
+Python and R the kernels run on (home written as `~`). A Cell whose package
+install the sandbox refused gets a one-line hint in its Observation saying so.
+This is guidance, not enforcement: what a Cell can actually read or reach is
+still decided only by the OS sandbox.
+
 A durable card is not a replay token. While the daemon is still running, a
 decision wakes the exact blocked call. After a daemon restart that thread is
 gone: approving the surviving card records that the old operation **did not

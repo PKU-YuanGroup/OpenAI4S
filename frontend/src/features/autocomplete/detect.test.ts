@@ -54,6 +54,27 @@ describe("composer trigger parsing (@ / # / /)", () => {
     });
     expect(acDetectFrom("@file#", 6)).toBeNull();
   });
+
+  it("opens / straight after CJK text, where there is no space to wait for", () => {
+    const before = "请用/lit";
+    expect(acDetectFrom(before, before.length)).toEqual({
+      trigger: "/",
+      query: "lit",
+      start: 2,
+      afterCjk: true,
+    });
+    expect(acDetectFrom("文献综述，/", 6)).toEqual({
+      trigger: "/",
+      query: "",
+      start: 5,
+      afterCjk: true,
+    });
+    // Only `/`: an @ or # glued to CJK is prose more often than a mention.
+    expect(acDetectFrom("请看@plot", 7)).toBeNull();
+    expect(acDetectFrom("第#3", 3)).toBeNull();
+    // A URL's slashes are not a CJK boundary.
+    expect(acDetectFrom("见 https://x.org/a", 17)).toBeNull();
+  });
 });
 
 describe("editor identifier detection", () => {
