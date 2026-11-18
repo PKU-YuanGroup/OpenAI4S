@@ -244,6 +244,34 @@ export function ensure(): LiveStream | null {
   return startStream();
 }
 
+/**
+ * Append a card (a step, an approval) at the turn's current position: the
+ * prose so far is sealed above it and later prose starts below it, which is
+ * the order the stored transcript has.
+ */
+export function placeInLiveStream(card: HTMLElement, st: LiveStream): void {
+  sealText(st);
+  st.wrap.appendChild(card);
+  st.md = el("div", "md");
+  st.wrap.appendChild(st.md);
+  st.text = "";
+}
+
+/**
+ * Move a card already on screen into the live turn, at the position its
+ * replayed event names. Reopening or reloading a running session renders the
+ * turn's stored steps and approvals from REST, then replays the turn: the
+ * replay updated those cards where REST had put them, so every card stacked
+ * above the turn and all of its prose collected into one paragraph below
+ * them. Never starts a stream; false when there is none or the card is in it.
+ */
+export function adoptIntoLiveStream(card: HTMLElement | null | undefined): boolean {
+  const st = currentStream();
+  if (!st || !st.wrap || !card || st.wrap.contains(card)) return false;
+  placeInLiveStream(card, st);
+  return true;
+}
+
 function newToolPre(): { pre: HTMLElement; handle: StreamingPreHandle } {
   const pre = el("pre");
   const textNode = document.createTextNode("");

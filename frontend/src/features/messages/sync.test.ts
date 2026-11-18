@@ -16,6 +16,7 @@ import { installSend } from "../send";
 import { resetSendHandlers } from "../send/handlers";
 import { newRequestId } from "../send/send";
 import { renderStoredPermission } from "../send/permission";
+import { renderStoredStep } from "../send/step";
 import { handleIncomingMessage } from "../ws/connect";
 import { registerBuiltinHandlers } from "../ws/handlers";
 import { onEvent, resetWsHandlers } from "../ws/registry";
@@ -555,5 +556,79 @@ describe("a reconnect after a gap", () => {
     await vi.waitFor(() => expect(card.classList.contains("denied")).toBe(true));
     expect(card.querySelector(".perm-reason")?.textContent).toBe("Reason: use the copy");
     expect(document.getElementById("composer-hint")?.textContent).toContain("already decided elsewhere");
+  });
+});
+
+// --------------------------------------------------------------------------
+// SYNC-3: a reopened running session keeps the live order
+// --------------------------------------------------------------------------
+
+/** The live turn's children as kinds: prose segments, steps, approvals. */
+function turnOutline(): string[] {
+  const wrap = messages().querySelector(":scope > .msg.assistant") as HTMLElement | null;
+  if (!wrap) return [];
+  return Array.from(wrap.children).map((node) => {
+    const el = node as HTMLElement;
+    if (el.classList.contains("md")) return "md:" + (el.textContent || "").trim();
+    if (el.classList.contains("step")) return "step";
+    if (el.classList.contains("perm-card")) return "perm:" + (el.dataset.decisionId || "");
+    return el.className;
+  });
+}
+
+function chunk(text: string): Record<string, unknown> {
+  return { type: "text_chunk", root_frame_id: "f-1", block_type: "text", chunk: text };
+}
+
+describe("reopening a running session", () => {
+  it("places the stored steps back between the prose they came between", () => {
+    // What a reload's REST read renders: the question and the turn's steps
+    // so far (its prose is stored only when the turn ends).
+    renderStored({ role: "user", content: "Fold change?", message_id: "m-1" });
+    renderStoredStep({ step_id: "s-1", kind: "read", title: "Reading plate.csv", status: "done", created_at: 1 });
+    renderStoredStep({ step_id: "s-2", kind: "write", title: "Writing fit.py", status: "running", created_at: 2 });
+    // ...then the turn's replay, from its text_reset.
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Reading the plate first.\n\n"));
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "read", title: "Reading plate.csv", status: "running" });
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-1", status: "done" });
+    onEvent(chunk("Now the fit.\n\n"));
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-2", kind: "write", title: "Writing fit.py", status: "running" });
+    onEvent(chunk("Running it."));
+
+    const top = Array.from(messages().children).map((node) => (node as HTMLElement).className);
+    expect(top).toEqual(["msg user", "msg assistant"]);
+    expect(turnOutline()).toEqual([
+      "md:Reading the plate first.",
+      "step",
+      "md:Now the fit.",
+      "step",
+      "md:",
+    ]);
+    expect((stream.value as LiveStream).text).toBe("Running it.");
+    expect(messages().querySelectorAll(".step")).toHaveLength(2);
+  });
+
+  it("splits the prose at a live approval the way a step does", () => {
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("I need to run a command.\n\n"));
+    onEvent({ type: "await_permission", root_frame_id: "f-1", frame_id: "f-1", decision_id: "perm-a", tool: "bash", title: "Run" });
+    onEvent(chunk("Approved, continuing."));
+    expect(turnOutline()).toEqual(["md:I need to run a command.", "perm:perm-a", "md:"]);
+    expect((stream.value as LiveStream).text).toBe("Approved, continuing.");
+  });
+
+  it("moves a stored approval into the turn when its event replays", () => {
+    permCards.value = Object.create(null);
+    renderStored({ role: "user", content: "Go", message_id: "m-1" });
+    renderStoredPermission({ decision_id: "perm-b", frame_id: "f-1", tool: "bash", title: "Run", state: "allowed", scope: "once" });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Asking first.\n\n"));
+    onEvent({ type: "await_permission", root_frame_id: "f-1", frame_id: "f-1", decision_id: "perm-b", tool: "bash", title: "Run", seq: 3 });
+    expect(turnOutline()).toEqual(["md:Asking first.", "perm:perm-b", "md:"]);
+    // Still one card, still showing its stored decision.
+    const cards = messages().querySelectorAll(".perm-card");
+    expect(cards).toHaveLength(1);
+    expect((cards[0] as HTMLElement).classList.contains("allowed")).toBe(true);
   });
 });

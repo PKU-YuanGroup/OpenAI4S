@@ -16,7 +16,7 @@ import { mdHighlight } from "../md/highlight";
 import { renderMd } from "../md/render";
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
-import { ensure, sealText, type LiveStream } from "../messages/stream";
+import { adoptIntoLiveStream, ensure, placeInLiveStream, type LiveStream } from "../messages/stream";
 import { shortRuntime } from "../notebook/kernel";
 import { publicText } from "../scrub/scrub";
 import { apiErrorText } from "../sessions/api";
@@ -733,6 +733,18 @@ function stepRegistry(): Record<string, StepHandle> {
   return els;
 }
 
+type DemotableStream = LiveStream & { toolCard?: HTMLElement & { _demoted?: boolean } };
+
+/** A Cell's activity card that steps follow becomes the "Code" group head. */
+function demoteToolCard(st: DemotableStream): void {
+  if (st.toolCard && !st.toolCard._demoted) {
+    st.toolCard.classList.add("has-steps");
+    st.toolCard._demoted = true;
+    const lbl = st.toolCard.querySelector(".lbl");
+    if (lbl) lbl.textContent = t("step.label.code");
+  }
+}
+
 export function addLiveStep(m: Record<string, unknown>): void {
   const existing = stepRegistry()[String(m.step_id || "")];
   if (existing && existing.card && existing.card.isConnected) {
@@ -741,12 +753,15 @@ export function addLiveStep(m: Record<string, unknown>): void {
     if (m.input != null) existing.step.input = rec(m.input);
     if (m.status) existing.step.status = String(m.status);
     applyStepState(existing, LAZY_BODY);
+    // A reopened running session rendered this stored step from REST before
+    // the turn's replay reached its `step` event: it belongs here, between
+    // the prose before and after it, as it was shown live.
+    if (adoptIntoLiveStream(existing.card)) demoteToolCard(liveStream.value as DemotableStream);
     down();
     return;
   }
-  const st = ensure() as (LiveStream & { toolCard?: HTMLElement & { _demoted?: boolean } }) | null;
+  const st = ensure() as DemotableStream | null;
   if (!st) return;
-  sealText(st);
   const handle = buildStepCard(
     {
       step_id: m.step_id != null ? String(m.step_id) : undefined,
@@ -758,16 +773,8 @@ export function addLiveStep(m: Record<string, unknown>): void {
     LAZY_BODY,
   );
   if (m.step_id) stepRegistry()[String(m.step_id)] = handle;
-  st.wrap.appendChild(handle.card);
-  if (st.toolCard && !st.toolCard._demoted) {
-    st.toolCard.classList.add("has-steps");
-    st.toolCard._demoted = true;
-    const lbl = st.toolCard.querySelector(".lbl");
-    if (lbl) lbl.textContent = t("step.label.code");
-  }
-  st.md = el("div", "md");
-  st.wrap.appendChild(st.md);
-  st.text = "";
+  placeInLiveStream(handle.card, st);
+  demoteToolCard(st);
   liveStream.value = st;
   if (m.kind === "review") hint(sendCopy("reviewing"), false, true);
   down();

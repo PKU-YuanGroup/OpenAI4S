@@ -10,7 +10,7 @@ import { LANG, t } from "../../i18n/runtime";
 import { permCards, running } from "../../stores/stream";
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
-import { ensure } from "../messages/stream";
+import { adoptIntoLiveStream, ensure, placeInLiveStream, type LiveStream } from "../messages/stream";
 import { api, apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { callLane } from "./host";
@@ -226,20 +226,29 @@ export function renderPermissionCard(m: PermEvent): void {
   if (!id) return;
   const reg = registry();
   const prev = Object.prototype.hasOwnProperty.call(reg, id) ? reg[id] : undefined;
-  if (prev && prev.card && prev.card.isConnected) return;
-  let host: HTMLElement | null = null;
+  if (prev && prev.card && prev.card.isConnected) {
+    // Rendered from stored history by a reopen; the replayed (or re-sent
+    // pending) event places it in the running turn, as a step's does.
+    if (adoptIntoLiveStream(prev.card)) down();
+    return;
+  }
+  let st: LiveStream | null = null;
   try {
-    const st = ensure();
-    host = st && st.wrap ? st.wrap : null;
+    st = ensure();
   } catch {
-    host = null;
+    st = null;
   }
-  if (!host && typeof document !== "undefined") {
-    host = document.getElementById("messages");
-  }
-  if (!host) return;
   const handle = buildPermissionCard(m);
-  host.appendChild(handle.card);
+  if (st && st.wrap) {
+    // The prose before the request stays above the card and what follows it
+    // starts below, matching the stored order (the card used to sit under
+    // the turn's text so far, and later text kept growing above it).
+    placeInLiveStream(handle.card, st);
+  } else {
+    const host = typeof document !== "undefined" ? document.getElementById("messages") : null;
+    if (!host) return;
+    host.appendChild(handle.card);
+  }
   reg[id] = handle;
   down();
 }
