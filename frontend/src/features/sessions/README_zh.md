@@ -47,7 +47,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`share.ts`](share.ts) | 分享对话框：创建、复制、更新或撤销会话的只读链接。app.js:7560-7697。 |
 | [`rejections.test.ts`](rejections.test.ts) | 「发起即不管」的操作失败时会提示，而不是留下未处理的 rejection：会话行菜单、项目菜单的导入与下载项，以及会话刷新触发的仪表盘重载。 |
 | [`projects.ts`](projects.ts) | 项目菜单/模态/研究视图（其时间线卡片：`projectTimelineCard`）、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。 |
-| [`project-files.ts`](project-files.ts) | 本地源文件夹选择器与只读项目文件浏览器：子文件夹浏览、限长文本预览、重试，以及避免过期读取覆盖界面的请求序号。 |
+| [`project-files.ts`](project-files.ts) | 本地源文件夹选择器与只读项目文件浏览器：子文件夹浏览、“显示隐藏文件夹”开关、限长文本预览、重试，以及避免过期读取覆盖界面的请求序号。`projectFolderErrorText` 按错误码把被拒绝的文件夹（保存或选择器）以界面语言说明。 |
 | [`project-history.ts`](project-history.ts) | 本地 `.openai4s/` 保存状态、立即保存、历史对话与版本、纯文本对话/代码/设置视图、文件版本下载和遗漏文件提示。继续对话前重新检查当前数据库归属，不恢复内核内存。 |
 | [`project-history.test.ts`](project-history.test.ts) | 真实保存状态与失败、重试、仅有存档的对话、继续前重新检查、版本切换、安全文本/下载链接，以及过期或已关闭视图的响应。 |
 | [`project-files.test.ts`](project-files.test.ts) | 显式选择文件夹、新建/编辑/解除绑定持久化、嵌套文件导航、安全文本预览、读取失败与过期响应。项目切换同时打开该项目的会话；目录读取或首个会话 POST 失败时恢复原项目、源文件夹和侧栏范围，也覆盖连续切换多个项目的情况。 |

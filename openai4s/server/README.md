@@ -66,7 +66,7 @@ gateway.py
 
 | File | Responsibility |
 | --- | --- |
-| [`project_folder_routes.py`](project_folder_routes.py) | Authenticated loopback-only folder picker, project directory listing and bounded UTF-8 preview, reusing the workspace descriptor and secret boundaries. Team and remote deployments cannot bind arbitrary host folders. |
+| [`project_folder_routes.py`](project_folder_routes.py) | Authenticated loopback-only folder picker, project directory listing and bounded UTF-8 preview, reusing the workspace descriptor and secret boundaries. The picker leaves dot-folders out unless `hidden=1` and lists Documents, Desktop and Downloads first at home. Team and remote deployments cannot bind arbitrary host folders. |
 | [`project_history_autosave.py`](project_history_autosave.py) | Coalesced background archival at durable boundaries (an execution's end, HTTP Artifact mutations, renames, branch switches), startup recovery, shutdown flush and preservation before deletion. |
 | [`project_history_routes.py`](project_history_routes.py) | Local history directory/status, manual save, read-only revision views and checksummed attachment downloads. |
 | [`__init__.py`](__init__.py) | The stable package facade. Exports `build_server` and `serve`. |

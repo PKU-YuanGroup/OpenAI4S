@@ -47,7 +47,7 @@ gateway.py
 
 | 文件 | 职责 |
 | --- | --- |
-| [`project_folder_routes.py`](project_folder_routes.py) | 经认证、仅回环连接可用的文件夹选择、项目目录浏览和有界 UTF-8 预览，复用工作区文件描述符与秘密文件边界。团队与远程部署不能绑定任意主机目录。 |
+| [`project_folder_routes.py`](project_folder_routes.py) | 经认证、仅回环连接可用的文件夹选择、项目目录浏览和有界 UTF-8 预览，复用工作区文件描述符与秘密文件边界。选择器默认不列出以 `.` 开头的文件夹（`hidden=1` 时列出），在主目录中把 Documents、Desktop、Downloads 排在最前。团队与远程部署不能绑定任意主机目录。 |
 | [`project_history_autosave.py`](project_history_autosave.py) | 在持久边界（一次执行结束、HTTP 文件变更、重命名、切换分支）合并后台保存，以及启动补存、关闭落盘和删除前保留记录。 |
 | [`project_history_routes.py`](project_history_routes.py) | 本地历史目录与状态、手动保存、只读版本查看和校验后的文件下载。 |
 | [`__init__.py`](__init__.py) | 稳定的包门面，导出 `build_server` 与 `serve`。 |
