@@ -184,6 +184,29 @@ describe("bindWorkbench and the locale chunks", () => {
     expect(dashboard.loadDashboard).not.toHaveBeenCalled(); // no new reads
   });
 
+  it("a language switch while a turn runs keeps the composer's queueing placeholder", async () => {
+    // The static repaint resets the placeholder from its data-i18n-ph (the
+    // idle "Ask anything…"), so a running turn's composer read as idle.
+    const composer = {
+      placeholder: "",
+      classList: { contains: (name: string) => name === "queueing" },
+      addEventListener: vi.fn(),
+    };
+    clicks["#composer"] = composer;
+    clicks["#dashboard"] = { classList: { contains: () => true } };
+    const { bindWorkbench } = await import("./boot");
+    const ready = bindWorkbench();
+    gate.release();
+    await ready;
+    await flush();
+    const i18n = await import("../../i18n");
+    await i18n.setLang("en");
+    await i18n.setLang("zh");
+    expect(composer.placeholder).toBe("当前任务运行中 — 现在发送将排入队列…");
+    await i18n.setLang("en");
+    expect(composer.placeholder).toBe("A turn is running — sending now queues this behind it…");
+  });
+
   it("does not wait forever on a stalled locale chunk", async () => {
     vi.useFakeTimers();
     try {

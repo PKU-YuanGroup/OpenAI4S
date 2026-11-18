@@ -21,7 +21,13 @@ import {
   rememberAdmission,
 } from "./admission";
 import { handleFrameUpdateTurn, registerSendHandlers } from "./handlers";
-import { reconcilePermissionCards, renderStoredPermission, type StoredApproval } from "./permission";
+import { onLanguageChange } from "../../i18n/runtime";
+import {
+  reconcilePermissionCards,
+  relabelPermissionCards,
+  renderStoredPermission,
+  type StoredApproval,
+} from "./permission";
 import { send } from "./send";
 import {
   buildStepCard,
@@ -75,6 +81,7 @@ export {
   permActionLine,
   permScopeCn,
   reconcilePermissionCards,
+  relabelPermissionCards,
   renderPermissionCard,
   renderStoredPermission,
   resolvePermissionCard,
@@ -132,6 +139,9 @@ export {
 
 export type SendTarget = Record<string, unknown>;
 
+/** One language hook for the page, however often the lane installs. */
+let relabelHooked = false;
+
 const SEND_CONTRACT_NAMES = [
   "send",
   "buildStepCard",
@@ -165,6 +175,10 @@ export function installSend(
   setReplayEndSideEffects((fid) => {
     void reconcilePermissionCards(fid);
   });
+  if (!relabelHooked) {
+    relabelHooked = true;
+    onLanguageChange(() => relabelPermissionCards());
+  }
   // Explicit `target.name =` lines (not a loop) so the duplicate-name
   // scan `target.[A-Za-z_]* =` can see every assignment.
   target.send = send;

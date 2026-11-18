@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { _seqSeen, _streamEpoch, ws as wsSignal } from "../../stores/stream";
+import { watchDisconnect } from "../sessions/chrome";
 import {
   API,
   WS_PING_MS,
+  WS_PONG_TIMEOUT_MS,
   WS_RECONNECT_MS,
   clearWsPing,
   connectWS,
@@ -15,6 +17,29 @@ import {
 } from "./connect";
 import { registerBuiltinHandlers } from "./handlers";
 import { registerWsHandler, resetWsHandlers } from "./registry";
+
+/** Just enough of an element for the disconnect banner and the hint line. */
+function fakeNode() {
+  const classes = new Set<string>();
+  const attrs = new Map<string, string>();
+  const node = {
+    textContent: "",
+    innerHTML: "",
+    style: {} as Record<string, string>,
+    classList: {
+      add: (name: string) => classes.add(name),
+      remove: (name: string) => classes.delete(name),
+      contains: (name: string) => classes.has(name),
+    },
+    setAttribute: (name: string, value: string) => attrs.set(name, value),
+    removeAttribute: (name: string) => attrs.delete(name),
+    appendChild: (child: unknown) => child,
+    get visible(): boolean {
+      return classes.has("visible") && !attrs.has("hidden");
+    },
+  };
+  return node;
+}
 
 class FakeWebSocket implements WsSocket {
   static instances: FakeWebSocket[] = [];
@@ -114,6 +139,62 @@ describe("connectWS", () => {
     project.value = "proj-b";
     project.value = null;
     expect(directories().map((msg) => msg.project_id)).toEqual(["proj-a", "proj-a", "proj-b", null]);
+  });
+
+  it("treats a ping left unanswered as a dropped connection and shows the banner", async () => {
+    // Chromium's offline mode freezes the socket without a close event, so a
+    // banner bound only to `close` never appeared.
+    const banner = fakeNode();
+    const composerHint = fakeNode();
+    vi.stubGlobal("document", {
+      querySelector: (sel: string) => (sel === "#conn-banner" ? banner : sel === "#composer-hint" ? composerHint : null),
+      createElement: () => fakeNode(),
+      createTextNode: () => fakeNode(),
+    });
+    watchDisconnect();
+    connectWS();
+    const socket = FakeWebSocket.instances[0]!;
+    await Promise.resolve(); // the banner wraps the new socket in a microtask
+    socket.open();
+    expect(banner.visible).toBe(false);
+    vi.advanceTimersByTime(WS_PING_MS);
+    expect(socket.sent).toContain('{"type":"ping"}');
+    // A frame inside the window keeps it alive...
+    socket.emit(JSON.stringify({ type: "pong" }));
+    vi.advanceTimersByTime(WS_PONG_TIMEOUT_MS);
+    expect(banner.visible).toBe(false);
+    // ...silence past it does not.
+    vi.advanceTimersByTime(WS_PING_MS - WS_PONG_TIMEOUT_MS);
+    vi.advanceTimersByTime(WS_PONG_TIMEOUT_MS);
+    expect(banner.visible).toBe(true);
+    expect(socket.onclose).toBeNull();
+    vi.advanceTimersByTime(WS_RECONNECT_MS);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    // A late real close of the dead socket starts nothing more.
+    socket.drop();
+    vi.advanceTimersByTime(WS_RECONNECT_MS);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    await Promise.resolve();
+    FakeWebSocket.instances[1]!.open();
+    expect(banner.visible).toBe(false);
+  });
+
+  it("follows the browser's offline and online events", () => {
+    const listeners: Record<string, Array<() => void>> = {};
+    vi.stubGlobal("window", {
+      addEventListener: (type: string, fn: () => void) => {
+        (listeners[type] ||= []).push(fn);
+      },
+    });
+    connectWS();
+    FakeWebSocket.instances[0]!.open();
+    listeners.offline?.forEach((fn) => fn());
+    // Closed at once, not after the next ping: the reconnect is pending.
+    expect(FakeWebSocket.instances[0]!.onclose).toBeNull();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    listeners.online?.forEach((fn) => fn());
+    // Back online reconnects now rather than waiting out the delay.
+    expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
   it("reconnects 1500ms after close", () => {

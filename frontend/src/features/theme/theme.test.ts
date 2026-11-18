@@ -179,6 +179,30 @@ describe("F-09 theme", () => {
       expect(invalid.attrs.get("data-theme")).toBe("light");
     });
 
+    it("follows a theme picked in another tab, as the language does", async () => {
+      const h = installHarness({ theme: "light" });
+      const storageListeners: Array<(event: { key: string | null }) => void> = [];
+      vi.stubGlobal("window", {
+        matchMedia: (globalThis as { matchMedia?: unknown }).matchMedia,
+        S: { _molViewer: h.mol },
+        addEventListener(type: string, listener: (event: { key: string | null }) => void) {
+          if (type === "storage") storageListeners.push(listener);
+        },
+      });
+      const api = await loadTheme();
+      api.installTheme();
+      expect(h.attrs.get("data-theme")).toBe("light");
+      // The other tab wrote the shared key; this tab hears it via `storage`.
+      h.store.set("os-theme", "dark");
+      storageListeners.forEach((listener) => listener({ key: "os-theme" }));
+      expect(api.getTheme()).toBe("dark");
+      expect(h.attrs.get("data-theme")).toBe("dark");
+      // Another key changing is not a theme change.
+      h.store.set("os-theme", "light");
+      storageListeners.forEach((listener) => listener({ key: "os-lang" }));
+      expect(h.attrs.get("data-theme")).toBe("dark");
+    });
+
     it("setTheme persists os-theme and does not touch os-lang", async () => {
       const h = installHarness({ theme: "system", extraStore: { "os-lang": "zh" } });
       const api = await loadTheme();

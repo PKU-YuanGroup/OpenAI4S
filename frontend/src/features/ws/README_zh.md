@@ -11,9 +11,9 @@
 | [`types.ts`](types.ts) | `WsMessage` / `WsHandler`。 |
 | [`registry.ts`](registry.ts) | Map 注册表、`registerWsHandler`、内层 `onEvent`。 |
 | [`guards.ts`](guards.ts) | `mine`、`isStaleTurnEvent`、`eventFrameId`、`tryLane`。 |
-| [`connect.ts`](connect.ts) | `connectWS`、`sub`/`unsub`、`subDirectory`/`watchDirectory`（`view_directory` 在连接时和每次切换项目时说明侧栏所在的项目）、ping、重连、`handleIncomingMessage`（去重闸门 + 游标，原地写入：只被采样，无人订阅）。 |
+| [`connect.ts`](connect.ts) | `connectWS`、`sub`/`unsub`、`subDirectory`/`watchDirectory`（`view_directory` 在连接时和每次切换项目时说明侧栏所在的项目）、带 pong 时限的 ping（`declareSocketDead`：超过 `WS_PONG_TIMEOUT_MS` 无任何帧、或浏览器的 `offline` 事件，立即走关闭路径——横幅与重连；`online` 时不再等待剩余延迟直接重连）、重连、`handleIncomingMessage`（去重闸门 + 游标，原地写入：只被采样，无人订阅）。 |
 | [`handlers.ts`](handlers.ts) | `replay_begin`/`replay_end`（`gap` 只标记需重读历史，游标保持不变——它仍代表屏幕上已有的内容，下次重连不会把回合再追加一遍；`setReplayEndSideEffects` 让 F-11 重读仍显示待审批的卡片）；`frame_update` 原位 patch + 300ms 尾沿加载；`session_status`（侧栏所在项目中的其他会话发生变化）同样原位 patch 并重载列表；`artifact_created` upsert（列表、`_artBust`、`_tbl` 都换成新值，订阅者才能收到）+ 150ms 尾沿加载。 |
 | [`index.ts`](index.ts) | `installWs` / `bootWs`（连接并开始跟踪侧栏目录）与对外 re-export。 |
 | [`registry.test.ts`](registry.test.ts) | 重复注册 throw；handler 抛异常时游标不推进。 |
 | [`handlers.test.ts`](handlers.test.ts) | epoch 失配、gap 重载（游标保留）、未查看会话的 `session_status`、mine / isStaleTurnEvent、会话 patch、产物 upsert、防抖。 |
-| [`connect.test.ts`](connect.test.ts) | URL、open 时订阅、open 与切换项目时的侧栏目录、ping、重连、onmessage 游标顺序、重复/旧事件丢弃、epoch 重置、待审批重发、非有限序号。 |
+| [`connect.test.ts`](connect.test.ts) | URL、open 时订阅、open 与切换项目时的侧栏目录、ping、无应答的 ping 显示横幅并重连（迟到的真实关闭不再触发任何操作）、offline/online 事件、重连、onmessage 游标顺序、重复/旧事件丢弃、epoch 重置、待审批重发、非有限序号。 |

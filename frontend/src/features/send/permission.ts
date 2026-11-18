@@ -52,6 +52,9 @@ type PermHandle = {
   deny: HTMLButtonElement;
   resolved: boolean;
   resolution?: unknown;
+  /** What `markPermCard` was told, so a language switch can say it again. */
+  allowed?: boolean;
+  scope?: string | null;
 };
 
 function rec(value: unknown): Record<string, unknown> {
@@ -141,6 +144,30 @@ function outcomeCopy(key: string, arg = ""): string {
   return (OUTCOME_COPY[LANG === "zh" ? "zh" : "en"][key] || key).replace("{0}", arg);
 }
 
+/**
+ * A fixed card label that follows a language switch: `data-i18n` makes the
+ * switch's static repaint (`applyStaticI18n`) re-translate it in place, so an
+ * open card keeps whatever the user already typed or picked.
+ */
+function labelEl(tag: string, className: string, key: string): HTMLElement {
+  const node = el(tag, className, t(key));
+  node.setAttribute("data-i18n", key);
+  return node;
+}
+
+/**
+ * Say every decided card's outcome again in the language just applied. Its
+ * status line is composed (a scope, a reason, a feature-local outcome), so the
+ * static repaint cannot re-translate it: "Allowed" stayed "已允许".
+ */
+export function relabelPermissionCards(): void {
+  const reg = registry();
+  for (const id of Object.keys(reg)) {
+    const h = reg[id];
+    if (h && h.resolved && h.card.isConnected) markPermCard(id, !!h.allowed, h.scope ?? null, h.resolution);
+  }
+}
+
 function statusLine(card: HTMLElement): HTMLElement {
   let st = card.querySelector(".perm-status") as HTMLElement | null;
   if (!st) {
@@ -176,6 +203,8 @@ export function markPermCard(
   if (!h) return;
   h.resolved = true;
   h.resolution = resolution || null;
+  h.allowed = allowed;
+  h.scope = scope;
   if (h.allow) h.allow.disabled = true;
   if (h.deny) h.deny.disabled = true;
   h.card.classList.add("resolved", allowed ? "allowed" : "denied");
@@ -297,11 +326,11 @@ function buildPermissionCard(m: PermEvent): PermHandle {
       fallback ? choiceCopy("title") : m.title || t("perm.title.run", m.tool),
     ),
   );
-  if (m.sub_agent) head.appendChild(el("span", "perm-badge", t("perm.badge.subAgent")));
-  if (m.dangerous) head.appendChild(el("span", "perm-badge danger", t("perm.badge.dangerous")));
+  if (m.sub_agent) head.appendChild(labelEl("span", "perm-badge", "perm.badge.subAgent"));
+  if (m.dangerous) head.appendChild(labelEl("span", "perm-badge danger", "perm.badge.dangerous"));
   card.appendChild(head);
   card.appendChild(
-    el("div", "perm-sub", fallback ? choiceCopy("sub") : t("perm.sub.approvalNeeded")),
+    fallback ? el("div", "perm-sub", choiceCopy("sub")) : labelEl("div", "perm-sub", "perm.sub.approvalNeeded"),
   );
   const act = permActionLine(m);
   if (act.text) card.appendChild(el("div", "perm-detail" + (act.mono ? " mono" : ""), act.text));
@@ -343,12 +372,14 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   }
 
   let scope = defaultRememberScope(m);
-  card.appendChild(el("div", "perm-lbl", t("perm.lbl.rememberScope")));
+  card.appendChild(labelEl("div", "perm-lbl", "perm.lbl.rememberScope"));
   const scRow = el("div", "perm-scope");
   const segs: Record<string, HTMLElement> = {};
   const patWrap = el("div", "perm-pat");
   (m.scopes || ["once", "conversation", "project", "global"]).forEach((s) => {
-    const b = el("button", "perm-seg" + (s === scope ? " active" : ""), permScopeCn(s));
+    const b = PERM_SCOPE_KEYS[s]
+      ? labelEl("button", "perm-seg" + (s === scope ? " active" : ""), PERM_SCOPE_KEYS[s])
+      : el("button", "perm-seg" + (s === scope ? " active" : ""), permScopeCn(s));
     b.onclick = () => {
       scope = s;
       Object.values(segs).forEach((x) => x.classList.remove("active"));
@@ -362,7 +393,7 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   // With choices the remembered rule's pattern IS the choice, so no free text.
   patWrap.style.display = scope === "once" || choices.length ? "none" : "";
 
-  patWrap.appendChild(el("div", "perm-lbl", t("perm.lbl.rememberRule")));
+  patWrap.appendChild(labelEl("div", "perm-lbl", "perm.lbl.rememberRule"));
   const patIn = el("input", "perm-in") as HTMLInputElement;
   patIn.type = "text";
   patIn.value = (m.suggested_patterns && m.suggested_patterns[0]) || m.target || "*";
@@ -383,11 +414,12 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   const fb = el("input", "perm-fb") as HTMLInputElement;
   fb.type = "text";
   fb.placeholder = t("perm.placeholder.denyReason");
+  fb.setAttribute("data-i18n-ph", "perm.placeholder.denyReason");
   card.appendChild(fb);
 
   const btns = el("div", "perm-btns");
-  const allow = el("button", "perm-allow", t("perm.btn.allow")) as HTMLButtonElement;
-  const deny = el("button", "perm-deny", t("perm.btn.deny")) as HTMLButtonElement;
+  const allow = labelEl("button", "perm-allow", "perm.btn.allow") as HTMLButtonElement;
+  const deny = labelEl("button", "perm-deny", "perm.btn.deny") as HTMLButtonElement;
   const submit = async (ok: boolean): Promise<void> => {
     allow.disabled = deny.disabled = true;
     const body: Record<string, unknown> = { decision_id: m.decision_id, allow: ok, scope };

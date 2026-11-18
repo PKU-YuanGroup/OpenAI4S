@@ -649,3 +649,35 @@ describe("reopening a running session", () => {
     expect((cards[0] as HTMLElement).classList.contains("allowed")).toBe(true);
   });
 });
+
+// --------------------------------------------------------------------------
+// SYNC-8: a language switch relabels what is already on screen
+// --------------------------------------------------------------------------
+
+describe("a language switch", () => {
+  afterEach(async () => {
+    await setLang("en");
+  });
+
+  it("relabels decided and open approval cards in place", async () => {
+    permCards.value = Object.create(null);
+    renderStoredPermission({ decision_id: "p-done", frame_id: "f-1", tool: "bash", title: "Run", state: "allowed", scope: "once" });
+    renderStoredPermission({
+      decision_id: "p-denied", frame_id: "f-1", tool: "bash", title: "Run", state: "denied", scope: "once", message: "no",
+    });
+    renderStoredPermission({ decision_id: "p-open", frame_id: "f-1", tool: "bash", title: "Run", state: "pending" });
+    const [done, denied, open] = Array.from(messages().querySelectorAll(".perm-card")) as HTMLElement[];
+    const reason = open?.querySelector(".perm-fb") as HTMLInputElement;
+    reason.value = "typed before the switch";
+    expect(done?.querySelector(".perm-status")?.textContent).toBe("Allowed");
+
+    await setLang("zh");
+    expect(done?.querySelector(".perm-status")?.textContent).toBe("已允许");
+    expect(denied?.querySelector(".perm-reason")?.textContent).toBe("原因：no");
+    expect(open?.querySelector(".perm-allow")?.textContent).toBe("允许");
+    expect(reason.placeholder).toBe("（可选）拒绝原因，会反馈给智能体");
+    // Relabelled, not rebuilt: what the user typed is still there.
+    expect(reason.value).toBe("typed before the switch");
+    expect(open?.querySelector(".perm-fb")).toBe(reason);
+  });
+});
