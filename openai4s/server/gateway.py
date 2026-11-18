@@ -7843,6 +7843,18 @@ class SessionRunner:
                     runner.cancel_all("parent execution cancelled")
                 except Exception:  # noqa: BLE001 - parent cancel still succeeds
                     traceback.print_exc()
+            # Background cells the stopped turn launched stop with it; they
+            # used to run to completion with no way to see or stop them.
+            dispatcher = state.dispatcher if state is not None else None
+            stop_background = getattr(dispatcher, "stop_turn_background", None)
+            if callable(stop_background):
+                try:
+                    stopped = list(stop_background() or [])
+                except Exception:  # noqa: BLE001 - parent cancel still succeeds
+                    traceback.print_exc()
+                    stopped = []
+                if stopped:
+                    result = {**result, "background_stopped": stopped}
         with self._lock:
             self.reviews.cancel_locked(root_frame_id)
         # Release any pending permission prompt for this conversation (deny).

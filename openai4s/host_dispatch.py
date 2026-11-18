@@ -4177,7 +4177,19 @@ class HostDispatcher:
             }
         code = spec["code"] if isinstance(spec, dict) else str(spec)
         origin = spec.get("origin", "agent") if isinstance(spec, dict) else "agent"
-        return self._bg().launch(code, origin=origin)
+        # An agent launch belongs to the current turn, so stopping that turn
+        # stops it too (``stop_turn_background``); a user/REPL launch does not.
+        turn_id = self._task_turn_id if origin == "agent" else None
+        return self._bg().launch(code, origin=origin, turn_id=turn_id)
+
+    def stop_turn_background(self) -> list[str]:
+        """Stop the background cells the current agent turn launched."""
+
+        executor = self._bg_executor
+        turn_id = self._task_turn_id
+        if executor is None or not turn_id:
+            return []
+        return list(executor.stop_turn(turn_id))
 
     def _m_exec_peek(self, exec_id: str) -> dict:
         executor = self._bg()

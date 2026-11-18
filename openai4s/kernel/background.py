@@ -102,6 +102,8 @@ class _BackgroundJob:
         "_last_flush_ms",
         "_flush_lock",
         "_flush_timer",
+        "turn_id",
+        "stop_requested",
     )
 
     def __init__(self, exec_id: str, code: str, *, persistent: bool = False):
@@ -128,6 +130,10 @@ class _BackgroundJob:
         self._lifetime: Any = None
         self.persistent = persistent
         self.receipt_degraded = False
+        # The agent turn that launched this cell, so stopping that turn can
+        # stop it too; None for a user/REPL launch, which no turn owns.
+        self.turn_id: str | None = None
+        self.stop_requested = False
 
     def _on_chunk(self, text: str) -> None:
         if not text:
@@ -235,10 +241,13 @@ class BackgroundExecutor:
             raise RuntimeError("background execution admission is unavailable")
         exit_(None, None, None)
 
-    def launch(self, code: str, origin: str = "agent") -> dict:
+    def launch(
+        self, code: str, origin: str = "agent", turn_id: str | None = None
+    ) -> dict:
         exec_id = f"exec-{uuid.uuid4().hex[:12]}"
         persistent = self.receipts is not None
         job = _BackgroundJob(exec_id, code, persistent=persistent)
+        job.turn_id = str(turn_id) if turn_id else None
         # Enter before claiming a process slot.  Foreground capture and this
         # increment are decided under the coordinator's one short lock, so a
         # background worker can never appear in the check/start gap.
@@ -370,8 +379,14 @@ class BackgroundExecutor:
                 # paths, or provider details, so expose one stable error while
                 # still converging KeyboardInterrupt/SystemExit fault paths to
                 # a terminal state that releases their process slot.
-                terminal_status = "failed"
-                terminal_error = "background execution failed"
+                if job.stop_requested:
+                    # Stopping the turn killed a worker that ignored SIGINT:
+                    # that is the stop working, not the cell failing.
+                    terminal_status = "interrupted"
+                    terminal_interrupted = True
+                else:
+                    terminal_status = "failed"
+                    terminal_error = "background execution failed"
             finally:
                 try:
                     try:
@@ -427,6 +442,9 @@ class BackgroundExecutor:
             with self._lock:
                 if self._closed:
                     raise RuntimeError("background executor is closed")
+                if job.stop_requested:
+                    # Its turn was stopped while the worker was spawning.
+                    raise RuntimeError("background execution stopped with its turn")
                 job._thread = thread
                 thread.start()
         except BaseException:
@@ -664,6 +682,53 @@ class BackgroundExecutor:
     def list_jobs(self) -> list[dict]:
         with self._lock:
             return [j.peek() for j in self._jobs.values()]
+
+    def stop_turn(self, turn_id: str, *, grace_s: float = 5.0) -> list[str]:
+        """Stop the running cells a cancelled agent turn launched.
+
+        Stop used to end the turn and leave these running to completion, with
+        nothing on screen to show them or stop them. Each one gets SIGINT and,
+        if it is still running after ``grace_s``, an exact kill. The ids come
+        back at once; the escalation runs on its own thread so a worker that
+        ignores SIGINT never holds up the Stop request.
+        """
+        if not turn_id:
+            return []
+        with self._lock:
+            jobs = [
+                job
+                for job in self._jobs.values()
+                if job.status == "running" and job.turn_id == turn_id
+            ]
+            for job in jobs:
+                job.stop_requested = True
+        for job in jobs:
+            threading.Thread(
+                target=self._stop_job,
+                args=(job, grace_s),
+                name=f"openai4s-bg-stop-{job.exec_id}",
+                daemon=True,
+            ).start()
+        return [job.exec_id for job in jobs]
+
+    @staticmethod
+    def _stop_job(job: _BackgroundJob, grace_s: float) -> None:
+        kernel = job._kernel
+        if kernel is not None:
+            try:
+                kernel.interrupt()
+            except Exception:  # noqa: BLE001 — escalate to the exact kill
+                pass
+        thread = job._thread
+        if thread is not None:
+            thread.join(timeout=max(0.0, grace_s))
+        if thread is None or thread.is_alive():
+            kernel = job._kernel
+            if kernel is not None:
+                try:
+                    kernel.kill_worker()
+                except Exception:  # noqa: BLE001 — worker may already be gone
+                    pass
 
     def shutdown(self, timeout_per_job: float = 5.0) -> int:
         """Interrupt then exact-kill every running background worker."""
