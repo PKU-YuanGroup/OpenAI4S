@@ -540,6 +540,11 @@ export async function nbSwitchEnv(name: string): Promise<void> {
       body: JSON.stringify({ env: name }),
     });
     if (r && r.error) hint(t("nb.kernel.envSwitchFailed", r.error), true);
+    // Only a running Python kernel loses its variables; an R pick and a kernel
+    // that never started lose nothing, and saying "variables cleared" there
+    // was untrue.
+    else if (r && r.language === "r") hint(nbT("nb.env.rSelected", name));
+    else if (r && r.state !== "running") hint(nbT("nb.env.selectedIdle", name));
     else hint(t("nb.kernel.envSwitched", name));
   } catch (e) {
     hint(t("nb.kernel.envSwitchFailed", apiErrorText(e)), true);
@@ -579,7 +584,7 @@ export function handleKernelStatus(m: WsMessage): void {
   }
   // A restart also drops the R kernel (the next R cell starts a fresh one).
   if (m.status === "restarted" || m.status === "stopped") dropInspectedNamespaces(["python", "r"]);
-  else if (m.status === "env_changed") dropInspectedNamespaces(["python"]);
+  else if (m.status === "env_changed") dropInspectedNamespaces([m.language === "r" ? "r" : "python"]);
   invalidateKernelCache();
   if (m.sandbox) {
     // Scrubbed like every other security write, and only the sandbox half:

@@ -66,6 +66,8 @@ import {
   resetNotebookCellCaches,
 } from "./chrome";
 import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent } from "./editor";
+import { environmentMenuItems, envSelectable, envSourceLabel } from "./envmenu";
+import { nbT } from "./copy";
 import { installNotebook } from "./install";
 import type { NotebookCell } from "./types";
 import {
@@ -1126,5 +1128,43 @@ describe("REPL editor keys (NB-7)", () => {
     expect(replHistory("r")).toEqual(["y <- 2"]);
     editAsNewCell({ producing_cell_id: "c", language: "r", source: "y <- 2" });
     expect(replLoad.value).toMatchObject({ code: "y <- 2", language: "r" });
+  });
+});
+
+describe("Session options environment picker (ENV-6)", () => {
+  const envs = [
+    { name: "base", language: "python", runnable: true, builtin: true, notable: ["numpy"] },
+    { name: "work", language: "python", runnable: true, builtin: false },
+    { name: "r-mini", language: "r", runnable: false, builtin: false },
+    { name: "broken", language: "python", runnable: false, builtin: true },
+  ];
+
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElement: () => ({ className: "", textContent: "", setAttribute: () => undefined }),
+      querySelector: () => null,
+    });
+  });
+
+  it("labels built-in and local environments and lets an R environment be chosen", () => {
+    expect(envSourceLabel(envs[0]!)).toBe(nbT("nb.env.builtin"));
+    expect(envSourceLabel(envs[1]!)).toBe(nbT("nb.env.local"));
+    expect(envSelectable(envs[2]!)).toBe(true);
+    expect(envSelectable(envs[3]!)).toBe(false);
+
+    const picked: string[] = [];
+    const items = environmentMenuItems({ envs, current: "base", currentR: null }, (name) => picked.push(name));
+    const labels = items.map((item) => ("label" in item && item.label) || (item.node ? item.node.textContent : "sep"));
+    expect(labels[0]).toBe(nbT("nb.env.group", "Python", "base"));
+    expect(labels[1]).toContain("✓  base · " + nbT("nb.env.builtin"));
+    expect(labels[2]).toContain("work · " + nbT("nb.env.local"));
+    expect(labels).toContain(nbT("nb.env.group", "R", nbT("nb.env.default")));
+    const click = (name: string) =>
+      items.find((item) => "label" in item && typeof item.label === "string" && item.label.includes(name + " · "));
+    click("work")!.onClick!();
+    click("r-mini")!.onClick!();
+    click("base")!.onClick!(); // already in use: no request
+    click("broken")!.onClick!(); // cannot run: explained, not sent
+    expect(picked).toEqual(["work", "r-mini"]);
   });
 });

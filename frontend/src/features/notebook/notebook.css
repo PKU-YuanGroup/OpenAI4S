@@ -69,3 +69,11 @@
   color: var(--text-400);
   font-size: 11px;
 }
+
+/* A group title inside a context menu (the environment picker's Python / R). */
+.ctx-heading {
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-400);
+}

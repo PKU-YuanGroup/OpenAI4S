@@ -246,6 +246,54 @@ def test_selecting_an_environment_passes_the_requested_name_through(tmp_path):
 
 
 @pytest.mark.stubbed_backend
+def test_choosing_an_environment_is_not_gated_by_the_manual_cells_switch(tmp_path):
+    """ENV-6: the session options menu offers the runtime environment whether
+    or not manual Notebook cells are on; choosing one runs no code."""
+    runner, handler, fid = _setup(tmp_path)
+    assert runner.cfg.notebook_repl is False
+    seen = []
+    runner.set_env = lambda frame, name, project: seen.append(name) or {"ok": True}
+
+    code, payload = _call(
+        handler, "POST", f"/frames/{fid}/kernel/env", body={"env": "struct"}
+    )
+
+    assert (code, payload) == (200, {"ok": True})
+    assert seen == ["struct"]
+
+
+def test_an_r_environment_retargets_the_r_channel_without_starting_it(
+    tmp_path, monkeypatch
+):
+    """ENV-6: picking an R environment used to be refused outright."""
+    from openai4s.kernel import environments as envmod
+
+    runner, _handler, fid = _setup(tmp_path)
+    r_only = SimpleNamespace(
+        name="r-lab", language="r", interpreter=None, rscript="/opt/r/bin/Rscript"
+    )
+    real = envmod.get_environment
+    monkeypatch.setattr(
+        envmod,
+        "get_environment",
+        lambda name: r_only if name == "r-lab" else real(name),
+    )
+
+    result = runner.set_env(fid, "r-lab", "proj-kernel")
+
+    assert result["ok"] is True and result["language"] == "r"
+    assert result["env"] == "r-lab"
+    assert runner.list_environments(fid)["current_r"] == "r-lab"
+    assert runner.kernel_status(fid)["alive"] is False  # nothing was started
+
+    no_runtime = SimpleNamespace(
+        name="empty", language="r", interpreter=None, rscript=None
+    )
+    monkeypatch.setattr(envmod, "get_environment", lambda name: no_runtime)
+    assert "neither a Python nor an R" in runner.set_env(fid, "empty", "p")["error"]
+
+
+@pytest.mark.stubbed_backend
 def test_the_environment_name_may_arrive_under_either_key(tmp_path):
     """`b.get("env") or b.get("name")`. Two spellings, one route -- a detail
     that is invisible unless someone writes it down before moving it."""
@@ -260,14 +308,12 @@ def test_the_environment_name_may_arrive_under_either_key(tmp_path):
     assert seen == ["struct", "r", ""]
 
 
-@pytest.mark.parametrize(
-    "action", ["execute", "env", "restart", "stop", "start", "interrupt"]
-)
-def test_the_six_repl_routes_stay_gated_when_the_notebook_is_read_only(
+@pytest.mark.parametrize("action", ["execute", "restart", "stop", "start", "interrupt"])
+def test_the_five_repl_routes_stay_gated_when_the_notebook_is_read_only(
     tmp_path, action
 ):
     """Already covered elsewhere, repeated here because the extraction moves
-    all six gates at once and the group needs its own regression."""
+    the gates at once and the group needs its own regression."""
     runner, handler, fid = _setup(tmp_path)
     assert runner.cfg.notebook_repl is False
 

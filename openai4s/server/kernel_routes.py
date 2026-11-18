@@ -15,9 +15,10 @@ by parsing the handler source.
 
 Nothing else here was rewritten, and three things that look like oversights are
 not: the `store.get_frame(fid) or {}` fallback on the ten permissive routes, the
-duplicate `store.get_frame` in `kernel/variables`, and the six live-Notebook
-gates (`official_notebook_enabled`, covering the Stage 8 flag and the older
-`notebook_repl` override) with `install` deliberately left ungated.
+duplicate `store.get_frame` in `kernel/variables`, and the five live-Notebook
+gates (`official_notebook_enabled`, covering the Stage 8 flag, the
+`notebook_repl` override and the Settings switch) with `install` and `env`
+deliberately left ungated.
 
 TWO POSITION DEPENDENCIES, written down because a 2,100-line if-chain is
 exactly where this kind of thing hides:
@@ -409,12 +410,10 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _ENV.match(method, sub)
     if m:
-        if not official_notebook_enabled(runner.cfg, store):
-            self._json(
-                {"error": _REPL_DISABLED},
-                403,
-            )
-            return True
+        # NOT gated by the manual-cells switch: choosing the session's
+        # runtime environment runs no code, and it is offered from the session
+        # options menu whether or not manual cells are on. Only the session's
+        # owner (or an admin) may change it.
         fid = m.group(1)
         f = store.get_frame(fid) or {}
         _require_session_control(self, store, fid)

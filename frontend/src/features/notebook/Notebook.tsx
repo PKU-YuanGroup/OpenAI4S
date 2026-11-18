@@ -75,6 +75,7 @@ import { iconSvg } from "../icons/paths";
 import type { KernelEnvRow, KernelStatus, NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
 import { nbT } from "./copy";
 import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent, type EditorState } from "./editor";
+import { envLanguage, envSelectable, envSourceLabel } from "./envmenu";
 import "./notebook.css";
 
 function notebookCellState(cell: NotebookCell): {
@@ -741,7 +742,7 @@ export function StatusStrip() {
 
 function envOptionLabel(e: KernelEnvRow): string {
   const notable = e.notable && e.notable.length ? " — " + e.notable.slice(0, 4).join("/") : "";
-  return e.name + (e.runnable ? "" : " · R") + notable;
+  return e.name + (envLanguage(e) === "r" ? " · R" : "") + " · " + envSourceLabel(e) + notable;
 }
 
 /** Options from the session's last environment read; a pick shows until the next read answers. */
@@ -753,14 +754,14 @@ function EnvSelect() {
   return (
     <select
       class="nb-env-select"
-      title={t("nb.env.selectTitle")}
+      title={nbT("nb.env.selectTitle")}
       disabled={!sid || !!(picked && picked.posting)}
       value={picked ? picked.name : cur || undefined}
       onChange={(ev) => void nbSwitchEnv((ev.currentTarget as HTMLSelectElement).value)}
     >
       {envs ? (
         envs.map((e) => (
-          <option key={e.name} value={e.name} disabled={!e.runnable} title={e.description || ""}>
+          <option key={e.name} value={e.name} disabled={!envSelectable(e)} title={e.description || ""}>
             {envOptionLabel(e)}
           </option>
         ))

@@ -470,7 +470,12 @@ def test_gateway_set_env_rejects_bad(tmp_path, monkeypatch):
     E.discover_environments(force=True)
     runner = _runner(tmp_path / "data")
     assert "error" in runner.set_env("f1", "does-not-exist")
-    assert "error" in runner.set_env("f1", "r")  # R-only → rejected before spawn
+    # An R-only env (ENV-6) retargets the session's R cells and starts nothing;
+    # it used to be refused, so no R environment could be chosen at all.
+    picked = runner.set_env("f1", "r")
+    assert picked.get("ok") is True and picked["language"] == "r"
+    assert runner.list_environments("f1")["current_r"] == "r"
+    assert runner.kernel_status("f1")["alive"] is False
 
 
 def test_resolve_env_falls_back_to_base(tmp_path, monkeypatch):
