@@ -2547,6 +2547,45 @@ def _install_artifact_submission(
     return captured
 
 
+def test_a_context_spill_is_not_listed_as_a_turn_deliverable(tmp_path, monkeypatch):
+    """ART-10: the model's large-output spill (context-output-*.json) is an
+    Artifact so it stays readable by version, but it was listed first in the
+    gallery and in the completion summary's materials. It is hidden now, and
+    the summary lists only what the turn produced for the user."""
+    import hashlib
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    spilled = {"rows": ["measurement"] * 50}
+    digest = hashlib.sha256(
+        json.dumps(spilled, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    def spill(_record):
+        state = runner._state(frame_id, "default")
+        runner._archive_context_output(
+            state, spilled, {"role": "tool"}, {"sha256": digest}
+        )
+
+    _install_artifact_submission(monkeypatch, runner, after_capture=spill)
+    try:
+        result = runner.run_message(frame_id, "default", "analyze the table")
+        assert result["status"] == "completed"
+        final = [
+            row
+            for row in runner.store.list_branch_message_boundaries(
+                frame_id, branch_id=frame_id
+            )
+            if row["role"] == "assistant"
+        ][-1]["content"]
+        assert "result.csv" in final
+        assert "context-output-" not in final
+    finally:
+        runner.close()
+
+
 def test_stage1_flag_off_keeps_legacy_completion_and_skips_delivery_ledger(
     tmp_path, monkeypatch
 ):

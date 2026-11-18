@@ -496,6 +496,10 @@ MAX_MESSAGE_CHARS = 200_000
 #: whole 200,000-character message there would multiply it across the wire.
 QUEUE_PREVIEW_CHARS = 160
 
+#: Artifact priority for files the product writes for itself (context spills).
+#: Negative priority is the existing "hidden from lists" state.
+_INTERNAL_ARTIFACT_PRIORITY = -1
+
 
 def queue_preview(text: str) -> str:
     """One line of a queued message, short enough to broadcast repeatedly."""
@@ -11087,6 +11091,9 @@ class SessionRunner:
                         artifact.get("artifact_id") or artifact.get("id")
                     )
                     != artifact.get("latest_version_id")
+                    # Hidden rows (internal context spills, files the user
+                    # hid) are not this turn's deliverables.
+                    and int(artifact.get("priority") or 0) >= 0
                 ]
                 if self.stage1_trusted_delivery:
                     # Same-head captures do not move latest_version_id. Their
@@ -11983,6 +11990,10 @@ class SessionRunner:
                 snapshot_path=(
                     str(frozen_context.path) if frozen_context is not None else None
                 ),
+                # The model's own spill, not a result: hidden like a file the
+                # user hid, so the gallery, Files panel and completion summary
+                # stop listing it (ART-10). It stays readable by version.
+                priority=_INTERNAL_ARTIFACT_PRIORITY,
             )
         except Exception:
             if frozen_context is not None:
@@ -11996,6 +12007,7 @@ class SessionRunner:
                 "artifact": {
                     "id": record["artifact_id"],
                     **record,
+                    "priority": _INTERNAL_ARTIFACT_PRIORITY,
                 },
             },
         )

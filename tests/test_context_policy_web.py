@@ -66,6 +66,23 @@ def test_large_context_output_is_a_deduplicated_artifact_version(tmp_path):
         assert artifact["project_id"] == "science"
         assert ".openai4s-context" in first["path"]
         assert any(event[1].get("type") == "artifact_created" for event in hub.events)
+        # ART-10: the spill is the model's own working file. It is hidden like a
+        # file the user hid (negative priority) -- in the stored row, which the
+        # Files panel and listings read, and in the live event, which the
+        # conversation strip paints from before any reload.
+        assert artifact["priority"] < 0
+        created = [
+            event[1]["artifact"]
+            for event in hub.events
+            if event[1].get("type") == "artifact_created"
+        ]
+        assert created and all(row["priority"] < 0 for row in created)
+        assert all(
+            (row.get("priority") or 0) < 0
+            for row in runner.store.list_artifacts(
+                {"root_frame_id": state.root_frame_id}
+            )
+        )
     finally:
         runner.close()
 
