@@ -107,8 +107,10 @@ class EnvCreateTool(Tool):
                 ],
                 "log": "",
             }
+        # registry_only: the agent names packages from the index; a path, URL
+        # or direct reference would run its own build code as the daemon user.
         result = preinstall.install(
-            packages, python=interpreter, preserve_installed=True
+            packages, python=interpreter, preserve_installed=True, registry_only=True
         )
         result["name"] = environment
         result["environment"] = environment

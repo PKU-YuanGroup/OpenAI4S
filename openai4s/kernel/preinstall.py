@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -346,12 +347,45 @@ def _pip_option_like(spec: str) -> bool:
     return spec.startswith("-") or any(ord(ch) < 32 or ord(ch) == 127 for ch in spec)
 
 
+#: What an agent may ask to install: a project name from the index, with
+#: optional extras and version clauses (`numpy==2.0.1`, `scikit-learn>=1.4,<2`,
+#: `lifelines[all]`). Anything else pip accepts -- a path, a `file:`, VCS or
+#: HTTP URL, a PEP 508 direct reference (`pkg @ url`) -- is an install
+#: *source*, whose build backend would run as the daemon user outside the
+#: kernel sandbox. Environment markers are left out too.
+_VERSION_CLAUSE = r"(?:===|==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9.*+!_-]+"
+_REGISTRY_REQUIREMENT = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+    r"(?:\[\s*[A-Za-z0-9._-]+(?:\s*,\s*[A-Za-z0-9._-]+)*\s*\])?"
+    r"(?:\s*" + _VERSION_CLAUSE + r"(?:\s*,\s*" + _VERSION_CLAUSE + r")*)?"
+)
+_ARCHIVE_SUFFIXES = (
+    ".whl",
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz",
+    ".tar.xz",
+    ".txz",
+)
+
+
+def _not_a_registry_requirement(spec: str) -> bool:
+    """True for anything but an index project name with extras and versions."""
+    return not _REGISTRY_REQUIREMENT.fullmatch(spec) or spec.lower().endswith(
+        _ARCHIVE_SUFFIXES
+    )
+
+
 def install(
     pip_names: list[str],
     *,
     upgrade: bool = False,
     python: str | None = None,
     preserve_installed: bool = False,
+    registry_only: bool = False,
 ) -> dict:
     """On-demand install of one or more packages. Returns a structured result.
 
@@ -361,6 +395,9 @@ def install(
     ``preserve_installed`` pins every package that interpreter already has, so
     the install may only *add* packages: one that needs to upgrade or downgrade
     an existing package (lifelines pulling pandas 3 back to 2) fails and says so.
+
+    ``registry_only`` (the agent's installs) accepts only index project names
+    with extras and version clauses, never a path, URL or direct reference.
     """
     pip_names = [p.strip() for p in pip_names if p and p.strip()]
     target = str(python) if python else sys.executable
@@ -385,6 +422,26 @@ def install(
             "ok": False,
             "installed": [],
             "failed": [{"name": ", ".join(option_like), "error": refusal}],
+            "log": refusal,
+            "interpreter": target,
+        }
+    sources = (
+        [name for name in pip_names if _not_a_registry_requirement(name)]
+        if registry_only
+        else []
+    )
+    if sources:
+        refusal = (
+            f"refused {', '.join(repr(name) for name in sources)}: an agent install "
+            "takes package names from the index, optionally with [extras] and "
+            "versions (for example numpy==2.0.1), not a path, URL, VCS link, "
+            "direct reference or environment marker, whose build code would run "
+            "outside the kernel sandbox. Nothing was installed."
+        )
+        return {
+            "ok": False,
+            "installed": [],
+            "failed": [{"name": ", ".join(sources), "error": refusal}],
             "log": refusal,
             "interpreter": target,
         }

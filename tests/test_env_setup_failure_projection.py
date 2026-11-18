@@ -164,7 +164,14 @@ def test_env_create_installs_into_the_kernel_environment(monkeypatch, tmp_path):
     )
 
     assert calls == [
-        (["lifelines"], {"python": str(bindir / "python"), "preserve_installed": True})
+        (
+            ["lifelines"],
+            {
+                "python": str(bindir / "python"),
+                "preserve_installed": True,
+                "registry_only": True,
+            },
+        )
     ]
     assert result["environment"] == "lab-env"
     assert result["name"] == "lab-env"
@@ -189,7 +196,9 @@ def test_env_create_defaults_to_the_daemon_interpreter(monkeypatch):
         types.SimpleNamespace(active_env_bin=None), {"packages": ["tabulate"]}
     )
 
-    assert calls == [{"python": sys.executable, "preserve_installed": True}]
+    assert calls == [
+        {"python": sys.executable, "preserve_installed": True, "registry_only": True}
+    ]
     assert result["environment"] == "base"
 
 

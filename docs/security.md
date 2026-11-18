@@ -229,7 +229,12 @@ package that interpreter already has, so an install can add packages but never
 move an existing one: a resolver conflict is reported as a refused version
 change. A requested name that pip would read as an option (one starting with
 `-`, such as `--index-url=…` or `-r file`) or that carries a control character
-is refused before anything runs. The install runs that environment's
+is refused before anything runs. The agent's installs (`env_setup` /
+`host.env.create`) accept only package names from the index, optionally with
+`[extras]` and version clauses (`numpy==2.0.1`, `scikit-learn>=1.4,<2`): a path,
+a `file:`, VCS or HTTP URL, a PEP 508 direct reference (`pkg @ url`) or an
+environment marker is refused, because it is an install source whose build code
+would run as the daemon user outside the kernel sandbox. The install runs that environment's
 interpreter (its `.pth` files and sitecustomize first) and the build backends
 of what it fetches, so it gets the kernel's scrubbed child environment plus
 pip/uv settings (`PIP_*`, `UV_*`) and proxy variables — not the daemon's

@@ -354,3 +354,32 @@ def test_the_pip_probe_on_a_foreign_interpreter_runs_confined(monkeypatch):
 
     assert preinstall._target_has_pip("/envs/lab/bin/python") is True
     assert probes == [["/envs/lab/bin/python", "-m", "pip", "--version"]]
+
+
+def test_an_agent_install_takes_only_index_package_names(monkeypatch):
+    """A path, `file:`/VCS/HTTP URL or PEP 508 direct reference is an install
+    source whose build backend would run as the daemon user outside the kernel
+    sandbox; the agent's installs (`registry_only`) refuse them before anything
+    runs, while index names with extras and versions go through."""
+    spy = SpyRun()
+    monkeypatch.setattr(preinstall, "_has_pip", lambda: True)
+    monkeypatch.setattr(preinstall.subprocess, "run", spy)
+    for source in (
+        "/tmp/evil",
+        "./evil",
+        "file:///tmp/evil",
+        "git+https://github.com/example/evil.git",
+        "evil @ https://evil.example/evil-1.0.tar.gz",
+        "https://evil.example/evil-1.0.tar.gz",
+        "evil-1.0-py3-none-any.whl",
+        'evil; python_version<"3.13"',
+    ):
+        result = preinstall.install([source], registry_only=True)
+        assert result["ok"] is False, source
+        assert "takes package names from the index" in result["failed"][0]["error"]
+    assert spy.commands == []
+
+    names = ["pandas", "numpy==2.0.1", "scikit-learn>=1.4,<2", "lifelines[all]"]
+    result = preinstall.install(names, registry_only=True)
+    assert result["ok"] is True
+    assert spy.commands and spy.commands[0][-len(names) :] == names
