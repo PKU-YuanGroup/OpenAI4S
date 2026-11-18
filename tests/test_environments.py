@@ -484,3 +484,100 @@ def test_resolve_env_falls_back_to_base(tmp_path, monkeypatch):
     assert st.env_name == "base"  # falls back and records it
     summ = runner._env_summary(st)
     assert summ["name"] == "base" and summ["language"] == "python"
+
+
+# --- ENV-2 / ENV-4: the user's own conda environments ------------------------
+#
+# Every discovered conda env was reported ``builtin``, so a personal research
+# environment read as part of OpenAI4S, the agent switched the kernel into it
+# without asking, and R cells ran in the first personal env that shipped
+# Rscript (r-mini, without survival) while PATH had a complete R.
+
+
+def test_envs_in_the_users_conda_root_are_local_but_product_names_are_not(
+    tmp_path, monkeypatch
+):
+    conda_root = tmp_path / "miniconda3"
+    _make_py_env(conda_root / "envs", "lab_env")
+    _make_py_env(conda_root / "envs", "python")
+    operator_root = tmp_path / "operator-envs"
+    _make_py_env(operator_root, "curated")
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(operator_root))
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("lab_env").builtin is False
+    assert E.get_environment("python").builtin is True  # built by `openai4s setup`
+    assert E.get_environment("curated").builtin is True  # operator-configured root
+    assert E.get_environment("base").builtin is True
+
+
+def test_switching_into_a_local_env_needs_approval_by_default(tmp_path, monkeypatch):
+    from openai4s.store import Store
+    from openai4s.tools.env_use import EnvUseTool
+
+    conda_root = tmp_path / "miniconda3"
+    _make_py_env(conda_root / "envs", "work")
+    _make_py_env(conda_root / "envs", "python")
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
+    E.discover_environments(force=True)
+
+    tool = EnvUseTool()
+    assert tool.requires_approval is True
+    assert tool.permission_target({"name": "work"}) == "local:work"
+    assert tool.permission_target("python") == "builtin:python"
+
+    store = Store(tmp_path / "perm.db")
+    store.seed_default_permission_rules()
+    assert store.resolve_permission(tool="env_use", pattern_input="local:work") == "ask"
+    assert (
+        store.resolve_permission(tool="env_use", pattern_input="builtin:python")
+        == "allow"
+    )
+
+
+def test_the_env_use_step_names_a_local_environment(tmp_path, monkeypatch):
+    from openai4s.host_dispatch import _step_begin
+
+    conda_root = tmp_path / "miniconda3"
+    _make_py_env(conda_root / "envs", "work")
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
+    E.discover_environments(force=True)
+
+    kind, title, data = _step_begin("env_use", [{"name": "work"}])
+
+    assert title == "Switching to the local work environment"
+    assert data == {"name": "work", "local": True}
+
+
+def test_r_on_path_wins_over_a_personal_conda_env_with_rscript(tmp_path, monkeypatch):
+    from openai4s.kernel.r_kernel import resolve_r_interpreter
+
+    conda_root = tmp_path / "miniconda3"
+    _make_r_env(conda_root / "envs", "r-mini")
+    path_dir = tmp_path / "path-bin"
+    path_dir.mkdir()
+    system_r = path_dir / "Rscript"
+    system_r.write_text("#!/bin/sh\necho R\n", "utf-8")
+    os.chmod(system_r, 0o755)
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
+    monkeypatch.setenv("PATH", str(path_dir))
+    E.discover_environments(force=True)
+
+    assert resolve_r_interpreter() == str(system_r)
+
+    # The environment `openai4s setup` builds for R still comes first.
+    product_r = _make_r_env(conda_root / "envs", "r")
+    E.discover_environments(force=True)
+    assert resolve_r_interpreter() == str(product_r / "bin" / "Rscript")
+
+    # Without any R on PATH, a discovered env is still better than nothing.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    import shutil
+
+    shutil.rmtree(product_r)
+    E.discover_environments(force=True)
+    assert resolve_r_interpreter() == str(
+        conda_root / "envs" / "r-mini" / "bin" / "Rscript"
+    )

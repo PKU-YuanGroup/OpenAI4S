@@ -348,7 +348,14 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
             if args and isinstance(args[0], str)
             else (a.get("name") or a.get("env") or "")
         )
-        return ("env", f"Switching to the {name} environment", {"name": name})
+        from openai4s.tools.env_use import EnvUseTool
+
+        local = EnvUseTool.is_local(name)
+        return (
+            "env",
+            f"Switching to the {'local ' if local else ''}{name} environment",
+            {"name": name, "local": local},
+        )
     if method == "env_setup":
         # ``name`` is the caller's free-text label, not the environment the
         # packages go into; the dispatcher adds the real target (see

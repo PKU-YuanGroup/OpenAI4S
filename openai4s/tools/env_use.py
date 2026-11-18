@@ -22,11 +22,34 @@ class EnvUseTool(Tool):
         },
         "required": ["name"],
     }
-    requires_approval = False
+    # Gated so the default rules can tell environments apart: switching into
+    # an OpenAI4S environment is allowed (``builtin:*``), switching into one of
+    # the user's own conda environments asks (``local:*``).
+    requires_approval = True
     read_only = False
     side_effect_class = "runtime_mutation"
     resource_key_prefix = "kernel"
     resource_target_default = "environment"
+
+    @staticmethod
+    def is_local(name: str) -> bool:
+        """Whether ``name`` is one of the user's own environments."""
+        from openai4s.kernel import environments as envmod
+
+        try:
+            environment = envmod.get_environment(name)
+        except Exception:  # noqa: BLE001 — an unreadable env is not "local"
+            return False
+        return environment is not None and not environment.builtin
+
+    def permission_target(self, arguments: object) -> str:
+        if isinstance(arguments, str):
+            name = arguments
+        elif isinstance(arguments, dict):
+            name = str(arguments.get("name") or arguments.get("env") or "")
+        else:
+            name = ""
+        return f"{'local' if self.is_local(name) else 'builtin'}:{name}"
 
     def execute(self, runtime: EnvironmentToolContext, arguments: dict | str) -> dict:
         from openai4s.kernel import environments as envmod

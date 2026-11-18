@@ -46,10 +46,15 @@ def resolve_r_interpreter(env: object | None = None) -> str | None:
     """Path to the Rscript that should run the R kernel, or None.
 
     Resolution order: the selected environment's own ``rscript`` → a discovered
-    environment literally named ``r`` → any discovered env carrying Rscript →
-    ``Rscript`` on PATH. Never substitutes a python interpreter — an R cell
-    either gets a real R or a soft error (no silent-fallback, unlike
-    ``Kernel(python=None)``).
+    environment literally named ``r`` (the one ``openai4s setup`` builds) →
+    ``Rscript`` on PATH → any other discovered env carrying Rscript. Never
+    substitutes a python interpreter — an R cell either gets a real R or a soft
+    error (no silent-fallback, unlike ``Kernel(python=None)``).
+
+    PATH comes before "any other env": an R the user installed system-wide is
+    the R they mean, while the first conda env that happens to ship Rscript is
+    someone's personal environment (the review found every R cell running in a
+    minimal conda R without survival/ggplot2 while PATH had both).
     """
     rs = getattr(env, "rscript", None) if env is not None else None
     if rs:
@@ -63,10 +68,13 @@ def resolve_r_interpreter(env: object | None = None) -> str | None:
     for e in envs:
         if e.name == "r" and e.rscript:
             return str(e.rscript)
+    on_path = shutil.which("Rscript")
+    if on_path:
+        return on_path
     for e in envs:
         if e.rscript:
             return str(e.rscript)
-    return shutil.which("Rscript")
+    return None
 
 
 def r_argv(rscript: str) -> list[str]:

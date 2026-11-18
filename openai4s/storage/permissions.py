@@ -171,6 +171,10 @@ DEFAULT_PERMISSION_RULES = (
     # kernel environment). It used to be allowed silently and wrote into the
     # daemon's own venv; every install is now the user's call.
     ("env_setup", "*", "ask"),
+    # Switching the kernel: OpenAI4S's own environments freely, the user's own
+    # conda environments ("local") only with their approval.
+    ("env_use", "builtin:*", "allow"),
+    ("env_use", "local:*", "ask"),
     ("web_fetch", "*", "allow"),
     ("web_search", "*", "allow"),
     ("science_search", "*", "allow"),
@@ -218,6 +222,10 @@ _DEFAULT_PERMISSION_RULE_ADDITIONS = {
         ("project_glob", "*", "allow"),
         ("project_grep", "*", "allow"),
         ("project_import_file", "*", "allow"),
+    ),
+    7: (
+        ("env_use", "builtin:*", "allow"),
+        ("env_use", "local:*", "ask"),
     ),
 }
 
