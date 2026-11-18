@@ -16,12 +16,15 @@ from __future__ import annotations
 import http.client
 import json
 import threading
+import time
 from types import SimpleNamespace
 
 from openai4s.config import Config, LLMConfig
+from openai4s.permissions import PermissionBroker
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
 from openai4s.server.gateway import WSHub
+from openai4s.store import get_store
 from tests._ports import bound_gateway_server
 
 API = "/api/v1"
@@ -366,3 +369,111 @@ def test_an_uploaded_session_stays_listed_and_a_project_visit_reuses_an_empty_on
         httpd.shutdown()
         httpd.server_close()
         runner.close()
+
+
+# --------------------------------------------------------------------------
+# approval cards look the same in every tab
+# --------------------------------------------------------------------------
+
+
+def _running_turn_with_an_approval(hub: WSHub) -> None:
+    _turn_start(hub, "f1")  # seq 1-4
+    hub.broadcast(
+        "f1",
+        {"type": "await_permission", "frame_id": "f1", "decision_id": "perm-1"},
+    )  # seq 5
+    hub.broadcast(
+        "f1",
+        {
+            "type": "permission_resolved",
+            "frame_id": "f1",
+            "decision_id": "perm-1",
+            "allow": False,
+            "message": "not that file",
+        },
+    )  # seq 6
+    hub.broadcast("f1", {"type": "text_chunk", "frame_id": "f1", "chunk": "B"})  # seq 7
+
+
+def test_a_running_turn_replays_its_approvals_in_place():
+    """A tab opened mid-turn places the cards between the turn's prose, and a
+    tab that was away when the card was answered learns the answer."""
+    hub = WSHub()
+    _running_turn_with_an_approval(hub)
+
+    late = _Conn()
+    hub.add(late)
+    hub.subscribe("f1", late)
+    replayed = [e.get("type") for e in late.sent[1:-1]]
+    assert replayed == [
+        "user_message",
+        "text_reset",
+        "text_chunk",
+        "await_permission",
+        "permission_resolved",
+        "text_chunk",
+    ]
+
+    # The tab that dropped right after the card appeared resumes with no hole,
+    # and with the decision it missed.
+    back = _Conn()
+    hub.add(back)
+    hub.subscribe("f1", back, since_seq=5, epoch=hub.epoch)
+    assert back.sent[0]["gap"] is False
+    resolved = [e for e in back.sent if e.get("type") == "permission_resolved"]
+    assert [(e["seq"], e["message"]) for e in resolved] == [(6, "not that file")]
+
+
+def test_an_approval_outside_a_running_turn_still_opens_no_window():
+    hub = WSHub()
+    hub.broadcast(
+        "f-idle",
+        {
+            "type": "permission_resolved",
+            "frame_id": "f-idle",
+            "decision_id": "perm-after-restart",
+            "allow": True,
+        },
+    )
+    assert "f-idle" not in hub._live
+    assert hub.is_running("f-idle") is False
+
+
+def test_every_tab_is_told_a_denials_reason(tmp_path):
+    store = get_store(_cfg(tmp_path).db_path)
+    store.seed_default_permission_rules()
+    broker = PermissionBroker()
+    events: list[dict] = []
+    broker.register_channel("root-deny", events.append)
+    out: dict = {}
+    thread = threading.Thread(
+        target=lambda: out.__setitem__(
+            "result",
+            broker.gate(
+                store=store, frame_id="root-deny", method="bash", target="rm x"
+            ),
+        )
+    )
+    thread.start()
+    for _ in range(200):
+        if any(e.get("type") == "await_permission" for e in events):
+            break
+        time.sleep(0.01)
+    ask = next(e for e in events if e.get("type") == "await_permission")
+    decision = broker.resolve_result(
+        ask["decision_id"],
+        allow=False,
+        scope="once",
+        message="use the scratch copy",
+        store=store,
+        root_frame_id="root-deny",
+    )
+    thread.join(timeout=5)
+    assert decision["ok"] is True
+    assert out["result"]["allow"] is False
+    resolved = next(e for e in events if e.get("type") == "permission_resolved")
+    assert resolved["state"] == "denied"
+    assert resolved["message"] == "use the scratch copy"
+    assert store.get_permission_request(ask["decision_id"])["message"] == (
+        "use the scratch copy"
+    )

@@ -618,6 +618,23 @@ describe("reopening a running session", () => {
     expect((stream.value as LiveStream).text).toBe("Approved, continuing.");
   });
 
+  it("shows another tab's denial with the reason typed there", () => {
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent({ type: "await_permission", root_frame_id: "f-1", frame_id: "f-1", decision_id: "perm-c", tool: "bash", title: "Run" });
+    onEvent({
+      type: "permission_resolved",
+      root_frame_id: "f-1",
+      decision_id: "perm-c",
+      allow: false,
+      scope: "once",
+      state: "denied",
+      message: "use the scratch copy",
+    });
+    const card = messages().querySelector(".perm-card") as HTMLElement;
+    expect(card.classList.contains("denied")).toBe(true);
+    expect(card.querySelector(".perm-reason")?.textContent).toBe("Reason: use the scratch copy");
+  });
+
   it("moves a stored approval into the turn when its event replays", () => {
     permCards.value = Object.create(null);
     renderStored({ role: "user", content: "Go", message_id: "m-1" });

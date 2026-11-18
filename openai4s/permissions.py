@@ -1433,16 +1433,20 @@ class PermissionBroker:
                     if not pending_ids:
                         self._by_root.pop(root, None)
             try:
-                chan["emit"](
-                    {
-                        "type": "permission_resolved",
-                        "frame_id": root,
-                        "decision_id": did,
-                        "allow": effective_allow,
-                        "scope": pend.scope,
-                        "state": actual_state or "failed",
-                    }
-                )
+                resolved_event = {
+                    "type": "permission_resolved",
+                    "frame_id": root,
+                    "decision_id": did,
+                    "allow": effective_allow,
+                    "scope": pend.scope,
+                    "state": actual_state or "failed",
+                }
+                if not effective_allow and pend.message:
+                    # A denial's reason is part of the decision every viewer
+                    # sees: it is stored with the request and shown on reload,
+                    # so the other open tabs show it too.
+                    resolved_event["message"] = str(pend.message)
+                chan["emit"](resolved_event)
             except Exception:  # noqa: BLE001
                 pass
         finally:

@@ -1407,12 +1407,23 @@ class WSHub:
 
     def _record(self, rid: str, obj: dict) -> None:
         t = obj.get("type")
-        # Approval cards have their own durable replay source.  In particular,
-        # resolving a card after daemon restart is not a live Agent turn and
-        # must not create a phantom running resume buffer.
-        if t in {"await_permission", "permission_resolved"}:
-            return
         buf = self._live.get(rid)
+        # Approval cards have their own durable replay source (the pending
+        # snapshot and `GET /frames/{fid}/approvals`). In particular, resolving
+        # a card after daemon restart is not a live Agent turn and must not
+        # create a phantom running resume buffer.
+        #
+        # Inside a running turn's window they are recorded, though. Left out,
+        # every approval was a numbered hole: each reconnect after one was
+        # declared a gap (and deferred the history reload behind the running
+        # turn), a decision made while a tab was away never reached it, and a
+        # reopened turn could not place its approval cards between the steps
+        # and prose they came between.
+        if t in {"await_permission", "permission_resolved"}:
+            if buf is not None and buf.get("running"):
+                self._append_live_event(buf, obj)
+                self._trim_live_events(buf)
+            return
         event_execution = str(obj.get("execution_id") or "")
         # A `processing` naming a new execution is a BOUNDARY, and it has to be
         # read before the staleness test -- which would otherwise judge it
