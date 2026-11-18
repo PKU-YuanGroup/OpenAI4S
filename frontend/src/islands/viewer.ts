@@ -8,7 +8,7 @@
 import { _artBust, _editing, dockArtifact } from "../stores/artifacts";
 import { currentId } from "../stores/session";
 import { _modalMode, provMode } from "../stores/ui";
-import { abortPreviewReads, api, apiErrorText, bytes } from "../features/artifacts/api";
+import { abortPreviewReads, api, ApiError, apiErrorText, bytes } from "../features/artifacts/api";
 import { artifactMetadataTarget, artifactMetadataUrl, artifactTabKey, artUrl, syncArtifactVersion } from "../features/artifacts/cache";
 import { validateArtifactVersions } from "../features/artifacts/validation";
 import { validateLineage } from "../features/execution/validation";
@@ -16,6 +16,7 @@ import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
 import { loadArtifacts } from "../features/artifacts/load";
 import { renderArtifactBody } from "../features/artifacts/renderers";
+import { readWorkbenchFlag } from "../features/table/workbench";
 import { scienceSourceStatus } from "../features/artifacts/science-results";
 import { publicText } from "../features/scrub/scrub";
 import { viewerVersionState } from "../features/artifacts/state";
@@ -187,13 +188,18 @@ export function retrievalSourcePanel(src: Record<string, unknown>): HTMLElement 
   return box;
 }
 
-/** app.js:9458-9461 */
+/**
+ * app.js:9458-9461. ART-11: a gzip stream or an Office Open XML zip is a
+ * binary container (`…openxmlformats…` contains "xml"); the server refuses a
+ * text save over one, so the editor is not offered.
+ */
 export function isTextEditable(a: ArtifactRow | null | undefined): boolean {
   if (!a) return false;
   const nm = (a.filename || "").toLowerCase();
   const ct = a.content_type || "";
   if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg|pdb|cif|mol|mol2|sdf|xyz|pdf)$/i.test(nm))
     return false;
+  if (/\.(gz|gzip|tgz|xlsx)$/i.test(nm) || /gzip|openxmlformats/i.test(ct)) return false;
   return (
     /\.(md|markdown|txt|log|csv|tsv|json|py|js|ts|fasta|fa|nwk|treefile|xml|ya?ml|sh|r|tex|html?|css)$/i.test(
       nm,
@@ -224,7 +230,9 @@ export function openArtifact(a: ArtifactRow): void {
  * line to copy by hand, instead of claiming a copy nobody made.
  */
 async function copyDeepLink(a: ArtifactRow): Promise<boolean> {
-  const href = artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null);
+  // ART-12: the whole URL, host and port included, so it opens when pasted
+  // into an address bar or a note; it was a bare `/projects/…?artifact=…`.
+  const href = absoluteLink(artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null));
   if (await copyText(href)) return true;
   hint(copyFailedText() + " " + href, true);
   return false;
@@ -236,17 +244,37 @@ export function editArtifact(a: ArtifactRow): void {
   renderViewer();
 }
 
+/** An app-relative link as a full URL; unchanged where the origin is unknown. */
+export function absoluteLink(href: string): string {
+  try {
+    const origin = typeof location !== "undefined" ? location.origin : "";
+    return origin && origin !== "null" ? new URL(href, origin).href : href;
+  } catch {
+    return href;
+  }
+}
+
 async function renameArtifact(a: ArtifactRow): Promise<void> {
   const name =
-    typeof prompt === "function" ? prompt(translate("artifact.rename.prompt"), a.filename || "") : null;
+    typeof prompt === "function" ? prompt(filesT("artifact.rename.promptFile"), a.filename || "") : null;
   if (!name || name === a.filename) return;
   try {
-    await api(`/artifacts/${a.id}/rename`, { method: "PATCH", body: JSON.stringify({ filename: name }) });
-    a.filename = name;
+    // ART-12: the server renames the workspace file too, keeps the extension
+    // when none was typed, and refuses a name another file already uses.
+    const result = (await api(`/artifacts/${a.id}/rename`, {
+      method: "PATCH",
+      body: JSON.stringify({ filename: name }),
+    })) as { filename?: unknown; moved?: unknown } | null;
+    const stored = result && typeof result.filename === "string" && result.filename ? result.filename : name;
+    a.filename = stored;
     if (currentId.value) void loadArtifacts(currentId.value);
     renderViewer();
-    hint(translate("artifact.renamed"));
+    hint(filesT(result && result.moved === false ? "artifact.rename.metaOnly" : "artifact.rename.moved", stored));
   } catch (e) {
+    if (e instanceof ApiError && e.code === "artifact_exists") {
+      hint(filesT("artifact.rename.exists", name), true);
+      return;
+    }
     hint(translate("toast.renameFailed", apiErrorText(e)), true);
   }
 }
@@ -317,16 +345,11 @@ function artifactMenu(anchor: Element, a: ArtifactRow): void {
       icon: "star",
       onClick: () => void setArtPriority(a, starred ? 0 : 1),
     },
-    { label: translate("menu.hideFromList"), icon: "eye-off", onClick: () => void setArtPriority(a, -1, true) },
-    {
-      label: translate("menu.copyLink"),
-      icon: "link",
-      onClick: () => {
-        void copyDeepLink(a).then((ok) => {
-          if (ok) hint(translate("artifact.linkCopied"));
-        });
-      },
-    },
+    // Hiding is reversible (ART-12): a hidden file offers to come back. The
+    // copy-link item was a second copy of the header's button; one remains.
+    (a.priority || 0) < 0
+      ? { label: filesT("artifact.unhide"), icon: "eye", onClick: () => void setArtPriority(a, 0) }
+      : { label: translate("menu.hideFromList"), icon: "eye-off", onClick: () => void setArtPriority(a, -1, true) },
     {
       label: translate("common.edit"),
       icon: "pencil",
@@ -433,9 +456,13 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
       view.href = artUrl({ id: a.id, version_id: v.version_id, _exactVersion: true });
       view.target = "_blank";
       acts.appendChild(view);
-      const previous = isTextEditable(a)
-        ? vs.find((candidate) => Number(candidate.ordinal) === Number(v.ordinal) - 1)
-        : null;
+      // Version diffs are served only by the Stage 9 workbench routes; with
+      // the flag off every comparison answered 403 "artifact workbench is
+      // disabled", so the button is not offered at all (ART-3).
+      const previous =
+        isTextEditable(a) && readWorkbenchFlag()
+          ? vs.find((candidate) => Number(candidate.ordinal) === Number(v.ordinal) - 1)
+          : null;
       if (previous) {
         const compare = el(
           "button",

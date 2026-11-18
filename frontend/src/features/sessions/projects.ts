@@ -31,7 +31,7 @@ import { beginNavigation } from "./navigation";
 import { chooseSessionPackage, downloadArtifactBundle } from "./actions";
 import { recoverConversation } from "../messages/open";
 import { displayProjectName, projectFilesCopy, projectHistoryCopy } from "./copy";
-import { openProjectFiles, resetProjectFolderPicker } from "./project-files";
+import { openProjectFiles, projectFolderErrorText, resetProjectFolderPicker } from "./project-files";
 import { openProjectHistory } from "./project-history";
 
 type ProjectLike = {
@@ -463,6 +463,8 @@ function showProjectModalError(text: string): void {
   }
   box.textContent = text;
   box.classList.toggle("hidden", !text);
+  // The form scrolls on a short screen; bring the refusal into view.
+  if (text && typeof box.scrollIntoView === "function") box.scrollIntoView({ block: "nearest" });
 }
 
 export async function submitProjectModal(): Promise<void> {
@@ -501,7 +503,7 @@ export async function submitProjectModal(): Promise<void> {
       closeProjectModal();
     }
   } catch (e) {
-    showProjectModalError(t("artifact.save.err", apiErrorText(e)));
+    showProjectModalError(t("artifact.save.err", projectFolderErrorText(e)));
   } finally {
     if (btn) btn.disabled = false;
   }

@@ -20,6 +20,7 @@ import { rendererFailure } from "../features/artifacts/renderers";
 import type { ArtifactRow } from "../features/artifacts/types";
 import { openViewer } from "../features/artifacts/ui";
 import { hint } from "../features/sessions/chrome";
+import { filesT } from "../features/artifacts/copy";
 import { $, el, icon, iconEl } from "./dom";
 import { translate } from "./host";
 
@@ -502,7 +503,10 @@ export function renderAnnotatableImage(body: HTMLElement, a: ArtifactRow, url: s
       img.style.width = zs.fitW * zs.z + "px";
       zoom.classList.add("zoomed");
     }
-    if (lvl) lvl.textContent = Math.round(zs.z * 100) + "%";
+    // At z=1 the image is fitted to the pane, not shown at its own pixel
+    // size: "100%" read as actual size, so a fitted wide figure looked like a
+    // cropped one (ART-15). The fit is named; zoom steps stay percentages.
+    if (lvl) lvl.textContent = zs.z <= 1.001 ? filesT("viewer.image.fit") : Math.round(zs.z * 100) + "%";
     if (bOut) bOut.disabled = zs.z <= 1.001;
     if (bIn) bIn.disabled = zs.z >= zs.max - 0.001;
   };
@@ -534,7 +538,7 @@ export function renderAnnotatableImage(body: HTMLElement, a: ArtifactRow, url: s
   bOut.title = translate("zoom.out");
   bOut.innerHTML = icon("minus", 16);
   bOut.onclick = () => zoomCenter(zs.z / 1.4);
-  lvl = el("div", "zoom-lvl", "100%");
+  lvl = el("div", "zoom-lvl", filesT("viewer.image.fit"));
   lvl.title = translate("zoom.reset");
   lvl.onclick = () => {
     applyZoom(1);

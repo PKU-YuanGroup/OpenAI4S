@@ -68,6 +68,12 @@ export type RendererDescriptor = {
 
 export type FilesOrigin = "" | "uploaded" | "generated";
 
+/** ART-12 human file categories; the server's `ARTIFACT_KINDS` uses the same table. */
+export type FilesKind = "" | "table" | "image" | "report" | "code" | "other";
+
+/** ART-12 session-list order. */
+export type FilesSort = "newest" | "oldest" | "name";
+
 export type ArtifactIndexPage = {
   artifacts: ArtifactRow[];
   next_cursor: string | null;
@@ -97,6 +103,12 @@ export const TEXT_EXT =
 
 /** app.js:8415 */
 export const MOL_EXT = /\.(pdb|cif|mmcif|ent|xyz|mol|mol2|sdf|gro)$/i;
+
+/** ART-11: a gzip container by name (its stored type may predate gzip typing). */
+export const COMPRESSED_EXT = /\.(gz|gzip|tgz)$/i;
+
+/** ART-11: an Office Open XML workbook. Legacy binary `.xls` is not one. */
+export const XLSX_EXT = /\.xlsx$/i;
 
 /** B-06 / M-03 default page size. First screen ≤ 50. */
 export const FILES_PAGE_SIZE = 50;

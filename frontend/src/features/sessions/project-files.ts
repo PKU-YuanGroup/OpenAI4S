@@ -22,15 +22,49 @@ function button(label: string, onClick: () => void, cls = "outline-btn small"): 
   return node;
 }
 
-function showError(target: HTMLElement, error: unknown, retry: () => void): void {
+function showError(
+  target: HTMLElement,
+  error: unknown,
+  retry: () => void,
+  describe: (error: unknown) => string = apiErrorText,
+): void {
   target.innerHTML = "";
-  const message = el("div", "project-folder-error", copy("error", apiErrorText(error)));
+  const message = el("div", "project-folder-error", copy("error", describe(error)));
   message.setAttribute("role", "alert");
   target.appendChild(message);
   target.appendChild(button(copy("retry"), retry));
 }
 
+/** Copy keys for the refusal codes of a typed or browsed project folder. */
+const FOLDER_REFUSALS: Record<string, string> = {
+  project_folder_outside_roots: "outsideRoots",
+  project_folder_overlap: "overlapsData",
+  project_folder_history: "historyFolder",
+  local_project_folders_only: "localOnly",
+  project_path_denied: "accessDenied",
+};
+/** `validate_folder_path`'s other refusals share the catch-all code; the status tells them apart. */
+const CATCH_ALL_FOLDER_REFUSALS: Record<number, string> = {
+  400: "notAFolder",
+  403: "credentialFolder",
+  404: "folderNotFound",
+};
+
+/**
+ * A refused project folder -- on Save or in the folder picker -- in the
+ * reader's language; the server's text is English. Only for those two: the
+ * project files browser's catch-all 400s are about project-relative paths.
+ */
+export function projectFolderErrorText(error: unknown): string {
+  const rec = error && typeof error === "object" ? (error as { code?: unknown; status?: unknown }) : null;
+  const code = typeof rec?.code === "string" ? rec.code : "";
+  const key = code === "project_folder" ? CATCH_ALL_FOLDER_REFUSALS[Number(rec?.status)] : FOLDER_REFUSALS[code];
+  return key ? copy(key) : apiErrorText(error);
+}
+
 let pickerVersion = 0;
+// Dot-folders (.cache, .conda…) are left out unless the picker asks for them.
+let showHiddenFolders = false;
 
 /** Reset also retires reads from a closed/reopened project editor. */
 export function resetProjectFolderPicker(folderPath?: string | null): void {
@@ -41,12 +75,13 @@ export function resetProjectFolderPicker(folderPath?: string | null): void {
     picker.classList.add("hidden");
   }
   if (folderPath !== undefined) {
+    showHiddenFolders = false;
     const field = $("#pm-folder") as HTMLInputElement | null;
     if (field) field.value = folderPath || "";
   }
 }
 
-export async function browseProjectFolder(path?: string): Promise<void> {
+export async function browseProjectFolder(path?: string, focusHiddenToggle = false): Promise<void> {
   const target = $("#pm-folder-picker");
   const modal = $("#proj-modal");
   if (!target || !modal) return;
@@ -57,7 +92,8 @@ export async function browseProjectFolder(path?: string): Promise<void> {
   target.innerHTML = "";
   target.appendChild(el("div", "project-folder-note", t("common.loading")));
   try {
-    const data = await api(`/local-folders?path=${encodeURIComponent(requested)}`) as FolderListing;
+    const hidden = showHiddenFolders ? "&hidden=1" : "";
+    const data = await api(`/local-folders?path=${encodeURIComponent(requested)}${hidden}`) as FolderListing;
     if (!active()) return;
     target.innerHTML = "";
     target.appendChild(el("div", "project-folder-path", data.path));
@@ -66,6 +102,19 @@ export async function browseProjectFolder(path?: string): Promise<void> {
     actions.appendChild(button(copy("choose"), () => resetProjectFolderPicker(data.path), "solid-btn small"));
     actions.appendChild(button(copy("closePicker"), () => resetProjectFolderPicker()));
     target.appendChild(actions);
+    const toggle = el("label", "project-folder-hidden-toggle");
+    const checkbox = el("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = showHiddenFolders;
+    checkbox.onchange = () => {
+      showHiddenFolders = checkbox.checked;
+      void browseProjectFolder(data.path, true);
+    };
+    toggle.appendChild(checkbox);
+    toggle.appendChild(el("span", null, copy("showHidden")));
+    target.appendChild(toggle);
+    // The listing is rebuilt; keep a keyboard user on the box they ticked.
+    if (focusHiddenToggle) checkbox.focus();
     const list = el("div", "project-folder-list");
     for (const entry of data.entries) {
       list.appendChild(button(entry.name + "/", () => { void browseProjectFolder(entry.path); }, "project-folder-entry"));
@@ -74,24 +123,34 @@ export async function browseProjectFolder(path?: string): Promise<void> {
     target.appendChild(list);
     if (data.truncated) target.appendChild(el("div", "project-folder-note", copy("limited")));
   } catch (error) {
-    if (active()) showError(target, error, () => { void browseProjectFolder(requested); });
+    if (active()) showError(target, error, () => { void browseProjectFolder(requested); }, projectFolderErrorText);
   }
 }
 
 let browserVersion = 0;
 
-export async function openProjectFiles(projectId: string, projectName: string): Promise<void> {
+export async function openProjectFiles(
+  projectId: string,
+  projectName: string,
+  startPath = "",
+  startIsFile = false,
+): Promise<void> {
   const mode = `project-files:${++browserVersion}:${projectId}`;
   _modalMode.value = mode;
   const modal = $("#modal");
-  const body = $("#modal-body");
-  if (!modal || !body) return;
+  const modalBody = $("#modal-body");
+  if (!modal || !modalBody) return;
   const title = $("#modal-title");
   if (title) title.textContent = copy("title", projectName);
   const download = $("#modal-download");
   if (download) download.style.display = "none";
-  body.innerHTML = "";
+  modalBody.innerHTML = "";
   modal.classList.remove("hidden");
+  // UP-5: the shared modal body has no padding of its own (previews fill it
+  // edge to edge), so this view brings its own: the path, note and input sat
+  // flush against the border with their first character cut.
+  const body = el("div", "project-files-pane");
+  modalBody.appendChild(body);
   const sourcePath = el("div", "project-folder-path");
   body.appendChild(sourcePath);
   body.appendChild(el("p", "project-folder-note", copy("readOnly")));
@@ -177,5 +236,10 @@ export async function openProjectFiles(projectId: string, projectName: string): 
       void showDirectory(pathInput.value.trim());
     }
   };
-  await showDirectory("");
+  // The Files panel's project-folder section opens here at an entry (UP-5).
+  if (startIsFile && startPath) {
+    const slash = startPath.lastIndexOf("/");
+    directory = slash > 0 ? startPath.slice(0, slash) : "";
+    await showFile(startPath);
+  } else await showDirectory(startPath);
 }

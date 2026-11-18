@@ -47,7 +47,7 @@ gateway.py
 
 | 文件 | 职责 |
 | --- | --- |
-| [`project_folder_routes.py`](project_folder_routes.py) | 经认证、仅回环连接可用的文件夹选择、项目目录浏览和有界 UTF-8 预览，复用工作区文件描述符与秘密文件边界。团队与远程部署不能绑定任意主机目录。 |
+| [`project_folder_routes.py`](project_folder_routes.py) | 经认证、仅回环连接可用的文件夹选择、项目目录浏览和有界 UTF-8 预览，复用工作区文件描述符与秘密文件边界。选择器默认不列出以 `.` 开头的文件夹（`hidden=1` 时列出），在主目录中把 Documents、Desktop、Downloads 排在最前。团队与远程部署不能绑定任意主机目录。 |
 | [`project_history_autosave.py`](project_history_autosave.py) | 在持久边界（一次执行结束、HTTP 文件变更、重命名、切换分支）合并后台保存，以及启动补存、关闭落盘和删除前保留记录。 |
 | [`project_history_routes.py`](project_history_routes.py) | 本地历史目录与状态、手动保存、只读版本查看和校验后的文件下载。 |
 | [`__init__.py`](__init__.py) | 稳定的包门面，导出 `build_server` 与 `serve`。 |
@@ -55,16 +55,18 @@ gateway.py
 | [`attention.py`](attention.py) | 跨 Session 的只读「需要处理」聚合。把 running/queued 执行、待批准、可恢复失败、view-only/blocked 会话，以及 live/unknown 远程计算合成固定 shape 的卡片。team 可见性在聚合、排序、limit 之前生效。`target.surface`/`dock` 是闭集，服务端不返回任意 URL。GET 零副作用：不 spawn kernel、不打 provider、不 retry/approve/harvest。首版不建物化表。 |
 | [`attention_routes.py`](attention_routes.py) | `GET /attention?limit&cursor`，一张经校验的 `RouteSpec`。cursor 是绑在调用方 team-scope fingerprint 上的 `(updated_at, id)` keyset；来自另一用户或另一组 filter 的 cursor 返回 `400 invalid_cursor`。retry/approve/restore 仍走现有 mutation 路由。 |
 | [`agent_run.py`](agent_run.py) | 把 `AgentEngine` 适配到 Web 契约。它流式输出安全的文本与代码草稿，发出 Web 事件，处理取消，并通过注入的端口执行原生 Action 或 Cell。 |
-| [`artifact_refs.py`](artifact_refs.py) | 用户消息里钉住版本的 `@文件` 引用。`@name#v-<version_id>` 发送的是那个确切版本的冻结字节，而不是活文件——旧的解析读到的是后续 cell 留下的任何内容。解析不出来的引用会被**报告**而不是丢掉；二进制 Artifact 只报名字，不会被贴成一片替换字符；同 project 的跨会话引用在**发送时**物化（D3），而不是就地读取。 |
+| [`artifact_refs.py`](artifact_refs.py) | 用户消息里钉住版本的 `@文件` 引用。`@name` 加一条 `mentions` 条目 `{filename, version_id}`（工作台的发法，版本哈希不进入用户的文字），或文本形式 `@name#v-<version_id>`，发送的都是那个确切版本的冻结字节，而不是活文件——旧的解析读到的是后续 cell 留下的任何内容。`display_text` 在派生的显示文字（会话标题、队列预览）里去掉文本形式的 `#v-<id>`。解析不出来的引用会被**报告**而不是丢掉；二进制 Artifact 只报名字，不会被贴成一片替换字符；同 project 的跨会话引用在**发送时**物化（D3），而不是就地读取。`@project:<路径>`（UP-5）指向项目文件夹里的文件：发送时不读取内容，只告诉模型路径，并让它用 `project_read_file`/`project_import_file`。 |
 | [`retrieval_source.py`](retrieval_source.py) | 一个版本的检索溯源信息中，可以安全交给客户端的那一部分投影。这个信封是由执行检索的那段代码（包括未经审计的 Skill）写入的自由格式 JSON，而科研 API 把 key 放进查询串是常态——所以键走白名单、值有长度上限，查询串、路径和 userinfo 三处的凭据都会被指纹化。没有溯源信息时返回 `None` 而不是一个空面板：空面板会被读成一条关于数据本身的结论。 |
 | [`artifacts.py`](artifacts.py) | Agent 写出的工作区文件在这里变成带版本的 Artifact。UI 上的编辑、重命名、上传、恢复和提升也走同一个 service，版本每动一次，快照、溯源和广播都跟着对齐。trusted 路径会在登记前流式复制、fsync、原子冻结并验证字节；遇到相同 head 时复用 version，同时保留 observation。 |
-| [`artifact_index.py`](artifact_index.py) | 按 project 分页的 Artifact 索引：`(created_at, artifact_id)` keyset、绑定 `project_id + q + content_type + origin + team scope` 的不透明 cursor，以及只搜 filename 的转义 `LIKE`。旧的 `/projects/{pid}/artifacts` 数组 route 保持不变。 |
+| [`artifact_index.py`](artifact_index.py) | 按 project 分页的 Artifact 索引：`(created_at, artifact_id)` keyset、绑定 `project_id + q + content_type + origin + team scope`（设置时再加 `kind`/`hidden`）的不透明 cursor，以及只搜 filename 的转义 `LIKE`。ART-12：`kind=` 按人能读懂的类别过滤（否则 `400 invalid_kind`），`hidden=1` 包含被隐藏的记录。旧的 `/projects/{pid}/artifacts` 数组 route 保持不变。 |
 | [`artifact_index_routes.py`](artifact_index_routes.py) | `GET /projects/{pid}/artifact-index`。`RouteSpec` 进入契约清单；filter 变化后沿用旧 cursor 返回 `400 invalid_cursor`。 |
 | [`artifact_workbench.py`](artifact_workbench.py) | Stage 9 正式 Artifact workbench：完整数据集表格查询、版本 diff、PDF/HTML locator、结构摘要，以及 Ketcher 3.7.0 包装页。flag 关闭时不生效。 |
 | [`artifact_workbench.py`](artifact_workbench.py) | Stage 9 正式 Artifact workbench：完整数据集表格查询、版本 diff、PDF/HTML locator、结构摘要，以及 Ketcher 3.7.0 包装页。flag 关闭时不生效。``GET .../table`` 可带可选 ``version_id``，提供时绝不降级 latest。 |
 | [`artifact_workbench_routes.py`](artifact_workbench_routes.py) | Stage 9 的五条 Artifact workbench 路由（`/table`、`/diff`、`/structure`、`/pdf-text`、`/html-outline`）。flag 关闭时返回 403。 |
 | [`artifact_workbench_routes.py`](artifact_workbench_routes.py) | Stage 9 Artifact workbench 路由（`/table`、`/table/profile`、`/table/export.csv`、`/diff`、`/structure`、`/pdf-text`、`/html-outline`）。flag 关闭时返回 403。 |
 | [`table_profile.py`](table_profile.py) | 共享表格 query parser（锁定既有 `/table` 五参数契约）、列 profile（type/missing/unique/min/max/mean/histogram，bins≤50，exact unique 做不完则 `approximate:true`）、分块 CSV 导出（单块 1 MiB，总量 32 MiB 超限 413）、profile 的进程 LRU，以及资源验收 manifest 门。统计不入库。 |
+| [`table_preview.py`](table_preview.py) | ART-11 标准库表格预览：返回 CSV/TSV（`text_decoding` 能识别的任意编码）、gzip（按魔数识别，限制解压量）与 `.xlsx` 工作表（`zipfile` + `ElementTree`；拒绝 DOCTYPE/ENTITY，只接受 deflate 部件，限制大小与成员数，只读取开头用到的共享字符串）的表头和前 100 行，并在时间/大小上限内精确计数行数，超限则给下限。旧版 `.xls` 以 `unsupported_format` 拒绝。 |
+| [`artifact_preview_routes.py`](artifact_preview_routes.py) | `GET /artifacts/{aid}/preview-table?version_id=&sheet=`，经校验的 `RouteSpec`。不受 Stage 9 开关控制：默认查看器在表格超过 8 MiB 读取预算、打开工作簿或 gzip 文件时调用它。拒绝以 `{error, code}` 返回：`not_tabular`/`unsupported_format`（415）、`too_large_to_inspect`（413）、`invalid_file`（422）或 `sheet_not_found`（404）。 |
 | [`auto_budget.py`](auto_budget.py) | Auto Mode 原子预算准入：consumer 注册表、canonical 动作指纹、durable-delta 闭集，以及不可验证 token 的 fail-closed。各 sink 在动作前用稳定 `admission_id` 预留；只有明确未开始的调用才可释放。Guardian 字段只投影既有权威状态，不复制计数。 |
 | [`auto_mode.py`](auto_mode.py) | 按冻结的「导入隔离 → frame → project → 显式 deployment → 旧 result-review → 内建默认」顺序解析 Stage 2 Auto Mode 选择；对 durable run/audit 状态做有界白名单投影；只把新建且已提交的规范事件作为尽力而为的 WebSocket 提示转发。它不会调用模型、Reviewer、Repair Agent 或权限路径。 |
 | [`auto_mode_portability.py`](auto_mode_portability.py) | Session package 与只读 share 共用的“不信任输入也安全”reducer。它验证 Auto Mode 的 scope/reference 闭包，只输出闭合的审计 DTO，把 portable evidence 无法独立证明的结论降级，而且绝不恢复执行或权限能力。 |
@@ -132,6 +134,7 @@ gateway.py
 | [`file_area.py`](file_area.py) | 团队文件区的路径策略（M1-8）：`OPENAI4S_DATA_ROOTS` 列出唯一可达的目录，一切操作都过同一个解析器，包含检查作用在**解析后**的路径上——先解 symlink 和 `..`——所以任何写法的外部路径都过不去，"在白名单外"与"不存在"答同一句话。上传目标再加一条纯文件名规则（无分隔符、无 dot-dot、不许 symlink 跳转），上传能创建文件却不能用来逃逸。 |
 | [`file_routes.py`](file_routes.py) | `GET /files`、`GET /files/download`、`POST /files/upload`，经校验的 `RouteSpec` 表。上传是真流式：网关的整体预读对这条路径单独跳过，处理器把 `rfile` 按 1 MiB 块拷进同目录临时文件再原子 `os.replace`——512 MiB 不经过 daemon 内存，截断的 body 也不会在最终名字下留半个文件。guest 在这里什么都不能读（D3：仅回放）。 |
 | [`team_auth.py`](team_auth.py) | 团队模式认证（`OPENAI4S_TEAM_MODE`）：`os_user` 登录 cookie；按（用户名, ip）的令牌桶限速——在 PBKDF2 计算**之前**消耗令牌，所以限速同时约束了攻击者能让 daemon 做多少哈希功；以及 loopback CLI 的 service 身份，让服务器上的管理 CLI 继续用 daemon 访问令牌而不冒充任何真人账号。当 trusted proxy 拓扑让所有客户端都呈现为 loopback peer 时，gateway 会禁用该机器身份。每次登录结果都写审计（INV-12）。 |
+| [`text_decoding.py`](text_decoding.py) | UP-4 产物预览的标准库文本解码：按 BOM 判定 UTF-16，再严格 UTF-8（去 BOM），再严格 GB18030 且读起来是中文文本时才采用，否则 UTF-8 加替换字符；支持只读前缀。工作台 `/table` 经它解码并返回 `encoding`。规则与前端 `text-encoding.ts` 相同。 |
 | [`team_routes.py`](team_routes.py) | 认证路由（`/auth/login`、`/auth/logout`、`/auth/me`），按 `kernel_routes` 的形态组织：一张经校验的 `RouteSpec` 表，运行时分发和契约清单读同一份。两种模式下都确定性应答——团队模式关闭时返回稳定的"已禁用"形状，契约捕获冻结的正是它。Set-Cookie 走 `_send` 带消毒的 header 通道；原始会话 token 只存在于该头和客户端 cookie jar 里。 |
 | [`titles.py`](titles.py) | 在后台根据第一条消息生成会话标题。模型配置延迟绑定，持久化和广播都做了防竞态处理。 |
 | [`trusted_capture.py`](trusted_capture.py) | 管理 Stage 1 会话级前台 Artifact 捕获、独立后台内核与面向用户的外部工作区变更三者之间的准入边界。同一线程的捕获和外部变更均可在各自类别内嵌套；另一所有者或任何跨类别重叠都会在工作区动作开始前失败即关闭。 |

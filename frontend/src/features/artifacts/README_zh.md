@@ -22,9 +22,10 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`deeplink.test.ts`](deeplink.test.ts) | 查询串解析；精确 version；禁止静默降级 latest。 |
 | [`deeplink.ts`](deeplink.ts) | `?artifact=&version_id=` 解析/序列化/解析 version。空 versions → not-found。 |
 | [`events.test.ts`](events.test.ts) | `artifact_created` 版本同步 + 现场插图；跳过 stub 的 `nbRender`。 |
+| [`encoding-note.ts`](encoding-note.ts) | UP-4：查看器里“按 GB18030 编码显示（自动识别，非 UTF-8）”提示，经读取的 `onEncoding` 在视图仍挂载时追加；UTF-8 不提示。 |
 | [`events.ts`](events.ts) | `artifact_created` 余下 32 行（app.js:5314-5346）。 |
 | [`files-index.test.ts`](files-index.test.ts) | cursor 生命周期（filter/project 丢弃）、禁止数组 route 回退、首屏 ≤50。 |
-| [`files-index.ts`](files-index.ts) | 只走 B-06 `GET .../artifact-index`。filter fingerprint 丢弃旧 cursor。 |
+| [`files-index.ts`](files-index.ts) | 只走 B-06 `GET .../artifact-index`。filter fingerprint 丢弃旧 cursor。ART-12：`artifactKind`（与服务端同一张类别表）、`kind`/`hidden` 过滤，以及 `sortArtifactsForFiles`（星标在前，再按最新/最早/名称；以前是随机 ID 顺序）。 |
 | [`http-stub.ts`](http-stub.ts) | Vitest 用的 JSON `Response` 替身，带真实 body 流，使有界读取与浏览器一致。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
 | [`links.test.ts`](links.test.ts) | 普通点击会话内的制品链接会打开 Viewer；带修饰键的点击、其他会话的制品、精确版本链接与外部链接仍交给浏览器。 |
@@ -35,19 +36,25 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`preview.test.ts`](preview.test.ts) | 生产渲染器 grant 生命周期、grant 复用与过期、源与路径拒绝、精确版本回退、非回环源保持惰性及已移除 iframe 回归测试。 |
 | [`science-results.ts`](science-results.ts) | `readScienceSearchEnvelope(text)`：顶层键集合封闭（`query`/`endpoint`/`request_url`/`retrieved_at`/`source_checksum`/`response_sha256`/`accessions`/`result`），`result.results` 必须是对象数组且 `id`/`title`/`url`/`type`/`attributes` 类型受检，并要求检索身份标记，因此任意带 `result` 的无关 JSON 返回 null 并保持通用路径。视图含“检索记录”（默认）与“原始 JSON”两个标签页：每页 50 最多 500 条、显示“本文件保存 N 条记录”、`next_cursor` 只提示“还有后续页未包含在此文件中”（绝不称数据库总量）、可展开最多 8 个标量属性且一律 textContent、标题/标识/类型/属性与链接显示文本都经 publicText 脱敏、仅 http(s) 链接渲染为 `<a target="_blank" rel="noopener noreferrer">` 且显示文本经 publicText 脱敏，原始 JSON 页保留原文显示/展开/下载并绑定 A3 冻结的确切版本；同时保留 `scienceSourceStatus` 供版本历史来源面板使用，读取当前 `alias_conflicts` 键（并兼容旧的 `source_conflicts` 拼写），冲突同样会被点名。 |
 | [`science-results.test.ts`](science-results.test.ts) | envelope 拒绝（坏 JSON、缺身份标记、字段类型错误、`result.results` 非数组/非对象、任何多余顶层键）、规范/旧键、next_cursor、外链协议/凭据脱敏与显示脱敏、标题/属性纯文本与 8 标量上限、空结果、50/500 分页与超限下载、原始 JSON 页（共享与回退）、版本隔离与零网络读取。 |
+| [`markdown-assets.ts`](markdown-assets.ts) | ART-2 Markdown 产物里的相对图片：`siblingPath` 以报告所在目录解析 `src`（解码、去掉查询串/片段、不能越出工作区），`findSibling` 先找完全相同的相对文件名，否则找同会话里唯一的同名文件，`resolveRelativeImages` 经 `readArtifactBytes` 读取为视图自有的 blob URL；找不到时显示“图片未找到”提示。 |
+| [`markdown-assets.test.ts`](markdown-assets.test.ts) | 路径解析（目录、`..`、解码、拒绝越出根目录）与同伴文件选择（精确匹配、唯一同名、歧义、其它会话、报告自身）。 |
 | [`notebook.ts`](notebook.ts) | 只读 nbformat-4 `.ipynb` 预览（F5–F7）：严格 envelope/字段类型校验（cells 数组、Cell 与输出字段类型）；最多 200 个 Cell、每批 50 个（“显示更多”）、每 Cell 20 输出、单文本块 65536 码元（`previewSlice`）；代码 Cell 用 `mdCodeBlock`（复制按钮即 `copy` 能力），Markdown 用 `renderMd(..., {resources:"none"})`，Raw 纯文本；PNG 在创建图像前逐项校验（Base64 估算→签名/IHDR/正尺寸→单张 2 MiB、累计 1600 万像素），最多 2 张并发解码；其他 MIME 只显示不支持提示；导出的 `[OpenAI4S artifacts]` 行保持纯文本；读取使用渲染根的 `previewReadSignal`，PNG URL 经 `previewObjectUrl` 登记，因此各关闭路径调用的 `abortPreviewReads` 即可中止读取、revoke 这些 URL 并清空其容器；侧栏与全屏相互独立。零执行、零 Host、零其他源请求。 |
 | [`notebook.test.ts`](notebook.test.ts) | envelope/类型拒绝（坏 JSON、nbformat 3、错误字段类型、未知 cell/output 枚举）、Cell/输出/文本上限与分批“显示更多”、string 与 string-array 字段、代码复制块、Markdown 禁资源（data 与外链图片）、文本/错误输出、不支持富 MIME、PNG 校验与字节/像素上限及两并发解码队列、损坏文件原文、分类读取失败与重试、关闭中止/释放/清空。 |
-| [`renderers.ts`](renderers.ts) | 兼容模式的信息行带“重试”，就地重新请求目录与描述符（无需整页刷新；仍失败则再次降级）。十一个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol/notebook 孤岛。PDF iframe 由 F-18 补 `sandbox=""`。图片与 PDF 经 `readArtifactBytes` 读取（blob URL 归该视图所有）。标注视图在读取被拒绝时显示同样的分类失败卡。打开预览时也会拆掉仍在读取的分子结构。有界可取消读取；冻结显示上限统一经 `previewSlice` 截取；`partial` 预览带持续可见的 `role="status"` 提示（说明只显示了前 N 个字符）与确切版本下载（Markdown 在 `.md` 正文上下各一条提示；原始文本保留“展开完整原文”）；读取失败是第三态，显示分类失败卡。版本冻结（F4）：descriptor 入口一次性计算 `target = artifactMetadataTarget(a)` 与 `url = artUrl(target)`，所有渲染器与下载只用这两个值；没有版本标识的行显示“最新版本（无固定版本标识）”。 |
+| [`renderers.ts`](renderers.ts) | 兼容模式的信息行带“重试”，就地重新请求目录与描述符（无需整页刷新；仍失败则再次降级）。十一个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol/notebook 孤岛。PDF iframe 不带 `sandbox` 属性（Chromium 不在沙箱 frame 里运行 PDF 查看器），只加载经有界读取、类型为 `application/pdf` 的 blob，由外壳 CSP 的 `frame-src blob:` 放行（ART-1）。图片与 PDF 经 `readArtifactBytes` 读取（blob URL 归该视图所有）。标注视图在读取被拒绝时显示同样的分类失败卡。打开预览时也会拆掉仍在读取的分子结构。有界可取消读取；冻结显示上限统一经 `previewSlice` 截取；`partial` 预览带持续可见的 `role="status"` 提示（说明只显示了前 N 个字符）与确切版本下载（Markdown 经懒加载 KaTeX 排版公式，并把相对图片解析为同会话产物，ART-2；在 `.md` 正文上下各一条提示；原始文本保留“展开完整原文”）；读取失败是第三态，显示分类失败卡。版本冻结（F4）：descriptor 入口一次性计算 `target = artifactMetadataTarget(a)` 与 `url = artUrl(target)`，所有渲染器与下载只用这两个值；没有版本标识的行显示“最新版本（无固定版本标识）”。信息行用界面语言写出查看器类型（`rendererLabel`），并显示「最新版本」或「固定版本」，版本 ID 与渲染器匹配方式只放在悬停提示里，不再作为副标题（ART-15）。 |
 | [`renderers.test.ts`](renderers.test.ts) | 文本渲染器：每次渲染只读一次（无下载/文本循环）；序列按源码显示；JSON 只按控制字符判定二进制；body 已被替换时晚到的描述符不再执行渲染胶水。 侧栏与全屏的读取和 Notebook 图片会话彼此独立；关闭后的迟到描述符不能重启读取。 |
-| [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限。 |
-| [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。 |
+| [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限；ART-3 表头排序（数值序、空值置后、回到文件原序、键盘）、`列名:值` 与任意列筛选及匹配计数、显示全部列开关及其提示。 |
+| [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。ART-3：默认（未开工作台）表格点击表头排序（升序、降序、文件原序），按子串或 `列名:值` 筛选，超过 100 列时可按需显示全部列，绘制行数按同样的 50 万单元格预算截断；全部在前端对已读取的行完成。 |
 | [`state.ts`](state.ts) | 车道局部 M-03 signal。不上升进 `stores/`。 |
-| [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。全局 FIFO 前缀队列（最多 4 个在途、共享 15 秒期限），每个磁贴 DOM 元素登记为缓存键的消费者，`pruneThumbReads()` 只在全部消费者都离开文档时中止并释放图片 blob URL；同一版本缓存未命中时，仍有磁贴在显示则复用那份 blob，全部消费者离开后才释放；被截断的文本/分子磁贴标“部分预览”，被截断的数据磁贴只显示列名、不显示行数。图片磁贴按 8 MiB 主预览上限整文件读取（前缀无法解码），绝不把产物 URL 赋给 `img.src`；超过 256 KiB 磁贴预算的位图先缩成 480 px 副本，磁贴只保留该副本。 |
+| [`table-preview.ts`](table-preview.ts) | ART-11：浏览器不整份读取的表格——超过 8 MiB 读取预算的 CSV、`.xlsx` 工作簿（工作表标签）或 gzip 文件——经 `GET /artifacts/{id}/preview-table` 读取确切版本的前若干行。用 `renderSheet` 绘制，其提示改为整份文件的规模（“共 900,000 行 × 6 列，仅显示前 100 行（文件 39.0 MB，……）”），保留确切版本下载，并逐一说明拒绝原因（`not_tabular`、`unsupported_format` 等），不提供无意义的重试。每个视图只发一个请求，随视图或更新的工作表请求取消，30 秒期限后结束。另含 gzip 磁贴与 gzip/工作簿判定。文案在它自己的表里。 |
+| [`table-preview.test.ts`](table-preview.test.ts) | 路由路径与响应校验、行记录的键（重复表头、xlsx 行号）、文件规模句（精确、下限、gzip、超出预算）、拒绝文案、切换工作表时较慢的旧响应不会覆盖、500 后重试、期限、随视图取消、默认表格查看器在超预算和二进制字节时的移交，以及不读取任何字节的 gzip 磁贴。 |
+| [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。全局 FIFO 前缀队列（最多 4 个在途、共享 15 秒期限），每个磁贴 DOM 元素登记为缓存键的消费者，`pruneThumbReads()` 只在全部消费者都离开文档时中止并释放图片 blob URL；同一版本缓存未命中时，仍有磁贴在显示则复用那份 blob，全部消费者离开后才释放；被截断的文本/分子磁贴标“部分预览”，被截断的数据磁贴只显示列名、不显示行数。行列数标签按界面语言显示（“241 行 · 11 列”），按非 UTF-8 解码的磁贴会标出编码（UP-4）。图片磁贴按 8 MiB 主预览上限整文件读取（前缀无法解码），绝不把产物 URL 赋给 `img.src`；超过 256 KiB 磁贴预算的位图先缩成 480 px 副本，磁贴只保留该副本。 |
+| [`text-encoding.ts`](text-encoding.ts) | UP-4 所有有界文本读取共用的解码：UTF-16 BOM 判定 UTF-16，合法 UTF-8 即 UTF-8（去 BOM），合法 GB18030 且读起来是中文文本才判为 GB18030，否则仍按 UTF-8 加替换字符；只读前缀时丢弃截断处的半个字符。与 `openai4s/server/text_decoding.py` 相同。 |
+| [`text-encoding.test.ts`](text-encoding.test.ts) | UTF-8 及其 BOM 不变、识别 GBK、UTF-16 LE/BE BOM、二进制与 Windows-1252 不会被当成中文、面向用户的编码名称。 |
 | [`thumbs.test.ts`](thumbs.test.ts) | 每个产物版本只读一次；错误页和失败的读取不缓存；LRU 上限。 |
 | [`types.ts`](types.ts) | Artifact DTO、页大小 50/100、TEXT_EXT / MOL_EXT。 |
-| [`ui.ts`](ui.ts) | Files 网格、dock 标签、`openViewer`、深链；`renderViewer` 交给 islands 的 Viewer。提供 `version_id` 时绝不静默 latest。 |
+| [`ui.ts`](ui.ts) | Files 网格、dock 标签、`openViewer`、深链；`renderViewer` 交给 islands 的 Viewer。提供 `version_id` 时绝不静默 latest。卡片显示按人能读懂的类型而非 MIME，被隐藏的文件显示「已隐藏」与「在列表中显示」（`unhideArtifact`，ART-12）。Files 标签出现过一次后就保留在标签栏里，打开很多文件时当前标签会滚动到可见处（ART-15）。 |
 | [`ui.test.ts`](ui.test.ts) | 深链 apply / `openViewer` 精确 pin / stale 不打开 latest。 |
-| [`editor.ts`](editor.ts) | 版本绑定草稿、有界 UTF-8 存储、校验读取与条件保存。 |
+| [`editor.ts`](editor.ts) | 版本绑定草稿、有界 UTF-8 存储、校验读取与条件保存。UTF-8 BOM 不进入文本框，保存时放回文件最前（ART-13），在开头输入的字符不会跑到 BOM 前面。 |
 | [`editor-view.ts`](editor-view.ts) | 编辑控件及冲突／未知结果的只读恢复。 |
 | [`editor.test.ts`](editor.test.ts) | 加载、版本、保存、核对和草稿容量合同。 |
 

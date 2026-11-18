@@ -1,6 +1,7 @@
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import { API } from "../ws/connect";
+import { decodeArtifactBytes } from "./text-encoding";
 import {
   FILES_MAX_PAGE_SIZE,
   FILES_PAGE_SIZE,
@@ -89,6 +90,10 @@ export type ArtifactIndexQuery = {
   q?: string;
   contentType?: string;
   origin?: string;
+  /** ART-12 human category (`table`, `image`, `report`, `code`, `other`). */
+  kind?: string;
+  /** ART-12: include rows hidden from the list. */
+  hidden?: boolean;
   cursor?: string | null;
   /** Clamped to 1…100. Omitted uses the Files page size (50). */
   limit?: number;
@@ -114,6 +119,8 @@ export async function fetchArtifactIndexPage(
   if (query.q) params.set("q", query.q);
   if (query.contentType) params.set("content_type", query.contentType);
   if (query.origin) params.set("origin", query.origin);
+  if (query.kind) params.set("kind", query.kind);
+  if (query.hidden) params.set("hidden", "1");
   if (query.cursor) params.set("cursor", query.cursor);
   params.set("limit", String(clampIndexLimit(query.limit)));
   const init: RequestInit = {};
@@ -362,9 +369,11 @@ export type ArtifactReadOptions = {
   timeoutMs?: number;
   /** Cancels the read when its view goes away or is replaced. */
   signal?: AbortSignal | null;
+  /** Told which encoding decoded a text read ("utf-8", "gb18030", …), before it resolves (UP-4). */
+  onEncoding?: (encoding: string) => void;
 };
 
-export type ArtifactPrefixRead = { text: string; truncated: boolean };
+export type ArtifactPrefixRead = { text: string; truncated: boolean; encoding: string };
 
 function isAbortError(error: unknown): boolean {
   const e = error as { name?: unknown } | null;
@@ -423,7 +432,7 @@ async function readArtifactText(
   options: ArtifactReadOptions,
   prefix: boolean,
   binary = false,
-): Promise<{ text: string; bytes: number; truncated: boolean; raw?: Uint8Array }> {
+): Promise<{ text: string; bytes: number; truncated: boolean; raw?: Uint8Array; encoding?: string }> {
   const requestedMax = options.maxBytes;
   const maxBytes =
     requestedMax != null && Number.isFinite(requestedMax) && requestedMax > 0
@@ -505,8 +514,14 @@ async function readArtifactText(
           }
           return { text: "", bytes: raw.byteLength, truncated: false, raw };
         }
-        const text = await response.text();
-        return { text, bytes: declared, truncated: false };
+        // Bytes when the response can give them, so the encoding is detected
+        // here too; a minimal response object only offers UTF-8 text.
+        const decoded =
+          typeof response.arrayBuffer === "function"
+            ? decodeArtifactBytes(new Uint8Array(await response.arrayBuffer()))
+            : { text: await response.text(), encoding: "utf-8" };
+        options.onEncoding?.(decoded.encoding);
+        return { text: decoded.text, bytes: declared, truncated: false, encoding: decoded.encoding };
       }
       throw new ArtifactReadError(
         "too_large",
@@ -515,10 +530,15 @@ async function readArtifactText(
       );
     }
     const reader = body.getReader();
-    const decoder = new TextDecoder();
     const parts: Uint8Array[] = [];
     let bytes = 0;
-    let text = "";
+    // Text is decoded once, from all the bytes read, so the encoding can be
+    // chosen from the whole prefix rather than guessed per chunk (UP-4).
+    const decodeRead = (truncated: boolean) => {
+      const decoded = decodeArtifactBytes(concatBytes(parts, bytes), truncated);
+      options.onEncoding?.(decoded.encoding);
+      return { text: decoded.text, bytes, truncated, encoding: decoded.encoding };
+    };
     // A body read may stay pending forever on a stalled transport; racing the
     // abort signal turns the deadline/cancellation into a real stop even for a
     // stream that is not wired to the fetch's own abort handling.
@@ -562,13 +582,13 @@ async function readArtifactText(
         if (value.byteLength > remaining) {
           if (prefix) {
             if (remaining > 0) {
-              text += decoder.decode(value.subarray(0, remaining), { stream: true });
+              parts.push(value.slice(0, remaining));
               bytes += remaining;
             }
-            // No final flush: an incomplete UTF-8 sequence at the cut is
-            // dropped instead of becoming U+FFFD.
+            // Decoded as a prefix: an incomplete multi-byte sequence at the
+            // cut is dropped instead of becoming U+FFFD.
             await cancelReader(reader);
-            return { text, bytes, truncated: true };
+            return decodeRead(true);
           }
           await cancelReader(reader);
           throw new ArtifactReadError(
@@ -577,8 +597,9 @@ async function readArtifactText(
             { maxBytes, bytes: maxBytes },
           );
         }
+        // Copy: the stream may reuse this buffer on the next pull.
+        parts.push(value.slice());
         bytes += value.byteLength;
-        text += decoder.decode(value, { stream: true });
         if (prefix && bytes >= maxBytes) {
           // Read exactly to the budget: stop and cancel without waiting for the
           // next chunk (which might be the rest of the file or a stall). An
@@ -586,13 +607,10 @@ async function readArtifactText(
           // whole file, not a prefix of it.
           await cancelReader(reader);
           const whole = declared !== null && identityEncoding(response) && declared === bytes;
-          return whole
-            ? { text: text + decoder.decode(), bytes, truncated: false }
-            : { text, bytes, truncated: true };
+          return decodeRead(!whole);
         }
       }
-      text += decoder.decode();
-      return { text, bytes, truncated: false };
+      return decodeRead(false);
     } catch (error) {
       if (error instanceof ArtifactReadError) throw error;
       await cancelReader(reader);
@@ -704,7 +722,11 @@ export function readArtifactPrefix(
   url: string,
   options: { maxBytes: number; timeoutMs?: number; signal?: AbortSignal | null },
 ): Promise<ArtifactPrefixRead> {
-  return readArtifactText(url, options, true).then(({ text, truncated }) => ({ text, truncated }));
+  return readArtifactText(url, options, true).then(({ text, truncated, encoding }) => ({
+    text,
+    truncated,
+    encoding: encoding || "utf-8",
+  }));
 }
 
 /** True when a read stopped only because its view went away. */

@@ -10,7 +10,7 @@ vi.mock("preact/hooks", () => ({
   useEffect: () => undefined,
 }));
 
-import { filesContentType, resetFilesIndexState } from "../../features/artifacts/state";
+import { filesContentType, filesKind, resetFilesIndexState } from "../../features/artifacts/state";
 import { resetStoreFields } from "../../stores/signal-field";
 import { FilesPanel } from "./FilesPanel";
 
@@ -36,20 +36,23 @@ function typeFilter(): VNode | null {
   return find(FilesPanel(), (node) => node.props?.class === "files-filter-type");
 }
 
-describe("Files content-type filter (AUDIT A64)", () => {
+describe("Files type filter (ART-12, was AUDIT A64)", () => {
   afterEach(() => {
     hooks.state.length = 0;
     resetFilesIndexState();
     resetStoreFields();
   });
 
-  it("keeps the typed text across a re-render until the change applies it", () => {
-    (typeFilter()?.props?.onInput as (event: unknown) => void)({ currentTarget: { value: "text/c" } });
-    // Anything else re-rendering the panel mid-typing must not undo the keystrokes.
-    expect(typeFilter()?.props?.value).toBe("text/c");
+  it("is a choice of human kinds that applies on change, not a MIME text box", () => {
+    const select = typeFilter();
+    expect(select?.type).toBe("select");
+    expect(select?.props?.value).toBe("");
+    (select?.props?.onChange as (event: unknown) => void)({ currentTarget: { value: "table" } });
+    expect(filesKind.value).toBe("table");
     expect(filesContentType.value).toBe("");
-    (typeFilter()?.props?.onChange as (event: unknown) => void)({ currentTarget: { value: "text/csv" } });
-    expect(filesContentType.value).toBe("text/csv");
-    expect(typeFilter()?.props?.value).toBe("text/csv");
+    expect(typeFilter()?.props?.value).toBe("table");
+    (typeFilter()?.props?.onChange as (event: unknown) => void)({ currentTarget: { value: "image/png" } });
+    // Anything outside the closed set means every kind.
+    expect(filesKind.value).toBe("");
   });
 });

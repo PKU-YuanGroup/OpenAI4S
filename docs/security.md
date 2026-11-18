@@ -400,6 +400,26 @@ remote origins, and unverified reverse-proxy topologies therefore receive no
 executable preview grant. Keep the daemon loopback-bound and treat grant URLs
 as sensitive, temporary links.
 
+### PDF previews are first-party blobs
+
+The Workbench shows a PDF by reading its bytes through the same bounded,
+cancellable preview read as an image, minting a `blob:` URL typed
+`application/pdf`, and framing that blob. The shell's `frame-src` therefore
+admits `blob:` beside `'self'` (and the sandbox origin). This widens framing to
+documents the app itself created and nothing else: a blob URL can only be
+minted by script running on the app origin, and `script-src 'self'` keeps that
+to the shipped bundles. The PDF frame carries **no** `sandbox` attribute:
+Chromium will not run its PDF viewer in a sandboxed frame (any `sandbox`
+value sets the "sandboxed plugins" flag, which no token lifts), so a sandboxed
+PDF frame only ever showed an error page. The frame never loads an Artifact
+URL: its document is the typed blob, which the browser hands to its PDF viewer
+and never parses as HTML, so PDF content cannot run script on the app origin.
+The alternative -- framing the app-origin Artifact URL, whose response keeps
+`sandbox allow-same-origin` and `script-src 'none'` -- was not taken: it would
+bypass the preview read budget and cancellation, and a PDF stored under
+another content type would turn the preview into a download. Untrusted
+Artifact and grant responses still frame nothing (`default-src 'none'`).
+
 ### The Notebook REPL is off by default
 
 The web UI's right-hand Notebook is a **read-only execution trace** by default:
@@ -465,6 +485,28 @@ it:
 - `projects.folder_path` (a linked project's absolute host path) reads as `NULL` from agent SQL and is absent from `host.query.schema()`, so a cell cannot learn where the folder is and open files the read-only project tools refuse. `SELECT * FROM projects` keeps working.
 
 Credential values passed to `host.credentials.set(name, value)` are held only in an in-memory vault (never persisted). To keep that true end to end, the **RPC audit log** redacts them: `credentials_get` / `credentials_list` are not logged at all, and `credentials_set` is logged for audit **with its args redacted** — the plaintext value never enters `host_call_log`. The replay tape recorder likewise skips `credentials_set`, so an exported notebook cannot carry a plaintext credential. `host.judge` is a different projection on the same log: `args_preview` keeps a template id only when the judgment registry resolves it and replaces state and params with fixed markers (`<redacted judge state>`, `<redacted judge params>`). The call stays on the replay tape, and `result_preview` stays. `result_digest` stays too, except for a soft-fail error, which is stored without one.
+
+### Local project folder roots
+
+A project's linked folder is a read grant: the project tools can list, search,
+read and import anything under it that the daemon's account can read, except
+credential paths and the `.openai4s/` history directory. Grants exist only on a
+standalone loopback daemon, and the folder must be inside an allowed root: the
+home directory, the system temporary directory (`TMPDIR`) and `/tmp`, the
+mounted-volume directories, or `OPENAI4S_PROJECT_ROOTS`. `/`, `/etc` and other
+system directories are refused. Containment is checked on the canonical path,
+so a link inside a root that points outside it is refused, and later reads
+re-check the root and walk it with no-follow descriptors.
+
+`/tmp` is a root because that is what people mean by "the temporary
+directory". On Linux the system temporary directory usually is `/tmp`, so it
+was already allowed; on macOS `/tmp` is `/private/tmp`, not the per-user
+`TMPDIR`, and a folder there was refused. It adds no exposure the home
+directory and `TMPDIR` lack: reads stay
+within the daemon account's own permissions, and the history archive is written
+with no-follow opens, `0700` directories and `0600` files. Other local accounts
+can write to `/tmp`, so link a folder you created there, not one another
+account owns, as you would on a shared mounted volume.
 
 ### Correlation IDs and structured logs
 

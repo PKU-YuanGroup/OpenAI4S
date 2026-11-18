@@ -18,15 +18,24 @@ import { defaultModelName } from "../../stores/customize";
 import { effProject } from "../customize/host";
 import { _openGen, currentId, project } from "../../stores/session";
 import { sub } from "../ws/connect";
-import { api, apiErrorText } from "./api";
+import { api, ApiError, apiErrorText } from "./api";
 import { $, hint } from "./dom";
 import { hostFn, isReady } from "./host";
+import { askUploadConflict, uploadT, type UploadConflictBatch } from "./upload-conflict";
 
 export interface UploadResult {
   ok: boolean;
   frameId: string | null;
+  /** The name the file was stored under (a "keep both" answer renames it). */
   filename: string;
+  /** The person cancelled this file at the same-name prompt (UP-3); not a failure. */
+  skipped?: boolean;
   error?: unknown;
+}
+
+/** UP-3: the server's refusal of a taken name, which asks the person. */
+function isUploadConflict(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === "artifact_exists";
 }
 
 export interface UploadBatch {
@@ -288,13 +297,16 @@ async function waitForIdle(frameId: string | null, attempt: number): Promise<voi
   }
 }
 
-async function postUpload(body: string, filename: string, frameId: string | null): Promise<void> {
+async function postUpload(
+  body: string,
+  filename: string,
+  frameId: string | null,
+): Promise<{ filename?: unknown } | null> {
   const started = UPLOAD_TIMING.now();
   let announced = false;
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await api("/uploads", { method: "POST", body });
-      return;
+      return (await api("/uploads", { method: "POST", body })) as { filename?: unknown } | null;
     } catch (error) {
       if (!sessionBusy(error) || UPLOAD_TIMING.now() - started > UPLOAD_BUSY_WAIT_MS) throw error;
       if (!announced) {
@@ -338,6 +350,8 @@ export function uploadFiles(
   });
   const targetPromise = batch.targetPromise;
   const several = selected.length > 1;
+  // One "do the same for the rest" memory per selection (UP-3).
+  const conflicts: UploadConflictBatch = { remembered: null, size: selected.length };
   const tasks = selected.map((file, index) =>
     (async (): Promise<UploadResult> => {
       let targetFrame: string | null = null;
@@ -346,29 +360,56 @@ export function uploadFiles(
         targetFrame = prepared[0];
         const b64 = prepared[1];
         const frame = targetFrame;
+        const body = (ifExists: "error" | "version" | "rename") =>
+          JSON.stringify({
+            filename: file.name,
+            content_base64: b64,
+            project_id: projectId || undefined,
+            frame_id: frame,
+            // A taken name is refused first, so replacing is a choice the
+            // person makes, never a silent overwrite (UP-3).
+            if_exists: ifExists,
+          });
+        const outcome: {
+          saved: { filename?: unknown } | null;
+          choice: "rename" | "version" | null;
+          skipped: boolean;
+        } = { saved: null, choice: null, skipped: false };
+        // One upload at a time (UP-1), each waiting out a busy session; a
+        // same-name question holds the queue, so questions come one at a time.
         await inSeries(async () => {
           if (several) {
             hint(uploadCopy("progress", String(index + 1), String(selected.length), file.name));
           }
-          await postUpload(
-            JSON.stringify({
-              filename: file.name,
-              content_base64: b64,
-              project_id: projectId || undefined,
-              frame_id: frame,
-            }),
-            file.name,
-            frame,
-          );
+          try {
+            outcome.saved = await postUpload(body("error"), file.name, frame);
+          } catch (error) {
+            if (!isUploadConflict(error)) throw error;
+            const answer = await askUploadConflict(file.name, conflicts);
+            if (answer === "cancel") {
+              outcome.skipped = true;
+              return;
+            }
+            outcome.choice = answer;
+            outcome.saved = await postUpload(body(answer), file.name, frame);
+          }
         });
+        if (outcome.skipped) {
+          hint(uploadT("upload.cancelled", file.name));
+          return { ok: true, skipped: true, frameId: targetFrame, filename: file.name };
+        }
+        const saved = outcome.saved;
+        const stored = saved && typeof saved.filename === "string" && saved.filename ? saved.filename : file.name;
         // Only the open conversation's file dock should be refreshed; the bytes
         // landed in targetFrame whether or not the user is still looking at it.
         if (currentId.value === targetFrame) {
           const loadArtifacts = hostFn("loadArtifacts");
           if (isReady(loadArtifacts)) loadArtifacts(targetFrame);
         }
-        if (!several) hint(t("upload.uploaded", file.name));
-        return { ok: true, frameId: targetFrame, filename: file.name };
+        if (outcome.choice === "rename" && stored !== file.name) hint(uploadT("upload.renamed", file.name, stored));
+        else if (outcome.choice === "version") hint(uploadT("upload.versioned", file.name));
+        else if (!several) hint(t("upload.uploaded", file.name));
+        return { ok: true, frameId: targetFrame, filename: stored };
       } catch (error) {
         // FileReader can fail before the shared frame request settles. Wait for
         // that target only to bind the failure to the right composer; no bytes
@@ -388,6 +429,7 @@ export function uploadFiles(
   batch.promise = Promise.all(tasks)
     .then((results) => {
       const failed = results.filter((result) => !result.ok);
+      const uploaded = results.filter((result) => result.ok && !result.skipped);
       if (several) {
         // One summary line names every file that did not make it; per-file
         // hints overwrote each other within milliseconds.
@@ -395,7 +437,7 @@ export function uploadFiles(
           hint(
             uploadCopy(
               "partial",
-              String(results.length - failed.length),
+              String(uploaded.length),
               String(results.length),
               failed
                 .map((result) => `${result.filename} (${apiErrorText(result.error)})`)
@@ -404,7 +446,7 @@ export function uploadFiles(
             true,
           );
         } else {
-          hint(uploadCopy("allDone", String(results.length)));
+          hint(uploadCopy("allDone", String(uploaded.length)));
         }
       }
       if (failed.length) {

@@ -1,7 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderStructuredText, renderTextArtifact } from "./renderers";
 import { setArtifactsFetch } from "./api";
-import { renderSheet, sheetCap, sheetShape, SHEET_MAX_COLUMNS, SHEET_MAX_ROWS } from "./sheet";
+import {
+  compareSheetCells,
+  filterSheetRows,
+  renderSheet,
+  sheetCap,
+  sheetHiddenText,
+  sheetShape,
+  sheetShapeText,
+  SHEET_MAX_CELLS,
+  SHEET_MAX_COLUMNS,
+  SHEET_MAX_ROWS,
+} from "./sheet";
 
 describe("renderSheet shape (app.js:8771-8802)", () => {
   it("counts the union of keys, not just rows[0]", () => {
@@ -175,4 +186,119 @@ it("a .json name over binary bytes gets the download tile, not 300k of garbage s
   const text = setupSheetDom();
   renderStructuredText(text as unknown as HTMLElement, { id: "a", filename: "notes.json" }, "not json at all");
   expect(childrenByTag(text, "pre")[0]?.textContent).toBe("not json at all");
+});
+
+describe("interactive default table (ART-3)", () => {
+  class LiveNode extends SheetNode {
+    parent: LiveNode | null = null;
+    value = "";
+    type = "";
+    placeholder = "";
+    dataset: Record<string, string> = {};
+    oninput: (() => void) | null = null;
+    onkeydown: ((event: { key: string; preventDefault: () => void }) => void) | null = null;
+    appendChild(child: LiveNode) {
+      child.parent = this;
+      return super.appendChild(child) as LiveNode;
+    }
+    remove() {
+      if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
+      this.parent = null;
+    }
+  }
+  function mount(rows: Record<string, unknown>[]) {
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => new LiveNode(tag),
+      createTextNode: (text: string) => Object.assign(new LiveNode("#text"), { textContent: text }),
+    });
+    const host = new LiveNode("div");
+    renderSheet(host as unknown as HTMLElement, rows);
+    const all = (tag: string) => childrenByTag(host, tag) as LiveNode[];
+    const column = (index: number) =>
+      all("tr").slice(1).map((tr) => (tr.children[index] as LiveNode | undefined)?.textContent);
+    return { host, all, column };
+  }
+  const rows = [
+    { gene: "TP53", score: "10" },
+    { gene: "BRCA1", score: "2" },
+    { gene: "egfr", score: "" },
+    { gene: "MYC", score: "2.5" },
+  ];
+
+  it("sorts numbers numerically, keeps blanks last, and cycles back to the file's order", () => {
+    const { all, column } = mount(rows);
+    all("th")[1]!.onclick?.();
+    expect(column(1)).toEqual(["2", "2.5", "10", ""]);
+    // A repaint draws new headers; the sorted one says so.
+    expect(all("th")[1]!.attrs["aria-sort"]).toBe("ascending");
+    expect(all("th")[1]!.dataset.sort).toBe("asc");
+    all("th")[1]!.onclick?.();
+    expect(column(1)).toEqual(["10", "2.5", "2", ""]);
+    all("th")[1]!.onclick?.();
+    expect(column(0)).toEqual(["TP53", "BRCA1", "egfr", "MYC"]);
+    all("th")[0]!.onkeydown?.({ key: "Enter", preventDefault() {} });
+    expect(column(0)).toEqual(["BRCA1", "egfr", "MYC", "TP53"]);
+  });
+
+  it("filters across columns or by column:value, and says how many rows match", async () => {
+    const { all, column } = mount(rows);
+    const input = all("input")[0]!;
+    input.value = "score:2";
+    input.oninput?.();
+    await vi.waitFor(() => expect(column(0)).toEqual(["BRCA1", "MYC"]));
+    expect(all("span").find((n) => n.className === "sheet-status")?.textContent).toContain("2");
+    input.value = "EGF";
+    input.oninput?.();
+    await vi.waitFor(() => expect(column(0)).toEqual(["egfr"]));
+    input.value = "nothing-like-this";
+    input.oninput?.();
+    await vi.waitFor(() => expect(all("tr")).toHaveLength(1));
+  });
+
+  it("shows every column of a wide table on request, within the same cell budget", () => {
+    const wide = Array.from({ length: 3 }, (_, r) =>
+      Object.fromEntries(Array.from({ length: 121 }, (_, c) => ["c" + c, String(r * 1000 + c)])),
+    );
+    const { all } = mount(wide);
+    expect(all("th")).toHaveLength(SHEET_MAX_COLUMNS);
+    const toggle = all("button").find((n) => n.textContent.includes("121"))!;
+    const note = all("div").find((n) => n.className === "renderer-note")!;
+    const allShown = sheetShapeText({ rows: 3, columns: 121 }, 3, 121);
+    expect(note.textContent).not.toBe(allShown);
+    expect(note.textContent).toBe(sheetShapeText({ rows: 3, columns: 121 }, 3, 100));
+    toggle.onclick?.();
+    expect(all("th")).toHaveLength(121);
+    expect(all("th")[120]?.textContent).toBe("c120");
+    // Every column is drawn now, so the note stops claiming 21 are hidden.
+    expect(note.textContent).toBe(allShown);
+    toggle.onclick?.();
+    expect(all("th")).toHaveLength(SHEET_MAX_COLUMNS);
+    expect(SHEET_MAX_CELLS).toBe(SHEET_MAX_ROWS * SHEET_MAX_COLUMNS);
+  });
+
+  it("a head of a larger file says the file's shape, as a partial-preview notice (ART-11)", () => {
+    vi.stubGlobal("document", { createElement: (tag: string) => new LiveNode(tag) });
+    const host = new LiveNode("div");
+    const wide = Array.from({ length: 2 }, (_, r) =>
+      Object.fromEntries(Array.from({ length: 103 }, (_, c) => ["c" + c, String(r + c)])),
+    );
+    const summary = "900,000 rows × 103 columns, showing the first 2 rows";
+    renderSheet(host as unknown as HTMLElement, wide, { summary });
+    const note = childrenByTag(host, "div").find((n) => n.className.includes("renderer-completeness"))!;
+    expect(note.attrs.role).toBe("status");
+    expect(note.attrs["data-state"]).toBe("partial");
+    // The head's own "2 rows" never replaces the file's count; what the drawn
+    // table leaves out is still said.
+    expect(note.textContent).toBe(summary + " " + sheetHiddenText({ rows: 2, columns: 103 }, 2, 100));
+    expect(note.textContent).not.toContain(sheetShapeText({ rows: 2, columns: 103 }, 2, 103));
+  });
+
+  it("pure helpers: comparison and filtering", () => {
+    expect(compareSheetCells("9", "10", 1)).toBeLessThan(0);
+    expect(compareSheetCells("", "1", -1)).toBeGreaterThan(0);
+    expect(compareSheetCells("a2", "a10", 1)).toBeLessThan(0);
+    expect(filterSheetRows(rows, ["gene", "score"], "gene:tp")).toEqual([rows[0]]);
+    expect(filterSheetRows(rows, ["gene", "score"], "  ")).toBe(rows);
+    expect(filterSheetRows(rows, ["gene", "score"], "unknown:x")).toEqual([]);
+  });
 });

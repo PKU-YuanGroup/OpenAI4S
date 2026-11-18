@@ -1,18 +1,30 @@
 import { DraftsPanel } from "./DraftsPanel";
-import { useEffect, useState } from "preact/hooks";
+import { ProjectFolderSection } from "./ProjectFolderSection";
+import { useEffect } from "preact/hooks";
 import { render } from "preact";
 import { filesScope } from "../../stores/artifacts";
 import { _openGen, currentId, project } from "../../stores/session";
-import { browseFiles, currentFilesFingerprint, filesListingIsCurrent, setFilesContentType, setFilesOrigin, setFilesQuery } from "../../features/artifacts/files-index";
+import {
+  browseFiles,
+  currentFilesFingerprint,
+  filesListingIsCurrent,
+  setFilesKind,
+  setFilesOrigin,
+  setFilesQuery,
+  setFilesShowHidden,
+  setFilesSort,
+} from "../../features/artifacts/files-index";
 import { loadProjectArtifacts, setFilesScope } from "../../features/artifacts/load";
 import { filesT } from "../../features/artifacts/copy";
 import {
-  filesContentType,
   filesHasMore,
   filesIndexError,
   filesIndexLoading,
+  filesKind,
   filesOrigin,
   filesQuery,
+  filesShowHidden,
+  filesSort,
 } from "../../features/artifacts/state";
 import { renderFilesGrid } from "../../features/artifacts/ui";
 import { FILES_PAGE_SIZE } from "../../features/artifacts/types";
@@ -37,10 +49,36 @@ function applyOrigin(origin: FilesOrigin): void {
   void browseFiles({ reset: true }).then(() => renderFilesGrid());
 }
 
-function applyType(value: string): void {
-  setFilesContentType(value);
+/** ART-12: a human category, not a MIME substring. */
+function applyKind(value: string): void {
+  setFilesKind(value);
   void browseFiles({ reset: true }).then(() => renderFilesGrid());
 }
+
+function applySort(value: string): void {
+  setFilesSort(value);
+  void browseFiles({ reset: true }).then(() => renderFilesGrid());
+}
+
+function applyShowHidden(value: boolean): void {
+  setFilesShowHidden(value);
+  void browseFiles({ reset: true }).then(() => renderFilesGrid());
+}
+
+const KIND_KEYS = [
+  ["", "files.filter.kind.all"],
+  ["table", "files.filter.kind.table"],
+  ["image", "files.filter.kind.image"],
+  ["report", "files.filter.kind.report"],
+  ["code", "files.filter.kind.code"],
+  ["other", "files.filter.kind.other"],
+] as const;
+
+const SORT_KEYS = [
+  ["newest", "files.sort.newest"],
+  ["oldest", "files.sort.oldest"],
+  ["name", "files.sort.name"],
+] as const;
 
 /**
  * Files dock chrome (M-03). Mounted into the shell's `#dock-files`.
@@ -55,10 +93,6 @@ export function FilesPanel() {
   const fid = currentId.value;
   const generation = _openGen.value;
   const currentListing = filesListingIsCurrent();
-  // The type filter applies on change (Enter or blur). Until then the field
-  // shows what was typed: any re-render mid-typing used to write the applied
-  // filter back over it.
-  const [typeDraft, setTypeDraft] = useState<string | null>(null);
 
   useEffect(() => {
     if (searchTimer !== null) { clearTimeout(searchTimer); searchTimer = null; }
@@ -103,6 +137,7 @@ export function FilesPanel() {
         </span>
       </div>
       <DraftsPanel />
+      <ProjectFolderSection />
       <div class="files-toolbar">
         <input
           class="files-search"
@@ -111,18 +146,18 @@ export function FilesPanel() {
           value={filesQuery.value}
           onInput={(e) => scheduleSearch((e.currentTarget as HTMLInputElement).value)}
         />
-        <input
+        <select
           class="files-filter-type"
-          type="search"
-          placeholder={filesT("files.filter.type.ph")}
           aria-label={filesT("files.filter.type")}
-          value={typeDraft ?? filesContentType.value}
-          onInput={(e) => setTypeDraft((e.currentTarget as HTMLInputElement).value)}
-          onChange={(e) => {
-            setTypeDraft(null);
-            applyType((e.currentTarget as HTMLInputElement).value);
-          }}
-        />
+          value={filesKind.value}
+          onChange={(e) => applyKind((e.currentTarget as HTMLSelectElement).value)}
+        >
+          {KIND_KEYS.map(([key, label]) => (
+            <option key={key || "all"} value={key}>
+              {filesT(label)}
+            </option>
+          ))}
+        </select>
         <span class="files-origin" role="group" aria-label={filesT("files.filter.origin")}>
           {(["", "uploaded", "generated"] as const).map((key) => (
             <button
@@ -141,6 +176,30 @@ export function FilesPanel() {
             </button>
           ))}
         </span>
+        <div class="files-toolbar-extra">
+          {scope === "frame" ? (
+            <select
+              class="files-sort"
+              aria-label={filesT("files.sort.label")}
+              value={filesSort.value}
+              onChange={(e) => applySort((e.currentTarget as HTMLSelectElement).value)}
+            >
+              {SORT_KEYS.map(([key, label]) => (
+                <option key={key} value={key}>
+                  {filesT(label)}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <label class="files-show-hidden">
+            <input
+              type="checkbox"
+              checked={filesShowHidden.value}
+              onChange={(e) => applyShowHidden((e.currentTarget as HTMLInputElement).checked)}
+            />
+            {filesT("files.showHidden")}
+          </label>
+        </div>
       </div>
       {currentListing && filesIndexError.value ? <div class="files-index-note">{filesIndexError.value}</div> : null}
       <div id="results-list" class="files-grid" />

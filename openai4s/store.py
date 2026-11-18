@@ -4213,6 +4213,16 @@ class Store:
     def rename_artifact(self, artifact_id: str, filename: str) -> None:
         self._artifacts.rename_artifact(artifact_id, filename)
 
+    def mark_user_inputs(self, artifact_ids: list[str]) -> None:
+        self._artifacts.mark_user_inputs(artifact_ids)
+
+    def move_artifact(
+        self, artifact_id: str, filename: str, *, old_path: str, new_path: str
+    ) -> None:
+        self._artifacts.move_artifact(
+            artifact_id, filename, old_path=old_path, new_path=new_path
+        )
+
     def artifact_by_unique_filename(
         self, filename: str, root_frame_id: str | None = None
     ) -> dict | None:
@@ -4465,6 +4475,8 @@ class Store:
         before: tuple[int, str] | None = None,
         limit: int = 50,
         visible_to_user_id: str | None = None,
+        kind: str | None = None,
+        include_hidden: bool = False,
     ) -> list[dict]:
         return self._artifacts.browse_artifacts(
             project_id=project_id,
@@ -4474,6 +4486,8 @@ class Store:
             before=before,
             limit=limit,
             visible_to_user_id=visible_to_user_id,
+            kind=kind,
+            include_hidden=include_hidden,
         )
 
     def list_artifact_names(self) -> list[dict]:

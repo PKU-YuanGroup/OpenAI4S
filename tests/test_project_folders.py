@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 import pytest
 
+from openai4s import project_folders
 from openai4s.config import Config
 from openai4s.project_folders import (
     PROJECT_ROOTS_ENV,
@@ -39,6 +40,7 @@ def test_folder_binding_browsing_preview_and_detach_over_http(tmp_path):
     outside = tmp_path / "outside.txt"
     outside.write_text("outside")
     (source / "escape.txt").symlink_to(outside)
+    (tmp_path / ".hidden-notes").mkdir()
     daemon = _TeamDaemon(tmp_path / "daemon", team_mode=False)
 
     def call(method, path, body=None):
@@ -54,6 +56,12 @@ def test_folder_binding_browsing_preview_and_detach_over_http(tmp_path):
         status, picker = call("GET", f"/local-folders?path={quote(str(tmp_path))}")
         assert status == 200, picker
         assert {entry["name"] for entry in picker["entries"]} >= {"research", "daemon"}
+        assert ".hidden-notes" not in {entry["name"] for entry in picker["entries"]}
+        status, hidden = call(
+            "GET", f"/local-folders?path={quote(str(tmp_path))}&hidden=1"
+        )
+        assert status == 200, hidden
+        assert ".hidden-notes" in {entry["name"] for entry in hidden["entries"]}
         status, listing = call("GET", f"/projects/{pid}/files")
         assert status == 200, listing
         assert {entry["name"] for entry in listing["entries"]} == {"data", "binary.dat"}
@@ -167,8 +175,26 @@ def _confine_default_roots(tmp_path, monkeypatch):
     scratch.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(scratch))
+    # On Linux pytest's tmp_path is under /tmp, itself a default root.
+    monkeypatch.setattr(project_folders, "SHARED_TEMP_DIR", str(scratch))
     monkeypatch.delenv(PROJECT_ROOTS_ENV, raising=False)
     return home, scratch
+
+
+def test_folder_refusals_keep_the_status_the_workbench_names_them_by(tmp_path):
+    """The project dialog localizes these by code, and the catch-all code by
+    status (frontend/src/features/sessions/project-files.ts)."""
+    (tmp_path / "notes.txt").write_text("")
+    (tmp_path / ".ssh").mkdir()
+    for folder, status in (
+        ("relative/path", 400),
+        (str(tmp_path / "notes.txt"), 400),
+        (str(tmp_path / ".ssh"), 403),
+        (str(tmp_path / "missing"), 404),
+    ):
+        with pytest.raises(ProjectFolderError) as refused:
+            validate_folder_path(folder)
+        assert (refused.value.status, refused.value.code) == (status, "project_folder")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX system directories")
@@ -210,6 +236,84 @@ def test_picker_stops_at_a_project_root(tmp_path, monkeypatch):
     assert inside["parent_path"] == str(home.resolve())
     with pytest.raises(ProjectFolderError):
         local_folders(str(tmp_path))
+
+
+def _names(listing):
+    return [entry["name"] for entry in listing["entries"]]
+
+
+def test_picker_hides_dot_folders_and_lists_common_home_folders_first(
+    tmp_path, monkeypatch
+):
+    home, _scratch = _confine_default_roots(tmp_path, monkeypatch)
+    for name in (
+        ".cache",
+        ".conda",
+        ".ssh",
+        "Applications",
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "analysis",
+        "Zeta",
+    ):
+        (home / name).mkdir()
+    (home / ".zshrc").write_text("")
+    common = ["Documents", "Desktop", "Downloads"]
+    assert _names(local_folders("")) == common + ["analysis", "Applications", "Zeta"]
+    shown = _names(local_folders("", show_hidden=True))
+    assert shown == common + [".cache", ".conda", "analysis", "Applications", "Zeta"]
+    # Showing hidden folders never shows a credential directory.
+    assert ".ssh" not in shown
+    # Outside the home directory those names sort like any other.
+    for name in ("Documents", "data", "Archive"):
+        (home / "analysis" / name).mkdir()
+    assert _names(local_folders(str(home / "analysis"))) == [
+        "Archive",
+        "data",
+        "Documents",
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX /tmp")
+def test_tmp_is_a_default_project_root():
+    """People read "the temporary directory" as /tmp. On macOS that is
+    /private/tmp, not the per-user TMPDIR, and a folder there was refused."""
+    assert os.path.realpath("/tmp") in allowed_project_roots()
+
+
+def _linked_shared_temp(tmp_path, monkeypatch):
+    """A /tmp that is a link, as macOS's /tmp -> /private/tmp is."""
+    shared = tmp_path / "private" / "tmp"
+    shared.mkdir(parents=True)
+    alias = tmp_path / "tmp-link"
+    alias.symlink_to(shared, target_is_directory=True)
+    monkeypatch.setattr(project_folders, "SHARED_TEMP_DIR", str(alias))
+    return shared, alias
+
+
+def test_a_linked_temporary_root_accepts_either_spelling(tmp_path, monkeypatch):
+    _confine_default_roots(tmp_path, monkeypatch)
+    shared, alias = _linked_shared_temp(tmp_path, monkeypatch)
+    (shared / "screen").mkdir()
+    canonical = str((shared / "screen").resolve())
+    assert validate_folder_path(str(alias / "screen")) == canonical
+    assert validate_folder_path(str(shared / "screen")) == canonical
+
+
+def test_outside_roots_refusal_names_this_computers_roots(tmp_path, monkeypatch):
+    home, _scratch = _confine_default_roots(tmp_path, monkeypatch)
+    shared, alias = _linked_shared_temp(tmp_path, monkeypatch)
+    (tmp_path / "elsewhere").mkdir()
+    with pytest.raises(ProjectFolderError) as refused:
+        validate_folder_path(str(tmp_path / "elsewhere"))
+    assert refused.value.code == "project_folder_outside_roots"
+    message = str(refused.value)
+    assert f"{home.resolve()} (home)" in message
+    # A root reached through a link is named both ways: /private/tmp is /tmp.
+    assert f"{shared.resolve()} (temporary, also {alias})" in message
+    assert PROJECT_ROOTS_ENV in message
+    assert all(root in message for root in allowed_project_roots())
 
 
 def test_agent_sql_never_reads_a_projects_host_path(tmp_path):

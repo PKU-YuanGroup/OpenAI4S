@@ -4,8 +4,10 @@ import { _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { fetchArtifactIndexPage, setArtifactsFetch } from "./api";
 import {
+  artifactKind,
   browseFiles,
   filterArtifactsClient,
+  sortArtifactsForFiles,
   filesGridArtifacts,
   filesGridPending,
   filesReadFailed,
@@ -497,7 +499,8 @@ describe("session artifact read failures (AUDIT A26)", () => {
     const rows = make500().slice(0, 3);
     setArtifactsFetch(async () => jsonResponse(rows));
     await loadArtifacts("a");
-    expect(filesGridArtifacts().map((x) => x.id)).toEqual(rows.map((x) => x.id).sort().reverse());
+    // Newest first (ART-12), not the random-hex id order it used to be.
+    expect(filesGridArtifacts().map((x) => x.id)).toEqual(["a-000", "a-001", "a-002"]);
     setArtifactsFetch(refuse);
     await loadArtifacts("a");
     expect(artifactsSignal.value).toEqual(rows);
@@ -632,5 +635,42 @@ describe("project refresh capacity and ownership", () => {
     expect(filesGridArtifacts()).toEqual([]);
     expect(filesHasMore.value).toBe(false);
     expect(filesIndexLoading.value).toBe(false);
+  });
+});
+
+
+describe("Files order, kinds and hidden rows (ART-12)", () => {
+  const rows = [
+    row({ id: "a-ff", filename: "b-report.md", content_type: "text/markdown", created_at: "2026-11-01T10:00:00.000Z" }),
+    row({ id: "a-00", filename: "A-table.csv", content_type: "text/csv", created_at: "2026-11-03T10:00:00.000Z" }),
+    row({ id: "a-77", filename: "c-plot.png", content_type: "image/png", created_at: "2026-11-02T10:00:00.000Z" }),
+    row({ id: "a-11", filename: "hidden.py", content_type: "text/x-python", created_at: "2026-11-04T10:00:00.000Z", priority: -1 }),
+    row({ id: "a-22", filename: "model.pt", content_type: "application/octet-stream", created_at: "2026-11-05T10:00:00.000Z", priority: 1 }),
+  ];
+  const names = (out: ArtifactRow[]) => out.map((a) => a.filename);
+
+  it("orders starred first, then newest, oldest or by name", () => {
+    // Priority first: starred (1), then the rest (0), then a hidden row (-1).
+    expect(names(sortArtifactsForFiles(rows, "newest"))).toEqual([
+      "model.pt", "A-table.csv", "c-plot.png", "b-report.md", "hidden.py",
+    ]);
+    expect(names(sortArtifactsForFiles(rows, "oldest"))).toEqual([
+      "model.pt", "b-report.md", "c-plot.png", "A-table.csv", "hidden.py",
+    ]);
+    expect(names(sortArtifactsForFiles(rows, "name"))).toEqual([
+      "model.pt", "A-table.csv", "b-report.md", "c-plot.png", "hidden.py",
+    ]);
+  });
+
+  it("filters by human kind and shows hidden rows only on request", () => {
+    const base = { q: "", contentType: "", origin: "" as const };
+    expect(names(filterArtifactsClient(rows, { ...base, kind: "table" }))).toEqual(["A-table.csv"]);
+    expect(names(filterArtifactsClient(rows, { ...base, kind: "image" }))).toEqual(["c-plot.png"]);
+    expect(names(filterArtifactsClient(rows, { ...base, kind: "report" }))).toEqual(["b-report.md"]);
+    expect(names(filterArtifactsClient(rows, { ...base, kind: "other" }))).toEqual(["model.pt"]);
+    expect(names(filterArtifactsClient(rows, { ...base, kind: "code" }))).toEqual([]);
+    expect(names(filterArtifactsClient(rows, { ...base, kind: "code", hidden: true }))).toEqual(["hidden.py"]);
+    expect(artifactKind({ filename: "cohort.xlsx", content_type: null })).toBe("table");
+    expect(artifactKind({ filename: "x", content_type: "image/svg+xml" })).toBe("image");
   });
 });

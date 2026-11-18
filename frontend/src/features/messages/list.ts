@@ -17,6 +17,7 @@ import { t } from "../../i18n/runtime";
 import { artifacts } from "../../stores/artifacts";
 import { currentId, feedback as feedbackSignal } from "../../stores/session";
 import { branchState } from "../../stores/timeline";
+import { stripRefVersions } from "../autocomplete/mentions";
 import { copyFailedText, copyText } from "../chrome/clipboard";
 import {
   forkFromMessage,
@@ -368,7 +369,10 @@ export function renderStored(
   (w as HTMLElement & { _messageText?: string })._messageText = text;
   if (m.role === "user") {
     const b = el("div", "bubble");
-    b.textContent = userBubbleText(planModeRequestText(text));
+    // A text-form `@name#v-<id>` reads as `@name`; the chip below names the
+    // version (ART-16). Rows stored before SYNC-5 also hide the product's
+    // annotation instructions. The stored row is unchanged.
+    b.textContent = stripRefVersions(userBubbleText(planModeRequestText(text)));
     w.appendChild(b);
     renderMessageRefChips(w, m.artifact_refs);
     renderAnnotationChip(w, m.annotations);

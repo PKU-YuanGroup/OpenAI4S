@@ -17,6 +17,22 @@ import {
 
 type FetchCall = { path: string; body: Record<string, unknown> };
 
+// UP-3: the same-name prompt is the person's answer; tests decide it.
+const conflict = vi.hoisted(() => ({
+  answer: "rename" as "rename" | "version" | "cancel",
+  asked: [] as string[],
+}));
+vi.mock("./upload-conflict", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./upload-conflict")>();
+  return {
+    ...actual,
+    askUploadConflict: async (name: string) => {
+      conflict.asked.push(name);
+      return conflict.answer;
+    },
+  };
+});
+
 function stubDom(workspaceHidden = false): void {
   const workspace = {
     classList: { contains: (cls: string) => cls === "hidden" && workspaceHidden },
@@ -344,6 +360,69 @@ describe("F-20 composer uploads (app.js:11049-11199)", () => {
   it("the stall budget stays at the app.js value", () => {
     expect(UPLOAD_WAIT_LIMIT_MS).toBe(120000);
   });
+
+  describe("a taken name asks before anything is replaced (UP-3)", () => {
+    function stubTakenName(stored: string): FetchCall[] {
+      const calls: FetchCall[] = [];
+      vi.stubGlobal("fetch", (url: string, opts: { body?: string }) => {
+        const path = String(url).replace("/api/v1", "");
+        const body = opts && opts.body ? (JSON.parse(opts.body) as Record<string, unknown>) : {};
+        calls.push({ path, body });
+        const taken = path === "/uploads" && body.if_exists === "error";
+        const payload = taken
+          ? { error: "a file named a.csv already exists in this session", code: "artifact_exists", status: 409 }
+          : { artifact_id: "a-1", filename: body.if_exists === "rename" ? stored : body.filename };
+        return Promise.resolve({
+          ok: !taken,
+          status: taken ? 409 : 200,
+          text: () => Promise.resolve(JSON.stringify(payload)),
+        });
+      });
+      return calls;
+    }
+
+    beforeEach(() => {
+      conflict.asked.length = 0;
+      stubReader((f) => `data:text/csv;base64,${f.name}`);
+      currentId.value = "frame_a";
+    });
+
+    it("every upload is first sent with if_exists=error", async () => {
+      const calls = stubFetch(() => ({ filename: "a.csv" }));
+      const [result] = await uploadFiles([file("a.csv")]);
+      expect(result?.ok).toBe(true);
+      expect(calls.find((c) => c.path === "/uploads")?.body.if_exists).toBe("error");
+      expect(conflict.asked).toEqual([]);
+    });
+
+    it("keep both re-sends with rename and reports the stored name", async () => {
+      conflict.answer = "rename";
+      const calls = stubTakenName("a-2.csv");
+      const [result] = await uploadFiles([file("a.csv")]);
+      expect(conflict.asked).toEqual(["a.csv"]);
+      expect(calls.filter((c) => c.path === "/uploads").map((c) => c.body.if_exists)).toEqual(["error", "rename"]);
+      expect(result).toMatchObject({ ok: true, filename: "a-2.csv" });
+      expect(UPLOAD_STATE.failures.size).toBe(0);
+    });
+
+    it("replace re-sends as a new version", async () => {
+      conflict.answer = "version";
+      const calls = stubTakenName("unused");
+      const [result] = await uploadFiles([file("a.csv")]);
+      expect(calls.filter((c) => c.path === "/uploads").map((c) => c.body.if_exists)).toEqual(["error", "version"]);
+      expect(result).toMatchObject({ ok: true, filename: "a.csv" });
+    });
+
+    it("cancel writes nothing, is not a failure, and does not hold a send", async () => {
+      conflict.answer = "cancel";
+      const calls = stubTakenName("unused");
+      const [result] = await uploadFiles([file("a.csv")]);
+      expect(calls.filter((c) => c.path === "/uploads")).toHaveLength(1);
+      expect(result).toMatchObject({ ok: true, skipped: true });
+      const ready = await waitForPendingUploads("frame_a", null, null);
+      expect(ready.ok).toBe(true);
+    });
+  });
 });
 
 describe("UP-1/UP-2: several files and a busy session", () => {
@@ -396,6 +475,34 @@ describe("UP-1/UP-2: several files and a busy session", () => {
     expect(results.map((r) => r.ok)).toEqual([true, true, true]);
     expect(calls.filter((c) => c.path === "/uploads")).toHaveLength(3);
     expect(maxInFlight()).toBe(1);
+  });
+
+  it("a same-name question holds the queue and a cancelled file is neither uploaded nor failed (UP-1 + UP-3)", async () => {
+    stubReader((f) => `data:text/csv;base64,${f.name}`);
+    conflict.asked.length = 0;
+    conflict.answer = "cancel";
+    const { calls, maxInFlight } = stubSequencedFetch((path, body) => {
+      if (path === "/uploads" && body.filename === "taken.csv" && body.if_exists === "error") {
+        return { status: 409, body: { error: "exists", code: "artifact_exists", status: 409 } };
+      }
+      return { status: 200, body: { filename: body.filename } };
+    });
+    currentId.value = "frame_a";
+
+    const results = await uploadFiles([file("taken.csv"), file("new.csv")]);
+
+    expect(conflict.asked).toEqual(["taken.csv"]);
+    expect(results.map((r) => [r.filename, r.ok, !!r.skipped])).toEqual([
+      ["taken.csv", true, true],
+      ["new.csv", true, false],
+    ]);
+    // The second file was sent only after the question about the first.
+    expect(calls.filter((c) => c.path === "/uploads").map((c) => c.body.filename)).toEqual([
+      "taken.csv",
+      "new.csv",
+    ]);
+    expect(maxInFlight()).toBe(1);
+    expect(UPLOAD_STATE.failures.size).toBe(0);
   });
 
   it("a busy session queues the upload until its run ends, then sends it", async () => {

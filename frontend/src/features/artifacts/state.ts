@@ -1,5 +1,5 @@
 import { signal } from "@preact/signals";
-import type { ArtifactRow, FilesOrigin, VersionResolve } from "./types";
+import type { ArtifactRow, FilesKind, FilesOrigin, FilesSort, VersionResolve } from "./types";
 import { ArtifactEditorStore } from "./editor";
 import { FILES_PAGE_SIZE } from "./types";
 
@@ -17,6 +17,12 @@ export const filesQuery = signal("");
 export const filesContentType = signal("");
 /** Origin closed set: "" | uploaded | generated. */
 export const filesOrigin = signal<FilesOrigin>("");
+/** ART-12 human category: "" | table | image | report | code | other. Bound into `kind`. */
+export const filesKind = signal<FilesKind>("");
+/** ART-12 order of the session list: newest first (default), oldest first, or by name. */
+export const filesSort = signal<FilesSort>("newest");
+/** ART-12: list files hidden from the list too, so they can be shown again. */
+export const filesShowHidden = signal(false);
 export const filesHasMore = signal(false);
 export const filesNextCursor = signal<string | null>(null);
 /**
@@ -43,6 +49,8 @@ export function resetFilesIndexState(): void {
   filesQuery.value = "";
   filesContentType.value = "";
   filesOrigin.value = "";
+  filesKind.value = "";
+  filesShowHidden.value = false;
   filesHasMore.value = false;
   filesNextCursor.value = null;
   filesCursorFilter.value = null;

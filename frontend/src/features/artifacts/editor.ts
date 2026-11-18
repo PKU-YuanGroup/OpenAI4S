@@ -5,6 +5,18 @@ import type { ArtifactRow } from "./types";
 export const EDITOR_MAX_DRAFTS = 10;
 export const EDITOR_MAX_BYTES = 8 * 1024 * 1024;
 const utf8 = (text: string): number => new TextEncoder().encode(text).byteLength;
+/** U+FEFF as the first character: a UTF-8 file's byte-order mark (3 bytes). */
+const BOM = "﻿";
+const BOM_BYTES = 3;
+/**
+ * ART-13: a UTF-8 BOM is a marker of the file, not text a person edits. The
+ * read keeps it (the checksum covers it), the textarea never shows it, and a
+ * save puts it back at the very start -- never after text typed at the top,
+ * which made pandas read the first column as "X﻿患者编号".
+ */
+function splitBom(text: string): { bom: boolean; body: string } {
+  return text.charCodeAt(0) === 0xfeff ? { bom: true, body: text.slice(1) } : { bom: false, body: text };
+}
 export type EditorPhase = "loading" | "ready" | "saving" | "error";
 export type EditorProblem = "load" | "capacity" | "conflict" | "unknown" | "rejected" | null;
 type Baseline = Readonly<{ sessionId: string; artifactId: string; versionId: string; original: string }>;
@@ -136,6 +148,8 @@ export class ArtifactEditor {
   private draft = "";
   private draftBytes = 0;
   private originalBytes = 0;
+  /** The baseline began with a UTF-8 BOM, which a save restores (ART-13). */
+  hasBom = false;
   onChange: (() => void) | null = null;
   /** Read-only reconciliation facts, never an acknowledgement of this write. */
   observed: { versionId: string; matchesDraft: boolean } | null = null;
@@ -157,12 +171,14 @@ export class ArtifactEditor {
       const version = this.artifact.version_id || this.artifact.latest_version_id;
       const head = await this.store.io.head(this.artifact.id, version || undefined);
       if (head.sizeBytes * 2 > EDITOR_MAX_BYTES) throw new EditorCapacityError();
-      const text = await this.store.io.text(head.versionId, this.store.readLimit, head.checksum);
+      const read = await this.store.io.text(head.versionId, this.store.readLimit, head.checksum);
       if (this.store.drafts.get(this.key) !== this) return;
+      const { bom, body: text } = splitBom(read);
       const size = utf8(text);
       if (this.store.bytes + 2 * size > EDITOR_MAX_BYTES) throw new EditorCapacityError();
       this.store.drafts.delete(this.key);
       this.baseline = Object.freeze({ sessionId: this.sessionId, artifactId: this.artifact.id, versionId: head.versionId, original: text });
+      this.hasBom = bom;
       this.draft = text;
       this.originalBytes = this.draftBytes = size;
       this.store.drafts.set(this.key, this);
@@ -193,8 +209,9 @@ export class ArtifactEditor {
   async save(): Promise<Saved | null> {
     if (!this.canSave || !this.baseline) return null;
     const { artifactId, versionId } = this.baseline;
-    const content = this.text;
-    const size = this.draftBytes;
+    // The file's BOM goes back where it was: first, before anything typed.
+    const content = (this.hasBom ? BOM : "") + this.text;
+    const size = this.draftBytes + (this.hasBom ? BOM_BYTES : 0);
     this.phase = "saving"; this.problem = null; this.emit();
     try {
       const result = await this.store.io.save(artifactId, versionId, content) as Partial<Saved> | null;
@@ -238,7 +255,8 @@ export class ArtifactEditor {
       // unsaved work.
       const limit = Math.min(EDITOR_MAX_BYTES, head.sizeBytes);
       const text = await this.store.io.text(head.versionId, limit, head.checksum);
-      this.observed = { versionId: head.versionId, matchesDraft: text === this.text };
+      // Compared as saved: the BOM is part of the bytes, not of the draft.
+      this.observed = { versionId: head.versionId, matchesDraft: text === (this.hasBom ? BOM : "") + this.text };
     } catch {
       this.observed = null; this.checkFailed = true;
     } finally { this.checking = false; this.emit(); }

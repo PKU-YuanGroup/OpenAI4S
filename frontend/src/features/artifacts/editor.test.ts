@@ -157,6 +157,48 @@ describe("draft byte accounting (AUDIT P08)", () => {
   });
 });
 
+describe("UTF-8 BOM files (ART-13)", () => {
+  const BOM = "﻿";
+
+  it("edits without the BOM and saves it back first, never after typed text", async () => {
+    const { io, store } = fixture();
+    vi.mocked(io.text).mockResolvedValue(BOM + "患者编号,年龄\nP001,42\n");
+    const editor = await ready(store, { id: "a", version_id: "v1" });
+    expect(editor.text).toBe("患者编号,年龄\nP001,42\n");
+    expect(editor.text.charCodeAt(0)).not.toBe(0xfeff);
+    expect(editor.dirty).toBe(false);
+    editor.change("X" + editor.text);
+    const saved = await editor.save();
+    expect(saved).not.toBeNull();
+    const content = vi.mocked(io.save).mock.calls[0]?.[2] as string;
+    expect(content).toBe(BOM + "X患者编号,年龄\nP001,42\n");
+    expect(content.indexOf(BOM, 1)).toBe(-1);
+  });
+
+  it("an untouched save sends the original bytes, and a file without a BOM never gains one", async () => {
+    const { io, store } = fixture();
+    vi.mocked(io.text).mockResolvedValue(BOM + "a,b\n");
+    const withBom = await ready(store, { id: "a", version_id: "v1" });
+    withBom.change("a,b\n");
+    await withBom.save();
+    expect(vi.mocked(io.save).mock.calls[0]?.[2]).toBe(BOM + "a,b\n");
+
+    vi.mocked(io.text).mockResolvedValue("a,b\n");
+    const plain = await ready(store, { id: "b", version_id: "v1" });
+    plain.change("a,b,c\n");
+    await plain.save();
+    expect(vi.mocked(io.save).mock.calls[1]?.[2]).toBe("a,b,c\n");
+  });
+
+  it("reconciles against the stored bytes, BOM included", async () => {
+    const { io, store } = fixture();
+    vi.mocked(io.text).mockResolvedValue(BOM + "x\n");
+    const editor = await ready(store, { id: "a", version_id: "v1" });
+    await editor.check();
+    expect(editor.observed?.matchesDraft).toBe(true);
+  });
+});
+
 describe("draft capacity", () => {
   it("does not evict the first ten drafts to accept an eleventh", async () => {
     const { store } = fixture();
@@ -312,7 +354,9 @@ it("verifies a BOM baseline and tolerates unrelated historical versions without 
     return new Response(original);
   });
   const editor = await ready(new ArtifactEditorStore());
-  expect(editor.text).toBe(original);
+  // ART-13: the checksum covers the BOM, the textarea does not show it, and
+  // the save restores it, so an untouched save is byte-identical (7 bytes).
+  expect(editor.text).toBe("中\n");
   expect(editor.dirty).toBe(false);
   expect(await editor.save()).not.toBeNull();
   expect(writes).toEqual([{ content: original, expected_version_id: "v1" }]);

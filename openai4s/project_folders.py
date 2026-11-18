@@ -44,29 +44,62 @@ def require_local_project_folders(cfg: Any) -> None:
 #: ``os.pathsep`` (e.g. ``/data:/scratch``).
 PROJECT_ROOTS_ENV = "OPENAI4S_PROJECT_ROOTS"
 
+#: The shared temporary directory people mean by "the temporary directory".
+#: macOS points ``TMPDIR`` at a per-user ``/var/folders/…/T`` and ``/tmp`` at
+#: ``/private/tmp``, so a folder in ``/tmp`` was refused there while Linux,
+#: whose system temporary directory usually is ``/tmp``, accepted it.
+SHARED_TEMP_DIR = "/tmp"
+
+
+def _project_roots() -> list[tuple[str, str, str]]:
+    """``(canonical path, kind, path as configured)`` for each allowed root."""
+    candidates = [("home", str(Path.home())), ("temporary", tempfile.gettempdir())]
+    if os.name == "posix":
+        candidates.append(("temporary", SHARED_TEMP_DIR))
+    if sys.platform == "darwin":
+        candidates.append(("mounted volumes", "/Volumes"))
+    elif sys.platform.startswith("linux"):
+        candidates.extend(
+            ("mounted volumes", item) for item in ("/media", "/mnt", "/run/media")
+        )
+    candidates.extend(
+        (PROJECT_ROOTS_ENV, item)
+        for item in os.environ.get(PROJECT_ROOTS_ENV, "").split(os.pathsep)
+    )
+    roots: dict[str, tuple[str, str]] = {}
+    for kind, item in candidates:
+        expanded = os.path.expanduser(item.strip())
+        if expanded and os.path.isabs(expanded):
+            roots.setdefault(os.path.realpath(expanded), (kind, expanded))
+    return [(real, kind, spelled) for real, (kind, spelled) in roots.items()]
+
 
 def allowed_project_roots() -> tuple[str, ...]:
     """Canonical directories a project folder may be inside (or equal to).
 
-    The home directory, the system temporary directory and the platform's
-    mounted-volume directories, plus absolute paths listed in
+    The home directory, the system temporary directory and ``/tmp``, the
+    platform's mounted-volume directories, plus absolute paths listed in
     ``OPENAI4S_PROJECT_ROOTS``. A grant such as ``/`` or ``/etc`` would hand
     the whole system to the project read tools, so it is refused.
     """
-    candidates = [str(Path.home()), tempfile.gettempdir()]
-    if sys.platform == "darwin":
-        candidates.append("/Volumes")
-    elif sys.platform.startswith("linux"):
-        candidates.extend(("/media", "/mnt", "/run/media"))
-    candidates.extend(os.environ.get(PROJECT_ROOTS_ENV, "").split(os.pathsep))
-    roots: list[str] = []
-    for item in candidates:
-        expanded = os.path.expanduser(item.strip())
-        if expanded and os.path.isabs(expanded):
-            real = os.path.realpath(expanded)
-            if real not in roots:
-                roots.append(real)
-    return tuple(roots)
+    return tuple(real for real, _kind, _spelled in _project_roots())
+
+
+def outside_roots_message() -> str:
+    """The refusal lists this computer's roots, so the API error explains itself."""
+    listed = "; ".join(
+        (
+            f"{real} ({kind})"
+            if os.path.normpath(spelled) == real
+            else f"{real} ({kind}, also {spelled})"
+        )
+        for real, kind, spelled in _project_roots()
+    )
+    return (
+        "project folders must be inside your home directory, a temporary "
+        "directory, a mounted volume or a directory listed in "
+        f"{PROJECT_ROOTS_ENV}. Allowed here: {listed}"
+    )
 
 
 def _inside_allowed_root(real: str) -> str | None:
@@ -102,10 +135,7 @@ def validate_folder_path(
     contained = _inside_allowed_root(os.path.realpath(text))
     if contained is None:
         raise ProjectFolderError(
-            403,
-            "project folders must be inside your home directory, the temporary "
-            f"directory, a mounted volume or {PROJECT_ROOTS_ENV}",
-            "project_folder_outside_roots",
+            403, outside_roots_message(), "project_folder_outside_roots"
         )
     resolved = Path(contained)
     try:

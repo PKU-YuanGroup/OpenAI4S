@@ -48,6 +48,14 @@ import {
 } from "../chrome/upload";
 import { loadSkillsCatalog } from "../autocomplete/catalog";
 import { acHoldSend, acPending } from "../autocomplete/composer";
+import {
+  clearMentions,
+  composerMentions,
+  mentionsPayload,
+  restoreMentions,
+  stripRefVersions,
+  type ComposerMention,
+} from "../autocomplete/mentions";
 import { effProject } from "../customize/host";
 import { composerChoiceMark, composerModelChoicePending, modelT, noteAdmittedModelBinding, noteSessionModelBinding } from "../customize/models";
 import { $, el } from "../messages/dom";
@@ -57,7 +65,7 @@ import { api, apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { enableComposer, grow } from "../sessions/dom";
 import { loadSessions } from "../sessions/load";
-import { renderComposerRefChips } from "../sessions/transcript";
+import { renderComposerRefChips, renderMessageRefChips } from "../sessions/transcript";
 import { sub } from "../ws/connect";
 import {
   admissionSettled,
@@ -214,6 +222,9 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   if (!text && !anns.length) return;
   const composerAtStart = $("#composer") as HTMLTextAreaElement | null;
   const composerDraft = composerAtStart ? composerAtStart.value : "";
+  // The `@` pins this draft carries, read with the draft (ART-16). Only the
+  // composer's own text takes them: a programmatic send has its own words.
+  const sentMentions = composerDraft.trim() === text ? composerMentions(text) : [];
   const sourceFrameId = currentId.value || null;
   const sourceProjectId = effProject() || project.value || null;
   const sourceOpenGen = _openGen.value || 0;
@@ -405,8 +416,16 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   const w = el("div", "msg user");
   w.dataset.requestId = requestId;
   const b = el("div", "bubble");
-  b.textContent = text || t("send.imageAnnotationFallback");
+  // As a reload shows it: a typed `@name#v-<id>` reads as `@name`.
+  b.textContent = stripRefVersions(text) || t("send.imageAnnotationFallback");
   w.appendChild(b);
+  // The same chips a reload draws from the stored `artifact_refs`.
+  if (sentMentions.length) {
+    renderMessageRefChips(
+      w,
+      sentMentions.map((m) => ({ display_name: m.filename, version_id: m.version_id, artifact_id: m.artifact_id })),
+    );
+  }
   if (anns.length) w.appendChild(annotAttachment(anns));
   if (queueing) w.classList.add("queued");
   const host = $("#messages");
@@ -446,7 +465,10 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   // what this call sends: a programmatic send (a permission's Continue, a plan
   // approval) carries its own text, and the user's unrelated draft is theirs.
   const composer = $("#composer") as HTMLTextAreaElement | null;
-  if (composer && composer.value === composerDraft && composerDraft.trim() === text) composer.value = "";
+  if (composer && composer.value === composerDraft && composerDraft.trim() === text) {
+    composer.value = "";
+    clearMentions();
+  }
   grow();
   renderComposerRefChips();
   if (annIds.length) {
@@ -470,6 +492,8 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         explore: exploreNow,
         annotation_ids: annIds,
         annotation_reservation_id: admissionId || undefined,
+        // `{filename, version_id}` per `@` pin; the text carries the names only.
+        mentions: sentMentions.length ? mentionsPayload(sentMentions) : undefined,
         wait: false,
       }),
     })) as {
@@ -549,7 +573,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         standardProfileReadiness.value = unavailableReadinessSnapshot();
         renderEnvironmentReadinessBanner();
       }
-      if (onDispatchFrame()) settleRefusedBubble(w, text);
+      if (onDispatchFrame()) settleRefusedBubble(w, text, sentMentions);
       if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
       if (onDispatchFrame()) {
         callLane("openCust", "compute");
@@ -567,7 +591,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     // the bubble is the only copy left and stays, marked not sent. A 5xx may
     // still have been admitted, and keeps both as before.
     const notAdmitted = refused && Number(err.status) < 500;
-    if (notAdmitted && onDispatchFrame()) settleRefusedBubble(w, text);
+    if (notAdmitted && onDispatchFrame()) settleRefusedBubble(w, text, sentMentions);
     let lasting = t("toast.sendFailed", apiErrorText(e));
     let settingsCode = err?.code;
     if (
@@ -699,14 +723,18 @@ const NOT_SENT_COPY: Record<"en" | "zh", string> = {
 /**
  * Put a refused message's text back, unless something new was typed since.
  * True when nothing of the refused text is lost: it went back into an empty
- * composer, or there was no text to keep (an annotation-only send).
+ * composer, or there was no text to keep (an annotation-only send). Its `@`
+ * pins go back with the text, so a retry still sends the versions picked.
  */
-function restoreDraft(text: string): boolean {
+function restoreDraft(text: string, mentions: readonly ComposerMention[] = []): boolean {
   if (!text) return true;
   const box = $("#composer") as HTMLTextAreaElement | null;
   if (!box) return false;
   const restored = !box.value.trim();
-  if (restored) box.value = text;
+  if (restored) {
+    box.value = text;
+    restoreMentions(mentions);
+  }
   grow();
   renderComposerRefChips();
   return restored;
@@ -718,8 +746,8 @@ function restoreDraft(text: string): boolean {
  * optimistic bubble go; otherwise the bubble is the last copy and stays,
  * marked not sent (the pre-existing `.msg.user.cancelled` style).
  */
-function settleRefusedBubble(w: HTMLElement, text: string): void {
-  if (restoreDraft(text)) {
+function settleRefusedBubble(w: HTMLElement, text: string, mentions: readonly ComposerMention[] = []): void {
+  if (restoreDraft(text, mentions)) {
     w.remove();
     return;
   }

@@ -6,7 +6,7 @@ import {
 import { api, ApiError } from "./api";
 import { artifactRendererVersion } from "./cache";
 import type { ArtifactRow, RendererCatalogItem, RendererDescriptor } from "./types";
-import { TEXT_EXT } from "./types";
+import { COMPRESSED_EXT, TEXT_EXT, XLSX_EXT } from "./types";
 
 /**
  * app.js:8578. Empty-value defense: the UMD script may be absent. Do not
@@ -126,7 +126,11 @@ export function compatibilityRendererDescriptor(a: ArtifactRow): RendererDescrip
   const ct = String(a.content_type || "").toLowerCase().split(";", 1)[0] || "";
   const nm = String(a.filename || "").toLowerCase();
   let id = "download";
-  if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm)) id = "image";
+  // ART-11: a container first, as the server's extension pre-pass does: a
+  // `.csv.gz` registered before gzip typing still carries `text/csv`.
+  if (COMPRESSED_EXT.test(nm) || /gzip/.test(ct)) id = "compressed";
+  else if (XLSX_EXT.test(nm) || /spreadsheetml\.sheet/.test(ct)) id = "spreadsheet";
+  else if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm)) id = "image";
   else if (ct === "application/pdf" || nm.endsWith(".pdf")) id = "pdf";
   else if (ct === "text/html" || /\.html?$/i.test(nm)) id = "html-preview";
   else if (/\.(pdb|cif|mmcif|ent|xyz)$/i.test(nm)) id = "molecule-3d";

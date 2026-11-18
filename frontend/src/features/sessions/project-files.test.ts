@@ -10,10 +10,11 @@ vi.mock("./load", () => ({
 vi.mock("./chrome", () => ({ hint: vi.fn(), reportFailure: vi.fn() }));
 vi.mock("../messages/open", () => ({ openConversation: vi.fn(), recoverConversation: vi.fn(async () => undefined) }));
 
+import { LANG, setLang } from "../../i18n";
 import { api } from "./api";
 import { binds } from "./binds";
 import { projectFilesCopy as copy, projectHistoryCopy } from "./copy";
-import { browseProjectFolder, openProjectFiles, resetProjectFolderPicker } from "./project-files";
+import { browseProjectFolder, openProjectFiles, projectFolderErrorText, resetProjectFolderPicker } from "./project-files";
 import { createProject, openProject, openProjectModal, renderProjMenu, submitProjectModal } from "./projects";
 import { loadSessions, loadSessionsForScope } from "./load";
 import { _openGen, currentId, folders, project, projects, sessions } from "../../stores/session";
@@ -31,10 +32,13 @@ class Node {
   title = "";
   placeholder = "";
   disabled = false;
+  checked = false;
   style: Record<string, string> = {};
   attrs: Record<string, string> = {};
   children: Node[] = [];
   onclick: (() => void) | null = null;
+  onchange: (() => void) | null = null;
+  scrollIntoView = vi.fn();
   onkeydown: ((event: { key: string; isComposing?: boolean; keyCode?: number; preventDefault: () => void }) => void) | null = null;
   constructor(public tag = "div") {}
   classList = {
@@ -50,7 +54,7 @@ class Node {
   setAttribute(key: string, value: string) { this.attrs[key] = value; }
   removeAttribute(key: string) { delete this.attrs[key]; }
   appendChild(child: Node) { this.children.push(child); return child; }
-  focus() {}
+  focus = vi.fn();
   all(): Node[] { return [this, ...this.children.flatMap((child) => child.all())]; }
   texts(): string[] { return this.all().map((node) => node.textContent).filter(Boolean); }
   click(label: string) {
@@ -70,6 +74,14 @@ function deferred() {
 function listing(path: string, entries: Array<{ name: string; path: string; kind?: string }> = [], parent: string | null = null) {
   return { path, parent_path: parent, folder_path: "/research", entries, truncated: false };
 }
+function stubDom() {
+  vi.stubGlobal("document", { createElement: (tag: string) => new Node(tag), querySelector: (sel: string) => nodes[sel] ?? null });
+  vi.stubGlobal("requestAnimationFrame", (callback: () => void) => callback());
+}
+/** A refusal as `api()` throws it: the server's English text, its code and status. */
+function refusal(code: string, status: number, message = "server text") {
+  return Object.assign(new Error(message), { code, status, requestId: "req-1" });
+}
 
 beforeEach(() => {
   resetStoreFields();
@@ -83,8 +95,7 @@ beforeEach(() => {
     "#pm-name", "#pm-desc", "#pm-ctx", "#pm-create", "#pm-delete", "#pm-error", "#proj-modal .modal-head span",
     "#proj-menu", "#proj-folder-path", "#proj-current",
   ].map((key) => [key, new Node()]));
-  vi.stubGlobal("document", { createElement: (tag: string) => new Node(tag), querySelector: (sel: string) => nodes[sel] ?? null });
-  vi.stubGlobal("requestAnimationFrame", (callback: () => void) => callback());
+  stubDom();
   binds.newSession = vi.fn();
   binds.openConversation = vi.fn((fid, pid) => {
     currentId.value = fid;
@@ -141,6 +152,97 @@ describe("local project folder selection", () => {
     vi.mocked(api).mockResolvedValueOnce(listing("/denied"));
     nodes["#pm-folder-picker"]!.click(copy("retry"));
     await vi.waitFor(() => expect(nodes["#pm-folder-picker"]!.texts()).toContain("/denied"));
+  });
+
+  it("asks for dot-folders only when Show hidden folders is on, and keeps it while browsing", async () => {
+    const toggle = () => nodes["#pm-folder-picker"]!.all().find((node) => node.tag === "input" && node.type === "checkbox")!;
+    vi.mocked(api).mockResolvedValueOnce(listing("/home/me", [{ name: "Documents", path: "/home/me/Documents" }]));
+    await browseProjectFolder("");
+    expect(api).toHaveBeenLastCalledWith("/local-folders?path=");
+    expect(nodes["#pm-folder-picker"]!.texts()).toContain(copy("showHidden"));
+    expect(toggle().checked).toBe(false);
+    expect(toggle().focus).not.toHaveBeenCalled();
+    vi.mocked(api).mockResolvedValueOnce(listing("/home/me", [
+      { name: "Documents", path: "/home/me/Documents" }, { name: ".cache", path: "/home/me/.cache" },
+    ]));
+    toggle().checked = true;
+    toggle().onchange!();
+    await vi.waitFor(() => expect(nodes["#pm-folder-picker"]!.texts()).toContain(".cache/"));
+    expect(api).toHaveBeenLastCalledWith("/local-folders?path=%2Fhome%2Fme&hidden=1");
+    expect(toggle().checked).toBe(true);
+    // The rebuilt listing keeps keyboard focus on the box that was ticked.
+    expect(toggle().focus).toHaveBeenCalledOnce();
+    vi.mocked(api).mockResolvedValueOnce(listing("/home/me/Documents", [], "/home/me"));
+    nodes["#pm-folder-picker"]!.click("Documents/");
+    await vi.waitFor(() => expect(nodes["#pm-folder-picker"]!.texts()).toContain("/home/me/Documents"));
+    expect(api).toHaveBeenLastCalledWith("/local-folders?path=%2Fhome%2Fme%2FDocuments&hidden=1");
+    // A reopened project editor starts with hidden folders hidden again.
+    openProjectModal({ project_id: "p", name: "Research", folder_path: "" });
+    vi.mocked(api).mockResolvedValueOnce(listing("/home/me"));
+    await browseProjectFolder("");
+    expect(api).toHaveBeenLastCalledWith("/local-folders?path=");
+  });
+
+  it("explains a refused folder in the reader's language", async () => {
+    vi.mocked(api).mockRejectedValueOnce(refusal("project_folder_outside_roots", 403, "project folders must be inside your home directory"));
+    await browseProjectFolder("/usr/share");
+    const shown = nodes["#pm-folder-picker"]!.texts().join(" ");
+    expect(shown).toContain(copy("error", copy("outsideRoots")));
+    expect(shown).not.toContain("project folders must be inside");
+  });
+});
+
+describe("project folder refusals", () => {
+  it.each([
+    ["project_folder_outside_roots", 403, "outsideRoots"],
+    ["project_folder_overlap", 400, "overlapsData"],
+    ["project_folder_history", 400, "historyFolder"],
+    ["local_project_folders_only", 403, "localOnly"],
+    ["project_path_denied", 403, "accessDenied"],
+    // validate_folder_path's catch-all code: not absolute / not a directory,
+    // a credential directory, and a missing folder are told apart by status.
+    ["project_folder", 400, "notAFolder"],
+    ["project_folder", 403, "credentialFolder"],
+    ["project_folder", 404, "folderNotFound"],
+  ])("names %s (%i) in the reader's language", (code, status, key) => {
+    expect(projectFolderErrorText(refusal(code, status))).toBe(copy(key));
+  });
+
+  it("keeps the server's text for a refusal it has no words for", () => {
+    expect(projectFolderErrorText(refusal("project_folder", 409, "project folder changed; select it again"))).toContain("project folder changed");
+    expect(projectFolderErrorText(refusal("not_found", 404, "project not found"))).toContain("project not found");
+  });
+
+  it("does not reword the project files browser's project-relative path errors", async () => {
+    vi.mocked(api).mockRejectedValueOnce(refusal("project_folder", 400, "path must stay inside the project folder"));
+    await openProjectFiles("p", "P");
+    const shown = nodes["#modal-body"]!.texts().join(" ");
+    expect(shown).toContain("path must stay inside the project folder");
+    expect(shown).not.toContain(copy("notAFolder"));
+  });
+
+  it("names the allowed roots, /tmp as /private/tmp included, when Save is refused in Chinese", async () => {
+    const previous = LANG;
+    vi.unstubAllGlobals();
+    await setLang("zh");
+    stubDom();
+    try {
+      openProjectModal({ project_id: "p", name: "Research", folder_path: "" });
+      nodes["#pm-folder"]!.value = "/usr/share";
+      vi.mocked(api).mockRejectedValueOnce(refusal("project_folder_outside_roots", 403, "project folders must be inside your home directory"));
+      await submitProjectModal();
+      const box = nodes["#pm-error"]!;
+      expect(box.textContent).toContain("主目录");
+      expect(box.textContent).toContain("/private/tmp");
+      expect(box.textContent).toContain("OPENAI4S_PROJECT_ROOTS");
+      expect(box.textContent).not.toContain("project folders must be inside");
+      // A short screen scrolls the form; the refusal is brought into view.
+      expect(box.scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+    } finally {
+      vi.unstubAllGlobals();
+      await setLang(previous);
+      stubDom();
+    }
   });
 });
 

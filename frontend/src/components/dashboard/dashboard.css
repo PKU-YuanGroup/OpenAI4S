@@ -109,6 +109,13 @@
   overflow-y: auto;
 }
 
+/* A column flexbox shrinks its children to fit the box's max-height: an
+   error line squeezed both textareas to a sliver. Every field keeps its own
+   height and the form scrolls instead. */
+#proj-modal .form > * {
+  flex-shrink: 0;
+}
+
 #proj-modal .modal-head {
   flex-shrink: 0;
 }
@@ -144,6 +151,25 @@
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+/* Inside `.form`, whose label and input rules would make this a field. */
+.project-folder-picker .project-folder-hidden-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  color: var(--text-400);
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.project-folder-picker .project-folder-hidden-toggle input {
+  height: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--clay);
 }
 
 .project-folder-list {
@@ -289,4 +315,9 @@
   .dash-hero-sub {
     font-size: 16px;
   }
+}
+
+/* UP-5: the shared modal body has no padding; the project files view adds its own. */
+.project-files-pane {
+  padding: 16px 20px 20px;
 }

@@ -583,6 +583,23 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .mol-view{flex:1;min-height:340px;position:relative}
 .mol-foot{padding:6px 12px;border-top:.5px solid var(--border);background:var(--bg-100);font-size:12px;color:var(--text-200)}
 .modal-body .mol-view{min-height:520px}
+.mol-meta{display:flex;align-items:baseline;gap:4px 12px;padding:8px 14px 0;font-size:12px;line-height:1.45;color:var(--text-200)}
+.mol-meta-info{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+.mol-meta-info>*+*::before{content:"·";margin:0 6px;color:var(--text-400)}
+.mol-meta-id{font-family:var(--mono);font-weight:600;color:var(--text-000)}
+.mol-meta-chains,.mol-meta-atoms{white-space:nowrap;color:var(--text-400)}
+.mol-meta .mol-tag{margin-left:auto;white-space:nowrap}
+.mol-lbl-gap{margin-left:8px}
+.mol-style:disabled{opacity:.45;cursor:not-allowed}
+.mol-style:disabled:hover{background:var(--bg-200);color:var(--text-200)}
+.mol-legend{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-200);font-variant-numeric:tabular-nums}
+.mol-legend[hidden]{display:none}
+.mol-key{display:inline-flex;align-items:center;gap:3px}
+.mol-swatch{width:10px;height:10px;border-radius:2px;flex:none}
+.mol-grad{width:64px;height:8px;border-radius:2px;box-shadow:inset 0 0 0 .5px var(--border)}
+.mol-foot-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px}
+.mol-hint{flex:1 1 240px;min-width:0}
+.mol-foot .mol-act{height:24px}
 
 /* Artifact renderer registry: the server selects a renderer/version descriptor;
    these components only visualize bytes and never execute artifact content. */
@@ -1669,6 +1686,10 @@ body.sidebar-collapsed .col-resizer-side{display:none}
   background:var(--bg-000);border:.5px solid var(--border);border-radius:999px;padding:3px 10px;box-shadow:var(--shadow-soft);
   opacity:0;transition:opacity .2s;pointer-events:none}
 .annot-wrap:hover .zoom-hint{opacity:.9}
+/* ART-15: at fit the pill and the zoom bar sit in reserved margins instead of
+   over the figure's title and axis; the pill stays one line. */
+.zoom-hint{white-space:nowrap;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
+.annot-zoom:not(.zoomed) .annot-stage{margin:44px auto 64px}
 
 @media (max-width:900px){
   .col-resizer{display:none}

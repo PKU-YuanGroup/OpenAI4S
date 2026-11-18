@@ -30,6 +30,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from openai4s.server.errors import GatewayError
+from openai4s.storage.artifacts import ARTIFACT_KIND_NAMES
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
@@ -75,19 +76,26 @@ def filter_fingerprint(
     content_type: str,
     origin: str,
     team_scope: str,
+    kind: str = "",
+    hidden: bool = False,
 ) -> str:
-    """Stable digest of the filter identity a cursor is bound to."""
-    canonical = json.dumps(
-        {
-            "content_type": content_type,
-            "origin": origin,
-            "project_id": project_id,
-            "q": q,
-            "team_scope": team_scope,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    """Stable digest of the filter identity a cursor is bound to.
+
+    ``kind`` and ``hidden`` (ART-12) join the identity only when set, so a
+    cursor minted for an older filter keeps its digest.
+    """
+    identity: dict[str, Any] = {
+        "content_type": content_type,
+        "origin": origin,
+        "project_id": project_id,
+        "q": q,
+        "team_scope": team_scope,
+    }
+    if kind:
+        identity["kind"] = kind
+    if hidden:
+        identity["hidden"] = True
+    canonical = json.dumps(identity, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -160,6 +168,18 @@ def parse_origin(raw: str) -> str:
     return origin
 
 
+def parse_kind(raw: str) -> str:
+    """A human file category (ART-12): table, image, report, code or other."""
+    kind = raw.strip()
+    if kind and kind not in ARTIFACT_KIND_NAMES:
+        raise GatewayError(
+            400,
+            "kind must be one of " + ", ".join(ARTIFACT_KIND_NAMES),
+            "invalid_kind",
+        )
+    return kind
+
+
 def browse_index(
     store: Any,
     *,
@@ -171,6 +191,8 @@ def browse_index(
     filename_query = _first(q, "q").strip()
     content_type = _first(q, "content_type").strip()
     origin = parse_origin(_first(q, "origin"))
+    kind = parse_kind(_first(q, "kind"))
+    hidden = _first(q, "hidden").strip().lower() in {"1", "true"}
     limit = parse_limit(_first(q, "limit"))
     team_scope = "" if visible_to_user_id is None else str(visible_to_user_id)
     fingerprint = filter_fingerprint(
@@ -179,6 +201,8 @@ def browse_index(
         content_type=content_type,
         origin=origin,
         team_scope=team_scope,
+        kind=kind,
+        hidden=hidden,
     )
     before = decode_cursor(_first(q, "cursor"), fingerprint=fingerprint)
     rows = store.browse_artifacts(
@@ -189,6 +213,8 @@ def browse_index(
         before=before,
         limit=limit + 1,
         visible_to_user_id=visible_to_user_id,
+        kind=kind or None,
+        include_hidden=hidden,
     )
     has_more = len(rows) > limit
     page = rows[:limit]

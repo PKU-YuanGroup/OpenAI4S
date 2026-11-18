@@ -2,9 +2,11 @@
  * Artifact / Ketcher iframe sandbox helpers.
  *
  * Artifact HTML starts inert. Only a scoped grant on the alternate loopback
- * origin can enable scripts; PDF stays inert. Ketcher is first-party UI
- * served with `embeddable_security_headers` (`frame-ancestors 'self'`) and
- * must NOT get a sandbox attribute — scripts and same-origin are required.
+ * origin can enable scripts. A PDF preview is a first-party blob typed
+ * `application/pdf` and carries no sandbox attribute (see `applyPdfFrame`).
+ * Ketcher is first-party UI served with `embeddable_security_headers`
+ * (`frame-ancestors 'self'`) and must NOT get a sandbox attribute — scripts
+ * and same-origin are required.
  */
 
 /** Empty sandbox: no scripts, no forms, no same-origin, no popups. */
@@ -14,7 +16,7 @@ export const INTERACTIVE_ARTIFACT_SANDBOX = "allow-scripts allow-same-origin";
 export const KETCHER_PATH = "/ketcher";
 export const KETCHER_ALLOW = "clipboard-read; clipboard-write";
 
-export type ArtifactIframeKind = "pdf" | "html-preview";
+export type ArtifactIframeKind = "html-preview";
 
 export type SandboxTarget = {
   setAttribute: (name: string, value: string) => void;
@@ -26,12 +28,30 @@ export type FrameTarget = SandboxTarget & {
   src: string;
 };
 
-/** PDF and the initial HTML preview share the empty sandbox token. */
+/** The initial HTML preview gets the empty sandbox token. */
 export function applyArtifactIframeSandbox(
   frame: SandboxTarget,
   _kind: ArtifactIframeKind,
 ): void {
   frame.setAttribute("sandbox", ARTIFACT_IFRAME_SANDBOX);
+}
+
+/**
+ * The PDF preview frame has NO sandbox attribute, on purpose.
+ *
+ * Chromium will not run its PDF viewer in a sandboxed frame: the HTML
+ * "sandboxed plugins" flag is set by any `sandbox` attribute and no token
+ * lifts it, so `sandbox=""` (and `allow-same-origin`, and every other value)
+ * turned each PDF preview into an error page. What the frame loads is a blob
+ * the Workbench minted itself, from bytes it read through the bounded preview
+ * read and typed `application/pdf`: the browser hands it to its PDF viewer
+ * and never parses it as HTML, so no Artifact-authored script runs on the
+ * app origin. The shell CSP admits `blob:` in `frame-src` for this, and only
+ * first-party script can mint a blob URL under `script-src 'self'`. Never
+ * point this frame at an Artifact URL or any other document.
+ */
+export function applyPdfFrame(frame: SandboxTarget): void {
+  if (frame.removeAttribute) frame.removeAttribute("sandbox");
 }
 
 /** First-party editor: always the app origin, never an artifact origin. */
