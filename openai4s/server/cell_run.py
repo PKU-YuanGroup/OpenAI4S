@@ -7,6 +7,8 @@ transaction is only an observation; it never decides that an agent task is done.
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -36,6 +38,16 @@ EventSink = Callable[[dict[str, Any]], None]
 ChunkSink = Callable[[str], None]
 
 
+#: A running cell's stdout writes are gathered for this long into one live
+#: event pair. Every `write()` used to become its own `notebook_cell_chunk` plus
+#: its activity echo: `print(i, 'x' * 80)` is four writes, so 5000 lines were
+#: 40,000 events, which overflowed the WebSocket queue and dropped the client
+#: before the cell's terminal events reached it.
+LIVE_CHUNK_WINDOW_S = 0.05
+#: A batch is sent early once it holds this many characters.
+LIVE_CHUNK_MAX_CHARS = 32_768
+
+
 def _bounded_live_output(value: Any) -> str:
     """Bound one transient WebSocket field without mutating the real result."""
 
@@ -43,6 +55,96 @@ def _bounded_live_output(value: Any) -> str:
     if len(text) <= LIVE_CELL_OUTPUT_CHARS:
         return text
     return text[:LIVE_CELL_OUTPUT_CHARS] + LIVE_OUTPUT_TRUNCATION
+
+
+class _LiveOutputBatcher:
+    """At most one live delivery per window, plus one per full batch.
+
+    The first write after a quiet window is delivered at once, so the first
+    line of output (and an interrupt that waits for it) is not delayed; later
+    writes inside the window are joined and delivered by a timer, so output
+    printed just before a long quiet computation still shows. `close` delivers
+    what is left; the caller closes before emitting the cell's terminal events,
+    which therefore always follow its last chunk. Deliveries happen under one
+    lock, so they keep the order the text was written in.
+    """
+
+    def __init__(
+        self,
+        deliver: Callable[[str], None],
+        *,
+        window_s: float = LIVE_CHUNK_WINDOW_S,
+        max_chars: int = LIVE_CHUNK_MAX_CHARS,
+    ) -> None:
+        self._deliver = deliver
+        self._window_s = window_s
+        self._max_chars = max_chars
+        self._lock = threading.Lock()
+        self._parts: list[str] = []
+        self._size = 0
+        self._timer: threading.Timer | None = None
+        self._last_delivery = float("-inf")
+        self._closed = False
+
+    def push(self, text: str) -> None:
+        with self._lock:
+            self._parts.append(text)
+            self._size += len(text)
+            now = time.monotonic()
+            quiet = now - self._last_delivery >= self._window_s
+            if self._closed or quiet or self._size >= self._max_chars:
+                self._deliver_locked(now)
+            elif self._timer is None:
+                delay = self._window_s - (now - self._last_delivery)
+                timer = threading.Timer(delay, self.flush)
+                timer.daemon = True
+                self._timer = timer
+                timer.start()
+
+    def flush(self) -> None:
+        with self._lock:
+            self._deliver_locked(time.monotonic())
+
+    def close(self) -> None:
+        with self._lock:
+            self._deliver_locked(time.monotonic())
+            self._closed = True
+
+    def _deliver_locked(self, now: float) -> None:
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+        if not self._parts:
+            return
+        text = "".join(self._parts)
+        self._parts = []
+        self._size = 0
+        self._last_delivery = now
+        self._deliver(text)
+
+
+class _LiveCellStream:
+    """The chunk sink one streaming cell hands its kernel; see `_start_stream`."""
+
+    def __init__(self, deliver: Callable[[str], None]) -> None:
+        self._batcher = _LiveOutputBatcher(deliver)
+        self._streamed_chars = 0
+        self._truncated = False
+
+    def __call__(self, text: str) -> None:
+        if self._truncated:
+            return
+        value = str(text or "")
+        remaining = max(0, LIVE_CELL_OUTPUT_CHARS - self._streamed_chars)
+        if len(value) > remaining:
+            value = value[:remaining] + LIVE_OUTPUT_TRUNCATION
+            self._truncated = True
+        self._streamed_chars += min(len(str(text or "")), remaining)
+        if value:
+            self._batcher.push(value)
+
+    def close(self) -> None:
+        self._batcher.close()
 
 
 def _runtime_files_read(result: dict[str, Any]) -> list[str]:
@@ -521,7 +623,13 @@ class CellExecutionService:
         lease = session.kernels.lease("r") if request.language == "r" else None
         try:
             with frame_scope(session.root_frame_id):
-                result = self.ports.run(session, request, cell_id, on_chunk, lease)
+                try:
+                    result = self.ports.run(session, request, cell_id, on_chunk, lease)
+                finally:
+                    # Deliver the last batched output before anything below
+                    # emits this cell's error or terminal events.
+                    if on_chunk is not None:
+                        on_chunk.close()
         except BaseException as exc:
             egress_decision = _egress_decision_from_failure(exc)
             if egress_decision is not None:
@@ -699,7 +807,7 @@ class CellExecutionService:
         kernel_id: str,
         title: str,
         generation_id: str | None,
-    ) -> ChunkSink | None:
+    ) -> _LiveCellStream | None:
         if not request.stream:
             return None
         emit(
@@ -744,21 +852,7 @@ class CellExecutionService:
             }
         )
 
-        streamed_chars = 0
-        stream_truncated = False
-
-        def on_chunk(text: str) -> None:
-            nonlocal streamed_chars, stream_truncated
-            if stream_truncated:
-                return
-            value = str(text or "")
-            remaining = max(0, LIVE_CELL_OUTPUT_CHARS - streamed_chars)
-            if len(value) > remaining:
-                value = value[:remaining] + LIVE_OUTPUT_TRUNCATION
-                stream_truncated = True
-            streamed_chars += min(len(str(text or "")), remaining)
-            if not value:
-                return
+        def deliver(value: str) -> None:
             emit(
                 {
                     "type": "notebook_cell_chunk",
@@ -779,7 +873,7 @@ class CellExecutionService:
                 }
             )
 
-        return on_chunk
+        return _LiveCellStream(deliver)
 
     def _refuse_egress_boundary(
         self,

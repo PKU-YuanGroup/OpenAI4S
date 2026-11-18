@@ -363,7 +363,10 @@ export async function executeNotebookCode(code: string, language: string): Promi
     } | null;
     if (accepted && pending && pending.execution_id === executionId) {
       const owner = response && (response.owner as { kind?: string; id?: string } | undefined);
-      if (owner && owner.kind && owner.id) pendingReplIdentity.value = { ...pending, owner };
+      // `accepted` lets a resync settle this execution from the queue alone
+      // (`reconcilePendingRepl`); before it the queue may not list it yet.
+      pendingReplIdentity.value =
+        owner && owner.kind && owner.id ? { ...pending, owner, accepted: true } : { ...pending, accepted: true };
     }
     hint(t("nb.action.queued", language === "r" ? "R" : "Python"));
     if (!accepted && currentId.value === frameId) {
@@ -381,6 +384,42 @@ export async function executeNotebookCode(code: string, language: string): Promi
       pendingReplIdentity.value = null;
     }
     if (currentId.value === frameId && dockIsNotebook()) nbRender();
+  }
+}
+
+/**
+ * Settle a REPL execution whose terminal event this page never received.
+ *
+ * Only `execution_state` used to clear `pendingReplIdentity`. A socket the
+ * server dropped (a flood of output overflowed its queue) loses that event,
+ * and when the resubscribe declares a gap nothing replays it -- the input
+ * stayed disabled until a reload. After a gap the server's queue is the
+ * truth: an accepted execution it no longer lists has finished.
+ */
+export async function reconcilePendingRepl(frameId: string): Promise<void> {
+  const before = pendingReplIdentity.value as { frame_id?: string; execution_id?: string; accepted?: boolean } | null;
+  if (!before || before.frame_id !== frameId || !before.accepted || !before.execution_id) return;
+  let snapshot: unknown;
+  try {
+    snapshot = await notebookFetch(`/frames/${frameId}/execution-queue`);
+  } catch {
+    return;
+  }
+  const now = pendingReplIdentity.value as { execution_id?: string } | null;
+  if (!now || now.execution_id !== before.execution_id) return;
+  const queue = (snapshot && typeof snapshot === "object" ? snapshot : {}) as {
+    owner?: { execution_id?: string } | null;
+    queue?: Array<{ execution_id?: string } | null>;
+  };
+  const listed = [queue.owner].concat(queue.queue || []).some((item) => !!item && item.execution_id === before.execution_id);
+  if (listed) return;
+  pendingReplIdentity.value = null;
+  invalidateKernelCache();
+  if (currentId.value === frameId) {
+    void loadExecutionLog(frameId).catch(() => {});
+    notifyLoadArtifacts(frameId);
+    scheduleWorkbenchRefresh();
+    nbRender();
   }
 }
 

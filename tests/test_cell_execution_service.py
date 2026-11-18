@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -480,6 +481,66 @@ def test_live_cell_output_is_bounded_once_for_notebook_and_activity(
     assert notebook_chunks == expected
     assert activity_chunks == expected
     assert "must-not-appear" not in "".join(notebook_chunks + activity_chunks)
+
+
+def test_a_burst_of_small_writes_streams_as_a_few_events_before_the_terminal(
+    tmp_path,
+):
+    """NB-2: 5000 `print` lines were 40,000 WebSocket events and dropped the
+    client before the cell's terminal events arrived."""
+    harness = Harness()
+    lines = [f"{i} {'x' * 80}\n" for i in range(5000)]
+
+    def run(session, request, cell_id, on_chunk, lease):
+        del session, request, cell_id, lease
+        harness.order.append("run")
+        for line in lines:
+            # print(i, 'x' * 80) is four writes.
+            number, rest = line.split(" ", 1)
+            for part in (number, " ", rest[:-1], "\n"):
+                on_chunk(part)
+        harness.completion = {"ok": True}
+        return dict(harness.run_result)
+
+    service = CellExecutionService(
+        replace(harness.ports(), run=run), id_factory=lambda: "cell-burst"
+    )
+    events = []
+    service.execute(
+        _session(tmp_path), CellRequest("print('burst')", "user"), events.append
+    )
+
+    chunks = [e for e in events if e["type"] == "notebook_cell_chunk"]
+    assert "".join(e["chunk"] for e in chunks) == "".join(lines)
+    # 20,000 writes; a slow runner adds at most one timer delivery per window.
+    assert len(chunks) < 500
+    last_chunk = max(
+        i for i, e in enumerate(events) if e["type"] == "notebook_cell_chunk"
+    )
+    finished = [
+        i for i, e in enumerate(events) if e["type"] == "notebook_cell_finished"
+    ]
+    assert finished and finished[0] > last_chunk
+
+
+def test_live_output_written_before_a_quiet_spell_is_still_delivered():
+    """A batch must not wait for the next write: a line printed before a long
+    computation shows within the window, without the cell having to finish."""
+    delivered: list[str] = []
+    batcher = cell_run._LiveOutputBatcher(delivered.append, window_s=0.05)
+    batcher.push("first\n")  # after a quiet window: delivered at once
+    assert delivered == ["first\n"]
+    batcher.push("second\n")  # inside the window: held for the timer
+    assert delivered == ["first\n"]
+    deadline = time.monotonic() + 5
+    while len(delivered) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert delivered == ["first\n", "second\n"]
+    batcher.push("third\n")
+    batcher.close()  # whatever is left goes before the terminal events
+    assert "".join(delivered) == "first\nsecond\nthird\n"
+    batcher.push("late\n")  # after close: delivered directly, never dropped
+    assert delivered[-1] == "late\n"
 
 
 def test_finished_event_is_bounded_without_mutating_result_or_record(

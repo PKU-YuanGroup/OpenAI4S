@@ -22,12 +22,13 @@ import {
   _replDrafts,
   cells,
   liveCells,
+  pendingReplIdentity,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { bytes, PREVIEW_READ_MAX_BYTES } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { resetStoreFields } from "../../stores/signal-field";
-import { running } from "../../stores/stream";
+import { _replayGap, running } from "../../stores/stream";
 import { branchState, securityState } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { t } from "../../i18n/runtime";
@@ -76,6 +77,7 @@ import {
   nbSwitchEnv,
   notebookOnTurnDone,
   refreshKernelState,
+  replBusy,
   replEnabledNow,
   shortRuntime,
   syncKernel,
@@ -519,6 +521,38 @@ describe("F-14 Notebook", () => {
       expect(await second).toBe(false);
       answer({ status: "accepted" });
       expect(await first).toBe(true);
+    });
+
+    it("a REPL execution whose terminal event was lost settles after a replay gap", async () => {
+      // NB-2: a dropped socket lost `execution_state`; the input stayed
+      // disabled until a reload because nothing else cleared the pending run.
+      const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+      let listed = true;
+      const reads: string[] = [];
+      setNotebookApi(async (path) => {
+        reads.push(path);
+        if (path.endsWith("/kernel/execute")) {
+          return { status: "accepted", owner: { kind: "user_repl", id: "x" } };
+        }
+        if (path.endsWith("/execution-queue")) {
+          return listed
+            ? { owner: { execution_id: (pendingReplIdentity.value as { execution_id: string }).execution_id }, queue: [] }
+            : { owner: null, queue: [] };
+        }
+        return { cells: [] };
+      });
+      expect(await executeNotebookCode("for i in range(5000): print(i)", "python")).toBe(true);
+      expect(replBusy.value).toBe(true);
+      _replayGap.value = "frame-1";
+      await tick();
+      expect(reads.filter((p) => p.endsWith("/execution-queue"))).toHaveLength(1);
+      expect(replBusy.value).toBe(true); // still running on the server
+      _replayGap.value = null;
+      listed = false;
+      _replayGap.value = "frame-1";
+      await tick();
+      expect(replBusy.value).toBe(false);
+      expect(pendingReplIdentity.value).toBeNull();
     });
 
     it("Fork sends one request while one is out, and says when the branch exists", async () => {
