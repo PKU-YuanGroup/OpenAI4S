@@ -22,6 +22,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`deeplink.test.ts`](deeplink.test.ts) | 查询串解析；精确 version；禁止静默降级 latest。 |
 | [`deeplink.ts`](deeplink.ts) | `?artifact=&version_id=` 解析/序列化/解析 version。空 versions → not-found。 |
 | [`events.test.ts`](events.test.ts) | `artifact_created` 版本同步 + 现场插图；跳过 stub 的 `nbRender`。 |
+| [`encoding-note.ts`](encoding-note.ts) | UP-4：查看器里“按 GB18030 编码显示（自动识别，非 UTF-8）”提示，经读取的 `onEncoding` 在视图仍挂载时追加；UTF-8 不提示。 |
 | [`events.ts`](events.ts) | `artifact_created` 余下 32 行（app.js:5314-5346）。 |
 | [`files-index.test.ts`](files-index.test.ts) | cursor 生命周期（filter/project 丢弃）、禁止数组 route 回退、首屏 ≤50。 |
 | [`files-index.ts`](files-index.ts) | 只走 B-06 `GET .../artifact-index`。filter fingerprint 丢弃旧 cursor。 |
@@ -44,7 +45,9 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限；ART-3 表头排序（数值序、空值置后、回到文件原序、键盘）、`列名:值` 与任意列筛选及匹配计数、显示全部列开关及其提示。 |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。ART-3：默认（未开工作台）表格点击表头排序（升序、降序、文件原序），按子串或 `列名:值` 筛选，超过 100 列时可按需显示全部列，绘制行数按同样的 50 万单元格预算截断；全部在前端对已读取的行完成。 |
 | [`state.ts`](state.ts) | 车道局部 M-03 signal。不上升进 `stores/`。 |
-| [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。全局 FIFO 前缀队列（最多 4 个在途、共享 15 秒期限），每个磁贴 DOM 元素登记为缓存键的消费者，`pruneThumbReads()` 只在全部消费者都离开文档时中止并释放图片 blob URL；同一版本缓存未命中时，仍有磁贴在显示则复用那份 blob，全部消费者离开后才释放；被截断的文本/分子磁贴标“部分预览”，被截断的数据磁贴只显示列名、不显示行数。图片磁贴按 8 MiB 主预览上限整文件读取（前缀无法解码），绝不把产物 URL 赋给 `img.src`；超过 256 KiB 磁贴预算的位图先缩成 480 px 副本，磁贴只保留该副本。 |
+| [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。全局 FIFO 前缀队列（最多 4 个在途、共享 15 秒期限），每个磁贴 DOM 元素登记为缓存键的消费者，`pruneThumbReads()` 只在全部消费者都离开文档时中止并释放图片 blob URL；同一版本缓存未命中时，仍有磁贴在显示则复用那份 blob，全部消费者离开后才释放；被截断的文本/分子磁贴标“部分预览”，被截断的数据磁贴只显示列名、不显示行数。行列数标签按界面语言显示（“241 行 · 11 列”），按非 UTF-8 解码的磁贴会标出编码（UP-4）。图片磁贴按 8 MiB 主预览上限整文件读取（前缀无法解码），绝不把产物 URL 赋给 `img.src`；超过 256 KiB 磁贴预算的位图先缩成 480 px 副本，磁贴只保留该副本。 |
+| [`text-encoding.ts`](text-encoding.ts) | UP-4 所有有界文本读取共用的解码：UTF-16 BOM 判定 UTF-16，合法 UTF-8 即 UTF-8（去 BOM），合法 GB18030 且读起来是中文文本才判为 GB18030，否则仍按 UTF-8 加替换字符；只读前缀时丢弃截断处的半个字符。与 `openai4s/server/text_decoding.py` 相同。 |
+| [`text-encoding.test.ts`](text-encoding.test.ts) | UTF-8 及其 BOM 不变、识别 GBK、UTF-16 LE/BE BOM、二进制与 Windows-1252 不会被当成中文、面向用户的编码名称。 |
 | [`thumbs.test.ts`](thumbs.test.ts) | 每个产物版本只读一次；错误页和失败的读取不缓存；LRU 上限。 |
 | [`types.ts`](types.ts) | Artifact DTO、页大小 50/100、TEXT_EXT / MOL_EXT。 |
 | [`ui.ts`](ui.ts) | Files 网格、dock 标签、`openViewer`、深链；`renderViewer` 交给 islands 的 Viewer。提供 `version_id` 时绝不静默 latest。 |

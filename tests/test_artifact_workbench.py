@@ -425,6 +425,39 @@ def test_workbench_routes_are_forbidden_when_the_flag_is_off(tmp_path):
     runner.close()
 
 
+def test_a_gbk_table_reads_as_chinese_and_names_its_encoding(tmp_path):
+    """UP-4: the workbench table decoded every CSV as UTF-8 with replacement."""
+    _cfg, runner, handler, fid = _setup(tmp_path)
+    workspace = runner.workspace_for_branch(fid, fid)
+    artifact = _save_snapshot(
+        runner,
+        fid,
+        workspace / "cohort_gbk.csv",
+        "患者编号,年龄\nP001,42\nP002,37\n".encode("gbk"),
+        content_type="text/csv",
+    )
+    code, page = _call(
+        handler,
+        "GET",
+        f"/artifacts/{artifact['artifact_id']}/table",
+        query={"sort": ["年龄"]},
+    )
+    assert code == 200, page
+    assert page["columns"] == ["患者编号", "年龄"]
+    assert [row[0] for row in page["rows"]] == ["P002", "P001"]
+    assert page["encoding"] == "gb18030"
+    utf8 = _save_snapshot(
+        runner,
+        fid,
+        workspace / "plain.csv",
+        b"a,b\n1,2\n",
+        content_type="text/csv",
+    )
+    code, plain = _call(handler, "GET", f"/artifacts/{utf8['artifact_id']}/table")
+    assert code == 200 and plain["encoding"] == "utf-8"
+    runner.close()
+
+
 def test_table_optional_version_id_never_falls_back_to_latest(tmp_path):
     _cfg, runner, handler, fid = _setup(tmp_path)
     workspace = runner.workspace_for_branch(fid, fid)

@@ -11,6 +11,8 @@ import {
   translate,
 } from "../artifacts/api";
 import { filesT, readFailureText } from "../artifacts/copy";
+import { noteEncodingIn } from "../artifacts/encoding-note";
+import { encodingLabel } from "../artifacts/text-encoding";
 import { previewSlice } from "../artifacts/cache";
 import { partialNotice, previewDownload } from "../artifacts/partial";
 import { parseTable } from "../csv/csv";
@@ -95,7 +97,7 @@ function legacySourceStatus(
 
 /** Flag-off path: client parse + capped sheet. Never hits /table/profile or /export.csv. */
 export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, { signal: previewReadSignal(container) })
+  fetchArtifactText(url, { signal: previewReadSignal(container), onEncoding: noteEncodingIn(container) })
     .then((text) => {
       if (!container.isConnected) return;
       if (looksBinary(text)) {
@@ -214,6 +216,9 @@ export function renderWorkbenchTable(
       rows.length ? offset + 1 : 0,
       rows.length ? Math.min(offset + rows.length, total) : 0,
     );
+    if (payload.encoding && payload.encoding !== "utf-8") {
+      meta.textContent += " · " + filesT("viewer.encoding.detected", encodingLabel(payload.encoding));
+    }
     hold.innerHTML = "";
     const table = el("table", "sheet");
     const head = el("tr");

@@ -243,3 +243,24 @@ table.sheet th[data-sort="desc"]::after {
   font-size: 0.75em;
   color: var(--text-400, #6c6a64);
 }
+
+/* UP-4: a preview or tile decoded as something other than UTF-8 says so. */
+.renderer-encoding {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-300, #55534e);
+  background: var(--bg-100, #f5f0e8);
+  border-radius: var(--radius, 8px);
+}
+.thumb-encoding {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-300, #55534e);
+  background: var(--bg-200, #efe9de);
+  border-radius: 3px;
+}

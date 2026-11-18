@@ -15,6 +15,7 @@ import {
   THUMB_READ_MAX_BYTES,
 } from "./api";
 import { filesT, readFailureText } from "./copy";
+import { encodingLabel } from "./text-encoding";
 import type { ArtifactRow } from "./types";
 import { MOL_EXT, TEXT_EXT } from "./types";
 
@@ -141,7 +142,7 @@ function evictThumbCache(cache: Record<string, Promise<unknown>>): void {
 function thumbRead<T>(
   kind: ThumbKind,
   a: ArtifactRow,
-  derive: (read: { text: string; truncated: boolean }) => T,
+  derive: (read: { text: string; truncated: boolean; encoding?: string }) => T,
   consumer: HTMLElement,
 ): Promise<T> {
   const cache = _thumbCache.value as Record<string, Promise<unknown>>;
@@ -298,6 +299,23 @@ function dataCol(iconName: string, label: string): HTMLElement {
   return c;
 }
 
+/** "241 行 · 11 列" / "241 rows · 11 columns", in the reader's language. */
+export function thumbShapeLabel(rows: number, columns: number): string {
+  return (
+    filesT(rows === 1 ? "files.thumb.row" : "files.thumb.rows", rows.toLocaleString()) +
+    " · " +
+    filesT(columns === 1 ? "files.thumb.col" : "files.thumb.cols", columns.toLocaleString())
+  );
+}
+
+/** A non-UTF-8 tile names its encoding (UP-4), so "GB18030" is visible before opening. */
+function encodingBadge(d: HTMLElement, encoding: string | undefined): void {
+  if (!encoding || encoding === "utf-8") return;
+  const badge = el("span", "thumb-encoding", encodingLabel(encoding));
+  badge.title = filesT("files.thumb.encoding", encodingLabel(encoding));
+  d.appendChild(badge);
+}
+
 function fillDataPreview(d: HTMLElement, a: ArtifactRow): void {
   thumbRead(
     "data",
@@ -306,6 +324,7 @@ function fillDataPreview(d: HTMLElement, a: ArtifactRow): void {
       truncated: read.truncated,
       shape: read.truncated ? null : tableShape(read.text, a),
       columns: read.truncated ? partialColumns(read.text, a) : [],
+      encoding: read.encoding,
     }),
     d,
   )
@@ -314,7 +333,8 @@ function fillDataPreview(d: HTMLElement, a: ArtifactRow): void {
       d.innerHTML = "";
       if (state.truncated) {
         // Only a prefix was read: name the columns, never a row count.
-        d.appendChild(el("div", "rc", filesT("files.thumb.partial")));
+        const rc = d.appendChild(el("div", "rc", filesT("files.thumb.partial")));
+        encodingBadge(rc, state.encoding);
         state.columns.slice(0, 3).forEach((cn) => d.appendChild(dataCol("type", cn)));
         return;
       }
@@ -323,16 +343,8 @@ function fillDataPreview(d: HTMLElement, a: ArtifactRow): void {
         return;
       }
       const { rows, columns: cols } = state.shape;
-      d.appendChild(
-        el(
-          "div",
-          "rc",
-          rows +
-            (rows === 1 ? " row · " : " rows · ") +
-            cols.length +
-            (cols.length === 1 ? " column" : " columns"),
-        ),
-      );
+      const rc = d.appendChild(el("div", "rc", thumbShapeLabel(rows, cols.length)));
+      encodingBadge(rc, state.encoding);
       cols.slice(0, 3).forEach((cn) => d.appendChild(dataCol("type", cn)));
     })
     .catch((error: unknown) => {
@@ -349,16 +361,18 @@ function fillTextPreview(d: HTMLElement, a: ArtifactRow): void {
   thumbRead(
     "text",
     a,
-    (read) => ({ snippet: textSnippet(read.text), truncated: read.truncated }),
+    (read) => ({ snippet: textSnippet(read.text), truncated: read.truncated, encoding: read.encoding }),
     d,
   )
-    .then(({ snippet: snip, truncated }) => {
+    .then(({ snippet: snip, truncated, encoding }) => {
       if (d.isConnected === false) return;
       if (snip === null) return thumbFallback(d, "file");
       if (!snip.trim()) return thumbFallback(d, "file-text");
       // Only a thumbnail text preview may show a prefix: the rest of the body
       // was never read, and the download keeps the complete exact version.
-      d.textContent = (truncated ? filesT("files.thumb.partial") + "\n" : "") + snip;
+      const decodedAs =
+        encoding && encoding !== "utf-8" ? filesT("files.thumb.encoding", encodingLabel(encoding)) + "\n" : "";
+      d.textContent = (truncated ? filesT("files.thumb.partial") + "\n" : "") + decodedAs + snip;
     })
     .catch((error: unknown) => {
       if (d.isConnected === false || isArtifactReadAborted(error)) return;

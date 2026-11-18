@@ -2,6 +2,7 @@ import { isReady } from "../../compat/stub";
 import { parseTable } from "../csv/csv";
 import { typesetMath } from "../md/math";
 import { renderMd } from "../md/render";
+import { noteEncodingIn } from "./encoding-note";
 import { resolveRelativeImages } from "./markdown-assets";
 import { publicText } from "../scrub/scrub";
 import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
@@ -123,7 +124,7 @@ function appendResidues(
 }
 
 export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, { signal: previewReadSignal(container) })
+  fetchArtifactText(url, { signal: previewReadSignal(container), onEncoding: noteEncodingIn(container) })
     .then((text) => {
       if (!container.isConnected) return;
       const slice = previewSlice(text, MARKDOWN_PREVIEW_CHARACTERS);
@@ -206,7 +207,7 @@ export function renderStructuredText(
 }
 
 export function renderTextArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, { signal: previewReadSignal(container) })
+  fetchArtifactText(url, { signal: previewReadSignal(container), onEncoding: noteEncodingIn(container) })
     .then((text) => {
       if (!container.isConnected) return;
       const ct = String(a.content_type || "").toLowerCase();

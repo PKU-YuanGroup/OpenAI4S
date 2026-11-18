@@ -226,7 +226,7 @@ describe("readArtifactPrefix: prefix mode (F2)", () => {
     setArtifactsFetch(async () => responseOf([encoded("complete file")]));
     await expect(
       readArtifactPrefix("/api/v1/artifacts/p", { maxBytes: 100 }),
-    ).resolves.toEqual({ text: "complete file", truncated: false });
+    ).resolves.toEqual({ text: "complete file", truncated: false, encoding: "utf-8" });
   });
 
   it("stops exactly at the budget, cancels the reader and marks truncated", async () => {
@@ -243,7 +243,7 @@ describe("readArtifactPrefix: prefix mode (F2)", () => {
         ),
     );
     const read = await readArtifactPrefix("/api/v1/artifacts/p", { maxBytes: 10 });
-    expect(read).toEqual({ text: "0123456789", truncated: true });
+    expect(read).toEqual({ text: "0123456789", truncated: true, encoding: "utf-8" });
     expect(cancelled).toBe(true);
   });
 
@@ -254,7 +254,7 @@ describe("readArtifactPrefix: prefix mode (F2)", () => {
         new Response(streamed([chunk]), { headers: { "content-length": "10" } }),
     );
     const read = await readArtifactPrefix("/api/v1/artifacts/p", { maxBytes: 10 });
-    expect(read).toEqual({ text: "0123456789", truncated: false });
+    expect(read).toEqual({ text: "0123456789", truncated: false, encoding: "utf-8" });
   });
 
   it("drops an incomplete trailing UTF-8 sequence instead of emitting a replacement character", async () => {
@@ -314,6 +314,25 @@ describe("readArtifactPrefix: prefix mode (F2)", () => {
     await expect(readArtifactPrefix("/api/v1/artifacts/p", { maxBytes: 12 })).resolves.toEqual({
       text: "中文报告",
       truncated: true,
+      encoding: "utf-8",
     });
+  });
+
+  it("decodes a GBK/GB18030 file as GB18030 and says so (UP-4)", async () => {
+    // "患者编号,年龄\n张三,42\n" in GBK.
+    const gbk = new Uint8Array([
+      0xbb, 0xbc, 0xd5, 0xdf, 0xb1, 0xe0, 0xba, 0xc5, 0x2c, 0xc4, 0xea, 0xc1, 0xe4, 0x0a,
+      0xd5, 0xc5, 0xc8, 0xfd, 0x2c, 0x34, 0x32, 0x0a,
+    ]);
+    setArtifactsFetch(async () => responseOf([gbk]));
+    const seen: string[] = [];
+    await expect(
+      fetchArtifactText("/api/v1/artifacts/g", { onEncoding: (e) => seen.push(e) }),
+    ).resolves.toBe("患者编号,年龄\n张三,42\n");
+    expect(seen).toEqual(["gb18030"]);
+    // A prefix cut inside a double-byte character drops the half character.
+    setArtifactsFetch(async () => responseOf([gbk]));
+    const prefix = await readArtifactPrefix("/api/v1/artifacts/g", { maxBytes: 3 });
+    expect(prefix).toEqual({ text: "患", truncated: true, encoding: "gb18030" });
   });
 });

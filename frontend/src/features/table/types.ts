@@ -41,6 +41,8 @@ export type TablePagePayload = {
   artifact_id?: string;
   version_id?: string;
   filename?: string;
+  /** How the server decoded a delimited file ("utf-8", "gb18030", …; UP-4). */
+  encoding?: string;
   columns?: string[];
   column_types?: string[];
   rows?: unknown[][];
