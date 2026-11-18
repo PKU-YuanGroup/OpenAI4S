@@ -419,6 +419,192 @@ def test_the_budget_cut_names_every_file_it_dropped(tmp_path):
         assert "budget" in problem["message"]
 
 
+# --------------------------------------------------------------------------
+# the structured spelling: `@name` in the text, the version beside it (ART-16)
+# --------------------------------------------------------------------------
+
+
+def test_a_mention_pins_the_version_and_leaves_the_text_as_typed(tmp_path):
+    """The composer used to write `@name#v-<id>`, and the hash then showed in
+    the bubble and the session title. The structured form pins the same version
+    while the words stay what the user typed."""
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    first = _seed(cfg, store, root, "p", "results.csv", b"v1 contents\n")
+    # A later version of the same name: an unpinned read would take this one.
+    _seed(cfg, store, root, "p", "results.csv", b"v2 contents\n")
+
+    text = "@results.csv 一共多少行？"
+    resolved, problems = artifact_refs.resolve_message_refs(
+        text,
+        store=store,
+        root_frame_id=root,
+        project_id="p",
+        mentions=[{"filename": "results.csv", "version_id": first["version_id"]}],
+    )
+    assert problems == []
+    assert resolved.startswith(text + "\n")
+    assert "v1 contents" in resolved
+    assert "v2 contents" not in resolved
+    assert "unpinned" not in resolved
+    # The model is told which version it read -- in the block, not the words.
+    assert f"(version {first['version_id']})" in resolved
+    assert "#v-" not in resolved
+
+
+def test_a_mention_whose_token_was_deleted_resolves_nothing(tmp_path):
+    """The text still decides which references exist. A pin whose `@name` the
+    user deleted before sending must not reach the prompt -- or materialise a
+    sibling session's file -- any more than a deleted `@name#v-...` did."""
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    theirs = store.new_frame(kind="turn", project_id="p")
+    mine = store.new_frame(kind="turn", project_id="p")
+    seeded = _seed(cfg, store, theirs, "p", "shared.csv", b"col\n1\n")
+    calls: list[str] = []
+
+    resolved, problems = artifact_refs.resolve_message_refs(
+        "never mind, ignore that",
+        store=store,
+        root_frame_id=mine,
+        project_id="p",
+        materialise=lambda version_id, name: calls.append(version_id) or {},
+        mentions=[{"filename": "shared.csv", "version_id": seeded["version_id"]}],
+    )
+    assert (resolved, problems, calls) == ("never mind, ignore that", [], [])
+
+
+def test_a_mention_from_a_sibling_session_materialises_like_the_text_form(tmp_path):
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    source = store.new_frame(kind="turn", project_id="p")
+    target = store.new_frame(kind="turn", project_id="p")
+    seeded = _seed(cfg, store, source, "p", "shared.csv", b"col\n1\n")
+    brought: list[tuple[str, str]] = []
+
+    def _materialise(version_id, name):
+        brought.append((version_id, name))
+        return {"version_id": version_id}
+
+    resolved, problems = artifact_refs.resolve_message_refs(
+        "@shared.csv",
+        store=store,
+        root_frame_id=target,
+        project_id="p",
+        materialise=_materialise,
+        mentions=[{"filename": "shared.csv", "version_id": seeded["version_id"]}],
+    )
+    assert problems == []
+    assert brought == [(seeded["version_id"], "shared.csv")]
+    assert "col" in resolved
+
+
+def test_a_mentioned_name_is_not_read_again_as_an_unpinned_reference(tmp_path):
+    """`@name` is also the legacy spelling. A mentioned name must resolve once,
+    pinned; a phantom unpinned second block -- or a `not_found` for the part of
+    a spaced filename the legacy pattern can see -- is a wrong answer."""
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    plain = _seed(cfg, store, root, "p", "plain.csv", b"plain bytes\n")
+    # The legacy pattern reads `@dir.x` out of this name and finds no such file.
+    spaced = _seed(cfg, store, root, "p", "dir.x y.txt", b"spaced bytes\n")
+
+    resolved, problems = artifact_refs.resolve_message_refs(
+        "@plain.csv and @dir.x y.txt",
+        store=store,
+        root_frame_id=root,
+        project_id="p",
+        mentions=[
+            {"filename": "plain.csv", "version_id": plain["version_id"]},
+            {"filename": "dir.x y.txt", "version_id": spaced["version_id"]},
+        ],
+    )
+    assert problems == []
+    assert resolved.count("### Referenced file:") == 2
+    assert "unpinned" not in resolved
+    assert "spaced bytes" in resolved
+    # In the order the message names them.
+    assert resolved.index("plain bytes") < resolved.index("spaced bytes")
+
+
+def test_the_two_spellings_combine_and_dedupe_by_version(tmp_path):
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    a = _seed(cfg, store, root, "p", "a.csv", b"AAA\n")
+    b = _seed(cfg, store, root, "p", "b.csv", b"BBB\n")
+
+    resolved, problems = artifact_refs.resolve_message_refs(
+        f"@a.csv#{a['version_id']} vs @b.csv, and @a.csv again",
+        store=store,
+        root_frame_id=root,
+        project_id="p",
+        mentions=[
+            {"filename": "b.csv", "version_id": b["version_id"]},
+            {"filename": "a.csv", "version_id": a["version_id"]},
+        ],
+    )
+    assert problems == []
+    assert resolved.count("### Referenced file:") == 2
+    assert resolved.index("AAA") < resolved.index("BBB")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "a.csv",
+        {"filename": "a.csv", "version_id": "v-abcdef123456"},
+        ["a.csv"],
+        [{"filename": "", "version_id": "v-abcdef123456"}],
+        [{"filename": "a\n.csv", "version_id": "v-abcdef123456"}],
+        [{"filename": "a.csv"}],
+        [{"filename": "a.csv", "version_id": "abcdef123456"}],
+        [{"filename": "a.csv", "version_id": "v-abc"}],
+        [{"filename": "a.csv", "version_id": "v-abcdef123456; DROP"}],
+        [{"filename": "x" * 513, "version_id": "v-abcdef123456"}],
+        [{"filename": "a.csv", "version_id": "v-abcdef123456"}]
+        * (artifact_refs.MAX_MENTIONS + 1),
+    ],
+)
+def test_a_malformed_mention_list_is_refused_not_skipped(raw):
+    """A pin dropped in silence sends the unpinned latest version, or nothing,
+    while the user believes the version they picked went with the message."""
+    with pytest.raises(ValueError):
+        artifact_refs.parse_mentions(raw)
+
+
+def test_a_well_formed_mention_list_keeps_only_what_the_server_resolves():
+    assert artifact_refs.parse_mentions(None) == []
+    assert artifact_refs.parse_mentions([]) == []
+    assert artifact_refs.parse_mentions(
+        [
+            {
+                "filename": "cohort 两张表.xlsx",
+                "version_id": "v-9f5c06efc35e",
+                "artifact_id": "a-1",
+            }
+        ]
+    ) == [{"filename": "cohort 两张表.xlsx", "version_id": "v-9f5c06efc35e"}]
+
+
+def test_display_text_drops_a_text_form_version_and_nothing_else():
+    """What a title or a queue preview shows of a text-form message."""
+    assert (
+        artifact_refs.display_text(
+            "@cohort_clinical_markers.csv#v-9f5c06efc35e 这个文件一共多少行？"
+        )
+        == "@cohort_clinical_markers.csv 这个文件一共多少行？"
+    )
+    assert (
+        artifact_refs.display_text("a @x.csv#v-abcdef12\n@数据.csv#v-0123456789ab.")
+        == "a @x.csv\n@数据.csv."
+    )
+    for unchanged in ("issue #v-123456", "me@x.csv#v-abcdef12", "@plain.csv", ""):
+        assert artifact_refs.display_text(unchanged) == unchanged
+
+
 def test_a_single_ordinary_reference_is_unaffected(tmp_path):
     """A budget that catches the common case is a bug, not a bound."""
     cfg = _cfg(tmp_path)

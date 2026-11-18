@@ -19,6 +19,7 @@ import { setLang, t } from "../../i18n/runtime";
 import { _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
+import { clearMentions, composerMentions, rememberMention } from "../autocomplete/mentions";
 import { UPLOAD_STATE, type UploadBatch, type UploadResult } from "../chrome/upload";
 import { chooseComposerModel, modelT, resetSessionModelState, sessionModelPin } from "../customize/models";
 import { rebindConfirmText, rebindDoneText, send } from "./send";
@@ -189,6 +190,18 @@ describe("send(): a message the server refuses before admission", () => {
     // Nothing was stored for it, so the optimistic bubble does not stay either.
     expect(userBubble()?.removed).toBe(true);
     expect(openCust).toHaveBeenCalledWith("models");
+  });
+
+  it("a refused draft goes back with its @ pins, so the retry sends the same versions", async () => {
+    clearMentions();
+    rememberMention({ filename: "cohort.csv", version_id: "v-9f5c06efc35e", artifact_id: "a", root_frame_id: "" });
+    nodes.composer!.value = "@cohort.csv rows?";
+    routes["/frames/frame_1/message"] = refusal("model_profile_needs_key", NEEDS_KEY);
+    await send(nodes.composer!.value);
+
+    expect(nodes.composer!.value).toBe("@cohort.csv rows?");
+    expect(composerMentions(nodes.composer!.value).map((m) => m.version_id)).toEqual(["v-9f5c06efc35e"]);
+    clearMentions();
   });
 
   it("keeps the text when the rebind prompt for model_revision_unavailable is dismissed", async () => {

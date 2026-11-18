@@ -26,6 +26,7 @@ import { $, el, grow } from "../sessions/dom";
 import { renderComposerRefChips } from "../sessions/transcript";
 import { loadSkillsCatalog } from "./catalog";
 import { acDetectFrom, type ComposerDetect } from "./detect";
+import { rememberMention } from "./mentions";
 import {
   artifactToAcItem,
   mergeArtifactCandidates,
@@ -203,6 +204,7 @@ function sameItemList(a: AcItem[], b: AcItem[]): boolean {
     const x = a[i]!;
     const y = b[i]!;
     if (x.insert !== y.insert || x.label !== y.label || x.sub !== y.sub) return false;
+    if ((x.mention?.version_id || "") !== (y.mention?.version_id || "")) return false;
   }
   return true;
 }
@@ -395,6 +397,8 @@ export function acPick(i: number): void {
   const pos = c.selectionStart;
   const token = ac.trigger + it.insert + " ";
   c.value = val.slice(0, ac.start) + token + val.slice(pos);
+  // The text says `@name`; the version the row named is kept beside it.
+  if (it.mention) rememberMention(it.mention);
   const np = ac.start + token.length;
   c.setSelectionRange(np, np);
   acClose();

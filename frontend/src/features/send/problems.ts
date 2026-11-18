@@ -7,6 +7,7 @@
 
 import { t } from "../../i18n/runtime";
 import { bytes } from "../artifacts/api";
+import { stripRefVersions } from "../autocomplete/mentions";
 import { $, el, messagesHost } from "../messages/dom";
 import { down } from "../messages/scroll";
 import { publicText } from "../scrub/scrub";
@@ -57,7 +58,8 @@ export function renderRefProblems(problems: unknown): void {
   problems.slice(0, 8).forEach((raw) => {
     const p = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
     const row = el("div", "ref-problem");
-    row.appendChild(el("code", "ref-problem-ref", "@" + String(p.ref || "")));
+    // `@name`, as the user wrote it: the server's ref also names the version.
+    row.appendChild(el("code", "ref-problem-ref", stripRefVersions("@" + String(p.ref || ""))));
     // The server's message, not a code lookup: it already names the file and
     // says what to do, and re-deriving it here is how the two drift apart.
     row.appendChild(el("span", "ref-problem-msg", String(p.message || "")));

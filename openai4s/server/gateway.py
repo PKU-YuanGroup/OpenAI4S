@@ -8577,6 +8577,7 @@ class SessionRunner:
         explore: bool = False,
         task_mode: str | None = None,
         on_admitted: Callable[[MessageJob], None] | None = None,
+        mentions: list[dict] | None = None,
     ) -> MessageJob:
         """Start a user turn in a background thread.
 
@@ -8643,7 +8644,8 @@ class SessionRunner:
             # rewritable while the item waits, so re-reading it at render time
             # would show a queued item running under a configuration it is not.
             metadata={
-                "preview": queue_preview(text),
+                # Display text: a text-form `@name#v-<id>` previews as `@name`.
+                "preview": queue_preview(artifact_refs.display_text(text)),
                 "model_profile_id": job.model_profile_id,
                 "model_profile_revision": job.model_profile_revision,
             },
@@ -8730,6 +8732,9 @@ class SessionRunner:
                                 job.model_profile_revision,
                             ),
                             task_mode=task_mode,
+                            # Only when there are any: a turn without pins
+                            # calls `run_message` exactly as it always has.
+                            **({"mentions": mentions} if mentions else {}),
                         )
                         result.setdefault("job_id", job.job_id)
                         result.setdefault("execution_id", ticket.execution_id)
@@ -10582,6 +10587,7 @@ class SessionRunner:
         explore: bool = False,
         frozen_binding: tuple[str, int] | None = None,
         task_mode: str | None = None,
+        mentions: list[dict] | None = None,
     ) -> dict:
         st = self._state(root_frame_id, project_id)
         if frozen_binding:
@@ -10686,6 +10692,9 @@ class SessionRunner:
             # prompt followed it instead of titling, so the 80-character
             # "[Plan Mode] Do not execute ..." placeholder became the title.
             title_text = plan_mode_request_text(user_text) if st.plan else user_text
+            # And without a text-form pin's `#v-<id>`: the title is display
+            # text, and the hash is the version, not the user's words (ART-16).
+            title_text = artifact_refs.display_text(title_text)
             if not (frame.get("name") or frame.get("task_summary")):
                 title_placeholder = re.sub(r"\s+", " ", title_text).strip()[:80]
                 self.store.update_frame(root_frame_id, task_summary=title_placeholder)
@@ -10717,7 +10726,7 @@ class SessionRunner:
                     root_frame_id, title_text, self._llm_cfg(st), title_placeholder
                 )
             # resolve @filename references → inject the artifact content (M4)
-            resolved, message_refs = self._resolve_mentions(st, user_text)
+            resolved, message_refs = self._resolve_mentions(st, user_text, mentions)
             if message_refs:
                 # Stamped after the row exists, not passed at INSERT: resolving
                 # can materialise a sibling session's file into this workspace,
@@ -11767,8 +11776,15 @@ class SessionRunner:
         )
         return identity
 
-    def _resolve_mentions(self, st: SessionState, text: str) -> tuple[str, list[dict]]:
+    def _resolve_mentions(
+        self, st: SessionState, text: str, mentions: list[dict] | None = None
+    ) -> tuple[str, list[dict]]:
         """Append the content of any @-referenced artifact to the prompt.
+
+        `mentions` are the request's structured pins (ART-16): the workbench
+        writes `@name` and sends the version beside it, so the stored text and
+        everything derived from it stay free of `#v-<id>`. The version reaches
+        the model in the appended block's header, here, and nowhere else.
 
         The resolution itself lives in `server/artifact_refs.py`. What used to
         be here read the artifact's *live path*, so the same reference meant
@@ -11794,6 +11810,7 @@ class SessionRunner:
                 st, version_id, name
             ),
             on_resolved=sent.append,
+            mentions=mentions,
         )
         if problems:
             # Emitted, not raised: the turn should still run. A user who
@@ -17650,6 +17667,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 req = (
                     (b.get("input_data") or {}).get("request") or b.get("request") or ""
                 )
+                # Structured `@file` pins (ART-16), checked before anything is
+                # reserved: a malformed list is refused, never half-applied.
+                try:
+                    mentions = artifact_refs.parse_mentions(b.get("mentions"))
+                except ValueError as error:
+                    raise GatewayError(400, str(error), "invalid_mentions") from error
                 f = store.get_frame(fid) or {}
                 pid = f.get("project_id") or "default"
                 # Fold pinned image annotations into the message so the remote
@@ -17761,6 +17784,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         explore=bool(b.get("explore")),
                         task_mode=b.get("task_mode"),
                         on_admitted=_persist_correlation,
+                        **({"mentions": mentions} if mentions else {}),
                     )
                 except BaseException:
                     # Every synchronous refusal lands here -- the 413 on an

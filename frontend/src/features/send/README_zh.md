@@ -15,7 +15,7 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`candidate.ts`](candidate.ts) | Review 门控三态时序：`markCandidateReady` → `applyCandidateResolution` → `applyFinalReviewStatus`。 |
 | [`candidate.test.ts`](candidate.test.ts) | 三态顺序、禁止把 verified 降级、durable 回执规则。 |
 | [`first-send.test.ts`](first-send.test.ts) | 新会话的第一条消息只在共享创建流程打开对话之后才派发，`openConversation` 的重置不会落在回合中间；票据与运行态得以保留。 |
-| [`refused-send.test.ts`](refused-send.test.ts) | 服务端在准入之前拒绝的发送（409 `model_profile_needs_key` / `model_revision_unavailable` / `model_profile_needs_active`）：文字回到输入框、移除乐观气泡（若输入框里已有新内容，则保留该气泡并标为未发送，被拒绝的文字不会丢失），提示保留服务端给出的原因而不是「本轮失败」；改绑成功后的提示说明实际绑定了什么（`rebindDoneText`）；改绑确认框依据服务端的 code 与消息说明真实原因（`rebindConfirmText`：配置已改指其他提供商或端点、缺少密钥、固定配置无法读取、匹配不唯一；只有服务端明确说"已不存在"时才这样说，其余情况用中性的"已不可用"）。拒绝在用户打开另一个会话之后才到达时，不往那个会话里放任何东西：不写入它的输入框、不显示提示、不打开设置、不弹改绑确认。 模型切换尚未保存时在本地阻止发送并保留草稿，保存完成后可重试。 |
+| [`refused-send.test.ts`](refused-send.test.ts) | 服务端在准入之前拒绝的发送（409 `model_profile_needs_key` / `model_revision_unavailable` / `model_profile_needs_active`）：文字回到输入框、移除乐观气泡（若输入框里已有新内容，则保留该气泡并标为未发送，被拒绝的文字不会丢失），提示保留服务端给出的原因而不是「本轮失败」；改绑成功后的提示说明实际绑定了什么（`rebindDoneText`）；改绑确认框依据服务端的 code 与消息说明真实原因（`rebindConfirmText`：配置已改指其他提供商或端点、缺少密钥、固定配置无法读取、匹配不唯一；只有服务端明确说"已不存在"时才这样说，其余情况用中性的"已不可用"）。拒绝在用户打开另一个会话之后才到达时，不往那个会话里放任何东西：不写入它的输入框、不显示提示、不打开设置、不弹改绑确认。 模型切换尚未保存时在本地阻止发送并保留草稿，保存完成后可重试。被拒绝的草稿连同其 `@` 钉选一起回到输入框，重试时发送的仍是同一批版本。 |
 | [`environment.ts`](environment.ts) | `send()` / `turnDone` 用的 standard-profile 就绪横幅，以及 `bootEnvironmentReadiness()`：Shell 渲染出横幅后由 `main.tsx` 启动的加载期拉取。它等字典就绪后再请求，并在切换语言时重绘横幅。 |
 | [`environment.test.ts`](environment.test.ts) | 加载期拉取：字典就绪前不发请求（字典失败时仍会发一次）、两处横幅都显示并填好文案、切换语言只重绘不再请求、开关关闭或首次拉取失败时横幅保持隐藏、无论调用多少次只启动一次，以及 `main.tsx` 在 `render` 之后启动它。 |
 | [`handlers.ts`](handlers.ts) | cards / candidate / step / plan / permission 的 WS 类型；`handleFrameUpdateTurn`。 |
@@ -27,9 +27,9 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`permission.test.ts`](permission.test.ts) | 202 `decision_resolving` 不是失败：不再提供重试、不显示失败提示，由 `permission_resolved` 收尾卡片；真正的拒绝（410 已过期）仍会重新启用按钮。 |
 | [`plan.ts`](plan.ts) | 结构化计划卡、进度、批准 / 修订 / 丢弃 / 恢复。仍为 `in_progress` 的步骤只在计划执行中时才闪烁；`completed` 计划若仍带着这样的步骤（服务端开始拒绝这种组合之前写下的行），会用本功能自带的文案表标成「已结束、有步骤未确认完成」。 |
 | [`plan.test.ts`](plan.test.ts) | 结束态计划卡：带着进行中步骤的已完成计划不显示为完成；执行中仍保留实时图标；步骤全部有结论的计划照常显示完成。草稿计划的修改意见未能派发（已有回合在运行、请求失败）时会放回输入框。丢弃计划的请求在用户打开另一个会话之后才返回时，不动那个会话的计划卡与计划状态。旧版审批卡只在计划模式回合正常结束后出现：被停止、被 guardian 拦截或失败的回合不弹卡，也不给下一回合留下待审批状态。 |
-| [`problems.ts`](problems.ts) | 附件问题卡（客户端文案）与 @-引用问题卡（服务端文案）。 |
-| [`send.test.ts`](send.test.ts) | 拒绝与首条消息之外的 `send()` 行为：程序化发送（权限卡的继续、批准计划）不动输入框里用户无关的草稿，而输入框自己的文字发送后会被清空；技能目录读取失败后，下一次发送的 `/skill` 仍会带上技能指令。 |
-| [`send.ts`](send.ts) | 作曲框发送全链。计划模式 payload 走 F-07 `planModePayload`。`bindComposer`（由 `main.tsx` 在 `render` 之后调用）把 Enter 和发送按钮绑到同一个派发锁上。 |
+| [`problems.ts`](problems.ts) | 附件问题卡（客户端文案）与 @-引用问题卡（服务端文案；引用显示为 `@name`，不带版本后缀）。 |
+| [`send.test.ts`](send.test.ts) | 拒绝与首条消息之外的 `send()` 行为：程序化发送（权限卡的继续、批准计划）不动输入框里用户无关的草稿，而输入框自己的文字发送后会被清空；技能目录读取失败后，下一次发送的 `/skill` 仍会带上技能指令。用 `@` 选中的文件以 `@name` 加 `mentions: [{filename, version_id}]` 发出，实时气泡显示用户输入的原文和引用芯片；手动输入的 `@name#v-<id>` 按原文发出，实时气泡与重开后一样显示为 `@name`；token 已被删掉的钉选不会发出，程序化发送不带钉选；@-引用问题卡把引用显示为 `@name`。 |
+| [`send.ts`](send.ts) | 作曲框发送全链。计划模式 payload 走 F-07 `planModePayload`。输入框自己的草稿把其 `@` 钉选（`autocomplete/mentions.ts`）作为 `mentions` 发出，实时气泡下显示引用芯片；实时气泡与重开后一样，把手动输入的 `@name#v-<id>` 显示为 `@name`。`bindComposer`（由 `main.tsx` 在 `render` 之后调用）把 Enter 和发送按钮绑到同一个派发锁上。 |
 | [`step.ts`](step.ts) | 语义活动步骤、`buildStepCard`、`searchResultHttpUrl`。从步骤里打开产物失败时用提示报告。历史与实时更新中折叠的卡片在第一次展开时才构建正文；`buildStepCard` 本身（window 契约）立即构建。 |
 | [`step.test.ts`](step.test.ts) | 步骤卡片：重开运行中的会话时，重放的回合更新已存的卡片而不是再添一张；折叠的历史卡片或被更新的卡片在展开前没有正文，展开后显示最新的步骤；自动展开的卡片与 `buildStepCard` 立即构建；输出开关、审阅中状态与无标题的审阅发现随界面语言显示；查看器打不开产物时会报告，而不是留下未处理的 rejection。 |
 | [`ticket.ts`](ticket.ts) | Turn ticket 世代、`acceptTurnTicket` / `activateTurnTicket`、`resumeWatch`。 |

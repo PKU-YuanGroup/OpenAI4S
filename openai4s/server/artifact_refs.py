@@ -15,10 +15,15 @@ first is obvious:
    `.npz` or a PDF injected a wall of U+FFFD that reads, to a model, as
    corrupted text rather than as "this is not text".
 
-A pinned reference is written `@name#v-<version_id>`. Self-contained on purpose:
-the composer is a plain textarea, so any out-of-band ref list would desync the
-moment somebody edits the words around it, and the text has to be the single
-source of truth.
+A pinned reference has two spellings. The text form `@name#v-<version_id>`
+is self-contained, and still accepted from any client. The workbench sends the
+structured form instead (ART-16): the text says only `@name`, and the version
+travels beside it as a `mentions` entry `{filename, version_id}`. The text form
+put the version hash into everything that shows the user's words -- the
+composer, the message bubble, the session title. The structured form keeps the
+text the single source of truth for *which* references exist: a mention whose
+`@name` token is no longer in the text is not resolved, so a reference typed
+and then deleted still leaves nothing behind.
 
 Cross-session references in the same project are **materialised** rather than
 read in place (D3), and only when the turn is actually sent -- inserting a chip
@@ -38,8 +43,9 @@ from openai4s.server.errors import record_diagnostic
 #: that fixes what it means.
 PINNED_REF = re.compile(r"(?:^|\s)@([\w./-]+\.\w+)#(v-[0-9a-zA-Z]{6,})")
 
-#: The unpinned spelling, deprecated and kept working until
-#: `LEGACY_REF_REMOVED_IN` below. It resolves inside the calling session only,
+#: The unpinned spelling -- a bare `@name` that no `mentions` entry pins -- is
+#: deprecated and kept working until `LEGACY_REF_REMOVED_IN` below. It
+#: resolves inside the calling session only,
 #: exactly as before -- widening it to the project would let a guessed filename
 #: pull in another session's file, which is the thing the pinned form asks for
 #: explicitly and gets checked for.
@@ -48,6 +54,28 @@ PINNED_REF = re.compile(r"(?:^|\s)@([\w./-]+\.\w+)#(v-[0-9a-zA-Z]{6,})")
 # character of "csv", the lookahead then saw "v" rather than "#", and
 # `@a.csv#v-abc123` produced a phantom legacy reference to "a.cs".
 LEGACY_REF = re.compile(r"(?:^|\s)@([\w./-]+\.\w+)(?![\w#])")
+
+#: The version suffix of a pinned token, as `display_text` drops it. Same name
+#: and version shape as `PINNED_REF`, so what is hidden is exactly what the
+#: resolver reads as a pin.
+_PINNED_SUFFIX = re.compile(r"((?:^|\s)@[\w./-]+\.\w+)#v-[0-9a-zA-Z]{6,}")
+
+#: A structured mention's version id. Bounded above as well: the field is
+#: request input, and the text form never needed more than this either.
+MENTION_VERSION = re.compile(r"v-[0-9a-zA-Z]{6,64}")
+
+#: How many mentions one request may carry, and how long a filename may be.
+#: Generous on purpose -- `MAX_REFS` is what bounds the prompt, and a reference
+#: past it is reported (`too_many_refs`) rather than refused.
+MAX_MENTIONS = 64
+MAX_MENTION_NAME = 512
+
+#: What may follow `@name` for the token to still be that name. A word
+#: character, `#`, `/`, `-` or `.` plus an alphanumeric would make it a longer
+#: name (`@a.csv.bak`, `@a.csv-old`) or the text form (`@a.csv#v-...`). Kept to
+#: ASCII so `@a.csv这个文件` -- no space before the Chinese -- is still `a.csv`,
+#: the same tolerance `PINNED_REF`'s ASCII version gave the text form.
+_MENTION_END = r"(?![A-Za-z0-9_#/-]|\.[A-Za-z0-9])"
 
 #: The release by which the bare `@name` spelling must be gone.
 #:
@@ -158,6 +186,94 @@ def _problem(ref: str, code: str, message: str) -> RefProblem:
     return RefProblem(ref=ref, code=code, message=message)
 
 
+def display_text(text: str) -> str:
+    """`text` as a person should read it: every `@name#v-<id>` shown as `@name`.
+
+    For what is *derived* from a message for display -- the session title, the
+    queue preview -- never for the message row, which keeps what was sent. A
+    client that still writes the text form must not put the hash back into a
+    title the structured form keeps clean.
+    """
+    return _PINNED_SUFFIX.sub(r"\1", text or "")
+
+
+def parse_mentions(raw: object) -> list[dict]:
+    """A request's `mentions` field, validated; `ValueError` on a bad shape.
+
+    Each entry is `{filename, version_id}`; other keys are ignored. Refused
+    rather than skipped when malformed: a pin dropped in silence would send the
+    model the unpinned latest version, or nothing, while the user believes the
+    exact version they picked went with the message.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("mentions must be a list of {filename, version_id}")
+    if len(raw) > MAX_MENTIONS:
+        raise ValueError(f"at most {MAX_MENTIONS} mentions may be sent")
+    parsed: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each mention must be an object")
+        filename = item.get("filename")
+        if (
+            not isinstance(filename, str)
+            or not filename.strip()
+            or len(filename) > MAX_MENTION_NAME
+            or any(ch < " " or ch == "\x7f" for ch in filename)
+        ):
+            raise ValueError(
+                "each mention needs a filename: 1-512 characters, no control "
+                "characters"
+            )
+        version_id = item.get("version_id")
+        if not isinstance(version_id, str) or not MENTION_VERSION.fullmatch(version_id):
+            raise ValueError("each mention needs a version_id of the form v-<id>")
+        parsed.append({"filename": filename, "version_id": version_id})
+    return parsed
+
+
+def _mentioned(
+    text: str, mentions: list[dict] | None
+) -> tuple[list[tuple[int, str, str]], list[tuple[int, int]]]:
+    """The mentions whose `@name` token is still in `text`, and every token span.
+
+    A mention without its token is dropped here, before anything resolves --
+    the structured form's equivalent of deleting `@name#v-...` from the text.
+    Each kept mention is placed at its first token, so references resolve in
+    the order the message names them whichever spelling they use.
+    """
+    found: list[tuple[int, str, str]] = []
+    spans: list[tuple[int, int]] = []
+    for mention in mentions or ():
+        name = str(mention.get("filename") or "")
+        version_id = str(mention.get("version_id") or "")
+        if not name or not version_id:
+            continue
+        token = re.compile(r"(?:^|(?<=\s))@" + re.escape(name) + _MENTION_END)
+        hits = [match.span() for match in token.finditer(text)]
+        if not hits:
+            continue
+        found.append((hits[0][0], name, version_id))
+        spans.extend(hits)
+    return found, spans
+
+
+def _blank(text: str, spans: list[tuple[int, int]]) -> str:
+    """`text` with each span overwritten by spaces, every offset unchanged.
+
+    So the text-form patterns do not read a mentioned name a second time: a
+    filename with a space in it (`@sub/dir.x y.csv`) would otherwise also
+    surface as a phantom legacy `@sub/dir.x`.
+    """
+    if not spans:
+        return text
+    chars = list(text)
+    for start, end in spans:
+        chars[start:end] = " " * (end - start)
+    return "".join(chars)
+
+
 def _artifact_ref(
     *,
     metadata: dict,
@@ -223,6 +339,7 @@ def resolve_message_refs(
     materialise: Callable[[str, str], dict] | None = None,
     on_resolved: Callable[[dict], None] | None = None,
     limit: int = MAX_REFS,
+    mentions: list[dict] | None = None,
 ) -> tuple[str, list[dict]]:
     """Return the prompt with referenced content appended, plus what failed.
 
@@ -239,6 +356,12 @@ def resolve_message_refs(
     value on purpose: every caller in the tree unpacks two, and widening the
     tuple to carry an optional record is a breaking change for a field most
     callers do not want.
+
+    ``mentions`` is the structured spelling (see :func:`parse_mentions`): each
+    entry pins the `@filename` token it names, exactly as `#v-<id>` after that
+    token would. The text is returned unchanged either way -- the version the
+    model reads is named in the appended block's header, never written back
+    into the words the user typed.
     """
     problems: list[dict] = []
     blocks: list[str] = []
@@ -276,11 +399,24 @@ def resolve_message_refs(
         if on_resolved is not None:
             on_resolved(ref)
 
-    pinned = [(name, version) for name, version in PINNED_REF.findall(text or "")]
+    structured, spans = _mentioned(text or "", mentions)
+    scan = _blank(text or "", spans)
+    pinned = [
+        (name, version)
+        for _, name, version in sorted(
+            [
+                (match.start(), match.group(1), match.group(2))
+                for match in PINNED_REF.finditer(scan)
+            ]
+            + structured,
+            key=lambda item: item[0],
+        )
+    ]
     # The legacy spelling only counts where a pinned one did not already claim
-    # that name, so `@a.csv#v-1` is not also read as a bare `@a.csv`.
+    # that name, so `@a.csv#v-1` -- or `@a.csv` with a mention -- is not also
+    # read as a bare `@a.csv`.
     pinned_names = {name for name, _ in pinned}
-    legacy = [n for n in LEGACY_REF.findall(text or "") if n not in pinned_names]
+    legacy = [n for n in LEGACY_REF.findall(scan) if n not in pinned_names]
 
     spent = 0
 
@@ -661,9 +797,13 @@ __all__ = [
     "ArtifactRef",
     "BINARY_SUFFIXES",
     "LEGACY_REF",
+    "MAX_MENTIONS",
     "MAX_REFS",
     "MAX_REF_BYTES",
     "MAX_TOTAL_REF_BYTES",
+    "MENTION_VERSION",
     "PINNED_REF",
+    "display_text",
+    "parse_mentions",
     "resolve_message_refs",
 ]

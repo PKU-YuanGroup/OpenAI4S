@@ -28,6 +28,8 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from openai4s.config import Config, LLMConfig
 from openai4s.server import artifact_refs
 from openai4s.server import gateway as gateway_mod
@@ -406,6 +408,175 @@ def test_reopening_a_session_gets_the_reference_back_from_the_route(
     assert user["artifact_refs"], "the route dropped the message's references"
     assert user["artifact_refs"][0]["version_id"] == seeded["version_id"]
     assert user["artifact_refs"][0]["display_name"] == "counts.csv"
+
+
+# ---------------------------------------------------------------------------
+# ART-16: the version travels beside the words, never inside them
+# ---------------------------------------------------------------------------
+
+
+def _capture_turn(monkeypatch, runner) -> tuple[list[list[dict]], list[tuple]]:
+    """What the model was sent, and what the title summariser was asked."""
+    prompts: list[list[dict]] = []
+    titles: list[tuple] = []
+
+    def _chat(messages, *args, **kwargs):
+        del args, kwargs
+        prompts.append([dict(m) for m in messages])
+        return {"content": "Read it.", "usage": {}}
+
+    monkeypatch.setattr(gateway_mod, "chat", _chat)
+    monkeypatch.setattr(
+        runner, "_spawn_title_summary", lambda *args, **kwargs: titles.append(args)
+    )
+    return prompts, titles
+
+
+def _user_turn(prompts: list[list[dict]]) -> str:
+    users = [m for m in prompts[0] if m.get("role") == "user"]
+    content = users[-1]["content"]
+    if isinstance(content, list):
+        content = "".join(str(part.get("text") or "") for part in content)
+    return str(content)
+
+
+def test_a_structured_mention_reaches_the_model_and_stays_out_of_the_words(
+    monkeypatch, tmp_path
+):
+    """The workbench sends `@name` plus `mentions`. The stored message and the
+    session title are what the user typed; the model still reads the pinned
+    version, and is told which one in the block it reads."""
+    runner = _runner(monkeypatch, tmp_path)
+    prompts, titles = _capture_turn(monkeypatch, runner)
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+    pinned = _seed(
+        runner.cfg, store, frame_id, "default", "cohort.csv", b"patient,age\nP1,40\n"
+    )
+    # A newer version of the same file: an unpinned read would send this one.
+    _seed(runner.cfg, store, frame_id, "default", "cohort.csv", b"NEWER BYTES\n")
+    typed = "@cohort.csv 这个文件一共多少行、多少列？"
+
+    runner.run_message(
+        frame_id,
+        "default",
+        typed,
+        mentions=[{"filename": "cohort.csv", "version_id": pinned["version_id"]}],
+    )
+
+    user = [m for m in store.list_messages(frame_id) if m["role"] == "user"][0]
+    assert user["content"] == typed
+    refs = json.loads(user["metadata"] or "{}")["artifact_refs"]
+    assert [r["version_id"] for r in refs] == [pinned["version_id"]]
+    assert (store.get_frame(frame_id) or {}).get("task_summary") == typed
+    assert titles and "#v-" not in titles[0][1]
+
+    seen = _user_turn(prompts)
+    assert seen.startswith(typed)
+    assert "P1,40" in seen and "NEWER BYTES" not in seen
+    assert f"version {pinned['version_id']}" in seen
+
+
+def test_a_text_form_message_still_pins_but_its_title_drops_the_hash(
+    monkeypatch, tmp_path
+):
+    """A client that still writes `@name#v-<id>` keeps working, and the row
+    keeps what it sent. Only what is derived for display loses the hash."""
+    runner = _runner(monkeypatch, tmp_path)
+    prompts, titles = _capture_turn(monkeypatch, runner)
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+    pinned = _seed(runner.cfg, store, frame_id, "default", "counts.csv", b"g,c\nA,1\n")
+    sent = f"@counts.csv#{pinned['version_id']} how many rows?"
+
+    runner.run_message(frame_id, "default", sent)
+
+    user = [m for m in store.list_messages(frame_id) if m["role"] == "user"][0]
+    assert user["content"] == sent
+    assert (store.get_frame(frame_id) or {}).get(
+        "task_summary"
+    ) == "@counts.csv how many rows?"
+    assert "#v-" not in titles[0][1]
+    assert "A,1" in _user_turn(prompts)
+
+
+def _post_message(port: int, frame_id: str, token: str, body: dict) -> tuple:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+    try:
+        conn.request(
+            "POST",
+            f"/api/v1/frames/{frame_id}/message",
+            body=json.dumps(body),
+            headers={
+                local_auth.TOKEN_HEADER: token,
+                "Content-Type": "application/json",
+            },
+        )
+        response = conn.getresponse()
+        return response.status, json.loads(response.read() or b"{}")
+    finally:
+        conn.close()
+
+
+@pytest.mark.stubbed_backend
+def test_the_route_carries_mentions_and_refuses_a_malformed_list(monkeypatch, tmp_path):
+    """Over real HTTP: the field the workbench posts reaches the resolver, and
+    a malformed one is a 400 before any row is written -- not a pin dropped in
+    silence while the user believes the version they picked was sent.
+
+    `stubbed_backend`: the turn behind the 200 runs on a stubbed model and
+    dispatcher, so its response must not be captured as the route's shape."""
+    httpd, port = bound_gateway_server()
+    runner = _runner(monkeypatch, tmp_path)
+    prompts, _titles = _capture_turn(monkeypatch, runner)
+    runner.cfg.port = port
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+    pinned = _seed(
+        runner.cfg, store, frame_id, "default", "counts.csv", b"gene,count\nTP53,7\n"
+    )
+    # The bare `@counts.csv` would read this one: only the pin tells them apart.
+    _seed(runner.cfg, store, frame_id, "default", "counts.csv", b"NEWER BYTES\n")
+    handler = gateway_mod.make_handler(runner.cfg, runner.hub, runner)
+    httpd.RequestHandlerClass = handler
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    token = local_auth.load_or_mint(runner.cfg.data_dir)
+    try:
+        status, body = _post_message(
+            port,
+            frame_id,
+            token,
+            {
+                "input_data": {"request": "@counts.csv rows?"},
+                "mentions": [{"filename": "counts.csv", "version_id": "not-a-version"}],
+            },
+        )
+        assert status == 400
+        assert body.get("code") == "invalid_mentions"
+        assert store.list_messages(frame_id) == []
+
+        status, body = _post_message(
+            port,
+            frame_id,
+            token,
+            {
+                "input_data": {"request": "@counts.csv rows?"},
+                "mentions": [
+                    {"filename": "counts.csv", "version_id": pinned["version_id"]}
+                ],
+            },
+        )
+        assert status == 200, body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    user = [m for m in store.list_messages(frame_id) if m["role"] == "user"][0]
+    assert user["content"] == "@counts.csv rows?"
+    refs = json.loads(user["metadata"] or "{}")["artifact_refs"]
+    assert [r["version_id"] for r in refs] == [pinned["version_id"]]
+    seen = _user_turn(prompts)
+    assert "TP53,7" in seen and "NEWER BYTES" not in seen
 
 
 def test_a_branch_projection_carries_the_reference_with_the_message(

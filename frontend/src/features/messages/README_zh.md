@@ -23,9 +23,9 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`identity.ts`](identity.ts) | 候选身份与 feed 边界上的 `storedCandidateOwnsChunk`。 |
 | [`index.ts`](index.ts) | 对外导出；`installMessages` 用 `isReady` 往 window 赋值，不创建任何 DOM（它在 Shell 渲染之前运行）。 |
 | [`install.test.ts`](install.test.ts) | 契约名字是真实现（`isReady`），不是 F-05 占位；安装时不会抢在 Shell 之前创建 `#messages`。 |
-| [`list.ts`](list.ts) | 唯一的已存消息行实现，首屏、"加载更早"（经 `sessions/transcript.ts`）与实时回合共用：`renderStored`、`addMsgActions`（复制走 `copyText`、👍/👎 带已保存评价、编辑）、`renderMessageRefChips`、`renderEmptySession`、`insertMessageByTime`；以及分帧批量绘制。计划模式的用户行渲染为用户自己的文字，计划执行种子渲染为计划标记（`planPrompt.ts`）。 |
+| [`list.ts`](list.ts) | 唯一的已存消息行实现，首屏、"加载更早"（经 `sessions/transcript.ts`）与实时回合共用：`renderStored`、`addMsgActions`（复制走 `copyText`、👍/👎 带已保存评价、编辑）、`renderMessageRefChips`、`renderEmptySession`、`insertMessageByTime`；以及分帧批量绘制。计划模式的用户行渲染为用户自己的文字，计划执行种子渲染为计划标记（`planPrompt.ts`）。用户行里文本形式的 `@name#v-<id>` 显示为 `@name`，版本由下方的引用芯片给出（存储的行不变）。 |
 | [`list.test.ts`](list.test.ts) | 640 条 → 16 帧 × 40；按时间插入跳过 `#msgs-earlier`；首屏与更早页是同一实现：审阅徽章与候选身份、👍/👎 提交并显示已保存评价、复制只在确认写入后打勾、编辑与起始问题会撑高输入框、用户行显示 @ 引用芯片。 |
-| [`messages.css`](messages.css) | `.md-sealed` / `.md-tail { display: contents }`；已停止回合标记与已停止卡片（弱化图标、中性色边条）；运行中与已结束的卡片（中性图标与边条，未要求减少动效时运行图标旋转）以及失败卡片（错误色图标与边条）；重开后的计划种子行沿用已停止标记的样式。 |
+| [`messages.css`](messages.css) | `.md-sealed` / `.md-tail { display: contents }`；已停止回合标记与已停止卡片（弱化图标、中性色边条）；运行中与已结束的卡片（中性图标与边条，未要求减少动效时运行图标旋转）以及失败卡片（错误色图标与边条）；重开后的计划种子行沿用已停止标记的样式；用户行的 @ 引用芯片单独占一行，位于气泡下方。 |
 | [`open.ts`](open.ts) | `openConversation` / `recoverConversation`：按代次读取、只读重试、保留已确认历史与原子分帧投影。会话级重置依据 `openedFrameId`（屏幕上状态所属的会话）而不只是 `currentId`，因此先发布 id 再打开的新会话、或从主页返回后打开的会话，Notebook 都从空开始。 |
 | [`open.test.ts`](open.test.ts) | 按打开代次保护历史失败、只读重试、REST/WS 交错与已展开旧页保留；新会话的 Notebook 只含自己的单元（从已打开会话新建、从主页返回后新建、上一会话的读取迟到）。 |
 | [`planPrompt.ts`](planPrompt.ts) | 计划模式行重开后显示用户自己写的内容：`planModeRequestText` 从存储的用户行中去掉计划模式提示（工作台、旧版 app.js、修订种子），与 `openai4s/server/plans.py` 一致；`planSeed` / `planSeedMarker` 把批准或继续执行的种子渲染为一行弱化的"已批准计划：…"（功能内文案）。存储的行不变。 |

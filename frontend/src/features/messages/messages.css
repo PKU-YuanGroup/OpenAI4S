@@ -78,6 +78,16 @@
   display: none;
 }
 
+/* A user row's @-ref chips go on their own line under the bubble, live or
+   reopened, with or without a fork control. Unwrapped, the flex row put them
+   beside the bubble, stretched to its height. */
+.msg.user:has(> .msg-refs) {
+  flex-wrap: wrap;
+}
+.msg.user > .msg-refs {
+  flex: 0 0 100%;
+}
+
 /* A stored user question can fork. Wrap only while the control is shown,
    so a checkpointed row does not grow an empty line when the capability is off. */
 :root[data-fork-from-message="on"] .msg.user:has(.msg-fork) {

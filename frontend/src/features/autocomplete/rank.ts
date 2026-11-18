@@ -6,10 +6,14 @@
  * not keep its own EDKW table.
  */
 
+import type { ComposerMention } from "./mentions";
+
 export type AcItem = {
   label: string;
   insert: string;
   sub: string;
+  /** An `@` file row's version, kept beside the text when it is picked (ART-16). */
+  mention?: ComposerMention;
 };
 
 export const AC_LIMIT = 8;
@@ -55,11 +59,22 @@ export function artifactToAcItem(
   const elsewhere = !!(a.root_frame_id && currentId && a.root_frame_id !== currentId);
   return {
     label: name,
-    insert: version ? `${name}#${version}` : name,
+    // The text gets the name only; the version is pinned through `mention`.
+    insert: name,
     sub:
       (elsewhere ? fromOtherSession + " · " : "") +
       (version ? String(version).slice(2, 8) + " · " : "") +
       (a.content_type || ""),
+    ...(version
+      ? {
+          mention: {
+            filename: name,
+            version_id: String(version),
+            artifact_id: String(a.artifact_id || a.id || ""),
+            root_frame_id: String(a.root_frame_id || ""),
+          },
+        }
+      : {}),
   };
 }
 

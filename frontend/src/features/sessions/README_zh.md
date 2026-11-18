@@ -52,4 +52,5 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`project-history.test.ts`](project-history.test.ts) | 真实保存状态与失败、重试、仅有存档的对话、继续前重新检查、版本切换、安全文本/下载链接，以及过期或已关闭视图的响应。 |
 | [`project-files.test.ts`](project-files.test.ts) | 显式选择文件夹、新建/编辑/解除绑定持久化、嵌套文件导航、安全文本预览、读取失败与过期响应。项目切换同时打开该项目的会话；目录读取或首个会话 POST 失败时恢复原项目、源文件夹和侧栏范围，也覆盖连续切换多个项目的情况。 |
 | [`static-i18n-ownership.test.ts`](static-i18n-ownership.test.ts) | 代码写入会话标题或当前项目名之后，迟到的语言分块重绘和切换语言都不会把它改回“会话”/“项目”；标题输入框失焦即提交，那次重绘曾把服务端的会话名改掉。 |
-| [`transcript.ts`](transcript.ts) | 输入框的 @ 引用芯片。已存消息行的名字（`renderStored`、`addMsgActions`、`insertMessageByTime`、`renderEmptySession`、`renderMessageRefChips`）从唯一实现 `messages/list.ts` 转导出。 |
+| [`transcript.ts`](transcript.ts) | 输入框的 @ 引用芯片：通过 `@` 菜单钉选的文件（`autocomplete/mentions.ts`）显示为已解析并带版本号，来自其他会话也一样；其余 `@name` 按本会话的文件匹配。已存消息行的名字（`renderStored`、`addMsgActions`、`insertMessageByTime`、`renderEmptySession`、`renderMessageRefChips`）从唯一实现 `messages/list.ts` 转导出。 |
+| [`transcript.test.ts`](transcript.test.ts) | 输入框引用芯片：`@` 钉选显示为已解析并给出版本号（以及来源的其他会话）；含空格的文件名只算一个芯片；钉选只在版本一致时才显示本会话那一行的校验和；未钉选的 `@name` 按本会话文件解析，解析不到则标为未解析；token 被删掉后不再显示芯片。 |

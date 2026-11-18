@@ -59,13 +59,16 @@ describe("composer candidate ranking", () => {
     );
     expect(merged).toHaveLength(1);
     expect(merged[0]?.version_id).toBe("v-project");
-    expect(artifactToAcItem(merged[0]!, null, "").insert).toBe("plot.png#v-project");
+    const item = artifactToAcItem(merged[0]!, null, "");
+    expect(item.insert).toBe("plot.png");
+    expect(item.mention?.version_id).toBe("v-project");
   });
 
-  it("pins the version on insert and marks a file from another session", () => {
+  it("pins the version beside the name and marks a file from another session", () => {
     const item = artifactToAcItem(
       {
         filename: "plot.png",
+        artifact_id: "a-plot",
         version_id: "v-abcdef",
         root_frame_id: "other",
         content_type: "image/png",
@@ -73,9 +76,22 @@ describe("composer candidate ranking", () => {
       "here",
       "from another session — copied in on send",
     );
-    expect(item.insert).toBe("plot.png#v-abcdef");
+    // ART-16: the text gets the name; the hash never enters what the user reads.
+    expect(item.insert).toBe("plot.png");
+    expect(item.mention).toEqual({
+      filename: "plot.png",
+      version_id: "v-abcdef",
+      artifact_id: "a-plot",
+      root_frame_id: "other",
+    });
     expect(item.sub).toContain("from another session");
     expect(item.sub).toContain("abcdef".slice(0, 6));
+  });
+
+  it("a row without a version inserts the bare name and pins nothing", () => {
+    const item = artifactToAcItem({ filename: "notes.md" }, "here", "");
+    expect(item.insert).toBe("notes.md");
+    expect(item.mention).toBeUndefined();
   });
 });
 

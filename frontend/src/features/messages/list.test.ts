@@ -457,6 +457,17 @@ describe("stored rows, first page and older page alike", () => {
     expect(chips[0]!.title).toBe("v-1 · sha256:abcdef012345");
   });
 
+  it.each(ROW_RENDERERS)("%s: a text-form @name#v-<id> reopens without the hash, the chip keeps it", (_name, render) => {
+    // Written before ART-16, when the `@` menu put the version into the text.
+    const row = render({
+      role: "user",
+      content: "@cohort_clinical_markers.csv#v-9f5c06efc35e 这个文件一共多少行？",
+      artifact_refs: [{ display_name: "cohort_clinical_markers.csv", version_id: "v-9f5c06efc35e" }],
+    }) as unknown as RowEl;
+    expect(row.querySelector(".bubble")!.textContent).toBe("@cohort_clinical_markers.csv 这个文件一共多少行？");
+    expect(row.querySelectorAll(".msg-ref-chip")[0]!.title).toBe("v-9f5c06efc35e");
+  });
+
   function forkButton(row: RowEl | null): RowEl | null {
     return row?.querySelector("[data-fork-message-id]") ?? null;
   }
