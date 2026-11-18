@@ -11,6 +11,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { authenticate, waitUntil } from "./browser_auth.mjs";
 
+/**
+ * The Action Timeline's exact time (NAV-6): the viewer's local wall clock with
+ * its UTC offset named, as features/timeline/model.ts writes it -- it used to
+ * be `toISOString()`, UTC with no zone. Node and the headless browser share the
+ * host's time zone (UTC on CI), so this is the string the page shows.
+ */
+function timelineExactTime(ms) {
+  const d = new Date(ms);
+  const pad = (value, width = 2) => String(value).padStart(width, "0");
+  const offset = -d.getTimezoneOffset();
+  const abs = Math.abs(offset);
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)} ` +
+    `(UTC${offset >= 0 ? "+" : "-"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)})`
+  );
+}
+
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
 const executablePath = process.env.OPENAI4S_BROWSER_EXECUTABLE || undefined;
 const browser = await chromium.launch({ headless: true, executablePath });
@@ -2036,15 +2054,15 @@ try {
     await page.locator(".timeline-overview-tooltip").waitFor({ state: "visible", timeout: 2000 });
     const tooltipText = await page.locator(".timeline-overview-tooltip").innerText();
     for (const value of [
-      new Date(overviewFixture.base + 1000).toISOString(),
-      new Date(overviewFixture.base + 1200).toISOString(),
-      new Date(overviewFixture.base + 1700).toISOString(),
-      new Date(overviewFixture.base + 3000).toISOString(),
+      timelineExactTime(overviewFixture.base + 1000),
+      timelineExactTime(overviewFixture.base + 1200),
+      timelineExactTime(overviewFixture.base + 1700),
+      timelineExactTime(overviewFixture.base + 3000),
       "200 ms", "500 ms", "1300 ms",
     ]) {
       if (!tooltipText.includes(value)) throw new Error(`overview hover omitted ${value}`);
     }
-    if (tooltipText.includes(new Date(overviewFixture.base - 50000).toISOString())) {
+    if (tooltipText.includes(timelineExactTime(overviewFixture.base - 50000))) {
       throw new Error("overview hover used a stale attempt");
     }
     const tooltipBox = await page.locator(".timeline-overview-tooltip").boundingBox();
@@ -2075,7 +2093,7 @@ try {
         apiRequests: state.apiRequestCount,
       };
     });
-    if (!refreshedTooltip.visible || !refreshedTooltip.text.includes(new Date(overviewFixture.base + 1800).toISOString()) ||
+    if (!refreshedTooltip.visible || !refreshedTooltip.text.includes(timelineExactTime(overviewFixture.base + 1800)) ||
         !refreshedTooltip.text.includes("600 ms") || refreshedTooltip.apiRequests !== 0) {
       throw new Error(`visible overview tooltip did not refresh with its streaming group: ${JSON.stringify(refreshedTooltip)}`);
     }
@@ -2121,7 +2139,7 @@ try {
       groupId: S._timelineView.overview.keyboardGroupId,
       tooltip: S._timelineView.overview.tooltip.textContent,
     }));
-    if (keyboardDetail.groupId !== "overview-middle" || !keyboardDetail.tooltip.includes(new Date(overviewFixture.base + 1800).toISOString())) {
+    if (keyboardDetail.groupId !== "overview-middle" || !keyboardDetail.tooltip.includes(timelineExactTime(overviewFixture.base + 1800))) {
       throw new Error(`keyboard overview navigation did not expose exact timing: ${JSON.stringify(keyboardDetail)}`);
     }
     await page.keyboard.press("Shift+Enter"); await settleOverview();
@@ -2147,8 +2165,8 @@ try {
       inspector: S._timelineView.inspectorHost.textContent,
     }));
     if (linked.selected !== "overview-middle" || !linked.highlight ||
-        !linked.inspector.includes(new Date(overviewFixture.base + 1000).toISOString()) ||
-        !linked.inspector.includes(new Date(overviewFixture.base + 1800).toISOString()) ||
+        !linked.inspector.includes(timelineExactTime(overviewFixture.base + 1000)) ||
+        !linked.inspector.includes(timelineExactTime(overviewFixture.base + 1800)) ||
         !linked.inspector.includes("600 ms") || !linked.inspector.includes("1200 ms")) {
       throw new Error("ledger selection did not highlight the same overview group_id");
     }
