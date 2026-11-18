@@ -8,6 +8,7 @@ import {
   KETCHER_PATH,
   applyArtifactIframeSandbox,
   applyKetcherFrame,
+  applyPdfFrame,
   htmlPreviewSrc,
   ketcherFrameSrc,
   resolveSandboxOrigin,
@@ -42,12 +43,11 @@ describe("artifact iframe sandbox (app.js:8663-8664)", () => {
     expect(frame.getAttribute("sandbox")).not.toContain("allow-forms");
   });
 
-  it("stamps sandbox=\"\" on PDF (audit hardening)", () => {
+  it("gives a PDF frame no sandbox attribute: Chromium refuses its PDF viewer in any sandboxed frame", () => {
     const frame = new FakeFrame();
-    applyArtifactIframeSandbox(frame, "pdf");
-    expect(frame.getAttribute("sandbox")).toBe("");
-    expect(frame.getAttribute("sandbox")).not.toContain("allow-scripts");
-    expect(frame.getAttribute("sandbox")).not.toContain("allow-forms");
+    frame.setAttribute("sandbox", "");
+    applyPdfFrame(frame);
+    expect(frame.getAttribute("sandbox")).toBeNull();
   });
 
   it("inert html-preview is the app-origin preview of an artifact or version id", () => {
@@ -56,13 +56,18 @@ describe("artifact iframe sandbox (app.js:8663-8664)", () => {
     expect(htmlPreviewSrc("a b")).toBe("/preview/a%20b");
   });
 
-  it("PDF stays inert and HTML delegates to the scoped preview implementation", () => {
+  it("a PDF frame only ever loads the bounded, application/pdf-typed blob; HTML delegates to the scoped preview", () => {
     const src = readFileSync(join(here, "../features/artifacts/renderers.ts"), "utf8");
-    expect(src).toContain('applyArtifactIframeSandbox(frame, "pdf")');
     expect(src).toContain("renderHtmlPreview(content, a)");
     const pdfFn = src.slice(src.indexOf("function renderPdfGlue"), src.indexOf("function renderHtmlPreviewGlue"));
-    expect(pdfFn).toContain("applyArtifactIframeSandbox");
+    expect(pdfFn).toContain("applyPdfFrame(frame)");
+    expect(pdfFn).not.toContain("applyArtifactIframeSandbox");
     expect(pdfFn).not.toContain("allow-scripts");
+    // The unsandboxed frame is safe only because its document is a typed PDF
+    // blob read through the preview budget, never the artifact URL itself.
+    expect(pdfFn).toContain('previewObjectUrl(bytes, "application/pdf", content)');
+    expect(pdfFn).toContain("readArtifactBytes(url");
+    expect(pdfFn).not.toMatch(/frame\.src\s*=\s*url\b/);
   });
 });
 

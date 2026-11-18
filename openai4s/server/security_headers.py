@@ -255,6 +255,15 @@ def content_security_policy(
         -- it is what Chromium did, with "Framing 'http://localhost:PORT/'
         violates ... default-src 'self'", while every response header on the
         sandbox side was already correct.
+
+    `frame-src` always admits ``blob:``, for one first-party document: the PDF
+    preview. The Workbench reads a PDF's bytes through its bounded preview
+    read and frames them as a blob it typed ``application/pdf``, and Chromium
+    blocked every one of those frames ("Framing 'blob:…' violates …
+    frame-src"), so each PDF preview was a blank page. A blob URL is minted
+    only by script running on this origin, which `script-src 'self'` limits
+    to the app's own bundles, so the keyword admits no document a third party
+    chose.
     """
     script_src = ["'self'"]
     if allow_eval:
@@ -287,7 +296,7 @@ def content_security_policy(
             "object-src 'none'",
             "base-uri 'none'",
             "form-action 'self'",
-            " ".join(["frame-src", "'self'", *frame_src]),
+            " ".join(["frame-src", "'self'", "blob:", *frame_src]),
             f"frame-ancestors {frame_ancestors}",
         ]
     )

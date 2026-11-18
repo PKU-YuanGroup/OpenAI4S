@@ -279,6 +279,33 @@ def test_dangerous_sinks_are_closed(index_html):
     assert _directive(policy, "frame-ancestors") == "frame-ancestors 'none'"
 
 
+def test_the_shell_may_frame_its_own_pdf_blobs_and_nothing_wider():
+    """ART-1: every PDF preview was blank.
+
+    The Workbench frames a PDF as a blob it minted from the bytes of a bounded
+    preview read, and Chromium refused it: "Framing 'blob:…' violates …
+    frame-src 'self'". `blob:` is admitted; a blob URL can only be minted by
+    script on this origin, which `script-src 'self'` keeps first-party. The
+    widening is exactly that scheme -- no `data:`, no wildcard, no `https:`.
+    """
+    frame_src = _directive(content_security_policy(), "frame-src")
+    assert frame_src == "frame-src 'self' blob:"
+    origins = ("http://127.0.0.1:8760", "http://localhost:8760")
+    headers = security_headers(frame_src=origins)
+    assert _directive(headers["Content-Security-Policy"], "frame-src") == (
+        "frame-src 'self' blob: http://127.0.0.1:8760 http://localhost:8760"
+    )
+    for token in ("data:", "*", "https:", "http:", "filesystem:"):
+        assert token not in frame_src.split()
+    # Untrusted Artifact documents frame nothing at all.
+    for policy in (
+        artifact_content_security_policy(),
+        sandboxed_artifact_content_security_policy("http://127.0.0.1:8760"),
+    ):
+        assert "frame-src" not in policy
+        assert _directive(policy, "default-src") == "default-src 'none'"
+
+
 def test_default_src_is_self(index_html):
     assert _directive(content_security_policy(), "default-src") == (
         "default-src 'self'"

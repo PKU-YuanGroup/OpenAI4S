@@ -368,6 +368,26 @@ remote origins, and unverified reverse-proxy topologies therefore receive no
 executable preview grant. Keep the daemon loopback-bound and treat grant URLs
 as sensitive, temporary links.
 
+### PDF previews are first-party blobs
+
+The Workbench shows a PDF by reading its bytes through the same bounded,
+cancellable preview read as an image, minting a `blob:` URL typed
+`application/pdf`, and framing that blob. The shell's `frame-src` therefore
+admits `blob:` beside `'self'` (and the sandbox origin). This widens framing to
+documents the app itself created and nothing else: a blob URL can only be
+minted by script running on the app origin, and `script-src 'self'` keeps that
+to the shipped bundles. The PDF frame carries **no** `sandbox` attribute:
+Chromium will not run its PDF viewer in a sandboxed frame (any `sandbox`
+value sets the "sandboxed plugins" flag, which no token lifts), so a sandboxed
+PDF frame only ever showed an error page. The frame never loads an Artifact
+URL: its document is the typed blob, which the browser hands to its PDF viewer
+and never parses as HTML, so PDF content cannot run script on the app origin.
+The alternative -- framing the app-origin Artifact URL, whose response keeps
+`sandbox allow-same-origin` and `script-src 'none'` -- was not taken: it would
+bypass the preview read budget and cancellation, and a PDF stored under
+another content type would turn the preview into a download. Untrusted
+Artifact and grant responses still frame nothing (`default-src 'none'`).
+
 ### The Notebook REPL is off by default
 
 The web UI's right-hand Notebook is a **read-only execution trace** by default.

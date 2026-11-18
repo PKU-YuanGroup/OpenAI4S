@@ -3,7 +3,7 @@ import { parseTable } from "../csv/csv";
 import { renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
 import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
-import { applyArtifactIframeSandbox } from "../../islands/frames";
+import { applyPdfFrame } from "../../islands/frames";
 import { molTeardown } from "../../islands/mol";
 import {
   artifactMediaType,
@@ -649,7 +649,8 @@ function renderImageGlue(content: HTMLElement, a: ArtifactRow, url: string): voi
 
 function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void {
   const frame = el("iframe");
-  applyArtifactIframeSandbox(frame, "pdf");
+  applyPdfFrame(frame);
+  frame.title = a.filename || "PDF";
   frame.dataset.currentPage = "1";
   content.appendChild(frame);
   const load = (): void => {

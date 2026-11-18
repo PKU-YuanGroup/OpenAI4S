@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-CDN 安全注释留在标签旁）、图片标注器、dock Viewer / 版本、应用同源 Ketcher `/ketcher` iframe（embeddable 头，不加 sandbox）、惰性 PDF / 初始 HTML iframe。HTML 获得 scoped grant 后可在已验证的另一回环源运行脚本。不改 `stores/`，也不改 `compat/window-exports.ts` 标记区以上的内容。
+F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-CDN 安全注释留在标签旁）、图片标注器、dock Viewer / 版本、应用同源 Ketcher `/ketcher` iframe（embeddable 头，不加 sandbox）、只加载应用自建 `application/pdf` blob 的无沙箱 PDF iframe，以及惰性的初始 HTML iframe。HTML 获得 scoped grant 后可在已验证的另一回环源运行脚本。不改 `stores/`，也不改 `compat/window-exports.ts` 标记区以上的内容。
 
 ## 文件
 
@@ -11,7 +11,7 @@ F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-
 | [`annot.ts`](annot.ts) | 图片标注器、pin 状态、作曲框 chip（app.js:8965-8993, 9149-9429）。 |
 | [`annot.test.ts`](annot.test.ts) | `annotationStatus` 映射；held pin；`openAnnotations`；删除一条后评论列表在重绘的 chip 上重新打开。 |
 | [`dom.ts`](dom.ts) | `el`（再导出 artifacts 的同名函数）/ `$` / lucide 子集 / `ghostIconBtn`。 |
-| [`frames.ts`](frames.ts) | 惰性 iframe 策略、回环源与 grant 路径检查；应用同源 Ketcher 与剪贴板权限。 |
+| [`frames.ts`](frames.ts) | 惰性 HTML iframe 策略、无沙箱的 PDF blob frame（`applyPdfFrame`：Chromium 不在任何沙箱 frame 里运行 PDF 查看器）、回环源与 grant 路径检查；应用同源 Ketcher 与剪贴板权限。 |
 | [`frames.test.ts`](frames.test.ts) | iframe sandbox 属性、派生的回环源、grant 路径检查及应用同源 Ketcher。 |
 | [`host.ts`](host.ts) | 用 `isReady` 调 window；`t()` 回退。 |
 | [`index.ts`](index.ts) | `bootIslands` / `installIslands`。覆盖 F-05 占位。 |
