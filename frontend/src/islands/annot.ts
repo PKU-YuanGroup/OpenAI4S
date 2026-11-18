@@ -161,7 +161,7 @@ function openAnnotDraft(stage: AnnotStage, a: ArtifactRow, x: number, y: number)
   layer.appendChild(pin);
   const pop = el("div", "annot-pop edit");
   const ta = el("textarea", "annot-input");
-  ta.placeholder = "Add annotation…";
+  ta.placeholder = filesT("annot.input.ph");
   ta.rows = 2;
   const foot = el("div", "annot-foot");
   const spacer = el("div", "annot-foot-l");
@@ -326,7 +326,7 @@ export function updateAnnotBadge(): void {
   const main = el("button", "annot-chip-main");
   main.appendChild(iconEl("message-square", 14));
   main.appendChild(
-    el("span", null, " " + open.length + (open.length === 1 ? " comment" : " comments")),
+    el("span", null, " " + filesT("annot.chip.count", open.length)),
   );
   main.title = translate("annot.chip.title");
   main.onclick = (e) => {

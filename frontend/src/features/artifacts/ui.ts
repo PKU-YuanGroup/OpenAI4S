@@ -105,7 +105,7 @@ export function renderDockTabs(): void {
   // from the list no longer makes the way back disappear.
   if (activeTab.value === "files") filesTabShown = true;
   if (filesTabShown) {
-    const files = tabBtn("button", "files", "Files");
+    const files = tabBtn("button", "files", translate("dock.tab.files"));
     if (activeTab.value === "files") files.classList.add("active");
     files.onclick = () => setActiveTab("files");
     bar.appendChild(files);
