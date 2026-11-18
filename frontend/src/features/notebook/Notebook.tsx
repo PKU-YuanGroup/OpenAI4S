@@ -604,10 +604,13 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
   const filter = kernelFilter.value;
   const badgeMode = runtimeBadge.value;
   // "Ended · view only" for a session whose kernel never ran was wrong.
+  const kernelNow = currentKernelStatus();
   const badgeText =
-    badgeMode === "ended" && kernelNeverStarted(currentKernelStatus())
+    badgeMode === "ended" && kernelNeverStarted(kernelNow)
       ? nbT("nb.kernel.notStarted")
-      : t("runtime.status." + badgeMode);
+      : badgeMode === "ended" && kernelNow && kernelExited(kernelNow)
+        ? nbT("nb.kernel.stateExited")
+        : t("runtime.status." + badgeMode);
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   return (
     <div class="kernel-chips">
@@ -684,7 +687,13 @@ function kernelStateLabel(st: KernelStatus): { text: string; cls: string } {
     stopped: t("nb.kernel.stateStopped"),
     none: t("nb.kernel.stateNone"),
   };
-  const label = st.turn_running ? t("dash.badge.running") : names[st.state || ""] || st.state;
+  // After a crash the slot is "none" again but a generation ran: "exited",
+  // not "not started".
+  const label = st.turn_running
+    ? t("dash.badge.running")
+    : kernelExited(st)
+      ? nbT("nb.kernel.stateExited")
+      : names[st.state || ""] || st.state;
   return {
     text: String(label || "") + (st.generation ? t("nb.kernel.generation", st.generation) : ""),
     cls: "kstate " + (st.turn_running ? "run" : st.state || ""),
@@ -705,6 +714,11 @@ function kernelTitle(st: KernelStatus): string {
 /** No kernel has run in this session yet: not the same as one that ended. */
 export function kernelNeverStarted(st: KernelStatus | null): boolean {
   return !!st && !st.alive && !st.turn_running && (st.state || "none") === "none" && !st.generation_id;
+}
+
+/** A kernel ran and its process is gone (a crash): the next cell starts a new one. */
+export function kernelExited(st: KernelStatus): boolean {
+  return !st.alive && !st.turn_running && (st.state || "none") === "none" && !!st.generation_id;
 }
 
 export function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {

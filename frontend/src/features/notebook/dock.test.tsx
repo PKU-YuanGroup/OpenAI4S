@@ -337,4 +337,12 @@ describe("Notebook read-only mode (NB-5)", () => {
     expect(text).toContain(nbT("nb.readonly.openSettings"));
     expect(textOf(KernelChips({ entries: [] }))).toContain(nbT("nb.kernel.notStarted"));
   });
+
+  it("calls a kernel whose process died 'exited', not 'not started' or 'view only'", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { state: "none", generation_id: "g-dead" }, envs: null, cur: null };
+    const chips = textOf(KernelChips({ entries: [] }));
+    expect(chips).toContain(nbT("nb.kernel.stateExited"));
+    expect(chips).not.toContain(nbT("nb.kernel.notStarted"));
+  });
 });
