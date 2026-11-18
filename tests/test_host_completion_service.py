@@ -111,6 +111,36 @@ def test_completion_bullets_accept_cjk_completed_action_phrases():
 
 
 @pytest.mark.parametrize(
+    "bullet",
+    [
+        # The refused bullet from a Chinese session: a package name first.
+        "PyDESeq2 完成 Wald 检验并输出差异表达结果",
+        "DESeq2 差异分析完成",
+        "GSEA 富集结果已保存",
+        "Wald 検定を実行した",
+        "Анализ завершён",
+        "Calculé la moyenne des réplicats",
+    ],
+)
+def test_non_english_bullets_are_accepted_whatever_their_first_word(bullet):
+    from openai4s.agent.finalize import validate_finalize_arguments
+
+    assert validate_completion_bullets([bullet]) is None
+    assert CompletionService().submit(
+        {"output": {"rows": 3}, "completion_bullets": [bullet]}
+    ) == {"status": "ok"}
+    assert (
+        validate_finalize_arguments({"summary": "x", "completion_bullets": [bullet]})
+        is None
+    )
+
+
+def test_plain_english_bullets_keep_the_past_tense_guard():
+    assert "past-tense verb" in validate_completion_bullets(["Run the analysis"])
+    assert "past-tense verb" in validate_completion_bullets(["Will compute DE genes"])
+
+
+@pytest.mark.parametrize(
     "output, schema, expected",
     [
         ({"x": 1}, {"type": "object", "required": ["x"]}, None),

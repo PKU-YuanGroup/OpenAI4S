@@ -994,9 +994,10 @@ class _Host:
     ) -> dict:
         """Submit the task's structured result + human-facing completion bullets.
 
-        completion_bullets must be 1-4 completed-action strings. English uses
-        past-tense, verb-first wording; CJK verb phrases are accepted without
-        English tense morphology. If output_schema is given, `output` is
+        completion_bullets must be 1-4 completed-action strings, in the
+        conversation's language. English uses past-tense, verb-first wording;
+        a bullet in another language (Chinese, Japanese, accented Latin, …) is
+        accepted as written. If output_schema is given, `output` is
         validated against it. task_status optionally declares an honest
         machine-readable status (completed|partial|blocked|failed; omitted
         means completed) — a delegated parent reads it instead of parsing

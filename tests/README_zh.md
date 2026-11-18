@@ -248,7 +248,7 @@ streams，验证真实 RPC worker 重启后原结果恢复且不重放 action。
 | [`test_auto_repair.py`](test_auto_repair.py) | Stage 5 的残差行数与缺失值误述种植案例、相同字节复用版本、禁止自我认证，以及 review_only 不修复。 |
 | [`test_guardian_shadow.py`](test_guardian_shadow.py) | Stage 6 精确动作 hash 失败即关闭、不能 standing allow、shadow 不执行，以及 flag 关闭时惰性。 |
 | [`test_guardian_enforce.py`](test_guardian_enforce.py) | Stage 7 无人值守 allow_once 与危险拒绝，以及 flag 关闭时走旧路径。 |
-| [`test_host_completion_service.py`](test_host_completion_service.py) | `host.submit_output`，Python Cell 唯一拥有的完成信号。schema 失败是软失败，且不得覆盖掉此前已有的完成；完成要点的过去式检查，除英文外也接受中日韩的表达。 |
+| [`test_host_completion_service.py`](test_host_completion_service.py) | `host.submit_output`，Python Cell 唯一拥有的完成信号。schema 失败是软失败，且不得覆盖掉此前已有的完成；完成要点的过去式检查只针对纯英文要点：含有任何非英文字母的要点（以包名开头的中文如「PyDESeq2 完成…」、日文、西里尔字母、带重音的拉丁字母）在 submit_output 与 finalize_response 两处都被接受。 |
 | [`test_host_contract.py`](test_host_contract.py) | worker 到 Host 的 wire：注入的门面、单键形式的软错误、camelCase 编解码。最后那个测试最有用——SDK 能调的每一个 `host.*` 方法都必须有对应的分发路由，这样新能力就不会接了一半就发出去。 |
 | [`test_host_accelerators.py`](test_host_accelerators.py) | 本地 GPU 探测与 SSH 注册、容器运行时及模型后端就绪状态彼此独立。 |
 | [`test_model_assets.py`](test_model_assets.py) | 用户提供的本地 checkpoint 经精确路径审批导入，限制在会话工作区内并流式校验 SHA-256；导入后仍是 staged，不能自行宣称 admitted。 |
