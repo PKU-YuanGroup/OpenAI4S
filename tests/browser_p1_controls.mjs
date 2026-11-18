@@ -1452,7 +1452,16 @@ conn.close()
     };
     page.on("request", onRequest);
 
-    const completed = /^@nvw3b-ac-\d{2}\.txt#v-[0-9a-f]{12} $/;
+    // ART-16: a pick writes `@name ` and keeps the exact version beside the
+    // text, where the composer's ref chip shows it (its title starts with the
+    // version id). The hash no longer goes into the message text.
+    const completed = /^@nvw3b-ac-\d{2}\.txt $/;
+    const pinChip = page.locator("#composer-refs .msg-ref-chip:not(.unresolved)");
+    const pinnedVersion = async () => {
+      if ((await pinChip.count()) !== 1) return null;
+      const title = (await pinChip.first().getAttribute("title")) || "";
+      return /^v-[0-9a-f]{12}(?: ·|$)/.test(title) ? title : null;
+    };
     const indexPattern = new RegExp(`/api/v1/projects/${projectId}/artifact-index(?:\\?|$)`);
     let releaseIndex = () => {};
     let indexSeen = () => {};
@@ -1534,10 +1543,12 @@ conn.close()
       await items.first().click();
       const picked = await composer.inputValue();
       check(
-        "picking a row inserts filename#version and a trailing space",
+        "picking a row inserts @filename and a trailing space, without the version hash",
         completed.test(picked),
         picked,
       );
+      const pickedPin = await waitUntil("the pick to show its pinned version", pinnedVersion, 10000);
+      check("picking a row pins its exact version beside the text", !!pickedPin, String(pickedPin));
 
       hold = armIndexHold();
       // A session of the same project with no local nvw3b-ac rows: the popup
@@ -1573,10 +1584,12 @@ conn.close()
         10000,
       );
       check(
-        "the in-flight Enter completes to filename#version",
+        "the in-flight Enter completes to @filename",
         completed.test(accepted),
         accepted,
       );
+      const acceptedPin = await waitUntil("the armed pick to show its pinned version", pinnedVersion, 10000);
+      check("the in-flight Enter pins the exact version", !!acceptedPin, String(acceptedPin));
       check(
         "no message POST anywhere in the completion scene",
         messagePosts.length === postsBefore,
