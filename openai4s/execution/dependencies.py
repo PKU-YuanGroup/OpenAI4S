@@ -642,6 +642,101 @@ def _cell_id(cell: Mapping[str, Any], index: int) -> str:
     return f"cell-S{revision}"
 
 
+#: The final exception of a Python cell that never compiled.
+_COMPILE_FAILURE = re.compile(r"^(?:SyntaxError|IndentationError|TabError)\b", re.M)
+#: A frame inside the cell itself: the cell's code was running when it failed.
+_CELL_FRAME = re.compile(r'File "<kernel:\d+>", line \d+, in ')
+
+
+def _cell_never_ran(cell: Mapping[str, Any]) -> bool:
+    """Whether none of the cell's code executed, so it changed no namespace.
+
+    Python compiles a whole cell before running any of it, and R parses one
+    before evaluating any of it, so a cell that failed there did nothing. Read
+    from the kernel's own report rather than re-parsed here: the daemon's
+    parser need not be the kernel interpreter's. A SyntaxError raised *while*
+    the cell ran (``eval("1 +")``) carries a frame in the cell and does not
+    count. A cell cancelled before it started did not run either.
+    """
+    if str(cell.get("status") or "") not in {"error", "interrupted"}:
+        return False
+    error = str(cell.get("error") or "")
+    if error.startswith("ParseError: "):  # r_worker.R: the parse failed
+        return True
+    if error.startswith("the cell was cancelled before it started"):
+        return True
+    return bool(_COMPILE_FAILURE.search(error)) and not _CELL_FRAME.search(error)
+
+
+def _namespace(cell: Mapping[str, Any]) -> str:
+    """Python and R cells live in separate kernels, so separate namespaces."""
+    language = str(cell.get("language") or "").strip().lower()
+    if not language:
+        language = str(cell.get("kernel_id") or "python").strip().lower()
+    return "r" if language == "r" or language.startswith("r ") else "python"
+
+
+class _ImportBindings(ast.NodeVisitor):
+    """Module-level names a cell leaves bound to an import, and to what.
+
+    Re-running ``import numpy as np`` binds the same module object again, so
+    it must not supersede the previous binding and stale every cell that used
+    ``np`` -- the agent re-imports its libraries in almost every cell. A name
+    the cell also binds some other way is not an idempotent import.
+    """
+
+    def __init__(self) -> None:
+        self.imports: dict[str, str] = {}
+        self.other: set[str] = set()
+
+    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+        for alias in node.names:
+            if alias.asname:
+                self.imports[alias.asname] = "import " + alias.name
+            else:
+                top = alias.name.split(".", 1)[0]
+                self.imports[top] = "import " + top
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+        module = "." * node.level + (node.module or "")
+        for alias in node.names:
+            if alias.name != "*":
+                self.imports[alias.asname or alias.name] = (
+                    f"from {module} import {alias.name}"
+                )
+
+    def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.other.add(node.id)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self.other.add(node.name)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+        self.other.add(node.name)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        self.other.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        del node
+
+
+def _idempotent_imports(cell: Mapping[str, Any]) -> dict[str, str]:
+    if _namespace(cell) != "python":
+        return {}
+    visitor = _ImportBindings()
+    try:
+        visitor.visit(ast.parse(str(cell.get("code") or ""), mode="exec"))
+    except (SyntaxError, ValueError, TypeError, MemoryError, RecursionError):
+        return {}
+    return {
+        name: target
+        for name, target in visitor.imports.items()
+        if name not in visitor.other
+    }
+
+
 def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Project dependency-aware stale flags without altering immutable rows.
 
@@ -650,22 +745,51 @@ def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, An
     stale; the old producer and independent Cells remain valid historical
     results.  A later unknown namespace mutation invalidates all earlier Cells
     because independence cannot be proven.
+
+    Python and R are projected separately: an R ``wt <- ...`` cannot change a
+    Python ``wt``. A cell none of whose code ran (`_cell_never_ran`) neither
+    reads nor writes, so a SyntaxError no longer counts as an unknown mutation
+    of everything before it. Re-importing the module a name is already bound
+    to is not a new value version.
     """
 
+    results: list[dict[str, Any]] = [
+        {"stale": False, "stale_reasons": []} for _ in cells
+    ]
+    namespaces: dict[str, list[int]] = {}
+    for position, cell in enumerate(cells):
+        namespaces.setdefault(_namespace(cell), []).append(position)
+    for positions in namespaces.values():
+        projected = _stale_in_one_namespace([cells[i] for i in positions], positions)
+        for position, item in zip(positions, projected):
+            results[position] = item
+    return results
+
+
+def _stale_in_one_namespace(
+    cells: Sequence[Mapping[str, Any]], positions: Sequence[int]
+) -> list[dict[str, Any]]:
     count = len(cells)
     edges: list[dict[int, set[str]]] = [dict() for _ in range(count)]
     producer: dict[str, int] = {}
+    #: What the current producer of each name bound it to, when that was an
+    #: import; a later import of the same target binds the same object.
+    bound_import: dict[str, str | None] = {}
     external_consumers: dict[str, set[int]] = {}
     # ``roots_are_consumers`` distinguishes a superseded known producer from
     # pre-session/external consumers.  A producer itself remains a valid
     # historical result; only its downstream consumers become stale.
     invalidations: list[tuple[set[int], str, int, bool]] = []
     uncertain_at: list[int] = []
+    never_ran = {index for index, cell in enumerate(cells) if _cell_never_ran(cell)}
 
     for index, cell in enumerate(cells):
+        if index in never_ran:
+            continue
         reads = normalize_string_list(cell.get("variable_reads"))
         writes = normalize_string_list(cell.get("variable_writes"))
         deletes = normalize_string_list(cell.get("variable_deletes"))
+        imports = _idempotent_imports(cell)
         for name in reads:
             source = producer.get(name)
             if source is None:
@@ -673,6 +797,9 @@ def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, An
             elif source != index:
                 edges[source].setdefault(index, set()).add(name)
         for name in sorted(set(writes) | set(deletes)):
+            target = None if name in deletes else imports.get(name)
+            if target is not None and bound_import.get(name) == target:
+                continue
             old = producer.get(name)
             if old is not None and old != index:
                 invalidations.append(({old}, name, index, False))
@@ -686,6 +813,7 @@ def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, An
             # A tombstone is still a namespace version: a later read/error is
             # downstream of this delete, and a subsequent write supersedes it.
             producer[name] = index
+            bound_import[name] = target
         if bool(cell.get("mutation_uncertain")):
             uncertain_at.append(index)
 
@@ -706,7 +834,7 @@ def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, An
             queue.extend(target for target in edges[current] if target < invalidator)
         if not seen:
             continue
-        by = _cell_id(cells[invalidator], invalidator)
+        by = _cell_id(cells[invalidator], positions[invalidator])
         revision = cells[invalidator].get("state_revision")
         suffix = f" (S{revision})" if revision is not None else ""
         reason = f"variable '{variable}' was superseded by {by}{suffix}"
@@ -717,12 +845,13 @@ def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, An
     for invalidator in uncertain_at:
         if invalidator <= 0:
             continue
-        by = _cell_id(cells[invalidator], invalidator)
+        by = _cell_id(cells[invalidator], positions[invalidator])
         revision = cells[invalidator].get("state_revision")
         suffix = f" (S{revision})" if revision is not None else ""
         reason = f"{by}{suffix} may have mutated unknown namespace state"
         for current in range(invalidator):
-            if reason not in reasons[current]:
+            # A cell that never ran holds no state for anything to make stale.
+            if current not in never_ran and reason not in reasons[current]:
                 reasons[current].append(reason)
 
     return [{"stale": bool(items), "stale_reasons": items} for items in reasons]
