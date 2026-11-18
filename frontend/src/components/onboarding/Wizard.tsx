@@ -59,6 +59,51 @@ function pathFromProfile(profile: Profile): PathChoice {
   };
 }
 
+/**
+ * The model the daemon already runs from its environment variables
+ * (`OPENAI4S_LLM_PROVIDER` / `_MODEL` / `OPENAI4S_<P>_API_KEY`), when no saved
+ * profile stands for it yet. GET /onboarding reports it (`has_api_key` and the
+ * model), but the wizard listed saved profiles only, so a daemon configured
+ * this way read "No profile yet" and Test asked for a profile.
+ *
+ * Choosing it saves a profile with an empty `base_url` and no key: the key
+ * stays in the environment and the server's credential rule resolves the same
+ * provider's environment key for that endpoint (never another provider's, and
+ * never for search).
+ */
+export function environmentPath(status: OnboardingStatus | null): PathChoice | null {
+  if (!status || !status.has_api_key) return null;
+  const provider = status.provider.trim();
+  const served = modelProtocolOptions(status.protocols).map((item) => item.value);
+  if (!provider || !served.includes(provider)) return null;
+  const model = status.model.trim();
+  const bare = (value: unknown) => asString(value).trim();
+  if (status.profiles.some((p) => bare(p.provider) === provider && bare(p.model) === model)) {
+    return null;
+  }
+  return {
+    kind: "existing",
+    profileId: "",
+    provider,
+    model,
+    baseUrl: "",
+    name: ot("onboarding.path.envName", model || provider),
+  };
+}
+
+/** The env model is the path: chosen but not saved yet (its profile id is still empty). */
+function isEnvironmentPath(path: PathChoice | null, status: OnboardingStatus | null): boolean {
+  const env = environmentPath(status);
+  return !!(
+    env &&
+    path &&
+    path.kind === "existing" &&
+    !path.profileId &&
+    path.provider === env.provider &&
+    path.model === env.model
+  );
+}
+
 /** A saved profile that already is this configuration (the server trims these fields). */
 function sameProfileId(status: OnboardingStatus | null, body: Record<string, unknown>): string {
   const bare = (value: unknown) => asString(value).trim().replace(/\/+$/, "");
@@ -110,6 +155,12 @@ function PathStep({
   const discoveryPending = useRef(false);
   const autoModel = useRef("");
   const locals = status.local_model_catalog.endpoints;
+  const env = environmentPath(status);
+  // The environment's key applies to a new cloud profile only for the same
+  // provider at its own endpoint (the server's credential rule): say so
+  // instead of "not configured; enter one".
+  const envKeyApplies =
+    status.has_api_key && provider === status.provider.trim() && !baseUrl.trim();
 
   useEffect(() => () => { discoveryRun.current += 1; }, []);
 
@@ -206,8 +257,29 @@ function PathStep({
           </button>
         ))}
       </div>
+      {kind === "existing" && env ? (
+        <label class="onb-choice onb-choice-env" key="environment" data-onboarding-env="">
+          <input
+            type="radio"
+            name="onb-profile"
+            checked={isEnvironmentPath(state.path, status)}
+            disabled={busy}
+            onChange={() => onChoose(env)}
+          />
+          <span>
+            <span class="onb-choice-name">
+              {ot(
+                "onboarding.path.envLabel",
+                env.model || ot("onboarding.path.envDefaultModel"),
+                modelProtocolOptions([env.provider])[0]?.label || env.provider,
+              )}
+            </span>
+            <span class="onb-choice-sub">{ot("onboarding.path.envHint")}</span>
+          </span>
+        </label>
+      ) : null}
       {kind === "existing" ? (
-        status.profiles.length ? (
+        status.profiles.length || env ? (
           status.profiles.map((raw) => {
             const p = raw as Profile;
             const id = asString(p.id);
@@ -303,7 +375,11 @@ function PathStep({
             type="password"
             autocomplete="off"
             onInput={() => invalidateDiscovery()}
-            placeholder={t("cust.models.keyPlaceholderUnset")}
+            placeholder={
+              envKeyApplies
+                ? ot("onboarding.path.keyFromEnv")
+                : t("cust.models.keyPlaceholderUnset")
+            }
           />
           <button type="button" class="solid-btn" disabled={busy || discovering} onClick={submitCloud}>
             {ot("onboarding.next")}
@@ -578,6 +654,59 @@ export function WizardHost() {
     }
   };
 
+  /** Save (or update) the profile for `path`, activate it, and return its id. */
+  const saveProfile = async (path: PathChoice, apiKey: string): Promise<string> => {
+    const body: Record<string, unknown> = {
+      name: path.name.trim(),
+      provider: path.provider,
+      base_url: path.baseUrl,
+      model: path.model,
+    };
+    if (apiKey.trim()) body.api_key = apiKey.trim();
+    let id = "";
+    const known = savedProfiles.current[path.kind] || sameProfileId(status, body);
+    if (known) {
+      try {
+        await updateModelProfile(known, body);
+        id = known;
+      } catch (error) {
+        // Deleted meanwhile (Settings -> Models): save it afresh below.
+        if ((error as { status?: unknown } | null)?.status !== 404) throw error;
+      }
+    }
+    if (!id) id = asString((await saveModelProfile(body)).id);
+    if (id) {
+      savedProfiles.current[path.kind] = id;
+      await activateModelProfile(id);
+    }
+    // The composer's `#model-select` lists saved profiles and marks the active one.
+    void loadModels();
+    return id;
+  };
+
+  /**
+   * Test with the environment's model selected (or nothing selected and no
+   * active profile): save it as a keyless profile first, so the probe has a
+   * profile to measure. Returns the saved id, or "" after reporting a failure.
+   */
+  const saveEnvironmentProfile = async (env: PathChoice): Promise<string> => {
+    setBusy(true);
+    try {
+      const id = await saveProfile(env, "");
+      if (!alive.current || !id) return "";
+      // Not `choosePath`: that retires the probe this save is about to start.
+      dispatch({ type: "choosePath", path: { ...env, profileId: id } });
+      const refreshed = await fetchOnboarding();
+      if (alive.current) setStatus(refreshed);
+      return id;
+    } catch (error) {
+      if (alive.current) fail(error);
+      return "";
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  };
+
   const onSaveNew = async (path: PathChoice, apiKey: string) => {
     const nm = path.name.trim();
     if (!nm) {
@@ -586,31 +715,7 @@ export function WizardHost() {
     }
     setBusy(true);
     try {
-      const body: Record<string, unknown> = {
-        name: nm,
-        provider: path.provider,
-        base_url: path.baseUrl,
-        model: path.model,
-      };
-      if (apiKey.trim()) body.api_key = apiKey.trim();
-      let id = "";
-      const known = savedProfiles.current[path.kind] || sameProfileId(status, body);
-      if (known) {
-        try {
-          await updateModelProfile(known, body);
-          id = known;
-        } catch (error) {
-          // Deleted meanwhile (Settings -> Models): save it afresh below.
-          if ((error as { status?: unknown } | null)?.status !== 404) throw error;
-        }
-      }
-      if (!id) id = asString((await saveModelProfile(body)).id);
-      if (id) {
-        savedProfiles.current[path.kind] = id;
-        await activateModelProfile(id);
-      }
-      // The composer's `#model-select` lists saved profiles and marks the active one.
-      void loadModels();
+      const id = await saveProfile({ ...path, name: nm }, apiKey);
       if (!alive.current) return;
       const chosen = { ...path, profileId: id };
       choosePath(chosen);
@@ -638,6 +743,18 @@ export function WizardHost() {
       if (active) {
         choosePath(pathFromProfile(active));
         id = status.active_id;
+      }
+    }
+    if (!id) {
+      // The model the environment configures: chosen, or the only one there is.
+      const env = isEnvironmentPath(state.path, status)
+        ? state.path
+        : !state.path
+          ? environmentPath(status)
+          : null;
+      if (env) {
+        id = await saveEnvironmentProfile(env);
+        if (!id) return;
       }
     }
     if (!id) {
@@ -683,6 +800,12 @@ export function WizardHost() {
   };
 
   const onUseExisting = async () => {
+    // The environment's model has no profile yet: Continue saves it (no key;
+    // the key stays in the environment) and activates it.
+    if (state.path && isEnvironmentPath(state.path, status)) {
+      await onSaveNew(state.path, "");
+      return;
+    }
     const id = state.path?.kind === "existing" ? state.path.profileId : "";
     if (!id) {
       dispatch({ type: "fail", message: ot("onboarding.test.needProfile"), requestId: "" });

@@ -150,6 +150,21 @@
 #onboarding .onb-choice input {
   accent-color: var(--ink, #141413);
 }
+/* NAV-1: a choice with a second line (the environment-configured model). */
+#onboarding .onb-choice-env {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+#onboarding .onb-choice-name,
+#onboarding .onb-choice-sub {
+  display: block;
+}
+#onboarding .onb-choice-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-400, #6c6a64);
+}
 #onboarding .cust-row {
   display: flex;
   align-items: center;
