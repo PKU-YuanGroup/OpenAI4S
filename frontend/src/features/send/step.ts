@@ -14,6 +14,7 @@ import { dockOpen, openViewer } from "../artifacts/ui";
 import type { ArtifactRow } from "../artifacts/types";
 import { mdHighlight } from "../md/highlight";
 import { renderMd } from "../md/render";
+import { declinedMeta, declinedReason, declinedStep } from "../messages/declined";
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
 import { adoptIntoLiveStream, ensure, placeInLiveStream, type LiveStream } from "../messages/stream";
@@ -375,6 +376,19 @@ export function stepBody(step: Step): HTMLElement {
     box.appendChild(blockedBody(blocked, out.error != null ? String(out.error) : ""));
     return box;
   }
+  // Refused, not failed: what was asked for, and the reason in plain words
+  // rather than the server's "Permission denied: …" in an error block.
+  const declined = step.status === "error" ? declinedStep(out) : null;
+  if (declined) {
+    if (inp.command) {
+      box.appendChild(codeBlock(String(inp.command), { term: true, lang: "bash", langLabel: "shell" }));
+    } else if (inp.query) box.appendChild(el("div", "s-q", "“" + String(inp.query) + "”"));
+    else if (inp.url) box.appendChild(el("div", "s-q", String(inp.url)));
+    box.appendChild(el("div", "s-note", declinedMeta(declined)));
+    const reason = declinedReason(declined);
+    if (reason) box.appendChild(el("div", "s-note", reason));
+    return box;
+  }
   if (out.error) {
     box.appendChild(clipPre(out.error, "d-del"));
     return box;
@@ -674,9 +688,13 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
   const status = step.status || "running";
   // Refused by a loaded Skill's network limit: not a crash, and not "0 results".
   const blocked = status !== "running" && !!blockedView(step);
+  // Denied by the user, refused by a rule, or cancelled by a Stop while it
+  // waited for approval: a refusal, shown neutrally, never as a failure.
+  const declined = status === "error" && !blocked ? declinedStep(step.output) : null;
   card.classList.toggle("running", status === "running");
-  card.classList.toggle("err", status === "error" && !blocked);
+  card.classList.toggle("err", status === "error" && !blocked && !declined);
   card.classList.toggle("warn", status === "warning" || blocked);
+  card.classList.toggle("declined", !!declined);
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
     meta.textContent = step.kind === "review" ? sendCopy("reviewing") : "";
@@ -684,15 +702,20 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
     ic.innerHTML = icon(
       blocked
         ? "lock"
-        : status === "error"
-          ? "x"
-          : status === "warning"
-            ? "alert-triangle"
-            : stepIcon(step.kind),
+        : declined
+          ? declined.kind === "stopped"
+            ? "stop"
+            : "lock"
+          : status === "error"
+            ? "x"
+            : status === "warning"
+              ? "alert-triangle"
+              : stepIcon(step.kind),
       14,
     );
     meta.textContent =
       stepNetworkMeta(step) ||
+      (declined ? declinedMeta(declined) : "") ||
       (step.summary != null ? String(step.summary) : "") ||
       (step.output && rec(step.output).error ? t("step.status.failed") : "");
   }

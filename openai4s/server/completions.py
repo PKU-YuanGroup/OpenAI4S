@@ -159,6 +159,9 @@ def outcome_narration(
     observation = str(getattr(outcome, "observation", "") or "")
     error = _error_headline(observation)
     zh = language == "zh"
+    refusal = _host_refusal(error) if error else None
+    if refusal is not None:
+        return _refusal_narration(refusal, zh)
     if error:
         return (
             f"这个 Cell 执行失败：`{error}`。下一轮会依据真实 traceback 修复。"
@@ -211,6 +214,53 @@ def outcome_narration(
             "warnings or errors; see the Notebook."
         )
     return "\n".join(parts)
+
+
+#: A Cell that raised because a Host call in it was refused: the user denied
+#: it, a rule or policy refused it, or the turn was stopped while it waited.
+#: (`sdk/bash.py` words a bash refusal; the worker words every other Host one.)
+_HOST_REFUSAL = re.compile(
+    r"^(?:RuntimeError:\s*)?(?:bash:\s*|host\.[\w.]+ error:\s*)Permission denied:\s*"
+    r"(?P<reason>.*?)(?:;\s*command was not executed)?\s*$"
+)
+_REFUSAL_PREFIXES = (
+    "这个 Cell 里需要批准的操作",
+    "An action in this cell that needed approval",
+)
+
+
+def _host_refusal(headline: str) -> str | None:
+    """The refusal's reason when ``headline`` is a Host refusal, else None."""
+
+    match = _HOST_REFUSAL.match(headline or "")
+    return match.group("reason").strip() if match else None
+
+
+def _refusal_narration(reason: str, zh: bool) -> str:
+    """A refusal is not a failure: no "this cell failed", no raw RuntimeError."""
+
+    if reason == "turn cancelled":
+        # The turn's own stop marker says what happened.
+        return ""
+    if reason == "approval timed out":
+        return (
+            "这个 Cell 里需要批准的操作等待批准超时，没有执行。"
+            if zh
+            else "An action in this cell that needed approval timed out waiting for it and did not run."
+        )
+    if not reason or reason == "denied by user":
+        return (
+            "这个 Cell 里需要批准的操作被你拒绝了，没有执行。智能体会据此调整下一步。"
+            if zh
+            else "An action in this cell that needed approval was declined by you and did not run. "
+            "The agent will adjust its next step."
+        )
+    return (
+        f"这个 Cell 里需要批准的操作未获批准，没有执行（原因：{reason}）。智能体会据此调整下一步。"
+        if zh
+        else f"An action in this cell that needed approval was not approved and did not run "
+        f"(reason: {reason}). The agent will adjust its next step."
+    )
 
 
 #: How much of a cell's stdout the chat repeats after it runs.
@@ -481,6 +531,7 @@ _PROGRESS_PREFIXES = (
     "Cell 已运行结束",
     "This cell failed: `",
     "这个 Cell 执行失败：`",
+    *_REFUSAL_PREFIXES,
     # Written by earlier versions; still in stored sessions.
     "This cell completed successfully",
     "这个 Cell 已成功完成",

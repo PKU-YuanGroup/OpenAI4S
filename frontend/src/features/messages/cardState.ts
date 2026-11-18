@@ -19,6 +19,7 @@
 import { LANG } from "../../i18n/runtime";
 import { paintIcon } from "../icons/paths";
 import type { WsMessage } from "../ws/types";
+import { declinedCell, declinedMeta, type Declined } from "./declined";
 import { messagesHost } from "./dom";
 
 /** Feature-local copy: en.ts / zh.ts are generated extracts. */
@@ -35,7 +36,7 @@ function copy(key: "cardTitle" | "stopped" | "failed"): string {
 const DEFAULT_CELL_TITLE = /^Running analysis · cell (\d+)$/;
 
 /** Every settled state a card can reach; "running" is the only unsettled one. */
-const SETTLED = new Set(["ok", "failed", "stopped", "ended"]);
+const SETTLED = new Set(["ok", "failed", "stopped", "ended", "declined"]);
 
 function glyphOf(card: HTMLElement): HTMLElement | null {
   return card.querySelector(".ic") as HTMLElement | null;
@@ -99,6 +100,17 @@ export function markCardFailed(card: HTMLElement): void {
   prefixMeta(card, copy("failed"));
 }
 
+/**
+ * The cell ended because a Host call in it was refused (denied, or refused by
+ * a rule): a lock and a neutral bar, "You declined · not run", not the failed
+ * card's red ✗.
+ */
+export function markCardDeclined(card: HTMLElement, declined: Declined): void {
+  if (cardSettled(card)) return;
+  settle(card, "declined", "lock");
+  prefixMeta(card, declinedMeta(declined));
+}
+
 export function markCardSucceeded(card: HTMLElement): void {
   if (cardSettled(card)) return;
   settle(card, "ok", "check");
@@ -132,7 +144,12 @@ export function settleLiveCellCard(event: WsMessage | null | undefined): void {
     null;
   if (!card) return;
   const status = String(event.status || (event.error ? "error" : "ok"));
-  if (status === "error") markCardFailed(card);
+  // A cell that raised because its Host call was refused, or cancelled by a
+  // Stop while it waited for approval, did not fail.
+  const declined = status === "error" ? declinedCell(event.error) : null;
+  if (declined && declined.kind === "stopped") markCardStopped(card);
+  else if (declined) markCardDeclined(card, declined);
+  else if (status === "error") markCardFailed(card);
   else if (status === "interrupted") markCardStopped(card);
   else if (status === "ok") markCardSucceeded(card);
 }

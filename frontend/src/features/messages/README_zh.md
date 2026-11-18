@@ -9,8 +9,10 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | 文件 | 职责 |
 | --- | --- |
 | [`failure.ts`](failure.ts) | 实时与重开会话共用的失败提示；流式中断或重复动作停止后提供显式继续入口。 |
-| [`cardState.ts`](cardState.ts) | 实时活动卡片的状态：新的单元卡片显示进度图标（而非成功对勾）并记录 `producing_cell_id`；`notebook_cell_finished`（由 Notebook 的处理器转发）把该卡片标为失败（x 图标、错误色边条、"失败 · N 行"）、成功或已停止；`turnDone` 把仍在运行的卡片收尾为中性的"已结束"。单元结束后，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"，单元自带标题保留。功能内文案。 |
+| [`cardState.ts`](cardState.ts) | 实时活动卡片的状态：新的单元卡片显示进度图标（而非成功对勾）并记录 `producing_cell_id`；`notebook_cell_finished`（由 Notebook 的处理器转发）把该卡片标为失败（x 图标、错误色边条、"失败 · N 行"）、成功或已停止；因 Host 调用被拒绝而结束的单元标为中性的「已拒绝」（锁图标，"你拒绝了 · 未执行"），等待批准时被停止的标为已停止；`turnDone` 把仍在运行的卡片收尾为中性的"已结束"。单元结束后，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"，单元自带标题保留。功能内文案。 |
 | [`copy.ts`](copy.ts) | 当前UI所属的双语历史恢复与“会话不存在”文案；不改自动提取的语言文件。 |
+| [`declined.ts`](declined.ts) | 拒绝不是失败：识别被拒绝的 Host 调用（步骤的 `output.error` "Permission denied: …"，或单元最后抛出的 "bash: / host.X error: Permission denied: …"，从不把系统 `PermissionError` 算进来），区分你拒绝的、规则拒绝的、等待批准时被「停止」取消的和审批超时的，并用界面语言给出状态与原因（功能内文案）。 |
+| [`declined.test.ts`](declined.test.ts) | 步骤与单元的拒绝分类、卡片上填写的原因算作你的拒绝、系统 `PermissionError` 与被捕获后又失败的单元仍算失败、中英文文案。 |
 | [`components.tsx`](components.tsx) | `HistoryLoadStatus`：可访问的历史状态/重试入口，由 Shell 挂在命令式消息宿主之外。 |
 | [`cut.ts`](cut.ts) | 增量 `_mdStableCut` / `mdStableCut`（app.js:5378-5402）。 |
 | [`cut.test.ts`](cut.test.ts) | 增量扫描与从零扫描同结果；围栏 / 120 字软尾。 |
@@ -25,7 +27,7 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`install.test.ts`](install.test.ts) | 契约名字是真实现（`isReady`），不是 F-05 占位；安装时不会抢在 Shell 之前创建 `#messages`。 |
 | [`list.ts`](list.ts) | 唯一的已存消息行实现，首屏、"加载更早"（经 `sessions/transcript.ts`）与实时回合共用：`renderStored`、`addMsgActions`（复制走 `copyText`、👍/👎 带已保存评价、编辑）、`renderMessageRefChips`、`renderEmptySession`、`insertMessageByTime`、`showLiveUserMessage`（`user_message` 事件带来的回合提问：认领本标签页的气泡、已渲染的行不重复，否则显示）、`renderMissingSession`（指向不存在会话的链接：说明与返回入口）；以及分帧批量绘制，其中 `interleaveHistory` 也按时间放置已存储的审批决定。计划模式的用户行渲染为用户自己的文字，计划执行种子渲染为计划标记（`planPrompt.ts`）。 |
 | [`list.test.ts`](list.test.ts) | 640 条 → 16 帧 × 40；按时间插入跳过 `#msgs-earlier`；首屏与更早页是同一实现：审阅徽章与候选身份、👍/👎 提交并显示已保存评价、复制只在确认写入后打勾、编辑与起始问题会撑高输入框、用户行显示 @ 引用芯片。 |
-| [`messages.css`](messages.css) | `.md-sealed` / `.md-tail { display: contents }`；已停止回合标记与已停止卡片（弱化图标、中性色边条）；运行中与已结束的卡片（中性图标与边条，未要求减少动效时运行图标旋转）以及失败卡片（错误色图标与边条）；重开后的计划种子行沿用已停止标记的样式；被拒审批卡片的原因行；历史状态提示位于转录内容列内；“会话不存在”面板的按钮。 |
+| [`messages.css`](messages.css) | `.md-sealed` / `.md-tail { display: contents }`；已停止回合标记与已停止卡片（弱化图标、中性色边条）；运行中与已结束的卡片（中性图标与边条，未要求减少动效时运行图标旋转）以及失败卡片（错误色图标与边条）；被拒绝的单元与步骤（中性图标）；重开后的计划种子行沿用已停止标记的样式；被拒审批卡片的原因行；历史状态提示位于转录内容列内；“会话不存在”面板的按钮。 |
 | [`open.ts`](open.ts) | `openConversation` / `recoverConversation`：按代次读取、只读重试、保留已确认历史与原子分帧投影。会话级重置依据 `openedFrameId`（屏幕上状态所属的会话）而不只是 `currentId`，因此先发布 id 再打开的新会话、或从主页返回后打开的会话，Notebook 都从空开始。Notebook REPL 单元的步骤（`input.origin: "notebook"`）与实时时一样不进入转录，空会话欢迎页只在聊天中什么都没有时显示。列表中没有的会话会被查询（`GET /frames/{id}`）：属于其他项目的会话会把地址、项目名与侧栏移到该项目；根本不存在的会话显示“会话不存在”及返回入口（项目、首页），输入框禁用且不订阅。 |
 | [`open.test.ts`](open.test.ts) | 指向不存在会话的链接会如实说明（不读历史、不订阅），项目 id 错误的链接会转到会话所属的项目；Notebook 单元的步骤不进入聊天（智能体步骤会取代欢迎页）；按打开代次保护历史失败、只读重试、REST/WS 交错与已展开旧页保留；新会话的 Notebook 只含自己的单元（从已打开会话新建、从主页返回后新建、上一会话的读取迟到）。 |
 | [`planPrompt.ts`](planPrompt.ts) | 计划模式行重开后显示用户自己写的内容：`planModeRequestText` 从存储的用户行中去掉计划模式提示（工作台、旧版 app.js、修订种子），与 `openai4s/server/plans.py` 一致；`planSeed` / `planSeedMarker` 把批准或继续执行的种子渲染为一行弱化的"已批准计划：…"（功能内文案）。存储的行不变。 |
