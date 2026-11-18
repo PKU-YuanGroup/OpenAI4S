@@ -199,6 +199,28 @@ function shortRuntime(value: unknown): string {
   return text ? (text.length > 12 ? text.slice(0, 8) + "…" : text) : t("runtime.none");
 }
 
+/**
+ * The runtime badge's words, one answer for the Notebook badge and the
+ * Timeline's runtime strip. "Ended · view only" was shown for a kernel that
+ * had never started, and the Timeline kept saying it after the Notebook
+ * stopped; an "ended" mode is told apart by the kernel's own state: not
+ * started, exited (crashed: a generation ran and its process is gone),
+ * stopped, or ended. The dictionary's zh labels were English ("Busy", "Live").
+ */
+export function runtimeStatusText(
+  mode: string,
+  kernel: KernelStatus | null = currentKernelStatus(),
+): string {
+  if (mode === "ended" && kernel) {
+    const idle = !kernel.alive && !kernel.turn_running;
+    if (idle && (kernel.state || "none") === "none") {
+      return kernel.generation_id ? nbT("nb.kernel.stateExited") : nbT("nb.kernel.notStarted");
+    }
+    if (idle && kernel.state === "stopped") return t("nb.kernel.stateStopped");
+  }
+  return nbT("nb.runtime." + mode);
+}
+
 /** The runtime badge's mode: runtimeSummary().status without the rest. */
 export function runtimeStatus(): string {
   const queue = (executionQueue.value || {}) as { owner?: unknown };

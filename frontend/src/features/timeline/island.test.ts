@@ -15,6 +15,8 @@ import { _kc, pendingReplIdentity } from "../../stores/notebook";
 import { delegationState, executionQueue } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { setNotebookRenderImpl } from "../notebook/scroll";
+import { kernelView } from "../notebook/kernel";
+import { nbT } from "../notebook/copy";
 import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
 import {
@@ -1190,6 +1192,25 @@ describe("scheduled workbench refresh", () => {
     reads.release();
     await vi.advanceTimersByTimeAsync(10);
     expect(reads.paths.slice(first)).toEqual(["/frames/frame-q/delegations"]);
+  });
+});
+
+// Follow-up A: only the Notebook badge stopped saying "Ended · view only" for
+// a kernel that never started; the Timeline's runtime strip kept it.
+describe("runtime strip", () => {
+  it("says 'not started' for a kernel that never ran, and 'exited' for one that died", () => {
+    const doc = mountDocument();
+    const frames = stubFrames();
+    stubApi(() => undefined);
+    installTimeline({});
+    showTimeline("frame-r", [group("g-1", 1)]);
+    kernelView.value = { sid: "frame-r", st: { state: "none" }, envs: null, cur: null };
+    renderActionTimeline();
+    expect(doc.querySelector(".runtime-state")?.textContent).toBe(nbT("nb.kernel.notStarted"));
+    kernelView.value = { sid: "frame-r", st: { state: "none", generation_id: "g-dead" }, envs: null, cur: null };
+    renderActionTimeline();
+    frames.run();
+    expect(doc.querySelector(".runtime-state")?.textContent).toBe(nbT("nb.kernel.stateExited"));
   });
 });
 

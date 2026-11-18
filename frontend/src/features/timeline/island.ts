@@ -14,7 +14,12 @@ import { provenanceT } from "../execution/copy";
 import { publicText } from "../scrub/scrub";
 import { pendingReplIdentity } from "../../stores/notebook";
 import { nbFindCell } from "../notebook/cells";
-import { invalidateKernelCache, runtimeSummary, shortRuntime } from "../notebook/kernel";
+import {
+  invalidateKernelCache,
+  runtimeStatusText,
+  runtimeSummary,
+  shortRuntime,
+} from "../notebook/kernel";
 import { nbRender } from "../notebook/scroll";
 import {
   ACTION_TIMELINE_OVERSCAN,
@@ -632,7 +637,9 @@ export function scheduleBranchConversationResync(fid: string, delay = 120): void
 
 function runtimeSummaryNode(compact = false, runtime = runtimeSummary()): HTMLElement {
   const root = el("div", "runtime-summary" + (compact ? " compact" : ""));
-  const state = el("span", "runtime-state " + runtime.status, t("runtime.status." + runtime.status));
+  // The Notebook badge's words: "not started" / "exited" / "stopped" rather
+  // than "Ended · view only" for a kernel that never ran.
+  const state = el("span", "runtime-state " + runtime.status, runtimeStatusText(runtime.status));
   root.appendChild(state);
   const item = (key: string, value: string, title?: string) => {
     const chip = el("span", "runtime-chip");
@@ -4394,8 +4401,13 @@ export function renderActionTimeline(): void {
   const runtime = runtimeSummary();
   syncTimelineChildren(root, [
     timelineSection(shell, "top", lang, timelineTop),
-    timelineSection(shell, "runtime", lang + "|" + JSON.stringify(runtime), () =>
-      runtimeSummaryNode(false, runtime),
+    // The status words also depend on the kernel's own state (not started vs
+    // exited), which `runtime` does not carry: key on what is shown.
+    timelineSection(
+      shell,
+      "runtime",
+      lang + "|" + JSON.stringify(runtime) + "|" + runtimeStatusText(runtime.status),
+      () => runtimeSummaryNode(false, runtime),
     ),
     shell.layout,
   ]);

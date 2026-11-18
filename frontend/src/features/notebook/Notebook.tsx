@@ -57,6 +57,7 @@ import {
   replHistory,
   replLoad,
   runtimeBadge,
+  runtimeStatusText,
   shortRuntime,
   syncKernel,
 } from "./kernel";
@@ -603,14 +604,9 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
   });
   const filter = kernelFilter.value;
   const badgeMode = runtimeBadge.value;
-  // "Ended · view only" for a session whose kernel never ran was wrong.
-  const kernelNow = currentKernelStatus();
-  const badgeText =
-    badgeMode === "ended" && kernelNeverStarted(kernelNow)
-      ? nbT("nb.kernel.notStarted")
-      : badgeMode === "ended" && kernelNow && kernelExited(kernelNow)
-        ? nbT("nb.kernel.stateExited")
-        : t("runtime.status." + badgeMode);
+  // "Ended · view only" for a session whose kernel never ran was wrong; the
+  // Timeline's runtime strip says the same words (runtimeStatusText).
+  const badgeText = runtimeStatusText(badgeMode, currentKernelStatus());
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   return (
     <div class="kernel-chips">
@@ -709,11 +705,6 @@ function kernelTitle(st: KernelStatus): string {
     (st.generation_id ? " · " + t("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
     (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "")
   );
-}
-
-/** No kernel has run in this session yet: not the same as one that ended. */
-export function kernelNeverStarted(st: KernelStatus | null): boolean {
-  return !!st && !st.alive && !st.turn_running && (st.state || "none") === "none" && !st.generation_id;
 }
 
 /** A kernel ran and its process is gone (a crash): the next cell starts a new one. */
