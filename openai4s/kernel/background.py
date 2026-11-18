@@ -219,10 +219,15 @@ class BackgroundExecutor:
     FLUSH_BYTES = 16 * 1024
     FLUSH_INTERVAL_MS = 1000
 
-    def _enter_lifetime(self) -> Any:
+    def _enter_lifetime(self, exec_id: str | None = None) -> Any:
         if self._lifetime_factory is None:
             return None
         lifetime = self._lifetime_factory()
+        # A lifetime that records what the job produced (the Web session's
+        # capture of the files it wrote) needs to know which job that is.
+        bind = getattr(lifetime, "bind_background_exec", None)
+        if exec_id and callable(bind):
+            bind(exec_id)
         enter = getattr(lifetime, "__enter__", None)
         exit_ = getattr(lifetime, "__exit__", None)
         if not callable(enter) or not callable(exit_):
@@ -251,7 +256,7 @@ class BackgroundExecutor:
         # Enter before claiming a process slot.  Foreground capture and this
         # increment are decided under the coordinator's one short lock, so a
         # background worker can never appear in the check/start gap.
-        job._lifetime = self._enter_lifetime()
+        job._lifetime = self._enter_lifetime(exec_id)
         # Claim the slot BEFORE the kernel exists. The old order checked
         # `_closed`, released the lock, spawned, and registered afterwards --
         # so any number of concurrent launches passed the check together and

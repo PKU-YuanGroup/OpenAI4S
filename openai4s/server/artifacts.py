@@ -3123,6 +3123,48 @@ class ArtifactManager:
         )
         return {"ok": True}
 
+    def capture_background(
+        self,
+        session: ArtifactSession,
+        exec_id: str,
+        before: WorkspaceSnapshot,
+        emit: EventSink,
+    ) -> list[dict]:
+        """Register what one finished background cell wrote (ART-5).
+
+        Foreground capture diffs the workspace around each Cell, so a file an
+        ``exec_background`` job wrote between Cells was never captured: its
+        figures and tables existed on disk while the completion claimed them
+        and the Artifact list did not. The job's lifetime snapshots at launch
+        and calls this when it ends. Bytes a foreground Cell already captured
+        (same name, same checksum as the head) are not versioned again.
+        """
+        after = self.snapshot(session.workspace)
+        records: list[dict] = []
+        for raw in sorted(
+            path for path, mark in after.items() if before.get(path) != mark
+        ):
+            path = Path(raw)
+            try:
+                relative = str(path.relative_to(session.workspace))
+                existing = self.store.artifact_by_filename(
+                    relative, session.root_frame_id, strict=True
+                )
+                head = (
+                    self.store.version_meta(existing["latest_version_id"])
+                    if existing and existing.get("latest_version_id")
+                    else None
+                )
+                if head and head.get("checksum") == self.checksum(path):
+                    continue
+                record = self.register_file(session, path, exec_id, emit)
+            except Exception as error:  # noqa: BLE001 — one file never blocks the rest
+                record_diagnostic(error, surface="artifacts:capture:background")
+                continue
+            if record is not None:
+                records.append(record)
+        return records
+
     def snapshot(self, workspace: Path) -> WorkspaceSnapshot:
         """Return kernel-owned file identities for deliverable change detection.
 
@@ -4023,6 +4065,54 @@ class ArtifactManager:
                 self._freeze_cache.clear()
             self._freeze_cache[key] = packages
         return packages
+
+
+class BackgroundCaptureLifetime:
+    """A background job's writer lease that also captures what the job wrote.
+
+    ``BackgroundExecutor`` holds its lifetime from spawn to the worker
+    thread's final shutdown, which is exactly the job's write window. This
+    wraps the session's background admission lease: snapshot on enter,
+    ``capture_background`` on exit, then release the lease. Capture is best
+    effort -- a failure is recorded and never changes the job's outcome.
+    """
+
+    def __init__(
+        self,
+        manager: "ArtifactManager",
+        session: ArtifactSession,
+        lease: Any,
+        emit: EventSink,
+    ) -> None:
+        self._manager = manager
+        self._session = session
+        self._lease = lease
+        self._emit = emit
+        self._before: WorkspaceSnapshot | None = None
+        self._exec_id = "background"
+
+    def bind_background_exec(self, exec_id: str) -> None:
+        self._exec_id = str(exec_id or "background")
+
+    def __enter__(self) -> Any:
+        entered = self._lease.__enter__()
+        try:
+            self._before = self._manager.snapshot(self._session.workspace)
+        except Exception as error:  # noqa: BLE001 — no baseline, no capture
+            record_diagnostic(error, surface="artifacts:capture:background")
+            self._before = None
+        return entered
+
+    def __exit__(self, *exc_info: Any) -> Any:
+        try:
+            if self._before is not None:
+                self._manager.capture_background(
+                    self._session, self._exec_id, self._before, self._emit
+                )
+        except Exception as error:  # noqa: BLE001 — the job's outcome stands
+            record_diagnostic(error, surface="artifacts:capture:background")
+        finally:
+            return self._lease.__exit__(*exc_info)
 
 
 def _capture_snippet(index: int, *, save: bool = True) -> str:

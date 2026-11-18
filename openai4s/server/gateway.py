@@ -136,6 +136,7 @@ from openai4s.server.artifact_workbench import (
 from openai4s.server.artifacts import (
     ArtifactManager,
     ArtifactOperationError,
+    BackgroundCaptureLifetime,
     PromotionTarget,
     WorkspaceSnapshot,
     artifact_receipt_map,
@@ -6317,7 +6318,14 @@ class SessionRunner:
         # was created by a tool-only turn before any language kernel existed.
         # The lease spans the whole background job and is the atomic peer of
         # every trusted foreground capture boundary.
-        dispatcher.background_execution_lease = st.trusted_capture.background
+        # ART-5: the same lifetime captures what the job wrote when it ends --
+        # foreground capture only sees files changed during a Cell.
+        dispatcher.background_execution_lease = lambda: BackgroundCaptureLifetime(
+            self.artifacts,
+            st,
+            st.trusted_capture.background(),
+            self.hub.emitter(st.root_frame_id),
+        )
         self._configure_background_kernel_factory(st, dispatcher)
         # Refresh per-turn model/delegation wiring without replacing the stable
         # dispatcher (and without starting Python).

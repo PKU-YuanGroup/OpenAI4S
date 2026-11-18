@@ -1971,3 +1971,70 @@ def test_the_content_digest_is_paid_only_where_the_ctime_can_lag(tmp_path, monke
     first = harness.manager.snapshot(harness.workspace)[str(path)]
     second = harness.manager.snapshot(harness.workspace)[str(path)]
     assert first == second
+
+
+def test_a_background_cell_s_files_are_captured_when_it_finishes(tmp_path):
+    """ART-5: an exec_background job wrote a figure and tables between Cells;
+    foreground capture only diffs the workspace around a Cell, so they never
+    became Artifacts while the completion said they were produced. The job's
+    lifetime now captures what it wrote, attributed to the job, and does not
+    re-version bytes a foreground Cell already captured."""
+    import threading
+    from contextlib import nullcontext
+
+    from openai4s.kernel.background import BackgroundExecutor
+    from openai4s.server.artifacts import BackgroundCaptureLifetime
+
+    harness = ArtifactHarness(tmp_path)
+    workspace = harness.workspace
+    (workspace / "shared.csv").write_text("a\n1\n", encoding="utf-8")
+    already = harness.manager.register_file(
+        harness.session, workspace / "shared.csv", "cell-fg", lambda event: None
+    )
+    go = threading.Event()
+
+    class _WritingKernel:
+        def execute(self, code, origin="agent", on_chunk=None):
+            go.wait(5)
+            (workspace / "ddct_barplot.png").write_bytes(b"\x89PNG\r\n\x1a\nbar")
+            (workspace / "results").mkdir(exist_ok=True)
+            (workspace / "results" / "ddct.csv").write_text("g,ddct\nA,1.2\n")
+            # Touched with identical bytes: already captured, not a new version.
+            (workspace / "shared.csv").write_text("a\n1\n", encoding="utf-8")
+            return {"stdout": "", "error": None}
+
+        def interrupt(self):
+            return None
+
+        def shutdown(self):
+            return None
+
+    events: list[dict] = []
+    executor = BackgroundExecutor(
+        lambda: _WritingKernel(),
+        dispatcher=None,
+        lifetime_factory=lambda: BackgroundCaptureLifetime(
+            harness.manager, harness.session, nullcontext(), events.append
+        ),
+    )
+    launched = executor.launch("make_figures()")
+    go.set()
+    job = executor._get(launched["exec_id"])
+    job._thread.join(5)
+    assert executor.peek(launched["exec_id"])["status"] == "done"
+
+    rows = {
+        row["filename"]: row
+        for row in harness.store.list_artifacts({"root_frame_id": harness.frame_id})
+    }
+    assert {"ddct_barplot.png", "results/ddct.csv", "shared.csv"} <= set(rows)
+    produced = {
+        event["artifact"]["filename"]: event["artifact"]["producing_cell_id"]
+        for event in events
+        if event.get("type") == "artifact_created"
+    }
+    assert produced == {
+        "ddct_barplot.png": launched["exec_id"],
+        "results/ddct.csv": launched["exec_id"],
+    }
+    assert len(harness.store.list_versions(already["artifact_id"])) == 1
