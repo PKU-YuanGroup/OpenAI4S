@@ -42,7 +42,7 @@ import {
   notebookFetch,
   notifyLoadArtifacts,
 } from "./cells";
-import { nbT } from "./copy";
+import { nbLabelT, nbT } from "./copy";
 import { nbRender } from "./scroll";
 import type { KernelEnvRow, KernelStatus, NotebookCell } from "./types";
 
@@ -731,7 +731,7 @@ export async function promoteNotebookCell(cell: NotebookCell): Promise<void> {
       body: JSON.stringify({ cell_id: nbCellKey(cell) }),
     });
     notifyLoadArtifacts(currentId.value);
-    hint(t("nb.action.promoted", (art && art.filename) || ""));
+    hint(nbLabelT("nb.action.promoted", (art && art.filename) || ""));
   } catch (error) {
     hint(t("nb.action.failed", apiErrorText(error)), true);
   }

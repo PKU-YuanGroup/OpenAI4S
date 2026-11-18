@@ -177,6 +177,13 @@ function CellStream({ cell, stream, live }: { cell: NotebookCell; stream: "stdou
   return <CellOutput text={text} isError={stream === "stderr"} live={live} />;
 }
 
+/** A cell's status word in the UI language ("ok" / "running" read as English in Chinese). */
+function cellStatusLabel(status: string): string {
+  const key = "nb.cell.status." + status;
+  const label = nbT(key);
+  return label === key ? status : label;
+}
+
 function CodeBlock(opts: {
   cacheKey: string;
   source: string;
@@ -193,7 +200,7 @@ function CodeBlock(opts: {
           <span>{opts.langLabel}</span>
         </span>
         <div class="oc-right">
-          {opts.status ? <span class={"nbc-status " + opts.status}>{opts.status}</span> : null}
+          {opts.status ? <span class={"nbc-status " + opts.status}>{cellStatusLabel(opts.status)}</span> : null}
           {opts.env ? (
             <span class="oc-env">
               <span class="oc-env-k">env</span>
@@ -356,7 +363,7 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
       </button>
       {canFork ? (
         <button class="nbc-action" disabled={forkBusy.value} onClick={() => void forkNotebookCell(cell)}>
-          {t("nb.action.fork")}
+          {nbLabelT("nb.action.fork")}
         </button>
       ) : null}
       <button
@@ -364,7 +371,7 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
         disabled={!canPromote.value}
         onClick={() => void promoteNotebookCell(cell)}
       >
-        {t("nb.action.promote")}
+        {nbLabelT("nb.action.promote")}
       </button>
     </div>
   );
@@ -1039,7 +1046,7 @@ export function cellNode(e: NotebookCell): HTMLElement {
   lg.appendChild(el("span", null, (e.language || k) + " [" + idx + "]"));
   head.appendChild(lg);
   const right = el("div", "oc-right");
-  right.appendChild(el("span", "nbc-status " + st, String(st)));
+  right.appendChild(el("span", "nbc-status " + st, cellStatusLabel(String(st))));
   head.appendChild(right);
   wrap.appendChild(head);
   const pre = el("pre", "oc-src");

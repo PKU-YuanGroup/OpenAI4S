@@ -355,6 +355,8 @@ describe("Notebook read-only mode (NB-5)", () => {
       expect(nbLabelT("nb.owner.agent")).toBe("智能体");
       expect(nbLabelT("nb.cell.current")).toBe("当前");
       expect(nbLabelT("nb.variables.title")).toBe("变量查看器");
+      expect(nbLabelT("nb.action.promote")).toBe("保存为产物");
+      expect(nbT("nb.cell.status.ok")).toBe("完成");
       expect(nbLabelT("nb.kernel.stopLabel")).toBe(t("nb.kernel.stopLabel"));
     } finally {
       await setLang(original);
