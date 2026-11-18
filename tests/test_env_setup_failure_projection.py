@@ -136,3 +136,97 @@ def test_a_successful_env_setup_step_still_ends_done(dispatcher, monkeypatch):
     end = next(step for step in steps if step.get("phase") == "end")
     assert end["status"] == "done"
     assert end["summary"] == "installed tabulate"
+
+
+# --- ENV-1: the install targets the kernel's environment and says so ---------
+
+
+def test_env_create_installs_into_the_kernel_environment(monkeypatch, tmp_path):
+    import types
+
+    from openai4s.kernel import preinstall
+    from openai4s.tools.env_create import EnvCreateTool
+
+    bindir = tmp_path / "lab-env" / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "python").write_text("")
+    calls: list = []
+
+    def fake_install(packages, **kwargs):
+        calls.append((packages, kwargs))
+        return {"ok": True, "installed": packages, "failed": [], "log": ""}
+
+    monkeypatch.setattr(preinstall, "install", fake_install)
+    runtime = types.SimpleNamespace(active_env_bin=str(bindir))
+
+    result = EnvCreateTool().execute(
+        runtime, {"name": "my-label", "packages": ["lifelines"]}
+    )
+
+    assert calls == [
+        (["lifelines"], {"python": str(bindir / "python"), "preserve_installed": True})
+    ]
+    assert result["environment"] == "lab-env"
+    assert result["name"] == "lab-env"
+
+
+def test_env_create_defaults_to_the_daemon_interpreter(monkeypatch):
+    import sys
+    import types
+
+    from openai4s.kernel import preinstall
+    from openai4s.tools.env_create import EnvCreateTool
+
+    calls: list = []
+    monkeypatch.setattr(
+        preinstall,
+        "install",
+        lambda packages, **kwargs: calls.append(kwargs)
+        or {"ok": True, "installed": packages, "failed": [], "log": ""},
+    )
+
+    result = EnvCreateTool().execute(
+        types.SimpleNamespace(active_env_bin=None), {"packages": ["tabulate"]}
+    )
+
+    assert calls == [{"python": sys.executable, "preserve_installed": True}]
+    assert result["environment"] == "base"
+
+
+def test_env_create_refuses_an_r_only_environment(tmp_path):
+    import types
+
+    from openai4s.tools.env_create import EnvCreateTool
+
+    bindir = tmp_path / "r-only" / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "Rscript").write_text("")
+
+    result = EnvCreateTool().execute(
+        types.SimpleNamespace(active_env_bin=str(bindir)), {"packages": ["survival"]}
+    )
+
+    assert result["ok"] is False
+    assert "has no Python interpreter" in result["failed"][0]["error"]
+
+
+def test_the_install_step_names_the_real_target_not_the_callers_label(tmp_path):
+    from openai4s.host_dispatch import _step_begin, _with_install_target
+
+    bindir = tmp_path / "lab-env" / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "python").write_text("")
+
+    view = _step_begin(
+        "env_setup",
+        [{"name": "lab_env", "packages": ["lifelines", "statsmodels"]}],
+    )
+    assert view is not None
+    assert "lab_env" not in view[1]
+    assert view[1] == "Installing lifelines, statsmodels"
+
+    kind, title, data = _with_install_target(view, str(bindir))
+    assert title == "Installing lifelines, statsmodels into lab-env"
+    assert data["environment"] == "lab-env"
+    assert data["interpreter"] == str(bindir / "python")
+    assert data["label"] == "lab_env"

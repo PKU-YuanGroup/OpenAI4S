@@ -167,7 +167,10 @@ DEFAULT_PERMISSION_RULES = (
     ("project_import_file", "*", "allow"),
     ("save_artifact", "*", "allow"),
     ("delegate", "*", "allow"),
-    ("env_setup", "*", "allow"),
+    # Installing packages changes an interpreter the user owns (the session's
+    # kernel environment). It used to be allowed silently and wrote into the
+    # daemon's own venv; every install is now the user's call.
+    ("env_setup", "*", "ask"),
     ("web_fetch", "*", "allow"),
     ("web_search", "*", "allow"),
     ("science_search", "*", "allow"),
@@ -205,7 +208,7 @@ DEFAULT_PERMISSION_RULES = (
 # Version 5 is skipped on purpose: a parallel branch claims it, and a database
 # already seeded to 5 by that branch would otherwise never add these rules.
 # Gaps are harmless; seeding reads ``ADDITIONS.get(version, ())``.
-_DEFAULT_PERMISSION_RULE_VERSION = 6
+_DEFAULT_PERMISSION_RULE_VERSION = 7
 _DEFAULT_PERMISSION_RULE_ADDITIONS = {
     2: (("science_search", "*", "allow"),),
     3: (("mcp_call", "volcengine-datapro/dataPro_search", "allow"),),
@@ -227,6 +230,10 @@ _DEFAULT_PERMISSION_RULE_ADDITIONS = {
 # an allow after upgrade; deny/ask and deleted rows are preserved.
 _DEFAULT_PERMISSION_RULE_REPLACEMENTS = {
     4: (("skills_edit", "*", "allow", "ask"),),
+    # v7: the shipped ``env_setup * allow`` let the agent install packages
+    # without asking (and, before the same release, into the daemon's venv). An
+    # operator who deliberately wants silent installs can restore the allow.
+    7: (("env_setup", "*", "allow", "ask"),),
 }
 
 

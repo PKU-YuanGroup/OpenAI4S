@@ -139,3 +139,125 @@ def test_install_reports_the_uv_result_through_the_structured_shape(monkeypatch)
     assert result["ok"] is True
     assert result["installed"] == ["pandas"]
     assert result["failed"] == []
+
+
+# --- ENV-1: install into the session kernel's interpreter, never move a pin ---
+#
+# The agent's `host.env.create` used to pip-install into the daemon's own
+# interpreter while the step card named the kernel's conda environment, and one
+# such install downgraded the daemon's pandas 3.0.3 to 2.3.3. The install now
+# targets an explicit interpreter and, for agent installs, pins every package
+# that interpreter already has.
+
+
+def test_a_foreign_interpreter_installs_with_its_own_pip(monkeypatch):
+    spy = SpyRun()
+    monkeypatch.setattr(preinstall, "_is_this_interpreter", lambda path: False)
+    monkeypatch.setattr(preinstall, "_target_has_pip", lambda path: True)
+    monkeypatch.setattr(preinstall.subprocess, "run", spy)
+
+    ok, _log = preinstall._pip_install(
+        ["lifelines"], python="/envs/lab/bin/python", constraints="/tmp/keep.txt"
+    )
+
+    assert ok is True
+    assert spy.commands == [
+        [
+            "/envs/lab/bin/python",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-input",
+            "--constraint",
+            "/tmp/keep.txt",
+            "lifelines",
+        ]
+    ]
+
+
+def test_a_foreign_interpreter_without_pip_is_targeted_by_uv(monkeypatch):
+    spy = SpyRun()
+    monkeypatch.setattr(preinstall, "_is_this_interpreter", lambda path: False)
+    monkeypatch.setattr(preinstall, "_target_has_pip", lambda path: False)
+    monkeypatch.setattr(preinstall.shutil, "which", lambda name: "/opt/uv")
+    monkeypatch.setattr(preinstall.subprocess, "run", spy)
+
+    ok, _log = preinstall._pip_install(["lifelines"], python="/envs/lab/bin/python")
+
+    assert ok is True
+    assert spy.commands == [
+        ["/opt/uv", "pip", "install", "--python", "/envs/lab/bin/python", "lifelines"]
+    ]
+
+
+def test_preserve_installed_pins_every_installed_package(monkeypatch):
+    seen: dict = {}
+
+    def fake_pip_install(names, *, upgrade, python, constraints):
+        seen["python"] = python
+        with open(constraints, encoding="utf-8") as handle:
+            seen["pins"] = handle.read().split()
+        return True, "ok"
+
+    monkeypatch.setattr(
+        preinstall,
+        "freeze_for",
+        lambda python: [
+            {"name": "pandas", "version": "3.0.3"},
+            {"name": "numpy", "version": "2.5.0"},
+            {"name": "broken-dist", "version": None},
+        ],
+    )
+    monkeypatch.setattr(preinstall, "_pip_install", fake_pip_install)
+
+    result = preinstall.install(
+        ["lifelines"], python="/envs/lab/bin/python", preserve_installed=True
+    )
+
+    assert result["ok"] is True
+    assert result["interpreter"] == "/envs/lab/bin/python"
+    assert seen["python"] == "/envs/lab/bin/python"
+    assert seen["pins"] == ["numpy==2.5.0", "pandas==3.0.3"]
+
+
+def test_preserve_installed_refuses_when_the_installed_set_is_unreadable(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(preinstall, "freeze_for", lambda python: None)
+    monkeypatch.setattr(
+        preinstall, "_pip_install", lambda *a, **k: calls.append(a) or (True, "")
+    )
+
+    result = preinstall.install(
+        ["lifelines"], python="/envs/lab/bin/python", preserve_installed=True
+    )
+
+    assert result["ok"] is False
+    assert calls == []
+    assert "no existing package version changes" in result["failed"][0]["error"]
+
+
+def test_a_resolver_conflict_is_reported_as_a_refused_version_change(monkeypatch):
+    monkeypatch.setattr(
+        preinstall,
+        "freeze_for",
+        lambda python: [{"name": "pandas", "version": "3.0.3"}],
+    )
+    monkeypatch.setattr(
+        preinstall,
+        "_pip_install",
+        lambda *a, **k: (
+            False,
+            "× No solution found when resolving dependencies: lifelines "
+            "depends on pandas<3 and you require pandas==3.0.3",
+        ),
+    )
+
+    result = preinstall.install(
+        ["lifelines"], python="/envs/lab/bin/python", preserve_installed=True
+    )
+
+    assert result["ok"] is False
+    error = result["failed"][0]["error"]
+    assert "would change the version of a package already installed" in error
+    assert "pandas<3" in error

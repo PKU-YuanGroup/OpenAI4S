@@ -170,6 +170,26 @@ def _configured_bash_allowed_roots() -> list[str]:
     return [item for item in raw.split(os.pathsep) if item.strip()]
 
 
+def _with_install_target(
+    view: tuple[str, str, dict], active_env_bin: str | None
+) -> tuple[str, str, dict]:
+    """Name the environment an ``env_setup`` really installs into.
+
+    The step card and the approval card both read this view, so the user sees
+    "Installing lifelines into lab_env" with the interpreter path before
+    approving, instead of the caller's label.
+    """
+    from openai4s.tools.env_create import install_target
+
+    kind, title, data = view
+    interpreter, environment = install_target(active_env_bin)
+    return (
+        kind,
+        f"{title} into {environment}",
+        {**data, "environment": environment, "interpreter": interpreter or ""},
+    )
+
+
 def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     """(kind, title, input) for a visible tool call, else None."""
     a = args[0] if args and isinstance(args[0], dict) else {}
@@ -330,10 +350,14 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
         )
         return ("env", f"Switching to the {name} environment", {"name": name})
     if method == "env_setup":
+        # ``name`` is the caller's free-text label, not the environment the
+        # packages go into; the dispatcher adds the real target (see
+        # ``_with_install_target``).
+        packages = [str(p) for p in (a.get("packages") or []) if p]
         return (
             "env",
-            f"Setting up the {a.get('name') or 'analysis'} environment",
-            {"name": a.get("name"), "packages": a.get("packages", [])},
+            "Installing " + ", ".join(packages) if packages else "Installing packages",
+            {"label": a.get("name"), "packages": packages},
         )
     if method == "save_artifact":
         fn = a.get("filename") or Path(a.get("path", "")).name
@@ -2395,6 +2419,8 @@ class HostDispatcher:
         if self.on_step is not None:
             try:
                 view = _step_begin(method, args)
+                if method == "env_setup" and view is not None:
+                    view = _with_install_target(view, self.active_env_bin)
             except Exception:  # noqa: BLE001 — step projection must never break a call
                 view = None
             if view is not None:

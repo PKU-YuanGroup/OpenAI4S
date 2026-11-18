@@ -137,12 +137,39 @@ def _has_pip() -> bool:
         return False
 
 
+def _target_has_pip(python: str) -> bool:
+    """Whether a *foreign* interpreter can run ``python -m pip``."""
+    try:
+        proc = subprocess.run(
+            [python, "-m", "pip", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
 def _pip_install(
-    pip_names: list[str], *, upgrade: bool = False, timeout: int = 1800
+    pip_names: list[str],
+    *,
+    upgrade: bool = False,
+    timeout: int = 1800,
+    python: str | None = None,
+    constraints: str | None = None,
 ) -> tuple[bool, str]:
+    """Install into ``python`` (default: this interpreter).
+
+    ``constraints`` is a pip/uv constraints file; :func:`install` passes one
+    that pins every package already present so an install can add packages but
+    never move an existing one.
+    """
     if not pip_names:
         return True, ""
-    if _has_pip():
+    own = python is None or _is_this_interpreter(str(python))
+    target = sys.executable if own else str(python)
+    if own and _has_pip():
         cmd = [
             sys.executable,
             "-m",
@@ -152,21 +179,36 @@ def _pip_install(
             "--disable-pip-version-check",
             "--no-input",
         ]
+    elif not own and _target_has_pip(target):
+        # Another environment (the session kernel's conda env): its own pip
+        # installs into its own site-packages. No --break-system-packages: an
+        # older pip in a conda env rejects the flag, and conda envs are not
+        # PEP 668 "externally managed".
+        cmd = [
+            target,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-input",
+        ]
     else:
-        # No pip module: fall back to a `uv` binary on PATH, pointed at this
+        # No pip module: fall back to a `uv` binary on PATH, pointed at the
         # same interpreter. Only tool *selection* falls back — a failed install
         # under a present pip is reported as-is rather than retried with uv,
         # which would blur what actually broke.
         uv = shutil.which("uv")
         if uv is None:
             return False, (
-                f"{sys.executable} has no pip module and no `uv` binary was "
+                f"{target} has no pip module and no `uv` binary was "
                 "found on PATH. Install pip into this environment "
                 "(python -m ensurepip --upgrade), or install uv, then retry."
             )
-        cmd = [uv, "pip", "install", "--python", sys.executable]
+        cmd = [uv, "pip", "install", "--python", target]
     if upgrade:
         cmd.append("--upgrade")
+    if constraints:
+        cmd += ["--constraint", constraints]
     cmd += pip_names
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -178,20 +220,104 @@ def _pip_install(
     return proc.returncode == 0, log[-4000:]
 
 
-def install(pip_names: list[str], *, upgrade: bool = False) -> dict:
+_CONFLICT_MARKERS = (
+    "ResolutionImpossible",
+    "conflicting dependencies",
+    "Cannot install",
+    "No solution found when resolving",
+)
+
+
+def _keep_installed_constraints(python: str) -> tuple[str | None, str | None]:
+    """Write a constraints file pinning every package ``python`` already has.
+
+    Returns ``(path, None)``, or ``(None, reason)`` when the installed set
+    cannot be read: an install whose effect on existing packages cannot be
+    bounded is refused rather than attempted.
+    """
+    frozen = freeze_for(python)
+    if frozen is None:
+        return None, (
+            f"could not read the packages already installed in {python}; "
+            "refused to install so that no existing package version changes"
+        )
+    pins = sorted(
+        {
+            f"{entry['name']}=={entry['version']}"
+            for entry in frozen
+            if isinstance(entry, dict) and entry.get("name") and entry.get("version")
+        }
+    )
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", prefix="openai4s-keep-installed-", delete=False
+    )
+    with handle:
+        handle.write("\n".join(pins) + "\n")
+    return handle.name, None
+
+
+def install(
+    pip_names: list[str],
+    *,
+    upgrade: bool = False,
+    python: str | None = None,
+    preserve_installed: bool = False,
+) -> dict:
     """On-demand install of one or more packages. Returns a structured result.
 
     Idempotent for already-present packages when ``upgrade`` is False.
+
+    ``python`` selects the interpreter to install into (default: this one).
+    ``preserve_installed`` pins every package that interpreter already has, so
+    the install may only *add* packages: one that needs to upgrade or downgrade
+    an existing package (lifelines pulling pandas 3 back to 2) fails and says so.
     """
     pip_names = [p.strip() for p in pip_names if p and p.strip()]
+    target = str(python) if python else sys.executable
     if not pip_names:
-        return {"ok": True, "installed": [], "failed": [], "log": "nothing to do"}
-    ok, log = _pip_install(pip_names, upgrade=upgrade)
+        return {
+            "ok": True,
+            "installed": [],
+            "failed": [],
+            "log": "nothing to do",
+            "interpreter": target,
+        }
+    constraints = None
+    if preserve_installed:
+        constraints, refusal = _keep_installed_constraints(target)
+        if refusal is not None:
+            return {
+                "ok": False,
+                "installed": [],
+                "failed": [{"name": ", ".join(pip_names), "error": refusal}],
+                "log": refusal,
+                "interpreter": target,
+            }
+    try:
+        ok, log = _pip_install(
+            pip_names, upgrade=upgrade, python=python, constraints=constraints
+        )
+    finally:
+        if constraints:
+            try:
+                os.unlink(constraints)
+            except OSError:
+                pass
+    error = log[-600:]
+    if not ok and preserve_installed and any(m in log for m in _CONFLICT_MARKERS):
+        error = (
+            f"installing {', '.join(pip_names)} would change the version of a "
+            "package already installed in this environment, so it was refused "
+            "and nothing was changed. Use a package version compatible with the "
+            "installed ones, or ask the user to change the environment. "
+            f"Resolver output: {log[-400:]}"
+        )
     result = {
         "ok": ok,
         "installed": pip_names if ok else [],
-        "failed": ([] if ok else [{"name": ", ".join(pip_names), "error": log[-600:]}]),
+        "failed": ([] if ok else [{"name": ", ".join(pip_names), "error": error}]),
         "log": log,
+        "interpreter": target,
     }
     return result
 

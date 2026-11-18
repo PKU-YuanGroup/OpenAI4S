@@ -34,8 +34,9 @@ def test_seed_defaults_and_fallback(tmp_path):
     assert (
         st.resolve_permission(tool="science_search", pattern_input="uniprot") == "allow"
     )
-    assert st.resolve_permission(tool="env_setup", pattern_input="numpy") == "allow"
-    # genuinely risky ones still ask
+    # genuinely risky ones still ask — including package installs, which change
+    # an interpreter the user owns
+    assert st.resolve_permission(tool="env_setup", pattern_input="numpy") == "ask"
     assert st.resolve_permission(tool="bash", pattern_input="ls -la") == "ask"
     assert st.resolve_permission(tool="skills_edit", pattern_input="QC") == "ask"
     assert st.resolve_permission(tool="mcp_call", pattern_input="x") == "ask"
