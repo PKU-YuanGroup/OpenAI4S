@@ -3,6 +3,7 @@ import { _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   UPLOAD_STATE,
+  UPLOAD_TIMING,
   UPLOAD_WAIT_LIMIT_MS,
   createUploadSession,
   pendingUploadsFor,
@@ -342,5 +343,110 @@ describe("F-20 composer uploads (app.js:11049-11199)", () => {
 
   it("the stall budget stays at the app.js value", () => {
     expect(UPLOAD_WAIT_LIMIT_MS).toBe(120000);
+  });
+});
+
+describe("UP-1/UP-2: several files and a busy session", () => {
+  beforeEach(() => {
+    resetStoreFields();
+    UPLOAD_STATE.pending.clear();
+    UPLOAD_STATE.failures.clear();
+    UPLOAD_STATE.creations.clear();
+    stubDom();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** fetch stub with per-request status codes and in-flight tracking. */
+  function stubSequencedFetch(
+    respond: (path: string, body: Record<string, unknown>) => { status: number; body: unknown },
+  ): { calls: FetchCall[]; maxInFlight: () => number } {
+    const calls: FetchCall[] = [];
+    let inFlight = 0;
+    let max = 0;
+    vi.stubGlobal("fetch", async (url: string, opts: { body?: string }) => {
+      const path = String(url).replace("/api/v1", "");
+      const body = opts && opts.body ? (JSON.parse(opts.body) as Record<string, unknown>) : {};
+      calls.push({ path, body });
+      inFlight += 1;
+      max = Math.max(max, inFlight);
+      await Promise.resolve();
+      await Promise.resolve();
+      inFlight -= 1;
+      const answer = respond(path, body);
+      return {
+        ok: answer.status < 400,
+        status: answer.status,
+        text: () => Promise.resolve(JSON.stringify(answer.body ?? {})),
+      };
+    });
+    return { calls, maxInFlight: () => max };
+  }
+
+  it("a multi-file selection uploads one file at a time and every file lands", async () => {
+    stubReader((f) => `data:text/csv;base64,${f.name}`);
+    const { calls, maxInFlight } = stubSequencedFetch(() => ({ status: 200, body: {} }));
+    currentId.value = "frame_a";
+
+    const results = await uploadFiles([file("a.csv"), file("b.csv"), file("c.csv")]);
+
+    expect(results.map((r) => r.ok)).toEqual([true, true, true]);
+    expect(calls.filter((c) => c.path === "/uploads")).toHaveLength(3);
+    expect(maxInFlight()).toBe(1);
+  });
+
+  it("a busy session queues the upload until its run ends, then sends it", async () => {
+    stubReader((f) => `data:text/csv;base64,${f.name}`);
+    const original = { ...UPLOAD_TIMING };
+    UPLOAD_TIMING.sleep = () => Promise.resolve();
+    let uploads = 0;
+    let statusPolls = 0;
+    const { calls } = stubSequencedFetch((path) => {
+      if (path === "/uploads") {
+        uploads += 1;
+        return uploads === 1
+          ? {
+              status: 409,
+              body: {
+                error: "session workspace is busy with another execution",
+                code: "trusted_capture_busy",
+                status: 409,
+              },
+            }
+          : { status: 200, body: {} };
+      }
+      if (path === "/frames/frame_a/status") {
+        statusPolls += 1;
+        return { status: 200, body: { running: statusPolls < 3 } };
+      }
+      return { status: 200, body: {} };
+    });
+    currentId.value = "frame_a";
+    try {
+      const results = await uploadFiles([file("late.csv")]);
+      expect(results[0]?.ok).toBe(true);
+      expect(statusPolls).toBe(3);
+      expect(calls.filter((c) => c.path === "/uploads")).toHaveLength(2);
+    } finally {
+      Object.assign(UPLOAD_TIMING, original);
+    }
+  });
+
+  it("a refusal that is not a busy session fails at once and is recorded", async () => {
+    stubReader((f) => `data:text/csv;base64,${f.name}`);
+    stubSequencedFetch((path) =>
+      path === "/uploads"
+        ? { status: 413, body: { error: "too large", code: "payload_too_large" } }
+        : { status: 200, body: {} },
+    );
+    currentId.value = "frame_a";
+
+    const results = await uploadFiles([file("a.csv"), file("b.csv")]);
+
+    expect(results.map((r) => r.ok)).toEqual([false, false]);
+    expect(UPLOAD_STATE.failures.size).toBe(1);
   });
 });

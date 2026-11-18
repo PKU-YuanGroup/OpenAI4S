@@ -13,7 +13,7 @@
  * conversation happened to be open when FileReader finished.
  */
 
-import { t } from "../../i18n/runtime";
+import { LANG, t } from "../../i18n/runtime";
 import { defaultModelName } from "../../stores/customize";
 import { effProject } from "../customize/host";
 import { _openGen, currentId, project } from "../../stores/session";
@@ -211,6 +211,98 @@ export function uploadFailureMatches(
     : !failure.frameId && failure.projectId === projectId;
 }
 
+/** Feature-local copy: `i18n/en.ts` / `zh.ts` are generated extracts of app.js. */
+const UPLOAD_COPY: Record<"en" | "zh", Record<string, string>> = {
+  en: {
+    queued: "The session is busy; {0} will upload as soon as the current run finishes…",
+    progress: "Uploading {0} of {1}: {2}",
+    allDone: "Uploaded {0} files",
+    partial: "Uploaded {0} of {1} files. Not uploaded: {2}",
+  },
+  zh: {
+    queued: "会话正在运行，{0} 会在当前任务结束后自动上传…",
+    progress: "正在上传 {0}/{1}：{2}",
+    allDone: "已上传 {0} 个文件",
+    partial: "已上传 {0}/{1} 个文件。未上传：{2}",
+  },
+};
+
+function uploadCopy(key: string, ...args: string[]): string {
+  let text = UPLOAD_COPY[LANG === "zh" ? "zh" : "en"][key] || key;
+  args.forEach((value, index) => {
+    text = text.split("{" + index + "}").join(value);
+  });
+  return text;
+}
+
+/**
+ * How long a refused upload keeps waiting for its session to go idle. The
+ * server refuses user mutations while a run is active (409
+ * `trusted_capture_busy`) so bytes never land inside a run's completion
+ * delta; the upload waits for the run instead of being dropped.
+ */
+export const UPLOAD_BUSY_WAIT_MS = 30 * 60 * 1000;
+
+/** Injectable timing so tests do not sleep. */
+export const UPLOAD_TIMING = {
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: (): number => Date.now(),
+};
+
+/**
+ * One upload request at a time per page. Every file of a multi-select used to
+ * POST at once; the session gate admits one mutation, so all but one came back
+ * 409 and were dropped behind a hint line the next file overwrote.
+ */
+let uploadChain: Promise<unknown> = Promise.resolve();
+
+function inSeries<T>(job: () => Promise<T>): Promise<T> {
+  const next = uploadChain.then(job, job);
+  uploadChain = next.catch(() => undefined);
+  return next;
+}
+
+function sessionBusy(error: unknown): boolean {
+  const e = error as { status?: unknown; code?: unknown } | null;
+  return !!e && e.status === 409 && e.code === "trusted_capture_busy";
+}
+
+/** Poll the cheap status route, not the upload itself, until the run ends. */
+async function waitForIdle(frameId: string | null, attempt: number): Promise<void> {
+  await UPLOAD_TIMING.sleep(Math.min(15000, 1000 * 2 ** attempt));
+  if (!frameId) return;
+  for (;;) {
+    let status: { running?: unknown } | null = null;
+    try {
+      status = (await api(`/frames/${encodeURIComponent(frameId)}/status`)) as {
+        running?: unknown;
+      } | null;
+    } catch {
+      return;
+    }
+    if (!status || status.running !== true) return;
+    await UPLOAD_TIMING.sleep(2000);
+  }
+}
+
+async function postUpload(body: string, filename: string, frameId: string | null): Promise<void> {
+  const started = UPLOAD_TIMING.now();
+  let announced = false;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await api("/uploads", { method: "POST", body });
+      return;
+    } catch (error) {
+      if (!sessionBusy(error) || UPLOAD_TIMING.now() - started > UPLOAD_BUSY_WAIT_MS) throw error;
+      if (!announced) {
+        hint(uploadCopy("queued", filename));
+        announced = true;
+      }
+      await waitForIdle(frameId, attempt);
+    }
+  }
+}
+
 /** app.js:11131. */
 export function uploadFiles(
   files: ArrayLike<File> | FileList | null | undefined,
@@ -242,21 +334,29 @@ export function uploadFiles(
     return targetFrame;
   });
   const targetPromise = batch.targetPromise;
-  const tasks = selected.map((file) =>
+  const several = selected.length > 1;
+  const tasks = selected.map((file, index) =>
     (async (): Promise<UploadResult> => {
       let targetFrame: string | null = null;
       try {
         const prepared = await Promise.all([targetPromise, readUploadFile(file)]);
         targetFrame = prepared[0];
         const b64 = prepared[1];
-        await api("/uploads", {
-          method: "POST",
-          body: JSON.stringify({
-            filename: file.name,
-            content_base64: b64,
-            project_id: projectId || undefined,
-            frame_id: targetFrame,
-          }),
+        const frame = targetFrame;
+        await inSeries(async () => {
+          if (several) {
+            hint(uploadCopy("progress", String(index + 1), String(selected.length), file.name));
+          }
+          await postUpload(
+            JSON.stringify({
+              filename: file.name,
+              content_base64: b64,
+              project_id: projectId || undefined,
+              frame_id: frame,
+            }),
+            file.name,
+            frame,
+          );
         });
         // Only the open conversation's file dock should be refreshed; the bytes
         // landed in targetFrame whether or not the user is still looking at it.
@@ -264,7 +364,7 @@ export function uploadFiles(
           const loadArtifacts = hostFn("loadArtifacts");
           if (isReady(loadArtifacts)) loadArtifacts(targetFrame);
         }
-        hint(t("upload.uploaded", file.name));
+        if (!several) hint(t("upload.uploaded", file.name));
         return { ok: true, frameId: targetFrame, filename: file.name };
       } catch (error) {
         // FileReader can fail before the shared frame request settles. Wait for
@@ -277,7 +377,7 @@ export function uploadFiles(
             /* the creation itself failed; the failure stays frame-less */
           }
         }
-        hint(t("upload.failed", apiErrorText(error)), true);
+        if (!several) hint(t("upload.failed", apiErrorText(error)), true);
         return { ok: false, frameId: targetFrame, filename: file.name, error };
       }
     })(),
@@ -285,6 +385,25 @@ export function uploadFiles(
   batch.promise = Promise.all(tasks)
     .then((results) => {
       const failed = results.filter((result) => !result.ok);
+      if (several) {
+        // One summary line names every file that did not make it; per-file
+        // hints overwrote each other within milliseconds.
+        if (failed.length) {
+          hint(
+            uploadCopy(
+              "partial",
+              String(results.length - failed.length),
+              String(results.length),
+              failed
+                .map((result) => `${result.filename} (${apiErrorText(result.error)})`)
+                .join("; "),
+            ),
+            true,
+          );
+        } else {
+          hint(uploadCopy("allDone", String(results.length)));
+        }
+      }
       if (failed.length) {
         UPLOAD_STATE.failures.add({
           frameId: results.find((result) => result.frameId)?.frameId || null,
