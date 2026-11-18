@@ -136,7 +136,8 @@ export function capabilityEffectiveText(row: BadgeRow): string {
 
 export function capabilityBadgeText(row: BadgeRow): string {
   if (row.kind !== "observed") return capabilityEffectiveText(row);
-  let text = `${row.label} · ${row.state}`;
+  // The tri-state in the UI language: "原生工具调用 · unknown" in Chinese.
+  let text = `${row.label} · ${ot("onboarding.badge.state." + row.state)}`;
   if (row.unknownReason) text += ` — ${row.unknownReason}`;
   if (row.stale) text += ` · ${ot("onboarding.badge.stale")}`;
   if (row.observedAt) {

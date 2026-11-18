@@ -567,6 +567,23 @@ describe("live activity card outcome", () => {
     expect(icon(stopped)).toBe("stop");
   });
 
+  // I18N-1: a Chinese UI showed "Running analysis · cell 1" while the cell ran
+  // and only "分析 · 单元 1" once it ended.
+  it("shows the generated running title in the UI language", async () => {
+    await setLang("zh");
+    try {
+      startStream();
+      const card = startCell(8, "c8");
+      expect(label(card)).toBe("正在分析 · 单元 8");
+      finished("c8", 8, "ok");
+      expect(label(card)).toBe("分析 · 单元 8");
+      const own = startCell(9, "c9", "Fit the growth model");
+      expect(label(own)).toBe("Fit the growth model");
+    } finally {
+      await setLang("en");
+    }
+  });
+
   it("a card whose outcome never arrived does not stay running after the turn", () => {
     for (const status of ["completed", "failed"]) {
       startStream();

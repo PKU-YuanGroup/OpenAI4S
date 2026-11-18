@@ -1,4 +1,4 @@
-import { copyLookup, type CopyTable } from "../../i18n/copy";
+import { copyLookup, overrideLookup, type CopyTable } from "../../i18n/copy";
 
 /**
  * Notebook strings the generated `i18n/en.ts` / `zh.ts` extract does not
@@ -29,6 +29,17 @@ const COPY: CopyTable = {
     "nb.status.exited": "{0} · 已退出 — 下一次运行代码会启动新的内核",
     "nb.kernel.notStarted": "未启动",
     "nb.kernel.stateExited": "已退出",
+    "nb.cell.status.ok": "完成",
+    "nb.cell.status.error": "出错",
+    "nb.cell.status.running": "运行中",
+    "nb.cell.status.interrupted": "已中断",
+    "nb.cell.status.cancelled": "已取消",
+    "nb.runtime.live": "就绪",
+    "nb.runtime.busy": "忙碌",
+    "nb.runtime.ended": "已结束",
+    "nb.runtime.restoring": "恢复中",
+    "nb.runtime.partial": "部分恢复",
+    "nb.runtime.failed": "恢复失败",
     "nb.readonly.hint": "这是只读的执行记录：显示智能体运行过的代码和输出。要自己运行代码，请在 设置 → 通用 中开启「Notebook 手动单元」。",
     "nb.readonly.openSettings": "打开设置",
     "nb.env.menuItem": "运行环境（Python / R）",
@@ -70,6 +81,17 @@ const COPY: CopyTable = {
     "nb.status.exited": "{0} · exited — the next cell starts a fresh kernel",
     "nb.kernel.notStarted": "Not started",
     "nb.kernel.stateExited": "Exited",
+    "nb.cell.status.ok": "ok",
+    "nb.cell.status.error": "error",
+    "nb.cell.status.running": "running",
+    "nb.cell.status.interrupted": "interrupted",
+    "nb.cell.status.cancelled": "cancelled",
+    "nb.runtime.live": "Live",
+    "nb.runtime.busy": "Busy",
+    "nb.runtime.ended": "Ended",
+    "nb.runtime.restoring": "Restoring",
+    "nb.runtime.partial": "Partly restored",
+    "nb.runtime.failed": "Recovery failed",
     "nb.readonly.hint": "This is a read-only record of the code the agent ran and its output. To run code yourself, turn on “Notebook manual cells” in Settings → General.",
     "nb.readonly.openSettings": "Open Settings",
     "nb.env.menuItem": "Runtime environment (Python / R)",
@@ -89,3 +111,29 @@ const COPY: CopyTable = {
 };
 
 export const nbT = copyLookup(COPY);
+
+/**
+ * I18N-1: Notebook labels the generated zh dictionary has in English -- the
+ * cell state ("Current", "Stale"), the owner chips ("Agent", "Repair",
+ * "Review scratch") and the Variable Inspector. `nbLabelT` reads these from
+ * here and every other key from the dictionary.
+ */
+export const nbLabelT = overrideLookup({
+  zh: {
+    "nb.cell.current": "当前",
+    "nb.cell.stale": "已过期",
+    "nb.cell.nonReplayable": "不可重放",
+    "nb.cell.statusRunning": "运行中",
+    "nb.owner.agent": "智能体",
+    "nb.owner.repair": "自动修复",
+    "nb.owner.review_scratch": "审阅草稿",
+    "nb.owner.generation": "内核 {0}",
+    "nb.action.fork": "从此单元之前分叉",
+    "nb.action.promote": "保存为产物",
+    "nb.action.promoted": "已保存为产物 · {0}",
+    "nb.variables.title": "变量查看器",
+    "nb.variables.generation": "内核 {0}",
+    "nb.variables.revision": "状态版本 S{0}",
+    "nb.variables.state.busy": "内核正在执行，变量查看器暂不可用。",
+  },
+});

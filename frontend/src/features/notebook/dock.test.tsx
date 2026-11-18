@@ -16,14 +16,14 @@ vi.mock("preact/hooks", () => ({
 }));
 
 import { effect } from "@preact/signals";
-import { i18nReady, t } from "../../i18n/runtime";
+import { LANG, i18nReady, setLang, t } from "../../i18n/runtime";
 import { cells, liveCells, pendingReplIdentity } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { actionTimeline, branchState } from "../../stores/timeline";
 import { resetStoreFields } from "../../stores/signal-field";
 import { notebookDisplayEntries } from "./cells";
-import { forkPending, invalidateKernelCache, kernelView } from "./kernel";
+import { forkPending, invalidateKernelCache, kernelView, runtimeStatusText } from "./kernel";
 import {
   CellActions,
   CellList,
@@ -37,7 +37,7 @@ import {
   outputLabel,
   writtenImages,
 } from "./Notebook";
-import { nbT } from "./copy";
+import { nbLabelT, nbT } from "./copy";
 
 type VNode = {
   type?: unknown;
@@ -344,5 +344,37 @@ describe("Notebook read-only mode (NB-5)", () => {
     const chips = textOf(KernelChips({ entries: [] }));
     expect(chips).toContain(nbT("nb.kernel.stateExited"));
     expect(chips).not.toContain(nbT("nb.kernel.notStarted"));
+  });
+
+  // I18N-1: owner chips, cell states and the Variable Inspector were English
+  // in a Chinese UI.
+  it("labels owners, cell states and the variable inspector in Chinese", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      expect(nbLabelT("nb.owner.agent")).toBe("智能体");
+      expect(nbLabelT("nb.cell.current")).toBe("当前");
+      expect(nbLabelT("nb.variables.title")).toBe("变量查看器");
+      expect(nbLabelT("nb.action.promote")).toBe("保存为产物");
+      expect(nbT("nb.cell.status.ok")).toBe("完成");
+      expect(nbLabelT("nb.kernel.stopLabel")).toBe(t("nb.kernel.stopLabel"));
+    } finally {
+      await setLang(original);
+    }
+  });
+
+  // Follow-up A: the Timeline's runtime strip said "Ended · view only" for a
+  // kernel that never started after the Notebook badge stopped saying it; both
+  // read one function now, and its words are not English in Chinese.
+  it("names the runtime state the same way for the badge and the Timeline", () => {
+    expect(runtimeStatusText("ended", { state: "none" })).toBe(nbT("nb.kernel.notStarted"));
+    expect(runtimeStatusText("ended", { state: "none", generation_id: "g" })).toBe(nbT("nb.kernel.stateExited"));
+    expect(runtimeStatusText("ended", { state: "stopped", generation_id: "g" })).toBe(t("nb.kernel.stateStopped"));
+    expect(runtimeStatusText("ended", { state: "ended", generation_id: "g" })).toBe(nbT("nb.runtime.ended"));
+    expect(runtimeStatusText("ended", null)).toBe(nbT("nb.runtime.ended"));
+    expect(runtimeStatusText("busy", { alive: true })).toBe(nbT("nb.runtime.busy"));
+    for (const mode of ["live", "busy", "ended", "restoring", "partial", "failed"]) {
+      expect(runtimeStatusText(mode, null)).not.toMatch(/view only|仅供查看/);
+    }
   });
 });

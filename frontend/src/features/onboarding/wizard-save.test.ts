@@ -43,6 +43,7 @@ const api = vi.hoisted(() => ({
   activateExistingModelProfile: vi.fn(),
   fetchOnboarding: vi.fn(),
   discoverModelProfile: vi.fn(),
+  probeModelProfile: vi.fn(),
   loadModels: vi.fn(),
 }));
 
@@ -63,6 +64,7 @@ vi.mock("./api", async (importOriginal) => {
     activateExistingModelProfile: api.activateExistingModelProfile,
     fetchOnboarding: api.fetchOnboarding,
     discoverModelProfile: api.discoverModelProfile,
+    probeModelProfile: api.probeModelProfile,
   };
 });
 
@@ -71,9 +73,11 @@ vi.mock("../customize/models", async (importOriginal) => ({
   loadModels: api.loadModels,
 }));
 
-import { WizardHost } from "../../components/onboarding/Wizard";
+import { WizardHost, environmentPath } from "../../components/onboarding/Wizard";
+import { t } from "../../i18n";
 import { ot } from "./copy";
 import { INITIAL_WIZARD, type PathChoice, type WizardState } from "./machine";
+import { sanitizeOnboardingStatus } from "./status";
 
 type VNode = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
 
@@ -316,5 +320,87 @@ describe("first-run wizard: model discovery on the cloud path", () => {
     answer.resolve({ models: ["gpt-5"], defaultModel: "gpt-5" });
     await pending;
     expect(onSaveNew).toHaveBeenCalledWith(expect.objectContaining({ name: "Renamed", model: "gpt-5" }), "");
+  });
+});
+
+// NAV-1: a daemon started with OPENAI4S_LLM_PROVIDER / OPENAI4S_LLM_MODEL /
+// OPENAI4S_ARK_API_KEY reported its model in GET /onboarding (`has_api_key`
+// true), yet the wizard said "No profile yet" and Test asked for a profile.
+describe("first-run wizard: the model configured by environment variables", () => {
+  const ENV_STATUS = sanitizeOnboardingStatus({
+    ...STATUS_BODY,
+    provider: "ark",
+    model: "doubao-seed-evolving",
+    base_url: "https://ark.example/api/v3",
+    has_api_key: true,
+    protocols: ["chatgpt", "ark"],
+  });
+
+  it("is offered as a path, and only while no saved profile stands for it", () => {
+    expect(environmentPath(ENV_STATUS)).toEqual({
+      kind: "existing",
+      profileId: "",
+      provider: "ark",
+      model: "doubao-seed-evolving",
+      baseUrl: "",
+      name: ot("onboarding.path.envName", "doubao-seed-evolving"),
+    });
+    expect(environmentPath({ ...ENV_STATUS, has_api_key: false })).toBeNull();
+    expect(environmentPath({ ...ENV_STATUS, protocols: ["chatgpt"] })).toBeNull();
+    expect(
+      environmentPath({
+        ...ENV_STATUS,
+        profiles: [{ id: "mp-1", provider: "ark", model: "doubao-seed-evolving" }],
+      }),
+    ).toBeNull();
+  });
+
+  it("is listed on the path step instead of 'No profile yet'", () => {
+    hooks.slots[STATUS] = ENV_STATUS;
+    const step = find(render(), (node) => typeof node.props?.onSaveNew === "function")!;
+    hooks.reset();
+    const choose = vi.fn();
+    hooks.begin();
+    const tree = (step.type as (props: unknown) => VNode)({ ...step.props, onChoose: choose });
+    expect(textOf(tree)).not.toContain(ot("onboarding.path.empty"));
+    const radio = find(tree, (node) => node.type === "input" && node.props?.name === "onb-profile")!;
+    (radio.props!.onChange as () => void)();
+    expect(choose).toHaveBeenCalledWith(environmentPath(ENV_STATUS));
+  });
+
+  it("is saved as a profile without a key when chosen, then activated", async () => {
+    hooks.slots[STATUS] = ENV_STATUS;
+    hooks.slots[REDUCER] = { ...wizard(), path: environmentPath(ENV_STATUS) } satisfies WizardState;
+    const next = find(
+      render(),
+      (node) => node.type === "button" && node.props?.class === "solid-btn" && textOf(node) === ot("onboarding.next"),
+    )!;
+    await (next.props!.onClick as () => Promise<void>)();
+    await vi.waitFor(() => expect(wizard().step).toBe("test"));
+    expect(api.saveModelProfile).toHaveBeenCalledWith({
+      name: ot("onboarding.path.envName", "doubao-seed-evolving"),
+      provider: "ark",
+      base_url: "",
+      model: "doubao-seed-evolving",
+    });
+    expect(api.activateModelProfile).toHaveBeenCalledWith("mp-new");
+    expect(wizard().path?.profileId).toBe("mp-new");
+  });
+
+  it("is what Test measures when nothing else is chosen", async () => {
+    hooks.slots[STATUS] = ENV_STATUS;
+    hooks.slots[REDUCER] = { ...wizard(), step: "test", path: null } satisfies WizardState;
+    api.probeModelProfile.mockResolvedValue({ reachable: true, capability_receipt: null });
+    const test = find(
+      render(),
+      (node) => node.type === "button" && textOf(node) === t("cust.models.test"),
+    )!;
+    await (test.props!.onClick as () => Promise<void>)();
+    await vi.waitFor(() => expect(api.probeModelProfile).toHaveBeenCalledWith("mp-new"));
+    expect(api.saveModelProfile).toHaveBeenCalledWith(
+      expect.not.objectContaining({ api_key: expect.anything() }),
+    );
+    expect(wizard().error).toBeNull();
+    expect(wizard().path?.profileId).toBe("mp-new");
   });
 });

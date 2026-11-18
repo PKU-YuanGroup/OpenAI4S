@@ -190,6 +190,44 @@ def test_the_example_seed_route_reports_state_and_surfaces_its_error(
         runner.close()
 
 
+def test_the_example_seed_route_reports_how_the_last_run_ended(tmp_path, monkeypatch):
+    """NAV-4: the home page went quiet when the example finished -- its card
+    disappeared whether all six cells ran or two crashed. The status route now
+    says how the last run started here ended (`result`: cells and failures);
+    `null` before any run, observed both ways so the frozen shape is honest."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    try:
+        handler = object.__new__(handler_cls)
+        handler.path = "/api/v1/example/session"
+        seen: list[tuple[dict, int]] = []
+        handler._json = lambda obj, code=200: seen.append((obj, code))
+        handler._body = lambda: {"confirm": True}
+
+        handler._api("GET", "/example/session")
+        assert seen[-1][0]["result"] is None
+
+        monkeypatch.setattr(
+            gateway_mod, "_seed_demo_session", lambda *_a: {"cells": 6, "failed": 2}
+        )
+        handler._api("POST", "/example/session")
+        assert seen[-1][0]["started"] is True
+        for _ in range(300):
+            if not runner.example_seed.running():
+                break
+            time.sleep(0.01)
+        handler._api("GET", "/example/session")
+        body, code = seen[-1]
+        assert code == 200
+        assert body["running"] is False
+        assert body["result"] == {"cells": 6, "failed": 2}
+        assert body["error"] is None
+    finally:
+        runner.close()
+
+
 def test_the_example_seed_route_reports_the_already_seeded_state(tmp_path, monkeypatch):
     """The idempotent path the API docs describe and nothing exercised.
 

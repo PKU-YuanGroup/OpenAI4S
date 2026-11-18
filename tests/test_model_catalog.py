@@ -230,6 +230,11 @@ def test_header_selector_hides_endpoints_the_user_never_configured(tmp_path):
     offered = {item["id"] for item in empty["models"]["default"]}
     assert offered == {live}
     assert not (offered & (builtin_models - {live}))
+    # I18N-1: the live entry's description said "ark (当前)" in an English UI.
+    # The daemon does not know the viewer's language; it says no words.
+    (entry,) = empty["models"]["default"]
+    assert "当前" not in entry["description"]
+    assert entry["description"].endswith(str(live))
 
     # A profile that leaves `model` blank still appears, resolved through the
     # default of the protocol it selected.

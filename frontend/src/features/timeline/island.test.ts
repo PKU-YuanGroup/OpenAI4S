@@ -15,6 +15,8 @@ import { _kc, pendingReplIdentity } from "../../stores/notebook";
 import { delegationState, executionQueue } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { setNotebookRenderImpl } from "../notebook/scroll";
+import { kernelView } from "../notebook/kernel";
+import { nbT } from "../notebook/copy";
 import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
 import {
@@ -25,13 +27,21 @@ import {
   rememberExecutionState,
   renderActionTimeline,
   renderBranchPanel,
+  renderContextPanel,
   renderDelegationPanel,
+  renderSecurityPanel,
 } from "./island";
+import { timelineLocalClock, timelineOverviewExactTime } from "./model";
+import { queueT, timelineT } from "./copy";
 import { noteQueuedTurnStarted, queuedFollowUpCount, renderQueueStrip } from "./queue";
-import { queueT } from "./copy";
 import { installTimeline } from "./index";
 import { S } from "./s";
-import { sanitizeActionTimeline, sanitizeBranches, sanitizeContext } from "./sanitize";
+import {
+  sanitizeActionTimeline,
+  sanitizeBranches,
+  sanitizeContext,
+  sanitizeSecurity,
+} from "./sanitize";
 import { provenanceT } from "../execution/copy";
 import { LANG, setLang, t } from "../../i18n/runtime";
 
@@ -1307,5 +1317,113 @@ describe("scheduled workbench refresh", () => {
     reads.release();
     await vi.advanceTimersByTimeAsync(10);
     expect(reads.paths.slice(first)).toEqual(["/frames/frame-q/delegations"]);
+  });
+});
+
+// I18N-1: the Timeline's titles, kinds and panel names were English in a
+// Chinese UI ("Action Timeline", "Python Cell", "Branch · Checkpoint").
+describe("timeline words", () => {
+  it("are Chinese in a Chinese UI where the generated dictionary has English", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      expect(timelineT("timeline.title")).toBe("行动时间线");
+      expect(timelineT("timeline.kind.python")).toBe("Python 单元");
+      expect(timelineT("branch.forkDefault", "x")).toBe("分叉 x");
+      // Keys the table does not name are the dictionary's.
+      expect(timelineT("timeline.refresh")).toBe(t("timeline.refresh"));
+      await setLang("en");
+      expect(timelineT("timeline.title")).toBe(t("timeline.title"));
+    } finally {
+      await setLang(original);
+    }
+  });
+});
+
+// Follow-up A: only the Notebook badge stopped saying "Ended · view only" for
+// a kernel that never started; the Timeline's runtime strip kept it.
+describe("runtime strip", () => {
+  it("says 'not started' for a kernel that never ran, and 'exited' for one that died", () => {
+    const doc = mountDocument();
+    const frames = stubFrames();
+    stubApi(() => undefined);
+    installTimeline({});
+    showTimeline("frame-r", [group("g-1", 1)]);
+    kernelView.value = { sid: "frame-r", st: { state: "none" }, envs: null, cur: null };
+    renderActionTimeline();
+    expect(doc.querySelector(".runtime-state")?.textContent).toBe(nbT("nb.kernel.notStarted"));
+    // NAV-6: the branch / generation / revision ids are folded away.
+    const ids = doc.querySelector(".runtime-summary details.runtime-ids") as unknown as FakeElement;
+    expect(ids).toBeTruthy();
+    expect(ids.open).toBeFalsy();
+    kernelView.value = { sid: "frame-r", st: { state: "none", generation_id: "g-dead" }, envs: null, cur: null };
+    renderActionTimeline();
+    frames.run();
+    expect(doc.querySelector(".runtime-state")?.textContent).toBe(nbT("nb.kernel.stateExited"));
+  });
+});
+
+// NAV-6: a developer view -- raw sandbox self-test JSON, "durable-policy",
+// token layers on view, and UTC times with no zone.
+describe("side panels in a scientist's words", () => {
+  /** Text of `node`, leaving out what sits inside a closed <details>. */
+  function visibleText(node: FakeElement): string {
+    if (node.tagName === "DETAILS" && !node.open) {
+      const summary = node.kids.find((kid) => kid.tagName === "SUMMARY");
+      return summary ? summary.textContent : "";
+    }
+    if (!node.kids.length) return node.textContent;
+    return node.kids.map(visibleText).join(" ");
+  }
+
+  it("shows sandbox status in plain words and keeps the raw self-test under details", () => {
+    mountDocument();
+    S.securityState = sanitizeSecurity({
+      sandbox: {
+        state: "enforced",
+        backend: "seatbelt",
+        enforced: true,
+        self_test_passed: true,
+        network_policy: "blocked",
+        detail: 'python: sandbox-exec detected; self-test passed: {"allowed_roots_readable": null}',
+      },
+      permission: { mode: "durable-policy", pending_count: 2 },
+    });
+    const panel = renderSecurityPanel() as unknown as FakeElement;
+    const shown = visibleText(panel);
+    expect(shown).not.toContain("{");
+    expect(shown).not.toContain("durable-policy");
+    expect(shown).toContain("macOS sandbox-exec");
+    const raw = panel.querySelector("details.security-raw") as unknown as FakeElement;
+    expect(raw).toBeTruthy();
+    expect(raw.open).toBeFalsy();
+    expect(raw.textContent).toContain("allowed_roots_readable");
+  });
+
+  it("keeps the model context's token layers in a closed diagnostics section", () => {
+    mountDocument();
+    S.contextState = sanitizeContext({
+      token_count: 10592,
+      layers: [{ name: "System prompt", kind: "system", token_count: 10592 }],
+    });
+    const panel = renderContextPanel() as unknown as FakeElement;
+    const details = panel.querySelector("details.workbench-diagnostics") as unknown as FakeElement;
+    expect(details).toBeTruthy();
+    expect(details.open).toBeFalsy();
+    expect(visibleText(panel)).not.toContain("10592");
+  });
+
+  it("names local times with their zone instead of UTC without one", () => {
+    const ms = Date.UTC(2026, 10, 18, 12, 21, 56, 159);
+    const local = new Date(ms);
+    const exact = timelineOverviewExactTime(ms);
+    expect(exact).not.toMatch(/Z$/);
+    expect(exact).toMatch(/\(UTC[+-]\d{2}:\d{2}\)$/);
+    expect(exact).toContain(
+      `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:56.159`,
+    );
+    expect(timelineLocalClock(ms)).toBe(
+      `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:56.159`,
+    );
   });
 });

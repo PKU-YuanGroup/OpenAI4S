@@ -28,7 +28,8 @@ vi.mock("../../features/customize/api", () => ({
 }));
 vi.mock("../../features/customize/host", () => ({ hint: mocks.hint }));
 
-import { SearchSetupCard } from "./SearchSetupCard";
+import { readSearchConfig } from "../../features/customize/search";
+import { SearchSetupCard, currentSearchChoice } from "./SearchSetupCard";
 
 type Node = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
 
@@ -72,5 +73,48 @@ describe("SearchSetupCard", () => {
       body: JSON.stringify({ primary: "parallel" }),
     });
     expect(mocks.hint).not.toHaveBeenCalledWith(expect.anything(), true);
+  });
+});
+
+// NAV-3: "Current order: You.com → Built-in keyless engines" sat above five
+// radios none of which was selected, and choosing Doubao asked for the same
+// plan key again without saying why.
+describe("SearchSetupCard current choice", () => {
+  beforeEach(() => {
+    hookState.length = 0;
+    mocks.api.mockReset();
+    mocks.hint.mockReset();
+  });
+
+  function withConfig(raw: Record<string, unknown>) {
+    render();
+    hookState[0] = readSearchConfig(raw);
+    return render();
+  }
+
+  const YOU_FIRST = {
+    doubao_configured: false,
+    engines: [
+      { id: "you", enabled: true, usable: true },
+      { id: "builtin", enabled: true, usable: true },
+    ],
+  };
+
+  it("selects the choice the current order already is, with nothing to apply", () => {
+    const tree = withConfig(YOU_FIRST);
+    const checked = all(tree, (n) => n.type === "input" && n.props?.type === "radio" && n.props?.checked === true);
+    expect(checked.map((r) => r.props?.value)).toEqual(["you"]);
+    expect(all(tree, (n) => n.props?.["data-action"] === "onboarding-search-apply")).toEqual([]);
+    expect(currentSearchChoice(readSearchConfig({ ...YOU_FIRST, doubao_configured: true }))).toBe("doubao");
+  });
+
+  it("explains why Doubao asks for the plan key when the model's key is not shared", () => {
+    const tree = withConfig(YOU_FIRST);
+    const doubao = all(tree, (n) => n.type === "input" && n.props?.value === "doubao")[0]!;
+    (doubao.props?.onChange as () => void)();
+    const next = render();
+    expect(all(next, (n) => n.props?.["data-search-doubao-note"] === "")).toHaveLength(1);
+    expect(all(next, (n) => n.type === "input" && n.props?.type === "password")).toHaveLength(1);
+    expect(all(next, (n) => n.props?.["data-action"] === "onboarding-search-apply")).toHaveLength(1);
   });
 });

@@ -30,7 +30,7 @@ import {
 import { beginNavigation } from "./navigation";
 import { chooseSessionPackage, downloadArtifactBundle } from "./actions";
 import { recoverConversation } from "../messages/open";
-import { projectFilesCopy, projectHistoryCopy } from "./copy";
+import { displayProjectName, projectFilesCopy, projectHistoryCopy } from "./copy";
 import { openProjectFiles, resetProjectFolderPicker } from "./project-files";
 import { openProjectHistory } from "./project-history";
 
@@ -46,7 +46,7 @@ type ProjectLike = {
 
 export function projName(id: string | null | undefined): string {
   const p = (projects.value as ProjectLike[]).find((x) => (x.project_id || x.id) === id);
-  return p ? p.name || t("proj.fallbackName") : t("proj.fallbackName");
+  return p ? displayProjectName(p) || t("proj.fallbackName") : t("proj.fallbackName");
 }
 
 export function sanitizeProjectLineage(payload: unknown): {

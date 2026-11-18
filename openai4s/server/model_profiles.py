@@ -1202,10 +1202,16 @@ class ModelProfileService:
                 }
             )
 
+        # Language-neutral, in the form of the profile entries below. It said
+        # "ark (当前)" -- Chinese in an English UI, since the daemon does not
+        # know the viewer's language (I18N-1).
+        live_provider = str(
+            self.store.get_setting("llm_provider") or self.cfg.llm.provider or ""
+        )
         add(
             live,
             live,
-            f"{self.store.get_setting('llm_provider') or self.cfg.llm.provider} (当前)",
+            " · ".join(part for part in (live_provider, str(live)) if part),
         )
         # One entry per profile, keyed on `profile_id`. This deduped on a
         # `seen: set[str]` of bare model *names*, so two profiles naming the same

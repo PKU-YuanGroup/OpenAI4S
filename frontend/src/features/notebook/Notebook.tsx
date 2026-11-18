@@ -57,6 +57,7 @@ import {
   replHistory,
   replLoad,
   runtimeBadge,
+  runtimeStatusText,
   shortRuntime,
   syncKernel,
 } from "./kernel";
@@ -73,7 +74,7 @@ import { applyArtifactDeepLink } from "../artifacts/ui";
 import { openCustomize } from "../customize";
 import { iconSvg } from "../icons/paths";
 import type { KernelEnvRow, KernelStatus, NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
-import { nbT } from "./copy";
+import { nbLabelT, nbT } from "./copy";
 import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent, type EditorState } from "./editor";
 import { envLanguage, envSelectable, envSourceLabel } from "./envmenu";
 import "./notebook.css";
@@ -176,6 +177,13 @@ function CellStream({ cell, stream, live }: { cell: NotebookCell; stream: "stdou
   return <CellOutput text={text} isError={stream === "stderr"} live={live} />;
 }
 
+/** A cell's status word in the UI language ("ok" / "running" read as English in Chinese). */
+function cellStatusLabel(status: string): string {
+  const key = "nb.cell.status." + status;
+  const label = nbT(key);
+  return label === key ? status : label;
+}
+
 function CodeBlock(opts: {
   cacheKey: string;
   source: string;
@@ -192,7 +200,7 @@ function CodeBlock(opts: {
           <span>{opts.langLabel}</span>
         </span>
         <div class="oc-right">
-          {opts.status ? <span class={"nbc-status " + opts.status}>{opts.status}</span> : null}
+          {opts.status ? <span class={"nbc-status " + opts.status}>{cellStatusLabel(opts.status)}</span> : null}
           {opts.env ? (
             <span class="oc-env">
               <span class="oc-env-k">env</span>
@@ -355,7 +363,7 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
       </button>
       {canFork ? (
         <button class="nbc-action" disabled={forkBusy.value} onClick={() => void forkNotebookCell(cell)}>
-          {t("nb.action.fork")}
+          {nbLabelT("nb.action.fork")}
         </button>
       ) : null}
       <button
@@ -363,7 +371,7 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
         disabled={!canPromote.value}
         onClick={() => void promoteNotebookCell(cell)}
       >
-        {t("nb.action.promote")}
+        {nbLabelT("nb.action.promote")}
       </button>
     </div>
   );
@@ -405,7 +413,7 @@ function CellShell({
           class={"nbc-state " + cellState.cls}
           title={(cellState.reasons || []).map((r) => publicText(r, 240)).filter(Boolean).join("\n")}
         >
-          {t("nb.cell." + cellState.key)}
+          {nbLabelT("nb.cell." + cellState.key)}
         </span>
         {/* NB-9: one number per cell. The state revision equals the cell number
             except on a branch or a replay; only then is it a second, labelled fact. */}
@@ -609,14 +617,9 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
   });
   const filter = kernelFilter.value;
   const badgeMode = runtimeBadge.value;
-  // "Ended · view only" for a session whose kernel never ran was wrong.
-  const kernelNow = currentKernelStatus();
-  const badgeText =
-    badgeMode === "ended" && kernelNeverStarted(kernelNow)
-      ? nbT("nb.kernel.notStarted")
-      : badgeMode === "ended" && kernelNow && kernelExited(kernelNow)
-        ? nbT("nb.kernel.stateExited")
-        : t("runtime.status." + badgeMode);
+  // "Ended · view only" for a session whose kernel never ran was wrong; the
+  // Timeline's runtime strip says the same words (runtimeStatusText).
+  const badgeText = runtimeStatusText(badgeMode, currentKernelStatus());
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   return (
     <div class="kernel-chips">
@@ -678,7 +681,7 @@ function OwnerChips() {
             class={"nb-owner-chip" + (active ? " active" : "")}
             title={active && active.execution_id ? active.execution_id : kind}
           >
-            {t("nb.owner." + kind)}
+            {nbLabelT("nb.owner." + kind)}
           </span>
         );
       })}
@@ -712,14 +715,9 @@ function kernelTitle(st: KernelStatus): string {
     kernelLabel(kernelIdFromEnv(env)) +
     " kernel · " +
     t("nb.kernel.shared") +
-    (st.generation_id ? " · " + t("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
+    (st.generation_id ? " · " + nbLabelT("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
     (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "")
   );
-}
-
-/** No kernel has run in this session yet: not the same as one that ended. */
-export function kernelNeverStarted(st: KernelStatus | null): boolean {
-  return !!st && !st.alive && !st.turn_running && (st.state || "none") === "none" && !st.generation_id;
 }
 
 /** A kernel ran and its process is gone (a crash): the next cell starts a new one. */
@@ -1046,7 +1044,7 @@ export function cellNode(e: NotebookCell): HTMLElement {
   const idx = e.cell_index != null ? e.cell_index : "…";
   const cellState = notebookCellState(e);
   const cellMeta = el("div", "nbc-cell-meta");
-  cellMeta.appendChild(el("span", "nbc-state " + cellState.cls, t("nb.cell." + cellState.key)));
+  cellMeta.appendChild(el("span", "nbc-state " + cellState.cls, nbLabelT("nb.cell." + cellState.key)));
   c.appendChild(cellMeta);
   const wrap = el("div", "os-code");
   const head = el("div", "oc-head");
@@ -1054,7 +1052,7 @@ export function cellNode(e: NotebookCell): HTMLElement {
   lg.appendChild(el("span", null, (e.language || k) + " [" + idx + "]"));
   head.appendChild(lg);
   const right = el("div", "oc-right");
-  right.appendChild(el("span", "nbc-status " + st, String(st)));
+  right.appendChild(el("span", "nbc-status " + st, cellStatusLabel(String(st))));
   head.appendChild(right);
   wrap.appendChild(head);
   const pre = el("pre", "oc-src");

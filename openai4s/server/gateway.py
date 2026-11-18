@@ -17509,6 +17509,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         "running": runner.example_seed.running(),
                         "seeds_at_startup": _demo_seed_enabled(),
                         "error": runner.example_seed.last_error(),
+                        # How the last run here ended ({"cells", "failed"}),
+                        # so the home page can say "finished" or "2 of 6
+                        # cells did not complete" instead of going quiet.
+                        "result": runner.example_seed.last_result(),
                     }
                 )
                 return
@@ -22323,6 +22327,7 @@ class _ExampleSeedState:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._last_error: str | None = None
+        self._last_result: dict[str, int] | None = None
 
     def running(self) -> bool:
         with self._lock:
@@ -22331,6 +22336,16 @@ class _ExampleSeedState:
     def last_error(self) -> str | None:
         with self._lock:
             return self._last_error
+
+    def last_result(self) -> dict[str, int] | None:
+        """How the last run in this daemon ended: ``{"cells", "failed"}``.
+
+        The home page said nothing when the example finished: its card simply
+        disappeared, whether all six cells ran or two crashed. ``None`` until
+        a run started here has finished (or when the example already existed).
+        """
+        with self._lock:
+            return dict(self._last_result) if self._last_result else None
 
     def start(self, cfg: Config, runner: "SessionRunner") -> bool:
         """Begin seeding on a background thread. False if one is already going.
@@ -22344,10 +22359,13 @@ class _ExampleSeedState:
             if self._thread is not None and self._thread.is_alive():
                 return False
             self._last_error = None
+            self._last_result = None
 
             def _run() -> None:
                 try:
-                    _seed_demo_session(cfg, runner)
+                    result = _seed_demo_session(cfg, runner)
+                    with self._lock:
+                        self._last_result = result if isinstance(result, dict) else None
                 except Exception as exc:  # noqa: BLE001 - reported, never raised
                     with self._lock:
                         self._last_error = f"{type(exc).__name__}: {exc}"
@@ -22889,13 +22907,16 @@ def _retire_demo_frame(runner: "SessionRunner", frame_id: str) -> None:
         traceback.print_exc()
 
 
-def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
+def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] | None:
     """Populate the example project with one real, fully-executed session that
     calls live external APIs (UniProt REST, RCSB PDB) and the bundled MCP
     connector, so the UI (thumbnails, 3Dmol viewer, notebook, provenance) has
     working, API-driven data on boot. Idempotent: keyed on the session name, so
     an existing install picks up the upgraded example on the next restart, and
-    any demo session from an older version is retired in the process."""
+    any demo session from an older version is retired in the process.
+
+    Returns ``{"cells": N, "failed": M}`` for a run it performed, ``None`` when
+    the example was already there."""
     store = get_store(cfg.db_path)
     roots = store.browse_frames(project_id="proj_example", roots_only=True, limit=200)
     # Retire superseded demo sessions (exact legacy names only) so the upgraded
@@ -22904,7 +22925,7 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         if (r.get("name") or "") in _LEGACY_DEMO_NAMES:
             _retire_demo_frame(runner, r.get("frame_id") or r.get("id"))
     if any((r.get("name") or "") == _DEMO_SESSION_NAME for r in roots):
-        return  # current demo already present
+        return None  # current demo already present
     fid = store.new_frame(
         kind="turn", project_id="proj_example", status="done", model=cfg.llm.model
     )
@@ -23114,3 +23135,4 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         "**Files** panel to view each material.",
     )
     store.update_frame(fid, status="done")
+    return {"cells": len(demo_plan), "failed": len(cell_failures)}

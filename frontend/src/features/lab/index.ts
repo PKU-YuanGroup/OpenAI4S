@@ -1,7 +1,9 @@
 import { h, render } from "preact";
 import { LANG } from "../../i18n/runtime";
-import { LabPanel } from "./LabPanel";
+import { applyLabTabPreference, LabPanel } from "./LabPanel";
 import "./lab.css";
+
+export { labCopy, labTabHidden, setLabTabHidden } from "./LabPanel";
 
 let mounted = false;
 
@@ -18,3 +20,6 @@ export function mountLab(): void {
 export function labTabLabel(): string {
   return LANG === "zh" ? "实验室" : "OpenMHS Lab";
 }
+
+// A tab the person hid stays hidden from the first paint of the dock.
+applyLabTabPreference();

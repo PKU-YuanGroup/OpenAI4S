@@ -9,7 +9,7 @@ import { filesT, readFailureText } from "../artifacts/copy";
 import { paintIcon } from "../icons/paths";
 import { isReady } from "../../compat/stub";
 import { _tbl } from "../../stores/artifacts";
-import { LANG, t } from "../../i18n/runtime";
+import { LANG, onLanguageChange, t } from "../../i18n/runtime";
 import { delimiterFor, parseDelimited } from "../csv/csv";
 import { esc } from "../md/esc";
 import { mdHighlight } from "../md/highlight";
@@ -161,13 +161,42 @@ function exportDownloadName(frameId: string, option: NotebookExportOption): stri
   return option.variant === "clean" ? "" : `${frameId}.${option.suffix}`;
 }
 
+/**
+ * Put every export split-button on the page back into the current language.
+ * The buttons are built once (the Notebook mounts one per session, the
+ * provenance panel one per artifact) and a live language switch left their
+ * labels -- feature-local ones included -- in the language they were built in.
+ */
+export function relabelNotebookExports(root: ParentNode | null = typeof document !== "undefined" ? document : null): void {
+  if (!root) return;
+  root.querySelectorAll("[data-nb-export]").forEach((node) => {
+    const option = NOTEBOOK_EXPORTS[Number((node as HTMLElement).getAttribute("data-nb-export"))];
+    if (option) node.textContent = exportLabel(option);
+  });
+  root.querySelectorAll(".prov-dlmore").forEach((node) => {
+    node.setAttribute("aria-label", t("prov.exec.downloadMore"));
+  });
+}
+
+let exportRelabelBound = false;
+
+function exportLabelSpan(index: number): HTMLElement {
+  const span = el("span", null, exportLabel(NOTEBOOK_EXPORTS[index] as NotebookExportOption));
+  span.setAttribute("data-nb-export", String(index));
+  return span;
+}
+
 /** app.js:10231-10264. Contract global. */
 export function notebookExportLink(frameId: string): HTMLElement {
+  if (!exportRelabelBound) {
+    exportRelabelBound = true;
+    onLanguageChange(() => relabelNotebookExports());
+  }
   const wrap = el("div", "prov-dl");
   const primary = NOTEBOOK_EXPORTS[0] as NotebookExportOption;
   const dl = el("a", "prov-dlbtn") as HTMLAnchorElement;
   dl.appendChild(iconEl("download", 14));
-  dl.appendChild(el("span", null, exportLabel(primary)));
+  dl.appendChild(exportLabelSpan(0));
   dl.href = notebookExportHref(frameId, primary);
   dl.setAttribute("download", exportDownloadName(frameId, primary));
   wrap.appendChild(dl);
@@ -177,9 +206,9 @@ export function notebookExportLink(frameId: string): HTMLElement {
   toggle.setAttribute("aria-expanded", "false");
   toggle.appendChild(iconEl("chevron-down", 13));
   const menu = el("div", "prov-dlmenu hidden");
-  NOTEBOOK_EXPORTS.slice(1).forEach((option) => {
+  NOTEBOOK_EXPORTS.slice(1).forEach((option, offset) => {
     const item = el("a", "prov-dlitem") as HTMLAnchorElement;
-    item.appendChild(el("span", null, exportLabel(option)));
+    item.appendChild(exportLabelSpan(offset + 1));
     item.href = notebookExportHref(frameId, option);
     item.setAttribute("download", exportDownloadName(frameId, option));
     item.onclick = () => {
