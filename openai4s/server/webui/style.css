@@ -1810,9 +1810,10 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 
 /* ---- queued follow-ups ----------------------------------------------------
    The composer stays usable while a turn runs, so what is waiting behind that
-   turn has to be visible. Sits between the composer card and the hint line, so
-   it reads as "what your next Enter joins" rather than as transcript. */
-.queue-strip{margin:6px auto 0;width:min(var(--col),calc(100% - 48px));border:.5px solid var(--border-btn);border-radius:var(--radius-card);background:var(--bg-000);padding:6px 8px}
+   turn has to be visible. Sits directly above the composer card, so it reads
+   as "what your next Enter joins" rather than as transcript, and showing it
+   never moves the card's own buttons. */
+.queue-strip{margin:0 auto 6px;width:min(var(--col),calc(100% - 48px));border:.5px solid var(--border-btn);border-radius:var(--radius-card);background:var(--bg-000);padding:6px 8px}
 .queue-head{font-size:11px;color:var(--text-400);margin:0 2px 4px}
 .queue-row{display:flex;align-items:baseline;gap:8px;padding:3px 2px;font-size:12px;min-width:0}
 .queue-pos{color:var(--text-400);flex:none;font-variant-numeric:tabular-nums}
@@ -2252,7 +2253,9 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .composer-refs{padding:8px 2px 0}
 .msg-ref-chip{padding:2px 9px;border:0;border-radius:999px;background:var(--bg-200);color:var(--text-200);font-size:12px}
 .msg-ref-chip.unresolved{border:1px solid var(--warn);background:transparent;color:var(--warn-text)}
-.queue-strip{margin-top:8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+.queue-strip{margin-bottom:8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+/* the frozen legacy shell still places the strip under the card */
+.notebook+.queue-strip{margin-top:8px}
 .annot-chip{border:1px solid var(--border);background:var(--bg-100)}
 
 /* ---- empty session: the headline, the starters and the composer sit
@@ -2680,13 +2683,13 @@ html[data-theme="dark"] #dash-project-search{background-image:url("data:image/sv
 html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(--text-000)}
 
 /* ---- the composer's send button: coral when there is text, cream when the
-   composer is empty, and the stop button takes its place while a turn runs ---- */
+   composer is empty. While a turn runs the stop button (a filled square) sits
+   beside it, never in its place: Send stays clickable and queues the draft ---- */
 .nb-right>.nb-model{order:1}
 .nb-right>#cancel-btn,.nb-right>.nb-send{order:2}
 .nb-send{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;padding:0;border:0;border-radius:999px;background:var(--clay);color:#fff;cursor:pointer}
 .nb-send:active{background:var(--clay-em)}
 .nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--line);color:var(--text-400);cursor:default}
 html[data-theme="dark"] .nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--bg-300)}
-.nb-right:has(#cancel-btn:not(.hidden)) .nb-send{display:none}
 @media (max-width:900px){.nb-send{width:40px;height:40px;min-width:40px;min-height:40px}}
 @media (max-width:900px){body.sidebar-collapsed #sidebar{box-shadow:none}}

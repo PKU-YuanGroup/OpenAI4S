@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { running } from "../../stores/stream";
 import { UPLOAD_STATE } from "../chrome/upload";
+import { sendCopy } from "./copy";
 import { installSend } from "./index";
 import { bindComposer } from "./send";
 import * as chrome from "../sessions/chrome";
@@ -275,5 +277,31 @@ describe("bindComposer", () => {
     onClick(click(true));
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch).toHaveBeenLastCalledWith("again");
+  });
+
+  it("labels the send button as queueing while a turn runs, and as sending again after", () => {
+    // Send stays on screen beside Stop while a turn runs; a click then queues
+    // the draft, and the button says so instead of promising to send now.
+    const attrs: Record<string, string> = {};
+    const sendBtn = {
+      dataset: {} as Record<string, string>,
+      title: "",
+      setAttribute: (name: string, value: string) => {
+        attrs[name] = value;
+      },
+    };
+    stubDocument({ composer: fakeComposer(), "send-btn": sendBtn });
+    running.value = false;
+    try {
+      bindComposer(vi.fn());
+      expect(sendBtn.title).toBe(sendCopy("send"));
+      running.value = true;
+      expect(sendBtn.title).toBe(sendCopy("queue"));
+      expect(attrs["aria-label"]).toBe(sendCopy("queue"));
+      running.value = false;
+      expect(sendBtn.title).toBe(sendCopy("send"));
+    } finally {
+      running.value = false;
+    }
   });
 });

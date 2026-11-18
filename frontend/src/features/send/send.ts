@@ -13,6 +13,7 @@
  * pinned dispatch id, never whatever `currentId` happens to hold.
  */
 
+import { effect } from "@preact/signals";
 import { LANG, onLanguageChange, planModePayload, t } from "../../i18n/runtime";
 import {
   _environmentStatusRefreshFailed,
@@ -768,12 +769,14 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
   const sendBtn = document.getElementById("send-btn");
   if (sendBtn && !sendBtn.dataset.sendBound) {
     sendBtn.dataset.sendBound = "1";
+    // Send stays on screen while a turn runs, beside Stop, and queues the
+    // draft; its label says so rather than promising an immediate send.
     const label = () => {
-      const text = sendCopy("send");
+      const text = sendCopy(running.value ? "queue" : "send");
       sendBtn.title = text;
       sendBtn.setAttribute("aria-label", text);
     };
-    label();
+    effect(label);
     onLanguageChange(label);
   }
   // Delegated on the document root, not on the node: a re-created #composer

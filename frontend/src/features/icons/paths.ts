@@ -56,6 +56,9 @@ export const ICON_PATHS: Readonly<Record<string, string>> = {
   "file-text":
     '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
   stop: '<circle cx="12" cy="12" r="10"/><rect width="6" height="6" x="9" y="9" rx="1"/>',
+  // The composer's Stop: a plain filled square, the control people know.
+  // `stop` (a square in a ring) read as ◎ and was taken for a record button.
+  "stop-square": '<rect width="12" height="12" x="6" y="6" rx="2" fill="currentColor"/>',
   "alert-triangle":
     '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   "eye-context":

@@ -315,6 +315,10 @@ export function Shell() {
                   最新
                 </span>
               </button>
+              {/* `renderQueueStrip` lists queued follow-ups here, above the card
+                  they were typed in, so a queued row never lands where the
+                  Stop or Send button was a moment ago. */}
+              <div id="queue-strip" class="queue-strip hidden" />
               <div class="notebook">
                 <div class="nb-tray">
                   <div class="nb-head">
@@ -387,12 +391,14 @@ export function Shell() {
                       />
                     </div>
                     <div class="nb-right">
+                      {/* Shown beside Send while a turn runs, never in its
+                          place: Send stays clickable and queues the draft. */}
                       <button
                         id="cancel-btn"
                         class="nb-icon hidden"
                         data-i18n-title="nb.kernel.stopLabel"
                         title="停止"
-                        data-icon="stop"
+                        data-icon="stop-square"
                         data-icon-size="18"
                         type="button"
                       />
@@ -413,9 +419,6 @@ export function Shell() {
                   </div>
                 </div>
               </div>
-              {/* `renderQueueStrip` lists queued follow-ups here, each with the
-                  only control that cancels one. */}
-              <div id="queue-strip" class="queue-strip hidden" />
               <div id="composer-refs" class="composer-refs hidden" />
               <div
                 class="composer-hint"
