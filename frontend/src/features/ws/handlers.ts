@@ -252,6 +252,18 @@ function handleFrameUpdate(m: WsMessage): void {
   scheduleLoadSessions();
 }
 
+/**
+ * Another session in this sidebar's directory started, stopped, was renamed
+ * or deleted (`view_directory`). Only the tabs viewing a session receive its
+ * `frame_update`, so every other tab's sidebar kept a stopped session
+ * spinning, and a session started elsewhere appeared only after this tab
+ * happened to reload its list.
+ */
+function handleSessionStatus(m: WsMessage): void {
+  patchSessionFromFrameUpdate(m);
+  scheduleLoadSessions();
+}
+
 function handleArtifactCreated(m: WsMessage): void {
   upsertArtifactFromEvent(m);
   if (artifactCreatedSideEffects) artifactCreatedSideEffects(m);
@@ -266,5 +278,6 @@ export function registerBuiltinHandlers(): void {
   registerUnlessPresent("replay_begin", handleReplayBegin);
   registerUnlessPresent("replay_end", handleReplayEnd);
   registerUnlessPresent("frame_update", handleFrameUpdate);
+  registerUnlessPresent("session_status", handleSessionStatus);
   registerUnlessPresent("artifact_created", handleArtifactCreated);
 }

@@ -197,6 +197,23 @@ describe("WS protocol handlers", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it("session_status updates a session this tab is not viewing", () => {
+    // Sent to every tab listing the project, viewing the session or not: a
+    // stop in another tab used to leave this sidebar spinning for minutes.
+    const load = vi.fn();
+    setLoadSessionsImpl(load);
+    currentId.value = "viewed";
+    const other: Record<string, unknown> = { id: "elsewhere", running: true };
+    sessions.value = [{ id: "viewed", running: false }, other];
+
+    onEvent({ type: "session_status", frame_id: "elsewhere", project_id: "p", status: "cancelled" });
+    expect(other.running).toBe(false);
+    onEvent({ type: "session_status", frame_id: "new-one", project_id: "p", status: "processing" });
+    vi.advanceTimersByTime(LOAD_SESSIONS_DEBOUNCE_MS);
+    // One coalesced re-read lists the session that started elsewhere.
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
   it("artifact_created upserts from nested, flat, and bare payloads", () => {
     const load = vi.fn();
     setLoadArtifactsImpl(load);

@@ -1,4 +1,5 @@
-import { currentId } from "../../stores/session";
+import { effect } from "@preact/signals";
+import { currentId, project } from "../../stores/session";
 import { _seqSeen, _streamEpoch, ws as wsSignal } from "../../stores/stream";
 import { onEvent } from "./registry";
 import type { WsMessage } from "./types";
@@ -70,6 +71,34 @@ export function sub(f: string): void {
   }
 }
 
+/**
+ * Name the session directory this tab's sidebar lists -- the open project,
+ * or every project on Home -- so the server sends it `session_status` for
+ * sessions this tab is not viewing (one stopped or started elsewhere).
+ */
+export function subDirectory(): void {
+  try {
+    const socket = wsSignal.value as WsSocket | null;
+    if (socket && socket.readyState === 1) {
+      socket.send(JSON.stringify({ type: "view_directory", project_id: project.value || null }));
+    }
+  } catch {
+    /* closed / mid-handshake: onopen names it again */
+  }
+}
+
+let directoryWatched = false;
+
+/** Re-name the directory whenever the sidebar changes project. */
+export function watchDirectory(): void {
+  if (directoryWatched) return;
+  directoryWatched = true;
+  effect(() => {
+    void project.value;
+    subDirectory();
+  });
+}
+
 /** app.js:5182 */
 export function unsub(f: string): void {
   try {
@@ -133,6 +162,7 @@ export const connectWS: ConnectWS = () => {
   socket.onopen = () => {
     conn(true);
     if (currentId.value) sub(currentId.value);
+    subDirectory();
   };
   socket.onclose = () => {
     conn(false);

@@ -477,3 +477,71 @@ def test_every_tab_is_told_a_denials_reason(tmp_path):
     assert store.get_permission_request(ask["decision_id"])["message"] == (
         "use the scratch copy"
     )
+
+
+# --------------------------------------------------------------------------
+# every sidebar hears about every session in its project
+# --------------------------------------------------------------------------
+
+
+class _DirectoryConn(_Conn):
+    def __init__(self, directory, *, visible=True):
+        super().__init__()
+        self.directory = directory
+        self.visible = visible
+
+    def refresh_visibility(self, root_frame_id):
+        del root_frame_id
+        return self.visible
+
+
+def test_session_status_reaches_the_tabs_listing_that_project_only():
+    hub = WSHub()
+    home = _DirectoryConn("*")
+    same = _DirectoryConn("p1")
+    other = _DirectoryConn("p2")
+    silent = _DirectoryConn(None)
+    hidden = _DirectoryConn("p1", visible=False)
+    for conn in (home, same, other, silent, hidden):
+        hub.add(conn)
+    hub.notify_directory("f-9", "p1", {"type": "session_status", "frame_id": "f-9"})
+    assert [len(c.sent) for c in (home, same, other, silent, hidden)] == [
+        1,
+        1,
+        0,
+        0,
+        0,
+    ]
+    # Not a stream position: no cursor may move on it.
+    assert "seq" not in same.sent[0]
+
+
+def test_a_root_frame_update_is_announced_to_sidebars_not_viewing_it(tmp_path):
+    hub = WSHub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    try:
+        project = runner.store.create_project(name="Assays")
+        pid = project["project_id"]
+        fid = runner.store.new_frame(kind="turn", project_id=pid, status="ready")
+        sidebar = _DirectoryConn(pid)
+        hub.add(sidebar)
+
+        hub.broadcast(
+            fid, {"type": "frame_update", "frame_id": fid, "status": "processing"}
+        )
+        hub.broadcast(
+            fid, {"type": "frame_update", "frame_id": "child-1", "status": "failed"}
+        )
+        hub.broadcast(fid, {"type": "text_chunk", "frame_id": fid, "chunk": "x"})
+        hub.broadcast(
+            fid, {"type": "frame_update", "frame_id": fid, "status": "cancelled"}
+        )
+        assert [
+            (e["type"], e["frame_id"], e["project_id"], e["status"])
+            for e in sidebar.sent
+        ] == [
+            ("session_status", fid, pid, "processing"),
+            ("session_status", fid, pid, "cancelled"),
+        ]
+    finally:
+        runner.close()

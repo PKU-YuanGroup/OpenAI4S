@@ -1136,6 +1136,7 @@ JSON form every 25 s).
 | `{"type":"ping"}` | → `{"type":"pong"}`. |
 | `{"type":"view_session","root_frame_id":fid}` | Subscribes this connection to `fid`'s events. If a turn is in flight, the buffered current-turn events are replayed (`replay_begin` … events … `replay_end`); any pending `await_permission` prompts are re-sent from durable storage even when no session runtime has been rebuilt after restart. `frame_id` is accepted as an alias. |
 | `{"type":"unview_session","root_frame_id":fid}` | Unsubscribes. |
+| `{"type":"view_directory","project_id":pid}` | Names the session directory this tab's sidebar lists: a project id, or `null` for every project (Home). The connection then receives `session_status` for sessions in it that it is not viewing. Each event is still checked against this login's session visibility, so naming a project grants nothing. Sent again on every project switch and reconnect; the latest one wins. |
 | `{"type":"cancel_execution","root_frame_id":fid,"execution_id", "owner":kind,"owner_id":id}` | Requests exact-ticket cancellation and receives `execution_cancel_result`. `cancel` is accepted as a compatibility type, but missing/stale/mismatched identity fails closed. |
 
 Events are only delivered to connections subscribed to the event's
@@ -1188,6 +1189,7 @@ chunks and flag-off completion chunks omit `delivery_id`.
 | `execution_queue` | authoritative snapshot fields from `GET /frames/{fid}/execution` | Queue/position projection; also sent immediately after `view_session`. |
 | `execution_owner` | `execution_id`, `owner`, previous identity, `reason` | Active writer changed. |
 | `execution_cancel_result` | scoped cancellation result | Direct reply to a WS cancellation request. In team mode a cancellation aimed at a session the caller may not see answers `ok:false` with `reason:"session not found"` — the same sentence an unknown session gets, because which sessions exist is itself protected. |
+| `session_status` | `frame_id`, `project_id`, `status` (a root `frame_update` status, or `deleted`) | Directory event for connections that sent `view_directory` naming this session's project (or `null`): a root session started, stopped, finished, was renamed or titled, or was deleted. Lets every sidebar follow sessions it is not viewing (before, a session stopped in one tab still showed as running in the others). Unsequenced: it is not a position in any session stream. Sub-agent frame updates are not forwarded. |
 | `view_denied` | `frame_id`, `reason` | Team mode only: `view_session` named a session this login may not see (another member's, or one with no ownership row). Refused before subscription, so neither the replay buffer, pending `await_permission` prompts, nor the queue snapshot leak. The reason is always `"session not found"`. |
 | `checkpoint_created` | `branch_id`, `checkpoint_id`, `reason` | An immutable checkpoint committed. |
 | `branch_created` | `branch_id`, `from_checkpoint_id` | A checkpoint-backed branch committed. |

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { currentId } from "../../stores/session";
+import { currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { _seqSeen, _streamEpoch, ws as wsSignal } from "../../stores/stream";
 import {
@@ -9,6 +9,7 @@ import {
   clearWsPing,
   connectWS,
   setWebSocketImpl,
+  watchDirectory,
   wsUrl,
   type WsSocket,
 } from "./connect";
@@ -94,10 +95,25 @@ describe("connectWS", () => {
     connectWS();
     const socket = FakeWebSocket.instances[0]!;
     socket.open();
+    const pings = () => socket.sent.filter((frame) => frame === '{"type":"ping"}');
     vi.advanceTimersByTime(WS_PING_MS - 1);
-    expect(socket.sent).toEqual([]);
+    expect(pings()).toEqual([]);
     vi.advanceTimersByTime(1);
-    expect(socket.sent).toEqual(['{"type":"ping"}']);
+    expect(pings()).toEqual(['{"type":"ping"}']);
+  });
+
+  it("names the sidebar's session directory on open and on every project switch", () => {
+    project.value = "proj-a";
+    connectWS();
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    const directories = () =>
+      socket.sent.map((frame) => JSON.parse(frame)).filter((msg) => msg.type === "view_directory");
+    expect(directories()).toEqual([{ type: "view_directory", project_id: "proj-a" }]);
+    watchDirectory();
+    project.value = "proj-b";
+    project.value = null;
+    expect(directories().map((msg) => msg.project_id)).toEqual(["proj-a", "proj-a", "proj-b", null]);
   });
 
   it("reconnects 1500ms after close", () => {

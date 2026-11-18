@@ -900,6 +900,9 @@ class WSConnection:
     def __init__(self, wfile) -> None:
         self.wfile = wfile
         self.subs: set[str] = set()
+        #: The session directory this tab's sidebar shows: a project id, "*"
+        #: for every project (Home), or None when the client never asked.
+        self.directory: str | None = None
         self.alive = True
         #: Team mode: "may this connection still receive that session?", set
         #: by the WS handler which owns identity re-resolution. None (the
@@ -1889,6 +1892,34 @@ class WSHub:
         with self._lock:
             conns = list(self._conns)
         return any(c.alive and root_frame_id in c.subs for c in conns)
+
+    def notify_directory(
+        self, root_frame_id: str, project_id: str | None, obj: dict
+    ) -> None:
+        """Tell every tab whose sidebar lists this session's project about it.
+
+        Session events reach only the tabs subscribed to that one session, so
+        a sidebar never learned that another session had started, stopped or
+        appeared: a session stopped in one tab still spun as running in all
+        the others minutes later. Unsequenced on purpose -- a directory is not
+        a session stream, and a number here would desynchronise a cursor.
+        Visibility is asked per connection outside the hub lock, exactly as a
+        broadcast does.
+        """
+        with self._lock:
+            targets = [
+                c
+                for c in self._conns
+                if c.alive
+                and getattr(c, "directory", None) is not None
+                and getattr(c, "directory", None) in ("*", project_id)
+            ]
+        for c in targets:
+            allowed = c.refresh_visibility(root_frame_id)
+            if allowed is None:
+                allowed = c.may_receive(root_frame_id)
+            if allowed:
+                c.send_json(dict(obj))
 
     def replay(self, root_frame_id: str, conn: "WSConnection") -> None:
         """Send the buffered current-turn events to a single (re)connecting
@@ -3145,6 +3176,7 @@ class SessionRunner:
         observer = getattr(self.hub, "add_event_observer", None)
         if callable(observer):
             observer(self.project_history_autosave.observe)
+            observer(self._announce_session_status)
         if start_idle_sweeper:
             self.recovery.start()
             self._share_boot_restore()
@@ -4200,6 +4232,30 @@ class SessionRunner:
         )
         self.project_history_autosave.schedule_session(fid)
         return fid
+
+    def _announce_session_status(self, root_frame_id: str, event: dict) -> None:
+        """Hub observer: a root session's lifecycle reaches every sidebar.
+
+        `frame_update` goes only to the tabs viewing that session; this
+        re-announces its root-level transitions (processing, terminal,
+        renamed, titled) to the tabs listing the session's project as a
+        `session_status` event. A sub-agent's frame update is not the
+        session's state and is not forwarded.
+        """
+        if event.get("type") != "frame_update":
+            return
+        if event.get("frame_id") not in (None, root_frame_id):
+            return
+        notify = getattr(self.hub, "notify_directory", None)
+        if not callable(notify):
+            return
+        frame = self.store.get_frame(root_frame_id) or {}
+        project_id = frame.get("project_id")
+        notify(
+            root_frame_id,
+            project_id,
+            _session_status_event(root_frame_id, project_id, event.get("status")),
+        )
 
     def latest_unused_session(
         self,
@@ -17544,7 +17600,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json(_frame_json(frame, store))
                     return
                 if method == "DELETE":
+                    deleted = store.get_frame(fid) or {}
                     runner.delete_session(fid)
+                    # Other tabs' sidebars drop the row without a reload.
+                    notify = getattr(hub, "notify_directory", None)
+                    if callable(notify) and deleted:
+                        project_id = deleted.get("project_id")
+                        notify(
+                            fid,
+                            project_id,
+                            _session_status_event(fid, project_id, "deleted"),
+                        )
                     self._json({"ok": True})
                     return
             m = re.fullmatch(r"/frames/([^/]+)/messages", sub)
@@ -20994,6 +21060,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         rid = msg.get("root_frame_id") or msg.get("frame_id")
                         if rid:
                             hub.unsubscribe(rid, conn)
+                    elif t == "view_directory":
+                        # The project whose session list this tab shows, or
+                        # none (Home lists every project). Each session event
+                        # is still checked against this login's visibility
+                        # before it is sent, so naming a project grants
+                        # nothing.
+                        pid = msg.get("project_id")
+                        conn.directory = (
+                            str(pid) if isinstance(pid, str) and pid else "*"
+                        )
             finally:
                 conn.close()  # stop the writer thread + mark dead
                 hub.remove(conn)
@@ -21040,6 +21116,18 @@ def _frame_json(f: dict | None, store: Store) -> dict:
     out["model_profile_id"] = f.get("model_profile_id") or None
     out["model_profile_revision"] = f.get("model_profile_revision") or None
     return out
+
+
+def _session_status_event(
+    root_frame_id: str, project_id: str | None, status: object
+) -> dict:
+    """The directory event a sidebar applies (see `WSHub.notify_directory`)."""
+    return {
+        "type": "session_status",
+        "frame_id": root_frame_id,
+        "project_id": project_id,
+        "status": status,
+    }
 
 
 def _session_is_unused(store: Store, fj: dict) -> bool:
