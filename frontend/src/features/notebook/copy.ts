@@ -12,6 +12,9 @@ const COPY: CopyTable = {
     "nb.crash.signal": "被信号 {0} 终止",
     "nb.crash.unknown": "退出状态未知",
     "nb.generation.divider": "从这里开始是一个新的内核：之前单元定义的变量在这个内核里不存在。",
+    "nb.output.stdout": "输出",
+    "nb.output.stderr": "标准错误（stderr）",
+    "nb.output.long": "{0} · {1} 行",
   },
   en: {
     "nb.crash.notice":
@@ -21,6 +24,9 @@ const COPY: CopyTable = {
     "nb.crash.signal": "killed by signal {0}",
     "nb.crash.unknown": "exit status unknown",
     "nb.generation.divider": "A new kernel starts here: variables defined by earlier cells do not exist in it.",
+    "nb.output.stdout": "Output",
+    "nb.output.stderr": "stderr",
+    "nb.output.long": "{0} · {1} lines",
   },
 };
 

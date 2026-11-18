@@ -105,23 +105,59 @@ function BinaryElided({ length }: { length: number }) {
   );
 }
 
+/** Past either bound an output that is already complete starts collapsed. */
+const LONG_OUTPUT_LINES = 60;
+const LONG_OUTPUT_CHARS = 6000;
+
+/** Lines in an output, counted only as far as the bound needs. */
+function outputLines(text: string, stopAt = Infinity): number {
+  let lines = 1;
+  for (let at = text.indexOf("\n"); at >= 0 && at < text.length - 1; at = text.indexOf("\n", at + 1)) {
+    lines += 1;
+    if (lines > stopAt) break;
+  }
+  return lines;
+}
+
+export function outputIsLong(text: string): boolean {
+  return text.length > LONG_OUTPUT_CHARS || outputLines(text, LONG_OUTPUT_LINES) > LONG_OUTPUT_LINES;
+}
+
+/** The disclosure's label: which stream it is, and how much a collapsed one holds. */
+export function outputLabel(text: string, isError: boolean, live: boolean): string {
+  const name = nbT(isError ? "nb.output.stderr" : "nb.output.stdout");
+  return !live && outputIsLong(text) ? nbT("nb.output.long", name, outputLines(text)) : name;
+}
+
 /**
  * One output block for a running and a finished cell. It used to be two
  * components, and the switch at completion remounted the block, so an output
  * the reader had opened snapped shut. A running cell appends its chunks; a
  * finished one shows its final record exactly.
+ *
+ * Open when it first appears -- a running cell's progress is visible as it
+ * prints -- except a long output that is already complete. After that the
+ * reader's choice stands: `open` is set once, never passed as a prop, so a
+ * re-render cannot snap it back.
  */
 export function CellOutput({ text, isError, live }: { text: string; isError: boolean; live: boolean }) {
   const preRef = useRef<HTMLPreElement>(null);
+  const boxRef = useRef<HTMLDetailsElement>(null);
   const seen = useRef(0);
+  const opened = useRef(false);
   useLayoutEffect(() => {
     seen.current = paintStreamedText(preRef.current, seen.current, text, !live);
+    const box = boxRef.current;
+    if (box && !opened.current) {
+      opened.current = true;
+      box.open = live || !outputIsLong(text);
+    }
   }, [text, live]);
   if (!text) return null;
   if (looksBinary(text)) return <BinaryElided length={text.length} />;
   return (
-    <details class={"nbc-disclosure" + (isError ? " error" : "")}>
-      <summary>output</summary>
+    <details ref={boxRef} class={"nbc-disclosure" + (isError ? " error" : "")}>
+      <summary>{outputLabel(text, isError, live)}</summary>
       <pre ref={preRef} class={isError ? "nbc-err" : "nbc-out"} />
     </details>
   );
@@ -869,19 +905,21 @@ export function cellNode(e: NotebookCell): HTMLElement {
   wrap.appendChild(pre);
   c.appendChild(wrap);
   if (e.stdout) {
-    const details = el("details", "nbc-disclosure");
-    details.appendChild(el("summary", null, "output"));
+    const details = el("details", "nbc-disclosure") as HTMLDetailsElement;
+    details.appendChild(el("summary", null, outputLabel(e.stdout, false, false)));
     const out = el("pre", "nbc-out");
     out.textContent = e.stdout;
     details.appendChild(out);
+    details.open = !outputIsLong(e.stdout);
     c.appendChild(details);
   }
   if (e.stderr) {
-    const details = el("details", "nbc-disclosure error");
-    details.appendChild(el("summary", null, "output"));
+    const details = el("details", "nbc-disclosure error") as HTMLDetailsElement;
+    details.appendChild(el("summary", null, outputLabel(e.stderr, true, false)));
     const out = el("pre", "nbc-err");
     out.textContent = e.stderr;
     details.appendChild(out);
+    details.open = !outputIsLong(e.stderr);
     c.appendChild(details);
   }
   if (e.error) {

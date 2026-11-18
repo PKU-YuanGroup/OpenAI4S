@@ -24,7 +24,17 @@ import { actionTimeline, branchState } from "../../stores/timeline";
 import { resetStoreFields } from "../../stores/signal-field";
 import { notebookDisplayEntries } from "./cells";
 import { forkPending, invalidateKernelCache, kernelView } from "./kernel";
-import { CellActions, CellList, CellOutput, KernelChips, NotebookDock, StatusStrip, kernelExitText } from "./Notebook";
+import {
+  CellActions,
+  CellList,
+  CellOutput,
+  KernelChips,
+  NotebookDock,
+  StatusStrip,
+  kernelExitText,
+  outputIsLong,
+  outputLabel,
+} from "./Notebook";
 import { nbT } from "./copy";
 
 type VNode = {
@@ -274,5 +284,19 @@ describe("Notebook after a kernel crash", () => {
     const keys = listed(tree).map((node) => String(node.key));
     expect(keys).toEqual(["a", "r1", "b", "gen:c", "c", "r2"]);
     expect(textOf(listed(tree)[3])).toBe(nbT("nb.generation.divider"));
+  });
+});
+
+describe("Notebook cell output disclosure", () => {
+  it("names stdout and stderr apart, and says how long a long output is", () => {
+    expect(textOf(CellOutput({ text: "4\n", isError: false, live: false }))).toContain(nbT("nb.output.stdout"));
+    expect(textOf(CellOutput({ text: "warn\n", isError: true, live: false }))).toContain(nbT("nb.output.stderr"));
+    const long = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n");
+    expect(outputIsLong(long)).toBe(true);
+    expect(outputIsLong("a\nb\n")).toBe(false);
+    expect(outputIsLong("x".repeat(7000))).toBe(true);
+    expect(outputLabel(long, false, false)).toBe(nbT("nb.output.long", nbT("nb.output.stdout"), 200));
+    // A running cell is never labelled (or collapsed) as long.
+    expect(outputLabel(long, false, true)).toBe(nbT("nb.output.stdout"));
   });
 });
