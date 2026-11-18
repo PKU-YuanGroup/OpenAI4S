@@ -12878,6 +12878,12 @@ class SessionRunner:
         step_input = {"files": files, "environment": environment or self._kernel_id(st)}
         if language:
             step_input["language"] = language
+        if getattr(emit, "chat_projection", True) is False:
+            # A Notebook REPL cell's "Saving …" step: kept for the record, but
+            # marked so the transcript leaves it out on reload exactly as the
+            # live chat did (it has no turn to belong to, and it used to sit
+            # alone above the empty-session welcome).
+            step_input["origin"] = "notebook"
         step_output = {"artifacts": saved}
         summary = f"{len(saved)} artifact" + ("" if len(saved) == 1 else "s")
         sid = "s-" + uuid.uuid4().hex[:12]
@@ -13556,6 +13562,11 @@ class SessionRunner:
             def emit_notebook(event: dict) -> None:
                 if event.get("type") not in {"text_chunk", "step", "step_update"}:
                     emit(event)
+
+            # The step rows this cell persists are Notebook-only too (see
+            # `_emit_artifact_step`): the chat never showed them live, so a
+            # reload must not show them either.
+            setattr(emit_notebook, "chat_projection", False)
 
             info = self._execute_and_log(
                 st,

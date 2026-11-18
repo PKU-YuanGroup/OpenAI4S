@@ -87,6 +87,27 @@ describe("history reads", () => {
     expect(result).toMatchObject({ messagesLoaded: false, stepsLoaded: true, runStateLoaded: true, superseded: false });
     expect(paint.empty).not.toHaveBeenCalled();
   });
+  it("leaves a Notebook cell's step out of the chat, as the live chat did", async () => {
+    // A manual cell's "Saving …" step used to reappear on reload, alone above
+    // the empty-session welcome, though the live chat never showed it.
+    const notebookStep = {
+      step_id: "s-nb", seq: 0, kind: "artifact", created_at: 1, status: "done", title: "Saving figure_cell1_1.png",
+      summary: null, input: { files: ["figure_cell1_1.png"], origin: "notebook" }, output: null,
+    };
+    server((path) => path.includes("/messages?") ? response({ messages: [] })
+      : path.endsWith("/steps") ? response({ steps: [notebookStep] }) : undefined);
+    await openConversation("f");
+    expect(paint.batches.mock.calls.flat(2)).toEqual([]);
+    expect(paint.empty).toHaveBeenCalledTimes(1);
+    // An agent step with no message yet is chat content: no welcome under it.
+    paint.empty.mockClear(); paint.batches.mockClear();
+    const agentStep = { ...notebookStep, step_id: "s-agent", input: { files: ["fit.png"] } };
+    server((path) => path.includes("/messages?") ? response({ messages: [] })
+      : path.endsWith("/steps") ? response({ steps: [notebookStep, agentStep] }) : undefined);
+    await recoverConversation("f");
+    expect(paint.batches.mock.calls.flat(2)).toEqual([expect.objectContaining({ kind: "step", v: agentStep })]);
+    expect(paint.empty).not.toHaveBeenCalled();
+  });
   it("shows valid empty history only after successful reads", async () => {
     server((path) => path.includes("/messages?") ? response({ messages: [] }) : undefined);
     expect(await openConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });

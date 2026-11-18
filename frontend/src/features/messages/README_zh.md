@@ -26,8 +26,8 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`list.ts`](list.ts) | 唯一的已存消息行实现，首屏、"加载更早"（经 `sessions/transcript.ts`）与实时回合共用：`renderStored`、`addMsgActions`（复制走 `copyText`、👍/👎 带已保存评价、编辑）、`renderMessageRefChips`、`renderEmptySession`、`insertMessageByTime`、`showLiveUserMessage`（`user_message` 事件带来的回合提问：认领本标签页的气泡、已渲染的行不重复，否则显示）；以及分帧批量绘制，其中 `interleaveHistory` 也按时间放置已存储的审批决定。计划模式的用户行渲染为用户自己的文字，计划执行种子渲染为计划标记（`planPrompt.ts`）。 |
 | [`list.test.ts`](list.test.ts) | 640 条 → 16 帧 × 40；按时间插入跳过 `#msgs-earlier`；首屏与更早页是同一实现：审阅徽章与候选身份、👍/👎 提交并显示已保存评价、复制只在确认写入后打勾、编辑与起始问题会撑高输入框、用户行显示 @ 引用芯片。 |
 | [`messages.css`](messages.css) | `.md-sealed` / `.md-tail { display: contents }`；已停止回合标记与已停止卡片（弱化图标、中性色边条）；运行中与已结束的卡片（中性图标与边条，未要求减少动效时运行图标旋转）以及失败卡片（错误色图标与边条）；重开后的计划种子行沿用已停止标记的样式；被拒审批卡片的原因行；历史状态提示位于转录内容列内。 |
-| [`open.ts`](open.ts) | `openConversation` / `recoverConversation`：按代次读取、只读重试、保留已确认历史与原子分帧投影。会话级重置依据 `openedFrameId`（屏幕上状态所属的会话）而不只是 `currentId`，因此先发布 id 再打开的新会话、或从主页返回后打开的会话，Notebook 都从空开始。 |
-| [`open.test.ts`](open.test.ts) | 按打开代次保护历史失败、只读重试、REST/WS 交错与已展开旧页保留；新会话的 Notebook 只含自己的单元（从已打开会话新建、从主页返回后新建、上一会话的读取迟到）。 |
+| [`open.ts`](open.ts) | `openConversation` / `recoverConversation`：按代次读取、只读重试、保留已确认历史与原子分帧投影。会话级重置依据 `openedFrameId`（屏幕上状态所属的会话）而不只是 `currentId`，因此先发布 id 再打开的新会话、或从主页返回后打开的会话，Notebook 都从空开始。Notebook REPL 单元的步骤（`input.origin: "notebook"`）与实时时一样不进入转录，空会话欢迎页只在聊天中什么都没有时显示。 |
+| [`open.test.ts`](open.test.ts) | Notebook 单元的步骤不进入聊天（智能体步骤会取代欢迎页）；按打开代次保护历史失败、只读重试、REST/WS 交错与已展开旧页保留；新会话的 Notebook 只含自己的单元（从已打开会话新建、从主页返回后新建、上一会话的读取迟到）。 |
 | [`planPrompt.ts`](planPrompt.ts) | 计划模式行重开后显示用户自己写的内容：`planModeRequestText` 从存储的用户行中去掉计划模式提示（工作台、旧版 app.js、修订种子），与 `openai4s/server/plans.py` 一致；`planSeed` / `planSeedMarker` 把批准或继续执行的种子渲染为一行弱化的"已批准计划：…"（功能内文案）。存储的行不变。 |
 | [`raf.ts`](raf.ts) | 共用 `requestAnimationFrame` / setTimeout 回退。 |
 | [`scroll.ts`](scroll.ts) | `down` / `updateJumpPill` 合并进一个 rAF；节流 scroll 监听，由 `bindMessageScroll` 在渲染后绑定。scroll 事件只测量并刷新跳转按钮，只有 `down()` 会滚动。 |

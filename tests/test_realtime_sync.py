@@ -545,3 +545,65 @@ def test_a_root_frame_update_is_announced_to_sidebars_not_viewing_it(tmp_path):
         ]
     finally:
         runner.close()
+
+
+# --------------------------------------------------------------------------
+# a Notebook cell is not an agent turn, live or reloaded
+# --------------------------------------------------------------------------
+
+
+def test_a_notebook_cells_saving_step_is_marked_out_of_the_chat(monkeypatch, tmp_path):
+    """The live chat never showed a manual cell's "Saving …" step (the REPL's
+    emitter drops step events), but the persisted row reappeared on reload,
+    alone above the empty-session welcome. The row now says where it came
+    from; an agent cell's row is unchanged."""
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    try:
+        fid = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+
+        def fake_execute(state, code, origin, emit, stream=True, language="python"):
+            del code, stream
+            assert origin == "user"
+            runner._emit_artifact_step(
+                state,
+                "Running analysis",
+                [{"filename": "figure_cell1_1.png"}],
+                emit,
+                "python",
+                language,
+            )
+            return {
+                "result": {"stdout": "", "stderr": "", "error": None},
+                "idx": 1,
+                "cell_id": "cell-1",
+                "state_revision": 1,
+                "generation_id": "gen-1",
+                "figures": [],
+                "files_written": [],
+            }
+
+        monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+        runner.run_repl(fid, "default", "plt.savefig('figure.png')")
+        state = runner._state(fid, "default")
+        runner._emit_artifact_step(
+            state,
+            "Running analysis",
+            [{"filename": "agent.png"}],
+            hub.emitter(fid),
+            "python",
+        )
+
+        steps = runner.store.list_steps(fid)
+        assert [s["title"] for s in steps] == [
+            "Saving figure_cell1_1.png",
+            "Saving agent.png",
+        ]
+        assert steps[0]["input"]["origin"] == "notebook"
+        assert "origin" not in steps[1]["input"]
+        # And, as before, the REPL never streamed it into the chat.
+        assert [e["step_id"] for e in hub.events if e.get("type") == "step"] == [
+            steps[1]["step_id"]
+        ]
+    finally:
+        runner.close()

@@ -237,6 +237,17 @@ async function fetchSteps(fid: string): Promise<Array<Record<string, unknown>>> 
   return rows;
 }
 /**
+ * A Notebook REPL cell's persisted step (`input.origin === "notebook"`). The
+ * live chat never showed it -- a manual cell is not an agent turn -- so the
+ * reopened transcript leaves it out too, rather than showing it alone above
+ * the empty-session welcome.
+ */
+function chatStep(row: Record<string, unknown>): boolean {
+  const input = row.input;
+  return !(input && typeof input === "object" && (input as { origin?: unknown }).origin === "notebook");
+}
+
+/**
  * Every approval this session asked for, decided or not. Optional history: a
  * failed read keeps the cards already confirmed rather than failing the
  * transcript, which is complete without them.
@@ -342,12 +353,13 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
     const hasEarlier = prefix.length ? msgHasEarlier.value : !!page.value.has_earlier;
     const stepRows = steps.status === "fulfilled" ? steps.value : cached?.steps || [];
     const approvalRows = approvals.status === "fulfilled" ? approvals.value : cached?.approvals || [];
+    const chatSteps = stepRows.filter(chatStep);
     const stage = typeof document !== "undefined" ? document.createDocumentFragment() : null;
     const host = messagesHost();
     const stagedSteps: Record<string, unknown> = Object.create(null);
     const stagedPerms: Record<string, unknown> = Object.create(null);
     await new Promise<void>((resolve, reject) => {
-      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], stepRows, approvalRows), {
+      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], chatSteps, approvalRows), {
         host: stage,
         stillCurrent: unchanged,
         onCancel: resolve,
@@ -387,8 +399,10 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       msgCursor.value = earlierCursor;
       msgHasEarlier.value = hasEarlier;
       callLane("paintEarlierControl");
-      // Failed auxiliary history is not evidence for a truly empty session.
-      if (!messages.length && result.stepsLoaded && result.runStateLoaded && stopped) renderEmptySession();
+      // Failed auxiliary history is not evidence for a truly empty session,
+      // and the welcome is only for a transcript with nothing in it at all.
+      if (!messages.length && !chatSteps.length && !approvalRows.length &&
+          result.stepsLoaded && result.runStateLoaded && stopped) renderEmptySession();
       // A transcript with nothing confirmed before it (an open, a branch
       // reset) starts at its newest message, as app.js's down(true) did.
       // Unforced, the updateJumpPill() below measured the emptied host at
