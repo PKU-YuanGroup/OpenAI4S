@@ -4066,3 +4066,99 @@ def test_portable_observation_v1_enablement_conclusion(tmp_path):
         assert "observation_imported_count" not in probe_with["result"]
     finally:
         store.close()
+
+
+# --- EXP-1: files in sub-directories travel; checkpoints stay consistent -------
+#
+# `project_import_file` lands project-folder files under `project-inputs/`.
+# The filename guard refused every "/", so such an Artifact was dropped as a
+# "secret_filename" while checkpoints still named its version: the package
+# verified clean and then every import failed with "checkpoint artifact version
+# references an unknown identity".
+
+
+def _add_artifact(store, root, project, workspace_dir, filename, body):
+    target = workspace_dir / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    return store.save_artifact(
+        path=str(target),
+        filename=filename,
+        content_type="text/csv",
+        size_bytes=target.stat().st_size,
+        checksum=hashlib.sha256(target.read_bytes()).hexdigest(),
+        frame_id=root,
+        root_frame_id=root,
+        project_id=project["project_id"],
+    )
+
+
+def test_an_artifact_in_a_subdirectory_round_trips(tmp_path):
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    try:
+        nested = "project-inputs/队列_临床与标志物.csv"
+        _add_artifact(
+            store, root, project, workspace(root, root), nested, "id,age\n1,61\n"
+        )
+        domain.create_checkpoint(root, metadata={"label": "after import"})
+
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+        manifest = json.loads(files["artifacts.json"])
+        assert nested in {item["filename"] for item in manifest["artifacts"]}
+        assert manifest["excluded"] == []
+
+        imported = domain.session_import(exported["data"])
+        names = {
+            a["filename"]
+            for a in store.list_artifacts({"root_frame_id": imported["root_frame_id"]})
+        }
+        assert nested in names
+    finally:
+        store.close()
+
+
+def test_an_excluded_artifact_does_not_strand_checkpoint_references(tmp_path):
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    try:
+        secret = _add_artifact(
+            store,
+            root,
+            project,
+            workspace(root, root),
+            "deploy.pem",
+            "not a real key\n",
+        )
+        domain.create_checkpoint(root, metadata={"label": "with a secret-named file"})
+
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+        manifest = json.loads(files["artifacts.json"])
+        assert {
+            "artifact_id": secret["artifact_id"],
+            "reason": "secret_filename",
+        } in manifest["excluded"]
+        listed = {
+            version_id
+            for checkpoint in json.loads(files["snapshots.json"])["checkpoints"]
+            for version_id in checkpoint.get("artifact_versions") or []
+        }
+        exported_versions = {
+            version["version_id"]
+            for item in manifest["artifacts"]
+            for version in item["versions"]
+        }
+        assert listed <= exported_versions
+
+        domain.session_import(exported["data"])  # must not raise
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../escape.csv", "/abs/path.csv", "a//b.csv", "a/./b.csv", "a\\b.csv", "dir/"],
+)
+def test_unsafe_artifact_paths_are_still_refused(name):
+    with pytest.raises(SessionPackageError, match="unsafe artifact filename"):
+        session_package_mod._safe_artifact_filename(name)

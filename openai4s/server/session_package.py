@@ -664,17 +664,43 @@ def _is_secret_path(value: str) -> bool:
     ) or (path.suffix.lower() in _SECRET_SUFFIXES)
 
 
+#: A workspace-relative artifact path may have subdirectories (the project
+#: folder import lands files under ``project-inputs/``), but every segment is
+#: a plain name and the whole path stays bounded.
+_MAX_ARTIFACT_PATH_BYTES = 1024
+_MAX_ARTIFACT_PATH_DEPTH = 16
+
+
+def _unsafe_artifact_path(filename: str) -> bool:
+    segments = filename.split("/")
+    return (
+        len(filename.encode("utf-8")) > _MAX_ARTIFACT_PATH_BYTES
+        or len(segments) > _MAX_ARTIFACT_PATH_DEPTH
+        or any(
+            not segment or segment in {".", ".."} or len(segment.encode("utf-8")) > 255
+            for segment in segments
+        )
+        or bool(re.search(r'[<>:"\\|?*\x00-\x1f]', filename))
+    )
+
+
 def _safe_artifact_filename(value: Any) -> str:
+    """A workspace-relative POSIX path, or raise.
+
+    Sub-directories are allowed: rejecting every ``/`` used to drop each file
+    imported from a project folder (``project-inputs/<name>``) from the
+    package while its checkpoints still referenced it, so the package passed
+    verification and then failed every import. Absolute paths, ``.``/``..``,
+    empty segments, backslashes and control characters stay refused, and the
+    importer still resolves every target inside the new workspace.
+    """
     if not isinstance(value, str):
         raise SessionPackageError("artifact filename must be a string")
     filename = value.strip()
     if (
         not filename
         or filename != value
-        or len(filename.encode("utf-8")) > 255
-        or filename in {".", ".."}
-        or re.search(r'[<>:"/\\|?*\x00-\x1f]', filename)
-        or PurePosixPath(filename).name != filename
+        or _unsafe_artifact_path(filename)
         or _is_secret_path(filename)
     ):
         raise SessionPackageError("secret or unsafe artifact filename")
@@ -947,6 +973,24 @@ class SessionPackageService:
             artifact_projection,
             environment_snapshots,
         ) = self._export_artifacts(root_frame_id)
+        # A checkpoint may name a version of an Artifact the package excluded
+        # (a secret filename, nothing importable). Keep only versions the
+        # package carries, or the importer refuses the whole package as an
+        # "unknown identity" after verification already said it was fine.
+        exported_versions = {
+            str(version.get("version_id"))
+            for item in artifact_projection.get("artifacts") or []
+            for version in item.get("versions") or []
+            if version.get("version_id")
+        }
+        for checkpoint in checkpoints:
+            listed = checkpoint.get("artifact_versions")
+            if isinstance(listed, list):
+                checkpoint["artifact_versions"] = [
+                    version_id
+                    for version_id in listed
+                    if str(version_id) in exported_versions
+                ]
         artifact_projection["completion_deliveries"] = (
             self._export_completion_deliveries(
                 root_frame_id,
@@ -1652,7 +1696,13 @@ class SessionPackageService:
                 excluded.append(
                     {
                         "artifact_id": str(artifact.get("artifact_id") or ""),
-                        "reason": "secret_filename",
+                        # Name the real reason: a path that is merely
+                        # unusual is not a secret.
+                        "reason": (
+                            "secret_filename"
+                            if _is_secret_path(filename.strip())
+                            else "unsafe_filename"
+                        ),
                     }
                 )
                 continue
