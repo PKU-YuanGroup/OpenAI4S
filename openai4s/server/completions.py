@@ -297,9 +297,21 @@ def completion_message(
         parts.append(heading + "\n" + "\n".join(f"- {item}" for item in fresh_bullets))
 
     artifact_lines = _artifact_lines(artifacts, trusted_delivery=trusted_delivery)
-    if artifact_lines:
+    # ART-8: scripts, logs and copies of inputs are how the result was made,
+    # not the result; listing them with the figures and tables buried the
+    # deliverables. They stay linked, on one line after the deliverables.
+    deliverables = [line for kind, line in artifact_lines if kind == "deliverable"]
+    process = [line for kind, line in artifact_lines if kind == "process"]
+    if deliverables:
         heading = "产物：" if zh else "Artifacts:"
-        parts.append(heading + "\n" + "\n".join(artifact_lines))
+        parts.append(heading + "\n" + "\n".join(f"- {link}" for link in deliverables))
+    if process:
+        heading = (
+            f"过程文件（脚本、日志、输入副本，{len(process)} 个）："
+            if zh
+            else f"Working files (scripts, logs, input copies; {len(process)}):"
+        )
+        parts.append(heading + " " + ("、" if zh else ", ").join(process))
 
     if not parts and previous:
         return ""
@@ -354,7 +366,7 @@ def _structured_body(value: Any) -> str:
         return ""
     if isinstance(value, dict):
         items = [
-            f"- {str(key)[:120]}: {_compact_value(item)}"
+            f"- {_readable_key(str(key))[:120]}: {_compact_value(item)}"
             for key, item in list(value.items())[:20]
         ]
         return "\n".join(items)[:4000]
@@ -364,7 +376,20 @@ def _structured_body(value: Any) -> str:
     return str(value).strip()[:4000]
 
 
+_SNAKE_KEY = re.compile(r"[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+")
+
+
+def _readable_key(key: str) -> str:
+    """``cox_tmb_HR_low`` reads as "cox tmb HR low" (ART-8); prose keys stay."""
+
+    return key.replace("_", " ") if _SNAKE_KEY.fullmatch(key) else key
+
+
 def _compact_value(value: Any) -> str:
+    if isinstance(value, float) and not isinstance(value, bool):
+        # 0.42712345 -> 0.4271; exponent forms stay as repr, which is clearer.
+        short = format(value, ".4g")
+        return short if "e" not in short else repr(value)
     if isinstance(value, str):
         return value.strip()[:500]
     if isinstance(value, (dict, list, tuple)):
@@ -428,10 +453,29 @@ def _summary_already_visible(output: Any, summary: str, previous: str) -> bool:
     return False
 
 
+#: Suffixes and folders of files that record how a result was made.
+_PROCESS_SUFFIXES = frozenset(
+    {".py", ".r", ".sh", ".bash", ".ipynb", ".log", ".pyc", ".tmp", ".bak", ".rds"}
+)
+_PROCESS_DIRS = ("project-inputs/", "inputs/", "__pycache__/", ".openai4s")
+
+
+def _artifact_kind(name: str) -> str:
+    lower = name.lower().replace("\\", "/")
+    dot = lower.rfind(".")
+    suffix = lower[dot:] if dot > lower.rfind("/") else ""
+    if suffix in _PROCESS_SUFFIXES:
+        return "process"
+    if lower.startswith(_PROCESS_DIRS) or any(f"/{d}" in lower for d in _PROCESS_DIRS):
+        return "process"
+    return "deliverable"
+
+
 def _artifact_lines(
     artifacts: Iterable[dict], *, trusted_delivery: bool = False
-) -> list[str]:
-    lines: list[str] = []
+) -> list[tuple[str, str]]:
+    """``(kind, markdown link)`` per artifact, deliverables and process files."""
+    lines: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for artifact in artifacts:
         if not isinstance(artifact, dict):
@@ -454,7 +498,7 @@ def _artifact_lines(
             continue
         seen.add(key)
         label = name.replace("[", "\\[").replace("]", "\\]")
-        lines.append(f"- [{label}]({target})")
+        lines.append((_artifact_kind(name), f"[{label}]({target})"))
     return lines
 
 

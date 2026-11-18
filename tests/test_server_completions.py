@@ -327,3 +327,41 @@ def test_a_truncated_output_reports_its_real_size_not_the_preview_lines():
     assert "lines in total" not in en and "omitted" not in en
     zh = outcome_narration(CodeCell("python", "x"), outcome, "zh")
     assert f"共 {len(out):,} 个字符" in zh
+
+
+def test_the_summary_separates_deliverables_and_reads_metrics_plainly():
+    """ART-8: 14 "artifacts" mixed figures and tables with helper scripts and
+    copies of inputs, and metrics read as raw keys (cox_tmb_HR_low: 0.42712)."""
+    artifacts = [
+        {"artifact_id": "a1", "filename": "fig1_survival.png", "version_id": "v-1"},
+        {"artifact_id": "a2", "filename": "cox_results.csv", "version_id": "v-2"},
+        {"artifact_id": "a3", "filename": "survival_lib.py", "version_id": "v-3"},
+        {
+            "artifact_id": "a4",
+            "filename": "project-inputs/cohort.csv",
+            "version_id": "v-4",
+        },
+    ]
+    text = completion_message(
+        {
+            "output": {
+                "summary": "Done.",
+                "metrics": {"cox_tmb_HR_low": 0.427123, "n": 120},
+            }
+        },
+        artifacts,
+        language="en",
+    )
+    deliverables = text.split("Artifacts:\n", 1)[1].split("\n\n", 1)[0]
+    assert "fig1_survival.png" in deliverables and "cox_results.csv" in deliverables
+    assert "survival_lib.py" not in deliverables
+    assert "Working files (scripts, logs, input copies; 2):" in text
+    assert "[survival_lib.py](" in text and "[project-inputs/cohort.csv](" in text
+    assert "- cox tmb HR low: 0.4271" in text
+    assert "- n: 120" in text
+
+    zh = completion_message(
+        {"output": {"summary": "完成"}}, artifacts[2:], language="zh"
+    )
+    assert "产物：" not in zh
+    assert "过程文件（脚本、日志、输入副本，2 个）：" in zh
