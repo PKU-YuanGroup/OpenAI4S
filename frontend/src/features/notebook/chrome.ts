@@ -9,7 +9,7 @@ import { filesT, readFailureText } from "../artifacts/copy";
 import { paintIcon } from "../icons/paths";
 import { isReady } from "../../compat/stub";
 import { _tbl } from "../../stores/artifacts";
-import { t } from "../../i18n/runtime";
+import { LANG, t } from "../../i18n/runtime";
 import { delimiterFor, parseDelimited } from "../csv/csv";
 import { esc } from "../md/esc";
 import { mdHighlight } from "../md/highlight";
@@ -101,24 +101,64 @@ export function resetNotebookCellCaches(
 
 export type NotebookExportOption = {
   language?: string;
+  /** `clean`: failed/diagnostic cells left out, figures embedded, narration as Markdown. */
+  variant?: "clean";
   key: string;
   suffix: string;
   path?: string;
+  /** Feature-local label, for options the generated dictionaries do not carry. */
+  label?: () => string;
 };
 
-/** app.js:10119-10132 */
+/** Export labels the generated i18n dictionaries do not carry. */
+const EXPORT_COPY = {
+  en: {
+    clean: "Download notebook (.ipynb)",
+    raw: "Raw execution log (every cell, zip)",
+    rawPython: "Raw Python execution log (.ipynb)",
+    rawR: "Raw R execution log (.ipynb)",
+  },
+  zh: {
+    clean: "下载 Notebook (.ipynb)",
+    raw: "原始执行日志（全部单元，打包 .zip）",
+    rawPython: "原始 Python 执行日志 (.ipynb)",
+    rawR: "原始 R 执行日志 (.ipynb)",
+  },
+} as const;
+
+function exportCopy(key: keyof (typeof EXPORT_COPY)["en"]): string {
+  return EXPORT_COPY[LANG === "en" ? "en" : "zh"][key];
+}
+
+/**
+ * The primary download is the clean notebook (owner decision): the raw forms
+ * serialise every attempt -- failed cells, environment probes, no figures, no
+ * narration -- and stay available as the execution log.
+ */
 export const NOTEBOOK_EXPORTS: NotebookExportOption[] = [
-  { language: "bundle", key: "prov.exec.downloadNotebook", suffix: "notebooks.zip" },
-  { language: "python", key: "prov.exec.downloadPython", suffix: "python.ipynb" },
-  { language: "r", key: "prov.exec.downloadR", suffix: "r.ipynb" },
+  { variant: "clean", key: "prov.exec.downloadNotebook", suffix: "ipynb", label: () => exportCopy("clean") },
+  { language: "bundle", key: "prov.exec.downloadNotebook", suffix: "notebooks.zip", label: () => exportCopy("raw") },
+  { language: "python", key: "prov.exec.downloadPython", suffix: "python.ipynb", label: () => exportCopy("rawPython") },
+  { language: "r", key: "prov.exec.downloadR", suffix: "r.ipynb", label: () => exportCopy("rawR") },
   { language: "markdown", key: "prov.exec.downloadMarkdown", suffix: "md" },
   { path: "/execution-sources/export", key: "prov.exec.downloadSources", suffix: "sources.zip" },
 ];
 
+function exportLabel(option: NotebookExportOption): string {
+  return option.label ? option.label() : t(option.key);
+}
+
 /** app.js:10133-10136 */
 export function notebookExportHref(frameId: string, option: NotebookExportOption): string {
   const base = `${API}/frames/${encodeURIComponent(frameId)}`;
-  return option.path ? `${base}${option.path}` : `${base}/notebook/export?language=${option.language}`;
+  if (option.path) return `${base}${option.path}`;
+  if (option.variant === "clean") return `${base}/notebook/export?variant=clean`;
+  return `${base}/notebook/export?language=${option.language}`;
+}
+
+/** The saved name: the server's (the session title) for the clean notebook. */
+function exportDownloadName(frameId: string, option: NotebookExportOption): string {
+  return option.variant === "clean" ? "" : `${frameId}.${option.suffix}`;
 }
 
 /** app.js:10231-10264. Contract global. */
@@ -127,9 +167,9 @@ export function notebookExportLink(frameId: string): HTMLElement {
   const primary = NOTEBOOK_EXPORTS[0] as NotebookExportOption;
   const dl = el("a", "prov-dlbtn") as HTMLAnchorElement;
   dl.appendChild(iconEl("download", 14));
-  dl.appendChild(el("span", null, t(primary.key)));
+  dl.appendChild(el("span", null, exportLabel(primary)));
   dl.href = notebookExportHref(frameId, primary);
-  dl.setAttribute("download", `${frameId}.${primary.suffix}`);
+  dl.setAttribute("download", exportDownloadName(frameId, primary));
   wrap.appendChild(dl);
 
   const toggle = el("button", "prov-dlmore");
@@ -139,9 +179,9 @@ export function notebookExportLink(frameId: string): HTMLElement {
   const menu = el("div", "prov-dlmenu hidden");
   NOTEBOOK_EXPORTS.slice(1).forEach((option) => {
     const item = el("a", "prov-dlitem") as HTMLAnchorElement;
-    item.appendChild(el("span", null, t(option.key)));
+    item.appendChild(el("span", null, exportLabel(option)));
     item.href = notebookExportHref(frameId, option);
-    item.setAttribute("download", `${frameId}.${option.suffix}`);
+    item.setAttribute("download", exportDownloadName(frameId, option));
     item.onclick = () => {
       menu.classList.add("hidden");
       toggle.setAttribute("aria-expanded", "false");

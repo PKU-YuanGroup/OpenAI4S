@@ -18924,16 +18924,38 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         400,
                     )
                     return
+                # `variant=clean` is the notebook a person re-runs: failed and
+                # diagnostic cells left out, figures embedded, narration as
+                # Markdown. Without it every export stays the execution log.
+                variant = (q.get("variant") or [None])[0]
+                if variant is not None and str(variant).lower() not in {
+                    "raw",
+                    "clean",
+                }:
+                    self._json({"error": "variant must be raw or clean"}, 400)
+                    return
+                if (
+                    str(variant or "").lower() == "clean"
+                    and language is not None
+                    and str(language).lower() not in {"python", "r"}
+                ):
+                    self._json(
+                        {"error": "a clean notebook is python or r (or automatic)"},
+                        400,
+                    )
+                    return
                 exported = runner.session_domain.notebook_export(
-                    m.group(1), language=language
+                    m.group(1), language=language, variant=variant
                 )
                 self._send(
                     200,
                     exported["data"],
                     exported["content_type"],
                     {
-                        "Content-Disposition": (
-                            f'attachment; filename="{exported["filename"]}"'
+                        # The clean form is named after the session title, so
+                        # the RFC 5987 form carries non-ASCII names safely.
+                        "Content-Disposition": download_content_disposition(
+                            exported["filename"], "notebook"
                         ),
                         "X-Content-SHA256": exported["sha256"],
                     },

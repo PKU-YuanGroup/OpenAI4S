@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -453,3 +454,264 @@ def test_a_reader_error_is_not_swallowed_into_the_paged_default(tmp_path):
 
     with pytest.raises(TypeError, match="inside the reader"):
         NotebookExportService(_Broken()).markdown("root-1")
+
+
+class _CleanStore:
+    """One session as a researcher saw it: analysis, a failed attempt, an
+    environment probe, the completion RPC, narration and progress lines."""
+
+    def __init__(self) -> None:
+        self.cells = [
+            {
+                "producing_cell_id": "c-plot",
+                "cell_index": 4,
+                "state_revision": 4,
+                "language": "python",
+                "status": "ok",
+                "visibility": "scientific",
+                "code": "ax = df.age.hist()\nplt.savefig('plot.png')\n",
+                "stdout": "plotted 120 ages\n",
+                "stderr": "",
+                "error": None,
+                "figures": ["plot.png"],
+                "created_at": 1000,
+            },
+            {
+                "producing_cell_id": "c-failed",
+                "cell_index": 5,
+                "language": "python",
+                "status": "error",
+                "visibility": "scientific",
+                "code": "df.agee.mean()\n",
+                "error": "AttributeError: 'DataFrame' object has no attribute 'agee'",
+                "created_at": 2000,
+            },
+            {
+                "producing_cell_id": "c-probe",
+                "cell_index": 6,
+                "language": "python",
+                "status": "ok",
+                "visibility": "scientific",
+                "code": "import sklearn\nprint(sklearn.__version__)\n",
+                "stdout": "1.5.0\n",
+                "created_at": 2500,
+            },
+            {
+                "producing_cell_id": "c-fetch",
+                "cell_index": 7,
+                "language": "python",
+                "status": "ok",
+                "visibility": "scientific",
+                "code": "page = host.web_fetch('https://example.org')\n",
+                "created_at": 3000,
+            },
+            {
+                "producing_cell_id": "c-scratch",
+                "cell_index": 8,
+                "language": "python",
+                "status": "ok",
+                "visibility": "scratch",
+                "code": "x = 1\n",
+                "created_at": 3500,
+            },
+            {
+                "producing_cell_id": "c-submit",
+                "cell_index": 9,
+                "language": "python",
+                "status": "ok",
+                "visibility": "scientific",
+                "code": "host.submit_output({'summary': 'done'})\n",
+                "created_at": 4000,
+            },
+            {
+                "producing_cell_id": "c-r",
+                "cell_index": 10,
+                "language": "r",
+                "status": "ok",
+                "visibility": "scientific",
+                "code": "summary(cars)\n",
+                "created_at": 4500,
+            },
+        ]
+
+    def list_cells(self, root_frame_id, *, branch_id=None):
+        return list(self.cells)
+
+    def list_branch_messages(self, root_frame_id, *, branch_id=None, limit=None):
+        return [
+            {
+                "message_id": "m-user",
+                "role": "user",
+                "content": "plot ages",
+                "created_at": 500,
+            },
+            {
+                "message_id": "m-plan",
+                "role": "assistant",
+                "content": "First I plot the age distribution.",
+                "created_at": 999,
+            },
+            {
+                "message_id": "m-progress",
+                "role": "assistant",
+                "content": "I have prepared a Python cell and am running it now; "
+                "its actual output will be recorded in the Notebook.",
+                "created_at": 998,
+            },
+            {
+                "message_id": "m-status",
+                "role": "assistant",
+                "content": "The cell finished. Output:\n```text\nplotted\n```",
+                "created_at": 1001,
+            },
+            {
+                "message_id": "m-final",
+                "role": "assistant",
+                "content": "Ages are right-skewed; see [plot.png](/api/artifacts/a1).",
+                "created_at": 5000,
+            },
+        ]
+
+    def list_artifacts(self, query):
+        return [
+            {"artifact_id": "a1", "root_frame_id": "root-1", "filename": "plot.png"}
+        ]
+
+    def list_versions(self, artifact_id):
+        return [
+            {
+                "version_id": "v-plot",
+                "producing_cell_id": "c-plot",
+                "filename": "plot.png",
+                "created_at": 1000,
+                "ordinal": 1,
+            }
+        ]
+
+    def get_frame(self, frame_id):
+        return {"frame_id": frame_id, "root_frame_id": frame_id}
+
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"pixels"
+
+
+def test_the_clean_notebook_is_one_a_person_can_read_and_rerun():
+    """NB-1: the export was the raw execution log -- failed cells, probes, the
+    completion RPC, no figures, no narration. The clean form keeps the analysis
+    that ran, embeds its figures, interleaves the agent's narration as
+    Markdown, and says what it left out."""
+    reads: list[str] = []
+
+    def read(version_id):
+        reads.append(version_id)
+        return _PNG
+
+    service = NotebookExportService(_CleanStore(), read_version_bytes=read)
+    exported = service.export("root-1", variant="clean", title="Age QC / 年龄")
+    document = json.loads(exported["data"])
+
+    assert exported["filename"] == "Age QC _ 年龄.ipynb"
+    assert exported["content_type"] == "application/x-ipynb+json"
+    kinds = [cell["cell_type"] for cell in document["cells"]]
+    assert kinds == ["markdown", "markdown", "code", "code", "markdown"]
+    header, plan, plot, fetch, final = document["cells"]
+    assert "1 failed and 2 diagnostic" in "".join(header["source"])
+    assert "".join(plan["source"]).startswith("First I plot")
+    # Progress lines and the user's own words are not narration.
+    text = json.dumps(document)
+    assert "I have prepared a Python cell" not in text
+    assert "The cell finished" not in text
+    assert "plot ages" not in text
+    # Renumbered, figure embedded, links into the daemon flattened.
+    assert [plot["execution_count"], fetch["execution_count"]] == [1, 2]
+    images = [o for o in plot["outputs"] if o["output_type"] == "display_data"]
+    assert images and images[0]["data"]["image/png"] == base64.b64encode(_PNG).decode()
+    assert reads == ["v-plot"]
+    assert "".join(fetch["source"]).startswith(
+        "# Needs an OpenAI4S kernel: host.web_fetch"
+    )
+    assert "".join(final["source"]).strip() == "Ages are right-skewed; see plot.png."
+    cells_text = json.dumps(document["cells"])
+    for gone in ("agee", "sklearn", "submit_output", "x = 1", "summary(cars)"):
+        assert gone not in cells_text
+    assert document["metadata"]["openai4s"]["left_out"] == {
+        "failed_cells": 1,
+        "diagnostic_cells": 2,
+    }
+
+
+def test_the_clean_notebook_lists_a_figure_it_cannot_embed():
+    service = NotebookExportService(_CleanStore(), read_version_bytes=lambda _v: None)
+    document = service.clean_notebook("root-1")
+    plot = next(c for c in document["cells"] if c["cell_type"] == "code")
+    assert not [o for o in plot["outputs"] if o["output_type"] == "display_data"]
+    assert "[OpenAI4S artifacts] plot.png" in json.dumps(plot["outputs"])
+
+
+def test_raw_exports_are_unchanged_by_the_clean_variant():
+    store = _CleanStore()
+    raw = json.loads(
+        NotebookExportService(store).export("root-1", language="python")["data"]
+    )
+    assert len(raw["cells"]) == 6  # every python cell, including the failed one
+    assert "variant" not in raw["metadata"]["openai4s"]
+
+
+def test_the_route_serves_the_clean_notebook_under_the_session_title(tmp_path):
+    """Through the real route: `variant=clean` reaches the service, the saved
+    name is the session title (RFC 5987, so a Chinese title survives), and an
+    unknown variant or a clean bundle is refused rather than guessed."""
+    import uuid
+
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server import gateway as gateway_mod
+    from openai4s.server.contract import API_ROOT
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    cfg = Config(
+        data_dir=tmp_path / "data", llm=LLMConfig(provider="deepseek", api_key="k")
+    )
+    cfg.ensure_dirs()
+    token = "tok-03-" + uuid.uuid4().hex
+    (cfg.data_dir / "access-token").write_text(token, encoding="utf-8")
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        root = runner.store.new_frame(kind="turn", project_id="default", status="done")
+        runner.store.update_frame(root, name="年龄 QC")
+        sent: list[tuple] = []
+
+        def get(query):
+            handler = object.__new__(handler_cls)
+            handler.headers = {gateway_mod._TOKEN_HEADER: token, "Content-Length": "0"}
+            handler.path = f"{API_ROOT}/frames/{root}/notebook/export?{query}"
+            handler.command = "GET"
+            handler.close_connection = False
+            handler._correlation_id = "req-nb1"
+            handler._send = lambda code, body, ctype, extra=None: sent.append(
+                (code, body, ctype, extra or {})
+            )
+            handler._json = lambda obj, code=200: sent.append((code, obj, "json", {}))
+            handler._route("GET")
+            return sent[-1]
+
+        code, body, ctype, extra = get("variant=clean")
+        assert code == 200 and ctype == "application/x-ipynb+json"
+        assert (
+            "filename*=UTF-8''%E5%B9%B4%E9%BE%84%20QC.ipynb"
+            in extra["Content-Disposition"]
+        )
+        assert json.loads(body)["metadata"]["openai4s"]["variant"] == "clean"
+        assert get("variant=bogus")[0] == 400
+        assert get("variant=clean&language=bundle")[0] == 400
+        raw_code, raw_body, _ctype, _extra = get("language=python")
+        assert raw_code == 200
+        assert "variant" not in json.loads(raw_body)["metadata"]["openai4s"]
+    finally:
+        runner.close()

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -32,6 +34,69 @@ from openai4s.storage.snapshots import WorkspaceCAS, revert_recovery_setting_key
 WorkspaceResolver = Callable[[str, str], str | Path]
 DomainEventSink = Callable[[dict[str, Any]], None]
 BeforeRevertUnlock = Callable[[str, str, Mapping[str, Any]], None]
+
+
+#: An embedded notebook figure larger than this is listed by name instead.
+_MAX_SNAPSHOT_READ = 8 * 1024 * 1024
+
+
+def _snapshot_reader(store: Any, data_dir: str | Path) -> Callable[[str], bytes | None]:
+    """Read one version's frozen bytes for an export, or None.
+
+    Only a private regular file under the data directory, read without
+    following a symlink, bounded, and checked against the recorded sha256.
+    Anything else is "not embeddable" -- the export lists the name instead.
+    """
+    root = Path(data_dir).expanduser().resolve()
+
+    def read(version_id: str) -> bytes | None:
+        reader = getattr(store, "version_meta", None)
+        meta = reader(version_id) if callable(reader) else None
+        raw = (meta or {}).get("snapshot_path")
+        if not raw:
+            return None
+        try:
+            lexical = Path(os.path.abspath(Path(str(raw)).expanduser()))
+            parent = lexical.parent.resolve(strict=True)
+        except OSError:
+            return None
+        if not parent.is_relative_to(root):
+            return None
+        try:
+            fd = os.open(
+                parent / lexical.name,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+            )
+        except OSError:
+            return None
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_SNAPSHOT_READ:
+                return None
+            chunks: list[bytes] = []
+            total = 0
+            while total <= _MAX_SNAPSHOT_READ:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+        except OSError:
+            return None
+        finally:
+            os.close(fd)
+        data = b"".join(chunks)
+        if len(data) > _MAX_SNAPSHOT_READ:
+            return None
+        checksum = str((meta or {}).get("checksum") or "")
+        if len(checksum) == 64 and hashlib.sha256(data).hexdigest() != checksum:
+            return None
+        return data
+
+    return read
 
 
 class CursorCheckpointUnavailable(RuntimeError):
@@ -221,7 +286,9 @@ class SessionDomainService:
             defer_revert_unlock=True,
         )
         self.timeline = ActionTimelineService(store)
-        self.notebooks = NotebookExportService(store)
+        self.notebooks = NotebookExportService(
+            store, read_version_bytes=_snapshot_reader(store, data_dir)
+        )
         self.sources = ExecutionSourcesService(store)
         self.packages = SessionPackageService(
             store,
@@ -717,12 +784,20 @@ class SessionDomainService:
         return self.timeline.get(root_frame_id, **filters)
 
     def notebook_export(
-        self, root_frame_id: str, *, language: str | None = None
+        self,
+        root_frame_id: str,
+        *,
+        language: str | None = None,
+        variant: str | None = None,
     ) -> dict[str, Any]:
+        frame_reader = getattr(self.store, "get_frame", None)
+        frame = frame_reader(root_frame_id) if callable(frame_reader) else None
         return self.notebooks.export(
             root_frame_id,
             language=language,
             branch_id=self.store.active_session_branch(root_frame_id),
+            variant=variant,
+            title=str((frame or {}).get("name") or "") or None,
         )
 
     def execution_sources(self, root_frame_id: str) -> dict[str, Any]:

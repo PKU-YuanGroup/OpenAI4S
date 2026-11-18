@@ -700,6 +700,21 @@ describe("F-14 Notebook", () => {
       expect(html).toContain("tb-final");
     });
 
+    it("makes the clean notebook the primary export and keeps the raw log (NB-1)", () => {
+      const primary = NOTEBOOK_EXPORTS[0]!;
+      const raw = NOTEBOOK_EXPORTS[1]!;
+      expect(primary.variant).toBe("clean");
+      expect(notebookExportHref("f-exec-root", primary)).toBe(
+        "/api/v1/frames/f-exec-root/notebook/export?variant=clean",
+      );
+      expect(raw.language).toBe("bundle");
+      expect(notebookExportHref("f-exec-root", raw)).toBe(
+        "/api/v1/frames/f-exec-root/notebook/export?language=bundle",
+      );
+      expect(primary.label?.()).toMatch(/ipynb/);
+      expect(raw.label?.()).not.toBe(primary.label?.());
+    });
+
     it("builds the sources.zip export on the execution-sources route", () => {
       const sources = NOTEBOOK_EXPORTS.find((o) => o.suffix === "sources.zip");
       expect(sources).toBeTruthy();

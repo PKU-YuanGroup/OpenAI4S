@@ -442,11 +442,68 @@ def _normalized(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip().casefold()
 
 
+#: The status lines this module writes around actions. A notebook export and
+#: anything else that wants only the model's own narration filters these out;
+#: ``tests/test_server_completions.py`` checks every template is recognised so
+#: the two cannot drift apart.
+_PROGRESS_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"我已经准备好一个 (?:R|Python) Cell，正在执行；真实输出会持续记录到 Notebook。",
+        r"I have prepared a (?:R|Python) cell and am running it now; its actual "
+        r"output will be recorded in the Notebook\.",
+        r"我正在执行 \d+ 个相关步骤，并会根据返回结果继续分析。",
+        r"I am running \d+ related steps and will continue from their returned "
+        r"results\.",
+        r"我先检索相关来源，随后会说明检索结果如何影响下一步分析。",
+        r"I am searching relevant sources first, then I will explain how the "
+        r"results affect the next analysis step\.",
+        r"我正在读取并核对这个来源中的关键证据。",
+        r"I am reading this source and checking its key evidence\.",
+        r"我正在保存阶段性结果，写出的文件会加入 Artifacts。",
+        r"I am saving the current results; written files will be added to "
+        r"Artifacts\.",
+        r"我先检查相关文件和数据，再根据实际内容继续分析。",
+        r"I am inspecting the relevant files and data before continuing from "
+        r"their actual contents\.",
+        r"我正在准备适合这一步分析的运行环境。",
+        r"I am preparing the appropriate runtime environment for this analysis "
+        r"step\.",
+        r"我正在执行下一步，并会把关键结果反馈在对话中。",
+        r"I am running the next step and will report its key result in the "
+        r"conversation\.",
+        r"_(?:已停止：已达到自动模式预算。|已由用户停止。|Stopped: the Auto Mode "
+        r"budget was reached\.|Stopped by user\.)_",
+    )
+)
+_PROGRESS_PREFIXES = (
+    "The cell finished",
+    "Cell 已运行结束",
+    "This cell failed: `",
+    "这个 Cell 执行失败：`",
+    # Written by earlier versions; still in stored sessions.
+    "This cell completed successfully",
+    "这个 Cell 已成功完成",
+)
+
+
+def is_progress_narration(text: Any) -> bool:
+    """Whether ``text`` is a status line written here, not the model's prose."""
+
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if value.startswith(_PROGRESS_PREFIXES):
+        return True
+    return any(pattern.fullmatch(value) for pattern in _PROGRESS_PATTERNS)
+
+
 __all__ = [
     "CANCEL_REASONS",
     "action_narration",
     "cancellation_marker",
     "completion_message",
+    "is_progress_narration",
     "outcome_narration",
     "response_language",
 ]

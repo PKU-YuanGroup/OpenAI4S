@@ -7,7 +7,9 @@ from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import ExecutionOutcome
 from openai4s.server.completions import (
     action_narration,
+    cancellation_marker,
     completion_message,
+    is_progress_narration,
     outcome_narration,
     response_language,
 )
@@ -262,3 +264,48 @@ def test_completion_action_narration_does_not_expose_submit_source():
 
     assert text == ""
     assert "submit_output" not in text
+
+
+def test_every_progress_line_this_module_writes_is_recognised():
+    """The clean notebook export (NB-1) drops progress lines and keeps the
+    model's narration. Recognition lives next to the templates; this walks
+    every template so a reworded line cannot silently leak into exports."""
+    actions = [
+        CodeCell("python", "print(1)"),
+        CodeCell("r", "print(1)"),
+        NativeToolBatch(calls=(_call("web_search"), _call("web_fetch"))),
+        *(
+            NativeToolBatch(calls=(_call(name),))
+            for name in (
+                "web_search",
+                "web_fetch",
+                "write_file",
+                "read_text_file",
+                "env_use",
+                "something_else",
+            )
+        ),
+    ]
+    outcomes = [
+        ExecutionOutcome(observation="[Observation]\nstdout:\nok"),
+        ExecutionOutcome(observation="[Observation]\n(no output)"),
+        ExecutionOutcome(observation="[Observation]\nstderr:\nwarn"),
+        ExecutionOutcome(
+            observation="[Observation]\nERROR (cell line 1):\nTraceback\nValueError: x"
+        ),
+    ]
+    for language in ("en", "zh"):
+        lines = [action_narration(action, language) for action in actions]
+        lines += [
+            outcome_narration(CodeCell("python", "x"), outcome, language)
+            for outcome in outcomes
+        ]
+        lines += [cancellation_marker(r, language) for r in ("user", "auto_budget")]
+        for line in lines:
+            assert line and is_progress_narration(line), line
+    for prose in (
+        "Ages are right-skewed (median 61).",
+        "I am running a sensitivity analysis next because the effect is small.",
+        "我先看一下缺失值的分布。",
+    ):
+        assert not is_progress_narration(prose), prose
