@@ -537,7 +537,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_revision_binding.py,tests/test_model_binding_recovery.py,tests/test_model_catalog.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "2ceb2cca21f7cfab37ecf0e0daf162a1d862b8a83ba9528964b33444f5c471e0"
+      "evidence_digest": "c5a6c399c11868c61211733ec80963960c62b5ab69242a9b13eb3bd42cb32037"
     },
     {
       "source": "R5",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "740ac9ead55a04bffd0f9ab9a50746910e1c77cbedafecf588bdbac6642e4077"
+      "evidence_digest": "294ebfdfaab912761708a607c5f881756c354cc53484326a35ba560d5650a438"
     },
     {
       "source": "R7",
