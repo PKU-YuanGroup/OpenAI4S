@@ -36,6 +36,7 @@ import {
   stepNetworkLabel,
   stepNetworkMeta,
 } from "./skill-network";
+import { stepSummaryText, stepTitleText } from "./step-title";
 
 export type Step = {
   step_id?: string;
@@ -732,8 +733,13 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
     meta.textContent =
       stepNetworkMeta(step) ||
       (declined ? declinedMeta(declined) : "") ||
-      (step.summary != null ? String(step.summary) : "") ||
+      (step.summary != null ? stepSummaryText(String(step.summary)) : "") ||
       (step.output && rec(step.output).error ? t("step.status.failed") : "");
+  }
+  // I18N-1: the host words titles in English; an update can retitle a card.
+  if (step.title) {
+    const label = card.querySelector(".s-lbl");
+    if (label) label.textContent = stepTitleText(String(step.title));
   }
   // A loaded Skill's network limit: the server words these in English.
   const netLabel = stepNetworkLabel(step);
@@ -786,7 +792,7 @@ export function buildStepCard(step: Step, paint: StepPaint = {}): StepHandle {
       ),
     );
   }
-  h.appendChild(el("span", "s-lbl", String(step.title || step.kind || t("step.card.defaultTitle"))));
+  h.appendChild(el("span", "s-lbl", stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")))));
   const meta = el("span", "s-meta", "");
   h.appendChild(meta);
   const chev = el("span", "s-chev");
