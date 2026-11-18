@@ -6,6 +6,7 @@ import {
   appendLiveOutput,
 } from "../stream/cap";
 import {
+  OUTPUT_DIVIDER,
   bindStreamingPre,
   countNewlines,
   liveOutputDelta,
@@ -106,5 +107,39 @@ describe("liveOutputDelta / truncation", () => {
     expect(toolMetaLabel(1)).toBe("完成");
     expect(toolMetaLabel(5)).toBe("输出 5 行");
     await setLang("en");
+  });
+
+  it("a running card shows no meta until it has printed more than one line", async () => {
+    await setLang("en");
+    expect(toolMetaLabel(0, true)).toBe("");
+    expect(toolMetaLabel(1, true)).toBe("");
+    expect(toolMetaLabel(3, true)).toBe("3 output lines");
+  });
+
+  it("outputLines counts what a cell printed, not its header, code or the divider", () => {
+    const node = { data: "", appendData(d: string) { this.data += d; } };
+    const handle = bindStreamingPre(node, "");
+    handle.append("Running analysis · cell 1\n");
+    // cell_run.py sends the code and the divider as one chunk.
+    handle.append("import time\ntime.sleep(25)\nprint('done')\n" + "\n" + OUTPUT_DIVIDER + "\n");
+    expect(handle.newlines).toBe(6);
+    expect(handle.outputLines).toBe(0);
+    handle.append("a\nb\n");
+    expect(handle.outputLines).toBe(2);
+    // A later line that merely looks like the divider is output too.
+    handle.append(OUTPUT_DIVIDER + "\nc\n");
+    expect(handle.outputLines).toBe(4);
+  });
+
+  it("finds a divider split across chunks, and counts every line without one", () => {
+    const node = { data: "", appendData(d: string) { this.data += d; } };
+    const split = bindStreamingPre(node, "cell 2\nx = 1\n");
+    split.append("\n----- out");
+    expect(split.outputLines).toBe(3);
+    split.append("put -----\n1\n2\n3\n");
+    expect(split.outputLines).toBe(3);
+    const plain = bindStreamingPre({ appendData() {} }, "◆ sub-agent\n");
+    plain.append("line\nline\n");
+    expect(plain.outputLines).toBe(plain.newlines);
   });
 });

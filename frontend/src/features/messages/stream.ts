@@ -284,7 +284,11 @@ function newToolPre(): { pre: HTMLElement; handle: StreamingPreHandle } {
 
 function paintToolMeta(st: LiveStream): void {
   if (!st.toolMeta || !st.toolHandle) return;
-  st.toolMeta.textContent = toolMetaLabel(st.toolHandle.newlines);
+  // meta → head → card, as feed() builds it.
+  const head = st.toolMeta.parentNode as HTMLElement | null;
+  const card = head ? (head.parentNode as HTMLElement | null) : null;
+  const running = !!(card && card.dataset && card.dataset.state === "running");
+  st.toolMeta.textContent = toolMetaLabel(st.toolHandle.outputLines, running);
 }
 
 /**
