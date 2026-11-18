@@ -22,6 +22,8 @@ import { openConversation, resumeWatch } from "./conversation";
 // hoisted function declaration, so the sessions<->send cycle resolves at call time.
 import { turnDone } from "../send/turn";
 import { scopedExecutionRequest } from "../timeline/execution-request";
+import { queueT } from "../timeline/copy";
+import { queuedFollowUpCount } from "../timeline/queue";
 import { $, clearConversationChrome, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
 import { assignFolder, invalidateFolders, loadProjects, loadSessions, renderSessions } from "./load";
@@ -584,9 +586,19 @@ export async function cancelTurn(): Promise<void> {
   // was aimed at is the one markTurnStopping has to be told about.
   const fid = currentId.value;
   if (!fid) return;
+  // Stop ends the running turn only. Follow-ups queued behind it keep their
+  // places and the first starts at once, so the hint says that up front
+  // instead of leaving a Stop that "did nothing" (the next turn's Stop button,
+  // placeholder and spinner look exactly like the stopped one's).
+  const queued = queuedFollowUpCount();
   try {
     const result = await scopedExecutionRequest(fid, "cancel", "composer cancel");
-    if (cancelNamedTheRunningTurn(result)) markTurnStopping(fid);
+    if (cancelNamedTheRunningTurn(result)) {
+      markTurnStopping(fid);
+      if (queued && running.value && fid === currentId.value) {
+        hint(queueT("queueRow.stopping", queued), false, true);
+      }
+    }
   } catch (error) {
     hint(t("nb.action.failed", apiErrorText(error)), true);
   }

@@ -12,6 +12,7 @@ import { running } from "../../stores/stream";
 import { autoModeHint } from "../automode/hints";
 import { enableComposer } from "../sessions/dom";
 import { scheduleWorkbenchRefresh } from "../timeline/island";
+import { noteQueuedTurnStarted } from "../timeline/queue";
 import { eventFrameId, isStaleTurnEvent, mine } from "../ws/guards";
 import { registerWsHandler } from "../ws/registry";
 import type { WsMessage } from "../ws/types";
@@ -140,6 +141,10 @@ export function handleFrameUpdateTurn(m: WsMessage): void {
     running.value = true;
     enableComposer(false);
     setCancelHidden(false);
+    // A follow-up this tab queued is the turn starting now (after the one
+    // before it finished or was stopped): say so, or a Stop with a queue
+    // looked like it had not worked.
+    noteQueuedTurnStarted(m.execution_id);
     if (fid) resumeWatch(String(fid), _openGen.value);
   }
   if (typeof m.status === "string" && TERMINAL_FRAME_STATUS.includes(m.status)) {

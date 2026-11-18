@@ -1820,6 +1820,8 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 .queue-preview{color:var(--text-200);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .queue-meta{color:var(--text-400);font-size:11px;flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .queue-cancel{flex:none}
+.queue-row{align-items:center}
+.queue-edit{flex:none;height:24px;padding:0 9px;font-size:12px}
 /* A message typed while a turn was running: shown in the transcript in the
    order it will run, but visibly not yet the live one. */
 .msg.user.queued .bubble{opacity:.72}

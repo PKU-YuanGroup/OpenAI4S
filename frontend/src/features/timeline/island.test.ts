@@ -27,7 +27,8 @@ import {
   renderBranchPanel,
   renderDelegationPanel,
 } from "./island";
-import { renderQueueStrip } from "./queue";
+import { noteQueuedTurnStarted, queuedFollowUpCount, renderQueueStrip } from "./queue";
+import { queueT } from "./copy";
 import { installTimeline } from "./index";
 import { S } from "./s";
 import { sanitizeActionTimeline, sanitizeBranches, sanitizeContext } from "./sanitize";
@@ -600,6 +601,125 @@ describe("queue strip", () => {
     expect(posts).toHaveLength(1);
     // Accepted: until the queue stops listing it, the row cannot be sent again.
     expect(doc.querySelector("#queue-strip .queue-cancel")!.disabled).toBe(true);
+  });
+
+  it("shows what the user wrote, never the ticket's branch, execution or profile ids", () => {
+    const doc = mountDocument();
+    S.currentId = "frame-ids";
+    S.executionQueue = {
+      owner: null,
+      queue: [
+        {
+          ...queued("exec-1a024afbd38943d1adff57c92774b6ca", "再画一张箱线图"),
+          branch_id: "f-7b6633dadc1a",
+          metadata: { preview: "再画一张箱线图", model_profile_id: "prof-9", model_profile_revision: 3 },
+        },
+      ],
+    };
+    renderQueueStrip();
+    const text = doc.getElementById("queue-strip")!.textContent;
+    expect(text).toContain("再画一张箱线图");
+    for (const internal of ["exec-1a024afbd", "f-7b6633dadc1a", "prof-9"]) {
+      expect(text).not.toContain(internal);
+    }
+  });
+
+  it("Edit takes the queued message out of the queue and back into the composer, in full", async () => {
+    const doc = mountDocument();
+    const calls = stubApi(() => ({ ok: true }));
+    const hints: string[] = [];
+    vi.stubGlobal("hint", (message: string) => hints.push(message));
+    const messages = doc.createElement("div");
+    messages.id = "messages";
+    doc.body.appendChild(messages);
+    const bubbleRow = doc.createElement("div");
+    bubbleRow.className = "msg user queued";
+    bubbleRow.dataset.executionId = "exec-e";
+    const bubble = doc.createElement("div");
+    bubble.className = "bubble";
+    const full = "第一行\n第二行：" + "很长的说明".repeat(60);
+    bubble.textContent = full;
+    bubbleRow.appendChild(bubble);
+    messages.appendChild(bubbleRow);
+    const composer = doc.createElement("textarea");
+    composer.id = "composer";
+    doc.body.appendChild(composer);
+    S.currentId = "frame-e";
+    S.executionQueue = { owner: null, queue: [queued("exec-e", full.replace(/\s+/g, " ").slice(0, 159) + "…")] };
+    renderQueueStrip();
+    const edit = doc.querySelector("#queue-strip .queue-edit")!;
+    expect(edit.disabled).toBe(false);
+    edit.click();
+    await flush();
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.path).toBe("/frames/frame-e/cancel");
+    expect((calls[0]!.body as { execution_id: string; reason: string }).execution_id).toBe("exec-e");
+    expect((calls[0]!.body as { reason: string }).reason).toContain("edit");
+    expect(composer.value).toBe(full);
+    expect(bubbleRow.isConnected).toBe(false);
+    expect(doc.activeElement).toBe(composer);
+    expect(hints.at(-1)).toBe(queueT("queueRow.editing"));
+  });
+
+  it("Edit keeps a draft already in the composer and takes nothing out of the queue", async () => {
+    const doc = mountDocument();
+    const calls = stubApi(() => ({ ok: true }));
+    const hints: string[] = [];
+    vi.stubGlobal("hint", (message: string) => hints.push(message));
+    const composer = doc.createElement("textarea");
+    composer.id = "composer";
+    composer.value = "my unsent draft";
+    doc.body.appendChild(composer);
+    S.currentId = "frame-f";
+    S.executionQueue = { owner: null, queue: [queued("exec-f", "short follow-up")] };
+    renderQueueStrip();
+    doc.querySelector("#queue-strip .queue-edit")!.click();
+    await flush();
+    expect(calls).toHaveLength(0);
+    expect(composer.value).toBe("my unsent draft");
+    expect(hints.at(-1)).toBe(queueT("queueRow.editBusy"));
+  });
+
+  it("does not offer Edit when this tab has only the cut-off start of the message", () => {
+    const doc = mountDocument();
+    S.currentId = "frame-g";
+    S.executionQueue = { owner: null, queue: [queued("exec-g", "x".repeat(159) + "…")] };
+    renderQueueStrip();
+    const edit = doc.querySelector("#queue-strip .queue-edit")!;
+    expect(edit.disabled).toBe(true);
+    expect(edit.title).toBe(queueT("queueRow.editUnavailable"));
+  });
+
+  it("says when a message this tab queued starts running", () => {
+    const doc = mountDocument();
+    const hints: string[] = [];
+    vi.stubGlobal("hint", (message: string) => hints.push(message));
+    const messages = doc.createElement("div");
+    messages.id = "messages";
+    doc.body.appendChild(messages);
+    const row = doc.createElement("div");
+    row.className = "msg user queued";
+    row.dataset.executionId = "exec-next";
+    const bubble = doc.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = "然后把结果画出来";
+    row.appendChild(bubble);
+    messages.appendChild(row);
+    expect(noteQueuedTurnStarted("exec-other")).toBe(false);
+    expect(hints).toEqual([]);
+    expect(noteQueuedTurnStarted("exec-next")).toBe(true);
+    expect(hints).toEqual([queueT("queueRow.started", "然后把结果画出来")]);
+  });
+
+  it("counts the queued follow-ups a Stop hands the session to", () => {
+    S.executionQueue = {
+      owner: null,
+      queue: [queued("exec-1"), queued("exec-2"), { ...queued("exec-3"), owner: { kind: "user_repl", id: "r" } }],
+    };
+    expect(queuedFollowUpCount()).toBe(2);
+    S.executionQueue = null;
+    expect(queuedFollowUpCount()).toBe(0);
   });
 
   it("offers the ✕ again when the cancel was refused", async () => {
