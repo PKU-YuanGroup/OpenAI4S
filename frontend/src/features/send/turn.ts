@@ -69,6 +69,18 @@ export function failureHint(detail: unknown): string {
 /** Terminal statuses of a turn that ran to its end (not failed, stopped or blocked). */
 const PLAN_TURN_FINISHED = ["completed", "success", "done", "ready"];
 
+/**
+ * What the Stop that ends this turn wants the status line to keep saying (the
+ * background cells it stopped too, the queued message that runs next). The
+ * accepted cancel usually answers before the `cancelled` event, whose
+ * teardown used to clear that line at once.
+ */
+let stopNote = "";
+
+export function noteForStop(text: string): void {
+  stopNote = text;
+}
+
 export function turnDone(status: string, detail?: unknown): void {
   noteHistoryMutation();
   running.value = false;
@@ -89,7 +101,9 @@ export function turnDone(status: string, detail?: unknown): void {
   }
   const mm = $("#messages");
   if (mm) mm.querySelectorAll(".md.cursor").forEach((n) => n.classList.remove("cursor"));
-  hint(status === "failed" ? failureHint(detail) : "", status === "failed");
+  const note = status === "cancelled" ? stopNote : "";
+  stopNote = "";
+  hint(status === "failed" ? failureHint(detail) : note, status === "failed");
   // A turn that ended took its approval wait with it (an open card left over
   // is answered by `reconcilePermissionCards`); the title and row follow.
   syncPendingApproval();

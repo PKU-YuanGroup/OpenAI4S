@@ -72,6 +72,7 @@ import {
 } from "./environment";
 import { callLane, setCancelHidden } from "./host";
 import { iconEl } from "./icon";
+import { bindBackgroundCells } from "./background";
 import { bindTurnProgress } from "./progress";
 import {
   acceptTurnTicket,
@@ -807,6 +808,8 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
   }
   // The turn clock beside Stop and the session's token chip.
   bindTurnProgress();
+  // Background cells still running, above the composer, each stoppable.
+  bindBackgroundCells();
   // Delegated on the document root, not on the node: a re-created #composer
   // (a keyed or conditional subtree, a second render()) keeps its Enter
   // handler with nothing to rebind. Bubble phase, so the autocomplete's

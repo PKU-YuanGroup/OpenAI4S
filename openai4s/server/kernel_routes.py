@@ -127,6 +127,18 @@ _ENV = contract.RouteSpec(
     r"/frames/([^/]+)/kernel/env",
     mutates=True,
 )
+_BACKGROUND = contract.RouteSpec(
+    "kernel.background",
+    "GET",
+    r"/frames/([^/]+)/background",
+    mutates=False,
+)
+_BACKGROUND_STOP = contract.RouteSpec(
+    "kernel.background_stop",
+    "POST",
+    r"/frames/([^/]+)/background/([^/]+)/stop",
+    mutates=True,
+)
 
 # Ordered exactly as the handler chain below. Contract tooling reads this same
 # tuple, so adding a route here is both a runtime and an inventory change.
@@ -150,6 +162,8 @@ ROUTES = contract.validate_routes(
         _INSTALL,
         _ENVIRONMENTS,
         _ENV,
+        _BACKGROUND,
+        _BACKGROUND_STOP,
     )
 )
 
@@ -426,5 +440,23 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         b = self._body()
         name = b.get("env") or b.get("name") or ""
         self._json(runner.set_env(fid, name, pid))
+        return True
+    m = _BACKGROUND.match(method, sub)
+    if m:
+        # The session's background cells (`host.exec_background`), live ones
+        # included, so a cell left running can be seen. Not the source: a
+        # first statement and the last printed line, redacted.
+        fid = m.group(1)
+        self._json({"frame_id": fid, "cells": runner.background_cells(fid)})
+        return True
+    m = _BACKGROUND_STOP.match(method, sub)
+    if m:
+        fid, exec_id = m.group(1), m.group(2)
+        _require_session_control(self, store, fid)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", exec_id):
+            self._json({"error": "invalid background cell id"}, 400)
+            return True
+        result = runner.stop_background_cell(fid, exec_id)
+        self._json(result, 200 if result.get("ok") else 409)
         return True
     return False

@@ -10,6 +10,8 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | --- | --- |
 | [`admission.ts`](admission.ts) | Admission 追踪器。独立键 `openai4s.admission.{fid}.{id}`；legacy key 迁移；60 秒 grace。 |
 | [`admission.test.ts`](admission.test.ts) | 前缀、legacy 迁移、grace 窗口、settled 状态。 |
+| [`background.ts`](background.ts) | 输入框上方的 `#bg-strip`：本会话仍在运行的后台单元（`GET /frames/{fid}/background`），每行显示首条语句、已运行时间、最后一行输出和单独的「停止」（`POST …/background/{exec_id}/stop`）；切换会话、运行开始/结束时读取，有任务运行时轮询。`backgroundStoppedHint` 在停止回合时一并停止了该回合的后台单元（`background_stopped`）时给出提示。功能内文案。 |
+| [`background.test.ts`](background.test.ts) | 列出运行中的单元（预览、已运行时间、最后一行；已结束的不列）；行内「停止」只针对该单元发请求；没有运行的就隐藏；停止回合的提示给出停下的数量。 |
 | [`bind.test.ts`](bind.test.ts) | `bindComposer` 只绑一次；`installSend` 不碰 DOM；Enter 和点击 `#send-btn` 都派发文本；两者合计同一时刻只有一个 dispatch 在途。 |
 | [`copy.ts`](copy.ts) | `sendCopy`：不进生成词典的文案——发送按钮的提示（以及回合运行中的「加入队列」）、审阅进行中（"正在审阅"）、无标题的审阅发现，以及计划模式/自主探索的说明。 |
 | [`candidate.ts`](candidate.ts) | Review 门控三态时序：`markCandidateReady` → `applyCandidateResolution` → `applyFinalReviewStatus`。 |

@@ -660,3 +660,55 @@ def test_the_quarantine_guard_still_covers_the_mutating_routes(spec, tmp_path):
     with pytest.raises(gateway_mod.GatewayError) as raised:
         _call(handler, spec.method, path, body={"code": "1"})
     assert raised.value.code == 423, f"{spec.name} is not write-protected"
+
+
+# --------------------------------------------------------------------------
+# a session's background cells: seen and stoppable (SEC-8)
+# --------------------------------------------------------------------------
+
+
+def test_a_session_with_no_background_cells_lists_none(tmp_path):
+    """Real response, no stub: a session that never launched one."""
+    _runner, handler, fid = _setup(tmp_path)
+
+    code, payload = _call(handler, "GET", f"/frames/{fid}/background")
+
+    assert code == 200
+    assert payload == {"frame_id": fid, "cells": []}
+
+
+@pytest.mark.stubbed_backend
+def test_the_background_routes_list_and_stop_through_the_runner(tmp_path):
+    runner, handler, fid = _setup(tmp_path)
+    cell = {
+        "exec_id": "exec-abc123",
+        "status": "running",
+        "started_at": 1,
+        "ended_at": None,
+        "interrupted": False,
+        "stop_requested": False,
+        "launched_by": "agent",
+        "code_preview": "for i in range(600):",
+        "output_tail": "tick 3",
+    }
+    stops: list[tuple] = []
+    runner.background_cells = lambda f: [cell] if f == fid else []
+
+    def stop(f, exec_id):
+        stops.append((f, exec_id))
+        if exec_id == "exec-abc123":
+            return {"ok": True, "exec_id": exec_id, "status": "stopping"}
+        return {"ok": False, "exec_id": exec_id, "reason": "no such background cell"}
+
+    runner.stop_background_cell = stop
+
+    code, payload = _call(handler, "GET", f"/frames/{fid}/background")
+    assert code == 200 and payload == {"frame_id": fid, "cells": [cell]}
+
+    code, payload = _call(handler, "POST", f"/frames/{fid}/background/exec-abc123/stop")
+    assert code == 200 and payload["status"] == "stopping"
+    code, payload = _call(handler, "POST", f"/frames/{fid}/background/exec-gone/stop")
+    assert code == 409 and payload["ok"] is False
+    code, payload = _call(handler, "POST", f"/frames/{fid}/background/-bad/stop")
+    assert code == 400
+    assert stops == [(fid, "exec-abc123"), (fid, "exec-gone")]

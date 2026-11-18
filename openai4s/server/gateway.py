@@ -3997,6 +3997,39 @@ class SessionRunner:
         ]
         return max(timestamps) if timestamps else None
 
+    def background_cells(self, root_frame_id: str) -> list[dict]:
+        """This session's background cells, as the workbench lists them.
+
+        Stop ends a turn's background cells with it, but a cell left running
+        on purpose, or launched from the Notebook, had no place on screen and
+        no way to be stopped.
+        """
+        st = self._existing_state(root_frame_id)
+        dispatcher = st.dispatcher if st is not None else None
+        executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
+        summaries = getattr(executor, "summaries", None)
+        if not callable(summaries):
+            return []
+        try:
+            return list(summaries())
+        except Exception:  # noqa: BLE001 - a listing never fails the request
+            traceback.print_exc()
+            return []
+
+    def stop_background_cell(self, root_frame_id: str, exec_id: str) -> dict:
+        """Stop one of this session's background cells (SIGINT, then a kill)."""
+        st = self._existing_state(root_frame_id)
+        dispatcher = st.dispatcher if st is not None else None
+        executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
+        stop = getattr(executor, "stop", None)
+        if not callable(stop):
+            return {
+                "ok": False,
+                "exec_id": exec_id,
+                "reason": "no such background cell",
+            }
+        return dict(stop(str(exec_id)))
+
     def _interrupt_background(self, st: SessionState) -> None:
         dispatcher = st.dispatcher
         executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None

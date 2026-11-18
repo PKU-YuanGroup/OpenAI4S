@@ -10,6 +10,8 @@ F-11 send chain and live cards. Composer `send()`, turn tickets, step / plan / p
 | --- | --- |
 | [`admission.ts`](admission.ts) | Admission tracker. Independent `openai4s.admission.{fid}.{id}` keys; legacy key migration; 60s grace. |
 | [`admission.test.ts`](admission.test.ts) | Prefix, legacy migration, grace window, settled states. |
+| [`background.ts`](background.ts) | `#bg-strip` above the composer: the session's background cells still running (`GET /frames/{fid}/background`), each with its first statement, elapsed time, last printed line and its own Stop (`POST …/background/{exec_id}/stop`); read on a session switch and run start/end, polled while anything runs. `backgroundStoppedHint` words a turn's Stop that also stopped that turn's background cells (`background_stopped`). Feature-local copy. |
+| [`background.test.ts`](background.test.ts) | Running cells are listed with preview, elapsed time and last line (finished ones are not); a row's Stop posts for that cell; nothing running hides the strip; the Stop hint counts the stopped cells. |
 | [`bind.test.ts`](bind.test.ts) | `bindComposer` binds once; `installSend` stays DOM-free; Enter and the `#send-btn` click dispatch the text; one dispatch in flight at a time across both. |
 | [`copy.ts`](copy.ts) | `sendCopy`: labels kept out of the generated dictionaries -- the send button's title (and its "queue" label while a turn runs), a running review ("Reviewing"), an untitled review finding, and what plan mode / explore mode do. |
 | [`candidate.ts`](candidate.ts) | Review gate three-state timing: `markCandidateReady` → `applyCandidateResolution` → `applyFinalReviewStatus`. |

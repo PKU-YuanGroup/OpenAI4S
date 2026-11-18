@@ -16,6 +16,7 @@ vi.mock("../send/ticket", () => ({ resumeWatch: vi.fn() }));
 import { currentId } from "../../stores/session";
 import { pendingExecutionId, running } from "../../stores/stream";
 import { resetStoreFields } from "../../stores/signal-field";
+import { backgroundCopy } from "../send/background";
 import { queueT } from "../timeline/copy";
 import { S } from "../timeline/s";
 import { cancelNamedTheRunningTurn, cancelTurn } from "./actions";
@@ -76,6 +77,21 @@ describe("Stop with follow-ups queued", () => {
     S.executionQueue = { owner: null, queue: [queuedTicket("B"), queuedTicket("C")] };
     await cancelTurn();
     expect(hints.at(-1)).toBe(queueT("queueRow.stopping", 2));
+  });
+
+  it("says when the Stop also stopped the turn's background cells", async () => {
+    currentId.value = "f-1";
+    running.value = true;
+    pendingExecutionId.value = "A";
+    S.currentId = "f-1";
+    S.executionQueue = { owner: null, queue: [queuedTicket("B")] };
+    scoped.result = { ok: true, scope: "running", execution_id: "A", background_stopped: ["exec-1", "exec-2"] };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => "{\"cells\":[]}" })));
+    await cancelTurn();
+    const last = hints.at(-1) || "";
+    expect(last).toContain(backgroundCopy("stoppedWithTurn", 2));
+    expect(last).toContain(queueT("queueRow.stopping", 1));
+    vi.unstubAllGlobals();
   });
 
   it("says only that it is stopping when nothing is queued", async () => {

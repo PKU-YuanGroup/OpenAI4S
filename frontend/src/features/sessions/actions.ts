@@ -20,8 +20,9 @@ import { openConversation, resumeWatch } from "./conversation";
 // and `callLane` answers a missing name with `undefined` rather than throwing --
 // so Stop sent no request at all and `turnDone` never ran. `turnDone` is a
 // hoisted function declaration, so the sessions<->send cycle resolves at call time.
-import { turnDone } from "../send/turn";
+import { noteForStop, turnDone } from "../send/turn";
 import { sendCopy } from "../send/copy";
+import { backgroundStoppedHint, refreshBackgroundCells } from "../send/background";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { queueT } from "../timeline/copy";
 import { queuedFollowUpCount } from "../timeline/queue";
@@ -601,9 +602,20 @@ export async function cancelTurn(): Promise<void> {
     const result = await scopedExecutionRequest(fid, "cancel", "composer cancel");
     if (cancelNamedTheRunningTurn(result)) {
       markTurnStopping(fid);
-      if (queued && running.value && fid === currentId.value) {
-        hint(queueT("queueRow.stopping", queued), false, true);
+      if (fid !== currentId.value) return;
+      // The background cells this turn started were stopped with it; say so,
+      // and how many, rather than leaving them to be discovered.
+      const background = backgroundStoppedHint(result);
+      const parts = [
+        background,
+        queued && running.value ? queueT("queueRow.stopping", queued) : "",
+      ].filter(Boolean);
+      if (parts.length) {
+        hint(parts.join("；"), false, running.value);
+        // Still running: the turn's teardown keeps the line instead of clearing it.
+        if (running.value) noteForStop(parts.join("；"));
       }
+      if (background) void refreshBackgroundCells();
     }
   } catch (error) {
     hint(t("nb.action.failed", apiErrorText(error)), true);

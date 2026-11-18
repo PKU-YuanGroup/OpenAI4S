@@ -1821,6 +1821,15 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 .queue-meta{color:var(--text-400);font-size:11px;flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .queue-cancel{flex:none}
 .queue-row{align-items:center}
+/* background cells still running in this session, each with its own Stop (send/background.ts) */
+.bg-strip{max-width:var(--col);margin:0 auto 8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+.bg-head{margin:0 2px 4px;font-size:11px;color:var(--text-400);cursor:help}
+.bg-row{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 2px;font-size:12px}
+.bg-code{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);color:var(--text-200)}
+.bg-origin{flex:none;color:var(--text-400);font-size:11px}
+.bg-tail{flex:0 1 32%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11px;color:var(--text-400)}
+.bg-time{flex:none;color:var(--text-400);font-variant-numeric:tabular-nums}
+.bg-stop{flex:none;height:24px;padding:0 9px;font-size:12px}
 .queue-edit{flex:none;height:24px;padding:0 9px;font-size:12px}
 /* A message typed while a turn was running: shown in the transcript in the
    order it will run, but visibly not yet the live one. */

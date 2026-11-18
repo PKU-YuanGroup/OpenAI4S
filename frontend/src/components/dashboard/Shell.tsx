@@ -318,6 +318,9 @@ export function Shell() {
                   最新
                 </span>
               </button>
+              {/* Background cells still running in this session, each with its
+                  own Stop (send/background.ts). */}
+              <div id="bg-strip" class="bg-strip hidden" />
               {/* `renderQueueStrip` lists queued follow-ups here, above the card
                   they were typed in, so a queued row never lands where the
                   Stop or Send button was a moment ago. */}
