@@ -111,7 +111,8 @@ def test_files_read_are_runtime_observations_not_source_guesses(tmp_path):
         )
 
     assert result["error"] is None
-    assert result["stdout"].strip() == "observed"
+    # The final expression's value (write_text's count) is echoed, as in Jupyter.
+    assert result["stdout"] == "observed\n6\n"
     assert result["files_read"] == ["executed.txt"]
     assert (tmp_path / "write-only.txt").read_text(encoding="utf-8") == "output"
 
@@ -616,6 +617,58 @@ def test_expr_echo():
     with Kernel(dispatcher=_echo_dispatcher) as k:
         r = k.execute("21 * 2")
         assert r["stdout"].strip() == "42"
+
+
+def test_last_expression_of_a_multiline_cell_is_echoed():
+    """Jupyter's rule: the final expression statement is displayed (NB-3)."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        assert k.execute("a = 1\na + 41")["stdout"] == "42\n"
+        # A trailing `;` suppresses it, as in IPython.
+        assert k.execute("a + 1;")["stdout"] == ""
+        assert k.execute("a + 2;  # quiet")["stdout"] == ""
+        # Only the LAST statement, and only when it is an expression.
+        assert k.execute("a + 3\nb = a")["stdout"] == ""
+        # None is not echoed; a call that prints still prints once.
+        assert k.execute("x = 5\nprint('once')")["stdout"] == "once\n"
+        # Non-ASCII before the expression does not move the `;` check.
+        assert k.execute("s = 'π'\nlen('π')  # π")["stdout"] == "1\n"
+
+
+def test_display_prints_each_object_and_is_not_a_listed_variable():
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        assert k.execute("display(1, 'x')")["stdout"] == "1\n'x'\n"
+        names = [v["name"] for v in k.inspect_variables()["variables"]]
+        assert "display" not in names
+
+
+def test_user_tracebacks_start_at_the_cell_not_the_worker():
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        runtime = k.execute("x = 1\n1 / 0")
+        assert "ZeroDivisionError" in runtime["error"]
+        assert "worker.py" not in runtime["error"]
+        assert runtime["error"].startswith("Traceback (most recent call last):")
+        assert 'File "<kernel:' in runtime["error"]
+        assert runtime["trace"]["error_lineno"] == 2
+
+        syntax = k.execute("x = (\n")
+        assert "SyntaxError" in syntax["error"]
+        assert "worker.py" not in syntax["error"]
+        assert "During handling" not in syntax["error"]
+
+
+def test_ipython_syntax_fails_with_a_hint():
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        shell = k.execute("!ls -la")["error"]
+        assert "SyntaxError" in shell and "subprocess.run" in shell
+        install = k.execute("x = 1\n!pip install numpy")["error"]
+        assert "installing packages from a cell is not supported" in install
+        magic = k.execute("%timeit sum(range(10))")["error"]
+        assert "IPython magics" in magic and "timeit" in magic
+        helpq = k.execute("len?")["error"]
+        assert "help(len)" in helpq
+        # An ordinary SyntaxError keeps its own message, with no hint.
+        plain = k.execute("def f(:\n    pass")["error"]
+        assert "SyntaxError" in plain and "IPython" not in plain
 
 
 def test_error_lineno():
