@@ -3,8 +3,8 @@
  * (editor). Pure: no DOM.
  *
  * Composer: a `@` / `#` / `/` token at the caret, started at a start-of-string
- * or whitespace boundary. The query cannot contain whitespace or another
- * trigger character.
+ * or whitespace boundary (a `/` also straight after CJK text). The query
+ * cannot contain whitespace or another trigger character.
  *
  * Editor: an ASCII identifier of at least 2 chars. The regex excludes Han so
  * CJK/IME composition cannot open the popup. A range selection yields null.
@@ -14,6 +14,8 @@ export type ComposerDetect = {
   trigger: "@" | "#" | "/";
   query: string;
   start: number;
+  /** A `/` typed straight after CJK text ("请用/lit"), with no space before it. */
+  afterCjk?: boolean;
 };
 
 export type EditorDetect = {
@@ -22,14 +24,26 @@ export type EditorDetect = {
 };
 
 const COMPOSER_RE = /(^|\s)([@#/])([^\s@#/]*)$/;
+/**
+ * Chinese and Japanese put no space before a word, so "请用/lit" never met the
+ * whitespace boundary above. Only `/` opens there: an `@` or `#` glued to CJK
+ * text is ordinary prose far more often than a mention.
+ */
+const CJK_SLASH_RE =
+  /[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯]\/([^\s@#/]*)$/;
 const EDITOR_RE = /[A-Za-z_$][\w$]*$/;
 
 export function acDetectFrom(before: string, pos: number): ComposerDetect | null {
   const m = before.match(COMPOSER_RE);
-  if (!m) return null;
-  const trigger = m[2] as ComposerDetect["trigger"];
-  const query = m[3] || "";
-  return { trigger, query, start: pos - query.length - 1 };
+  if (m) {
+    const trigger = m[2] as ComposerDetect["trigger"];
+    const query = m[3] || "";
+    return { trigger, query, start: pos - query.length - 1 };
+  }
+  const cjk = before.match(CJK_SLASH_RE);
+  if (!cjk) return null;
+  const query = cjk[1] || "";
+  return { trigger: "/", query, start: pos - query.length - 1, afterCjk: true };
 }
 
 export function edacDetectFrom(

@@ -716,7 +716,7 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .ctx-item.danger{color:var(--danger)}.ctx-item.danger .ic{color:var(--danger)}.ctx-item.danger:hover{background:var(--danger-bg)}
 
 /* composer autocomplete */
-.composer-ac{position:absolute;left:0;right:0;margin:0 auto;bottom:88px;width:min(var(--col),calc(100% - 48px));max-height:240px;overflow:auto;display:flex;flex-direction:column;background:var(--bg-000);border:.5px solid var(--border-btn);border-radius:var(--radius-card);box-shadow:var(--shadow-pop);z-index:9;padding:6px}
+.composer-ac{position:absolute;left:0;right:0;margin:0 auto;bottom:88px;width:min(var(--col),calc(100% - 48px));max-height:min(360px,50vh);overflow:auto;display:flex;flex-direction:column;background:var(--bg-000);border:.5px solid var(--border-btn);border-radius:var(--radius-card);box-shadow:var(--shadow-pop);z-index:9;padding:6px}
 .composer-ac .ac-list{overflow:auto;min-height:0;flex:1 1 auto}
 .ac-item{display:flex;align-items:baseline;gap:10px;padding:6px 8px;border-radius:8px;cursor:pointer}
 .ac-item.on,.ac-item:hover{background:var(--bg-200)}
