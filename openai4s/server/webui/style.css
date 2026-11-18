@@ -2171,6 +2171,11 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-sub{margin:2px 0 16px 48px;font-size:14px;color:var(--text-300)}
 .perm-detail{margin-bottom:14px;padding:12px 16px;border-radius:var(--radius);background:var(--dark);color:var(--on-dark);font-size:13px}
 .perm-detail.mono{font:13px/1.6 var(--mono)}
+/* what the user is approving: target environment, sandbox, a dynamic tool's code */
+.perm-ctx{margin:-6px 0 10px;font-size:13px;line-height:1.5;color:var(--text-200);overflow-wrap:anywhere}
+.perm-codewrap{margin:0 0 10px}
+.perm-codewrap>summary{cursor:pointer}
+.perm-code{max-height:320px;margin:0;padding:12px 16px;overflow:auto;border-radius:var(--radius);background:var(--dark);color:var(--on-dark);font:12px/1.55 var(--mono);white-space:pre}
 .perm-lbl{margin:12px 0 6px;font-size:13px;font-weight:500;color:var(--text-300)}
 .perm-scope{gap:4px}
 .perm-seg{height:30px;padding:0 12px;border:1px solid transparent;border-radius:var(--radius);background:transparent;color:var(--text-300);font-size:13px;font-weight:500}
@@ -2193,7 +2198,7 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-card.resolved .perm-head{flex:none;gap:10px}
 .perm-card.resolved .perm-ic{padding:0;background:transparent}
 .perm-card.resolved .perm-title{font-size:14px;font-weight:500}
-.perm-card.resolved .perm-sub{display:none}
+.perm-card.resolved .perm-sub,.perm-card.resolved .perm-ctx,.perm-card.resolved .perm-codewrap{display:none}
 .perm-card.resolved .perm-detail{flex:1 1 160px;min-width:0;max-height:none;margin:0;padding:0;overflow:hidden;background:transparent;color:var(--text-200);white-space:nowrap;text-overflow:ellipsis}
 .perm-card.allowed,.perm-card.denied{border-color:var(--border)}
 .perm-card.allowed .perm-status{color:var(--text-200)}

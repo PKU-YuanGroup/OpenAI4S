@@ -190,6 +190,32 @@ def _with_install_target(
     )
 
 
+def _with_shell_context(
+    view: tuple[str, str, dict],
+    active_env_bin: str | None,
+    sandbox: Mapping[str, Any] | None,
+) -> tuple[str, str, dict]:
+    """Say where a ``host.bash`` command will run before the user approves it.
+
+    The card showed only the command, so approving ``python3 -m pip install``
+    gave no hint that ``python3`` resolves to the kernel environment's
+    interpreter (a conda env's ``bin`` leads PATH), or whether the command runs
+    inside the kernel sandbox and may reach the network.
+    """
+    from openai4s.tools.env_create import install_target
+
+    kind, title, data = view
+    interpreter, environment = install_target(active_env_bin)
+    extra: dict[str, Any] = {"environment": environment, "python": interpreter or ""}
+    if isinstance(sandbox, Mapping):
+        extra["sandbox"] = {
+            "backend": sandbox.get("backend"),
+            "enforced": sandbox.get("enforced") is True,
+            "network": sandbox.get("network_policy"),
+        }
+    return (kind, title, {**data, **extra})
+
+
 def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     """(kind, title, input) for a visible tool call, else None."""
     a = args[0] if args and isinstance(args[0], dict) else {}
@@ -442,10 +468,22 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
             },
         )
     if method == "dynamic_tool_define":
+        # This view is what the approval card shows. It carried only the name,
+        # so a "high risk" card asked the user to approve up to 100,000
+        # characters of Python they could not see. The schema caps every field,
+        # so the whole definition fits.
         return (
             "tool",
             f"Defining dynamic tool {a.get('name') or ''}",
-            {"name": a.get("name"), "ttl_s": a.get("ttl_s")},
+            {
+                "name": a.get("name"),
+                "description": a.get("description"),
+                "implementation": a.get("implementation"),
+                "input_schema": a.get("input_schema"),
+                "output_schema": a.get("output_schema"),
+                "smoke_args": a.get("smoke_args"),
+                "ttl_s": a.get("ttl_s"),
+            },
         )
     if method == "dynamic_tool_promote":
         return (
@@ -2428,6 +2466,10 @@ class HostDispatcher:
                 view = _step_begin(method, args)
                 if method == "env_setup" and view is not None:
                     view = _with_install_target(view, self.active_env_bin)
+                if method == "authorize_bash" and view is not None:
+                    view = _with_shell_context(
+                        view, self.active_env_bin, self._current_sandbox_status()
+                    )
             except Exception:  # noqa: BLE001 — step projection must never break a call
                 view = None
             if view is not None:

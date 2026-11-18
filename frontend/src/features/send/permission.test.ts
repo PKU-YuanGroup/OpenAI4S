@@ -234,3 +234,73 @@ describe("pick-one permission cards", () => {
     expect(seen.bodies[0]).toMatchObject({ scope: "once", pattern: "you" });
   });
 });
+
+describe("what a card says before the user decides", () => {
+  it("shows the whole code of a dynamic tool, not only its name", async () => {
+    const { permContext, permActionLine } = await import("./permission");
+    const card = {
+      tool: "dynamic_tool_define",
+      target: "noop",
+      input: {
+        name: "noop",
+        description: "Echo the input back",
+        implementation: "def execute(args):\n    return args\n",
+        input_schema: { type: "object" },
+      },
+    };
+    expect(permActionLine(card).text).toBe("noop");
+    const ctx = permContext(card);
+    expect(ctx.code[0]?.text).toBe("def execute(args):\n    return args\n");
+    expect(ctx.code[1]?.text).toContain('"type": "object"');
+    expect(ctx.lines.join("\n")).toContain("Echo the input back");
+  });
+
+  it("names the environment an install goes into and that existing versions are kept", async () => {
+    const { permContext } = await import("./permission");
+    setLang("zh");
+    const ctx = permContext({
+      tool: "env_setup",
+      input: {
+        packages: ["lifelines"],
+        environment: "lab_env",
+        interpreter: "/envs/lab_env/bin/python",
+      },
+    });
+    expect(ctx.lines[0]).toBe("安装到：lab_env (/envs/lab_env/bin/python)");
+    expect(ctx.lines[1]).toContain("保持原版本");
+  });
+
+  it("warns that a switch targets one of the user's own environments", async () => {
+    const { permContext, permActionLine } = await import("./permission");
+    setLang("en");
+    const card = { tool: "env_use", target: "local:work", input: { name: "work", local: true } };
+    expect(permActionLine(card).text).toBe("work");
+    expect(permContext(card).lines[0]).toContain("your own conda environments");
+    expect(permContext({ tool: "env_use", input: { name: "python", local: false } }).lines).toEqual([]);
+  });
+
+  it("says where a shell command runs and whether the sandbox holds", async () => {
+    const { permContext } = await import("./permission");
+    setLang("en");
+    const enforced = permContext({
+      tool: "bash",
+      input: {
+        command: "python3 -m pip install lifelines",
+        cwd: "/ws/f-1",
+        environment: "lab_env",
+        python: "/envs/lab_env/bin/python",
+        sandbox: { backend: "seatbelt", enforced: true, network: "blocked" },
+      },
+    }).lines;
+    expect(enforced).toEqual([
+      "Runs in the lab_env environment (python → /envs/lab_env/bin/python)",
+      "Working directory: /ws/f-1",
+      "Kernel sandbox: on (seatbelt); network blocked",
+    ]);
+    const open = permContext({
+      tool: "bash",
+      input: { command: "ls", sandbox: { backend: "none", enforced: false } },
+    }).lines;
+    expect(open[0]).toContain("not enforced");
+  });
+});

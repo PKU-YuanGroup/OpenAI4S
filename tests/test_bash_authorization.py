@@ -578,3 +578,67 @@ def test_command_output_is_bounded_as_it_is_produced(tmp_path, monkeypatch):
     assert len(result["stdout"]) <= 30_000
     # The tail is what is kept, so the end of the stream survives.
     assert result["stdout"].endswith("z")
+
+
+# --- SEC-3: the approval card says where a command runs ----------------------
+
+
+def test_the_shell_approval_view_names_environment_and_sandbox(tmp_path):
+    from openai4s.host_dispatch import _step_begin, _with_shell_context
+
+    bindir = tmp_path / "lab_env" / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "python").write_text("")
+    view = _step_begin(
+        "authorize_bash",
+        [{"command": "python3 -m pip install lifelines", "cwd": "/ws/f-1"}],
+    )
+    assert view is not None
+
+    kind, title, data = _with_shell_context(
+        view,
+        str(bindir),
+        {"backend": "seatbelt", "enforced": True, "network_policy": "blocked"},
+    )
+
+    assert title == "Running python3"
+    assert data["environment"] == "lab_env"
+    assert data["python"] == str(bindir / "python")
+    assert data["cwd"] == "/ws/f-1"
+    assert data["sandbox"] == {
+        "backend": "seatbelt",
+        "enforced": True,
+        "network": "blocked",
+    }
+
+    _kind, _title, unbound = _with_shell_context(view, None, None)
+    assert unbound["environment"] == "base"
+    assert "sandbox" not in unbound
+
+
+# --- SEC-1: a dynamic tool's approval card carries its code -------------------
+
+
+def test_the_dynamic_tool_approval_view_carries_the_code():
+    from openai4s.host_dispatch import _step_begin
+
+    implementation = "def execute(args):\n    return {'ok': True}\n"
+    view = _step_begin(
+        "dynamic_tool_define",
+        [
+            {
+                "name": "noop",
+                "description": "Do nothing",
+                "input_schema": {"type": "object"},
+                "output_schema": {"type": "object"},
+                "implementation": implementation,
+            }
+        ],
+    )
+
+    assert view is not None
+    _kind, title, data = view
+    assert title == "Defining dynamic tool noop"
+    assert data["implementation"] == implementation
+    assert data["description"] == "Do nothing"
+    assert data["input_schema"] == {"type": "object"}

@@ -87,7 +87,105 @@ export function permActionLine(m: PermEvent): { mono: boolean; text: string } {
   if (tool === "delegate") {
     return { mono: false, text: String(inp.specialist || m.target || "") };
   }
+  if (tool === "env_use") {
+    return { mono: true, text: String(inp.name || m.target || "") };
+  }
+  if (tool === "dynamic_tool_define") {
+    return { mono: true, text: String(inp.name || m.target || "") };
+  }
   return { mono: true, text: String(m.target || "") };
+}
+
+/** Feature-local copy for the context a card shows before the user decides. */
+const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
+  en: {
+    installInto: "Installs into: {0}",
+    installKeep:
+      "Packages already in this environment keep their versions; an install that would change one is refused.",
+    localEnv:
+      "This is one of your own conda environments, not one OpenAI4S set up. If you allow it, the following cells run with its interpreter.",
+    runsIn: "Runs in the {0} environment (python → {1})",
+    cwd: "Working directory: {0}",
+    sandboxOn: "Kernel sandbox: on ({0}); network {1}",
+    sandboxOff: "Kernel sandbox: not enforced; the command can reach the network and files outside the workspace",
+    networkBlocked: "blocked",
+    networkAllowed: "allowed",
+    toolDescription: "What it does",
+    toolCode: "Code that will run ({0} characters)",
+    toolInput: "Input schema",
+  },
+  zh: {
+    installInto: "安装到：{0}",
+    installKeep: "这个环境里已安装的包保持原版本；需要改动它们的安装会被拒绝。",
+    localEnv:
+      "这是你本机的 conda 环境，不是 OpenAI4S 自带的环境。允许后，后续单元会用它的解释器运行。",
+    runsIn: "运行环境：{0}（python → {1}）",
+    cwd: "工作目录：{0}",
+    sandboxOn: "内核沙盒：已启用（{0}），网络{1}",
+    sandboxOff: "内核沙盒：未强制，命令可以联网、可以访问工作区以外的文件",
+    networkBlocked: "已阻止",
+    networkAllowed: "可访问",
+    toolDescription: "用途",
+    toolCode: "将要运行的代码（{0} 个字符）",
+    toolInput: "输入参数结构",
+  },
+};
+
+function ctx(key: string, ...args: string[]): string {
+  let text = CONTEXT_COPY[LANG === "zh" ? "zh" : "en"][key] || key;
+  args.forEach((value, index) => {
+    text = text.split("{" + index + "}").join(value);
+  });
+  return text;
+}
+
+/**
+ * Plain-text lines and code blocks a card needs so the user knows what they
+ * are approving: which environment an install or shell command touches,
+ * whether the kernel sandbox holds, and the full code of a dynamic tool.
+ */
+export function permContext(m: PermEvent): { lines: string[]; code: Array<{ label: string; text: string }> } {
+  const inp = rec(m.input);
+  const lines: string[] = [];
+  const code: Array<{ label: string; text: string }> = [];
+  if (m.tool === "env_setup") {
+    const env = String(inp.environment || "");
+    if (env) {
+      lines.push(ctx("installInto", inp.interpreter ? `${env} (${String(inp.interpreter)})` : env));
+    }
+    lines.push(ctx("installKeep"));
+  } else if (m.tool === "env_use") {
+    if (inp.local === true) lines.push(ctx("localEnv"));
+  } else if (m.tool === "bash") {
+    if (inp.environment) {
+      lines.push(ctx("runsIn", String(inp.environment), String(inp.python || "?")));
+    }
+    if (inp.cwd) lines.push(ctx("cwd", String(inp.cwd)));
+    const sandbox = rec(inp.sandbox);
+    if (Object.keys(sandbox).length) {
+      if (sandbox.enforced === true) {
+        lines.push(
+          ctx(
+            "sandboxOn",
+            String(sandbox.backend || "sandbox"),
+            ctx(sandbox.network === "blocked" ? "networkBlocked" : "networkAllowed"),
+          ),
+        );
+      } else {
+        lines.push(ctx("sandboxOff"));
+      }
+    }
+  } else if (m.tool === "dynamic_tool_define") {
+    if (inp.description) lines.push(ctx("toolDescription") + ": " + String(inp.description));
+    const implementation = typeof inp.implementation === "string" ? inp.implementation : "";
+    if (implementation) {
+      code.push({ label: ctx("toolCode", String(implementation.length)), text: implementation });
+    }
+    if (inp.input_schema && typeof inp.input_schema === "object") {
+      code.push({ label: ctx("toolInput"), text: JSON.stringify(inp.input_schema, null, 2) });
+    }
+  }
+  return { lines, code };
 }
 
 export function defaultRememberScope(m: PermEvent): string {
@@ -225,6 +323,16 @@ export function renderPermissionCard(m: PermEvent): void {
   );
   const act = permActionLine(m);
   if (act.text) card.appendChild(el("div", "perm-detail" + (act.mono ? " mono" : ""), act.text));
+  const context = permContext(m);
+  context.lines.forEach((line) => card.appendChild(el("div", "perm-ctx", line)));
+  context.code.forEach((block, index) => {
+    const wrap = el("details", "perm-codewrap") as HTMLDetailsElement;
+    // The code a dynamic tool will run is the decision itself: open it.
+    if (index === 0) wrap.open = true;
+    wrap.appendChild(el("summary", "perm-lbl", block.label));
+    wrap.appendChild(el("pre", "perm-code", block.text));
+    card.appendChild(wrap);
+  });
   const fileReviewKeys: Record<string, string> = {
     credential_path: "perm.review.credential_path",
     dynamic_file_search: "perm.review.dynamic_file_search",
