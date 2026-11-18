@@ -129,18 +129,28 @@ export async function browseProjectFolder(path?: string, focusHiddenToggle = fal
 
 let browserVersion = 0;
 
-export async function openProjectFiles(projectId: string, projectName: string): Promise<void> {
+export async function openProjectFiles(
+  projectId: string,
+  projectName: string,
+  startPath = "",
+  startIsFile = false,
+): Promise<void> {
   const mode = `project-files:${++browserVersion}:${projectId}`;
   _modalMode.value = mode;
   const modal = $("#modal");
-  const body = $("#modal-body");
-  if (!modal || !body) return;
+  const modalBody = $("#modal-body");
+  if (!modal || !modalBody) return;
   const title = $("#modal-title");
   if (title) title.textContent = copy("title", projectName);
   const download = $("#modal-download");
   if (download) download.style.display = "none";
-  body.innerHTML = "";
+  modalBody.innerHTML = "";
   modal.classList.remove("hidden");
+  // UP-5: the shared modal body has no padding of its own (previews fill it
+  // edge to edge), so this view brings its own: the path, note and input sat
+  // flush against the border with their first character cut.
+  const body = el("div", "project-files-pane");
+  modalBody.appendChild(body);
   const sourcePath = el("div", "project-folder-path");
   body.appendChild(sourcePath);
   body.appendChild(el("p", "project-folder-note", copy("readOnly")));
@@ -226,5 +236,10 @@ export async function openProjectFiles(projectId: string, projectName: string): 
       void showDirectory(pathInput.value.trim());
     }
   };
-  await showDirectory("");
+  // The Files panel's project-folder section opens here at an entry (UP-5).
+  if (startIsFile && startPath) {
+    const slash = startPath.lastIndexOf("/");
+    directory = slash > 0 ? startPath.slice(0, slash) : "";
+    await showFile(startPath);
+  } else await showDirectory(startPath);
 }

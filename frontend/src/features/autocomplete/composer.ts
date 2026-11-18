@@ -18,8 +18,8 @@
 
 import { t } from "../../i18n/runtime";
 import { artifacts } from "../../stores/artifacts";
-import { currentId, sessions } from "../../stores/session";
-import { fetchArtifactIndexPage } from "../artifacts/api";
+import { currentId, projects, sessions } from "../../stores/session";
+import { api, fetchArtifactIndexPage } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { effProject } from "../customize/host";
 import { $, el, grow } from "../sessions/dom";
@@ -127,10 +127,74 @@ const itemKey = new WeakMap<AcItem, string>();
 
 function toItems(rows: ArtifactLike[]): AcItem[] {
   return rows.map((a) => {
+    const folderPath = (a as ProjectFolderRow).projectFolderPath;
+    if (folderPath) {
+      // UP-5: a file in the bound project folder. `@project:<path>` is a
+      // reference the agent reads or imports with its project tools; it is
+      // not an Artifact, so no version travels with it.
+      const item: AcItem = {
+        label: folderPath,
+        insert: PROJECT_REF_PREFIX + folderPath,
+        sub: filesT("ac.projectFolder"),
+      };
+      itemKey.set(item, PROJECT_REF_PREFIX + folderPath);
+      return item;
+    }
     const item = artifactToAcItem(a, currentId.value, t("ac.fromOtherSession"));
     itemKey.set(item, String(a.artifact_id || a.id || a.filename));
     return item;
   });
+}
+
+/** `@project:<path>` names a file in the session's project folder (UP-5). */
+export const PROJECT_REF_PREFIX = "project:";
+type ProjectFolderRow = ArtifactLike & { projectFolderPath?: string };
+type FolderEntry = { name?: string; path?: string; kind?: string };
+/** Root listings of project folders, briefly reused across keystrokes. */
+const folderListings = new Map<string, { at: number; rows: FolderEntry[] }>();
+const FOLDER_LISTING_TTL_MS = 30_000;
+/** At most this many project-folder rows join an `@` popup. */
+const PROJECT_FOLDER_AC_LIMIT = 5;
+
+function boundFolder(pid: string): boolean {
+  const rows = (projects.value as Array<{ id?: string; project_id?: string; folder_path?: string | null }>) || [];
+  const row = rows.find((p) => (p.project_id || p.id) === pid);
+  return !!(row && row.folder_path);
+}
+
+/** Files at the top of the project's bound folder whose path contains `query`. */
+export async function projectFolderCandidates(
+  pid: string,
+  query: string,
+  signal?: AbortSignal,
+): Promise<ProjectFolderRow[]> {
+  if (!pid || !boundFolder(pid)) return [];
+  const held = folderListings.get(pid);
+  let rows: FolderEntry[] = held ? held.rows : [];
+  if (!held || Date.now() - held.at > FOLDER_LISTING_TTL_MS) {
+    try {
+      const init: RequestInit = {};
+      if (signal) init.signal = signal;
+      const data = (await api(`/projects/${encodeURIComponent(pid)}/files?path=`, init)) as {
+        entries?: FolderEntry[];
+      } | null;
+      rows = data && Array.isArray(data.entries) ? data.entries : [];
+      folderListings.set(pid, { at: Date.now(), rows });
+    } catch {
+      // The folder may be unlinked or unreadable; the popup keeps its files.
+      return [];
+    }
+  }
+  const needle = query.trim().toLowerCase();
+  return rows
+    .filter((entry) => entry && entry.kind !== "directory" && typeof entry.path === "string")
+    .filter((entry) => !needle || String(entry.path).toLowerCase().includes(needle))
+    .slice(0, PROJECT_FOLDER_AC_LIMIT)
+    .map((entry) => ({
+      filename: String(entry.path),
+      id: PROJECT_REF_PREFIX + String(entry.path),
+      projectFolderPath: String(entry.path),
+    }));
 }
 
 function clearDebounce(): void {
@@ -253,12 +317,15 @@ export async function acProjectFiles(query = "", signal?: AbortSignal): Promise<
   const pid = projectId();
   const sessionList = sessionCandidates();
   if (!pid) return sessionList;
-  const page = await fetchArtifactIndexPage(pid, {
-    q: query,
-    limit: AC_INDEX_LIMIT,
-    signal,
-  });
-  return mergeArtifactCandidates(page.artifacts.filter(isShownArtifact), sessionList);
+  const [page, folderRows] = await Promise.all([
+    fetchArtifactIndexPage(pid, {
+      q: query,
+      limit: AC_INDEX_LIMIT,
+      signal,
+    }),
+    projectFolderCandidates(pid, query, signal),
+  ]);
+  return [...mergeArtifactCandidates(page.artifacts.filter(isShownArtifact), sessionList), ...folderRows];
 }
 
 export function ensureComposerAc(): HTMLElement | null {

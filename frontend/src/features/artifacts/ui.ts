@@ -229,10 +229,12 @@ export function renderConversationArtifacts(): void {
     return tile;
   };
   const CAP = 6;
-  const section = (cls: string, label: string, list: ArtifactRow[]) => {
+  const section = (cls: string, label: string, list: ArtifactRow[], title?: string) => {
     if (!list.length) return;
     const g = el("div", cls);
-    g.appendChild(el("div", "gen-label", `${label} · ${list.length}`));
+    const heading = el("div", "gen-label", `${label} · ${list.length}`);
+    if (title) heading.title = title;
+    g.appendChild(heading);
     const tiles = el("div", "gen-tiles");
     if (list.length <= CAP) {
       list.forEach((a) => tiles.appendChild(mkTile(a)));
@@ -255,7 +257,9 @@ export function renderConversationArtifacts(): void {
     }
     host.insertBefore(g, review || null);
   };
-  section("uploaded", translate("art.uploaded"), arts.filter((a) => a.is_user_upload));
+  // UP-5: the person's own files -- uploads and project-folder imports -- are
+  // inputs; only what the agent produced is "generated".
+  section("uploaded", filesT("art.inputs"), arts.filter((a) => a.is_user_upload), filesT("art.inputs.title"));
   section("generated", translate("art.generated"), arts.filter((a) => !a.is_user_upload));
   callWindow("down");
 }

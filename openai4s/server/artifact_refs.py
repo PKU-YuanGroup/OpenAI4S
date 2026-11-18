@@ -60,6 +60,37 @@ LEGACY_REF = re.compile(r"(?:^|\s)@([\w./-]+\.\w+)(?![\w#])")
 #: resolver reads as a pin.
 _PINNED_SUFFIX = re.compile(r"((?:^|\s)@[\w./-]+\.\w+)#v-[0-9a-zA-Z]{6,}")
 
+#: `@project:<path>` -- a file in the session's attached project folder,
+#: inserted by the workbench's `@` menu (UP-5). It is not an Artifact: nothing
+#: is read at send time, so the project tools and their permission gates stay
+#: the only way in. The model is told where the file is and how to get it.
+PROJECT_REF = re.compile(r"(?:^|\s)@project:([^\s，。、；：！？（）【】「」]+)")
+_PROJECT_REF_TRAILING = "，。、；：！？,.;:!?)）]】\"'"
+MAX_PROJECT_REFS = 16
+
+
+def project_folder_refs(text: str) -> list[str]:
+    """The distinct project-relative paths `@project:<path>` tokens name."""
+    paths: list[str] = []
+    for match in PROJECT_REF.finditer(text or ""):
+        path = match.group(1).rstrip(_PROJECT_REF_TRAILING)
+        if path and ".." not in path.split("/") and path not in paths:
+            paths.append(path)
+        if len(paths) >= MAX_PROJECT_REFS:
+            break
+    return paths
+
+
+def _project_ref_block(path: str) -> str:
+    return (
+        f"### Project folder file referenced: {path}\n"
+        "The person referenced this file in the session's attached project "
+        "folder (read-only). It was not copied into this message: read it with "
+        "project_read_file, or import it with project_import_file before "
+        "analysing it in a cell."
+    )
+
+
 #: A structured mention's version id. Bounded above as well: the field is
 #: request input, and the text form never needed more than this either.
 MENTION_VERSION = re.compile(r"v-[0-9a-zA-Z]{6,64}")
@@ -495,6 +526,9 @@ def resolve_message_refs(
                     )
                 )
 
+    # UP-5: project-folder references are pointers, not content, so they are
+    # not charged against the file budget.
+    blocks.extend(_project_ref_block(path) for path in project_folder_refs(scan))
     if not blocks:
         return text, problems
     body = "\n\n".join(blocks)

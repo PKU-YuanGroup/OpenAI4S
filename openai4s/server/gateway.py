@@ -9127,6 +9127,12 @@ class SessionRunner:
                 artifact_receipts=artifact_receipts,
             )
             captured_holder.append(captured)
+            if tool_name == "project_import_file" and captured.artifacts:
+                # UP-5: a copy of the person's own project file is an input,
+                # like an upload, not something the agent generated.
+                self.store.mark_user_inputs(
+                    [str(item.get("artifact_id") or "") for item in captured.artifacts]
+                )
             if captured.artifacts:
                 self._emit_artifact_step(
                     st,

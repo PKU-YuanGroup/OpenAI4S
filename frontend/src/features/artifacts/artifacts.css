@@ -354,3 +354,58 @@ table.sheet th[data-sort="desc"]::after {
   font-size: 11px;
   color: var(--text-400, #6c6a64);
 }
+
+/* UP-5: the bound project folder, read-only, above the session's files. */
+.files-project-folder {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius, 8px);
+  background: var(--bg-100, #f5f0e8);
+}
+.files-project-folder summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.files-project-folder-title {
+  flex: none;
+  white-space: nowrap;
+}
+.files-project-folder-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-400, #6c6a64);
+}
+.files-project-folder-note {
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--text-400, #6c6a64);
+}
+.files-project-folder-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.files-project-folder-entry {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: 999px;
+  background: var(--bg-000, #faf9f5);
+  color: inherit;
+  cursor: pointer;
+}

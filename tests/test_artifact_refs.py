@@ -118,6 +118,37 @@ def test_a_pinned_reference_sends_the_version_it_names_not_the_live_file(tmp_pat
     assert "v2 REWRITTEN" not in resolved
 
 
+def test_a_project_folder_reference_points_the_model_at_its_project_tools(tmp_path):
+    """UP-5: `@project:<path>` from the `@` menu is a pointer, not content.
+
+    Nothing is read at send time -- the project tools, and their permission
+    gates, stay the only way to the bytes -- and the token is not a missing
+    Artifact, so it raises no `not_found` problem.
+    """
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    text = (
+        "比较 @project:raw/plate1.csv，和 @project:raw/plate1.csv 以及 @project:../etc"
+    )
+    resolved, problems = artifact_refs.resolve_message_refs(
+        text, store=store, root_frame_id=root, project_id="p"
+    )
+    assert problems == []
+    assert resolved.startswith(text)
+    assert resolved.count("### Project folder file referenced: raw/plate1.csv") == 1
+    assert "project_import_file" in resolved
+    assert "../etc" not in resolved[len(text) :]
+    assert artifact_refs.project_folder_refs("x @project:a.csv. @project:b/c.tsv") == [
+        "a.csv",
+        "b/c.tsv",
+    ]
+    plain = "no references here"
+    assert artifact_refs.resolve_message_refs(
+        plain, store=store, root_frame_id=root, project_id="p"
+    ) == (plain, [])
+
+
 def test_an_unresolvable_reference_is_reported_rather_than_dropped(tmp_path):
     """It used to `continue`. The block was simply absent from the prompt and
     the user was told nothing, so they asked a question about a file the model

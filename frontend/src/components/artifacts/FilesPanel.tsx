@@ -1,4 +1,5 @@
 import { DraftsPanel } from "./DraftsPanel";
+import { ProjectFolderSection } from "./ProjectFolderSection";
 import { useEffect } from "preact/hooks";
 import { render } from "preact";
 import { filesScope } from "../../stores/artifacts";
@@ -136,6 +137,7 @@ export function FilesPanel() {
         </span>
       </div>
       <DraftsPanel />
+      <ProjectFolderSection />
       <div class="files-toolbar">
         <input
           class="files-search"

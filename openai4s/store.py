@@ -4213,6 +4213,9 @@ class Store:
     def rename_artifact(self, artifact_id: str, filename: str) -> None:
         self._artifacts.rename_artifact(artifact_id, filename)
 
+    def mark_user_inputs(self, artifact_ids: list[str]) -> None:
+        self._artifacts.mark_user_inputs(artifact_ids)
+
     def move_artifact(
         self, artifact_id: str, filename: str, *, old_path: str, new_path: str
     ) -> None:

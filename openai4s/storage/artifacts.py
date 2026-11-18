@@ -425,6 +425,23 @@ class ArtifactRepository:
             }
         return [path for path in paths if path not in keep]
 
+    def mark_user_inputs(self, artifact_ids: list[str]) -> None:
+        """Record Artifacts as inputs the person provided (UP-5).
+
+        A file copied in from the project folder is the person's data, like an
+        upload, not something the agent produced: it belongs beside uploads
+        (``is_user_upload``), not under "generated".
+        """
+        ids = [str(item) for item in artifact_ids if item]
+        if not ids:
+            return
+        with self._lock:
+            self._connection.executemany(
+                "UPDATE artifacts SET is_user_upload=1 WHERE artifact_id=?",
+                [(item,) for item in ids],
+            )
+            self._connection.commit()
+
     def move_artifact(
         self,
         artifact_id: str,

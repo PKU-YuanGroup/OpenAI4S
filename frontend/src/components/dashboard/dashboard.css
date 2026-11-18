@@ -316,3 +316,8 @@
     font-size: 16px;
   }
 }
+
+/* UP-5: the shared modal body has no padding; the project files view adds its own. */
+.project-files-pane {
+  padding: 16px 20px 20px;
+}
