@@ -89,8 +89,9 @@ scripts.
   revisions remain collapsed and read-only; a running Cell is updated in place.
   While the model writes a Python/R fence, one transient draft block is updated
   in place and is replaced by the immutable Cell only when execution starts.
-- **Explicit developer REPL** — `OPENAI4S_NOTEBOOK_REPL=1` enables multiline
-  Python/R input. Shift+Enter appends a new Cell; it never edits an executed
+- **Manual cells (REPL), opt-in** — Settings → General → Notebook manual
+  cells (off by default; admin-only in team mode; `OPENAI4S_NOTEBOOK_REPL=1`
+  forces it on) enables multiline Python/R input. Shift+Enter appends a new Cell; it never edits an executed
   Cell. User Cells and Agent turns share the same per-session FIFO execution
   coordinator.
 - **Exact ownership and cancellation** — runtime events expose the active

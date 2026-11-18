@@ -241,6 +241,9 @@ INSTANCE_CONFIG_PATHS = frozenset(
         "/network/status",
         "/share/settings",
         "/memory/enabled",
+        #   `/notebook/settings` lets every member's sessions run arbitrary
+        #     code from the Notebook panel.
+        "/notebook/settings",
         # First-run completion writes instance-global model settings.
         "/onboarding/complete",
         # Experimental judgment flags, disclosure ack, and TypeSafe key are

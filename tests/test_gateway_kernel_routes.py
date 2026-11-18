@@ -277,6 +277,69 @@ def test_the_six_repl_routes_stay_gated_when_the_notebook_is_read_only(
     assert "disabled" in payload["error"]
 
 
+def test_the_settings_switch_turns_manual_cells_on_and_off(tmp_path):
+    """NB-5: manual Notebook cells were reachable only through an env var."""
+    runner, handler, fid = _setup(tmp_path)
+
+    code, payload = _call(handler, "GET", "/notebook/settings")
+    assert (code, payload) == (
+        200,
+        {"repl_enabled": False, "env_forced": False, "can_change": True},
+    )
+    assert _call(handler, "POST", f"/frames/{fid}/kernel/stop")[0] == 403
+
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": True}
+    )
+    assert code == 200 and payload["repl_enabled"] is True
+    assert runner.kernel_status(fid)["repl_enabled"] is True
+    assert _call(handler, "POST", f"/frames/{fid}/kernel/stop")[0] == 200
+
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": False}
+    )
+    assert payload["repl_enabled"] is False
+    code, payload = _call(handler, "POST", f"/frames/{fid}/kernel/stop")
+    assert code == 403
+    assert "Settings" in payload["error"]
+
+
+def test_the_switch_takes_a_boolean_and_cannot_turn_off_the_environment(tmp_path):
+    from openai4s.server.errors import GatewayError
+
+    _runner, handler, _fid = _setup(tmp_path, notebook_repl=True)
+    with pytest.raises(GatewayError) as refused:
+        _call(handler, "PUT", "/notebook/settings", body={"repl_enabled": "false"})
+    assert refused.value.code == 400
+
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": False}
+    )
+    assert (code, payload) == (
+        200,
+        {"repl_enabled": True, "env_forced": True, "can_change": False},
+    )
+
+
+def test_members_read_the_switch_but_only_an_admin_changes_it(tmp_path):
+    from openai4s.server.errors import GatewayError
+
+    _runner, handler, _fid = _setup(tmp_path)
+    handler._team_identity = SimpleNamespace(is_admin=False, user_id="member")
+    code, payload = _call(handler, "GET", "/notebook/settings")
+    assert code == 200 and payload["can_change"] is False
+    with pytest.raises(GatewayError) as refused:
+        _call(handler, "PUT", "/notebook/settings", body={"repl_enabled": True})
+    assert refused.value.code == 403
+    assert refused.value.error_code == "admin_only"
+
+    handler._team_identity = SimpleNamespace(is_admin=True, user_id="admin")
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": True}
+    )
+    assert code == 200 and payload["repl_enabled"] is True
+
+
 @pytest.mark.stubbed_backend
 def test_install_is_deliberately_not_gated_by_the_notebook_flag(tmp_path):
     """The asymmetry the comment in the route body explains: installing into a

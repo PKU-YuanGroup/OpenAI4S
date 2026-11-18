@@ -48,6 +48,12 @@ from openai4s.server.notebook_lineage import official_notebook_enabled
 
 from . import contract, errors, team_policy
 
+#: Why a manual Notebook request was refused, and where the switch is.
+_REPL_DISABLED = (
+    "notebook REPL is disabled; turn on manual Notebook cells in "
+    "Settings → General, or send a message to resume the agent"
+)
+
 _EXECUTION = contract.RouteSpec(
     "kernel.execution",
     "GET",
@@ -203,11 +209,9 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _EXECUTE.match(method, sub)
     if m:
-        if not official_notebook_enabled(runner.cfg):
+        if not official_notebook_enabled(runner.cfg, store):
             self._json(
-                {
-                    "error": "notebook REPL is disabled; send a message to resume the agent"
-                },
+                {"error": _REPL_DISABLED},
                 403,
             )
             return True
@@ -267,11 +271,9 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _RESTART.match(method, sub)
     if m:
-        if not official_notebook_enabled(runner.cfg):
+        if not official_notebook_enabled(runner.cfg, store):
             self._json(
-                {
-                    "error": "notebook REPL is disabled; send a message to resume the agent"
-                },
+                {"error": _REPL_DISABLED},
                 403,
             )
             return True
@@ -283,11 +285,9 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _STOP.match(method, sub)
     if m:
-        if not official_notebook_enabled(runner.cfg):
+        if not official_notebook_enabled(runner.cfg, store):
             self._json(
-                {
-                    "error": "notebook REPL is disabled; send a message to resume the agent"
-                },
+                {"error": _REPL_DISABLED},
                 403,
             )
             return True
@@ -298,11 +298,9 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _INTERRUPT.match(method, sub)
     if m:
-        if not official_notebook_enabled(runner.cfg):
+        if not official_notebook_enabled(runner.cfg, store):
             self._json(
-                {
-                    "error": "notebook REPL is disabled; send a message to resume the agent"
-                },
+                {"error": _REPL_DISABLED},
                 403,
             )
             return True
@@ -332,11 +330,9 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _START.match(method, sub)
     if m:
-        if not official_notebook_enabled(runner.cfg):
+        if not official_notebook_enabled(runner.cfg, store):
             self._json(
-                {
-                    "error": "notebook REPL is disabled; send a message to resume the agent"
-                },
+                {"error": _REPL_DISABLED},
                 403,
             )
             return True
@@ -413,11 +409,9 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _ENV.match(method, sub)
     if m:
-        if not official_notebook_enabled(runner.cfg):
+        if not official_notebook_enabled(runner.cfg, store):
             self._json(
-                {
-                    "error": "notebook REPL is disabled; send a message to resume the agent"
-                },
+                {"error": _REPL_DISABLED},
                 403,
             )
             return True

@@ -370,13 +370,18 @@ as sensitive, temporary links.
 
 ### The Notebook REPL is off by default
 
-The web UI's right-hand Notebook is a **read-only execution trace** by default.
-The developer REPL is disabled and only appears when
-`OPENAI4S_NOTEBOOK_REPL=1`. With it off, the mutating `kernel/*` routes
-(`execute`, `env`, `restart`, `stop`, `start`, `interrupt`) return `403`;
-`kernel/install` remains available because it backs Customize → Compute. When
-enabled, the input is multiline, selects Python/R, and appends a new immutable
-Cell through the same FIFO execution coordinator as Agent work. Interrupts
+The web UI's right-hand Notebook is a **read-only execution trace** by default:
+it shows the code the agent ran and its output, and says where manual cells are
+turned on. Manual cells (the REPL) are a switch in Settings → General, off by
+default and persisted in the settings store (`GET`/`PUT /notebook/settings`).
+In team mode only an admin can change it, because it lets every member run
+arbitrary code from the Notebook panel; members can read it.
+`OPENAI4S_NOTEBOOK_REPL=1` still forces it on, and then the switch cannot turn
+it off. With it off, the mutating `kernel/*` routes (`execute`, `env`,
+`restart`, `stop`, `start`, `interrupt`) return `403`; `kernel/install`
+remains available because it backs Customize → Compute. When enabled, the
+input is multiline, selects Python/R, and appends a new immutable Cell through
+the same FIFO execution coordinator as Agent work. Interrupts
 must carry the exact `execution_id`, `owner.kind`, and `owner.id`; broad
 session-level SIGINT is rejected.
 

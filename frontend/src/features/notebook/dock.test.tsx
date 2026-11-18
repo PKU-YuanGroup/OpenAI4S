@@ -32,6 +32,7 @@ import {
   NotebookDock,
   StatusStrip,
   kernelExitText,
+  kernelStatusLine,
   outputIsLong,
   outputLabel,
   writtenImages,
@@ -315,5 +316,25 @@ describe("Notebook images a cell wrote", () => {
     expect(writtenImages(cell)).toEqual(["plots/volcano.png", "Rplot_2_01.png"]);
     const many = { files_written: Array.from({ length: 20 }, (_, i) => `p${i}.png`) };
     expect(writtenImages(many)).toHaveLength(8);
+  });
+});
+
+describe("Notebook read-only mode (NB-5)", () => {
+  it("tells a kernel that never ran from one that ended, stopped or exited", () => {
+    const env = { python_version: "3.11" };
+    expect(kernelStatusLine({ state: "none", env }).text).toBe(nbT("nb.status.notStarted", "Python 3.11"));
+    expect(kernelStatusLine({ state: "ended", generation_id: "g", env }).text).toBe(t("nb.status.ended", "Python 3.11"));
+    expect(kernelStatusLine({ state: "stopped", generation_id: "g", env }).text).toBe(nbT("nb.status.stopped", "Python 3.11"));
+    expect(kernelStatusLine({ state: "none", generation_id: "g", env }).text).toBe(nbT("nb.status.exited", "Python 3.11"));
+    expect(kernelStatusLine({ alive: true, state: "running", env }).cls).toBe("ready");
+  });
+
+  it("says what the read-only Notebook is and where manual cells are turned on", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { state: "none" }, envs: null, cur: null };
+    const text = textOf(StatusStrip());
+    expect(text).toContain(nbT("nb.readonly.hint"));
+    expect(text).toContain(nbT("nb.readonly.openSettings"));
+    expect(textOf(KernelChips({ entries: [] }))).toContain(nbT("nb.kernel.notStarted"));
   });
 });

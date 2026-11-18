@@ -70,6 +70,7 @@ import {
 import { bytes } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { applyArtifactDeepLink } from "../artifacts/ui";
+import { openCustomize } from "../customize";
 import { iconSvg } from "../icons/paths";
 import type { KernelEnvRow, KernelStatus, NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
 import { nbT } from "./copy";
@@ -601,6 +602,11 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
   });
   const filter = kernelFilter.value;
   const badgeMode = runtimeBadge.value;
+  // "Ended · view only" for a session whose kernel never ran was wrong.
+  const badgeText =
+    badgeMode === "ended" && kernelNeverStarted(currentKernelStatus())
+      ? nbT("nb.kernel.notStarted")
+      : t("runtime.status." + badgeMode);
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   return (
     <div class="kernel-chips">
@@ -627,7 +633,7 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
       ))}
       <div class={"nb-live-badge " + badgeMode}>
         <span class="ld" />
-        <span>{t("runtime.status." + badgeMode)}</span>
+        <span>{badgeText}</span>
       </div>
       {currentId.value ? <ExportMount frameId={currentId.value} /> : null}
       {currentId.value ? (
@@ -695,18 +701,27 @@ function kernelTitle(st: KernelStatus): string {
   );
 }
 
-function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {
-  const env = st.env || {};
-  const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
-  const live = !!st.turn_running;
-  const ready = !live && !!st.alive;
-  return {
-    text: live ? t("nb.status.live", rt) : ready ? t("nb.status.ready", rt) : t("nb.status.ended", rt),
-    cls: live ? "live" : ready ? "ready" : "ended",
-  };
+/** No kernel has run in this session yet: not the same as one that ended. */
+export function kernelNeverStarted(st: KernelStatus | null): boolean {
+  return !!st && !st.alive && !st.turn_running && (st.state || "none") === "none" && !st.generation_id;
 }
 
-/** The read-only status line; its text is the session's last kernel read. */
+export function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {
+  const env = st.env || {};
+  const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
+  if (st.turn_running) return { text: t("nb.status.live", rt), cls: "live" };
+  if (st.alive) return { text: t("nb.status.ready", rt), cls: "ready" };
+  // A fresh session said "ended — view only" before any cell had run.
+  if (st.state === "stopped") return { text: nbT("nb.status.stopped", rt), cls: "ended" };
+  if (st.state === "ended") return { text: t("nb.status.ended", rt), cls: "ended" };
+  if (st.generation_id) return { text: nbT("nb.status.exited", rt), cls: "ended" };
+  return { text: nbT("nb.status.notStarted", rt), cls: "idle" };
+}
+
+/**
+ * The read-only Notebook's status line and what it is. It never said that
+ * manual cells exist or where to turn them on.
+ */
 export function StatusStrip() {
   const st = currentKernelStatus();
   const line = st ? kernelStatusLine(st) : null;
@@ -714,6 +729,12 @@ export function StatusStrip() {
     <div class="nb-status">
       <div class={"nb-status-line" + (line ? " " + line.cls : "")}>{line ? line.text : "…"}</div>
       <div class="nb-status-hint">{t("nb.status.hint")}</div>
+      <div class="nb-status-hint nb-readonly-hint">
+        {nbT("nb.readonly.hint")}{" "}
+        <button type="button" class="nbc-action" data-action="open-notebook-settings" onClick={() => void openCustomize("general")}>
+          {nbT("nb.readonly.openSettings")}
+        </button>
+      </div>
     </div>
   );
 }
