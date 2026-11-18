@@ -700,6 +700,38 @@ def test_the_cell_number_is_only_offered_to_kernels_that_take_it():
 # --------------------------------------------------------------------------
 
 
+def test_a_manual_cells_background_launch_is_the_users_whatever_origin_it_claims(
+    tmp_path,
+):
+    """SEC-8 wiring, through the real runner and kernel: the gateway binds the
+    Cell's origin host-side around `kernel.execute`, so a manual Notebook
+    cell's `host.exec_background` is the user's even when it passes
+    `origin="agent"`, and an agent turn's Stop leaves it alone. Without the
+    binding the launch is "unknown" and would be tied to the turn."""
+    runner, _handler, fid = _setup(tmp_path, notebook_repl=True)
+    runner.store.set_permission_rule(
+        scope="global", tool="exec_background", pattern="*", decision="allow"
+    )
+    try:
+        # The session dispatcher exists once the kernel has started.
+        runner.run_repl(fid, "proj-kernel", "warm = 1")
+        st = runner._state(fid, "proj-kernel")
+        st.dispatcher.set_task_evidence_scope(turn_id="turn-1")
+        outcome = runner.run_repl(
+            fid,
+            "proj-kernel",
+            'job = host.exec_background("import time\\ntime.sleep(30)", origin="agent")',
+        )
+        assert not outcome["cell"].get("error"), outcome["cell"].get("error")
+        cells = runner.background_cells(fid)
+        assert len(cells) == 1
+        assert cells[0]["launched_by"] == "user"
+        assert st.dispatcher.stop_turn_background() == []
+        runner.stop_background_cell(fid, cells[0]["exec_id"])
+    finally:
+        runner.close()
+
+
 def test_a_session_with_no_background_cells_lists_none(tmp_path):
     """Real response, no stub: a session that never launched one."""
     _runner, handler, fid = _setup(tmp_path)

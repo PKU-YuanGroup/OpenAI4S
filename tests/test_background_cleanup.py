@@ -2447,13 +2447,23 @@ def test_the_dispatcher_ties_agent_background_launches_to_the_current_turn(
     dispatcher = _dispatcher(cfg, root, "instance-a", factory)
     dispatcher.set_task_evidence_scope(turn_id="turn-1")
     agent = dispatcher._m_exec_background({"code": "loop()"})
-    user = dispatcher._m_exec_background({"code": "loop()", "origin": "user"})
+    # A manual Notebook cell's launch: the host bound that Cell's origin.
+    with dispatcher.bind_cell_origin("user"):
+        user = dispatcher._m_exec_background({"code": "loop()"})
+    # An agent Cell claiming to be the user is still the agent's: the
+    # caller-supplied origin decides nothing (it used to skip the turn).
+    with dispatcher.bind_cell_origin("agent"):
+        spoofed = dispatcher._m_exec_background({"code": "loop()", "origin": "user"})
     for kernel in kernels:
         assert kernel.entered.wait(1)
 
-    assert dispatcher.stop_turn_background() == [agent["exec_id"]]
+    assert sorted(dispatcher.stop_turn_background()) == sorted(
+        [agent["exec_id"], spoofed["exec_id"]]
+    )
     _join(dispatcher, agent["exec_id"])
+    _join(dispatcher, spoofed["exec_id"])
     assert dispatcher._m_exec_peek(agent["exec_id"])["status"] == "interrupted"
+    assert dispatcher._m_exec_peek(spoofed["exec_id"])["status"] == "interrupted"
     assert dispatcher._m_exec_peek(user["exec_id"])["status"] == "running"
 
     # A later turn's Stop does not reach back into this one's survivors.

@@ -12788,13 +12788,19 @@ class SessionRunner:
         def run_cell(kernel):
             binder = getattr(kernel, "bind_action_context", None)
             receipt_binder = getattr(st.dispatcher, "bind_artifact_receipt_scope", None)
+            # SEC-8: who submitted this Cell, bound host-side for its Host
+            # calls, so `host.exec_background` cannot claim another origin.
+            origin_binder = getattr(st.dispatcher, "bind_cell_origin", None)
             # NB-9: the session's cell number, so the kernel names this cell's
             # code `<cell N>` in tracebacks -- the number the chat card and the
             # Notebook show. Only for kernels whose execute takes it.
             label = _cell_label_kwargs(kernel, getattr(st, "cell_index", None))
             with (
-                receipt_binder() if callable(receipt_binder) else nullcontext([])
-            ) as artifact_receipts:
+                (
+                    receipt_binder() if callable(receipt_binder) else nullcontext([])
+                ) as artifact_receipts,
+                origin_binder(origin) if callable(origin_binder) else nullcontext(),
+            ):
                 if callable(binder):
                     with binder(action_context):
                         result = kernel.execute(

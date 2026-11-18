@@ -1367,6 +1367,7 @@ class HostDispatcher:
         # parallel read-only native tools: each approval must point back to its
         # own provider tool call rather than merely to the surrounding turn.
         self._action_context_local = threading.local()
+        self._cell_origin_local = threading.local()
         # Optional RL parent binding for nested Host RPC facts. The binding is
         # thread-local because one dispatcher serves foreground and background
         # workers concurrently.
@@ -1656,6 +1657,38 @@ class HostDispatcher:
     def _current_action_context(self) -> dict[str, Any]:
         value = getattr(self._action_context_local, "value", None)
         return dict(value) if isinstance(value, dict) else {}
+
+    @contextmanager
+    def bind_cell_origin(self, origin: str | None) -> Iterator[None]:
+        """Name who submitted the Cell whose Host calls follow (SEC-8).
+
+        The host binds it around ``kernel.execute`` on the thread that
+        dispatches that Cell's Host calls, so code inside the Cell cannot
+        choose it -- unlike the ``origin`` a caller may pass to
+        ``host.exec_background``.
+        """
+
+        local = getattr(self, "_cell_origin_local", None)
+        if local is None:
+            local = self._cell_origin_local = threading.local()
+        marker = object()
+        previous = getattr(local, "value", marker)
+        local.value = str(origin) if origin else None
+        try:
+            yield
+        finally:
+            if previous is marker:
+                try:
+                    del local.value
+                except AttributeError:
+                    pass
+            else:
+                local.value = previous
+
+    def _current_cell_origin(self) -> str | None:
+        local = getattr(self, "_cell_origin_local", None)
+        value = getattr(local, "value", None) if local is not None else None
+        return str(value) if value else None
 
     @contextmanager
     def bind_rl_context(self, context: Mapping[str, Any] | None) -> Iterator[None]:
@@ -4260,10 +4293,16 @@ class HostDispatcher:
                 )
             }
         code = spec["code"] if isinstance(spec, dict) else str(spec)
-        origin = spec.get("origin", "agent") if isinstance(spec, dict) else "agent"
         # An agent launch belongs to the current turn, so stopping that turn
-        # stops it too (``stop_turn_background``); a user/REPL launch does not.
-        turn_id = self._task_turn_id if origin == "agent" else None
+        # stops it too (``stop_turn_background``); a manual Notebook cell's
+        # launch does not. Which one this is is the host's call, never the
+        # caller's: an agent Cell could pass origin="user" to keep its worker
+        # alive past Stop. Only a Cell the host itself ran as the user's is left
+        # out; an unknown origin (a background worker's own launch) stays with
+        # the turn.
+        launched_by_user = self._current_cell_origin() == "user"
+        origin = "user" if launched_by_user else "agent"
+        turn_id = None if launched_by_user else self._task_turn_id
         return self._bg().launch(code, origin=origin, turn_id=turn_id)
 
     def stop_turn_background(self) -> list[str]:
