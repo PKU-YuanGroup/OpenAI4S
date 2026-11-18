@@ -61,3 +61,11 @@
   font-size: 10px;
   line-height: 1;
 }
+
+/* The REPL input's editing keys, under the multi-line hint. */
+.nb-repl-keys {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-400);
+  font-size: 11px;
+}

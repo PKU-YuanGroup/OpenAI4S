@@ -216,7 +216,9 @@ describe("Notebook cell actions", () => {
     branchState.value = { capabilities: { fork_from_cell: true, promote: true } };
     const cell = { producing_cell_id: "c", source: "x = 1", fork_checkpoint_id: "cp1" };
     const row = (): VNode[] => buttons(CellActions({ cell }));
-    const [, rerun, fork] = row();
+    const button = (label: string): VNode => row().find((b) => textOf(b) === label)!;
+    const rerun = button(t("nb.action.rerun"));
+    const fork = button(t("nb.action.fork"));
     expect(rerun!.props?.disabled).toBe(false);
     expect(fork!.props?.disabled).toBe(false);
     pendingReplIdentity.value = {
@@ -225,9 +227,10 @@ describe("Notebook cell actions", () => {
       owner: { kind: "user_repl", id: "repl-1" },
     };
     forkPending.value = "frame-1";
-    const [, rerunBusy, forkBusyButton] = row();
-    expect(rerunBusy!.props?.disabled).toBe(true);
-    expect(forkBusyButton!.props?.disabled).toBe(true);
+    expect(button(t("nb.action.rerun")).props?.disabled).toBe(true);
+    expect(button(t("nb.action.fork")).props?.disabled).toBe(true);
+    // Loading a cell into the input runs nothing, so it stays available.
+    expect(button(nbT("nb.action.edit")).props?.disabled).toBe(false);
   });
 });
 

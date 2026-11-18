@@ -38,6 +38,7 @@ import {
   canRerun,
   copyNotebookCell,
   currentKernelEnvs,
+  editAsNewCell,
   currentKernelStatus,
   envChoice,
   executeNotebookCode,
@@ -53,6 +54,8 @@ import {
   promoteNotebookCell,
   replBusy,
   replEnabled,
+  replHistory,
+  replLoad,
   runtimeBadge,
   shortRuntime,
   syncKernel,
@@ -70,6 +73,7 @@ import { applyArtifactDeepLink } from "../artifacts/ui";
 import { iconSvg } from "../icons/paths";
 import type { KernelEnvRow, KernelStatus, NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
 import { nbT } from "./copy";
+import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent, type EditorState } from "./editor";
 import "./notebook.css";
 
 function notebookCellState(cell: NotebookCell): {
@@ -317,6 +321,8 @@ function CellIo({ cell }: { cell: NotebookCell }) {
 export function CellActions({ cell }: { cell: NotebookCell }) {
   const appendable =
     canRerun.value && !replBusy.value && !cell.live && !!String(cell.source || "").trim();
+  // Loading code into the input runs nothing, so it does not wait for the REPL.
+  const editable = canRerun.value && !cell.live && !!String(cell.source || "").trim();
   const canFork =
     !cell.live && canForkFromCell.value && !!publicText(cell.fork_checkpoint_id, 96);
   return (
@@ -333,6 +339,17 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
         }}
       >
         {t("nb.action.rerun")}
+      </button>
+      <button
+        class="nbc-action"
+        data-action="edit-as-new-cell"
+        disabled={!editable}
+        title={editable ? nbT("nb.action.editTitle") : t("nb.action.unavailable")}
+        onClick={() => {
+          if (editable) editAsNewCell(cell);
+        }}
+      >
+        {nbT("nb.action.edit")}
       </button>
       {canFork ? (
         <button class="nbc-action" disabled={forkBusy.value} onClick={() => void forkNotebookCell(cell)}>
@@ -733,8 +750,29 @@ function EnvSelect() {
   );
 }
 
+function readEditor(box: HTMLTextAreaElement): EditorState {
+  return { value: box.value, start: box.selectionStart, end: box.selectionEnd };
+}
+
+/** The last `replLoad` a panel applied: a remount must not re-apply an old one. */
+let appliedReplLoad = 0;
+
 function ReplPanel() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const history = useRef(new ReplHistory());
+  // Escape releases the next Tab to move focus, so the box is not a trap.
+  const tabReleased = useRef(false);
+  const load = replLoad.value;
+  useLayoutEffect(() => {
+    const box = inputRef.current;
+    if (!box || !load || load.seq === appliedReplLoad) return;
+    appliedReplLoad = load.seq;
+    box.value = load.code;
+    history.current.reset();
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+    if (typeof box.scrollIntoView === "function") box.scrollIntoView({ block: "nearest" });
+  }, [load]);
   const sid = currentId.value;
   const st = currentKernelStatus();
   const state = !sid
@@ -776,7 +814,10 @@ function ReplPanel() {
           {t("nb.revive.startBtn")}
         </button>
       </div>
-      <div class="nb-repl-body">{t("nb.repl.multilineHint")}</div>
+      <div class="nb-repl-body">
+        {t("nb.repl.multilineHint")}
+        <span class="nb-repl-keys">{nbT("nb.repl.keys")}</span>
+      </div>
       <div class="nb-live-input">
         <div class="nb-live-input-bar">
           <label class="nb-language-label">
@@ -821,13 +862,47 @@ function ReplPanel() {
           disabled={!sid || busy}
           defaultValue={drafts[lang] || ""}
           onInput={(ev) => {
+            history.current.reset();
             drafts[_replLanguage.value] = (ev.currentTarget as HTMLTextAreaElement).value;
           }}
           onKeyDown={(event) => {
             if (event.isComposing || event.keyCode === 229) return;
-            if (event.key === "Enter" && event.shiftKey) {
+            const box = event.currentTarget as HTMLTextAreaElement;
+            const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
+            if (event.key === "Enter" && (event.shiftKey || event.ctrlKey || event.metaKey)) {
               event.preventDefault();
               void runDraft();
+              return;
+            }
+            if (event.key === "Escape") {
+              tabReleased.current = true;
+              return;
+            }
+            if (event.key === "Tab" && plain) {
+              if (tabReleased.current) {
+                tabReleased.current = false;
+                return;
+              }
+              event.preventDefault();
+              const next = indent(readEditor(box), event.shiftKey);
+              box.value = next.value;
+              box.setSelectionRange(next.start, next.end);
+              drafts[_replLanguage.value] = next.value;
+              return;
+            }
+            tabReleased.current = false;
+            const language = _replLanguage.value === "r" ? "r" : "python";
+            let recalled: string | null = null;
+            if (event.key === "ArrowUp" && plain && !event.shiftKey && caretOnFirstLine(readEditor(box))) {
+              recalled = history.current.older(replHistory(language), box.value);
+            } else if (event.key === "ArrowDown" && plain && !event.shiftKey && caretOnLastLine(readEditor(box))) {
+              recalled = history.current.newer(replHistory(language));
+            }
+            if (recalled != null) {
+              event.preventDefault();
+              box.value = recalled;
+              box.setSelectionRange(recalled.length, recalled.length);
+              drafts[language] = recalled;
             }
           }}
         />
@@ -843,6 +918,7 @@ function ReplPanel() {
     if (ok) {
       drafts[currentLanguage] = "";
       if (box) box.value = "";
+      history.current.reset();
     }
     requestAnimationFrame(() => box && box.focus());
   }

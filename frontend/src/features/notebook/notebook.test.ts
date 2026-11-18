@@ -65,11 +65,13 @@ import {
   resetHighlightMemo,
   resetNotebookCellCaches,
 } from "./chrome";
+import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent } from "./editor";
 import { installNotebook } from "./install";
 import type { NotebookCell } from "./types";
 import {
   copyNotebookCell,
   currentKernelStatus,
+  editAsNewCell,
   executeNotebookCode,
   forkNotebookCell,
   handleKernelStatus,
@@ -83,6 +85,8 @@ import {
   refreshKernelState,
   replBusy,
   replEnabledNow,
+  replHistory,
+  replLoad,
   shortRuntime,
   syncKernel,
 } from "./kernel";
@@ -1082,5 +1086,45 @@ describe("Notebook immutable output selection", () => {
       expect(holder.children[0]?.className).toBe("nbc-table-scroll");
       dispose();
     } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+describe("REPL editor keys (NB-7)", () => {
+  it("Tab indents at the caret and every selected line; Shift+Tab dedents", () => {
+    expect(indent({ value: "x = 1", start: 0, end: 0 }, false)).toEqual({ value: "    x = 1", start: 4, end: 4 });
+    const block = "for i in r:\nprint(i)\nprint(2)";
+    const selected = indent({ value: block, start: 12, end: block.length }, false);
+    expect(selected.value).toBe("for i in r:\n    print(i)\n    print(2)");
+    const back = indent({ value: selected.value, start: selected.start, end: selected.end }, true);
+    expect(back.value).toBe(block);
+    // A selection that ends at a line start leaves that line alone.
+    expect(indent({ value: "a\nb\nc", start: 0, end: 2 }, false).value).toBe("    a\nb\nc");
+  });
+
+  it("↑ on the first line recalls earlier input and ↓ walks back to the draft", () => {
+    expect(caretOnFirstLine({ value: "a\nb", start: 1, end: 1 })).toBe(true);
+    expect(caretOnFirstLine({ value: "a\nb", start: 3, end: 3 })).toBe(false);
+    expect(caretOnLastLine({ value: "a\nb", start: 3, end: 3 })).toBe(true);
+    const history = new ReplHistory();
+    const entries = ["x = 1", "y = 2"];
+    expect(history.older(entries, "draft")).toBe("y = 2");
+    expect(history.older(entries, "y = 2")).toBe("x = 1");
+    expect(history.older(entries, "x = 1")).toBeNull();
+    expect(history.newer(entries)).toBe("y = 2");
+    expect(history.newer(entries)).toBe("draft");
+    expect(history.newer(entries)).toBeNull();
+  });
+
+  it("history is this session's REPL cells of the language; Edit loads a cell", () => {
+    cells.value = [
+      { producing_cell_id: "a", origin: "user", language: "python", source: "x = 1" },
+      { producing_cell_id: "b", origin: "agent", language: "python", source: "agent()" },
+      { producing_cell_id: "c", origin: "user", language: "r", source: "y <- 2" },
+      { producing_cell_id: "d", origin: "user", language: "python", source: "x + 1" },
+    ];
+    expect(replHistory("python")).toEqual(["x = 1", "x + 1"]);
+    expect(replHistory("r")).toEqual(["y <- 2"]);
+    editAsNewCell({ producing_cell_id: "c", language: "r", source: "y <- 2" });
+    expect(replLoad.value).toMatchObject({ code: "y <- 2", language: "r" });
   });
 });

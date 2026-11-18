@@ -21,6 +21,9 @@ const COPY: CopyTable = {
     "nb.kernel.action.stop": "正在停止…",
     "nb.kernel.action.start": "正在启动…",
     "nb.kernel.restartWaits": "智能体正在使用内核，重启会在它当前的执行结束后进行。",
+    "nb.repl.keys": "Tab 缩进 · Shift+Tab 取消缩进 · ↑/↓ 调出之前的输入 · Shift/Ctrl/⌘+Enter 运行 · 按 Esc 后 Tab 可离开输入框",
+    "nb.action.edit": "编辑为新单元",
+    "nb.action.editTitle": "把这段代码放进下面的输入框，修改后作为新单元运行",
   },
   en: {
     "nb.crash.notice":
@@ -39,6 +42,9 @@ const COPY: CopyTable = {
     "nb.kernel.action.stop": "Stopping…",
     "nb.kernel.action.start": "Starting…",
     "nb.kernel.restartWaits": "The agent is using the kernel; the restart runs when its current execution ends.",
+    "nb.repl.keys": "Tab indents · Shift+Tab dedents · ↑/↓ recall earlier input · Shift/Ctrl/⌘+Enter runs · Esc then Tab leaves the box",
+    "nb.action.edit": "Edit as new cell",
+    "nb.action.editTitle": "Put this code in the input below to change it and run it as a new cell",
   },
 };
 

@@ -9,6 +9,8 @@ import { computed } from "@preact/signals";
 import { isReady } from "../../compat/stub";
 import {
   _kc,
+  _replDrafts,
+  _replLanguage,
   artifactWorkbench,
   pendingReplIdentity,
   variableInspector,
@@ -624,6 +626,40 @@ export async function interruptRepl(): Promise<void> {
   } catch (error) {
     hint(t("nb.action.failed", apiErrorText(error)), true);
   }
+}
+
+/** Code an executed cell handed to the REPL input, applied once by the panel. */
+export const replLoad = field<{ seq: number; code: string; language: "python" | "r" } | null>(() => null);
+let replLoads = 0;
+
+/**
+ * "Edit as new cell": put an executed cell's code in the REPL input to change
+ * and run as a new cell. Executed cells are immutable history; before this the
+ * only way to change one line was copy, scroll down, paste, edit.
+ */
+export function editAsNewCell(cell: NotebookCell): void {
+  const code = String(cell.source || "");
+  if (!code.trim()) return;
+  const language = /^r\b/i.test(String(cell.language || cell.kernel_id || "python")) ? "r" : "python";
+  const drafts = _replDrafts.value || { python: "", r: "" };
+  drafts[language] = code;
+  _replLanguage.value = language;
+  replLoads += 1;
+  replLoad.value = { seq: replLoads, code, language };
+  nbRender();
+}
+
+/** Earlier REPL submissions in this session, oldest first, for ↑/↓. */
+export function replHistory(language: string): string[] {
+  const entries: string[] = [];
+  for (const cell of notebookDisplayEntries()) {
+    if (cell.origin !== "user") continue;
+    const slot = /^r\b/i.test(String(cell.language || cell.kernel_id || "python")) ? "r" : "python";
+    const source = String(cell.source || "");
+    if (slot !== language || !source.trim() || entries[entries.length - 1] === source) continue;
+    entries.push(source);
+  }
+  return entries;
 }
 
 /**
