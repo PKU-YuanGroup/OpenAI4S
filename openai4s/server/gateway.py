@@ -20647,7 +20647,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     ),
                 )
             except ArtifactOperationError as error:
-                raise GatewayError(error.code, error.message) from error
+                # `artifact_exists` (ART-12) is what the client branches on.
+                raise GatewayError(
+                    error.code, error.message, error.error_code
+                ) from error
 
         def _upload(self, b: dict) -> dict:
             try:

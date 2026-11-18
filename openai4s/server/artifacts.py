@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Protocol
 
 from openai4s.artifact_paths import ignored_artifact_path
@@ -2387,14 +2387,45 @@ class ArtifactManager:
         *,
         broadcast: Broadcast | None = None,
     ) -> dict:
-        """Rename artifact metadata; the historical live file stays in place."""
+        """Rename an Artifact and the live file it names in the workspace (ART-12).
+
+        This used to rename metadata only: the workspace kept the old file, the
+        new name could drop the extension, and it could repeat another file's
+        name in the same session. Now the name keeps its folder and (when the
+        person typed none) its extension, a name another Artifact or another
+        workspace file already uses is refused with 409 ``artifact_exists``,
+        and the live file moves through the pinned, no-follow parent directory
+        with every version that recorded its path. An Artifact whose live file
+        is already gone is renamed in metadata and says so (``moved: false``).
+        """
         if not filename:
             raise ArtifactOperationError(400, "filename required")
         artifact = self.store.get_artifact(artifact_id)
         if not artifact:
             raise ArtifactOperationError(404, "artifact not found")
+        filename = self._renamed_filename(str(artifact.get("filename") or ""), filename)
         self.live_path({**artifact, "filename": filename})
-        self.store.rename_artifact(artifact_id, filename)
+        if filename == artifact.get("filename"):
+            return {
+                "ok": True,
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "moved": False,
+            }
+        duplicate = self.store.artifact_by_scope_filename(
+            filename,
+            root_frame_id=artifact.get("root_frame_id"),
+            project_id=str(artifact.get("project_id") or "default"),
+        )
+        if duplicate is not None and duplicate.get("artifact_id") != artifact_id:
+            raise ArtifactOperationError(
+                409,
+                f"a file named {filename!r} already exists in this session",
+                "artifact_exists",
+            )
+        moved = self._move_live_file(artifact, filename)
+        if moved is None:
+            self.store.rename_artifact(artifact_id, filename)
         root_frame_id = artifact.get("root_frame_id")
         self._notify(
             root_frame_id,
@@ -2408,7 +2439,103 @@ class ArtifactManager:
             },
             broadcast,
         )
-        return {"ok": True, "artifact_id": artifact_id, "filename": filename}
+        return {
+            "ok": True,
+            "artifact_id": artifact_id,
+            "filename": filename,
+            "moved": moved is not None,
+        }
+
+    @staticmethod
+    def _renamed_filename(current: str, requested: str) -> str:
+        """The new relative name: same folder, and the old extension if none was typed.
+
+        A bare name stays in the file's folder; a name that repeats the folder
+        is accepted as written; moving to another folder is refused, because
+        that is a move, not a rename.
+        """
+        requested = requested.strip().replace("\\", "/")
+        current_path = PurePosixPath(current.replace("\\", "/"))
+        new_path = PurePosixPath(requested)
+        if new_path.is_absolute() or ".." in new_path.parts:
+            raise ArtifactOperationError(
+                400, "artifact live path escapes its workspace"
+            )
+        if not new_path.name or new_path.name in {".", ".."} or "\x00" in requested:
+            raise ArtifactOperationError(400, "filename is invalid")
+        if len(new_path.parts) > 1 and new_path.parent != current_path.parent:
+            raise ArtifactOperationError(
+                400, "rename keeps the file in its folder; give a file name only"
+            )
+        name = new_path.name
+        old_suffix = current_path.suffix
+        # "笔记 改名后" for "notes.txt" keeps ".txt": a dropped extension is
+        # almost always an accident, and an explicit new one is respected.
+        if old_suffix and not PurePosixPath(name).suffix and not name.endswith("."):
+            name += old_suffix
+        parent = current_path.parent
+        return name if str(parent) in {"", "."} else str(parent / name)
+
+    def _move_live_file(self, artifact: dict, filename: str) -> bool | None:
+        """Move the live file to ``filename``'s name; None when there is none to move.
+
+        Runs under the upload lock. Both names are resolved inside the pinned,
+        no-follow parent directory, so a kernel that swaps a workspace folder
+        for a link cannot redirect the move, and a destination that exists is
+        refused rather than overwritten. The rows follow the file in one
+        transaction; if they cannot, the file goes back.
+        """
+        try:
+            root, old_target, _stored = self._exact_artifact_target(artifact)
+        except ArtifactOperationError:
+            return None
+        new_target = old_target.with_name(PurePosixPath(filename).name)
+        current = self.store.version_meta(str(artifact.get("latest_version_id") or ""))
+        recorded = str((current or {}).get("path") or "")
+        try:
+            parent = self._open_upload_parent(root, old_target, create=False)
+        except (OSError, RuntimeError):
+            return None
+        with parent:
+            try:
+                if not stat.S_ISREG(parent.lstat(old_target).st_mode):
+                    return None
+            except FileNotFoundError:
+                return None
+            except OSError as error:
+                record_diagnostic(error, surface="artifacts:rename:lstat")
+                return None
+            if parent.exists(new_target):
+                raise ArtifactOperationError(
+                    409,
+                    f"a file named {new_target.name!r} already exists in the workspace",
+                    "artifact_exists",
+                )
+            try:
+                parent.replace(old_target, new_target)
+                parent.fsync()
+            except OSError as error:
+                record_diagnostic(error, surface="artifacts:rename:move")
+                raise ArtifactOperationError(500, "renaming the file failed") from error
+            new_recorded = (
+                str(new_target)
+                if Path(recorded).is_absolute() or not recorded
+                else str(PurePosixPath(recorded).with_name(new_target.name))
+            )
+            try:
+                self.store.move_artifact(
+                    str(artifact.get("artifact_id")),
+                    filename,
+                    old_path=recorded,
+                    new_path=new_recorded,
+                )
+            except Exception as error:
+                try:
+                    parent.replace(new_target, old_target)
+                except OSError as undo:
+                    record_diagnostic(undo, surface="artifacts:rename:undo")
+                raise ArtifactOperationError(500, "renaming the file failed") from error
+        return True
 
     @staticmethod
     def _upload_bytes(payload: dict) -> bytes:

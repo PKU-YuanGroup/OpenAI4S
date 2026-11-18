@@ -25,7 +25,7 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`encoding-note.ts`](encoding-note.ts) | UP-4: the viewer's "shown as GB18030 (detected encoding, not UTF-8)" note, appended through a read's `onEncoding` while the view is still attached; silent for UTF-8. |
 | [`events.ts`](events.ts) | Remaining 32-line `artifact_created` body (app.js:5314-5346). |
 | [`files-index.test.ts`](files-index.test.ts) | Cursor lifecycle (filter/project drop), no array-route fallback, first page ≤50. |
-| [`files-index.ts`](files-index.ts) | B-06 `GET .../artifact-index` only. Filter fingerprint drops stale cursors. |
+| [`files-index.ts`](files-index.ts) | B-06 `GET .../artifact-index` only. Filter fingerprint drops stale cursors. ART-12: `artifactKind` (the same category table as the server), `kind`/`hidden` filters, and `sortArtifactsForFiles` (starred first, then newest/oldest/name; it used to be the random id). |
 | [`http-stub.ts`](http-stub.ts) | JSON `Response` stand-in for Vitest, with a real body stream so bounded reads behave as in the browser. |
 | [`index.ts`](index.ts) | Public re-exports. |
 | [`links.test.ts`](links.test.ts) | A plain click on a session Artifact link opens the Viewer; modified clicks, other sessions' Artifacts, exact-version and external links stay the browser's. |
@@ -52,7 +52,7 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`text-encoding.test.ts`](text-encoding.test.ts) | UTF-8 and its BOM unchanged, GBK detected, UTF-16 LE/BE BOMs, binary and Windows-1252 never called Chinese, people-facing labels. |
 | [`thumbs.test.ts`](thumbs.test.ts) | One read per artifact version, error pages and failed reads never kept, LRU bound, read queue ≤4, leaving cancels unowned reads, partial text prefix. |
 | [`types.ts`](types.ts) | Artifact DTO, page size 50/100, TEXT_EXT / MOL_EXT. |
-| [`ui.ts`](ui.ts) | Files grid, dock tabs, `openViewer`, deep links; `renderViewer` delegates to the islands Viewer. Provided `version_id` never silent-latest. |
+| [`ui.ts`](ui.ts) | Files grid, dock tabs, `openViewer`, deep links; `renderViewer` delegates to the islands Viewer. Provided `version_id` never silent-latest. Cards show a human type instead of the MIME type, and a hidden file shows "hidden" plus "Show in list" (`unhideArtifact`, ART-12). |
 | [`ui.test.ts`](ui.test.ts) | Deep-link apply / `openViewer` exact pin / stale does not open latest. |
 | [`editor.ts`](editor.ts) | Version-bound drafts, bounded UTF-8 storage, checksum reads and conditional saves. A UTF-8 BOM is kept out of the textarea and restored first on save (ART-13), so typing at the top never lands before it. |
 | [`editor-view.ts`](editor-view.ts) | Editor controls and read-only conflict/unknown-result recovery. |

@@ -384,18 +384,32 @@ back that same set together; no schema or migration change is involved.
 
 ### Files filtering and pages / 文件筛选与分页
 
-Files combines filename, content-type and Uploaded/Generated filters. The cards,
+Files combines filename, a human type (Tables, Images, Reports & documents,
+Code, Other — the same table on the client and in `GET .../artifact-index?kind=`)
+and Uploaded/Generated filters. The cards,
 displayed count, empty message and Load more all describe the same result. A
 session starts at 50 files and adds 50 per click; changing any filter or the
 session/scope starts a new first page. Refresh preserves the number of requested
-slots, including a partially filled final page. Hidden files stay excluded and
+slots, including a partially filled final page. Session scope lists starred files
+first, then newest first, oldest first or by name (the sort control); it used to
+fall back to the random artifact id. Hidden files stay excluded unless **Show
+hidden** is ticked, which lists them with a **Show in list** button (the Viewer
+menu offers the same), and
 distinct artifact IDs remain distinct even when their names match. Project scope
 keeps the server's artifact-index order and pagination, with hidden rows excluded
-before the page limit. Late responses and
+before the page limit (or included with `hidden=1`). Rename renames the workspace
+file too, keeps the extension when none is typed, stays in the file's folder and
+refuses a name already in use (`409 artifact_exists`). The Viewer's single **Copy
+link** copies the full URL. Late responses and
 artifact events from a previous session cannot replace the current cards.
 
-Files 可组合文件名、内容类型及上传/生成来源筛选。卡片、显示数量、空状态和
+Files 可组合文件名、按人能读懂的类型（表格、图片、报告与文档、代码、其他；前端与
+`GET .../artifact-index?kind=` 用同一张表）及上传/生成来源筛选。卡片、显示数量、空状态和
 「加载更多」基于同一结果。会话首次显示 50 项，每次再加载 50 项；改变筛选、
 会话或范围会重置第一页。刷新保留已请求的容量，包括尚未填满的最后一页。
-隐藏文件不显示，同名但不同 ID 的产物不合并；项目范围沿用服务端索引顺序，并在分页前排除隐藏记录。
+本会话范围先列星标文件，再按排序控件「最新在前 / 最早在前 / 按名称」排列（以前退回到随机的产物 ID）。
+隐藏文件默认不显示，勾选「显示已隐藏」后会带「在列表中显示」按钮列出（查看器菜单也提供同一操作）；
+同名但不同 ID 的产物不合并；项目范围沿用服务端索引顺序，并在分页前排除隐藏记录（`hidden=1` 时包含）。
+重命名会同时重命名工作区里的文件，未写扩展名时保留原扩展名，只能在原文件夹内改名，名称已被占用时拒绝（`409 artifact_exists`）。
+查看器只保留一个「复制链接」，复制的是完整 URL。
 上一会话的迟到响应和产物事件不能覆盖当前卡片。

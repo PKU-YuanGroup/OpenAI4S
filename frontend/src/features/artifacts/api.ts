@@ -90,6 +90,10 @@ export type ArtifactIndexQuery = {
   q?: string;
   contentType?: string;
   origin?: string;
+  /** ART-12 human category (`table`, `image`, `report`, `code`, `other`). */
+  kind?: string;
+  /** ART-12: include rows hidden from the list. */
+  hidden?: boolean;
   cursor?: string | null;
   /** Clamped to 1…100. Omitted uses the Files page size (50). */
   limit?: number;
@@ -115,6 +119,8 @@ export async function fetchArtifactIndexPage(
   if (query.q) params.set("q", query.q);
   if (query.contentType) params.set("content_type", query.contentType);
   if (query.origin) params.set("origin", query.origin);
+  if (query.kind) params.set("kind", query.kind);
+  if (query.hidden) params.set("hidden", "1");
   if (query.cursor) params.set("cursor", query.cursor);
   params.set("limit", String(clampIndexLimit(query.limit)));
   const init: RequestInit = {};

@@ -47,7 +47,7 @@ describe("isTextEditable (app.js:9458-9461)", () => {
 });
 
 
-it.each([true, false])("the Viewer menu copy respects exact=%s", (exact) => {
+it.each([true, false])("the Viewer copy link is one absolute URL that respects exact=%s (ART-12)", async (exact) => {
   class Node {
     children: Node[] = [];
     innerHTML = ""; textContent = ""; className = ""; title = "";
@@ -67,12 +67,15 @@ it.each([true, false])("the Viewer menu copy respects exact=%s", (exact) => {
     dockArtifact.value = { id: "a", filename: "plot.png", version_id: "v1", _exactVersion: exact };
     renderViewer();
     const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+    // The menu no longer carries a second copy of the header's button.
     walk(root).find((node) => node.innerHTML.includes('cx="12" cy="5"'))?.onclick?.();
     expect(menu.open).toHaveBeenCalledTimes(1);
     const items = menu.open.mock.calls[0]?.[1] as { icon?: string; onClick?: () => void }[];
-    items.find((item) => item.icon === "link")?.onClick?.();
-    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(items.some((item) => item.icon === "link")).toBe(false);
+    walk(root).find((node) => node.textContent === filesT("files.deeplink.copy"))?.onclick?.();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const copied = String(writeText.mock.calls[0]?.[0]);
+    expect(copied.startsWith("http://localhost/?")).toBe(true);
     expect(copied).toContain("artifact=a");
     if (exact) expect(copied).toContain("version_id=v1");
     else expect(copied).not.toContain("version_id=");
@@ -132,32 +135,16 @@ describe("Viewer Copy link (AUDIT A17, A19)", () => {
     } finally { vi.unstubAllGlobals(); resetStoreFields(); }
   });
 
-  function menuCopy(clipboard: unknown): void {
-    menu.open.mockReset();
-    const { root } = mountExactViewer(clipboard);
-    walk(root).find((node) => node.innerHTML.includes('cx="12" cy="5"'))?.onclick?.();
-    const items = menu.open.mock.calls[0]?.[1] as { icon?: string; onClick?: () => void }[];
-    items.find((item) => item.icon === "link")?.onClick?.();
-  }
-
-  it("the menu reports Copied only after a confirmed write", async () => {
-    const writeText = vi.fn(async () => undefined);
-    try {
-      menuCopy({ writeText });
-      await vi.waitFor(() => expect(hint).toHaveBeenCalledWith(translate("artifact.linkCopied")));
-      expect(writeText).toHaveBeenCalledWith("/?artifact=a&version_id=v1");
-    } finally { vi.unstubAllGlobals(); resetStoreFields(); }
-  });
-
   it.each([
     ["refused", { writeText: () => Promise.reject(new Error("denied")) }],
     ["insecure context", undefined],
-  ])("the menu shows the link instead of Copied when the clipboard is %s", async (_label, clipboard) => {
+  ])("the button shows the link instead of Copied when the clipboard is %s", async (_label, clipboard) => {
     try {
-      menuCopy(clipboard);
+      const { button } = mountExactViewer(clipboard);
+      button?.onclick?.();
       await vi.waitFor(() => expect(hint).toHaveBeenCalled());
       expect(hint).toHaveBeenCalledWith(copyFailedText() + " /?artifact=a&version_id=v1", true);
-      expect(hint).not.toHaveBeenCalledWith(translate("artifact.linkCopied"));
+      expect(button?.textContent).toBe(filesT("files.deeplink.copy"));
     } finally { vi.unstubAllGlobals(); resetStoreFields(); }
   });
 });

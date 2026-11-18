@@ -4,7 +4,7 @@ import {
 } from "../../stores/artifacts";
 import { currentId, sessions } from "../../stores/session";
 import { activeTab, dock, openTabs, provMode } from "../../stores/ui";
-import { bytes, callWindow, el, icon, translate } from "./api";
+import { api, apiErrorText, bytes, callWindow, el, icon, translate } from "./api";
 import { artifactTabKey } from "./cache";
 import { filesT } from "./copy";
 import {
@@ -14,7 +14,7 @@ import {
   versionResolveMessage,
 } from "./deeplink";
 import { labTabLabel, mountLab } from "../lab";
-import { browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
+import { artifactKind, browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
 import { abortPreviewReads } from "./api";
@@ -300,26 +300,60 @@ function paintFilesGrid(): void {
       return;
     }
     const filter = currentFilesFilter();
-    const msg = filter.q || filter.contentType || filter.origin
+    const msg = filter.q || filter.contentType || filter.origin || filter.kind
       ? filesT("files.noMatches")
       : filesScope.value === "project" ? translate("files.emptyProject") : translate("files.empty");
     list.appendChild(el("div", "files-empty", msg));
     return;
   }
   arts.forEach((a) => {
-    const card = el("div", "art");
+    const hidden = (a.priority || 0) < 0;
+    const card = el("div", hidden ? "art art-hidden" : "art");
     card.dataset.artifactId = a.id;
     card.appendChild(tileThumbBig(a));
     card.appendChild(
       el("div", "a-name", ((a.priority || 0) > 0 ? "⭐ " : "") + (a.filename || "artifact")),
     );
-    card.appendChild(el("div", "a-meta", (a.content_type || "") + " · " + bytes(a.size_bytes)));
+    // ART-12: a kind a person reads ("表格"), not a MIME type that overflows.
+    const meta = el("div", "a-meta", filesT("files.filter.kind." + artifactKind(a)) + " · " + bytes(a.size_bytes));
+    meta.title = String(a.content_type || "");
+    card.appendChild(meta);
+    if (hidden) {
+      // Hidden used to be one-way: listed again only through "show hidden".
+      const row = el("div", "a-hidden");
+      row.appendChild(el("span", "a-hidden-badge", filesT("files.hiddenBadge")));
+      const unhide = el("button", "outline-btn small", filesT("artifact.unhide"));
+      unhide.setAttribute("type", "button");
+      unhide.onclick = (event: Event) => {
+        event.stopPropagation();
+        void unhideArtifact(a);
+      };
+      row.appendChild(unhide);
+      card.appendChild(row);
+    }
     if (filesScope.value === "project") {
       card.appendChild(el("div", "a-src", translate("files.fromSession", sessionNameFor(a.root_frame_id))));
     }
     card.onclick = () => presentViewer(a);
     list.appendChild(card);
   });
+}
+
+/** ART-12: put a hidden file back in the list. */
+export async function unhideArtifact(a: ArtifactRow): Promise<void> {
+  try {
+    await api(`/artifacts/${encodeURIComponent(a.id)}/priority`, {
+      method: "POST",
+      body: JSON.stringify({ priority: 0 }),
+    });
+    a.priority = 0;
+    callWindow("hint", filesT("artifact.unhidden", a.filename || ""));
+    if (currentId.value) await loadArtifacts(currentId.value);
+    if (filesScope.value === "project") await browseFiles({ refresh: true });
+    renderFilesGrid();
+  } catch (error) {
+    callWindow("hint", filesT("artifact.unhideFailed", apiErrorText(error)), true);
+  }
 }
 
 let renderViewerImpl: (() => void) | null = null;

@@ -311,3 +311,46 @@ table.sheet th[data-sort="desc"]::after {
   font-weight: 500;
   color: var(--text-300, #55534e);
 }
+
+/* ART-12: order, hidden files and the human type filter. */
+.files-toolbar-extra {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.files-sort {
+  height: 32px;
+  font: inherit;
+  font-size: 13px;
+  padding: 0 8px;
+  border: 1px solid var(--border, #e6dfd8);
+  background: var(--bg, #faf9f5);
+  color: inherit;
+  border-radius: var(--radius, 8px);
+}
+.files-show-hidden {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-300, #55534e);
+  cursor: pointer;
+}
+.files-show-hidden input {
+  margin: 0;
+}
+.art.art-hidden > :not(.a-hidden) {
+  opacity: 0.55;
+}
+.art .a-hidden {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.art .a-hidden-badge {
+  font-size: 11px;
+  color: var(--text-400, #6c6a64);
+}

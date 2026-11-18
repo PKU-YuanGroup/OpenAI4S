@@ -25,7 +25,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`encoding-note.ts`](encoding-note.ts) | UP-4：查看器里“按 GB18030 编码显示（自动识别，非 UTF-8）”提示，经读取的 `onEncoding` 在视图仍挂载时追加；UTF-8 不提示。 |
 | [`events.ts`](events.ts) | `artifact_created` 余下 32 行（app.js:5314-5346）。 |
 | [`files-index.test.ts`](files-index.test.ts) | cursor 生命周期（filter/project 丢弃）、禁止数组 route 回退、首屏 ≤50。 |
-| [`files-index.ts`](files-index.ts) | 只走 B-06 `GET .../artifact-index`。filter fingerprint 丢弃旧 cursor。 |
+| [`files-index.ts`](files-index.ts) | 只走 B-06 `GET .../artifact-index`。filter fingerprint 丢弃旧 cursor。ART-12：`artifactKind`（与服务端同一张类别表）、`kind`/`hidden` 过滤，以及 `sortArtifactsForFiles`（星标在前，再按最新/最早/名称；以前是随机 ID 顺序）。 |
 | [`http-stub.ts`](http-stub.ts) | Vitest 用的 JSON `Response` 替身，带真实 body 流，使有界读取与浏览器一致。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
 | [`links.test.ts`](links.test.ts) | 普通点击会话内的制品链接会打开 Viewer；带修饰键的点击、其他会话的制品、精确版本链接与外部链接仍交给浏览器。 |
@@ -52,7 +52,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`text-encoding.test.ts`](text-encoding.test.ts) | UTF-8 及其 BOM 不变、识别 GBK、UTF-16 LE/BE BOM、二进制与 Windows-1252 不会被当成中文、面向用户的编码名称。 |
 | [`thumbs.test.ts`](thumbs.test.ts) | 每个产物版本只读一次；错误页和失败的读取不缓存；LRU 上限。 |
 | [`types.ts`](types.ts) | Artifact DTO、页大小 50/100、TEXT_EXT / MOL_EXT。 |
-| [`ui.ts`](ui.ts) | Files 网格、dock 标签、`openViewer`、深链；`renderViewer` 交给 islands 的 Viewer。提供 `version_id` 时绝不静默 latest。 |
+| [`ui.ts`](ui.ts) | Files 网格、dock 标签、`openViewer`、深链；`renderViewer` 交给 islands 的 Viewer。提供 `version_id` 时绝不静默 latest。卡片显示按人能读懂的类型而非 MIME，被隐藏的文件显示「已隐藏」与「在列表中显示」（`unhideArtifact`，ART-12）。 |
 | [`ui.test.ts`](ui.test.ts) | 深链 apply / `openViewer` 精确 pin / stale 不打开 latest。 |
 | [`editor.ts`](editor.ts) | 版本绑定草稿、有界 UTF-8 存储、校验读取与条件保存。UTF-8 BOM 不进入文本框，保存时放回文件最前（ART-13），在开头输入的字符不会跑到 BOM 前面。 |
 | [`editor-view.ts`](editor-view.ts) | 编辑控件及冲突／未知结果的只读恢复。 |
