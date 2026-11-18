@@ -250,6 +250,8 @@ function PathStep({
           <button
             key={item}
             type="button"
+            role="tab"
+            aria-selected={kind === item}
             class={"onb-step" + (kind === item ? " active" : "")}
             onClick={() => { invalidateDiscovery(); setKind(item); }}
           >
@@ -386,6 +388,9 @@ function PathStep({
           </button>
         </div>
       ) : null}
+      {kind === "local" && locals.length ? (
+        <div class="ds">{ot("onboarding.path.localHint")}</div>
+      ) : null}
       {kind === "local" ? (
         locals.length ? (
           locals.map((endpoint) => (
@@ -412,7 +417,7 @@ function PathStep({
             </label>
           ))
         ) : (
-          <div class="ds">{ot("onboarding.path.empty")}</div>
+          <div class="ds">{ot("onboarding.path.localEmpty")}</div>
         )
       ) : null}
       {kind === "local" && state.path?.kind === "local" ? (
@@ -891,6 +896,7 @@ export function WizardHost() {
                 key={item.step}
                 type="button"
                 class={"onb-step" + (item.done ? " done" : "")}
+                aria-label={item.done ? ot("onboarding.step.done", stepLabel(item.step)) : undefined}
                 onClick={() => {
                   if (item.step === "readiness") dispatch({ type: "markReadinessSeen" });
                   dispatch({ type: "goto", step: item.step });
@@ -903,20 +909,40 @@ export function WizardHost() {
           </div>
         ) : state.surface === "wizard" ? (
           <>
-            <div class="onb-steps">
-              {REQUIRED_STEPS.map((step, index) => (
-                <span
-                  key={step}
-                  class={
-                    "onb-step" +
-                    (state.step === step ? " active" : "") +
-                    (state.decided.includes(step) ? " done" : "")
-                  }
-                >
-                  {index + 1}/{REQUIRED_STEPS.length} {stepLabel(step)}
-                </span>
-              ))}
-            </div>
+            {/* The rail looked clickable and was not: only the Checklist could
+                move between steps, and nothing on the rail said which were done. */}
+            <nav class="onb-steps onb-rail" aria-label={ot("onboarding.checklist.title")}>
+              {REQUIRED_STEPS.map((step, index) => {
+                const done = state.decided.includes(step);
+                const label = stepLabel(step);
+                return (
+                  <button
+                    key={step}
+                    type="button"
+                    class={
+                      "onb-step" +
+                      (state.step === step ? " active" : "") +
+                      (done ? " done" : "")
+                    }
+                    aria-current={state.step === step ? "step" : undefined}
+                    title={ot("onboarding.step.goto", index + 1, label)}
+                    aria-label={done ? ot("onboarding.step.done", label) : label}
+                    disabled={busy}
+                    onClick={() => {
+                      if (step === state.step) return;
+                      if (state.step === "test") leaveTest();
+                      if (step === "readiness") dispatch({ type: "markReadinessSeen" });
+                      dispatch({ type: "goto", step });
+                    }}
+                  >
+                    <span class="onb-step-n" aria-hidden="true">
+                      {done ? "✓" : index + 1}
+                    </span>
+                    {label}
+                  </button>
+                );
+              })}
+            </nav>
             {state.step === "path" && status ? (
               <PathStep
                 status={status}

@@ -39,9 +39,22 @@ export function CopyCommand({ item }: { item: { command: string; label: string }
   );
 }
 
+/** A standard environment's name with what it is: "python" alone read as "your Python". */
+function environmentLabel(name: string): string {
+  const key = "onboarding.env.name." + name;
+  const label = ot(key);
+  return label === key ? name : label;
+}
+
 /**
  * The standard-profile readiness card: first-run setup shows it, and so does
  * Settings -> Compute, which adds a Refresh `action` to its head.
+ *
+ * An environment that does not exist yet is listed once, with what it is.
+ * Its whole manifest used to be listed again as "packages missing from
+ * python", which read as numpy and pandas missing from the Python the
+ * sessions run on (the daemon's own, where they are installed), and nothing
+ * said whether any of it mattered.
  */
 export function EnvironmentCard({
   readiness,
@@ -50,32 +63,36 @@ export function EnvironmentCard({
   readiness: StandardReadiness;
   action?: ComponentChildren;
 }) {
+  const absent = readiness.missing_environments;
   return (
     <section class={"standard-readiness-card state-" + readiness.state}>
       <div class="standard-readiness-head">
         <div>
-          <div class="standard-readiness-title">{t("environment.readiness.cardTitle")}</div>
+          <div class="standard-readiness-title">{ot("onboarding.env.title")}</div>
           <div class="standard-readiness-summary">{standardReadinessStateText(readiness)}</div>
         </div>
         {action}
       </div>
-      {readiness.missing_environments.length ? (
+      {readiness.ready ? null : (
+        <div class="standard-readiness-explicit" data-readiness-optional="">
+          {ot("onboarding.env.optional")}
+        </div>
+      )}
+      {absent.length ? (
         <div class="standard-readiness-gap">
-          <div class="standard-readiness-label">
-            {t("environment.readiness.missingEnvironments")}
-          </div>
+          <div class="standard-readiness-label">{ot("onboarding.env.missing")}</div>
           <ul>
-            {readiness.missing_environments.map((name) => (
-              <li key={name}>{name}</li>
+            {absent.map((name) => (
+              <li key={name}>{environmentLabel(name)}</li>
             ))}
           </ul>
         </div>
       ) : null}
       {Object.entries(readiness.missing_packages).map(([environment, packages]) =>
-        packages.length ? (
+        packages.length && !absent.includes(environment) ? (
           <div class="standard-readiness-gap" key={environment}>
             <div class="standard-readiness-label">
-              {t("environment.readiness.missingPackages", environment)}
+              {ot("onboarding.env.missingPackages", environment)}
             </div>
             <ul class="standard-readiness-packages">
               {packages.map((packageName) => (
@@ -89,17 +106,31 @@ export function EnvironmentCard({
       readiness.remediation.requires_explicit_action &&
       readiness.remediation.commands.length ? (
         <div class="standard-readiness-remediation">
-          <div class="standard-readiness-label">{t("environment.readiness.remediation")}</div>
+          <div class="standard-readiness-label">{ot("onboarding.env.remediation")}</div>
           <div class="standard-readiness-explicit">{t("environment.readiness.explicitOnly")}</div>
           {readiness.remediation.commands.map((item) => (
             <CopyCommand key={item.command} item={item} />
           ))}
+          <div class="standard-readiness-explicit">{ot("onboarding.env.notOnPath")}</div>
         </div>
       ) : null}
     </section>
   );
 }
 
+/** `platform.system()` as people name it. */
+function systemName(platform: string): string {
+  if (platform === "Darwin") return "macOS";
+  return platform || "—";
+}
+
+/**
+ * Network access in two parts that work differently (ENV-3): requests the app
+ * makes for the agent (web search, web pages, science databases), which the
+ * Settings switch and the domain limit govern, and code running in cells,
+ * which the kernel sandbox blocks by default. "Allow network: yes · egress:
+ * off · Contacted anyone: no" named the flags, not what they do.
+ */
 function NetworkCard({
   network,
   platform,
@@ -109,15 +140,31 @@ function NetworkCard({
   platform: string;
   nativeRuntime: boolean;
 }) {
-  const yn = (value: boolean) => (value ? ot("onboarding.readiness.yes") : ot("onboarding.readiness.no"));
   return (
-    <section class="standard-readiness-card">
+    <section class="standard-readiness-card" data-onboarding-network="">
       <div class="standard-readiness-title">{ot("onboarding.readiness.network")}</div>
-      <div class="ds">{ot("onboarding.readiness.allowNetwork", yn(network.allow_network))}</div>
-      <div class="ds">{ot("onboarding.readiness.egress", network.egress)}</div>
-      <div class="ds">{ot("onboarding.readiness.contacted", yn(network.contacted))}</div>
-      <div class="ds">{ot("onboarding.readiness.platform", platform || "—")}</div>
+      <div class="ds" data-network="app">
+        {ot(
+          "onboarding.readiness.appNetwork",
+          network.allow_network
+            ? ot("onboarding.readiness.appNetworkOn")
+            : ot("onboarding.readiness.appNetworkOff"),
+        )}{" "}
+        {ot("onboarding.readiness.modelAlways")}
+      </div>
+      <div class="ds" data-network="egress">
+        {network.egress === "allowlist"
+          ? ot("onboarding.readiness.egressOn")
+          : ot("onboarding.readiness.egressOff")}
+      </div>
+      <div class="ds" data-network="kernel">
+        {ot("onboarding.readiness.kernelNetwork")}
+      </div>
+      {network.contacted ? null : (
+        <div class="ds">{ot("onboarding.readiness.notContacted")}</div>
+      )}
       <div class="ds">
+        {ot("onboarding.readiness.platform", systemName(platform))} ·{" "}
         {nativeRuntime ? ot("onboarding.readiness.runtimeYes") : ot("onboarding.readiness.runtimeNo")}
       </div>
     </section>
