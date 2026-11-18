@@ -2116,6 +2116,12 @@ html[data-theme="dark"] .activity .a-head:hover{background:var(--bg-100)}
 .generated,.uploaded{margin:4px auto 20px}
 .gen-label{margin-bottom:10px;font-size:13px;font-weight:500;letter-spacing:0;color:var(--text-400)}
 .gen-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px}
+.generated>summary.gen-label,.uploaded>summary.gen-label{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;margin-bottom:0;width:max-content}
+.generated>summary.gen-label::-webkit-details-marker,.uploaded>summary.gen-label::-webkit-details-marker{display:none}
+.generated>summary.gen-label::before,.uploaded>summary.gen-label::before{content:"\25B8";font-size:10px;transition:transform .15s}
+.generated[open]>summary.gen-label::before,.uploaded[open]>summary.gen-label::before{transform:rotate(90deg)}
+.generated[open]>summary.gen-label,.uploaded[open]>summary.gen-label{margin-bottom:10px}
+.generated,.uploaded{margin-top:2px;margin-bottom:10px}
 .tile{width:auto;gap:8px;padding:6px 6px 10px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg);box-shadow:none}
 .tile:hover{border-color:var(--bg-300);background:var(--bg-100);box-shadow:none}
 .tile .thumb{height:84px;border:0;border-radius:var(--radius);background:var(--bg-200)}

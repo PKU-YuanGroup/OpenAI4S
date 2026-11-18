@@ -196,6 +196,9 @@ export function sessionNameFor(frameId: string | null | undefined): string {
   return (f && (f.name || f.task_summary)) || translate("conv.title.default");
 }
 
+/** ART-9: strips the reader opened, by `session:kind`; collapsed is the default. */
+const stripOpen = new Map<string, boolean>();
+
 export function renderConversationArtifacts(): void {
   if (typeof document === "undefined") return;
   document.querySelectorAll(".generated, .uploaded").forEach((n) => n.remove());
@@ -218,20 +221,39 @@ export function renderConversationArtifacts(): void {
   const CAP = 6;
   const section = (cls: string, label: string, list: ArtifactRow[]) => {
     if (!list.length) return;
-    const g = el("div", cls);
-    g.appendChild(el("div", "gen-label", `${label} · ${list.length}`));
+    // ART-9: the strips sat at the end of the conversation as two rows of
+    // cards, ~60% of a 1024x768 viewport, pushing the running cell and the
+    // latest narration out of view. They are one collapsed line now; the
+    // reader's choice to open one is kept for the session across repaints,
+    // and tiles (and their thumbnail reads) are built only once opened.
+    const g = el("details", cls) as HTMLDetailsElement;
+    const key = `${currentId.value || ""}:${cls}`;
+    g.appendChild(el("summary", "gen-label", `${label} · ${list.length}`));
     const tiles = el("div", "gen-tiles");
-    if (list.length <= CAP) {
-      list.forEach((a) => tiles.appendChild(mkTile(a)));
-    } else {
-      list.slice(0, CAP - 1).forEach((a) => tiles.appendChild(mkTile(a)));
-      const more = el("div", "tile tile-more");
-      more.appendChild(el("div", "tile-more-n", translate("gen.more", list.length - (CAP - 1))));
-      more.onclick = () => {
-        more.remove();
-        list.slice(CAP - 1).forEach((a) => tiles.appendChild(mkTile(a)));
-      };
-      tiles.appendChild(more);
+    let built = false;
+    const build = () => {
+      if (built) return;
+      built = true;
+      if (list.length <= CAP) {
+        list.forEach((a) => tiles.appendChild(mkTile(a)));
+      } else {
+        list.slice(0, CAP - 1).forEach((a) => tiles.appendChild(mkTile(a)));
+        const more = el("div", "tile tile-more");
+        more.appendChild(el("div", "tile-more-n", translate("gen.more", list.length - (CAP - 1))));
+        more.onclick = () => {
+          more.remove();
+          list.slice(CAP - 1).forEach((a) => tiles.appendChild(mkTile(a)));
+        };
+        tiles.appendChild(more);
+      }
+    };
+    g.ontoggle = () => {
+      stripOpen.set(key, !!g.open);
+      if (g.open) build();
+    };
+    if (stripOpen.get(key) === true) {
+      g.open = true;
+      build();
     }
     g.appendChild(tiles);
     const host = document.getElementById("messages");
