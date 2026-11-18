@@ -2009,6 +2009,11 @@ html[data-theme="dark"] .toggle:disabled{background:var(--bg-300)}
 .session.running .s-dot{display:inline-block;order:2;width:10px;height:10px;border:1.5px solid var(--text-000);border-right-color:transparent;border-radius:50%;background:transparent;animation:spin 1s linear infinite}
 .s-badge.run{background:transparent;color:var(--text-400);font-weight:500;animation:none}
 .s-badge.live{background:var(--success)}
+/* a turn blocked on an approval request: not a spinner, a call to act */
+.session.awaiting .s-dot{border:0;background:var(--warn);animation:none}
+.s-badge.run.approval{background:var(--warn-bg);color:var(--warn-text);font-weight:600}
+.jump-pill.approval{border-color:var(--warn);background:var(--warn-bg);color:var(--warn-text)}
+.jump-pill.approval:hover{background:var(--warn-bg);color:var(--warn-text)}
 .folder-head{height:36px;padding:0 12px;border-radius:var(--radius);font-size:14px;font-weight:500;color:var(--text-000)}
 .folder-count{background:var(--bg-200);border-radius:999px;padding:0 7px}
 .side-foot{padding:12px 0 0;margin-top:4px;gap:4px}

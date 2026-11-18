@@ -103,6 +103,13 @@ export function patchSessionFromFrameUpdate(m: WsMessage): void {
   if (status === "processing") row.running = true;
   if (typeof status === "string" && TERMINAL_FRAME_STATUS.includes(status)) {
     row.running = false;
+    row.awaiting_approval = false;
+  }
+  // `session_status` for an approval request opening or being answered: the
+  // row says "waiting for approval" rather than "running" while one is open.
+  if (status === "approval" && typeof m.awaiting_approval === "boolean") {
+    row.awaiting_approval = m.awaiting_approval;
+    if (m.awaiting_approval) row.running = true;
   }
   if (status === "titled" && m.task_summary) row.task_summary = m.task_summary;
   if (status === "updated") {

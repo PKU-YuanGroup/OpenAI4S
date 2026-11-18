@@ -8,6 +8,7 @@
 
 import { LANG, t } from "../../i18n/runtime";
 import { permCards, running } from "../../stores/stream";
+import { syncPendingApproval } from "../messages/approval";
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
 import { adoptIntoLiveStream, ensure, placeInLiveStream, type LiveStream } from "../messages/stream";
@@ -403,6 +404,9 @@ export function markPermCard(
     };
     h.card.appendChild(cont);
   }
+  // Not while a reopen paints history off-DOM: that registry is not the one
+  // on screen until the paint swaps it in (messages/open.ts syncs then).
+  if (h.card.isConnected) syncPendingApproval();
 }
 
 export function renderPermissionCard(m: PermEvent): void {
@@ -414,6 +418,7 @@ export function renderPermissionCard(m: PermEvent): void {
     // Rendered from stored history by a reopen; the replayed (or re-sent
     // pending) event places it in the running turn, as a step's does.
     if (adoptIntoLiveStream(prev.card)) down();
+    if (!prev.resolved) syncPendingApproval({ reveal: true });
     return;
   }
   let st: LiveStream | null = null;
@@ -435,6 +440,8 @@ export function renderPermissionCard(m: PermEvent): void {
   }
   reg[id] = handle;
   down();
+  // The turn is blocked on this card: say so everywhere and bring it into view.
+  syncPendingApproval({ reveal: true });
 }
 
 /** A durable approval request as `GET /frames/{fid}/approvals` returns it. */

@@ -15,8 +15,8 @@ M-02 仪表盘「需要处理」卡片流。数据来自 `GET /api/v1/attention`
 | [`copy.ts`](copy.ts) | M-02 覆盖文案（不改生成的 i18n 字典）。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
 | [`mutations.ts`](mutations.ts) | 把 approve/restore/retry hint 映射到现有 POST 路由。 |
-| [`navigate.test.ts`](navigate.test.ts) | 闭集 target → 本地 session 路径 + exact dock；忽略 URL 字段。 |
-| [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`。 |
+| [`navigate.test.ts`](navigate.test.ts) | 闭集 target → 本地 session 路径 + exact dock；忽略 URL 字段；审批打开在卡片上而不是时间线。 |
+| [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`。审批（`security` dock）打开会话并停在对话里的审批卡片上，而不是打开行动时间线面板。 |
 | [`parse.ts`](parse.ts) | 闭集 item 解析与 `cardsFromItems` 映射。 |
 | [`poll.ts`](poll.ts) | `shouldFetchAttention`：只在仪表盘可见且页面可见时读取。 |
 | [`state.ts`](state.ts) | 车道局部 signal。不上升进 `stores/`。 |

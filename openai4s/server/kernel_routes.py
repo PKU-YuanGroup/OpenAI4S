@@ -378,6 +378,11 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
                 # and the alternative, reading a cached session list, is stale
                 # by construction.
                 "status": (runner.store.get_frame(fid) or {}).get("status"),
+                # A running turn blocked on an approval request reads
+                # `processing` like any other; this is what tells them apart.
+                "awaiting_approval": bool(
+                    getattr(runner, "approval_waiting", lambda _fid: False)(fid)
+                ),
                 "kernel": runner.kernel_status(fid),
             }
         )

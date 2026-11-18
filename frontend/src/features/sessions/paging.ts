@@ -22,6 +22,8 @@ export type SessionLike = {
   updated_at?: string;
   message_count?: number;
   running?: boolean;
+  /** A running turn blocked on an approval request (`GET /frames`). */
+  awaiting_approval?: boolean;
   kernel_alive?: boolean;
 };
 export type FolderLike = { folder_id?: string; name?: string };

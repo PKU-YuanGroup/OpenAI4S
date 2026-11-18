@@ -9,6 +9,8 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | 文件 | 职责 |
 | --- | --- |
 | [`failure.ts`](failure.ts) | 实时与重开会话共用的失败提示；流式中断或重复动作停止后提供显式继续入口。 |
+| [`approval.ts`](approval.ts) | 等待批准是独立状态：当前会话里未作答的卡片决定输入框状态行、标签页标题前缀、会话行徽标（其他会话行用服务端的 `awaiting_approval`）和跳转按钮，并在卡片出现、会话打开时停在卡片上、以及从首页「去批准」进入时，把卡片的按钮滚到跳转按钮上方可见处。叶子模块：不引用 `sessions/` 或 `scroll.ts`。功能内文案。 |
+| [`approval.test.ts`](approval.test.ts) | 标题、状态行和会话行徽标随未作答卡片及其答复变化；卡片滚入视野且不被跳转按钮遮住；卡片不在视野时跳转按钮指向它，之后恢复「最新」。 |
 | [`cardState.ts`](cardState.ts) | 实时活动卡片的状态：新的单元卡片显示进度图标（而非成功对勾）并记录 `producing_cell_id`；`notebook_cell_finished`（由 Notebook 的处理器转发）把该卡片标为失败（x 图标、错误色边条、"失败 · N 行"）、成功或已停止；因 Host 调用被拒绝而结束的单元标为中性的「已拒绝」（锁图标，"你拒绝了 · 未执行"），等待批准时被停止的标为已停止；`turnDone` 把仍在运行的卡片收尾为中性的"已结束"。单元结束后，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"，单元自带标题保留。功能内文案。 |
 | [`copy.ts`](copy.ts) | 当前UI所属的双语历史恢复与“会话不存在”文案；不改自动提取的语言文件。 |
 | [`declined.ts`](declined.ts) | 拒绝不是失败：识别被拒绝的 Host 调用（步骤的 `output.error` "Permission denied: …"，或单元最后抛出的 "bash: / host.X error: Permission denied: …"，从不把系统 `PermissionError` 算进来），区分你拒绝的、规则拒绝的、等待批准时被「停止」取消的和审批超时的，并用界面语言给出状态与原因（功能内文案）。 |
@@ -32,7 +34,7 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`open.test.ts`](open.test.ts) | 指向不存在会话的链接会如实说明（不读历史、不订阅），项目 id 错误的链接会转到会话所属的项目；Notebook 单元的步骤不进入聊天（智能体步骤会取代欢迎页）；按打开代次保护历史失败、只读重试、REST/WS 交错与已展开旧页保留；新会话的 Notebook 只含自己的单元（从已打开会话新建、从主页返回后新建、上一会话的读取迟到）。 |
 | [`planPrompt.ts`](planPrompt.ts) | 计划模式行重开后显示用户自己写的内容：`planModeRequestText` 从存储的用户行中去掉计划模式提示（工作台、旧版 app.js、修订种子），与 `openai4s/server/plans.py` 一致；`planSeed` / `planSeedMarker` 把批准或继续执行的种子渲染为一行弱化的"已批准计划：…"（功能内文案）。存储的行不变。 |
 | [`raf.ts`](raf.ts) | 共用 `requestAnimationFrame` / setTimeout 回退。 |
-| [`scroll.ts`](scroll.ts) | `down` / `updateJumpPill` 合并进一个 rAF；节流 scroll 监听，由 `bindMessageScroll` 在渲染后绑定。scroll 事件只测量并刷新跳转按钮，只有 `down()` 会滚动。 |
+| [`scroll.ts`](scroll.ts) | `down` / `updateJumpPill` 合并进一个 rAF；节流 scroll 监听，由 `bindMessageScroll` 在渲染后绑定。scroll 事件只测量并刷新跳转按钮，只有 `down()` 会滚动。有待批准卡片不在视野内时，跳转按钮指向它（「待批准」，其 `data-i18n` 暂存起来，切换语言的重绘不会改回「最新」），点击把卡片带回视野。 |
 | [`scroll.test.ts`](scroll.test.ts) | scroll 事件从不滚动（位于 80px 容差内的读者不会被拉回底部）；`down()` 只在跟随时滚动；`down(true)` 与跳转按钮总会跳到底部。 |
 | [`stopped.ts`](stopped.ts) | 已停止回合标记：带 `cancelled` 的 `text_chunk` 或存储行渲染为同一个标记（功能内文案），仍在运行的活动卡片经 `cardState.ts` 标为已停止（停止图标，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"；已收到自身结果的卡片保持该结果），漏收标记块的 `cancelled` 终态也补上同一标记。 |
 | [`stopped.test.ts`](stopped.test.ts) | 实时渲染为标记而非正文；已停止卡片（图标、替换生成标题、保留单元自带标题）与先完成的卡片区分；终态兜底不重复；两个存储渲染器重开一致；畸形元数据仍按正文渲染。经真实 `notebook_cell_finished` 处理器验证卡片结果：抛错的单元以失败收尾（无对勾、无运行中标题），成功保留对勾，被中断的单元只标一次已停止，只重绘所指单元的卡片，未收到结果的卡片不会在回合结束后仍显示运行中。经两个存储渲染器验证计划模式行：提示行的气泡是任务（中/英），修订行是修改意见，批准种子是计划标记，普通文字不受影响。 |

@@ -20,6 +20,7 @@ import {
   stream as liveStream,
 } from "../../stores/stream";
 import { loadArtifacts } from "../artifacts/load";
+import { syncPendingApproval } from "../messages/approval";
 import { settleRunningCards } from "../messages/cardState";
 import { $ } from "../messages/dom";
 import { canContinueFailure, failureCodeHint, failureMeta } from "../messages/failure";
@@ -89,6 +90,9 @@ export function turnDone(status: string, detail?: unknown): void {
   const mm = $("#messages");
   if (mm) mm.querySelectorAll(".md.cursor").forEach((n) => n.classList.remove("cursor"));
   hint(status === "failed" ? failureHint(detail) : "", status === "failed");
+  // A turn that ended took its approval wait with it (an open card left over
+  // is answered by `reconcilePermissionCards`); the title and row follow.
+  syncPendingApproval();
   closeTurnTicket();
   notebookOnTurnDone();
   if (currentId.value) {

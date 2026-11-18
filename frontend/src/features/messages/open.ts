@@ -109,6 +109,7 @@ import { loadSessions, renderSessions } from "../sessions/load";
 import { openProject, renderProjMenu } from "../sessions/projects";
 import { sub, unsub } from "../ws/connect";
 import { apiGet, fetchRecentMessages, recordRows, uniqueMessages, MESSAGE_PAGE_SIZE } from "./fetch";
+import { syncPendingApproval } from "./approval";
 import { ensureMessageDom, messagesHost } from "./dom";
 import {
   cancelFramedRender,
@@ -202,6 +203,9 @@ function resetSessionScoped(): void {
   // ResizeObserver can only be released through the view object itself.
   destroyActionTimelineView();
   _timelineView.value = null;
+  // The previous session's open approval no longer titles the tab or
+  // badges its row from this view.
+  syncPendingApproval();
 }
 
 /**
@@ -412,6 +416,8 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       // loaded row. A re-read of the transcript on screen leaves a reader
       // who scrolled up where they are.
       down(!cached);
+      // A session waiting on an approval opens on that card, not below it.
+      syncPendingApproval({ reveal: true });
     }
   }
   if (deferred) {

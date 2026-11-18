@@ -143,8 +143,16 @@ def test_status_combines_the_turn_and_the_kernel(tmp_path):
         # completed, cancelled and failed alike, and a client reopening a
         # session needs to know which before it can restore anything.
         "status": "ready",
+        # A turn blocked on an approval request reads `processing` like any
+        # running turn; this is what tells the two apart.
+        "awaiting_approval": False,
         "kernel": {"state": "busy"},
     }
+
+    runner.approval_waiting = lambda f: f == fid
+    code, payload = _call(handler, "GET", f"/frames/{fid}/status")
+    assert code == 200
+    assert payload["awaiting_approval"] is True
 
 
 @pytest.mark.stubbed_backend

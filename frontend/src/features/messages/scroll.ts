@@ -7,7 +7,15 @@
  * 5509).
  */
 
+import { t } from "../../i18n/runtime";
 import { _messagesFollow } from "../../stores/ui";
+import {
+  approvalCardInView,
+  approvalCopy,
+  pendingApprovalCard,
+  revealPendingApproval,
+  setApprovalPillPainter,
+} from "./approval";
 import { $, messagesHost } from "./dom";
 import { cancelFrame, scheduleFrame } from "./raf";
 
@@ -29,7 +37,54 @@ export function paintJumpPill(): void {
   const m = messagesHost();
   const pill = $("#jump-pill");
   if (!m || !pill) return;
-  pill.classList.toggle("hidden", messagesAtBottom(m, 60));
+  // An open approval card the user cannot see turns the pill into a pointer
+  // to it: the turn is blocked on that card, not on the newest row.
+  const card = pendingApprovalCard();
+  const toApproval = !!card && !approvalCardInView(card, m);
+  paintPillMode(pill, toApproval);
+  pill.classList.toggle("hidden", !toApproval && messagesAtBottom(m, 60));
+}
+
+/**
+ * Swap the pill's label between "Latest" and "Approval needed". The static
+ * labels carry `data-i18n` for a language switch's repaint; while the pill
+ * points at a card those attributes are parked, so a repaint cannot put
+ * "Latest" back over it.
+ */
+let pillToApproval = false;
+
+function paintPillMode(pill: HTMLElement, toApproval: boolean): void {
+  if (!toApproval && !pillToApproval) return;
+  pillToApproval = toApproval;
+  const label = pill.querySelector(".jp-lbl") as HTMLElement | null;
+  pill.classList.toggle("approval", toApproval);
+  if (toApproval) {
+    if (label) {
+      if (label.dataset.i18n) {
+        label.dataset.i18nParked = label.dataset.i18n;
+        delete label.dataset.i18n;
+      }
+      label.textContent = approvalCopy("pill");
+    }
+    if (pill.dataset.i18nTitle) {
+      pill.dataset.i18nTitleParked = pill.dataset.i18nTitle;
+      delete pill.dataset.i18nTitle;
+    }
+    pill.title = approvalCopy("pillTitle");
+    return;
+  }
+  if (label) {
+    if (label.dataset.i18nParked) {
+      label.dataset.i18n = label.dataset.i18nParked;
+      delete label.dataset.i18nParked;
+    }
+    label.textContent = t("conv.jumpLastLabel");
+  }
+  if (pill.dataset.i18nTitleParked) {
+    pill.dataset.i18nTitle = pill.dataset.i18nTitleParked;
+    delete pill.dataset.i18nTitleParked;
+  }
+  pill.title = t("conv.jumpLast");
 }
 
 function flushScroll(): void {
@@ -80,6 +135,10 @@ function onMessagesScroll(): void {
 }
 
 function onJumpPillClick(): void {
+  if (pillToApproval && revealPendingApproval()) {
+    paintJumpPill();
+    return;
+  }
   down(true);
 }
 
@@ -91,6 +150,9 @@ function onJumpPillClick(): void {
  */
 export function bindMessageScroll(host?: HTMLElement | null): void {
   unbindMessageScroll();
+  // An open approval card repaints the pill (approval.ts cannot import this
+  // module: sessions/chrome -> sessions/dom -> here already imports it).
+  setApprovalPillPainter(paintJumpPill);
   const m = host || messagesHost();
   const pill = $("#jump-pill");
   if (m) {
@@ -117,6 +179,7 @@ export function unbindMessageScroll(): void {
   pendingDown = false;
   pendingForce = false;
   pendingMeasure = false;
+  pillToApproval = false;
 }
 
 /** Flush a pending rAF immediately (tests). */
