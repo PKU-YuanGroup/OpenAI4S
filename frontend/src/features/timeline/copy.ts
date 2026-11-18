@@ -44,3 +44,59 @@ const COPY: CopyTable = {
 };
 
 export const computeRecordsT = copyLookup(COPY);
+
+/**
+ * NAV-6: the side panels in a scientist's words. The sandbox row showed the
+ * raw self-test JSON and "durable-policy"; the context panel's token layers
+ * were on view by default. Plain status first, raw values under "details".
+ */
+const WORKBENCH: CopyTable = {
+  zh: {
+    "wb.security.title": "沙盒与权限",
+    "wb.security.sandbox": "沙盒",
+    "wb.security.notStarted": "运行第一个单元后才能确认",
+    "wb.security.on": "已启用",
+    "wb.security.off": "未启用：代码在没有系统沙盒的情况下运行",
+    "wb.security.selfTest": "自检",
+    "wb.security.passed": "通过",
+    "wb.security.notPassed": "未通过",
+    "wb.security.network": "内核联网",
+    "wb.security.net.blocked": "已阻止：单元里的代码不能直接上网",
+    "wb.security.net.allowed": "已放开：单元里的代码可以直接上网",
+    "wb.security.net.unproven": "没有确认被阻止",
+    "wb.security.net.unknown": "运行第一个单元后才能确认",
+    "wb.security.approvals": "待批准",
+    "wb.security.pending": "{0} 项等待你批准",
+    "wb.security.none": "没有等待批准的操作",
+    "wb.security.kernel": "内核",
+    "wb.security.kernelEnded": "{0} 内核已结束：{1}",
+    "wb.details": "技术细节",
+    "wb.diagnostics": "诊断：模型上下文",
+    "wb.diagnosticsHint": "这一轮发给模型的内容由哪些部分组成、各占多少 token。排查问题时才需要看。",
+  },
+  en: {
+    "wb.security.title": "Sandbox and permissions",
+    "wb.security.sandbox": "Sandbox",
+    "wb.security.notStarted": "Confirmed once the first cell runs",
+    "wb.security.on": "On",
+    "wb.security.off": "Off: code runs without the system sandbox",
+    "wb.security.selfTest": "Self-test",
+    "wb.security.passed": "passed",
+    "wb.security.notPassed": "not passed",
+    "wb.security.network": "Kernel networking",
+    "wb.security.net.blocked": "Blocked: code in cells cannot go online directly",
+    "wb.security.net.allowed": "Open: code in cells can go online directly",
+    "wb.security.net.unproven": "Not confirmed as blocked",
+    "wb.security.net.unknown": "Confirmed once the first cell runs",
+    "wb.security.approvals": "Approvals",
+    "wb.security.pending": "{0} waiting for you",
+    "wb.security.none": "Nothing waiting for approval",
+    "wb.security.kernel": "Kernel",
+    "wb.security.kernelEnded": "{0} kernel ended: {1}",
+    "wb.details": "Technical details",
+    "wb.diagnostics": "Diagnostics: model context",
+    "wb.diagnosticsHint": "What this turn sent to the model, part by part, with token counts. Only needed when troubleshooting.",
+  },
+};
+
+export const workbenchT = copyLookup(WORKBENCH);

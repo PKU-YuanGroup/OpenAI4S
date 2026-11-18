@@ -14,7 +14,7 @@ F-19 Customize 模态。九个 tab 组件、嵌套编辑层，以及 `vendors/` 
 | [`Customize.tsx`](Customize.tsx) | `#cust` 外壳、tablist、Esc / 背景关闭。 |
 | [`Customize.test.tsx`](Customize.test.tsx) | 在输入框里拖选文字、到 Customize 或嵌套编辑器的遮罩上才松开，弹窗保持打开；在遮罩上按下仍会关闭。加载状态变化或嵌套编辑器开关不会让模态重新渲染；Skills 与 Memory tab 只在项目变化时重新渲染，不随每次会话列表更新重新渲染。 |
 | [`NotebookReplSetting.tsx`](NotebookReplSetting.tsx) | 「通用」页上的「Notebook 手动单元」开关（`GET`/`PUT /notebook/settings`）：默认关闭；`OPENAI4S_NOTEBOOK_REPL` 强制开启时、或团队模式下非管理员时锁定；改动后让已打开的 Notebook 重新读取。 |
-| [`GeneralTab.tsx`](GeneralTab.tsx) | 主题、布局、语言、API key 快捷入口、Notebook 手动单元开关，以及「版本与更新」一行。选主题、布局或语言只在原处更新对应的分段控件；语言控件还提供「跟随系统」（按浏览器语言顺序），在用户选定语言之前显示的就是它。 |
+| [`GeneralTab.tsx`](GeneralTab.tsx) | 主题、布局、语言、API key 快捷入口、Notebook 手动单元开关，以及「版本与更新」一行。选主题、布局或语言只在原处更新对应的分段控件；语言控件还提供「跟随系统」（按浏览器语言顺序），在用户选定语言之前显示的就是它。 `LabTabSetting` 显示或隐藏实验室标签。 |
 | [`GeneralTab.test.tsx`](GeneralTab.test.tsx) | 选主题或布局只移动它自己的分段控件，不重新挂载，也不重新读取整个 tab；语言控件提供「跟随系统」，未保存选择时显示它，并把每次选择交给 `setLang`。 |
 | [`UpdateCheck.tsx`](UpdateCheck.tsx) | U2「版本与更新」一行（附录 B.2）：挂载只读本地 `GET /updates/status`；「检查更新」发 `{refresh:false}`、「强制重新检查」发 `{refresh:true}`。显示运行/最新版本、安装渠道、缓存年龄、检查时间、两词信任摘要（作者身份始终「未验证」），`unknown` 时显示原因码与上次已知答案及时间；只有 `up_to_date` 才显示「已是最新版本」。渠道的 refusal 命令仅作可复制文本、绝不执行——无下载、安装、重启、一键升级或轮询。 |
 | [`UpdateCheck.test.tsx`](UpdateCheck.test.tsx) | Vitest（HTTP 替身）：挂载只发一次本地 GET、无 POST；两个按钮分别恰发一次 `{refresh:false}` / `{refresh:true}`；双击只发一次 POST；429 显示有界等待；`unknown` 显示原因与上次答案；`admin_only` 拒绝后隐藏按钮；畸形载荷降级为「无法读取」；refusal 命令可复制且不存在安装/下载/重启动作；卸载后到达的答复被丢弃。 |

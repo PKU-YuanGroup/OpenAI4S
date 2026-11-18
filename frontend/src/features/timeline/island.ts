@@ -38,6 +38,7 @@ import {
   timelineCost,
   timelineDuration,
   timelineEpochMs,
+  timelineLocalClock,
   timelineOverviewExactDuration,
   timelineOverviewExactTime,
   timelineOverviewItemPaths,
@@ -49,7 +50,7 @@ import {
 import { renderQueueStrip } from "./queue";
 import { S } from "./s";
 import { ago, localDateTime } from "../chrome/dom";
-import { computeRecordsT } from "./copy";
+import { computeRecordsT, workbenchT } from "./copy";
 import {
   branchUndoFromProjection,
   carryRevertPreview,
@@ -1426,14 +1427,14 @@ function renderActionTimelineOverviewPaths(view: View): void {
         timelineOverviewItemPaths(overview, model.byId.get(overview.hoverGroupId)).highlight,
       );
   }
-  const axisTime = (value: number | null) =>
-    value == null ? "—" : new Date(Math.round(value)).toISOString();
-  const startText = axisTime(overview.viewStart),
-    endText = axisTime(overview.viewEnd);
-  overview.axisStart.textContent = startText === "—" ? startText : startText.slice(11, 23);
-  overview.axisStart.title = startText;
-  overview.axisEnd.textContent = endText === "—" ? endText : endText.slice(11, 23);
-  overview.axisEnd.title = endText;
+  // Local time of day on the axis, the full local time and zone in the title:
+  // a UTC slice with no zone read as the wrong hour.
+  const axisClock = (value: number | null) =>
+    value == null ? "—" : timelineLocalClock(Math.round(value));
+  overview.axisStart.textContent = axisClock(overview.viewStart);
+  overview.axisStart.title = timelineOverviewExactTime(overview.viewStart);
+  overview.axisEnd.textContent = axisClock(overview.viewEnd);
+  overview.axisEnd.title = timelineOverviewExactTime(overview.viewEnd);
   overview.shell.dataset.viewStart =
     overview.viewStart == null ? "" : String(Math.round(overview.viewStart));
   overview.shell.dataset.viewEnd =
@@ -3328,11 +3329,18 @@ export function renderBranchPanel(): HTMLElement {
 }
 
 export function renderContextPanel(): HTMLElement {
-  const panel = panelShell(t("timeline.panel.context"), "context-panel"),
-    state = S.contextState;
+  // Diagnostics, closed by default: the token layers ("Syst… 10592 tokens")
+  // were on view next to the timeline as if a scientist needed them.
+  const shell = el("section", "workbench-panel context-panel");
+  const panel = el("details", "workbench-diagnostics");
+  panel.appendChild(el("summary", "workbench-panel-title", workbenchT("wb.diagnostics")));
+  panel.appendChild(el("div", "workbench-diagnostics-hint", workbenchT("wb.diagnosticsHint")));
+  detailsKey(panel, "context-diagnostics");
+  shell.appendChild(panel);
+  const state = S.contextState;
   if (!state || !(state.layers || []).length) {
     panel.appendChild(el("div", "workbench-empty", t("timeline.noContext")));
-    return panel;
+    return shell;
   }
   const summary = el("div", "context-summary");
   if (state.token_count != null)
@@ -3408,11 +3416,11 @@ export function renderContextPanel(): HTMLElement {
     detailsKey(history, "context-history");
     panel.appendChild(history);
   }
-  return panel;
+  return shell;
 }
 
 export function renderSecurityPanel(): HTMLElement {
-  const panel = panelShell(t("timeline.panel.security"), "security-panel"),
+  const panel = panelShell(workbenchT("wb.security.title"), "security-panel"),
     state = S.securityState;
   if (!state) {
     panel.appendChild(el("div", "workbench-empty", t("timeline.noSecurity")));
@@ -3428,34 +3436,75 @@ export function renderSecurityPanel(): HTMLElement {
       .forEach((value) => line.appendChild(el("span", "timeline-pill", String(value))));
     panel.appendChild(line);
   };
+  // Plain status rows; the raw state, mode, backend and self-test detail
+  // (which was a JSON dump) go under "Technical details".
+  const notStarted = String(sandbox.state || "") === "not_started";
   row(
-    t("security.sandbox"),
-    [sandbox.state || sandbox.mode || "unknown", sandbox.backend, sandbox.enforced ? "enforced" : "not enforced"],
-    sandbox.enforced ? "ok" : "warn",
+    workbenchT("wb.security.sandbox"),
+    notStarted
+      ? [workbenchT("wb.security.notStarted")]
+      : sandbox.enforced
+        ? [workbenchT("wb.security.on"), sandboxBackendName(sandbox.backend)]
+        : [workbenchT("wb.security.off")],
+    notStarted ? "" : sandbox.enforced ? "ok" : "warn",
   );
-  row(
-    t("security.selfTest"),
-    [sandbox.self_test_passed ? "passed" : "not passed"],
-    sandbox.self_test_passed ? "ok" : "warn",
-  );
-  row(t("security.network"), [sandbox.network_policy || "unknown"]);
+  if (!notStarted)
+    row(
+      workbenchT("wb.security.selfTest"),
+      [sandbox.self_test_passed ? workbenchT("wb.security.passed") : workbenchT("wb.security.notPassed")],
+      sandbox.self_test_passed ? "ok" : "warn",
+    );
+  row(workbenchT("wb.security.network"), [kernelNetworkText(sandbox.network_policy, notStarted)]);
   (sandbox.runtimes || [])
     .filter((runtime: any) => runtime.generation_ended)
     .forEach((runtime: any) => {
-      row(t("security.generation"), [
-        t(
-          "security.generationEnded",
-          runtime.language || "kernel",
+      row(workbenchT("wb.security.kernel"), [
+        workbenchT(
+          "wb.security.kernelEnded",
+          runtime.language === "r" ? "R" : "Python",
           runtime.generation_ended_reason || runtime.generation_state || "ended",
         ),
       ]);
     });
-  row(t("security.permission"), [
-    permission.mode || "unknown",
-    permission.pending_count ? t("security.pending", permission.pending_count) : "",
+  row(workbenchT("wb.security.approvals"), [
+    permission.pending_count
+      ? workbenchT("wb.security.pending", permission.pending_count)
+      : workbenchT("wb.security.none"),
   ]);
-  if (sandbox.detail) panel.appendChild(el("div", "security-detail", sandbox.detail));
+  const raw = [
+    sandbox.mode ? "mode=" + sandbox.mode : "",
+    sandbox.state ? "state=" + sandbox.state : "",
+    sandbox.backend ? "backend=" + sandbox.backend : "",
+    sandbox.network_policy ? "network_policy=" + sandbox.network_policy : "",
+    permission.mode ? "permission=" + permission.mode : "",
+  ].filter(Boolean);
+  if (sandbox.detail || raw.length) {
+    const details = el("details", "security-raw");
+    details.appendChild(el("summary", null, workbenchT("wb.details")));
+    if (raw.length) details.appendChild(el("div", "security-detail", raw.join(" · ")));
+    if (sandbox.detail) details.appendChild(el("div", "security-detail", sandbox.detail));
+    detailsKey(details, "security-raw");
+    panel.appendChild(details);
+  }
   return panel;
+}
+
+/** The OS sandbox by the name people know it under; the raw value otherwise. */
+function sandboxBackendName(backend: unknown): string {
+  const value = String(backend || "");
+  if (/seatbelt|sandbox-exec/i.test(value)) return "macOS sandbox-exec";
+  if (/bwrap|bubblewrap/i.test(value)) return "Linux bubblewrap";
+  return value;
+}
+
+/** What code in cells can do on the network, from the kernel's measured policy. */
+function kernelNetworkText(policy: unknown, notStarted: boolean): string {
+  const value = String(policy || "");
+  if (value === "blocked") return workbenchT("wb.security.net.blocked");
+  if (value === "raw_allowed") return workbenchT("wb.security.net.allowed");
+  if (notStarted) return workbenchT("wb.security.net.unknown");
+  if (value === "unproven" || value === "not_enforced") return workbenchT("wb.security.net.unproven");
+  return workbenchT("wb.security.net.unknown");
 }
 
 async function refreshComputeTask(jobId: string, button: HTMLButtonElement): Promise<void> {

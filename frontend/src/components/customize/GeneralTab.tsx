@@ -10,7 +10,27 @@ import { DiagnosticsTab } from "./DiagnosticsTab";
 import { ExperimentsTab } from "./ExperimentsTab";
 import { NotebookReplSetting } from "./NotebookReplSetting";
 import { UpdateCheck } from "./UpdateCheck";
-import { CustRow, Hdr, Seg } from "./ui";
+import { CustRow, Hdr, Seg, Toggle } from "./ui";
+import { labCopy, labTabHidden, setLabTabHidden } from "../../features/lab";
+
+/**
+ * NAV-6: the Lab tab can be hidden from its own panel; this is where it comes
+ * back. A per-browser choice, like the theme.
+ */
+export function LabTabSetting() {
+  const [hidden, setHidden] = useState(labTabHidden);
+  return (
+    <CustRow name={labCopy("tabSetting")} desc={hidden ? labCopy("tabHidden") : labCopy("tabShown")}>
+      <Toggle
+        on={!hidden}
+        onClick={() => {
+          setLabTabHidden(!hidden);
+          setHidden(!hidden);
+        }}
+      />
+    </CustRow>
+  );
+}
 
 /**
  * Feature-local on purpose: `i18n/en.ts` / `zh.ts` are generated extracts of
@@ -108,6 +128,7 @@ export function GeneralTab() {
         </button>
       </CustRow>
       <NotebookReplSetting />
+      <LabTabSetting />
       <UpdateCheck />
       <ExperimentsTab />
       <DiagnosticsTab />

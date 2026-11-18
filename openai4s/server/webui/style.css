@@ -1526,6 +1526,12 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .context-layer{display:flex;align-items:center;gap:5px;padding:5px 0;border-top:var(--hair);font-size:11px}
 .context-layer-name{flex:1;min-width:0;color:var(--text-200);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .context-layer-tokens{color:var(--text-400);font:10px var(--mono)}
+/* NAV-6: diagnostics (model context) and raw sandbox values are collapsed. */
+.workbench-diagnostics>summary.workbench-panel-title{cursor:pointer;margin-bottom:0;color:var(--text-300)}
+.workbench-diagnostics[open]>summary.workbench-panel-title{margin-bottom:8px}
+.workbench-diagnostics-hint{margin-bottom:6px;color:var(--text-400);font-size:11px;line-height:1.45}
+.security-raw{margin-top:6px;border-top:var(--hair);padding-top:5px}
+.security-raw>summary{cursor:pointer;color:var(--text-300);font-size:11px}
 .context-history{margin-top:6px;border-top:var(--hair);padding-top:5px}
 .context-history>summary{cursor:pointer;color:var(--text-300);font-size:11px}
 .context-history-row{display:flex;align-items:center;gap:5px;padding:5px 0;border-top:var(--hair);font-size:10px}

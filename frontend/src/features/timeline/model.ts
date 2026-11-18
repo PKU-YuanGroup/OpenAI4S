@@ -385,9 +385,34 @@ export function timelineOverviewXToDomainTime(
   return start + ratio * (end - start);
 }
 
+const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+
+/** The viewer's UTC offset at `date`, as "UTC+08:00". */
+function utcOffsetLabel(date: Date): string {
+  const offset = -date.getTimezoneOffset();
+  const abs = Math.abs(offset);
+  return `UTC${offset >= 0 ? "+" : "-"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+
+/** Local time of day with milliseconds ("16:33:56.059"), for the overview's axis. */
+export function timelineLocalClock(ms: number): string {
+  const d = new Date(ms);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+/**
+ * An exact time in the viewer's own time zone, with the zone named: the
+ * inspector and the overview showed `toISOString()` -- UTC with no zone -- so
+ * 04:21 on the wall clock read "12:21:56.159".
+ */
 export function timelineOverviewExactTime(value: unknown): string {
   const ms = timelineEpochMs(value);
-  return ms == null ? "—" : new Date(ms).toISOString();
+  if (ms == null) return "—";
+  const d = new Date(ms);
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${timelineLocalClock(ms)} (${utcOffsetLabel(d)})`
+  );
 }
 
 export function timelineOverviewExactDuration(start: unknown, end: unknown): string {

@@ -25,12 +25,20 @@ import {
   rememberExecutionState,
   renderActionTimeline,
   renderBranchPanel,
+  renderContextPanel,
   renderDelegationPanel,
+  renderSecurityPanel,
 } from "./island";
+import { timelineLocalClock, timelineOverviewExactTime } from "./model";
 import { renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
-import { sanitizeActionTimeline, sanitizeBranches, sanitizeContext } from "./sanitize";
+import {
+  sanitizeActionTimeline,
+  sanitizeBranches,
+  sanitizeContext,
+  sanitizeSecurity,
+} from "./sanitize";
 import { provenanceT } from "../execution/copy";
 import { LANG, setLang, t } from "../../i18n/runtime";
 
@@ -1182,5 +1190,70 @@ describe("scheduled workbench refresh", () => {
     reads.release();
     await vi.advanceTimersByTimeAsync(10);
     expect(reads.paths.slice(first)).toEqual(["/frames/frame-q/delegations"]);
+  });
+});
+
+// NAV-6: a developer view -- raw sandbox self-test JSON, "durable-policy",
+// token layers on view, and UTC times with no zone.
+describe("side panels in a scientist's words", () => {
+  /** Text of `node`, leaving out what sits inside a closed <details>. */
+  function visibleText(node: FakeElement): string {
+    if (node.tagName === "DETAILS" && !node.open) {
+      const summary = node.kids.find((kid) => kid.tagName === "SUMMARY");
+      return summary ? summary.textContent : "";
+    }
+    if (!node.kids.length) return node.textContent;
+    return node.kids.map(visibleText).join(" ");
+  }
+
+  it("shows sandbox status in plain words and keeps the raw self-test under details", () => {
+    mountDocument();
+    S.securityState = sanitizeSecurity({
+      sandbox: {
+        state: "enforced",
+        backend: "seatbelt",
+        enforced: true,
+        self_test_passed: true,
+        network_policy: "blocked",
+        detail: 'python: sandbox-exec detected; self-test passed: {"allowed_roots_readable": null}',
+      },
+      permission: { mode: "durable-policy", pending_count: 2 },
+    });
+    const panel = renderSecurityPanel() as unknown as FakeElement;
+    const shown = visibleText(panel);
+    expect(shown).not.toContain("{");
+    expect(shown).not.toContain("durable-policy");
+    expect(shown).toContain("macOS sandbox-exec");
+    const raw = panel.querySelector("details.security-raw") as unknown as FakeElement;
+    expect(raw).toBeTruthy();
+    expect(raw.open).toBeFalsy();
+    expect(raw.textContent).toContain("allowed_roots_readable");
+  });
+
+  it("keeps the model context's token layers in a closed diagnostics section", () => {
+    mountDocument();
+    S.contextState = sanitizeContext({
+      token_count: 10592,
+      layers: [{ name: "System prompt", kind: "system", token_count: 10592 }],
+    });
+    const panel = renderContextPanel() as unknown as FakeElement;
+    const details = panel.querySelector("details.workbench-diagnostics") as unknown as FakeElement;
+    expect(details).toBeTruthy();
+    expect(details.open).toBeFalsy();
+    expect(visibleText(panel)).not.toContain("10592");
+  });
+
+  it("names local times with their zone instead of UTC without one", () => {
+    const ms = Date.UTC(2026, 10, 18, 12, 21, 56, 159);
+    const local = new Date(ms);
+    const exact = timelineOverviewExactTime(ms);
+    expect(exact).not.toMatch(/Z$/);
+    expect(exact).toMatch(/\(UTC[+-]\d{2}:\d{2}\)$/);
+    expect(exact).toContain(
+      `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:56.159`,
+    );
+    expect(timelineLocalClock(ms)).toBe(
+      `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:56.159`,
+    );
   });
 });
