@@ -252,7 +252,9 @@ describe("the allowlist on Network", () => {
     expect(text(head(tree))).toContain("OPENAI4S_EGRESS=off");
     expect(text(head(tree))).toContain("literature-review");
     // Fourteen domains: twelve pills and a count, not a silent cut at twelve.
-    const pills = text(find(tree, (node) => String(node.props?.title || "").startsWith("d0.org"))!);
+    // The pill row's title is the whole list, `domains.join(", ")`: compare
+    // its first entry exactly rather than by prefix.
+    const pills = text(find(tree, (node) => String(node.props?.title || "").split(", ")[0] === "d0.org")!);
     expect(pills).toContain("d11.org");
     expect(pills).not.toContain("d12.org");
     expect(pills).toMatch(/(2 more|还有 2 个)$/);

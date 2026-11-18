@@ -8,6 +8,8 @@ request at a time.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from openai4s.config import Config
@@ -26,6 +28,11 @@ _ENFORCED = {
     "state": "enforced",
     "mode": "auto",
 }
+
+
+def _hosts(text: str) -> set[str]:
+    """The host names a message lists, each an exact token (not a substring)."""
+    return set(re.findall(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", text))
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +154,7 @@ def test_the_model_reads_the_limit_before_the_recipe(tmp_path):
     text = format_tool_result(get_tool("load_skill"), loaded)
     head = text.split("\n\n", 1)[0]
     assert head.startswith("[Tool: load_skill]\n[network] Loading this Skill limits")
-    assert "eutils.ncbi.nlm.nih.gov" in head
+    assert {"eutils.ncbi.nlm.nih.gov"} <= _hosts(head)
     assert "approving it cannot widen the limit" in head
     assert "# Literature review" in text
     disp.store.close()
@@ -213,7 +220,7 @@ def test_a_command_the_skill_limit_refuses_never_asks_for_approval(
     reason = refused["error"]
     assert "does not declare destination 'www.nejm.org'" in reason
     assert "literature-review Skill limits this session's network" in reason
-    assert "eutils.ncbi.nlm.nih.gov" in reason
+    assert {"eutils.ncbi.nlm.nih.gov"} <= _hosts(reason)
     assert "approving it cannot widen" in reason
 
     end = next(step for step in steps if step.get("phase") == "end")
@@ -222,7 +229,7 @@ def test_a_command_the_skill_limit_refuses_never_asks_for_approval(
     assert blocked["by"] == "skill_network"
     assert blocked["destination"] == "www.nejm.org"
     assert blocked["skills"] == ["literature-review"]
-    assert "eutils.ncbi.nlm.nih.gov" in blocked["domains"]
+    assert {"eutils.ncbi.nlm.nih.gov"} <= set(blocked["domains"])
     assert blocked["search"] is False
 
     # A declared destination still goes to the user for approval as before.

@@ -139,7 +139,16 @@ class FakeEl {
     return this.text;
   }
   set innerHTML(value: string) {
-    this.textContent = String(value).replace(/<[^>]*>/g, "");
+    // The fake's text view of rendered markup: the characters outside tags.
+    // A scan, not a tag-stripping regex, which reads as an HTML sanitizer.
+    let text = "";
+    let inTag = false;
+    for (const ch of String(value)) {
+      if (ch === "<") inTag = true;
+      else if (ch === ">" && inTag) inTag = false;
+      else if (!inTag) text += ch;
+    }
+    this.textContent = text;
   }
   get isConnected(): boolean {
     let node: FakeEl | null = this;

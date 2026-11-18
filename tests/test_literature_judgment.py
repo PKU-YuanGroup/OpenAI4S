@@ -432,8 +432,7 @@ def test_literature_review_declares_typesafe_domain() -> None:
     skill = loader.get("literature-review")
     assert skill is not None
     assert skill.network.mode == "host_only"
-    assert "api.typesafe.ai" in skill.network.domains
-    assert "api.openalex.org" in skill.network.domains
+    assert {"api.typesafe.ai", "api.openalex.org"} <= set(skill.network.domains)
 
 
 class ScriptedBackend:
