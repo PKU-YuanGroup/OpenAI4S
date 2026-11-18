@@ -583,6 +583,34 @@ export function renderEmptySession(host: ParentNode | null = messagesHost()): vo
   host.appendChild(wrap);
 }
 
+/**
+ * A link to a session that does not exist (or that this login may not see).
+ * The workbench used to open as if it did -- an empty transcript, a usable
+ * composer, and "Invalid running state" in the history banner -- with no way
+ * back but the browser's.
+ */
+export function renderMissingSession(
+  host: ParentNode | null,
+  back: { project?: (() => void) | null; home: () => void },
+): void {
+  if (!host) return;
+  const wrap = el("div", "empty-session missing-session");
+  wrap.setAttribute("role", "alert");
+  wrap.appendChild(el("div", "es-title", historyT("history.missing.title")));
+  wrap.appendChild(el("div", "es-sub", historyT("history.missing.sub")));
+  const actions = el("div", "missing-actions");
+  const button = (label: string, onClick: () => void): void => {
+    const b = el("button", "outline-btn", label) as HTMLButtonElement;
+    b.type = "button";
+    b.onclick = onClick;
+    actions.appendChild(b);
+  };
+  if (back.project) button(historyT("history.missing.project"), back.project);
+  button(historyT("history.missing.home"), back.home);
+  wrap.appendChild(actions);
+  host.appendChild(wrap);
+}
+
 export function interleaveHistory(
   msgs: StoredMessage[],
   steps: Array<{ created_at?: number; seq?: number; [key: string]: unknown }>,

@@ -21,7 +21,7 @@ import { handleIncomingMessage } from "../ws/connect";
 import { registerBuiltinHandlers } from "../ws/handlers";
 import { onEvent, resetWsHandlers } from "../ws/registry";
 import { registerMessageHandlers } from "./handlers";
-import { interleaveHistory, renderStored } from "./list";
+import { interleaveHistory, renderMissingSession, renderStored } from "./list";
 import type { LiveStream } from "./stream";
 
 // --------------------------------------------------------------------------
@@ -679,5 +679,31 @@ describe("a language switch", () => {
     // Relabelled, not rebuilt: what the user typed is still there.
     expect(reason.value).toBe("typed before the switch");
     expect(open?.querySelector(".perm-fb")).toBe(reason);
+  });
+});
+
+// --------------------------------------------------------------------------
+// SYNC-10: a link to a session that does not exist
+// --------------------------------------------------------------------------
+
+describe("a missing session", () => {
+  it("says so and offers the way back to the project and Home", () => {
+    const toProject = vi.fn();
+    const toHome = vi.fn();
+    renderMissingSession(messages(), { project: toProject, home: toHome });
+    const panel = messages().querySelector(".missing-session") as HTMLElement;
+    expect(panel.getAttribute("role")).toBe("alert");
+    expect(panel.querySelector(".es-title")?.textContent).toBe("Session not found");
+    const buttons = Array.from(panel.querySelectorAll("button")) as HTMLElement[];
+    expect(buttons.map((b) => b.textContent)).toEqual(["Back to the project", "Back to Home"]);
+    (buttons[0] as unknown as { onclick: () => void }).onclick();
+    (buttons[1] as unknown as { onclick: () => void }).onclick();
+    expect(toProject).toHaveBeenCalledTimes(1);
+    expect(toHome).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers only Home when the link's project is not one either", () => {
+    renderMissingSession(messages(), { project: null, home: vi.fn() });
+    expect(Array.from(messages().querySelectorAll("button")).map((b) => b.textContent)).toEqual(["Back to Home"]);
   });
 });

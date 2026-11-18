@@ -23,6 +23,16 @@
   margin: 6px 0;
 }
 
+/* A link to a session that does not exist (list.ts `renderMissingSession`):
+   the welcome's centred layout, with its way back. */
+.missing-session .missing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
 /* A denied approval's reason (send/permission.ts), on its own row of the
    compact resolved card. */
 .perm-card .perm-reason {

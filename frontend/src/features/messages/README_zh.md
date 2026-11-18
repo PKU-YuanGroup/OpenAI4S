@@ -10,7 +10,7 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | --- | --- |
 | [`failure.ts`](failure.ts) | 实时与重开会话共用的失败提示；流式中断或重复动作停止后提供显式继续入口。 |
 | [`cardState.ts`](cardState.ts) | 实时活动卡片的状态：新的单元卡片显示进度图标（而非成功对勾）并记录 `producing_cell_id`；`notebook_cell_finished`（由 Notebook 的处理器转发）把该卡片标为失败（x 图标、错误色边条、"失败 · N 行"）、成功或已停止；`turnDone` 把仍在运行的卡片收尾为中性的"已结束"。单元结束后，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"，单元自带标题保留。功能内文案。 |
-| [`copy.ts`](copy.ts) | 当前UI所属的双语历史恢复文案；不改自动提取的语言文件。 |
+| [`copy.ts`](copy.ts) | 当前UI所属的双语历史恢复与“会话不存在”文案；不改自动提取的语言文件。 |
 | [`components.tsx`](components.tsx) | `HistoryLoadStatus`：可访问的历史状态/重试入口，由 Shell 挂在命令式消息宿主之外。 |
 | [`cut.ts`](cut.ts) | 增量 `_mdStableCut` / `mdStableCut`（app.js:5378-5402）。 |
 | [`cut.test.ts`](cut.test.ts) | 增量扫描与从零扫描同结果；围栏 / 120 字软尾。 |
@@ -23,11 +23,11 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`identity.ts`](identity.ts) | 候选身份与 feed 边界上的 `storedCandidateOwnsChunk`。 |
 | [`index.ts`](index.ts) | 对外导出；`installMessages` 用 `isReady` 往 window 赋值，不创建任何 DOM（它在 Shell 渲染之前运行）。 |
 | [`install.test.ts`](install.test.ts) | 契约名字是真实现（`isReady`），不是 F-05 占位；安装时不会抢在 Shell 之前创建 `#messages`。 |
-| [`list.ts`](list.ts) | 唯一的已存消息行实现，首屏、"加载更早"（经 `sessions/transcript.ts`）与实时回合共用：`renderStored`、`addMsgActions`（复制走 `copyText`、👍/👎 带已保存评价、编辑）、`renderMessageRefChips`、`renderEmptySession`、`insertMessageByTime`、`showLiveUserMessage`（`user_message` 事件带来的回合提问：认领本标签页的气泡、已渲染的行不重复，否则显示）；以及分帧批量绘制，其中 `interleaveHistory` 也按时间放置已存储的审批决定。计划模式的用户行渲染为用户自己的文字，计划执行种子渲染为计划标记（`planPrompt.ts`）。 |
+| [`list.ts`](list.ts) | 唯一的已存消息行实现，首屏、"加载更早"（经 `sessions/transcript.ts`）与实时回合共用：`renderStored`、`addMsgActions`（复制走 `copyText`、👍/👎 带已保存评价、编辑）、`renderMessageRefChips`、`renderEmptySession`、`insertMessageByTime`、`showLiveUserMessage`（`user_message` 事件带来的回合提问：认领本标签页的气泡、已渲染的行不重复，否则显示）、`renderMissingSession`（指向不存在会话的链接：说明与返回入口）；以及分帧批量绘制，其中 `interleaveHistory` 也按时间放置已存储的审批决定。计划模式的用户行渲染为用户自己的文字，计划执行种子渲染为计划标记（`planPrompt.ts`）。 |
 | [`list.test.ts`](list.test.ts) | 640 条 → 16 帧 × 40；按时间插入跳过 `#msgs-earlier`；首屏与更早页是同一实现：审阅徽章与候选身份、👍/👎 提交并显示已保存评价、复制只在确认写入后打勾、编辑与起始问题会撑高输入框、用户行显示 @ 引用芯片。 |
-| [`messages.css`](messages.css) | `.md-sealed` / `.md-tail { display: contents }`；已停止回合标记与已停止卡片（弱化图标、中性色边条）；运行中与已结束的卡片（中性图标与边条，未要求减少动效时运行图标旋转）以及失败卡片（错误色图标与边条）；重开后的计划种子行沿用已停止标记的样式；被拒审批卡片的原因行；历史状态提示位于转录内容列内。 |
-| [`open.ts`](open.ts) | `openConversation` / `recoverConversation`：按代次读取、只读重试、保留已确认历史与原子分帧投影。会话级重置依据 `openedFrameId`（屏幕上状态所属的会话）而不只是 `currentId`，因此先发布 id 再打开的新会话、或从主页返回后打开的会话，Notebook 都从空开始。Notebook REPL 单元的步骤（`input.origin: "notebook"`）与实时时一样不进入转录，空会话欢迎页只在聊天中什么都没有时显示。 |
-| [`open.test.ts`](open.test.ts) | Notebook 单元的步骤不进入聊天（智能体步骤会取代欢迎页）；按打开代次保护历史失败、只读重试、REST/WS 交错与已展开旧页保留；新会话的 Notebook 只含自己的单元（从已打开会话新建、从主页返回后新建、上一会话的读取迟到）。 |
+| [`messages.css`](messages.css) | `.md-sealed` / `.md-tail { display: contents }`；已停止回合标记与已停止卡片（弱化图标、中性色边条）；运行中与已结束的卡片（中性图标与边条，未要求减少动效时运行图标旋转）以及失败卡片（错误色图标与边条）；重开后的计划种子行沿用已停止标记的样式；被拒审批卡片的原因行；历史状态提示位于转录内容列内；“会话不存在”面板的按钮。 |
+| [`open.ts`](open.ts) | `openConversation` / `recoverConversation`：按代次读取、只读重试、保留已确认历史与原子分帧投影。会话级重置依据 `openedFrameId`（屏幕上状态所属的会话）而不只是 `currentId`，因此先发布 id 再打开的新会话、或从主页返回后打开的会话，Notebook 都从空开始。Notebook REPL 单元的步骤（`input.origin: "notebook"`）与实时时一样不进入转录，空会话欢迎页只在聊天中什么都没有时显示。列表中没有的会话会被查询（`GET /frames/{id}`）：属于其他项目的会话会把地址、项目名与侧栏移到该项目；根本不存在的会话显示“会话不存在”及返回入口（项目、首页），输入框禁用且不订阅。 |
+| [`open.test.ts`](open.test.ts) | 指向不存在会话的链接会如实说明（不读历史、不订阅），项目 id 错误的链接会转到会话所属的项目；Notebook 单元的步骤不进入聊天（智能体步骤会取代欢迎页）；按打开代次保护历史失败、只读重试、REST/WS 交错与已展开旧页保留；新会话的 Notebook 只含自己的单元（从已打开会话新建、从主页返回后新建、上一会话的读取迟到）。 |
 | [`planPrompt.ts`](planPrompt.ts) | 计划模式行重开后显示用户自己写的内容：`planModeRequestText` 从存储的用户行中去掉计划模式提示（工作台、旧版 app.js、修订种子），与 `openai4s/server/plans.py` 一致；`planSeed` / `planSeedMarker` 把批准或继续执行的种子渲染为一行弱化的"已批准计划：…"（功能内文案）。存储的行不变。 |
 | [`raf.ts`](raf.ts) | 共用 `requestAnimationFrame` / setTimeout 回退。 |
 | [`scroll.ts`](scroll.ts) | `down` / `updateJumpPill` 合并进一个 rAF；节流 scroll 监听，由 `bindMessageScroll` 在渲染后绑定。scroll 事件只测量并刷新跳转按钮，只有 `down()` 会滚动。 |
@@ -36,4 +36,4 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`stopped.test.ts`](stopped.test.ts) | 实时渲染为标记而非正文；已停止卡片（图标、替换生成标题、保留单元自带标题）与先完成的卡片区分；终态兜底不重复；两个存储渲染器重开一致；畸形元数据仍按正文渲染。经真实 `notebook_cell_finished` 处理器验证卡片结果：抛错的单元以失败收尾（无对勾、无运行中标题），成功保留对勾，被中断的单元只标一次已停止，只重绘所指单元的卡片，未收到结果的卡片不会在回合结束后仍显示运行中。经两个存储渲染器验证计划模式行：提示行的气泡是任务（中/英），修订行是修改意见，批准种子是计划标记，普通文字不受影响。 |
 | [`stream.ts`](stream.ts) | `feed` / `flushRender` / `scheduleRender` / `startStream` / `sealText`。已稳定的文字只渲染一次，按块追加到 sealed 节点；每次只重渲染尾部（仍可能被后续列表项延续的列表留在尾部）；无法稳定的尾部（未闭合的代码块）越长，两次刷新的间隔越大，每秒的重渲染工作量保持不变。`startStream` 保留仍在页面上的步骤卡片登记，重开运行中的会话时，重放的回合会更新已存的卡片，而不是再添一张；`placeInLiveStream` 把卡片放在回合的当前位置（之前的正文封存在其上方），`adoptIntoLiveStream` 把这样的已存卡片移入重放回合中其事件所在的位置。 |
 | [`stream.test.ts`](stream.test.ts) | 流式回答显示的内容与整段渲染完全一致，同时每个已稳定的段落只渲染一次（线性工作量）；松散列表不会被拆开；不断增长的未闭合代码块每秒只刷新几次而不是二十次；最终渲染是整段文字；被替换的回答在新节点里重新开始。 |
-| [`sync.test.ts`](sync.test.ts) | 跨标签页、刷新与重连的同一份转录（文件内最小 DOM）：`user_message` 在其他标签页显示提问、发送页按 `X-Request-Id` 认领自己的乐观气泡、刷新已渲染的行不再重复；已存储的审批与消息、步骤按时间交错，并按结果渲染（拒绝及其原因、超时、仍可作答的待审批卡片）；出现 gap 的重连保留游标，重发的回合不会再追加一遍，新的守护进程 epoch 则清空游标；离线期间已处理的审批在重放结束后或点击过期的允许时收尾；重开运行中的会话会把已存的步骤与审批放回它们原本所在的正文之间，实时审批像步骤一样分隔正文；其他标签页的拒绝会显示在那里填写的原因；切换语言时已决定与待审批的卡片原位重新翻译。 |
+| [`sync.test.ts`](sync.test.ts) | 跨标签页、刷新与重连的同一份转录（文件内最小 DOM）：`user_message` 在其他标签页显示提问、发送页按 `X-Request-Id` 认领自己的乐观气泡、刷新已渲染的行不再重复；已存储的审批与消息、步骤按时间交错，并按结果渲染（拒绝及其原因、超时、仍可作答的待审批卡片）；出现 gap 的重连保留游标，重发的回合不会再追加一遍，新的守护进程 epoch 则清空游标；离线期间已处理的审批在重放结束后或点击过期的允许时收尾；重开运行中的会话会把已存的步骤与审批放回它们原本所在的正文之间，实时审批像步骤一样分隔正文；其他标签页的拒绝会显示在那里填写的原因；切换语言时已决定与待审批的卡片原位重新翻译；“会话不存在”面板提供返回项目与首页（项目也未知时只提供首页）。 |

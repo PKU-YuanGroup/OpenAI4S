@@ -87,6 +87,34 @@ describe("history reads", () => {
     expect(result).toMatchObject({ messagesLoaded: false, stepsLoaded: true, runStateLoaded: true, superseded: false });
     expect(paint.empty).not.toHaveBeenCalled();
   });
+  it("says a linked session does not exist instead of opening an empty workbench", async () => {
+    // GET /frames/{id} answers `{}` for an unknown id. The workbench used to
+    // open it anyway: an empty transcript, a live composer, and "Invalid
+    // running state" in the history banner.
+    const send = vi.fn();
+    ws.value = { readyState: 1, send, onopen: null, onclose: null, onmessage: null };
+    const fetcher = server();
+    const result = await openConversation("f-000000000000", "proj-1");
+    expect(result).toMatchObject({ messagesLoaded: false, superseded: false });
+    const paths = fetcher.mock.calls.map(([path]) => String(path));
+    expect(paths).toContain("/api/v1/frames/f-000000000000");
+    expect(paths.some((path) => path.includes("/messages?") || path.endsWith("/status"))).toBe(false);
+    expect(session.historyLoad.value).toBeNull();
+    expect(session._titleName.value).toBe("Session not found");
+    // Nothing subscribes to a session that is not there.
+    expect(send.mock.calls.map(([raw]) => JSON.parse(String(raw)).type)).not.toContain("view_session");
+  });
+  it("moves a link with the wrong project id to the session's own project", async () => {
+    const fetcher = server((path) => path.endsWith("/api/v1/frames/f-elsewhere")
+      ? response({ id: "f-elsewhere", project_id: "proj-right", name: "qPCR fold change" }) : undefined);
+    const result = await openConversation("f-elsewhere", "proj-wrong");
+    expect(result).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
+    expect(session.project.value).toBe("proj-right");
+    expect(session._titleName.value).toBe("qPCR fold change");
+    const paths = fetcher.mock.calls.map(([path]) => String(path));
+    // The sidebar re-reads the session's own project.
+    expect(paths.some((path) => path.startsWith("/api/v1/frames?") && path.includes("project_id=proj-right"))).toBe(true);
+  });
   it("leaves a Notebook cell's step out of the chat, as the live chat did", async () => {
     // A manual cell's "Saving …" step used to reappear on reload, alone above
     // the empty-session welcome, though the live chat never showed it.

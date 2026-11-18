@@ -36,6 +36,7 @@ import {
   msgCursor,
   msgHasEarlier,
   project,
+  projects,
   sessions,
   sessionsLoading,
   foldersLoading,
@@ -94,7 +95,7 @@ import {
 } from "../timeline/island";
 import { hint } from "../sessions/chrome";
 import { refreshComputeStatus } from "../sessions/compute";
-import { showWorkspace } from "../sessions/dashboard";
+import { showDashboard, showWorkspace } from "../sessions/dashboard";
 import {
   enableComposer,
   framePath,
@@ -105,7 +106,7 @@ import {
   showConv,
 } from "../sessions/dom";
 import { loadSessions, renderSessions } from "../sessions/load";
-import { renderProjMenu } from "../sessions/projects";
+import { openProject, renderProjMenu } from "../sessions/projects";
 import { sub, unsub } from "../ws/connect";
 import { apiGet, fetchRecentMessages, recordRows, uniqueMessages, MESSAGE_PAGE_SIZE } from "./fetch";
 import { ensureMessageDom, messagesHost } from "./dom";
@@ -114,6 +115,7 @@ import {
   interleaveHistory,
   renderEmptySession,
   renderHistoryItem,
+  renderMissingSession,
   scheduleFramedRender,
   type StoredMessage,
 } from "./list";
@@ -511,6 +513,49 @@ export function recoverConversation(fid: string, gen = _openGen.value): Promise<
 }
 
 /**
+ * The session record behind an id the list does not show. `null` when there
+ * is no such session (`GET /frames/{id}` answers `{}`, or 404 for one this
+ * login may not see); `undefined` when the read itself failed, which is not
+ * evidence either way, so the open proceeds as it always did.
+ */
+async function locateSession(
+  fid: string,
+): Promise<{ id: string; name?: string; task_summary?: string; project_id?: string | null } | null | undefined> {
+  try {
+    const raw = await apiGet(`/frames/${encodeURIComponent(fid)}`);
+    if (raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string") {
+      return raw as { id: string; name?: string; task_summary?: string; project_id?: string | null };
+    }
+    return null;
+  } catch (error) {
+    return error instanceof ApiError && error.status === 404 ? null : undefined;
+  }
+}
+
+/**
+ * A link to a session that does not exist: say so, offer the way back, and
+ * leave nothing usable that would act on a session that is not there.
+ */
+function showMissingSession(pid: string | null): void {
+  const host = messagesHost();
+  if (host) host.innerHTML = "";
+  historyLoad.value = null;
+  _titleName.value = t("history.missing.title");
+  setTitle(_titleName.value);
+  hideCancel();
+  hint("");
+  const knownProject = !!pid && (projects.value as Array<{ project_id?: string; id?: string }>)
+    .some((row) => (row?.project_id || row?.id) === pid);
+  renderMissingSession(host, {
+    project: knownProject ? () => { void openProject(pid as string).catch(() => showDashboard()); } : null,
+    home: () => showDashboard(),
+  });
+  // Re-enabled by the next open (`enableComposer`): there is nothing here to send to.
+  const composer = typeof document !== "undefined" ? document.getElementById("composer") as HTMLTextAreaElement | null : null;
+  if (composer) composer.disabled = true;
+}
+
+/**
  * Open another conversation, or reload this one while preserving confirmed
  * content. `replaceUrl` is for routing: the address being resolved is
  * replaced rather than stacked under the one it resolves to.
@@ -601,7 +646,29 @@ export async function openConversation(
     try { await loadSessions(); } catch { /* history has its own independently reported reads */ }
     if (!current(fid, gen)) return obsolete();
   } else renderSessions();
-  const row = (sessions.value as Array<{ id?: string; name?: string; task_summary?: string }>).find((x) => x?.id === fid);
+  type SessionRow = { id?: string; name?: string; task_summary?: string; project_id?: string | null };
+  let row: SessionRow | undefined = (sessions.value as SessionRow[]).find((x) => x?.id === fid);
+  if (!row) {
+    // Not in this project's list: a session nobody has used yet (the list
+    // hides those), one that belongs to another project (a link with the
+    // wrong project id), or no session at all (a stale or mistyped link).
+    const located = await locateSession(fid);
+    if (!current(fid, gen)) return obsolete();
+    if (located === null) {
+      showMissingSession(pid || project.value || null);
+      return incomplete();
+    }
+    if (located?.project_id && located.project_id !== project.value) {
+      // Put the address, the project name and the sidebar on the project the
+      // session belongs to, instead of rendering it under one it is not in.
+      project.value = located.project_id; _projArtFor.value = null; resetSessionDirectory();
+      navURL(framePath(fid, located.project_id), true);
+      renderProjMenu();
+      try { await loadSessions(); } catch { /* the transcript still opens */ }
+      if (!current(fid, gen)) return obsolete();
+    }
+    row = located || undefined;
+  }
   _titleName.value = row?.name || row?.task_summary || t("conv.title.default");
   setTitle(_titleName.value);
   try {
