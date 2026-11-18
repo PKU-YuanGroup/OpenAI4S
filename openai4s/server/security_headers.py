@@ -163,7 +163,9 @@ _DISPOSITION_ASCII_KEPT = frozenset(
 _DISPOSITION_NAME_MAX = 180
 
 
-def artifact_content_disposition(filename: object, fallback: str = "artifact") -> str:
+def artifact_content_disposition(
+    filename: object, fallback: str = "artifact", *, disposition: str = "inline"
+) -> str:
     """``Content-Disposition`` for Artifact bytes: shown in place, saved by name.
 
     Without it a browser that downloads rather than renders a type (``text/csv``)
@@ -198,7 +200,20 @@ def artifact_content_disposition(filename: object, fallback: str = "artifact") -
         for ch in decomposed
         if not unicodedata.combining(ch)
     )
-    return f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name, safe='')}"
+    kind = "attachment" if disposition == "attachment" else "inline"
+    return f"{kind}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
+def download_content_disposition(filename: object, fallback: str = "download") -> str:
+    """``attachment`` disposition for a generated download (session package,
+    Artifact or Notebook bundle), named after something a person recognises.
+
+    These used to be named by opaque ids (``f-c117ee9740dc.openai4s-session.zip``,
+    ``project-proj_8146cc34f892-artifacts.zip``); a browser honours
+    Content-Disposition over the page's ``download`` attribute, so the
+    session title the Workbench chose never reached the saved file.
+    """
+    return artifact_content_disposition(filename, fallback, disposition="attachment")
 
 
 def embeddable_security_headers(*, allow_eval: bool = False) -> dict[str, str]:

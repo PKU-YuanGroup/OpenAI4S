@@ -216,6 +216,7 @@ from openai4s.server.scientific_review import ScientificReviewService
 from openai4s.server.security_headers import (
     artifact_content_disposition,
     artifact_security_headers,
+    download_content_disposition,
     embeddable_security_headers,
     ketcher_editor_security_headers,
     sandboxed_artifact_security_headers,
@@ -16238,13 +16239,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             zf.write(path, arcname)
                         except OSError:
                             continue
-                safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-")
-                if not safe_name.lower().endswith(".zip"):
-                    safe_name += ".zip"
+                name = str(filename or "artifacts").strip() or "artifacts"
+                if not name.lower().endswith(".zip"):
+                    name += ".zip"
                 self._stream_file(
                     tmp_path,
                     "application/zip",
-                    {"Content-Disposition": f'attachment; filename="{safe_name}"'},
+                    {
+                        # A person's name for the bundle (session title,
+                        # project name), with an ASCII fallback and the exact
+                        # UTF-8 name for current browsers.
+                        "Content-Disposition": download_content_disposition(
+                            name, "artifacts.zip"
+                        )
+                    },
                     security=artifact_security_headers(),
                 )
             finally:
@@ -18486,9 +18494,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/artifacts\.zip", sub)
             if m and method == "GET":
                 fid = m.group(1)
+                frame = store.get_frame(fid) or {}
+                title = str(frame.get("name") or "").strip() or f"session-{fid}"
                 self._serve_artifact_bundle(
                     store.list_artifacts({"root_frame_id": fid}),
-                    f"session-{fid}-artifacts.zip",
+                    f"{title}-artifacts.zip",
                 )
                 return
             m = re.fullmatch(r"/projects/([^/]+)/artifacts\.zip", sub)
@@ -18498,7 +18508,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._team_filter_artifacts(
                         store.list_artifacts({"project_id": pid})
                     ),
-                    f"project-{pid}-artifacts.zip",
+                    f"{str((store.get_project(pid) or {}).get('name') or '').strip() or 'project-' + pid}"
+                    "-artifacts.zip",
                 )
                 return
             m = re.fullmatch(r"/frames/([^/]+)/artifacts/promote", sub)
@@ -18929,13 +18940,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     raise GatewayError(
                         409, str(error), "session_not_exportable"
                     ) from error
+                title = str(frame.get("name") or "").strip()
                 self._send(
                     200,
                     exported["data"],
                     exported["content_type"],
                     {
-                        "Content-Disposition": (
-                            f'attachment; filename="{exported["filename"]}"'
+                        "Content-Disposition": download_content_disposition(
+                            (
+                                f"{title}.openai4s-session.zip"
+                                if title
+                                else exported["filename"]
+                            ),
+                            exported["filename"],
                         ),
                         "X-Content-SHA256": exported["sha256"],
                         "X-OpenAI4S-Session-Schema": str(exported["schema_version"]),

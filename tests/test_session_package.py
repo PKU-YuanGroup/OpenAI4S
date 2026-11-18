@@ -4162,3 +4162,39 @@ def test_an_excluded_artifact_does_not_strand_checkpoint_references(tmp_path):
 def test_unsafe_artifact_paths_are_still_refused(name):
     with pytest.raises(SessionPackageError, match="unsafe artifact filename"):
         session_package_mod._safe_artifact_filename(name)
+
+
+# --- EXP-3: an exported package does not carry the exporter's home path -----
+
+
+def test_exported_package_redacts_local_absolute_paths(tmp_path, monkeypatch):
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        environment = json.loads(files["environment.json"])
+        environment["probe"] = {
+            "interpreter": str(home / "miniconda3" / "envs" / "lab" / "bin" / "python"),
+            "workspace": str(workspace(root, root) / "fig.png"),
+        }
+        redacted = domain.packages._redact_local_paths(
+            {"environment.json": _canonical(environment)}, root, branches=(root,)
+        )
+        probe = json.loads(redacted["environment.json"])["probe"]
+        assert probe["interpreter"] == "~/miniconda3/envs/lab/bin/python"
+        assert probe["workspace"] == "./fig.png"
+    finally:
+        store.close()
+
+
+def test_download_names_are_human_and_survive_non_ascii_titles():
+    from openai4s.server.security_headers import download_content_disposition
+
+    header = download_content_disposition("晚期NSCLC免疫队列.openai4s-session.zip")
+    assert header.startswith('attachment; filename="')
+    assert "filename*=UTF-8''%E6%99%9A%E6%9C%9FNSCLC" in header
+    assert download_content_disposition('a"/../evil.zip').startswith(
+        'attachment; filename="evil.zip"'
+    )

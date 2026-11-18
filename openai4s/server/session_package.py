@@ -417,16 +417,70 @@ def _reproduce_notes(
         "## Rerunning it",
         "",
         "1. Verify the archive with the command above.",
-        "2. Recreate the environment from `environment.json`.",
-        "3. Import the package into an OpenAI4S installation, or read",
-        "   `notebook.json` directly — the cells are plain source in order.",
+        "2. Recreate the environment from `environment.json`"
+        + (" (command below)." if _reinstall_command(snapshots) else "."),
+        "3. Import the package into an OpenAI4S installation (dashboard →",
+        "   Import session package), or read `notebook.json` directly — the",
+        "   cells are plain source in order.",
         "",
-        "An imported session is quarantined read-only until you explicitly",
-        "activate it, so opening someone else's package cannot execute",
-        "anything on your machine.",
+        'An imported session opens read-only ("Ended · view only") until you',
+        "choose **Restart fresh**, so opening someone else's package cannot",
+        "execute anything on your machine.",
+        "",
+    ]
+    command = _reinstall_command(snapshots)
+    if command:
+        lines += [
+            "## Reinstalling the Python packages",
+            "",
+            "The pinned versions recorded for the Python environment that",
+            "produced the artifacts (run it in a fresh virtual environment):",
+            "",
+            "```",
+            command,
+            "```",
+            "",
+        ]
+    lines += [
+        "## 中文说明",
+        "",
+        "这是一次研究会话的完整记录：对话、每个执行过的单元、产出的文件及其来源。",
+        "先用上面的 `openai4s verify-package` 校验，再在 OpenAI4S 首页「导入会话包」。",
+        "导入后的会话默认只读，选择「全新重启」后才会运行任何代码。",
         "",
     ]
     return ("\n".join(lines)).encode("utf-8")
+
+
+#: Bound the reinstall line; a freeze can list hundreds of distributions.
+_REINSTALL_MAX_PACKAGES = 400
+
+
+def _reinstall_command(snapshots: list[Any]) -> str:
+    """A ``pip install`` line pinning the first recorded Python freeze."""
+    for row in snapshots:
+        if not isinstance(row, Mapping) or str(row.get("kind") or "") != "python":
+            continue
+        packages = row.get("packages")
+        if not isinstance(packages, list):
+            continue
+        pins = sorted(
+            {
+                f"{item['name']}=={item['version']}"
+                for item in packages
+                if isinstance(item, Mapping)
+                and isinstance(item.get("name"), str)
+                and isinstance(item.get("version"), str)
+                and re.fullmatch(r"[A-Za-z0-9._-]+", item["name"])
+                and re.fullmatch(r"[A-Za-z0-9.+!_-]+", item["version"])
+                and item["name"].lower()
+                not in {"openai4s", "pip", "setuptools", "wheel"}
+            },
+            key=str.lower,
+        )[:_REINSTALL_MAX_PACKAGES]
+        if pins:
+            return "python -m pip install " + " ".join(pins)
+    return ""
 
 
 def _sha256(data: bytes) -> str:
@@ -1157,6 +1211,10 @@ class SessionPackageService:
                     "project": {
                         "name": _safe_text(project.get("name") or "Imported research"),
                         "description": _safe_text(project.get("description") or ""),
+                        # The project's Agent Context shaped every turn of this
+                        # session; without it a recipient cannot tell why the
+                        # agent behaved as it did. Import never applies it.
+                        "context": _safe_text(project.get("context") or ""),
                     },
                     "frame": {
                         key: _sanitize(frame.get(key))
@@ -1223,6 +1281,9 @@ class SessionPackageService:
                 branches=(root_frame_id, active_branch),
             )
         )
+        files = self._redact_local_paths(
+            files, root_frame_id, branches=(root_frame_id, active_branch)
+        )
         for name, payload in files.items():
             if self._contains_secret_bytes(payload):
                 raise SessionPackageError(
@@ -1265,6 +1326,91 @@ class SessionPackageService:
             "schema_version": PACKAGE_SCHEMA_VERSION,
             "immutable": True,
         }
+
+    #: Package documents that carry this machine's absolute paths (interpreters,
+    #: environment prefixes, worker argv, tracebacks), and which keys to
+    #: rewrite in each; ``None`` means every string value. Message text, cell
+    #: code and anything a digest covers are deliberately not listed.
+    _PATH_REDACTION: dict[str, frozenset[str] | None] = {
+        "environment.json": None,
+        "snapshots.json": frozenset(
+            {
+                "base_prefix",
+                "environment_root",
+                "init_hooks",
+                "interpreter",
+                "interpreter_prefix",
+                "key",
+                "r_home",
+                "worker_argv",
+            }
+        ),
+        "notebook.json": frozenset({"stdout", "stderr", "error", "traceback"}),
+        "ledger.json": frozenset({"observation"}),
+    }
+
+    def _redact_local_paths(
+        self,
+        files: dict[str, bytes],
+        root_frame_id: str,
+        *,
+        branches: tuple[str, ...],
+    ) -> dict[str, bytes]:
+        """Replace this machine's absolute paths before the package is hashed.
+
+        A package is made to be handed to someone else, and it carried the
+        exporter's username hundreds of times (``/Users/<name>/...`` in every
+        interpreter, prefix and traceback). Session workspaces become relative
+        (``.``), the daemon data directory becomes ``<data_dir>`` and the home
+        directory ``~``; the path *shape* — which kind of interpreter, which
+        environment — stays readable.
+        """
+
+        prefixes: list[tuple[str, str]] = []
+        for branch_id in dict.fromkeys(branches):
+            try:
+                path = Path(self._workspace(root_frame_id, branch_id)).expanduser()
+            except Exception:  # noqa: BLE001 - one path fewer, not a failed export
+                continue
+            for spelling in {str(path), str(path.resolve())}:
+                prefixes.append((spelling, "."))
+        prefixes.append((str(self.data_dir), "<data_dir>"))
+        home = Path.home()
+        for spelling in {str(home), str(home.resolve())}:
+            prefixes.append((spelling, "~"))
+        patterns = [
+            (re.compile(re.escape(prefix) + r"(?=[/\\\s\"'),;:]|$)"), label)
+            for prefix, label in sorted(
+                prefixes, key=lambda item: len(item[0]), reverse=True
+            )
+            if len(prefix) > 1 and prefix != "/"
+        ]
+
+        def text(value: str) -> str:
+            for pattern, label in patterns:
+                value = pattern.sub(label, value)
+            return value
+
+        def walk(value: Any, keys: frozenset[str] | None, active: bool) -> Any:
+            if isinstance(value, Mapping):
+                return {
+                    key: walk(item, keys, active or keys is None or key in keys)
+                    for key, item in value.items()
+                }
+            if isinstance(value, list):
+                return [walk(item, keys, active) for item in value]
+            if isinstance(value, str) and (active or keys is None):
+                return text(value)
+            return value
+
+        output = dict(files)
+        for name, keys in self._PATH_REDACTION.items():
+            payload = files.get(name)
+            if payload is None:
+                continue
+            document = json.loads(payload)
+            output[name] = _canonical_json(walk(document, keys, False))
+        return output
 
     def _runtime_scrubber(self) -> Callable[[Any], Any]:
         """Redaction for runtime evidence, which must never fail an export.
@@ -2069,6 +2215,17 @@ class SessionPackageService:
                 ),
                 context="",
             )
+            # The sender's Agent Context is untrusted prompt text: it is kept as
+            # a project note the recipient can read and copy, never applied.
+            original_context = _safe_text(
+                session.get("project", {}).get("context") or ""
+            ).strip()
+            if original_context:
+                self.store.add_note(
+                    project_id=new_project_id,
+                    title="Agent Context from the package (not applied)",
+                    content=original_context[:20000],
+                )
             self.store.update_frame(
                 new_root,
                 name=_safe_text(
