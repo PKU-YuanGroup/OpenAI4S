@@ -235,6 +235,90 @@ describe("pick-one permission cards", () => {
   });
 });
 
+describe("what a card remembers", () => {
+  function captureDecision(): { bodies: Record<string, unknown>[] } {
+    const seen = { bodies: [] as Record<string, unknown>[] };
+    vi.stubGlobal("fetch", (_url: string, init: { body?: string }) => {
+      seen.bodies.push(JSON.parse(String(init.body || "{}")));
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ ok: true, allow: true })),
+      });
+    });
+    return seen;
+  }
+
+  function scopeButton(node: El, label: string): El {
+    return node
+      .querySelectorAll(".perm-scope")
+      .find((row) => !row.classes.has("perm-choices"))!
+      .querySelectorAll(".perm-seg")
+      .find((b) => b.textContent === label)!;
+  }
+
+  const shellCard = {
+    decision_id: "d-r1",
+    frame_id: "f-1",
+    tool: "bash",
+    target: 'python3 -c "import numpy; print(numpy.__version__)"',
+    input: { command: 'python3 -c "import numpy; print(numpy.__version__)"' },
+    suggested_patterns: [
+      'python3 -c "import numpy; print(numpy.__version__)"',
+      "python3 -c *",
+      "python3 *",
+      "*",
+    ],
+  };
+
+  it("starts at once, so allowing remembers nothing", async () => {
+    const seen = captureDecision();
+    renderPermissionCard(shellCard);
+    const { card: node, allow } = card();
+    expect(scopeButton(node, t("perm.scope.once")).classes.has("active")).toBe(true);
+    expect(scopeButton(node, t("perm.scope.conversation")).classes.has("active")).toBe(false);
+    expect(node.querySelector(".perm-pat")!.style.display).toBe("none");
+    allow.onclick!();
+    await settle();
+    expect(seen.bodies[0]).toMatchObject({ scope: "once" });
+    expect(seen.bodies[0]).not.toHaveProperty("pattern");
+  });
+
+  it("widened, it proposes the command's prefix, names each choice, and never preselects *", async () => {
+    const seen = captureDecision();
+    renderPermissionCard({ ...shellCard, decision_id: "d-r2" });
+    const { card: node, allow } = card();
+    scopeButton(node, t("perm.scope.conversation")).onclick!();
+    expect(node.querySelector(".perm-pat")!.style.display).toBe("");
+    const input = node.querySelector(".perm-in")!;
+    expect(input.value).toBe("python3 -c *");
+    const chips = node.querySelectorAll(".perm-chip");
+    expect(chips.map((c) => c.textContent)).toEqual([
+      "This exact command",
+      "python3 -c *",
+      "python3 *",
+      "Everything (not recommended)",
+    ]);
+    expect(chips.find((c) => c.classes.has("active"))?.dataset.pattern).toBe("python3 -c *");
+    expect(chips[3]!.classes.has("danger")).toBe(true);
+    expect(node.querySelector(".perm-note")!.textContent).toContain("still asks");
+    allow.onclick!();
+    await settle();
+    expect(seen.bodies[0]).toMatchObject({ scope: "conversation", pattern: "python3 -c *" });
+  });
+
+  it("falls back to the exact command when the server offers no prefix (a chained command)", async () => {
+    const { defaultRememberPattern } = await import("./permission");
+    expect(
+      defaultRememberPattern({ tool: "bash", target: "cd data && ls", suggested_patterns: ["cd data && ls", "*"] }),
+    ).toBe("cd data && ls");
+    expect(defaultRememberPattern({ tool: "bash", target: "x", suggested_patterns: ["*"] })).toBe("x");
+    expect(
+      defaultRememberPattern({ tool: "write_file", target: "out/a.csv", suggested_patterns: ["out/a.csv", "out/*", "*.csv", "*"] }),
+    ).toBe("out/a.csv");
+  });
+});
+
 describe("what a card says before the user decides", () => {
   it("shows the whole code of a dynamic tool, not only its name", async () => {
     const { permContext, permActionLine } = await import("./permission");

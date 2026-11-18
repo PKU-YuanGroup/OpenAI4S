@@ -2194,6 +2194,12 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-fb{height:40px;margin-top:14px;padding:0 14px;font-size:14px}
 .perm-chip{border:1px solid var(--border);border-radius:6px;background:var(--bg)}
 .perm-chip:hover{background:var(--bg-100)}
+/* the rule picker names what each choice covers; `*` is marked, never preselected */
+.perm-chip.active{border-color:var(--ink);background:var(--ink);color:var(--bg)}
+.perm-chip.danger{color:var(--danger)}
+.perm-chip.danger.active{border-color:var(--danger);background:var(--danger);color:#fff}
+.perm-note{margin-top:6px;font-size:12.5px;line-height:1.45;color:var(--text-300)}
+.perm-note:empty{display:none}
 .perm-btns{justify-content:flex-end;gap:8px;margin-top:14px}
 .perm-deny{order:1;height:40px;padding:0 20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text-000);font-size:14px;font-weight:500}
 .perm-deny:hover{background:var(--bg);border-color:var(--danger);color:var(--danger)}
