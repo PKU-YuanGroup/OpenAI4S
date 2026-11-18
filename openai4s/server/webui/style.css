@@ -1769,7 +1769,9 @@ html:not([data-theme-instant]) .modal-box,html:not([data-theme-instant]) .nb-car
 .msg.assistant > .activity,
 .msg.assistant > .step,
 .msg.assistant > .plan-card,
-.msg.assistant > .perm-card{content-visibility:auto;contain-intrinsic-size:auto 72px}
+.msg.assistant > .perm-card.resolved{content-visibility:auto;contain-intrinsic-size:auto 72px}
+/* An open approval card is never a 72px placeholder: the follow-scroll and
+   messages/approval.ts measure it to keep its Allow/Deny buttons on screen. */
 
 /* ---- sticky composer elevation when scrolled ---- */
 .composer-wrap{position:relative;z-index:5;background:linear-gradient(180deg,transparent,var(--bg) 28%)}

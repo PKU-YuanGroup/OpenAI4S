@@ -24,7 +24,6 @@ import { isReady } from "../../compat/stub";
 import { LANG, t } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
 import { permCards, running } from "../../stores/stream";
-import { _messagesFollow } from "../../stores/ui";
 import { messagesHost } from "./dom";
 import { scheduleFrame } from "./raf";
 
@@ -69,7 +68,7 @@ export function pendingApprovalCard(): HTMLElement | null {
 /** The band above the composer the jump pill floats in. */
 const PILL_BAND = 64;
 
-/** Whether the card's buttons (its bottom edge) are on screen, clear of the pill. */
+/** Whether the card's buttons (its bottom edge) are on screen. */
 export function approvalCardInView(card: HTMLElement, host: HTMLElement): boolean {
   if (typeof card.getBoundingClientRect !== "function" || typeof host.getBoundingClientRect !== "function") {
     return true;
@@ -77,12 +76,13 @@ export function approvalCardInView(card: HTMLElement, host: HTMLElement): boolea
   const r = card.getBoundingClientRect();
   const v = host.getBoundingClientRect();
   if (!v.height) return true;
-  return r.bottom <= v.bottom - PILL_BAND + 1 && r.bottom >= v.top + 40;
+  return r.bottom <= v.bottom + 1 && r.bottom >= v.top + 40;
 }
 
 /**
- * Scroll the open card's buttons above the pill band. A card taller than the
- * view keeps its buttons on screen rather than its top. True when one exists.
+ * Scroll the open card's buttons on screen, above the pill band where the
+ * transcript can scroll that far. A card taller than the view keeps its
+ * buttons on screen rather than its top. True when one exists.
  */
 export function revealPendingApproval(): boolean {
   const card = pendingApprovalCard();
@@ -170,7 +170,9 @@ export function syncPendingApproval(opts: { reveal?: boolean } = {}): void {
     const token = ++revealToken;
     scheduleFrame(() => {
       if (token !== revealToken) return;
-      if (revealPendingApproval()) _messagesFollow.value = false;
+      // Following is left to the reader's own scrolling (scroll.ts): a card
+      // already in view needs no scroll, and the stream keeps following.
+      revealPendingApproval();
       paintPill();
     });
   } else paintPill();
