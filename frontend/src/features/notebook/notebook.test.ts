@@ -61,10 +61,13 @@ import {
   notebookArtifactState,
   renderTableInto,
   notebookExportHref,
+  notebookExportLink,
   NOTEBOOK_EXPORTS,
+  relabelNotebookExports,
   resetHighlightMemo,
   resetNotebookCellCaches,
 } from "./chrome";
+import { LANG, setLang } from "../../i18n/runtime";
 import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent } from "./editor";
 import { environmentMenuItems, envSelectable, envSourceLabel } from "./envmenu";
 import { nbT } from "./copy";
@@ -793,6 +796,69 @@ describe("F-14 Notebook", () => {
       );
       expect(primary.label?.()).toMatch(/ipynb/);
       expect(raw.label?.()).not.toBe(primary.label?.());
+    });
+
+    // SYNC-8 follow-up: the split-button is built once per session (or per
+    // provenance panel) and its labels stayed in the language they were built in.
+    it("relabels a built export button when the language changes", async () => {
+      class Node {
+        tagName: string;
+        className = "";
+        textContent = "";
+        innerHTML = "";
+        href = "";
+        onclick: unknown = null;
+        attrs = new Map<string, string>();
+        kids: Node[] = [];
+        constructor(tag: string) {
+          this.tagName = tag.toUpperCase();
+        }
+        setAttribute(name: string, value: string) {
+          this.attrs.set(name, String(value));
+        }
+        getAttribute(name: string) {
+          return this.attrs.has(name) ? this.attrs.get(name)! : null;
+        }
+        appendChild(kid: Node) {
+          this.kids.push(kid);
+          return kid;
+        }
+        querySelectorAll(selector: string): Node[] {
+          const out: Node[] = [];
+          const match = (n: Node) =>
+            selector.startsWith("[")
+              ? n.attrs.has(selector.slice(1, -1))
+              : selector.startsWith(".")
+                ? n.className.split(/\s+/).includes(selector.slice(1))
+                : false;
+          const walk = (n: Node) => n.kids.forEach((kid) => { if (match(kid)) out.push(kid); walk(kid); });
+          walk(this);
+          return out;
+        }
+      }
+      const body = new Node("body");
+      const doc = Object.assign(body, {
+        body,
+        documentElement: new Node("html"),
+        createElement: (tag: string) => new Node(tag),
+      });
+      vi.stubGlobal("document", doc);
+      const before = LANG;
+      try {
+        await setLang("en");
+        body.appendChild(notebookExportLink("f-lang") as unknown as Node);
+        const label = () => body.querySelectorAll("[data-nb-export]").map((n) => n.textContent);
+        expect(label()[0]).toBe(NOTEBOOK_EXPORTS[0]!.label!());
+        const english = label();
+        await setLang("zh");
+        expect(label()[0]).toBe(NOTEBOOK_EXPORTS[0]!.label!());
+        expect(label()).not.toEqual(english);
+        relabelNotebookExports(doc as unknown as ParentNode);
+        expect(label()).toHaveLength(NOTEBOOK_EXPORTS.length);
+      } finally {
+        await setLang(before);
+        vi.unstubAllGlobals();
+      }
     });
 
     it("builds the sources.zip export on the execution-sources route", () => {
