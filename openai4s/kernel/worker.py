@@ -904,6 +904,27 @@ def _no_interactive_input(prompt: object = "") -> str:
     )
 
 
+def _put_working_directory_on_sys_path() -> None:
+    """Make modules saved in the working directory importable, as in Jupyter.
+
+    Run as a script, this worker started with its own directory,
+    `openai4s/kernel`, as `sys.path[0]`: a module the agent wrote into the
+    workspace raised ModuleNotFoundError, while the kernel's internal modules
+    (`errors`, `protocol`, ...) were importable by bare name and shadowed a
+    workspace file called the same. `""` is the interactive interpreter's
+    entry for the current directory. Run after the protocol imports, which
+    resolve through the package and never needed the script directory.
+    """
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    sys.path[:] = [
+        entry
+        for entry in sys.path
+        if not (entry and os.path.realpath(entry) == script_dir)
+    ]
+    if "" not in sys.path:
+        sys.path.insert(0, "")
+
+
 def _drain_skill_sidecar_loads() -> list[dict]:
     """Return worker-generated successful imports not reported by prior Cells.
 
@@ -1857,6 +1878,7 @@ def main() -> None:
     # stdin is /dev/null now (see `_setup_protocol_channels`); make `input()`
     # say why it cannot work instead of failing with a bare EOFError.
     builtins.input = _no_interactive_input
+    _put_working_directory_on_sys_path()
     # Kernel mode is process identity established by the manager at spawn.
     # Capture both it and the runner object in this driver frame. This keeps
     # ordinary cell mutations of ``os.environ`` and ``__main__`` globals from

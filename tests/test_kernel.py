@@ -693,6 +693,19 @@ def test_input_fails_at_once_and_stdin_is_not_the_protocol_pipe():
         assert k.execute("1 + 1")["stdout"] == "2\n"
 
 
+def test_modules_written_to_the_working_directory_are_importable(tmp_path):
+    """NB-4: the workspace is on sys.path; the kernel's own directory is not."""
+    with Kernel(dispatcher=_echo_dispatcher, cwd=str(tmp_path)) as k:
+        wrote = k.execute("open('m_review.py', 'w').write('X = 1\\n');")
+        assert wrote["error"] is None
+        imported = k.execute("import m_review\nprint(m_review.X)")
+        assert imported["error"] is None, imported["error"]
+        assert imported["stdout"] == "1\n"
+        # The worker's sibling modules are not importable by bare name.
+        leaked = k.execute("import sink_drain")
+        assert "ModuleNotFoundError" in leaked["error"]
+
+
 def test_error_lineno():
     with Kernel(dispatcher=_echo_dispatcher) as k:
         r = k.execute("a = 1\nb = 2\nraise ValueError('boom')")
