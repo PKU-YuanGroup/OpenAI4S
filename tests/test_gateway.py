@@ -224,6 +224,24 @@ def test_the_example_seed_route_reports_how_the_last_run_ended(tmp_path, monkeyp
         assert body["running"] is False
         assert body["result"] == {"cells": 6, "failed": 2}
         assert body["error"] is None
+
+        # POST reports the same field, and the POST above could not pin it:
+        # `start()` clears the result and spawns a thread that, with an instant
+        # seed, may finish before the response is built -- so that one
+        # observation froze `result` as `null` on macOS and saw an object on
+        # CI ("breaking"). Once the example exists, POST starts nothing and
+        # answers the finished run's result: the object half, deterministically.
+        store = get_store(cfg.db_path)
+        fid = store.new_frame(
+            kind="turn", project_id="proj_example", status="done", model=cfg.llm.model
+        )
+        store.update_frame(fid, name=gateway_mod._DEMO_SESSION_NAME)
+        handler._api("POST", "/example/session")
+        body, code = seen[-1]
+        assert code == 200
+        assert body["seeded"] is True
+        assert body["started"] is False
+        assert body["result"] == {"cells": 6, "failed": 2}
     finally:
         runner.close()
 
