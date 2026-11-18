@@ -197,8 +197,12 @@ export function labTabHidden(): boolean {
 
 /** Show the choice on the page: `body.lab-tab-hidden` hides the tab (lab.css). */
 export function applyLabTabPreference(hidden = labTabHidden()): void {
-  if (typeof document === "undefined" || !document.body) return;
-  document.body.classList.toggle("lab-tab-hidden", hidden);
+  // Runs when the module loads: it must never throw into whatever imported it.
+  try {
+    document.body.classList.toggle("lab-tab-hidden", hidden);
+  } catch {
+    /* no document (yet): nothing to show */
+  }
 }
 
 export function setLabTabHidden(hidden: boolean): void {
