@@ -479,11 +479,14 @@ def load_notes(result: Any) -> list[str]:
         )
     import_hint = result.get("import")
     if isinstance(import_hint, str) and import_hint.strip():
+        # The loader's hint ends in a "# why" comment; the statement is what
+        # the model runs.
+        statement = import_hint.split(" # ", 1)[0].strip()
         notes.append(
             "[helpers] This Skill's helper functions live in its kernel.py and "
             "are not in the kernel until you import them. In a ```python cell, "
-            f"run: {import_hint.strip()} -- then use its functions. Do not "
-            "read or exec kernel.py by hand."
+            f"run: {statement} -- then use its functions. Do not read or exec "
+            "kernel.py by hand."
         )
     return notes
 

@@ -1261,7 +1261,10 @@ def test_a_load_says_how_to_import_the_helpers_it_does_not_import(tmp_path):
     )
     text = format_tool_result(get_tool("load_skill"), loaded)
     assert text.startswith("[Tool: load_skill]\n[helpers] This Skill's helper")
-    assert 'importlib.import_module("literature-review.kernel")' in text
+    assert (
+        'run: import importlib; k = importlib.import_module("literature-review.kernel")'
+        " -- then use its functions" in text
+    )
     assert "Do not read or exec kernel.py by hand" in text
     # A Skill without a sidecar says nothing about one.
     plain = service.load("borzoi")
