@@ -45,7 +45,7 @@ export const INITIAL_RENDER_BATCH = 40;
 export type HistoryItem = {
   t: number;
   seq: number;
-  kind: "msg" | "step";
+  kind: "msg" | "step" | "perm";
   v: unknown;
 };
 
@@ -86,12 +86,18 @@ export function forkFromMessageCapability(): boolean {
 type StepRenderer = (step: unknown, target?: ParentNode | null) => Node | null | void;
 
 let renderStoredStepImpl: StepRenderer | null = null;
+let renderStoredPermissionImpl: StepRenderer | null = null;
 let framedRaf = 0;
 let framedOnCancel: (() => void) | null = null;
 
 /** F-11 assigns `renderStoredStep`. Until then steps in the interleaved list are skipped. */
 export function setRenderStoredStepImpl(fn: StepRenderer | null): void {
   renderStoredStepImpl = fn;
+}
+
+/** F-11 assigns the approval-card renderer for stored decisions. */
+export function setRenderStoredPermissionImpl(fn: StepRenderer | null): void {
+  renderStoredPermissionImpl = fn;
 }
 
 export function nextBatchEnd(
@@ -458,6 +464,10 @@ export function renderHistoryItem(
   if (item.kind === "msg") {
     return renderStored(item.v as StoredMessage, target);
   }
+  if (item.kind === "perm") {
+    const node = renderStoredPermissionImpl ? renderStoredPermissionImpl(item.v, target) : null;
+    return node instanceof Node ? node : null;
+  }
   if (renderStoredStepImpl) {
     const node = renderStoredStepImpl(item.v, target);
     return node instanceof Node ? node : null;
@@ -573,9 +583,38 @@ export function renderEmptySession(host: ParentNode | null = messagesHost()): vo
   host.appendChild(wrap);
 }
 
+/**
+ * A link to a session that does not exist (or that this login may not see).
+ * The workbench used to open as if it did -- an empty transcript, a usable
+ * composer, and "Invalid running state" in the history banner -- with no way
+ * back but the browser's.
+ */
+export function renderMissingSession(
+  host: ParentNode | null,
+  back: { project?: (() => void) | null; home: () => void },
+): void {
+  if (!host) return;
+  const wrap = el("div", "empty-session missing-session");
+  wrap.setAttribute("role", "alert");
+  wrap.appendChild(el("div", "es-title", historyT("history.missing.title")));
+  wrap.appendChild(el("div", "es-sub", historyT("history.missing.sub")));
+  const actions = el("div", "missing-actions");
+  const button = (label: string, onClick: () => void): void => {
+    const b = el("button", "outline-btn", label) as HTMLButtonElement;
+    b.type = "button";
+    b.onclick = onClick;
+    actions.appendChild(b);
+  };
+  if (back.project) button(historyT("history.missing.project"), back.project);
+  button(historyT("history.missing.home"), back.home);
+  wrap.appendChild(actions);
+  host.appendChild(wrap);
+}
+
 export function interleaveHistory(
   msgs: StoredMessage[],
   steps: Array<{ created_at?: number; seq?: number; [key: string]: unknown }>,
+  approvals: Array<{ created_at?: unknown; [key: string]: unknown }> = [],
 ): HistoryItem[] {
   const items: HistoryItem[] = [];
   for (const mm of msgs) {
@@ -594,8 +633,63 @@ export function interleaveHistory(
       v: s,
     });
   }
+  // An approval is asked while the step that needs it is already on screen,
+  // so on a millisecond tie it follows the step and precedes the prose.
+  for (const a of approvals) {
+    items.push({
+      t: new Date(String(a.created_at || "")).getTime() || 0,
+      seq: 5e14,
+      kind: "perm",
+      v: a,
+    });
+  }
   items.sort((a, b) => a.t - b.t || a.seq - b.seq);
   return items;
+}
+
+/**
+ * A `user_message` event: the request a turn starts from, whichever tab sent
+ * it. The sending tab adopts its own optimistic bubble (matched by the
+ * `X-Request-Id` it sent, or the execution the 202 named); a transcript that
+ * already shows the stored row (a reload's REST read, a replay) keeps it and
+ * gets null back; any other tab shows the question it would otherwise never
+ * have seen.
+ */
+export function showLiveUserMessage(
+  m: Record<string, unknown>,
+  host: ParentNode | null = messagesHost(),
+): HTMLElement | null {
+  if (!host) return null;
+  const id = typeof m.message_id === "string" ? m.message_id : "";
+  const requestId = typeof m.request_id === "string" ? m.request_id : "";
+  const executionId = typeof m.execution_id === "string" ? m.execution_id : "";
+  const rows = Array.from(
+    (host as ParentNode & { querySelectorAll?: (s: string) => ArrayLike<Element> })
+      .querySelectorAll?.(":scope > .msg.user") || [],
+  ) as HTMLElement[];
+  // Already on screen: nothing changes, and the caller is told so (null).
+  if (id && rows.some((row) => row.dataset.messageId === id)) return null;
+  const own = rows.find((row) =>
+    !row.dataset.messageId &&
+    ((requestId && row.dataset.requestId === requestId) ||
+      (executionId && row.dataset.executionId === executionId)));
+  if (own) {
+    if (id) own.dataset.messageId = id;
+    // Its turn is running now; it is no longer waiting in the queue.
+    own.classList.remove("queued");
+    return own;
+  }
+  (host as ParentNode).querySelector?.(":scope > .empty-session")?.remove();
+  return renderStored(
+    {
+      role: "user",
+      content: m.content,
+      created_at: m.created_at,
+      message_id: id || undefined,
+      artifact_refs: m.artifact_refs,
+    },
+    host,
+  );
 }
 
 setMessageForkRefresh(() => {

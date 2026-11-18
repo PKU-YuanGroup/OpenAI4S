@@ -64,7 +64,9 @@ describe("WS protocol handlers", () => {
     expect(_seqSeen.value.f).toBe(9);
   });
 
-  it("replay_begin gap on the open session zeros that cursor and flags reload", () => {
+  it("replay_begin gap on the open session keeps that cursor and flags reload", () => {
+    // The transcript up to the cursor stays on screen, so the cursor stays
+    // the dedupe line; zeroing it made the next reconnect re-append the turn.
     currentId.value = "f";
     _streamEpoch.value = "epoch-a";
     _seqSeen.value.f = 9;
@@ -74,7 +76,7 @@ describe("WS protocol handlers", () => {
       root_frame_id: "f",
       gap: true,
     });
-    expect(_seqSeen.value.f).toBe(0);
+    expect(_seqSeen.value.f).toBe(9);
     expect(_replayGap.value).toBe("f");
   });
 
@@ -193,6 +195,23 @@ describe("WS protocol handlers", () => {
     expect(row.running).toBe(false);
     vi.advanceTimersByTime(LOAD_SESSIONS_DEBOUNCE_MS);
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("session_status updates a session this tab is not viewing", () => {
+    // Sent to every tab listing the project, viewing the session or not: a
+    // stop in another tab used to leave this sidebar spinning for minutes.
+    const load = vi.fn();
+    setLoadSessionsImpl(load);
+    currentId.value = "viewed";
+    const other: Record<string, unknown> = { id: "elsewhere", running: true };
+    sessions.value = [{ id: "viewed", running: false }, other];
+
+    onEvent({ type: "session_status", frame_id: "elsewhere", project_id: "p", status: "cancelled" });
+    expect(other.running).toBe(false);
+    onEvent({ type: "session_status", frame_id: "new-one", project_id: "p", status: "processing" });
+    vi.advanceTimersByTime(LOAD_SESSIONS_DEBOUNCE_MS);
+    // One coalesced re-read lists the session that started elsewhere.
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it("artifact_created upserts from nested, flat, and bare payloads", () => {

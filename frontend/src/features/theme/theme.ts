@@ -168,7 +168,26 @@ function watchSystemTheme(): void {
   }
 }
 
+let watchingOtherTabs = false;
+
+/**
+ * Follow a theme picked in another tab, as the language already does (the
+ * window `storage` event fires only in the tabs that did not write). A dark
+ * pick in one tab left the others light until they were reloaded.
+ */
+function watchOtherTabs(): void {
+  if (watchingOtherTabs || typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+  watchingOtherTabs = true;
+  window.addEventListener("storage", (event: StorageEvent) => {
+    if (event.key !== null && event.key !== THEME_STORAGE_KEY) return;
+    const next = storedTheme();
+    if (next === getTheme()) return;
+    applyTheme(next, { instant: true });
+  });
+}
+
 export function installTheme(): void {
   applyTheme(getTheme(), { instant: true });
   watchSystemTheme();
+  watchOtherTabs();
 }

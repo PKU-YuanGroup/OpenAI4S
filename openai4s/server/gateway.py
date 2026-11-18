@@ -936,6 +936,9 @@ class WSConnection:
     def __init__(self, wfile) -> None:
         self.wfile = wfile
         self.subs: set[str] = set()
+        #: The session directory this tab's sidebar shows: a project id, "*"
+        #: for every project (Home), or None when the client never asked.
+        self.directory: str | None = None
         self.alive = True
         #: Team mode: "may this connection still receive that session?", set
         #: by the WS handler which owns identity re-resolution. None (the
@@ -1443,12 +1446,23 @@ class WSHub:
 
     def _record(self, rid: str, obj: dict) -> None:
         t = obj.get("type")
-        # Approval cards have their own durable replay source.  In particular,
-        # resolving a card after daemon restart is not a live Agent turn and
-        # must not create a phantom running resume buffer.
-        if t in {"await_permission", "permission_resolved"}:
-            return
         buf = self._live.get(rid)
+        # Approval cards have their own durable replay source (the pending
+        # snapshot and `GET /frames/{fid}/approvals`). In particular, resolving
+        # a card after daemon restart is not a live Agent turn and must not
+        # create a phantom running resume buffer.
+        #
+        # Inside a running turn's window they are recorded, though. Left out,
+        # every approval was a numbered hole: each reconnect after one was
+        # declared a gap (and deferred the history reload behind the running
+        # turn), a decision made while a tab was away never reached it, and a
+        # reopened turn could not place its approval cards between the steps
+        # and prose they came between.
+        if t in {"await_permission", "permission_resolved"}:
+            if buf is not None and buf.get("running"):
+                self._append_live_event(buf, obj)
+                self._trim_live_events(buf)
+            return
         event_execution = str(obj.get("execution_id") or "")
         # A `processing` naming a new execution is a BOUNDARY, and it has to be
         # read before the staleness test -- which would otherwise judge it
@@ -1492,13 +1506,26 @@ class WSHub:
             # no execution id today, so taking the field verbatim would wipe
             # the id the `processing` boundary just established and hand the
             # window straight back to whichever late event arrived next.
+            inherited = event_execution or (
+                str(buf.get("execution_id") or "") if buf else ""
+            )
+            # The turn's own request was broadcast between its `processing`
+            # boundary and this reset. Starting the window over without it
+            # would leave a reconnecting tab that missed it with a hole it can
+            # only fill by refetching history, which a running turn defers.
+            carried = [
+                event
+                for event in ((buf.get("events") or []) if buf else [])
+                if buf.get("running")
+                and event.get("type") == "user_message"
+                and str(event.get("execution_id") or "") == inherited
+            ]
             self._install_live_buffer(
                 rid,
                 self._new_live_buffer(
-                    [obj],
+                    [*carried, obj],
                     scope="turn",
-                    execution_id=event_execution
-                    or (str(buf.get("execution_id") or "") if buf else ""),
+                    execution_id=inherited,
                 ),
             )
             return
@@ -1629,6 +1656,7 @@ class WSHub:
             buf.setdefault("active_cell_sizes", {}).pop(cell_id, None)
         if t in (
             "text_chunk",
+            "user_message",
             "notebook_cell_start",
             "notebook_cell_finished",
             "kernel_status",
@@ -1900,6 +1928,34 @@ class WSHub:
         with self._lock:
             conns = list(self._conns)
         return any(c.alive and root_frame_id in c.subs for c in conns)
+
+    def notify_directory(
+        self, root_frame_id: str, project_id: str | None, obj: dict
+    ) -> None:
+        """Tell every tab whose sidebar lists this session's project about it.
+
+        Session events reach only the tabs subscribed to that one session, so
+        a sidebar never learned that another session had started, stopped or
+        appeared: a session stopped in one tab still spun as running in all
+        the others minutes later. Unsequenced on purpose -- a directory is not
+        a session stream, and a number here would desynchronise a cursor.
+        Visibility is asked per connection outside the hub lock, exactly as a
+        broadcast does.
+        """
+        with self._lock:
+            targets = [
+                c
+                for c in self._conns
+                if c.alive
+                and getattr(c, "directory", None) is not None
+                and getattr(c, "directory", None) in ("*", project_id)
+            ]
+        for c in targets:
+            allowed = c.refresh_visibility(root_frame_id)
+            if allowed is None:
+                allowed = c.may_receive(root_frame_id)
+            if allowed:
+                c.send_json(dict(obj))
 
     def replay(self, root_frame_id: str, conn: "WSConnection") -> None:
         """Send the buffered current-turn events to a single (re)connecting
@@ -3156,6 +3212,7 @@ class SessionRunner:
         observer = getattr(self.hub, "add_event_observer", None)
         if callable(observer):
             observer(self.project_history_autosave.observe)
+            observer(self._announce_session_status)
         if start_idle_sweeper:
             self.recovery.start()
             self._share_boot_restore()
@@ -4211,6 +4268,66 @@ class SessionRunner:
         )
         self.project_history_autosave.schedule_session(fid)
         return fid
+
+    def _announce_session_status(self, root_frame_id: str, event: dict) -> None:
+        """Hub observer: a root session's lifecycle reaches every sidebar.
+
+        `frame_update` goes only to the tabs viewing that session; this
+        re-announces its root-level transitions (processing, terminal,
+        renamed, titled) to the tabs listing the session's project as a
+        `session_status` event. A sub-agent's frame update is not the
+        session's state and is not forwarded.
+        """
+        if event.get("type") != "frame_update":
+            return
+        if event.get("frame_id") not in (None, root_frame_id):
+            return
+        notify = getattr(self.hub, "notify_directory", None)
+        if not callable(notify):
+            return
+        frame = self.store.get_frame(root_frame_id) or {}
+        project_id = frame.get("project_id")
+        notify(
+            root_frame_id,
+            project_id,
+            _session_status_event(root_frame_id, project_id, event.get("status")),
+        )
+
+    def latest_unused_session(
+        self,
+        project_id: str,
+        *,
+        owner_user_id: str | None = None,
+        visible_to_user_id: str | None = None,
+    ) -> str | None:
+        """The newest root session in this project that nobody has used yet.
+
+        "Unused" is the predicate the session list hides (`_session_is_unused`),
+        so a frame reused here is exactly one the user could not otherwise
+        reach. Team mode reuses only the caller's own frames; another member's
+        empty session is theirs. Nothing is reused while the project is being
+        deleted or while the frame runs anything.
+        """
+        with self._lock:
+            if project_id in self._deleting_projects:
+                return None
+        running = self.running_frames()
+        for frame in self.store.browse_frames(
+            project_id=project_id,
+            roots_only=True,
+            limit=20,
+            visible_to_user_id=visible_to_user_id,
+        ):
+            fid = str(frame.get("frame_id") or "")
+            if not fid or fid in running or self._execution_active(fid):
+                continue
+            if owner_user_id is not None:
+                owner = self.store.team.session_owner(fid) or {}
+                if owner.get("user_id") != owner_user_id:
+                    continue
+            if _session_is_unused(self.store, _frame_json(frame, self.store)):
+                return fid
+        return None
 
     def delete_project(self, project_id: str) -> dict[str, Any]:
         roots: tuple[str, ...] = ()
@@ -10778,6 +10895,40 @@ class SessionRunner:
                     stored_user_message["message_id"],
                     {"artifact_refs": message_refs},
                 )
+            # The request is part of the stream, not only of the sender's DOM.
+            # The sending tab inserted its own bubble before the POST, but every
+            # other tab viewing this session learned about the turn only from
+            # its narration, and a queued follow-up never appeared anywhere but
+            # in the tab that typed it -- until a reload read the stored row.
+            # `request_id` is the id the 202 returned (the sender's own
+            # `X-Request-Id`), so the sender can recognise its optimistic bubble;
+            # `message_id` lets a reopened transcript skip the row it already
+            # rendered from REST.
+            emit(
+                {
+                    "type": "user_message",
+                    "frame_id": root_frame_id,
+                    "message_id": stored_user_message.get("message_id"),
+                    "role": "user",
+                    "content": user_text,
+                    "created_at": _iso(stored_user_message.get("created_at")),
+                    "request_id": turn_request_id,
+                    **(
+                        {"execution_id": execution.execution_id}
+                        if getattr(execution, "execution_id", "")
+                        else {}
+                    ),
+                    **(
+                        {
+                            "artifact_refs": _message_artifact_refs(
+                                {"metadata": {"artifact_refs": message_refs}}
+                            )
+                        }
+                        if message_refs
+                        else {}
+                    ),
+                }
+            )
             remote_ctx = _remote_gpu_runtime_context(
                 user_text, data_dir=self.cfg.data_dir
             )
@@ -12797,6 +12948,12 @@ class SessionRunner:
         step_input = {"files": files, "environment": environment or self._kernel_id(st)}
         if language:
             step_input["language"] = language
+        if getattr(emit, "chat_projection", True) is False:
+            # A Notebook REPL cell's "Saving …" step: kept for the record, but
+            # marked so the transcript leaves it out on reload exactly as the
+            # live chat did (it has no turn to belong to, and it used to sit
+            # alone above the empty-session welcome).
+            step_input["origin"] = "notebook"
         step_output = {"artifacts": saved}
         summary = f"{len(saved)} artifact" + ("" if len(saved) == 1 else "s")
         sid = "s-" + uuid.uuid4().hex[:12]
@@ -13475,6 +13632,11 @@ class SessionRunner:
             def emit_notebook(event: dict) -> None:
                 if event.get("type") not in {"text_chunk", "step", "step_update"}:
                     emit(event)
+
+            # The step rows this cell persists are Notebook-only too (see
+            # `_emit_artifact_step`): the chat never showed them live, so a
+            # reload must not show them either.
+            setattr(emit_notebook, "chat_projection", False)
 
             info = self._execute_and_log(
                 st,
@@ -17433,13 +17595,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         for f in batch:
                             fj = _frame_json(f, store)
                             # hide abandoned empty sessions (no messages, no
-                            # cells, no title) — but keep REPL-only sessions
-                            if (
-                                not fj["message_count"]
-                                and not fj.get("name")
-                                and not fj.get("task_summary")
-                                and not store.cell_count(f["frame_id"])
-                            ):
+                            # cells, no title, no files) — but keep REPL-only
+                            # sessions and ones that only received an upload
+                            if _session_is_unused(store, fj):
                                 continue
                             fj["running"] = f["frame_id"] in running
                             fj["kernel_alive"] = runner.kernel_alive(f["frame_id"])
@@ -17483,7 +17641,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "POST /projects or list them with GET /projects",
                             "project_id_required",
                         )
-                    fid = runner.create_session(
+                    # `reuse_empty`: entering a project with nothing listed
+                    # (the workbench's project open). Every entry used to
+                    # create another frame nobody had used, each hidden from
+                    # the list, so the project accumulated empty sessions.
+                    fid = (
+                        runner.latest_unused_session(
+                            pid,
+                            owner_user_id=self._team_owner_user_id(),
+                            visible_to_user_id=self._team_visibility_filter(),
+                        )
+                        if b.get("reuse_empty") is True
+                        else None
+                    ) or runner.create_session(
                         pid,
                         model=b.get("model"),
                         owner_user_id=self._team_owner_user_id(),
@@ -17524,7 +17694,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json(_frame_json(frame, store))
                     return
                 if method == "DELETE":
+                    deleted = store.get_frame(fid) or {}
                     runner.delete_session(fid)
+                    # Other tabs' sidebars drop the row without a reload.
+                    notify = getattr(hub, "notify_directory", None)
+                    if callable(notify) and deleted:
+                        project_id = deleted.get("project_id")
+                        notify(
+                            fid,
+                            project_id,
+                            _session_status_event(fid, project_id, "deleted"),
+                        )
                     self._json({"ok": True})
                     return
             m = re.fullmatch(r"/frames/([^/]+)/messages", sub)
@@ -18129,6 +18309,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     return
                 self._json(resolution)
+                return
+            # ---- approval history: every request this session asked, in order ----
+            m = re.fullmatch(r"/frames/([^/]+)/approvals", sub)
+            if m and method == "GET":
+                fr = store.get_frame(m.group(1))
+                if fr is None:
+                    raise GatewayError(404, "session not found")
+                root = fr.get("root_frame_id") or m.group(1)
+                self._json(
+                    {
+                        "root_frame_id": root,
+                        "approvals": [
+                            _approval_json(row)
+                            for row in store.list_permission_requests(
+                                root_frame_id=root
+                            )
+                        ],
+                    }
+                )
                 return
             # ---- permission rules: list (per conversation) / upsert / delete ----
             m = re.fullmatch(r"/frames/([^/]+)/permissions", sub)
@@ -20986,6 +21185,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         rid = msg.get("root_frame_id") or msg.get("frame_id")
                         if rid:
                             hub.unsubscribe(rid, conn)
+                    elif t == "view_directory":
+                        # The project whose session list this tab shows, or
+                        # none (Home lists every project). Each session event
+                        # is still checked against this login's visibility
+                        # before it is sent, so naming a project grants
+                        # nothing.
+                        pid = msg.get("project_id")
+                        conn.directory = (
+                            str(pid) if isinstance(pid, str) and pid else "*"
+                        )
             finally:
                 conn.close()  # stop the writer thread + mark dead
                 hub.remove(conn)
@@ -21031,6 +21240,86 @@ def _frame_json(f: dict | None, store: Store) -> dict:
     # column the list leaves out would read as "unpinned" for a pinned session.
     out["model_profile_id"] = f.get("model_profile_id") or None
     out["model_profile_revision"] = f.get("model_profile_revision") or None
+    return out
+
+
+def _session_status_event(
+    root_frame_id: str, project_id: str | None, status: object
+) -> dict:
+    """The directory event a sidebar applies (see `WSHub.notify_directory`)."""
+    return {
+        "type": "session_status",
+        "frame_id": root_frame_id,
+        "project_id": project_id,
+        "status": status,
+    }
+
+
+def _session_is_unused(store: Store, fj: dict) -> bool:
+    """A session nobody has used: no message, title, Cell or file.
+
+    The session list hides these (abandoned "New session" clicks), and a
+    project open reuses one rather than minting another. A file counts: a
+    session that has only received an upload was hidden from the list while
+    its project card counted it, and the upload could be found only through
+    the project's file view.
+    """
+    fid = str(fj.get("id") or "")
+    return bool(
+        fid
+        and not fj.get("message_count")
+        and not fj.get("name")
+        and not fj.get("task_summary")
+        and not store.cell_count(fid)
+        and not store.list_artifacts({"root_frame_id": fid})
+    )
+
+
+#: The approval-card fields a history read may republish from a request's
+#: stored `await_permission` payload. An allowlist: the payload also carries
+#: ledger identities (action group, tool call, resource keys) that the card
+#: never showed and no client needs.
+_APPROVAL_CARD_FIELDS = (
+    "tool",
+    "kind",
+    "title",
+    "input",
+    "target",
+    "suggested_patterns",
+    "scopes",
+    "sub_agent",
+    "dangerous",
+    "choices",
+    "policy_review_kind",
+    "resolved_file_path",
+)
+
+
+def _approval_json(row: dict) -> dict:
+    """One durable approval request as the transcript shows it.
+
+    The live card came from the `await_permission` event and its outcome from
+    `permission_resolved`; neither was part of the stored history, so a reload
+    lost every decision -- including a denial and the reason typed with it --
+    and each tab showed only the cards it happened to be open for.
+    """
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    out: dict = {
+        "decision_id": row.get("decision_id"),
+        "frame_id": payload.get("frame_id") or row.get("root_frame_id"),
+        "state": row.get("state"),
+        "scope": row.get("scope"),
+        "message": row.get("message"),
+        "resolution_context": row.get("resolution_context"),
+        "created_at": _iso(row.get("created_at")),
+        "resolved_at": _iso(row.get("resolved_at")),
+    }
+    for key in _APPROVAL_CARD_FIELDS:
+        if key in payload:
+            out[key] = payload[key]
+    out["tool"] = out.get("tool") or row.get("tool")
+    out["target"] = out.get("target") or row.get("target") or ""
+    out["dangerous"] = bool(out.get("dangerous") or row.get("dangerous"))
     return out
 
 

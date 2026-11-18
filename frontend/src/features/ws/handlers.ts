@@ -184,22 +184,41 @@ function handleReplayBegin(m: WsMessage): void {
   if (mine(fid)) {
     // A reconnect is not proof that the currently visible stream is invalid.
     // Preserve it until a complete, quiet REST read can replace the transcript.
-    // `gap` means the server could not serve our cursor — the buffer had
-    // aged past it, or it belonged to a previous run. Replaying from a hole
-    // we cannot see would leave the transcript quietly wrong, so reload it.
-    if (m.gap) {
-      // In place, like every cursor write (see handleIncomingMessage).
-      const seen = _seqSeen.value;
-      if (typeof fid === "string") seen[fid] = 0;
-      _replayGap.value = fid;
-    }
+    // `gap` means the server could not serve our cursor contiguously -- the
+    // buffer had aged past it, or some numbers were never buffered (an idle
+    // delta). Replaying from a hole we cannot see would leave the transcript
+    // quietly wrong, so reload it.
+    //
+    // The cursor stays where it is. Everything up to it is still on screen
+    // (that is what "preserve" means), so it is still the dedupe line: this
+    // replay's newer events apply, older ones drop. Resetting it to 0 here
+    // made the next reconnect ask for the whole buffer while the running turn
+    // kept the REST reload deferred, and the narration was appended a second
+    // time. A cursor from another daemon run was already dropped above.
+    if (m.gap) _replayGap.value = fid;
   }
+}
+
+let replayEndSideEffects: ((fid: string) => void) | null = null;
+
+/**
+ * F-11 re-reads the approval cards still shown as pending once a
+ * subscription's replay is over: a decision made while this tab was away
+ * reaches it through neither the replay nor the pending snapshot.
+ */
+export function setReplayEndSideEffects(fn: ((fid: string) => void) | null): void {
+  replayEndSideEffects = fn;
 }
 
 let replayRecovery: { fid: string; gen: number; promise: Promise<unknown> } | null = null;
 function handleReplayEnd(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid) || typeof fid !== "string") return;
+  try {
+    if (replayEndSideEffects) replayEndSideEffects(fid);
+  } catch {
+    /* a side effect never blocks the gap recovery below */
+  }
   if (_replayGap.value === fid) {
     const gen = _openGen.value;
     if (replayRecovery?.fid !== fid || replayRecovery.gen !== gen) {
@@ -233,6 +252,18 @@ function handleFrameUpdate(m: WsMessage): void {
   scheduleLoadSessions();
 }
 
+/**
+ * Another session in this sidebar's directory started, stopped, was renamed
+ * or deleted (`view_directory`). Only the tabs viewing a session receive its
+ * `frame_update`, so every other tab's sidebar kept a stopped session
+ * spinning, and a session started elsewhere appeared only after this tab
+ * happened to reload its list.
+ */
+function handleSessionStatus(m: WsMessage): void {
+  patchSessionFromFrameUpdate(m);
+  scheduleLoadSessions();
+}
+
 function handleArtifactCreated(m: WsMessage): void {
   upsertArtifactFromEvent(m);
   if (artifactCreatedSideEffects) artifactCreatedSideEffects(m);
@@ -247,5 +278,6 @@ export function registerBuiltinHandlers(): void {
   registerUnlessPresent("replay_begin", handleReplayBegin);
   registerUnlessPresent("replay_end", handleReplayEnd);
   registerUnlessPresent("frame_update", handleFrameUpdate);
+  registerUnlessPresent("session_status", handleSessionStatus);
   registerUnlessPresent("artifact_created", handleArtifactCreated);
 }

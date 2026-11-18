@@ -27,4 +27,4 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 | [`team.test.ts`](team.test.ts) | Identity chip, admin panel, guest redirect, trap on team modals, audit times from epoch milliseconds, a late directory read not repainting over a newer one, admin section headings in the interface language. |
 | [`team.ts`](team.ts) | Team IIFEs. `/auth/me` probe; admin/files modals use the trap. Only the latest directory read renders, and it alone moves the Upload target. Admin section headings come from a local zh/en table. |
 | [`upload.test.ts`](upload.test.ts) | Selection-time destination, the four-clause batch match, single flight, retry supersession, 64-failure bound. |
-| [`upload.ts`](upload.ts) | File input / paste / drop uploads, `UPLOAD_STATE`, the first-session single flight, and the send barrier's `waitForPendingUploads`. |
+| [`upload.ts`](upload.ts) | File input / paste / drop uploads, `UPLOAD_STATE`, the first-session single flight (with `reuseEmpty` it asks `POST /frames` for the project's newest unused session), and the send barrier's `waitForPendingUploads`. |

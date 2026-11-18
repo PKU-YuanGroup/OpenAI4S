@@ -52,6 +52,7 @@ function deferred<T>() {
 function body(path: string): unknown {
   if (path.includes("/messages?")) return { messages: [{ role: "assistant", content: "confirmed", seq: 1 }], has_earlier: false };
   if (path.endsWith("/steps")) return { steps: [] };
+  if (path.endsWith("/approvals")) return { approvals: [] };
   if (path.endsWith("/status")) return { running: false, status: "completed" };
   return {};
 }
@@ -84,6 +85,55 @@ describe("history reads", () => {
     server((path) => path.includes("/messages?") ? response({ error: "read failed" }, status) : undefined);
     const result = await openConversation("f");
     expect(result).toMatchObject({ messagesLoaded: false, stepsLoaded: true, runStateLoaded: true, superseded: false });
+    expect(paint.empty).not.toHaveBeenCalled();
+  });
+  it("says a linked session does not exist instead of opening an empty workbench", async () => {
+    // GET /frames/{id} answers `{}` for an unknown id. The workbench used to
+    // open it anyway: an empty transcript, a live composer, and "Invalid
+    // running state" in the history banner.
+    const send = vi.fn();
+    ws.value = { readyState: 1, send, onopen: null, onclose: null, onmessage: null };
+    const fetcher = server();
+    const result = await openConversation("f-000000000000", "proj-1");
+    expect(result).toMatchObject({ messagesLoaded: false, superseded: false });
+    const paths = fetcher.mock.calls.map(([path]) => String(path));
+    expect(paths).toContain("/api/v1/frames/f-000000000000");
+    expect(paths.some((path) => path.includes("/messages?") || path.endsWith("/status"))).toBe(false);
+    expect(session.historyLoad.value).toBeNull();
+    expect(session._titleName.value).toBe("Session not found");
+    // Nothing subscribes to a session that is not there.
+    expect(send.mock.calls.map(([raw]) => JSON.parse(String(raw)).type)).not.toContain("view_session");
+  });
+  it("moves a link with the wrong project id to the session's own project", async () => {
+    const fetcher = server((path) => path.endsWith("/api/v1/frames/f-elsewhere")
+      ? response({ id: "f-elsewhere", project_id: "proj-right", name: "qPCR fold change" }) : undefined);
+    const result = await openConversation("f-elsewhere", "proj-wrong");
+    expect(result).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
+    expect(session.project.value).toBe("proj-right");
+    expect(session._titleName.value).toBe("qPCR fold change");
+    const paths = fetcher.mock.calls.map(([path]) => String(path));
+    // The sidebar re-reads the session's own project.
+    expect(paths.some((path) => path.startsWith("/api/v1/frames?") && path.includes("project_id=proj-right"))).toBe(true);
+  });
+  it("leaves a Notebook cell's step out of the chat, as the live chat did", async () => {
+    // A manual cell's "Saving …" step used to reappear on reload, alone above
+    // the empty-session welcome, though the live chat never showed it.
+    const notebookStep = {
+      step_id: "s-nb", seq: 0, kind: "artifact", created_at: 1, status: "done", title: "Saving figure_cell1_1.png",
+      summary: null, input: { files: ["figure_cell1_1.png"], origin: "notebook" }, output: null,
+    };
+    server((path) => path.includes("/messages?") ? response({ messages: [] })
+      : path.endsWith("/steps") ? response({ steps: [notebookStep] }) : undefined);
+    await openConversation("f");
+    expect(paint.batches.mock.calls.flat(2)).toEqual([]);
+    expect(paint.empty).toHaveBeenCalledTimes(1);
+    // An agent step with no message yet is chat content: no welcome under it.
+    paint.empty.mockClear(); paint.batches.mockClear();
+    const agentStep = { ...notebookStep, step_id: "s-agent", input: { files: ["fit.png"] } };
+    server((path) => path.includes("/messages?") ? response({ messages: [] })
+      : path.endsWith("/steps") ? response({ steps: [notebookStep, agentStep] }) : undefined);
+    await recoverConversation("f");
+    expect(paint.batches.mock.calls.flat(2)).toEqual([expect.objectContaining({ kind: "step", v: agentStep })]);
     expect(paint.empty).not.toHaveBeenCalled();
   });
   it("shows valid empty history only after successful reads", async () => {
@@ -129,12 +179,12 @@ describe("history reads", () => {
     ]));
     expect(paint.empty).not.toHaveBeenCalled();
     expect(_replayGap.value).toBe("f");
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher).toHaveBeenCalledTimes(4);
     for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
     const retry = server((path) => path.endsWith("/steps") ? response({ steps: [storedStep] }) : undefined);
     expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(_replayGap.value).toBeNull();
-    expect(retry).toHaveBeenCalledTimes(3);
+    expect(retry).toHaveBeenCalledTimes(4);
     for (const [, init] of retry.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
   });
   it.each([
@@ -198,7 +248,7 @@ describe("history reads", () => {
     const one = recoverConversation("f");
     const two = recoverConversation("f");
     expect(two).toBe(one);
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher).toHaveBeenCalledTimes(4);
     gate.resolve(response({ steps: [] }));
     expect(await one).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(fetcher.mock.calls.map(([path]) => String(path))).toEqual(expect.arrayContaining([
@@ -295,7 +345,7 @@ describe("history reads", () => {
     gate.resolve(response({ messages: [] }));
     expect(await reading).toMatchObject({ messagesLoaded: false });
     await vi.waitFor(() => expect(session.historyLoad.value?.status).toBe("loaded"));
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher).toHaveBeenCalledTimes(8);
   });
 
   it("an old admission cannot settle a submission after navigating away and back", () => {

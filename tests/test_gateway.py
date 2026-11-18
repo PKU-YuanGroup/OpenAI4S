@@ -1071,9 +1071,12 @@ def test_ws_replay_declares_an_unbuffered_idle_delta_at_the_tail():
     root = "root-replay-tail-gap"
     hub.broadcast(root, {"type": "text_reset", "frame_id": root})  # seq 1
     hub.broadcast(root, {"type": "text_chunk", "chunk": "kept"})  # seq 2
-    # Approval cards replay from their durable source, so they advance the
-    # stream counter but intentionally do not enter the live-turn buffer.
-    hub.broadcast(root, {"type": "await_permission", "request_id": "p1"})  # seq 3
+    # A delegation projection is frame state, not turn stream: it advances the
+    # stream counter but intentionally does not enter the live-turn buffer.
+    # (Approval cards used to be the example; a running turn now records them.)
+    hub.broadcast(
+        root, {"type": "delegation_child_event", "event": "progress"}
+    )  # seq 3
 
     conn = _Recorder()
     hub.add(conn)

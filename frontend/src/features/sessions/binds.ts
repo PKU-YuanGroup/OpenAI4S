@@ -11,6 +11,11 @@ export type OpenConversation = (
 export type NewSessionOptions = {
   /** The conversation retained while an empty project creates its first frame. */
   restoreOnFailure?: { frameId: string; projectId: string | null };
+  /**
+   * Entering a project with nothing listed: reuse the newest session nobody
+   * has used (`POST /frames` `reuse_empty`) instead of minting another.
+   */
+  reuseEmpty?: boolean;
 };
 export type NewSession = (projectId?: string, options?: NewSessionOptions) => Promise<void> | void;
 

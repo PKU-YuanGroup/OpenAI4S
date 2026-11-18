@@ -74,6 +74,8 @@ class El {
     return node.tagName === "BODY";
   }
   appendChild(child: El): El {
+    // A DOM append moves a node that already has a parent.
+    child.remove();
     child.parent = this;
     this.children.push(child);
     return child;
@@ -81,6 +83,10 @@ class El {
   remove(): void {
     if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
     this.parent = null;
+  }
+  contains(node: El | null): boolean {
+    for (let cur = node; cur; cur = cur.parent) if (cur === this) return true;
+    return false;
   }
   setAttribute(): void {}
   querySelector(sel: string): El | null {
@@ -224,11 +230,13 @@ describe("opening a session whose turn is still running", () => {
       input: { code: "fit()" },
     }) as unknown as El;
     // The replay of the live turn: text_reset, then the same step's events.
-    startStream();
+    const live = startStream() as unknown as { wrap: El };
     addLiveStep({ step_id: "s-run", kind: "code", status: "running", input: { code: "fit()" } });
     updateLiveStep({ step_id: "s-run", status: "done", output: { stdout: "converged" } });
 
     expect(messages.querySelectorAll(".step")).toHaveLength(1);
+    // Moved into the replayed turn, where its event put it live.
+    expect(stored.parent).toBe(live.wrap);
     expect(stored.classes.has("running")).toBe(false);
     stored.querySelector(".s-head")!.onclick!();
     expect(stored.querySelector(".oc-out")!.textContent).toBe("converged");

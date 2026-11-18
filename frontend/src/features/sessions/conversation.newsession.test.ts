@@ -112,6 +112,22 @@ describe("newSession", () => {
     expect(wsMock.unsub).not.toHaveBeenCalled();
   });
 
+  it("asks the server to reuse an unused session only when told to", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body || "{}")));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ id: "frame_B" })) });
+    });
+    project.value = "proj_1";
+    await newSession("proj_1", { reuseEmpty: true });
+    expect(bodies[0]).toMatchObject({ project_id: "proj_1", reuse_empty: true });
+    // A deliberate New-session click still means a new session.
+    currentId.value = "frame_B";
+    await newSession();
+    expect(bodies[1]).toMatchObject({ project_id: "proj_1" });
+    expect(bodies[1]).not.toHaveProperty("reuse_empty");
+  });
+
   it("a late accepted creation cannot adopt after A→B→A", async () => {
     currentId.value = "previous"; project.value = "A";
     let answer!: (value: unknown) => void;

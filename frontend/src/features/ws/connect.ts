@@ -1,4 +1,5 @@
-import { currentId } from "../../stores/session";
+import { effect } from "@preact/signals";
+import { currentId, project } from "../../stores/session";
 import { _seqSeen, _streamEpoch, ws as wsSignal } from "../../stores/stream";
 import { onEvent } from "./registry";
 import type { WsMessage } from "./types";
@@ -6,10 +7,16 @@ import type { WsMessage } from "./types";
 export const API = "/api/v1";
 export const WS_PING_MS = 25000;
 export const WS_RECONNECT_MS = 1500;
+/**
+ * How long a ping may go unanswered. Any frame counts as an answer: the
+ * server sends a pong for every ping, and a busy stream proves the same.
+ */
+export const WS_PONG_TIMEOUT_MS = 10000;
 
 export type WsSocket = {
   readyState: number;
   send: (data: string) => void;
+  close?: () => void;
   onopen: ((ev?: unknown) => void) | null;
   onclose: ((ev?: unknown) => void) | null;
   onmessage: ((ev: { data: unknown }) => void) | null;
@@ -70,6 +77,34 @@ export function sub(f: string): void {
   }
 }
 
+/**
+ * Name the session directory this tab's sidebar lists -- the open project,
+ * or every project on Home -- so the server sends it `session_status` for
+ * sessions this tab is not viewing (one stopped or started elsewhere).
+ */
+export function subDirectory(): void {
+  try {
+    const socket = wsSignal.value as WsSocket | null;
+    if (socket && socket.readyState === 1) {
+      socket.send(JSON.stringify({ type: "view_directory", project_id: project.value || null }));
+    }
+  } catch {
+    /* closed / mid-handshake: onopen names it again */
+  }
+}
+
+let directoryWatched = false;
+
+/** Re-name the directory whenever the sidebar changes project. */
+export function watchDirectory(): void {
+  if (directoryWatched) return;
+  directoryWatched = true;
+  effect(() => {
+    void project.value;
+    subDirectory();
+  });
+}
+
 /** app.js:5182 */
 export function unsub(f: string): void {
   try {
@@ -127,31 +162,102 @@ export function handleIncomingMessage(data: unknown): void {
   if (rid && sq > (seen[rid] || 0)) seen[rid] = sq;
 }
 
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let pongTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPongTimer(): void {
+  if (pongTimer !== null) clearTimeout(pongTimer);
+  pongTimer = null;
+}
+
+/**
+ * Treat a socket that went silent as closed. Chromium's offline mode, a
+ * sleeping laptop or a dropped route freeze a WebSocket without ever firing
+ * `close`, so the banner (bound to close) never showed and the page claimed a
+ * live connection for as long as the user waited. Its handlers are detached
+ * first, so a late real `close` cannot start a second reconnect loop or show
+ * the banner over a newer, healthy socket; then the ordinary close path runs
+ * once (banner, reconnect).
+ */
+export function declareSocketDead(socket: WsSocket | null): void {
+  if (!socket || wsSignal.value !== socket) return;
+  clearPongTimer();
+  const fire = socket.onclose;
+  socket.onclose = null;
+  socket.onmessage = null;
+  socket.onopen = null;
+  try {
+    socket.close?.();
+  } catch {
+    /* already closing */
+  }
+  if (fire) fire({});
+}
+
+let networkWatched = false;
+
+/** The browser's own word on connectivity, faster than any ping. */
+function watchNetwork(): void {
+  if (networkWatched || typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+  networkWatched = true;
+  window.addEventListener("offline", () => {
+    declareSocketDead(wsSignal.value as WsSocket | null);
+  });
+  window.addEventListener("online", () => {
+    // Only a pending reconnect is waiting on the network; a live socket (or a
+    // connect already in flight) owns the connection. Back now, so do not sit
+    // out the rest of that delay.
+    if (reconnectTimer === null) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    connectWS();
+  });
+}
+
 export const connectWS: ConnectWS = () => {
+  reconnectTimer = null;
+  clearPongTimer();
+  watchNetwork();
   const socket = new (resolveWsCtor())(wsUrl());
   wsSignal.value = socket;
   socket.onopen = () => {
     conn(true);
     if (currentId.value) sub(currentId.value);
+    subDirectory();
   };
   socket.onclose = () => {
     conn(false);
-    setTimeout(connectWS, WS_RECONNECT_MS);
+    clearPongTimer();
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectWS, WS_RECONNECT_MS);
   };
   socket.onmessage = (e) => {
+    // Any frame proves the connection is alive, a pong or not.
+    clearPongTimer();
     handleIncomingMessage(e.data);
   };
   clearInterval(connectWS._p);
   connectWS._p = setInterval(() => {
     try {
-      socket.readyState === 1 && socket.send('{"type":"ping"}');
+      if (socket.readyState !== 1) return;
+      socket.send('{"type":"ping"}');
+      if (pongTimer === null) {
+        pongTimer = setTimeout(() => {
+          pongTimer = null;
+          declareSocketDead(socket);
+        }, WS_PONG_TIMEOUT_MS);
+      }
     } catch {
       /* ignore ping failure */
     }
   }, WS_PING_MS);
 };
 
+/** Teardown: every timer the socket loop owns (ping, pong wait, reconnect). */
 export function clearWsPing(): void {
   clearInterval(connectWS._p);
   connectWS._p = undefined;
+  clearPongTimer();
+  if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
 }
