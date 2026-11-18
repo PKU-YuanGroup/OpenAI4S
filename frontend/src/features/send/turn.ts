@@ -76,9 +76,25 @@ const PLAN_TURN_FINISHED = ["completed", "success", "done", "ready"];
  * teardown used to clear that line at once.
  */
 let stopNote = "";
+/** The part worth repeating when a queued message starts right after the Stop. */
+let stopCarry = "";
+let carried = { text: "", at: 0 };
 
-export function noteForStop(text: string): void {
-  stopNote = text;
+export function noteForStop(text: string, carry = ""): void {
+  if (running.value) {
+    stopNote = text;
+    stopCarry = carry;
+  } else if (carry) {
+    // The turn already ended (its `cancelled` event beat the answer).
+    carried = { text: carry, at: Date.now() };
+  }
+}
+
+/** What the last Stop said that the next queued turn's start should keep saying. */
+export function takeStopCarry(withinMs = 15000): string {
+  const text = Date.now() - carried.at <= withinMs ? carried.text : "";
+  carried = { text: "", at: 0 };
+  return text;
 }
 
 export function turnDone(status: string, detail?: unknown): void {
@@ -102,7 +118,9 @@ export function turnDone(status: string, detail?: unknown): void {
   const mm = $("#messages");
   if (mm) mm.querySelectorAll(".md.cursor").forEach((n) => n.classList.remove("cursor"));
   const note = status === "cancelled" ? stopNote : "";
+  if (status === "cancelled" && stopCarry) carried = { text: stopCarry, at: Date.now() };
   stopNote = "";
+  stopCarry = "";
   hint(status === "failed" ? failureHint(detail) : note, status === "failed");
   // A turn that ended took its approval wait with it (an open card left over
   // is answered by `reconcilePermissionCards`); the title and row follow.

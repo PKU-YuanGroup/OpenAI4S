@@ -198,12 +198,15 @@ async function editQueuedExecution(item: any, fid: string | null): Promise<void>
  * A Stop with follow-ups waiting hands the session straight to the next one,
  * and with nothing on screen saying so the Stop looked like it had not worked.
  */
-export function noteQueuedTurnStarted(executionId: unknown): boolean {
+export function noteQueuedTurnStarted(executionId: unknown, prefix = ""): boolean {
   const bubble = bubbleFor(typeof executionId === "string" ? executionId : "");
   if (!bubble) return false;
   const line = String(bubble.querySelector(".bubble")?.textContent || "")
     .replace(/\s+/g, " ")
     .trim();
-  hint(queueT("queueRow.started", line.length > 60 ? line.slice(0, 59) + "…" : line), false, true);
+  const started = queueT("queueRow.started", line.length > 60 ? line.slice(0, 59) + "…" : line);
+  // `prefix`: what the Stop that handed over to this message also did (the
+  // background cells it stopped), which this line would otherwise replace.
+  hint(prefix ? prefix + "；" + started : started, false, true);
   return true;
 }

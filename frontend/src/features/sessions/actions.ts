@@ -612,8 +612,9 @@ export async function cancelTurn(): Promise<void> {
       ].filter(Boolean);
       if (parts.length) {
         hint(parts.join("；"), false, running.value);
-        // Still running: the turn's teardown keeps the line instead of clearing it.
-        if (running.value) noteForStop(parts.join("；"));
+        // The turn's teardown keeps the line instead of clearing it, and a
+        // queued message starting next keeps the background part.
+        noteForStop(parts.join("；"), background);
       }
       if (background) void refreshBackgroundCells();
     }

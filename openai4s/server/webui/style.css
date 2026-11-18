@@ -1824,7 +1824,7 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 .queue-cancel{flex:none}
 .queue-row{align-items:center}
 /* background cells still running in this session, each with its own Stop (send/background.ts) */
-.bg-strip{max-width:var(--col);margin:0 auto 8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+.bg-strip{width:min(var(--col),calc(100% - 48px));margin:0 auto 8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
 .bg-head{margin:0 2px 4px;font-size:11px;color:var(--text-400);cursor:help}
 .bg-row{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 2px;font-size:12px}
 .bg-code{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);color:var(--text-200)}

@@ -710,6 +710,11 @@ describe("queue strip", () => {
     expect(hints).toEqual([]);
     expect(noteQueuedTurnStarted("exec-next")).toBe(true);
     expect(hints).toEqual([queueT("queueRow.started", "然后把结果画出来")]);
+    // After a Stop that also stopped background cells, the line keeps saying so.
+    noteQueuedTurnStarted("exec-next", "已停止，并停止了本回合启动的 1 个后台任务");
+    expect(hints.at(-1)).toBe(
+      "已停止，并停止了本回合启动的 1 个后台任务；" + queueT("queueRow.started", "然后把结果画出来"),
+    );
   });
 
   it("counts the queued follow-ups a Stop hands the session to", () => {

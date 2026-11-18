@@ -28,7 +28,7 @@ import { renderPlanCard, updatePlanProgress } from "./plan";
 import { renderAttachmentProblems, renderRefProblems } from "./problems";
 import { addLiveStep, updateLiveStep } from "./step";
 import { activateTurnTicket, resumeWatch } from "./ticket";
-import { turnDone } from "./turn";
+import { takeStopCarry, turnDone } from "./turn";
 
 const TERMINAL_FRAME_STATUS = [
   "completed",
@@ -144,7 +144,7 @@ export function handleFrameUpdateTurn(m: WsMessage): void {
     // A follow-up this tab queued is the turn starting now (after the one
     // before it finished or was stopped): say so, or a Stop with a queue
     // looked like it had not worked.
-    noteQueuedTurnStarted(m.execution_id);
+    noteQueuedTurnStarted(m.execution_id, takeStopCarry());
     if (fid) resumeWatch(String(fid), _openGen.value);
   }
   if (typeof m.status === "string" && TERMINAL_FRAME_STATUS.includes(m.status)) {
