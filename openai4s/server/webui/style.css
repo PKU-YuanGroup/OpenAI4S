@@ -428,6 +428,15 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .rightdock{width:var(--dock-w,680px);border-left:.5px solid var(--border);background:var(--bg);display:flex;flex-direction:column;height:100vh;min-width:0;position:relative}
 .rightdock.collapsed{display:none}
 .rightdock.wide{width:min(900px,64vw)}
+/* NAV-2: the chat column keeps a usable width. The dock gives way first: it
+   is never wider than what leaves #main 440px, and never narrower than 360px.
+   A 1024px window with the sidebar open used to leave the chat ~140px. */
+@media (min-width:901px){
+  .rightdock{width:clamp(360px,var(--dock-w,680px),calc(100vw - var(--side-w,272px) - 440px))}
+  .rightdock.wide{width:clamp(360px,min(900px,64vw),calc(100vw - var(--side-w,272px) - 440px))}
+  body.sidebar-collapsed .rightdock{width:clamp(360px,var(--dock-w,680px),calc(100vw - 440px))}
+  body.sidebar-collapsed .rightdock.wide{width:clamp(360px,min(900px,64vw),calc(100vw - 440px))}
+}
 .dock-head{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:8px 10px}
 .dock-tabs{display:flex;gap:4px;flex:1;min-width:0;overflow:auto;align-items:center}
 .dock-tab{display:inline-flex;align-items:center;gap:6px;background:transparent;border:0;padding:6px 12px;height:32px;font-size:14px;color:var(--text-200);white-space:nowrap;border-radius:var(--radius);max-width:240px;flex:none}
@@ -1195,8 +1204,12 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 
 /* ---- tablet: give the chat more room; slim the right dock ---- */
 @media (max-width:1180px){
-  .rightdock{width:min(var(--dock-w,520px),60vw)}
-  .rightdock.wide{width:min(680px,58vw)}
+  .rightdock{width:clamp(360px,min(var(--dock-w,520px),60vw),calc(100vw - var(--side-w,272px) - 440px))}
+  .rightdock.wide{width:clamp(360px,min(680px,58vw),calc(100vw - var(--side-w,272px) - 440px))}
+}
+@media (min-width:901px) and (max-width:1180px){
+  body.sidebar-collapsed .rightdock{width:clamp(360px,min(var(--dock-w,520px),60vw),calc(100vw - 440px))}
+  body.sidebar-collapsed .rightdock.wide{width:clamp(360px,min(680px,58vw),calc(100vw - 440px))}
 }
 
 /* ---- narrow / mobile: single column; sidebar & dock become overlays ---- */
