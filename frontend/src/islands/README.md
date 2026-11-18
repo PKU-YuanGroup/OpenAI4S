@@ -8,7 +8,7 @@ F-18 imperative islands. 3Dmol lazy script-tag inject (vendored copy only; the d
 
 | File | Responsibility |
 | --- | --- |
-| [`annot.ts`](annot.ts) | Image annotator, pin status, composer chip (app.js:8965-8993, 9149-9429). |
+| [`annot.ts`](annot.ts) | Image annotator, pin status, composer chip (app.js:8965-8993, 9149-9429). At z=1 the image is fitted to the pane width and the level reads "fit width", not "100%" (which read as actual size); the hint pill and zoom bar sit in reserved margins instead of over the figure (ART-15). |
 | [`annot.test.ts`](annot.test.ts) | `annotationStatus` mapping; held pins; `openAnnotations`; the comment list reopens on the repainted chip after a removal. |
 | [`dom.ts`](dom.ts) | `el` (the artifacts helper, re-exported) / `$` / lucide subset / `ghostIconBtn`. |
 | [`frames.ts`](frames.ts) | Inert HTML iframe policy, the unsandboxed PDF-blob frame (`applyPdfFrame`: Chromium refuses its PDF viewer in any sandboxed frame), verified loopback origin and grant path checks; app-origin Ketcher + clipboard allow. |

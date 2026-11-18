@@ -101,12 +101,25 @@ export function renderDockTabs(): void {
   if (activeTab.value === "timeline") timeline.classList.add("active");
   timeline.onclick = () => setActiveTab("timeline");
   bar.appendChild(timeline);
-  if (activeTab.value === "files") {
+  // ART-15: Files stays a tab once the dock has shown it, so opening a file
+  // from the list no longer makes the way back disappear.
+  if (activeTab.value === "files") filesTabShown = true;
+  if (filesTabShown) {
     const files = tabBtn("button", "files", "Files");
-    files.classList.add("active");
+    if (activeTab.value === "files") files.classList.add("active");
+    files.onclick = () => setActiveTab("files");
     bar.appendChild(files);
   }
+  // Many open files overflow the strip; the active tab is scrolled into view
+  // instead of being pushed off the right edge (ART-15).
+  const active = typeof bar.querySelector === "function" ? bar.querySelector(".dock-tab.active") : null;
+  if (active && typeof (active as HTMLElement).scrollIntoView === "function") {
+    (active as HTMLElement).scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
 }
+
+/** The Files tab joins the strip the first time the Files pane is shown. */
+let filesTabShown = false;
 
 export function showDockPane(pane: string): void {
   if (typeof document === "undefined") return;

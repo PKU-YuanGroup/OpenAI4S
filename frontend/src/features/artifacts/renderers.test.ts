@@ -735,7 +735,9 @@ describe("visible truncation and frozen preview version (A3)", () => {
     const firstDownload = links(root)[0]!;
     expect(firstDownload.href).toBe("/api/v1/artifacts/versions/v1");
     const version = walk(root).find((node) => (node.className || "") === "renderer-version");
-    expect(version?.textContent).toBe(translate("viewer.renderer.version", "v1"));
+    // ART-15: human wording; the frozen version id is the tooltip.
+    expect(version?.textContent).toBe(filesT("viewer.version.latest"));
+    expect((version as unknown as { title?: string })?.title).toBe("v1");
     // A new version published later does not move this paint's download.
     renderArtifactDescriptor(
       host(root),

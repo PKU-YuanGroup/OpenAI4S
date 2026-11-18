@@ -1652,6 +1652,10 @@ body.sidebar-collapsed .col-resizer-side{display:none}
   background:var(--bg-000);border:.5px solid var(--border);border-radius:999px;padding:3px 10px;box-shadow:var(--shadow-soft);
   opacity:0;transition:opacity .2s;pointer-events:none}
 .annot-wrap:hover .zoom-hint{opacity:.9}
+/* ART-15: at fit the pill and the zoom bar sit in reserved margins instead of
+   over the figure's title and axis; the pill stays one line. */
+.zoom-hint{white-space:nowrap;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
+.annot-zoom:not(.zoomed) .annot-stage{margin:44px auto 64px}
 
 @media (max-width:900px){
   .col-resizer{display:none}
