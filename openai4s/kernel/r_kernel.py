@@ -30,7 +30,11 @@ plane. Pure stdlib.
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
+import threading
+import time
 from pathlib import Path
 
 from openai4s.kernel.manager import Kernel
@@ -55,6 +59,12 @@ def resolve_r_interpreter(env: object | None = None) -> str | None:
     the R they mean, while the first conda env that happens to ship Rscript is
     someone's personal environment (the review found every R cell running in a
     minimal conda R without survival/ggplot2 while PATH had both).
+
+    PATH and "other env" candidates must be able to run the worker, which needs
+    ``jsonlite``: a system R without it would turn every R cell into a startup
+    error while a working env R sat next to it. When no candidate can, the
+    first one is still returned so the spawn fails with the worker's own
+    install hint instead of "no R interpreter".
     """
     rs = getattr(env, "rscript", None) if env is not None else None
     if rs:
@@ -68,13 +78,59 @@ def resolve_r_interpreter(env: object | None = None) -> str | None:
     for e in envs:
         if e.name == "r" and e.rscript:
             return str(e.rscript)
+    candidates: list[str] = []
     on_path = shutil.which("Rscript")
     if on_path:
-        return on_path
+        candidates.append(on_path)
     for e in envs:
-        if e.rscript:
-            return str(e.rscript)
-    return None
+        if e.rscript and str(e.rscript) not in candidates:
+            candidates.append(str(e.rscript))
+    for candidate in candidates:
+        if _can_run_worker(candidate):
+            return candidate
+    return candidates[0] if candidates else None
+
+
+#: Probe results keyed by interpreter identity. A "yes" holds until the binary
+#: changes; a "no" is re-checked after a minute, so installing jsonlite takes
+#: effect without restarting the daemon.
+_READY: dict[tuple[str, int, int], tuple[bool, float]] = {}
+_READY_LOCK = threading.Lock()
+_NOT_READY_TTL_S = 60.0
+_READY_PROBE = (
+    'quit(status = if (requireNamespace("jsonlite", quietly = TRUE)) 0L else 3L)'
+)
+
+
+def _can_run_worker(rscript: str) -> bool:
+    """Whether ``rscript`` has what r_worker.R needs to start (jsonlite)."""
+    try:
+        st = os.stat(rscript)
+    except OSError:
+        return False
+    key = (rscript, st.st_mtime_ns, st.st_size)
+    now = time.monotonic()
+    with _READY_LOCK:
+        cached = _READY.get(key)
+    if cached is not None and (cached[0] or now - cached[1] < _NOT_READY_TTL_S):
+        return cached[0]
+    try:
+        ok = (
+            subprocess.run(
+                [rscript, "--vanilla", "-e", _READY_PROBE],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    with _READY_LOCK:
+        _READY[key] = (ok, now)
+    return ok
 
 
 def r_argv(rscript: str) -> list[str]:
