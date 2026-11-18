@@ -139,7 +139,7 @@ def _authorization_failure(exc: BaseException) -> str:
 
     text = str(exc)
     if text.startswith(_AUTHORIZE_ERROR_PREFIX):
-        reason = " ".join(text[len(_AUTHORIZE_ERROR_PREFIX) :].split())
+        reason = " ".join(text[len(_AUTHORIZE_ERROR_PREFIX) :].split()).rstrip(". ")
         if reason and not reason.lower().startswith(_NO_AUTHORIZER):
             if reason.startswith("bash"):
                 return f"{reason}; command was not executed"

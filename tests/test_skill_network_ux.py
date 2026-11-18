@@ -271,6 +271,15 @@ def test_the_cell_hears_the_hosts_reason_not_authorization_unavailable():
         executor.run("curl -s https://www.nejm.org/x")
     assert str(refused.value) == f"bash: {reason}; command was not executed"
 
+    def sentence(method, _args):
+        raise RuntimeError(f"host.{method} error: {reason}. Use one of those domains.")
+
+    with pytest.raises(RuntimeError) as worded:
+        BashExecutor(sentence, generation="worker:test").run("ls")
+    assert str(worded.value).endswith(
+        "Use one of those domains; command was not executed"
+    )
+
     def denied_by_user(method, _args):
         raise RuntimeError(f"host.{method} error: Permission denied: denied by user")
 
