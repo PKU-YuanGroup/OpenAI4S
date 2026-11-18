@@ -2559,9 +2559,18 @@ class ArtifactManager:
         )
         raw = raw_override if raw_override is not None else self._upload_bytes(payload)
 
+        if_exists = "version"
         if exact_artifact is not None:
             root, target, stored_filename = self._exact_artifact_target(exact_artifact)
         else:
+            if_exists = self._upload_if_exists(payload)
+            if if_exists == "rename":
+                filename = self._free_upload_name(
+                    filename,
+                    frame_id=frame_id,
+                    workspace_frame_id=workspace_frame_id,
+                    project_id=project_id,
+                )
             root, target, stored_filename = self._upload_target(
                 frame_id=workspace_frame_id,
                 filename=filename,
@@ -2587,7 +2596,76 @@ class ArtifactManager:
                 restore_source_version_id=restore_source_version_id,
                 materialise_source_version_id=materialise_source_version_id,
                 producing_cell_id=producing_cell_id,
+                if_exists=if_exists,
             )
+
+    #: What an upload whose name is taken does. ``version`` (the default, and
+    #: what every caller got before UP-3) publishes a new version of the
+    #: existing Artifact; ``error`` refuses with 409 ``artifact_exists`` so
+    #: the client can ask the person; ``rename`` stores it under the first
+    #: free ``name-2.ext``.
+    UPLOAD_IF_EXISTS = ("version", "error", "rename")
+
+    @classmethod
+    def _upload_if_exists(cls, payload: dict) -> str:
+        value = payload.get("if_exists")
+        if value in (None, ""):
+            return "version"
+        if value not in cls.UPLOAD_IF_EXISTS:
+            raise ArtifactOperationError(
+                400,
+                "if_exists must be one of " + ", ".join(cls.UPLOAD_IF_EXISTS),
+            )
+        return str(value)
+
+    @staticmethod
+    def _numbered_name(name: str, number: int) -> str:
+        """``data.csv`` → ``data-2.csv``; a compression suffix stays last."""
+        stem, suffix = os.path.splitext(name)
+        if suffix.lower() in {".gz", ".bz2", ".xz", ".zst", ".zip"}:
+            inner_stem, inner = os.path.splitext(stem)
+            if inner and inner_stem:
+                stem, suffix = inner_stem, inner + suffix
+        if not stem:
+            stem, suffix = name, ""
+        return f"{stem}-{number}{suffix}"
+
+    def _free_upload_name(
+        self,
+        filename: Any,
+        *,
+        frame_id: Any,
+        workspace_frame_id: Any,
+        project_id: Any,
+    ) -> str:
+        """The first name in this scope that neither an Artifact nor a file uses.
+
+        Runs under the upload lock, so no other upload can take the name
+        between this check and the publish; a scope the write would refuse is
+        left for the write to report.
+        """
+        name = Path(str(filename)).name
+        try:
+            _explicit, root_frame_id, scope_project = self.store.artifact_write_scope(
+                frame_id=frame_id, project_id=project_id
+            )
+        except ValueError:
+            return name
+        for number in range(1, 1000):
+            candidate = name if number == 1 else self._numbered_name(name, number)
+            _root, target, _stored = self._upload_target(
+                frame_id=workspace_frame_id, filename=candidate, exact=False
+            )
+            taken = self.store.artifact_by_scope_filename(
+                candidate,
+                root_frame_id=root_frame_id,
+                project_id=scope_project,
+            ) is not None or os.path.lexists(target)
+            if not taken:
+                return candidate
+        raise ArtifactOperationError(
+            409, "no free name is left for this upload", "artifact_exists"
+        )
 
     def _upload_locked_in_parent(
         self,
@@ -2605,6 +2683,7 @@ class ArtifactManager:
         restore_source_version_id: str | None,
         materialise_source_version_id: str | None,
         producing_cell_id: str | None,
+        if_exists: str = "version",
     ) -> dict:
         """Run one upload using only the pinned live-parent descriptor."""
 
@@ -2643,6 +2722,14 @@ class ArtifactManager:
             raise FileExistsError(
                 f"{stored_filename!r} already exists in this session; "
                 "materialising would create a duplicate Artifact"
+            )
+        if if_exists == "error" and (existing is not None or target_exists):
+            # UP-3: the person decides between a new version and a second
+            # file; nothing has been staged yet, so the refusal is free.
+            raise ArtifactOperationError(
+                409,
+                f"a file named {stored_filename!r} already exists in this session",
+                "artifact_exists",
             )
 
         previous_file: _PinnedUploadFile | None = None

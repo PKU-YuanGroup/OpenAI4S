@@ -577,6 +577,84 @@ def test_upload_versioning_and_event_contracts(tmp_path):
     assert harness.store.get_artifact(loose["artifact_id"])["root_frame_id"] is None
 
 
+def test_upload_if_exists_asks_renames_or_versions_on_a_taken_name(tmp_path):
+    """UP-3: a same-name upload no longer silently replaces what was there.
+
+    ``error`` refuses before anything is staged, so the client can ask the
+    person; ``rename`` keeps both under the next free name; ``version`` (and
+    an omitted policy, for every older caller) publishes a new version.
+    """
+    harness = MutationHarness(tmp_path)
+
+    def upload(data: bytes, **extra) -> dict:
+        return harness.manager.upload(
+            {
+                "filename": "qpcr_plate.csv",
+                "content_base64": base64.b64encode(data).decode(),
+                "frame_id": harness.frame_id,
+                **extra,
+            }
+        )
+
+    first = upload(b"72 rows", if_exists="error")
+    events = len(harness.events)
+    with pytest.raises(ArtifactOperationError) as taken:
+        upload(b"2 rows", if_exists="error")
+    assert taken.value.code == 409
+    assert taken.value.error_code == "artifact_exists"
+    assert "qpcr_plate.csv" in taken.value.message
+    assert (harness.workspace / "qpcr_plate.csv").read_bytes() == b"72 rows"
+    assert len(harness.store.list_versions(first["artifact_id"])) == 1
+    assert len(harness.events) == events
+    assert not list(harness.workspace.glob("*.part"))
+
+    kept = upload(b"2 rows", if_exists="rename")
+    assert kept["filename"] == "qpcr_plate-2.csv"
+    assert kept["artifact_id"] != first["artifact_id"]
+    assert (harness.workspace / "qpcr_plate-2.csv").read_bytes() == b"2 rows"
+    assert (harness.workspace / "qpcr_plate.csv").read_bytes() == b"72 rows"
+    third = upload(b"3 rows", if_exists="rename")
+    assert third["filename"] == "qpcr_plate-3.csv"
+
+    replaced = upload(b"new rows", if_exists="version")
+    assert replaced["artifact_id"] == first["artifact_id"]
+    assert len(harness.store.list_versions(first["artifact_id"])) == 2
+    legacy = upload(b"newer rows")
+    assert legacy["artifact_id"] == first["artifact_id"]
+
+    # A file in the workspace that no Artifact names is still a taken name.
+    (harness.workspace / "stray.txt").write_bytes(b"cell output")
+    with pytest.raises(ArtifactOperationError) as stray:
+        harness.manager.upload(
+            {
+                "filename": "stray.txt",
+                "content_text": "upload",
+                "frame_id": harness.frame_id,
+                "if_exists": "error",
+            }
+        )
+    assert stray.value.error_code == "artifact_exists"
+    assert (harness.workspace / "stray.txt").read_bytes() == b"cell output"
+
+    with pytest.raises(ArtifactOperationError) as bad:
+        upload(b"x", if_exists="overwrite")
+    assert bad.value.code == 400
+
+
+@pytest.mark.parametrize(
+    ("name", "numbered"),
+    [
+        ("data.csv", "data-2.csv"),
+        ("counts.csv.gz", "counts-2.csv.gz"),
+        ("archive.tar.zst", "archive-2.tar.zst"),
+        ("README", "README-2"),
+        (".env", ".env-2"),
+    ],
+)
+def test_numbered_upload_names_keep_the_extension(name, numbered):
+    assert ArtifactManager._numbered_name(name, 2) == numbered
+
+
 def test_delete_reclaims_versions_and_emits_bare_refresh_event(tmp_path):
     harness = MutationHarness(tmp_path)
     first = harness.artifact("delete.txt", b"one", "text/plain")

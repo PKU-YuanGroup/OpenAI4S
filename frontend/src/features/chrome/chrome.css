@@ -42,3 +42,11 @@ body.sidebar-collapsed .col-resizer-side{display:none}
 .team-admin-table th{font-weight:600;text-align:left;border-bottom:.5px solid var(--border);padding:5px 8px}
 .team-admin-table td{border-bottom:.5px solid var(--border);padding:5px 8px;font-family:var(--mono);font-size:12px}
 .team-admin-empty{color:var(--text-300);font-size:12px;padding:4px 8px}
+
+/* UP-3: same-name upload prompt. Each choice is a two-line option button. */
+.upload-conflict-body{margin:0 0 6px;font-size:14px;line-height:1.5;overflow-wrap:anywhere}
+.upload-conflict .upload-conflict-option{height:auto;min-height:44px;flex-direction:column;align-items:flex-start;justify-content:center;gap:2px;padding:8px 14px;margin-top:6px;text-align:left;cursor:pointer}
+.upload-conflict .upload-conflict-option strong{font-size:13px;font-weight:600}
+.upload-conflict .upload-conflict-note{font-size:12px;font-weight:400;opacity:.8;overflow-wrap:anywhere}
+.upload-conflict .upload-conflict-remember{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--text-300)}
+.upload-conflict .upload-conflict-remember input{height:auto;margin:0;padding:0}

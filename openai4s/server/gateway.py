@@ -20644,7 +20644,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     ),
                 )
             except ArtifactOperationError as error:
-                raise GatewayError(error.code, error.message) from error
+                # The stable code (e.g. `artifact_exists`) is what a client
+                # branches on; the status alone covers several refusals.
+                raise GatewayError(
+                    error.code, error.message, error.error_code
+                ) from error
 
         def _delete_artifact(self, artifact_id: str) -> dict:
             try:

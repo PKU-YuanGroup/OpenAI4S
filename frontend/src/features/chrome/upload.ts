@@ -18,15 +18,24 @@ import { defaultModelName } from "../../stores/customize";
 import { effProject } from "../customize/host";
 import { _openGen, currentId, project } from "../../stores/session";
 import { sub } from "../ws/connect";
-import { api, apiErrorText } from "./api";
+import { api, ApiError, apiErrorText } from "./api";
 import { $, hint } from "./dom";
 import { hostFn, isReady } from "./host";
+import { askUploadConflict, uploadT, type UploadConflictBatch } from "./upload-conflict";
 
 export interface UploadResult {
   ok: boolean;
   frameId: string | null;
+  /** The name the file was stored under (a "keep both" answer renames it). */
   filename: string;
+  /** The person cancelled this file at the same-name prompt (UP-3); not a failure. */
+  skipped?: boolean;
   error?: unknown;
+}
+
+/** UP-3: the server's refusal of a taken name, which asks the person. */
+function isUploadConflict(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === "artifact_exists";
 }
 
 export interface UploadBatch {
@@ -242,6 +251,8 @@ export function uploadFiles(
     return targetFrame;
   });
   const targetPromise = batch.targetPromise;
+  // One "do the same for the rest" memory per selection (UP-3).
+  const conflicts: UploadConflictBatch = { remembered: null, size: selected.length };
   const tasks = selected.map((file) =>
     (async (): Promise<UploadResult> => {
       let targetFrame: string | null = null;
@@ -249,23 +260,44 @@ export function uploadFiles(
         const prepared = await Promise.all([targetPromise, readUploadFile(file)]);
         targetFrame = prepared[0];
         const b64 = prepared[1];
-        await api("/uploads", {
-          method: "POST",
-          body: JSON.stringify({
-            filename: file.name,
-            content_base64: b64,
-            project_id: projectId || undefined,
-            frame_id: targetFrame,
-          }),
-        });
+        const post = (ifExists: "error" | "version" | "rename") =>
+          api("/uploads", {
+            method: "POST",
+            body: JSON.stringify({
+              filename: file.name,
+              content_base64: b64,
+              project_id: projectId || undefined,
+              frame_id: targetFrame,
+              // A taken name is refused first, so replacing is a choice the
+              // person makes, never a silent overwrite (UP-3).
+              if_exists: ifExists,
+            }),
+          }) as Promise<{ filename?: unknown } | null>;
+        let saved: { filename?: unknown } | null;
+        let choice: "rename" | "version" | null = null;
+        try {
+          saved = await post("error");
+        } catch (error) {
+          if (!isUploadConflict(error)) throw error;
+          const answer = await askUploadConflict(file.name, conflicts);
+          if (answer === "cancel") {
+            hint(uploadT("upload.cancelled", file.name));
+            return { ok: true, skipped: true, frameId: targetFrame, filename: file.name };
+          }
+          choice = answer;
+          saved = await post(answer);
+        }
+        const stored = saved && typeof saved.filename === "string" && saved.filename ? saved.filename : file.name;
         // Only the open conversation's file dock should be refreshed; the bytes
         // landed in targetFrame whether or not the user is still looking at it.
         if (currentId.value === targetFrame) {
           const loadArtifacts = hostFn("loadArtifacts");
           if (isReady(loadArtifacts)) loadArtifacts(targetFrame);
         }
-        hint(t("upload.uploaded", file.name));
-        return { ok: true, frameId: targetFrame, filename: file.name };
+        if (choice === "rename" && stored !== file.name) hint(uploadT("upload.renamed", file.name, stored));
+        else if (choice === "version") hint(uploadT("upload.versioned", file.name));
+        else hint(t("upload.uploaded", file.name));
+        return { ok: true, frameId: targetFrame, filename: stored };
       } catch (error) {
         // FileReader can fail before the shared frame request settles. Wait for
         // that target only to bind the failure to the right composer; no bytes

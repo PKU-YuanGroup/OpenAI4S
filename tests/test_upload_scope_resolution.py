@@ -666,6 +666,38 @@ def test_the_route_answers_a_scope_conflict_as_a_conflict_not_a_500(runner):
     assert "internal error" not in json.dumps(body, default=str)
 
 
+def test_the_route_names_a_taken_upload_name_with_a_stable_code(runner):
+    """UP-3, through the real handler: the client branches on `code`.
+
+    Several upload refusals share 409, so the status alone cannot tell the
+    workbench to ask "replace or keep both?"; the route must carry the
+    repository's `artifact_exists` code rather than the status default.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    runner.artifacts.upload(_payload(frame_id, b"first\n"))
+    handler_class = gateway_mod.make_handler(runner.cfg, runner.hub, runner)
+    handler = object.__new__(handler_class)
+    handler._correlation_id = "req-upload-exists"
+    handler._last_status = 0
+    handler.headers = {}
+    handler._query = lambda: {}
+    handler._body = lambda: _payload(frame_id, b"second\n", if_exists="error")
+    seen: list[tuple[object, int]] = []
+    handler._json = lambda value, code=200: seen.append((value, code))
+
+    from openai4s.server.errors import GatewayError, gateway_error_payload
+
+    try:
+        handler._api("POST", "/uploads")
+    except GatewayError as error:
+        seen.append((gateway_error_payload(error), error.code))
+
+    body, status = seen[-1]
+    assert status == 409, (status, body)
+    assert isinstance(body, dict) and body.get("code") == "artifact_exists", body
+    assert (runner.workspace_for(frame_id) / "table.tsv").read_bytes() == b"first\n"
+
+
 def test_a_five_thousand_row_upload_is_stored_whole(runner, tmp_path):
     """The size this route is asked for in practice, end to end.
 
