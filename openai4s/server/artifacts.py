@@ -3626,6 +3626,7 @@ class ArtifactManager:
         producer_frame_id: str | None = None,
         honor_delegated_claims: bool = True,
         artifact_receipts: Mapping[str, Mapping[str, Any]] | None = None,
+        cell_failed: bool = False,
     ) -> CaptureResult:
         receipt_map = (
             artifact_receipt_map(artifact_receipts.values())
@@ -3641,7 +3642,9 @@ class ArtifactManager:
         figures: list[str] = []
         if language == "python" and run_system_cell is not None:
             try:
-                response = run_system_cell(_capture_snippet(cell_index))
+                response = run_system_cell(
+                    _capture_snippet(cell_index, save=not cell_failed)
+                )
                 for line in (response.get("stdout") or "").splitlines():
                     if line.startswith("__OSFIGS__"):
                         try:
@@ -4022,7 +4025,7 @@ class ArtifactManager:
         return packages
 
 
-def _capture_snippet(index: int) -> str:
+def _capture_snippet(index: int, *, save: bool = True) -> str:
     # pyplot is read from sys.modules, never imported, as in
     # kernel/guards.py: importing it builds matplotlib's font list, and an
     # enforced sandbox gives each kernel an empty private MPLCONFIGDIR. The
@@ -4031,6 +4034,16 @@ def _capture_snippet(index: int) -> str:
     # so a font scan (8-48s on macOS) ran after the Cell and the Stop or the
     # daemon shutdown waited it out. A process that has not imported pyplot
     # has no pyplot figures to capture.
+    #
+    # ART-7: a figure the Cell already saved was saved a second time as
+    # figure_cellN_k.png, and a failed Cell's half-drawn figure became a
+    # deliverable. Each open figure is still closed, but it is saved only when
+    # the Cell did not fail and the figure has unsaved drawing: it was never
+    # rendered (`stale`), or it was changed after the Cell's last savefig. The
+    # snippet wraps Figure.savefig once so later Cells mark what they save to
+    # a file (a save into a buffer, as an inline display does, is not a file);
+    # before that wrap exists (the first plotting Cell) a rendered, unchanged
+    # figure is taken as saved.
     return (
         "import json as __oj\n"
         "__osfigs=[]\n"
@@ -4038,12 +4051,32 @@ def _capture_snippet(index: int) -> str:
         " import sys as __sys\n"
         " __plt=__sys.modules.get('matplotlib.pyplot')\n"
         " if __plt is not None:\n"
+        "  __F=__sys.modules['matplotlib.figure'].Figure\n"
+        "  __marked=getattr(__F.savefig,'__openai4s_marks__',False)\n"
         "  for __n in list(__plt.get_fignums()):\n"
         f"   __nm='figure_cell{index}_'+str(__n)+'.png'\n"
         "   try:\n"
-        "    __plt.figure(__n).savefig(__nm,dpi=130,bbox_inches='tight')\n"
-        "    __plt.close(__n); __osfigs.append(__nm)\n"
+        "    __f=__plt.figure(__n)\n"
+        "    __kept=not getattr(__f,'stale',True) and (not __marked or "
+        "getattr(__f,'_openai4s_saved',False))\n"
+        f"    if {bool(save)} and not __kept:\n"
+        "     __f.savefig(__nm,dpi=130,bbox_inches='tight')\n"
+        "     __osfigs.append(__nm)\n"
+        "    __plt.close(__n)\n"
         "   except Exception: pass\n"
+        "  if not __marked:\n"
+        "   __orig=__F.savefig\n"
+        "   def __openai4s_savefig(self,*a,__o=__orig,**k):\n"
+        "    __r=__o(self,*a,**k)\n"
+        "    __t=a[0] if a else k.get('fname')\n"
+        "    if isinstance(__t,(str,bytes)) or hasattr(__t,'__fspath__'):\n"
+        "     try: self._openai4s_saved=True\n"
+        "     except Exception: pass\n"
+        "    return __r\n"
+        "   __openai4s_savefig.__openai4s_marks__=True\n"
+        "   __openai4s_savefig.__wrapped__=__orig\n"
+        "   __openai4s_savefig.__doc__=__orig.__doc__\n"
+        "   __F.savefig=__openai4s_savefig\n"
         "except Exception: pass\n"
         "print('__OSFIGS__'+__oj.dumps(__osfigs))\n"
     )

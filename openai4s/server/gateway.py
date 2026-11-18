@@ -9049,6 +9049,7 @@ class SessionRunner:
         emit,
         language: str,
         artifact_receipts: list[dict[str, Any]] | None = None,
+        cell_failed: bool = False,
     ) -> CaptureResult:
         kernel = st.kernel
         run_system_cell = (
@@ -9066,6 +9067,7 @@ class SessionRunner:
             run_system_cell=run_system_cell,
             drain_remote_provenance=self._remote_provenance_drain(st),
             artifact_receipts=artifact_receipt_map(artifact_receipts or []),
+            cell_failed=cell_failed,
         )
 
     def _invoke_control_with_artifacts(self, st, call, emit, invoke):

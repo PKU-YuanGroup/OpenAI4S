@@ -1521,6 +1521,78 @@ def test_figure_capture_still_saves_and_closes_a_pyplot_figure(tmp_path):
     assert open_figures["stdout"].strip() == "[]"
 
 
+def test_figure_capture_skips_saved_figures_and_failed_cells(tmp_path):
+    """ART-7: a figure the Cell saved itself was saved again as
+    figure_cellN_k.png, and a Cell that failed mid-plot left its half-drawn
+    figure as a deliverable. Saved-and-unchanged figures and failed Cells'
+    figures are now closed without a second file; a figure with unsaved
+    drawing is still captured. Run against the real kernel and matplotlib
+    because `stale` and savefig are matplotlib's behaviour, not ours."""
+    _require_matplotlib_in_the_kernel()
+    harness = ArtifactHarness(tmp_path)
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    def run(kernel, index, code, *, failed=False):
+        before = harness.manager.snapshot(harness.workspace)
+        result = kernel.execute(code, cell_id=f"cell-{index}")
+        captured = harness.manager.capture(
+            harness.session,
+            index,
+            f"cell-{index}",
+            before,
+            lambda event: None,
+            language="python",
+            run_system_cell=kernel.execute,
+            cell_failed=failed,
+        )
+        return result, captured
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        # First plotting Cell: the savefig wrapper does not exist yet, so a
+        # rendered and unchanged figure counts as saved.
+        result, first = run(
+            kernel,
+            1,
+            "import matplotlib\nmatplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "plt.plot([1, 2])\nplt.savefig('fig1.png')\n",
+        )
+        assert result["error"] is None
+        assert first.figures == []
+        assert sorted(a["filename"] for a in first.artifacts) == ["fig1.png"]
+
+        # Later Cells: the wrapper marks what was saved to a file.
+        _result, saved = run(kernel, 2, "plt.plot([3, 4])\nplt.savefig('fig2.png')\n")
+        assert saved.figures == []
+        assert [a["filename"] for a in saved.artifacts] == ["fig2.png"]
+
+        # Changed after the save: the drawing on screen is not on disk.
+        _result, changed = run(
+            kernel,
+            3,
+            "plt.plot([5, 6])\nplt.savefig('fig3.png')\nplt.title('later')\n",
+        )
+        assert changed.figures == ["figure_cell3_1.png"]
+
+        # Saved only into a buffer (an inline display): still captured.
+        _result, buffered = run(
+            kernel,
+            4,
+            "import io\nplt.plot([7, 8])\nplt.savefig(io.BytesIO(), format='png')\n",
+        )
+        assert buffered.figures == ["figure_cell4_1.png"]
+
+        # A failed Cell's half-drawn figure is closed, not delivered.
+        failed, broken = run(
+            kernel, 5, "plt.plot([9, 10])\nraise TypeError('half way')\n", failed=True
+        )
+        assert failed["error"]
+        assert broken.figures == []
+        assert not (harness.workspace / "figure_cell5_1.png").exists()
+        open_figures = kernel.execute("print(plt.get_fignums())")
+    assert open_figures["stdout"].strip() == "[]"
+
+
 def test_r_capture_never_runs_python_figure_probe(tmp_path):
     harness = ArtifactHarness(tmp_path)
     before = harness.manager.snapshot(harness.workspace)

@@ -138,6 +138,8 @@ class CellExecutionPorts:
         [CellSession, CellRequest, str, ChunkSink | None, KernelLease | None],
         dict[str, Any],
     ]
+    # (..., language, artifact_receipts, cell_failed). ``cell_failed`` keeps a
+    # failed Cell's half-drawn open figures from being saved as deliverables.
     capture: Callable[
         [
             CellSession,
@@ -147,6 +149,7 @@ class CellExecutionPorts:
             EventSink,
             str,
             list[dict[str, Any]],
+            bool,
         ],
         CaptureResult,
     ]
@@ -626,6 +629,7 @@ class CellExecutionService:
                 emit,
                 request.language,
                 artifact_receipts,
+                bool(result.get("error") or result.get("interrupted")),
             )
             capture.files_read = _runtime_files_read(result)
             if attempt_id is not None:

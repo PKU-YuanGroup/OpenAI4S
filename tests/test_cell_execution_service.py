@@ -83,8 +83,17 @@ class Harness:
         return dict(self.run_result)
 
     def capture(
-        self, session, index, cell_id, before, emit, language, artifact_receipts
+        self,
+        session,
+        index,
+        cell_id,
+        before,
+        emit,
+        language,
+        artifact_receipts,
+        cell_failed=False,
     ):
+        self.capture_cell_failed = cell_failed
         assert self.completion is not None
         self.order.append("capture")
         self.capture_cell_id = cell_id
@@ -536,6 +545,16 @@ def test_interrupted_result_wins_over_its_error_text_in_notebook_event(tmp_path)
     assert events[-1]["error"] == "Interrupted"
     assert harness.records[0]["result"] is result.result
     assert harness.records[0]["result"]["interrupted"] is True
+    # ART-7: capture is told the Cell did not finish, so its open figures are
+    # closed rather than saved as deliverables.
+    assert harness.capture_cell_failed is True
+
+
+def test_a_successful_cell_is_captured_as_not_failed(tmp_path):
+    harness = Harness()
+    service = CellExecutionService(harness.ports(), id_factory=lambda: "cell-ok")
+    service.execute(_session(tmp_path), CellRequest("x = 1", "user"), lambda e: None)
+    assert harness.capture_cell_failed is False
 
 
 def test_protocol_only_submit_is_audited_without_streaming_a_notebook_cell(tmp_path):
