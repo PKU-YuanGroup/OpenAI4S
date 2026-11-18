@@ -6,7 +6,10 @@ import { _molView } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
 import { filesT, readFailureText } from "../features/artifacts/copy";
 import { abortPreviewReads, beginPreviewRead } from "../features/artifacts/api";
+import { LANG, setLang } from "../i18n/runtime";
 import { MOL_VENDOR_SRC, molRetheme, molTeardown, molecule } from "./mol";
+import { molT } from "./mol-copy";
+import { B_HIGH, B_LOW, chainColor, hexColor, type MolAtom } from "./mol-facts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactsDir = join(here, "../features/artifacts");
@@ -334,5 +337,279 @@ describe("3Dmol viewer lifetimes (AUDIT A37)", () => {
     expect(views.filter((view) => walk(second).includes(view))).toHaveLength(1);
     expect(views.filter((view) => walk(first).includes(view))).toHaveLength(1);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("3Dmol viewer controls (ART-6)", () => {
+  /** An inert element that keeps the class list, state and children the controls touch. */
+  class Node {
+    children: Node[] = [];
+    parent: Node | null = null;
+    page = false;
+    className = "";
+    textContent = "";
+    title = "";
+    disabled = false;
+    hidden = false;
+    style: Record<string, string> = {};
+    onclick: (() => void) | null = null;
+    classList = {
+      add: (name: string) => {
+        if (!this.classes().includes(name)) this.className = `${this.className} ${name}`.trim();
+      },
+      remove: (name: string) => {
+        this.className = this.classes().filter((c) => c !== name).join(" ");
+      },
+    };
+    constructor(readonly tagName = "div") {}
+    classes(): string[] {
+      return this.className.split(/\s+/).filter(Boolean);
+    }
+    get isConnected(): boolean {
+      return this.page || (!!this.parent && this.parent.isConnected);
+    }
+    set innerHTML(_value: string) {
+      for (const child of this.children) child.parent = null;
+      this.children = [];
+    }
+    appendChild(child: Node): Node {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+    setAttribute(): void {}
+    contains(other: Node): boolean {
+      return this === other || this.children.some((child) => child.contains(other));
+    }
+    querySelector(): Node | null {
+      return null;
+    }
+  }
+  const all = (node: Node): Node[] => [node, ...node.children.flatMap(all)];
+
+  const PDB = [
+    "HEADER    FLUORESCENT PROTEIN                     01-AUG-96   1EMA              ",
+    "TITLE     GREEN FLUORESCENT PROTEIN FROM AEQUOREA VICTORIA                      ",
+    "ATOM      1  N   GLY A  65       0.000   0.000   0.000  1.00 10.00           N",
+  ].join("\n");
+  const ATOMS: MolAtom[] = [
+    { atom: "N", resn: "GLY", resi: 65, chain: "A", b: 10, x: 0, y: 0, z: 0 },
+    { atom: "CA", resn: "GLY", resi: 65, chain: "A", b: 12, x: 1, y: 2, z: 3 },
+    { atom: "CA", resn: "TYR", resi: 66, chain: "B", b: 50, x: 4, y: 5, z: 6 },
+    { atom: "ZN", resn: "ZN", resi: 301, chain: "A", hetflag: true, b: 90, x: 7, y: 7, z: 7 },
+  ];
+
+  function mount(atoms: MolAtom[], name = "1ema.pdb", text = PDB) {
+    resetStoreFields();
+    const head = new Node("head");
+    head.page = true;
+    vi.stubGlobal("document", { head, createElement: (tag: string) => new Node(tag) });
+    let onClick: ((atom: MolAtom) => void) | null = null;
+    const viewer = {
+      addModel: vi.fn(() => ({ selectedAtoms: () => atoms })),
+      setStyle: vi.fn(),
+      addSurface: vi.fn(),
+      removeAllSurfaces: vi.fn(),
+      zoomTo: vi.fn(),
+      render: vi.fn(),
+      clear: vi.fn(),
+      setBackgroundColor: vi.fn(),
+      getRenderer: () => ({ getContext: () => null }),
+      setClickable: vi.fn((_sel: unknown, _on: boolean, callback: (atom: MolAtom) => void) => {
+        onClick = callback;
+      }),
+      addLabel: vi.fn((label: string, options: Record<string, unknown>) => ({ label, options })),
+      removeLabel: vi.fn(),
+      removeAllLabels: vi.fn(),
+      getView: vi.fn(() => [1, 2, 3, -40, 0, 0, 0, 1]),
+      setView: vi.fn(),
+    };
+    vi.stubGlobal("$3Dmol", { createViewer: vi.fn(() => viewer), SurfaceType: { VDW: "vdw" } });
+    const fetch = vi.fn(async () => new Response(text));
+    vi.stubGlobal("fetch", fetch);
+    const page = new Node();
+    page.page = true;
+    const container = page.appendChild(new Node());
+    molecule(container as unknown as HTMLElement, "/a/" + name, name);
+    const find = (cls: string): Node[] => all(container).filter((node) => node.classes().includes(cls));
+    const [reset, clear] = find("mol-act") as [Node, Node];
+    return {
+      viewer,
+      fetch,
+      find,
+      reset,
+      clear,
+      click: (atom: MolAtom) => onClick?.(atom),
+      loaded: () => vi.waitFor(() => expect(reset.disabled).toBe(false)),
+    };
+  }
+  /** The style last applied to every atom (the hetero override is a second call). */
+  const mainStyle = (viewer: { setStyle: ReturnType<typeof vi.fn> }) =>
+    viewer.setStyle.mock.calls.filter(([sel]) => Object.keys(sel as object).length === 0).at(-1)![1] as Record<
+      string,
+      { colorfunc?: (atom: MolAtom) => number }
+    >;
+
+  afterEach(() => {
+    molTeardown();
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  it("shows the PDB ID, title, chains and atom count from the text it already read", async () => {
+    const { fetch, find, loaded } = mount(ATOMS);
+    await loaded();
+    expect(find("mol-meta-id")[0]!.textContent).toBe("1EMA");
+    expect(find("mol-meta-title")[0]!.textContent).toBe("GREEN FLUORESCENT PROTEIN FROM AEQUOREA VICTORIA");
+    // The zinc is hetero: it neither adds a chain nor decides the B-factor range.
+    expect(find("mol-meta-chains")[0]!.textContent).toBe(molT("mol.chains", 2, "A" + molT("mol.chains.sep") + "B"));
+    expect(find("mol-meta-atoms")[0]!.textContent).toBe(molT("mol.atoms", (4).toLocaleString()));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets to the view of the first fit, then refits", async () => {
+    const { viewer, reset, loaded } = mount(ATOMS);
+    expect(reset.disabled).toBe(true);
+    reset.onclick?.();
+    expect(viewer.setView).not.toHaveBeenCalled();
+    await loaded();
+    expect(viewer.getView).toHaveBeenCalledTimes(1);
+    expect(viewer.getView.mock.invocationCallOrder[0]).toBeGreaterThan(viewer.zoomTo.mock.invocationCallOrder[0]!);
+    reset.onclick?.();
+    expect(viewer.setView).toHaveBeenCalledWith([1, 2, 3, -40, 0, 0, 0, 1]);
+    expect(viewer.zoomTo).toHaveBeenCalledTimes(2);
+    expect(viewer.setView.mock.invocationCallOrder[0]).toBeLessThan(viewer.zoomTo.mock.invocationCallOrder[1]!);
+    expect(viewer.render.mock.invocationCallOrder.at(-1)).toBeGreaterThan(viewer.zoomTo.mock.invocationCallOrder[1]!);
+  });
+
+  it("labels a clicked residue at its CA, removes it on a second click, and clears all", async () => {
+    const { viewer, clear, click, loaded } = mount(ATOMS);
+    await loaded();
+    expect(viewer.setClickable).toHaveBeenCalledWith({}, true, expect.any(Function));
+    expect(clear.disabled).toBe(true);
+    expect(clear.textContent).toBe(molT("mol.labels.clear"));
+    click(ATOMS[0]!);
+    expect(viewer.addLabel).toHaveBeenCalledWith(
+      "GLY 65 · A",
+      expect.objectContaining({ position: { x: 1, y: 2, z: 3 } }),
+    );
+    expect(clear.disabled).toBe(false);
+    expect(clear.textContent).toBe(molT("mol.labels.clearCount", 1));
+    // Another atom of the same residue toggles the same label off.
+    click(ATOMS[1]!);
+    expect(viewer.removeLabel).toHaveBeenCalledWith(viewer.addLabel.mock.results[0]!.value);
+    expect(clear.disabled).toBe(true);
+    click(ATOMS[0]!);
+    click(ATOMS[2]!);
+    expect(viewer.addLabel).toHaveBeenLastCalledWith("TYR 66 · B", expect.anything());
+    expect(clear.textContent).toBe(molT("mol.labels.clearCount", 2));
+    clear.onclick?.();
+    expect(viewer.removeAllLabels).toHaveBeenCalledTimes(1);
+    expect(clear.disabled).toBe(true);
+    click(ATOMS[0]!);
+    expect(viewer.addLabel).toHaveBeenCalledTimes(4);
+  });
+
+  it("colours by chain and by B-factor with a legend; default restores the original look", async () => {
+    const { viewer, find, loaded } = mount(ATOMS);
+    const pills = find("mol-style");
+    const [def, byChain, byB] = pills.slice(5) as [Node, Node, Node];
+    expect(byChain.disabled).toBe(true);
+    await loaded();
+    expect(mainStyle(viewer)).toEqual({ cartoon: { color: "spectrum" } });
+    expect(byChain.disabled).toBe(false);
+    expect(byB.disabled).toBe(false);
+    const legend = find("mol-legend")[0]!;
+    expect(legend.hidden).toBe(true);
+    byChain.onclick?.();
+    expect(mainStyle(viewer).cartoon!.colorfunc!(ATOMS[2]!)).toBe(chainColor(1));
+    expect(viewer.setStyle).toHaveBeenLastCalledWith({ hetflag: true }, { stick: { colorscheme: "Jmol" } });
+    expect(byChain.classes()).toContain("on");
+    expect(def.classes()).not.toContain("on");
+    expect(legend.hidden).toBe(false);
+    expect(all(legend).filter((node) => node.className === "mol-swatch").map((node) => node.style.background)).toEqual([
+      hexColor(chainColor(0)),
+      hexColor(chainColor(1)),
+    ]);
+    byB.onclick?.();
+    expect(mainStyle(viewer).cartoon!.colorfunc!(ATOMS[0]!)).toBe(B_LOW);
+    expect(mainStyle(viewer).cartoon!.colorfunc!(ATOMS[2]!)).toBe(B_HIGH);
+    expect(all(legend).map((node) => node.textContent)).toEqual(expect.arrayContaining(["10.0", "50.0"]));
+    expect(legend.title).toBe(molT("mol.legend.bfactor"));
+    pills[3]!.onclick?.();
+    expect(viewer.addSurface).toHaveBeenLastCalledWith("vdw", { opacity: 0.85, colorfunc: expect.any(Function) });
+    def.onclick?.();
+    expect(mainStyle(viewer)).toEqual({ cartoon: { color: "spectrum" } });
+    expect(viewer.addSurface).toHaveBeenLastCalledWith("vdw", { opacity: 0.85, color: "white" });
+    expect(legend.hidden).toBe(true);
+  });
+
+  it("keeps chain and B-factor colouring off for a small molecule and says why", async () => {
+    const methane: MolAtom[] = [
+      { elem: "C", atom: "C", hetflag: true, index: 0, x: 0, y: 0, z: 0 },
+      { elem: "H", atom: "H", hetflag: true, index: 1, x: 0.6, y: 0.6, z: 0.6 },
+    ];
+    const { viewer, find, click, loaded } = mount(methane, "methane.xyz", "HEADER    NOT A PDB FILE\n2\nmethane\n");
+    await loaded();
+    const [, byChain, byB] = find("mol-style").slice(5) as [Node, Node, Node];
+    expect(byChain.disabled).toBe(true);
+    expect(byChain.title).toBe(molT("mol.color.chain.none"));
+    expect(byB.disabled).toBe(true);
+    expect(byB.title).toBe(molT("mol.color.bfactor.none"));
+    const applied = viewer.setStyle.mock.calls.length;
+    byChain.onclick?.();
+    expect(viewer.setStyle.mock.calls.length).toBe(applied);
+    // Only PDB text is read for a header; the atom count still shows.
+    expect(find("mol-meta-id")).toHaveLength(0);
+    expect(find("mol-meta-title")).toHaveLength(0);
+    expect(find("mol-meta-atoms")[0]!.textContent).toBe(molT("mol.atoms", (2).toLocaleString()));
+    click(methane[0]!);
+    expect(viewer.addLabel).toHaveBeenCalledWith("C 1", expect.objectContaining({ position: { x: 0, y: 0, z: 0 } }));
+  });
+
+  it("renders a structure without label or reset support in an older 3Dmol", async () => {
+    const { viewer, clear, reset, click, loaded } = mount(ATOMS);
+    Object.assign(viewer, { setClickable: undefined, getView: undefined });
+    // The fields are read when the structure loads, after this point.
+    await loaded();
+    click(ATOMS[0]!);
+    expect(viewer.addLabel).not.toHaveBeenCalled();
+    reset.onclick?.();
+    expect(viewer.zoomTo).toHaveBeenCalledTimes(2);
+    expect(clear.disabled).toBe(true);
+  });
+
+  it.each([
+    ["zh", "重置视角", "着色：", ["卡通", "棍状", "球状", "表面", "线条", "默认", "按链", "B 因子"]],
+    ["en", "Reset view", "Color:", ["Cartoon", "Stick", "Sphere", "Surface", "Line", "Default", "By chain", "B-factor"]],
+  ] as const)("labels every control in %s", async (lang, reset, color, pills) => {
+    const previous = LANG;
+    await setLang(lang);
+    try {
+      const { find } = mount(ATOMS);
+      expect(find("mol-act")[0]!.textContent).toBe(reset);
+      expect(find("mol-lbl")[1]!.textContent).toBe(color);
+      expect(find("mol-style").map((node) => node.textContent)).toEqual(pills);
+      expect(find("mol-tag")[0]!.textContent).toBe(lang === "zh" ? "使用 3Dmol.js 查看器" : "Using 3Dmol.js viewer");
+      // The vendored 3Dmol zooms on Shift+drag and pans on Ctrl+drag.
+      expect(find("mol-hint")[0]!.textContent).toContain("Ctrl+");
+      expect(find("mol-hint")[0]!.textContent).not.toContain("Shift");
+      // Every key has its own entry in this language (the lookup falls back
+      // to English, so a missing Chinese entry would otherwise pass).
+      const cjk = /[　-〿一-鿿＀-￯]/;
+      for (const key of [
+        "mol.color.label", "mol.color.default", "mol.color.chain", "mol.color.bfactor",
+        "mol.color.chain.none", "mol.color.bfactor.none", "mol.legend.bfactor", "mol.reset",
+        "mol.reset.title", "mol.labels.clear", "mol.labels.clearCount", "mol.atoms", "mol.atoms.one",
+        "mol.chains", "mol.chains.one", "mol.chains.many", "mol.chains.sep", "mol.hint",
+      ]) {
+        expect(molT(key)).not.toBe(key);
+        expect([key, cjk.test(molT(key))]).toEqual([key, lang === "zh"]);
+      }
+    } finally {
+      molTeardown();
+      vi.unstubAllGlobals();
+      await setLang(previous);
+    }
   });
 });
