@@ -1228,6 +1228,10 @@ describe("runtime strip", () => {
     kernelView.value = { sid: "frame-r", st: { state: "none" }, envs: null, cur: null };
     renderActionTimeline();
     expect(doc.querySelector(".runtime-state")?.textContent).toBe(nbT("nb.kernel.notStarted"));
+    // NAV-6: the branch / generation / revision ids are folded away.
+    const ids = doc.querySelector(".runtime-summary details.runtime-ids") as unknown as FakeElement;
+    expect(ids).toBeTruthy();
+    expect(ids.open).toBeFalsy();
     kernelView.value = { sid: "frame-r", st: { state: "none", generation_id: "g-dead" }, envs: null, cur: null };
     renderActionTimeline();
     frames.run();

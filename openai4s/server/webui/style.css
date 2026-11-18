@@ -1360,6 +1360,10 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .runtime-state.failed{color:var(--danger);background:var(--danger-bg)}
 .runtime-state.ended{color:var(--text-400);background:var(--bg-200)}
 .runtime-chip{display:inline-flex;align-items:baseline;gap:5px;min-width:0;border-left:var(--hair);padding-left:8px;font-size:11px}
+/* NAV-6: the runtime ids are diagnostics, folded under "Technical details". */
+.runtime-ids{display:inline-flex;align-items:baseline;gap:7px;flex-wrap:wrap;min-width:0;font-size:11px}
+.runtime-ids>summary{cursor:pointer;color:var(--text-400)}
+.runtime-ids[open]{flex-basis:100%}
 .runtime-key{color:var(--text-400)}
 .runtime-val{color:var(--text-200);font-family:var(--mono);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nb-live-badge.busy,.nb-live-badge.restoring{border-color:var(--clay);color:var(--clay-em)}

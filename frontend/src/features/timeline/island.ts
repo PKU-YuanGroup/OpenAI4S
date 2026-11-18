@@ -55,6 +55,7 @@ import {
 import { renderQueueStrip } from "./queue";
 import { S } from "./s";
 import { ago, localDateTime } from "../chrome/dom";
+import { nbLabelT } from "../notebook/copy";
 import { computeRecordsT, timelineT, workbenchT } from "./copy";
 
 /**
@@ -647,20 +648,31 @@ function runtimeSummaryNode(compact = false, runtime = runtimeSummary()): HTMLEl
   // than "Ended · view only" for a kernel that never ran.
   const state = el("span", "runtime-state " + runtime.status, runtimeStatusText(runtime.status));
   root.appendChild(state);
-  const item = (key: string, value: string, title?: string) => {
+  const item = (key: string, value: string, title?: string, parent: HTMLElement = root) => {
     const chip = el("span", "runtime-chip");
     chip.appendChild(el("span", "runtime-key", t(key)));
     const val = el("span", "runtime-val", value);
     if (title) val.title = publicText(title, 160);
     chip.appendChild(val);
-    root.appendChild(chip);
+    parent.appendChild(chip);
   };
-  item("runtime.branch", shortRuntime(runtime.branch), runtime.branch);
-  item("runtime.python", shortRuntime(runtime.python), runtime.python);
-  item("runtime.r", shortRuntime(runtime.r), runtime.r);
+  // In words: who is using the kernel and what is queued. The branch,
+  // generation, revision and job ids are diagnostics (NAV-6): they sit under
+  // a closed "Technical details".
+  if (runtime.owner) item("runtime.owner", nbLabelT("nb.owner." + runtime.owner));
+  if (runtime.queue) item("runtime.queue", String(runtime.queue));
+  if (runtime.viewOnly && runtime.trustState === "quarantined")
+    item("runtime.trust", t("runtime.trust.quarantined"));
+  const ids = el("details", "runtime-ids");
+  ids.appendChild(el("summary", null, workbenchT("wb.details")));
+  item("runtime.branch", shortRuntime(runtime.branch), runtime.branch, ids);
+  item("runtime.python", shortRuntime(runtime.python), runtime.python, ids);
+  item("runtime.r", shortRuntime(runtime.r), runtime.r, ids);
   item(
     "runtime.revision",
     runtime.revision == null ? t("runtime.none") : "S" + runtime.revision,
+    undefined,
+    ids,
   );
   item(
     "runtime.owner",
@@ -668,10 +680,10 @@ function runtimeSummaryNode(compact = false, runtime = runtimeSummary()): HTMLEl
       ? runtime.owner + (runtime.ownerId ? " · " + shortRuntime(runtime.ownerId) : "")
       : t("runtime.none"),
     runtime.ownerId,
+    ids,
   );
-  item("runtime.queue", String(runtime.queue));
-  if (runtime.viewOnly && runtime.trustState === "quarantined")
-    item("runtime.trust", t("runtime.trust.quarantined"));
+  detailsKey(ids, "runtime-ids");
+  root.appendChild(ids);
   return root;
 }
 
