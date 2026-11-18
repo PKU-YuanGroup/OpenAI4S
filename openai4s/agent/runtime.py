@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import queue
+import re
 import sys
 import threading
 import time
@@ -1755,6 +1756,17 @@ def evidence_cell_id(dispatcher: Any, cell_id: Any) -> str | None:
     return str(cell_id)
 
 
+#: Name-resolution / connection failures a sandboxed cell produces when it
+#: tries to reach the network itself (Python, pip, curl and R spellings).
+_NETWORK_BLOCKED = re.compile(
+    r"Failed to resolve|NameResolutionError|nodename nor servname provided|"
+    r"Temporary failure in name resolution|Name or service not known|"
+    r"Could not resolve host|getaddrinfo failed|"
+    r"cannot open URL|unable to access index for repository",
+    re.IGNORECASE,
+)
+
+
 def format_observation(result: dict, *, cell_id: str | None = None) -> str:
     """Format one kernel result as the stable observation protocol.
 
@@ -1793,6 +1805,20 @@ def format_observation(result: dict, *, cell_id: str | None = None) -> str:
                 "[system] `host` is a pre-injected Python singleton. Use it "
                 "directly; never `import host` or `from host import ...`."
             )
+    if _NETWORK_BLOCKED.search("\n".join((out, err, str(error or "")))):
+        # A sandboxed cell that tries to reach the network fails at name
+        # resolution, which reads like an outage. In the review a model spent
+        # 13 minutes retrying pip, switching kernels and probing the machine
+        # because nothing said the denial was policy.
+        parts.append(
+            "[system] This looks like blocked network access. OpenAI4S's "
+            "kernel sandbox denies direct network from cells by default, "
+            "including pip/conda/install.packages run inside a cell, so "
+            "retrying will not help. Fetch data with host.web_fetch, "
+            "host.web_search or science_search; to install a package use "
+            "host.env.create (the user approves it), or tell the user what "
+            "to install."
+        )
     if not out and not err and not error:
         parts.append("(no output)")
     usage = result.get("usage") or {}

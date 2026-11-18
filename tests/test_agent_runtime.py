@@ -1393,3 +1393,22 @@ def test_egress_outcome_reads_the_decision_below_a_wrapper():
     outcome = _executor()._egress_boundary_outcome(wrapped)
     assert outcome.observation == "egress_boundary_unavailable: sandbox not proven"
     assert outcome.stop_reason == "egress_boundary_unavailable"
+
+
+def test_format_observation_explains_a_sandboxed_network_denial():
+    """ENV-3: pip inside a sandboxed cell fails at DNS resolution, which reads
+    like an outage; the observation must say the denial is policy."""
+    observation = format_observation(
+        {
+            "stdout": "returncode: 1\nWARNING: Retrying ... NameResolutionError("
+            "\"HTTPSConnection(host='pypi.org', port=443): Failed to resolve "
+            "'pypi.org' ([Errno 8] nodename nor servname provided, or not known)\")",
+            "stderr": "",
+            "error": None,
+        }
+    )
+    assert "kernel sandbox denies direct network from cells" in observation
+    assert "host.env.create" in observation
+
+    quiet = format_observation({"stdout": "ok", "stderr": "", "error": None})
+    assert "sandbox" not in quiet
