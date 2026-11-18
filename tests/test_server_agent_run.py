@@ -320,10 +320,10 @@ def test_web_event_sink_adds_real_post_cell_status_after_intent_prose():
     )
 
     assert [block["text"] for block in visible][0] == "I will compute it."
-    assert "1 stdout line(s)" in visible[-1]["text"]
+    assert "```text\n42\n```" in visible[-1]["text"]
     assert [event["chunk"] for event in sent if event["type"] == "text_chunk"] == [
         "I will compute it.\n",
-        "This cell completed successfully with 1 stdout line(s); the actual output is recorded in the Notebook.\n",
+        "The cell finished. Output:\n```text\n42\n```\n",
     ]
 
 

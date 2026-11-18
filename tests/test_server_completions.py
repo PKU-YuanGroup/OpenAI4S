@@ -154,13 +154,52 @@ def test_code_only_success_has_honest_running_and_actual_output_status():
     assert "actual output" in running
     assert "print('a')" not in running
     text = outcome_narration(action, outcome, "en", had_public_prose=False)
-    assert "2 stdout line(s)" in text
+    assert text == "The cell finished. Output:\n```text\na\nb\n```"
     assert "running this analysis stage" not in text
     # Pre-action prose describes intent, not the execution result, so it must
     # not suppress the short post-Cell status.
-    assert "2 stdout line(s)" in outcome_narration(
+    assert "```text\na\nb\n```" in outcome_narration(
         action, outcome, had_public_prose=True
     )
+
+
+def test_post_cell_status_shows_output_and_never_calls_a_cell_successful():
+    """RUN-1: the status said "completed successfully with N stdout line(s);
+    the actual output is recorded in the Notebook" 40+ times a session --
+    including for a cell whose pip subprocess exited 1. It now shows the first
+    lines the cell printed, says the cell *finished*, and flags stderr."""
+    action = CodeCell("python", "run()")
+    many = "\n".join(f"row {i}" for i in range(1, 11))
+    outcome = ExecutionOutcome(
+        observation=(
+            "[Observation]\nstdout:\n" + many + "\nstderr:\nWARNING: pip exited 1\n"
+            "[system] This looks like blocked network access.\n"
+            "[usage wall=1s cpu=1s rss=1kb]"
+        )
+    )
+    en = outcome_narration(action, outcome, "en")
+    assert "successfully" not in en
+    assert en.startswith("The cell finished. First lines of its output:")
+    assert "row 6" in en and "row 7" not in en
+    assert "(10 lines in total; the full output is in the Notebook.)" in en
+    assert "1 stderr line(s), which may contain warnings or errors" in en
+    assert "blocked network" not in en  # a [system] hint is not stdout
+
+    zh = outcome_narration(action, outcome, "zh")
+    assert "成功" not in zh
+    assert zh.startswith("Cell 已运行结束，输出的前几行：")
+    assert "（共 10 行，完整输出在 Notebook。）" in zh
+    assert "另有 stderr 1 行" in zh
+
+    quiet = ExecutionOutcome(observation="[Observation]\n(no output)")
+    assert outcome_narration(action, quiet, "zh") == "Cell 已运行结束，没有输出。"
+
+    secret = ExecutionOutcome(
+        observation="[Observation]\nstdout:\napi_key=sk-live-123\nok ``` fence"
+    )
+    shown = outcome_narration(action, secret, "en")
+    assert "sk-live-123" not in shown and "api_key=<redacted>" in shown
+    assert shown.count("```") == 2  # the output's own fence cannot close ours
 
 
 def test_agent_prompt_documents_the_delegation_task_status_contract():

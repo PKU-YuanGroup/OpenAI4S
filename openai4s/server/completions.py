@@ -168,29 +168,67 @@ def outcome_narration(
     if getattr(outcome, "completion", None) is not None:
         return ""
 
-    stdout_lines = _section_line_count(observation, "stdout:")
-    stderr_lines = _section_line_count(observation, "stderr:")
-    details: list[str] = []
+    # "No exception" is not "success": a cell whose subprocess exited 1 used
+    # to be narrated as "completed successfully", and the narration carried
+    # no output, so every result had to be dug out of the Notebook. Say the
+    # cell finished, show the first lines it printed, and flag stderr.
+    stdout = _section_body(observation, "stdout:")
+    stderr_lines = _line_count(_section_body(observation, "stderr:"))
+    stdout_lines = _line_count(stdout)
+    parts: list[str] = []
     if stdout_lines:
-        details.append(
-            f"stdout {stdout_lines} 行" if zh else f"{stdout_lines} stdout line(s)"
+        shown = min(stdout_lines, _PREVIEW_LINES)
+        if zh:
+            parts.append(
+                "Cell 已运行结束，输出："
+                if shown == stdout_lines
+                else "Cell 已运行结束，输出的前几行："
+            )
+        else:
+            parts.append(
+                "The cell finished. Output:"
+                if shown == stdout_lines
+                else "The cell finished. First lines of its output:"
+            )
+        parts.append("```text\n" + _output_preview(stdout) + "\n```")
+        if shown < stdout_lines:
+            parts.append(
+                f"（共 {stdout_lines} 行，完整输出在 Notebook。）"
+                if zh
+                else f"({stdout_lines} lines in total; the full output is in the Notebook.)"
+            )
+    elif stderr_lines:
+        parts.append("Cell 已运行结束。" if zh else "The cell finished.")
+    else:
+        parts.append(
+            "Cell 已运行结束，没有输出。" if zh else "The cell finished with no output."
         )
     if stderr_lines:
-        details.append(
-            f"stderr {stderr_lines} 行" if zh else f"{stderr_lines} stderr line(s)"
-        )
-    if details:
-        joined = "、".join(details) if zh else " and ".join(details)
-        return (
-            f"这个 Cell 已成功完成，产生了 {joined}；实际输出已记录在 Notebook。"
+        parts.append(
+            f"另有 stderr {stderr_lines} 行，可能包含警告或错误，请在 Notebook 查看。"
             if zh
-            else f"This cell completed successfully with {joined}; the actual output is recorded in the Notebook."
+            else f"It also wrote {stderr_lines} stderr line(s), which may contain "
+            "warnings or errors; see the Notebook."
         )
-    return (
-        "这个 Cell 已成功完成（没有 stdout 或 stderr）；运行状态已保留在 Notebook。"
-        if zh
-        else "This cell completed successfully with no stdout or stderr; its runtime state is recorded in the Notebook."
-    )
+    return "\n".join(parts)
+
+
+#: How much of a cell's stdout the chat repeats after it runs.
+_PREVIEW_LINES = 6
+_PREVIEW_LINE_CHARS = 200
+_FENCE = "`" * 3
+
+
+def _output_preview(stdout: str) -> str:
+    lines = []
+    for line in stdout.splitlines()[:_PREVIEW_LINES]:
+        line = _BEARER.sub("Bearer <redacted>", line)
+        line = _SECRET_ASSIGNMENT.sub(r"\1\2<redacted>", line)
+        if len(line) > _PREVIEW_LINE_CHARS:
+            line = line[: _PREVIEW_LINE_CHARS - 1] + "…"
+        # A fence inside the output would close the block early.
+        lines.append(line.replace(_FENCE, "'" * 3))
+    return "\n".join(lines)
 
 
 def completion_message(
@@ -337,20 +375,24 @@ def _error_headline(observation: str) -> str:
     return headline[:240]
 
 
-def _section_line_count(observation: str, marker: str) -> int:
+def _section_body(observation: str, marker: str) -> str:
     needle = "\n" + marker + "\n"
     start = observation.find(needle)
     if start < 0:
-        return 0
+        return ""
     body = observation[start + len(needle) :]
     stops = [
         index
-        for boundary in ("\nstderr:", "\nERROR", "\n[usage")
+        for boundary in ("\nstderr:", "\nERROR", "\n[system]", "\n[usage")
         if (index := body.find(boundary)) >= 0
     ]
     if stops:
         body = body[: min(stops)]
-    return len(body.rstrip().splitlines()) if body.rstrip() else 0
+    return body.rstrip()
+
+
+def _line_count(body: str) -> int:
+    return len(body.splitlines()) if body else 0
 
 
 def _summary_already_visible(output: Any, summary: str, previous: str) -> bool:
