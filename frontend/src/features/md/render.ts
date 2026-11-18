@@ -117,9 +117,12 @@ export function mdInline(t: string | null | undefined, options: MdRenderOptions 
   }
   t = t.replace(/\*\*\*([^*]+?)\*\*\*/g, "<strong><em>$1</em></strong>");
   t = t.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
-  t = t.replace(/(^|[^\w*])__([^_]+?)__(?!\w)/g, "$1<strong>$2</strong>");
+  // ART-8: `\w` is ASCII-only, so an underscore between CJK letters
+  // ("队列_临床_标志物.csv") opened emphasis and the underscores vanished.
+  // Intraword means any Unicode letter or digit, as in CommonMark.
+  t = t.replace(/(^|[^\p{L}\p{N}_*])__([^_]+?)__(?![\p{L}\p{N}_])/gu, "$1<strong>$2</strong>");
   t = t.replace(/(^|[^*])\*([^*\n]+?)\*/g, "$1<em>$2</em>");
-  t = t.replace(/(^|[^\w_])_([^_\n]+?)_(?!\w)/g, "$1<em>$2</em>");
+  t = t.replace(/(^|[^\p{L}\p{N}_])_([^_\n]+?)_(?![\p{L}\p{N}_])/gu, "$1<em>$2</em>");
   t = t.replace(/~~([^~]+?)~~/g, "<del>$1</del>");
   t = t.replace(mdCodeRestore, (_m, k: string) => {
     const idx = +k;

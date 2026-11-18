@@ -228,3 +228,19 @@ describe("notebook-only resource-free rendering (F7)", () => {
     );
   });
 });
+
+describe("underscores inside non-ASCII words (ART-8)", () => {
+  it("keeps a CJK file name's underscores instead of reading them as emphasis", () => {
+    const html = mdInline("[project-inputs/队列_临床_与_标志物.csv](/api/v1/artifacts/a-1)");
+    expect(html).toContain("队列_临床_与_标志物.csv");
+    expect(html).not.toContain("<em>");
+    expect(mdInline("Ü_ber_x")).not.toContain("<em>");
+  });
+
+  it("still reads standalone underscores as emphasis", () => {
+    expect(mdInline("a _word_ here")).toContain("<em>word</em>");
+    expect(mdInline("强调 _这个_ 词")).toContain("<em>这个</em>");
+    expect(mdInline("__bold__ text")).toContain("<strong>bold</strong>");
+    expect(mdInline("snake_case_name")).not.toContain("<em>");
+  });
+});
