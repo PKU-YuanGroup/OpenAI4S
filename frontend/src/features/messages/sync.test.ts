@@ -22,6 +22,7 @@ import { registerBuiltinHandlers } from "../ws/handlers";
 import { onEvent, resetWsHandlers } from "../ws/registry";
 import { registerMessageHandlers } from "./handlers";
 import { interleaveHistory, renderMissingSession, renderStored } from "./list";
+import { cancelFrame } from "./raf";
 import type { LiveStream } from "./stream";
 
 // --------------------------------------------------------------------------
@@ -348,6 +349,15 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  // A streamed chunk schedules its markdown flush on a real 16 ms timer
+  // (raf.ts falls back to setTimeout under node). Cancel it while the fake
+  // document still exists: on a runner slow enough to reach it (CI, not a
+  // laptop) it fired after the stub was gone, as "document is not defined".
+  const live = stream.value as LiveStream | null;
+  if (live && live._raf) {
+    cancelFrame(live._raf);
+    live._raf = null;
+  }
   resetWsHandlers();
   vi.unstubAllGlobals();
   activeDoc = null;
