@@ -6,6 +6,7 @@
  * (the page is already newest-first).
  */
 
+import { agoMs } from "../chrome/dom";
 import { publicText } from "../scrub/scrub";
 import { attentionT } from "./copy";
 import { navigationFromTarget } from "./navigate";
@@ -58,13 +59,23 @@ function asMs(value: unknown): number {
   return n > 10_000_000_000 ? Math.trunc(n) : Math.trunc(n * 1000);
 }
 
+/** Relative time in the UI language (the shared `chrome/dom.ts` helper). */
 export function agoFromMs(ms: number, now = Date.now()): string {
-  if (!ms) return "";
-  const d = (now - ms) / 1000;
-  if (d < 60) return "just now";
-  if (d < 3600) return (d / 60 | 0) + "m";
-  if (d < 86400) return (d / 3600 | 0) + "h";
-  return (d / 86400 | 0) + "d";
+  return agoMs(ms, now);
+}
+
+/**
+ * What "Needs attention" lists: things a person has to decide or look at --
+ * an approval, a failure to restore or retry, a view-only session, a remote
+ * job whose state is lost. A running or queued session is progress, not a
+ * decision, and has its own Running card: listed here too, a session waiting
+ * for approval took two rows (pending approval + running) before the Running
+ * card and Recent showed it again.
+ */
+export function needsDecision(card: AttentionCardModel): boolean {
+  if (card.sourceKind === "running" || card.sourceKind === "queued") return false;
+  if (card.sourceKind === "compute") return card.severity === "high";
+  return true;
 }
 
 export function projectNameFor(

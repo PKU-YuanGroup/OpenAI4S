@@ -3,6 +3,7 @@ import { beginNavigation } from "./navigation";
 
 import { t } from "../../i18n";
 import { _openGen, currentId } from "../../stores/session";
+import { ago as chromeAgo } from "../chrome/dom";
 import { callLane } from "./lane";
 
 export function $(sel: string): HTMLElement | null {
@@ -21,15 +22,9 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+/** The shared relative time, in the UI language (chrome/dom.ts). */
 export function ago(iso: string | undefined | null): string {
-  if (!iso) return "";
-  const ts = new Date(iso).getTime();
-  if (isNaN(ts)) return "";
-  const d = (Date.now() - ts) / 1000;
-  if (d < 60) return "just now";
-  if (d < 3600) return (d / 60 | 0) + "m";
-  if (d < 86400) return (d / 3600 | 0) + "h";
-  return (d / 86400 | 0) + "d";
+  return chromeAgo(iso);
 }
 
 export function framePath(fid: string, pid?: string | null): string {

@@ -106,6 +106,11 @@ button{font:inherit;cursor:pointer}
    calls and runs code) has to be readable before the click, not after. */
 .dash-example{padding:0 20px 20px;text-align:center}
 .dash-example .btn{margin:0 auto}
+/* NAV-4: the example run's own notice (running / finished / N cells failed). */
+.dash-example-status{display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px 20px;margin:0 0 10px;border:.5px solid var(--border);border-radius:var(--radius-card);background:var(--bg-000)}
+.dash-example-msg{font-size:14px;line-height:1.5;color:var(--text-200)}
+.dash-example-status[data-phase="error"] .dash-example-msg{color:var(--danger)}
+.dash-example-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
 .dash-example-hint{margin-top:8px;color:var(--text-400);font-size:12px;line-height:1.5;max-width:46em;margin-left:auto;margin-right:auto}
 .d-row{display:flex;align-items:center;gap:12px;padding:13px 16px;cursor:pointer;border-bottom:.5px solid var(--border)}
 .d-row:last-child{border-bottom:0}

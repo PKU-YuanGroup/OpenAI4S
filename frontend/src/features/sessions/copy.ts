@@ -104,6 +104,28 @@ export const projectHistoryCopy = copyLookup({
   },
 });
 
+/** Home dashboard strings the generated dictionaries do not carry (NAV-4). */
+export const dashCopy = copyLookup({
+  en: {
+    "dash.example.runningNote": "The example analysis is running; it takes a minute or two. Open the session to watch it.",
+    "dash.example.done": "The example analysis finished: all {0} cells ran without an error.",
+    "dash.example.doneFailed": "The example analysis ended: {0} of {1} cells did not complete. The session says why.",
+    "dash.example.ended": "The example analysis ended. Open the session to see the results.",
+    "dash.example.open": "Open the example session",
+    "dash.example.dismiss": "Dismiss",
+    "dash.sessions.allAbove": "Running sessions and the ones waiting for you are listed above.",
+  },
+  zh: {
+    "dash.example.runningNote": "示例分析正在运行，大约需要一两分钟。可以打开会话看它运行。",
+    "dash.example.done": "示例分析已完成：{0} 个单元都运行完毕，没有出错。",
+    "dash.example.doneFailed": "示例分析已结束：{1} 个单元中有 {0} 个没有完成，会话里写明了原因。",
+    "dash.example.ended": "示例分析已结束，打开会话查看结果。",
+    "dash.example.open": "打开示例会话",
+    "dash.example.dismiss": "知道了",
+    "dash.sessions.allAbove": "正在运行和等你处理的会话显示在上方。",
+  },
+});
+
 /** Feature-owned copy; the frozen legacy dictionaries remain generated. */
 export function sessionCopy(key: "sessionsError" | "foldersError" | "retry"): string {
   const copy = LANG === "en" ? {
