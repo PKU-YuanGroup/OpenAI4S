@@ -198,3 +198,48 @@
   color: var(--text-400, #6c6a64);
   font-size: 0.92em;
 }
+
+/* ART-3: the default table viewer's filter, column toggle and sortable
+   headers. Sorting happens on the rows already read; no server flag. */
+.sheet-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+.sheet-filter {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 420px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: inherit;
+  background: var(--bg-000, #faf9f5);
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius, 8px);
+}
+.sheet-status {
+  font-size: 12px;
+  color: var(--text-400, #6c6a64);
+}
+.sheet-hold {
+  overflow-x: auto;
+}
+table.sheet th[tabindex] {
+  cursor: pointer;
+  user-select: none;
+}
+table.sheet th[data-sort="asc"]::after {
+  content: " \25B2";
+  font-size: 0.75em;
+  color: var(--text-400, #6c6a64);
+}
+table.sheet th[data-sort="desc"]::after {
+  content: " \25BC";
+  font-size: 0.75em;
+  color: var(--text-400, #6c6a64);
+}

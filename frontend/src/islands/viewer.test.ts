@@ -509,6 +509,20 @@ describe("versions modal ownership (AUDIT A29)", () => {
     } finally { setArtifactsFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
   });
 
+  it.each([false, true])("offers version comparison only when the workbench serves diffs (ART-3, flag=%s)", async (flag) => {
+    const { body, rows } = mountModal();
+    setArtifactsFetch(async () => new Response(JSON.stringify(listFor("A", 3))));
+    try {
+      const { showVersions } = await import("./viewer");
+      const { artifactWorkbench } = await import("../stores/notebook");
+      artifactWorkbench.value = flag;
+      void showVersions({ id: "A", filename: "notes.md" });
+      await vi.waitFor(() => expect(rows()).toHaveLength(3));
+      const compares = walk(body).filter((n) => n.dataset.action === "compare-artifact-versions");
+      expect(compares).toHaveLength(flag ? 2 : 0);
+    } finally { setArtifactsFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
+  });
+
   it("a restore publishes a new cache-bust map (AUDIT S04)", async () => {
     const { body, rows } = mountModal();
     let listReads = 0;

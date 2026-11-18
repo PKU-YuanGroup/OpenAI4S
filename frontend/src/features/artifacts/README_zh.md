@@ -41,8 +41,8 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`notebook.test.ts`](notebook.test.ts) | envelope/类型拒绝（坏 JSON、nbformat 3、错误字段类型、未知 cell/output 枚举）、Cell/输出/文本上限与分批“显示更多”、string 与 string-array 字段、代码复制块、Markdown 禁资源（data 与外链图片）、文本/错误输出、不支持富 MIME、PNG 校验与字节/像素上限及两并发解码队列、损坏文件原文、分类读取失败与重试、关闭中止/释放/清空。 |
 | [`renderers.ts`](renderers.ts) | 兼容模式的信息行带“重试”，就地重新请求目录与描述符（无需整页刷新；仍失败则再次降级）。十一个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol/notebook 孤岛。PDF iframe 不带 `sandbox` 属性（Chromium 不在沙箱 frame 里运行 PDF 查看器），只加载经有界读取、类型为 `application/pdf` 的 blob，由外壳 CSP 的 `frame-src blob:` 放行（ART-1）。图片与 PDF 经 `readArtifactBytes` 读取（blob URL 归该视图所有）。标注视图在读取被拒绝时显示同样的分类失败卡。打开预览时也会拆掉仍在读取的分子结构。有界可取消读取；冻结显示上限统一经 `previewSlice` 截取；`partial` 预览带持续可见的 `role="status"` 提示（说明只显示了前 N 个字符）与确切版本下载（Markdown 经懒加载 KaTeX 排版公式，并把相对图片解析为同会话产物，ART-2；在 `.md` 正文上下各一条提示；原始文本保留“展开完整原文”）；读取失败是第三态，显示分类失败卡。版本冻结（F4）：descriptor 入口一次性计算 `target = artifactMetadataTarget(a)` 与 `url = artUrl(target)`，所有渲染器与下载只用这两个值；没有版本标识的行显示“最新版本（无固定版本标识）”。 |
 | [`renderers.test.ts`](renderers.test.ts) | 文本渲染器：每次渲染只读一次（无下载/文本循环）；序列按源码显示；JSON 只按控制字符判定二进制；body 已被替换时晚到的描述符不再执行渲染胶水。 侧栏与全屏的读取和 Notebook 图片会话彼此独立；关闭后的迟到描述符不能重启读取。 |
-| [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限。 |
-| [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。 |
+| [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限；ART-3 表头排序（数值序、空值置后、回到文件原序、键盘）、`列名:值` 与任意列筛选及匹配计数、显示全部列开关及其提示。 |
+| [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。ART-3：默认（未开工作台）表格点击表头排序（升序、降序、文件原序），按子串或 `列名:值` 筛选，超过 100 列时可按需显示全部列，绘制行数按同样的 50 万单元格预算截断；全部在前端对已读取的行完成。 |
 | [`state.ts`](state.ts) | 车道局部 M-03 signal。不上升进 `stores/`。 |
 | [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。全局 FIFO 前缀队列（最多 4 个在途、共享 15 秒期限），每个磁贴 DOM 元素登记为缓存键的消费者，`pruneThumbReads()` 只在全部消费者都离开文档时中止并释放图片 blob URL；同一版本缓存未命中时，仍有磁贴在显示则复用那份 blob，全部消费者离开后才释放；被截断的文本/分子磁贴标“部分预览”，被截断的数据磁贴只显示列名、不显示行数。图片磁贴按 8 MiB 主预览上限整文件读取（前缀无法解码），绝不把产物 URL 赋给 `img.src`；超过 256 KiB 磁贴预算的位图先缩成 480 px 副本，磁贴只保留该副本。 |
 | [`thumbs.test.ts`](thumbs.test.ts) | 每个产物版本只读一次；错误页和失败的读取不缓存；LRU 上限。 |

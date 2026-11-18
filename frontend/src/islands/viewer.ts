@@ -16,6 +16,7 @@ import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
 import { loadArtifacts } from "../features/artifacts/load";
 import { renderArtifactBody } from "../features/artifacts/renderers";
+import { readWorkbenchFlag } from "../features/table/workbench";
 import { scienceSourceStatus } from "../features/artifacts/science-results";
 import { publicText } from "../features/scrub/scrub";
 import { viewerVersionState } from "../features/artifacts/state";
@@ -433,9 +434,13 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
       view.href = artUrl({ id: a.id, version_id: v.version_id, _exactVersion: true });
       view.target = "_blank";
       acts.appendChild(view);
-      const previous = isTextEditable(a)
-        ? vs.find((candidate) => Number(candidate.ordinal) === Number(v.ordinal) - 1)
-        : null;
+      // Version diffs are served only by the Stage 9 workbench routes; with
+      // the flag off every comparison answered 403 "artifact workbench is
+      // disabled", so the button is not offered at all (ART-3).
+      const previous =
+        isTextEditable(a) && readWorkbenchFlag()
+          ? vs.find((candidate) => Number(candidate.ordinal) === Number(v.ordinal) - 1)
+          : null;
       if (previous) {
         const compare = el(
           "button",
