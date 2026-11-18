@@ -21880,8 +21880,9 @@ def _seed_datapro_connector(cfg: Config) -> None:
 # records + sequences come from the live UniProt REST API (with a small bundle of
 # REAL reference sequences as an offline fallback — real public data, never
 # fabricated), the biochemistry / hydropathy / pairwise-identity numbers are
-# deterministic computations over those real sequences (Biopython + the
-# Kyte-Doolittle scale), and the 3D structure is a real coordinate download from
+# deterministic computations over those real sequences (Biopython when
+# installed, otherwise the same formulas in plain Python, + the Kyte-Doolittle
+# scale), and the 3D structure is a real coordinate download from
 # the RCSB PDB API. Nothing uses np.random, hardcoded stand-ins, or a placeholder
 # structure — consistent with the app's no-fabrication policy. A failed live
 # fetch degrades to the bundled real data or an honest "unavailable" note, never
@@ -21987,25 +21988,101 @@ print('rendered hydropathy profile for %s (%d residues) via %s'
       % (ref['accession'], len(_seq), api_source))
 """
 _DEMO_CSV = r"""
-# Cell 4/6 -- REAL per-protein biochemistry (Biopython ProtParam) + REAL pairwise
-# %% identity to the reference (global alignment). Every number is computed from
-# the real sequences above; nothing is randomised or hardcoded.
+# Cell 4/6 -- REAL per-protein biochemistry + REAL pairwise % identity to the
+# reference (global alignment). Every number is computed from the real
+# sequences above; nothing is randomised or hardcoded. Biopython is used when it
+# is installed; otherwise the same standard formulas run in plain Python.
 import pandas as pd
-from Bio.SeqUtils.ProtParam import ProteinAnalysis
 try:
-    from Bio import Align
-    from Bio.Align import substitution_matrices
-    _al = Align.PairwiseAligner()
-    _al.mode = 'global'
-    _al.open_gap_score = -10
-    _al.extend_gap_score = -0.5
-    _al.substitution_matrix = substitution_matrices.load('BLOSUM62')
-except Exception:
-    _al = None
+    from Bio.SeqUtils.ProtParam import ProteinAnalysis
+except ImportError:
+    ProteinAnalysis = None
+_al = None
+if ProteinAnalysis is not None:
+    try:
+        from Bio import Align
+        from Bio.Align import substitution_matrices
+        _al = Align.PairwiseAligner()
+        _al.mode = 'global'
+        _al.open_gap_score = -10
+        _al.extend_gap_score = -0.5
+        _al.substitution_matrix = substitution_matrices.load('BLOSUM62')
+    except Exception:
+        _al = None
+
+# Plain-Python fallback: average amino-acid masses, the Bjellqvist pK set and
+# the Kyte-Doolittle scale (the tables Biopython ProtParam uses), and a
+# Needleman-Wunsch global alignment (match +1, mismatch -1, gap -2).
+_MASS = {'A': 89.0932, 'R': 174.201, 'N': 132.1179, 'D': 133.1027,
+         'C': 121.1582, 'Q': 146.1445, 'E': 147.1293, 'G': 75.0666,
+         'H': 155.1546, 'I': 131.1729, 'L': 131.1729, 'K': 146.1876,
+         'M': 149.2113, 'F': 165.1891, 'P': 115.1305, 'S': 105.0926,
+         'T': 119.1192, 'W': 204.2252, 'Y': 181.1885, 'V': 117.1463}
+_KD4 = {'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5,
+        'E': -3.5, 'G': -0.4, 'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9,
+        'M': 1.9, 'F': 2.8, 'P': -1.6, 'S': -0.8, 'T': -0.7, 'W': -0.9,
+        'Y': -1.3, 'V': 4.2}
+
+def _isoelectric_point(s):
+    _nt = {'A': 7.59, 'M': 7.0, 'S': 6.93, 'P': 8.36, 'T': 6.82,
+           'V': 7.44, 'E': 7.7}.get(s[0], 7.5)
+    _ct = {'D': 4.55, 'E': 4.75}.get(s[-1], 3.55)
+    _pos = [(1, _nt)] + [(s.count(a), k) for a, k in
+                         (('K', 10.0), ('R', 12.0), ('H', 5.98))]
+    _neg = [(1, _ct)] + [(s.count(a), k) for a, k in
+                         (('D', 4.05), ('E', 4.45), ('C', 9.0), ('Y', 10.0))]
+    def _charge(ph):
+        return (sum(n / (10 ** (ph - k) + 1) for n, k in _pos)
+                - sum(n / (10 ** (k - ph) + 1) for n, k in _neg))
+    _lo, _hi, _ph = 4.05, 12.0, 7.775
+    while _hi - _lo > 0.0001:
+        if _charge(_ph) > 0:
+            _lo = _ph
+        else:
+            _hi = _ph
+        _ph = (_lo + _hi) / 2
+    return _ph
+
+def _nw_identity(a, b):
+    _prev = [-2 * j for j in range(len(b) + 1)]
+    _back = [[2] * (len(b) + 1)]
+    for i in range(1, len(a) + 1):
+        _cur, _ptr = [-2 * i], [1]
+        for j in range(1, len(b) + 1):
+            _d = _prev[j - 1] + (1 if a[i - 1] == b[j - 1] else -1)
+            _u, _l = _prev[j] - 2, _cur[j - 1] - 2
+            _best = max(_d, _u, _l)
+            _cur.append(_best)
+            _ptr.append(0 if _best == _d else (1 if _best == _u else 2))
+        _back.append(_ptr)
+        _prev = _cur
+    i, j, _same, _cols = len(a), len(b), 0, 0
+    while i > 0 and j > 0:
+        _p = _back[i][j]
+        if _p == 0:
+            _cols += 1
+            _same += a[i - 1] == b[j - 1]
+            i, j = i - 1, j - 1
+        elif _p == 1:
+            i -= 1
+        else:
+            j -= 1
+    return round(100.0 * _same / _cols, 1) if _cols else None
+
+if ProteinAnalysis is not None:
+    biochem_source = 'Biopython ProtParam + PairwiseAligner (BLOSUM62)'
+else:
+    biochem_source = ('built-in formulas (Biopython is not installed): average '
+                      'residue masses, Bjellqvist pK, Kyte-Doolittle GRAVY, '
+                      'Needleman-Wunsch identity; instability index needs '
+                      'Biopython')
+print('biochemistry via', biochem_source)
 
 def _pct_identity(a, b):
     if a == b:
         return 100.0
+    if ProteinAnalysis is None:
+        return _nw_identity(a, b)
     if _al is None:
         return None
     try:
@@ -22025,13 +22102,21 @@ for e in entries:
     _seq = e['sequence']
     _row = {'accession': e['accession'], 'organism': e['organism'],
             'length': len(_seq)}
-    if set(_seq) <= _STD:
+    if set(_seq) <= _STD and ProteinAnalysis is not None:
         _pa = ProteinAnalysis(_seq)
         _row.update({'molecular_weight_da': round(_pa.molecular_weight(), 1),
                      'isoelectric_point': round(_pa.isoelectric_point(), 2),
                      'gravy': round(_pa.gravy(), 3),
                      'aromaticity': round(_pa.aromaticity(), 3),
                      'instability_index': round(_pa.instability_index(), 1)})
+    elif set(_seq) <= _STD:
+        _row.update({
+            'molecular_weight_da': round(
+                sum(_MASS[c] for c in _seq) - (len(_seq) - 1) * 18.0153, 1),
+            'isoelectric_point': round(_isoelectric_point(_seq), 2),
+            'gravy': round(sum(_KD4[c] for c in _seq) / len(_seq), 3),
+            'aromaticity': round(sum(_seq.count(c) for c in 'FWY') / len(_seq), 3),
+            'instability_index': None})
     else:
         _row.update({'molecular_weight_da': None, 'isoelectric_point': None,
                      'gravy': None, 'aromaticity': None, 'instability_index': None})
@@ -22107,13 +22192,13 @@ _report = (
     '- GRAVY (mean Kyte-Doolittle hydropathy): ' + _gv + '\n\n'
     '## What was computed\n'
     '- Per-protein biochemistry (length, MW, pI, GRAVY, aromaticity,\n'
-    '  instability) via Biopython ProtParam -> family_biochemistry.csv\n'
-    '- Pairwise % identity to the reference via a real global alignment (BLOSUM62)\n'
+    '  instability) -> family_biochemistry.csv\n'
+    '- Pairwise % identity to the reference via a real global alignment\n'
     '- A Kyte-Doolittle hydropathy profile of the reference (see the figure)\n\n'
     '## Provenance\n'
-    'UniProt REST API, RCSB PDB API, Biopython (ProtParam / PairwiseAligner),\n'
-    'and the Kyte-Doolittle hydropathy scale. Re-running these cells reproduces\n'
-    'every value.\n'
+    'UniProt REST API, RCSB PDB API, the Kyte-Doolittle hydropathy scale, and\n'
+    'for the biochemistry and identity: ' + str(biochem_source) + '.\n'
+    'Re-running these cells reproduces every value.\n'
 )
 open('nif3_report.md', 'w').write(_report)
 print('wrote nif3_report.md')
@@ -22180,7 +22265,7 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         name=_DEMO_SESSION_NAME,
         task_summary="Pull NIF3/DUF34 family records + sequences from the UniProt "
         "REST API, compute real per-protein biochemistry and pairwise "
-        "identity (Biopython) with a Kyte-Doolittle hydropathy "
+        "identity with a Kyte-Doolittle hydropathy "
         "profile, fetch a representative structure from the RCSB PDB "
         "API, and write a reproducible report — every value real.",
     )
@@ -22229,7 +22314,7 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
             {
                 "filename": "family_biochemistry.csv",
                 "line": "- **family_biochemistry.csv** — per-protein length "
-                "/ MW / pI / GRAVY / % identity (Biopython)\n",
+                "/ MW / pI / GRAVY / % identity\n",
                 "label": "biochemistry table",
             },
         ),
@@ -22284,7 +22369,7 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
     # Describe only the materials that were actually produced. Every
     # deliverable is conditional in practice — the structure needs a live
     # RCSB download, the figure/table/report need optional science libraries
-    # the lightweight install does not ship (matplotlib, Biopython, pandas) —
+    # the lightweight install does not ship (matplotlib, pandas) —
     # so every line branches on the artifact store rather than over-claiming.
     _produced = {
         a.get("filename") for a in store.list_artifacts({"root_frame_id": fid})
@@ -22310,12 +22395,33 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
             )
     if cell_failures:
         # An honest header beats the reassuring one: some cells crashed, so
-        # "every value is real" must not be claimed on their behalf.
+        # "every value is real" must not be claimed on their behalf. A missing
+        # module is the common cause, so name it and say how to install it
+        # rather than leaving the reader to guess.
+        missing_modules = sorted(
+            {
+                match.group(1).split(".")[0]
+                for failure in cell_failures
+                for match in [re.search(r"No module named '([^']+)'", failure)]
+                if match
+            }
+        )
+        install_hint = ""
+        if missing_modules:
+            install_hint = (
+                "\nMissing Python module(s): "
+                + ", ".join(f"`{name}`" for name in missing_modules)
+                + ". The example uses the science extra (numpy, pandas, "
+                "matplotlib). From a source checkout run `uv sync --extra "
+                "science` (or `./setup.sh`); for a pip install run `pip install "
+                '"openai4s[science]"`. Restart OpenAI4S afterwards so new '
+                "kernels pick them up.\n"
+            )
         _header = (
             f"{len(cell_failures)} of {len(demo_plan)} example cells did not "
-            "complete on this install (commonly a missing optional science "
-            "dependency such as Biopython or pandas):\n"
+            "complete on this install:\n"
             + "".join(f"- {failure}\n" for failure in cell_failures)
+            + install_hint
             + "\nEvery value that **was** produced is computed from real data "
             "(no simulated or placeholder values), and the materials below "
             "list only what was actually produced."

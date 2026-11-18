@@ -4,6 +4,7 @@ import io
 import json
 import re
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
@@ -437,6 +438,11 @@ def test_the_example_seed_message_lists_only_materials_that_really_exist(
     assert "2 of 6 example cells did not complete" in content
     assert "cell 4/6: ModuleNotFoundError: No module named 'Bio'" in content
     assert "cell 6/6: FileNotFoundError" in content
+    # ENV-5: the missing module is named and the reader gets a command to run,
+    # not "commonly a missing optional science dependency" to decode.
+    assert "Missing Python module(s): `Bio`." in content
+    assert "`uv sync --extra science`" in content
+    assert 'pip install "openai4s[science]"' in content
 
     # Materials list exactly what the artifact store holds: produced files are
     # clickable claims, missing ones are honest placeholders.
@@ -473,6 +479,7 @@ def test_the_example_seed_message_keeps_the_full_claim_when_everything_ran(
 
     assert content.startswith("Done — every value in this session")
     assert "did not complete" not in content
+    assert "Missing Python module" not in content
     for name in (
         "**hydropathy figure (PNG)**",
         "**family_biochemistry.csv**",
@@ -480,6 +487,46 @@ def test_the_example_seed_message_keeps_the_full_claim_when_everything_ran(
         "**nif3_report.md**",
     ):
         assert name in content
+
+
+def test_the_example_biochemistry_cell_runs_without_biopython(tmp_path, monkeypatch):
+    """ENV-5: the default install (science extra, no Biopython) ran the example
+    with Cell 4 dying on ``ModuleNotFoundError: No module named 'Bio'`` and
+    Cell 6 on the CSV that Cell 4 never wrote. Cell 4 now falls back to the
+    same standard formulas in plain Python. The expected values are what
+    Biopython ProtParam returns for the bundled reference sequences, so the
+    fallback is checked against the library it stands in for, not itself."""
+    pytest.importorskip("pandas")
+    monkeypatch.setitem(sys.modules, "Bio", None)  # `from Bio...` -> ImportError
+    monkeypatch.chdir(tmp_path)
+    ns: dict = {"__name__": "__kernel__"}
+    # Cell 1 without a `host` falls back to the bundled real sequences.
+    exec(compile(gateway_mod._DEMO_UNIPROT, "<cell1>", "exec"), ns)
+    exec(compile(gateway_mod._DEMO_CSV, "<cell4>", "exec"), ns)
+
+    rows = {r["accession"]: r for r in ns["df"].to_dict(orient="records")}
+    assert set(rows) == {"Q9GZT8", "P0AFP6"}
+    for accession, mw, pi, gravy, aromaticity in (
+        ("Q9GZT8", 41967.6, 6.19, -0.162, 0.056),
+        ("P0AFP6", 26892.1, 5.07, -0.125, 0.069),
+    ):
+        row = rows[accession]
+        assert row["molecular_weight_da"] == mw
+        assert row["isoelectric_point"] == pi
+        assert row["gravy"] == gravy
+        assert row["aromaticity"] == aromaticity
+        assert row["instability_index"] is None  # needs Biopython's DIWV table
+    assert rows["Q9GZT8"]["pct_identity_to_ref"] == 100.0
+    assert 0 < rows["P0AFP6"]["pct_identity_to_ref"] < 100
+    assert (tmp_path / "family_biochemistry.csv").is_file()
+    assert "built-in formulas" in ns["biochem_source"]
+
+    # Cell 6 reads the CSV and cites the method that was actually used.
+    ns["struct_source"] = None
+    exec(compile(gateway_mod._DEMO_MD, "<cell6>", "exec"), ns)
+    report = (tmp_path / "nif3_report.md").read_text()
+    assert "built-in formulas (Biopython is not installed)" in report
+    assert "Biopython (ProtParam" not in report
 
 
 def test_the_example_seed_counts_interrupted_cells_as_failures(tmp_path, monkeypatch):
