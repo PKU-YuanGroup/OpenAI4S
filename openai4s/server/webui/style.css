@@ -1033,6 +1033,12 @@ body.has-key-banner #sidebar,body.has-key-banner #main,body.has-key-banner #righ
 .step .s-fig-cap{padding:6px 9px;font-size:11px;color:var(--text-300);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .step .s-q{color:var(--text-300);font-style:italic}
 .step .s-note{color:var(--text-400);font-size:12.5px}
+/* a loaded Skill's network limit: its notice, the Skill's load card, a refusal */
+.step.s-net-limited .s-ic{color:var(--warn,#b8860b)}
+.step .s-net{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:9px;background:var(--bg-200,rgba(18,18,18,.04));color:var(--text-200);font-size:12.5px;line-height:1.45}
+.step .s-net-head{color:var(--text-400);font-size:12px}
+.step .s-net-doms{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+.step .s-net-dom{font-family:var(--mono);font-size:11.5px;padding:1px 6px;border-radius:6px;background:var(--bg-000);border:.5px solid var(--border);color:var(--text-300)}
 /* search results */
 .step .s-res{display:flex;flex-direction:column;gap:1px;padding:5px 0;border-top:1px solid var(--border,rgba(18,18,18,.05))}
 .step .s-res:first-child{border-top:none}

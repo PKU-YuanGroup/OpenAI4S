@@ -332,6 +332,70 @@ def active_host_only_domains() -> tuple[str, ...] | None:
     return host_only_declared_domains(_CURRENT_FRAME.get())
 
 
+def _declared_host_only(
+    bindings: Sequence[SkillNetworkBinding],
+) -> list[SkillNetworkBinding]:
+    return [
+        item
+        for item in bindings
+        if item.capability.mode == "host_only"
+        and item.capability.declaration == "declared"
+    ]
+
+
+def narrowing_summary(frame_id: str | None = None) -> dict[str, Any] | None:
+    """Which loaded Skills narrow this frame's network, and to what.
+
+    ``None`` when no declared ``host_only`` Skill is bound. The domain list is
+    the union every Host request is held to, the same one ``check_url`` and
+    shell admission read; it is a description for people and the model and
+    grants nothing.
+    """
+
+    key = str(frame_id or _CURRENT_FRAME.get() or "").strip()
+    host_only = _declared_host_only(bindings_for(key))
+    if not host_only:
+        return None
+    return {
+        "skills": list(dict.fromkeys(item.skill_id for item in host_only)),
+        "domains": list(host_only_declared_domains_from(host_only)),
+    }
+
+
+def narrowing_notice(
+    frame_id: str | None, candidate: SkillNetworkBinding
+) -> dict[str, Any] | None:
+    """The session notice a load owes the user, or None when nothing changes.
+
+    Only a declared ``host_only`` manifest narrows the network, and only the
+    first load of a given manifest in a frame changes what the session can
+    reach; a repeat load says nothing new. Call before binding ``candidate``.
+    """
+
+    if candidate.capability.mode != "host_only":
+        return None
+    if candidate.capability.declaration != "declared":
+        return None
+    for item in bindings_for(frame_id):
+        if (
+            item.skill_id == candidate.skill_id
+            and item.manifest_digest == candidate.manifest_digest
+        ):
+            return None
+    bound = _declared_host_only(bindings_for(frame_id))
+    union = host_only_declared_domains_from([*bound, candidate])
+    skills = list(
+        dict.fromkeys([*(item.skill_id for item in bound), candidate.skill_id])
+    )
+    return {
+        "notice": "skill_network",
+        "skill": candidate.skill_id,
+        "skill_domains": list(candidate.capability.domains),
+        "skills": skills,
+        "domains": list(union),
+    }
+
+
 def host_only_boundary_holds(status: Mapping[str, Any] | None) -> bool:
     """True only when the OS sandbox is the measured Host-only boundary."""
 

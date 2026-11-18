@@ -261,3 +261,76 @@ describe("artifact step card", () => {
     expect(hintBox.textContent).toContain(t("toast.failed", "version lookup failed"));
   });
 });
+
+describe("a loaded Skill's network limit", () => {
+  afterEach(async () => {
+    await setLang("en");
+  });
+
+  const DOMAINS = ["api.crossref.org", "api.openalex.org", "eutils.ncbi.nlm.nih.gov"];
+  const NOTICE = {
+    step_id: "n-1",
+    kind: "network",
+    title: "literature-review limits this session's network",
+    status: "done",
+    summary: "limited to 3 domains",
+    input: { skill: "literature-review" },
+    output: {
+      notice: "skill_network",
+      skill: "literature-review",
+      skill_domains: DOMAINS,
+      skills: ["literature-review"],
+      domains: DOMAINS,
+    },
+  };
+
+  it("the notice card names the Skill and the count in the UI language, the domains on expand", async () => {
+    await setLang("zh");
+    const card = buildStepCard(NOTICE).card as unknown as El;
+    expect(card.querySelector(".s-lbl")!.textContent).toBe(
+      "已加载 literature-review：本会话联网限定为 3 个域名",
+    );
+    expect(card.querySelector(".s-meta")!.textContent).toBe("3 个域名");
+    expect(card.classes.has("s-net-limited")).toBe(true);
+    expect(card.querySelectorAll(".s-net-dom").map((chip) => chip.textContent)).toEqual(DOMAINS);
+  });
+
+  it("the English notice pluralizes the count", () => {
+    const card = buildStepCard({ ...NOTICE, output: { ...NOTICE.output, domains: ["doi.org"] } })
+      .card as unknown as El;
+    expect(card.querySelector(".s-lbl")!.textContent).toBe(
+      "Loaded literature-review: this session's network is limited to 1 domain",
+    );
+  });
+
+  it("the Skill's load card says it narrowed the session, not just loaded", async () => {
+    await setLang("zh");
+    const card = buildStepCard({
+      step_id: "l-1",
+      kind: "skill",
+      title: "Loading literature-review skill guidance",
+      status: "done",
+      summary: "loaded · network limited to 3 domains",
+      input: { name: "literature-review" },
+      output: {
+        name: "literature-review",
+        content: "# Literature review",
+        session_network: { skills: ["literature-review"], domains: DOMAINS },
+      },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-meta")!.textContent).toBe("已加载 · 本会话联网限定为 3 个域名");
+    expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
+  });
+
+  it("an ordinary load card keeps the server's summary", () => {
+    const card = buildStepCard({
+      step_id: "l-2",
+      kind: "skill",
+      status: "done",
+      summary: "loaded",
+      output: { name: "figure-style", content: "# Figure style" },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-meta")!.textContent).toBe("loaded");
+    expect(card.classes.has("s-net-limited")).toBe(false);
+  });
+});

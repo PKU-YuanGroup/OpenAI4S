@@ -1105,14 +1105,19 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
                 {"content": text[:24000], "chars": len(text)},
                 _plural(len(text), "char") + " read",
             )
-        return (
-            {
-                "name": r.get("name"),
-                "description": r.get("description"),
-                "content": (r.get("content") or "")[:24000],
-            },
-            "loaded",
-        )
+        card = {
+            "name": r.get("name"),
+            "description": r.get("description"),
+            "content": (r.get("content") or "")[:24000],
+        }
+        # A host_only Skill narrows every later Host request in the session;
+        # the card has to say so, not just "loaded".
+        session_network = r.get("session_network")
+        if isinstance(session_network, dict) and session_network.get("domains"):
+            card["session_network"] = session_network
+            count = len(session_network["domains"])
+            return (card, f"loaded · network limited to {_plural(count, 'domain')}")
+        return (card, "loaded")
     if kind == "env":
         used = r.get("env")
         if isinstance(used, dict) and used.get("name"):  # env_use → switch
@@ -3419,6 +3424,8 @@ class HostDispatcher:
             bind_skill_load,
             load_event_metadata,
             load_needs_posture,
+            narrowing_notice,
+            narrowing_summary,
             skill_binding,
         )
 
@@ -3479,14 +3486,57 @@ class HostDispatcher:
             "skill_loaded",
             metadata=metadata,
         )
+        notice = narrowing_notice(self.frame_id, candidate)
         bind_skill_load(frame_id=self.frame_id, **binding)
+        if notice is not None:
+            self._announce_skill_network(notice)
         loaded_dict = loaded if isinstance(loaded, dict) else None
         if loaded_dict is not None:
             loaded_dict["skill_id"] = skill.name
             loaded_dict["action_group_id"] = metadata["action_group_id"]
             loaded_dict["manifest_digest"] = metadata["manifest_digest"]
             loaded_dict["document_digest"] = metadata["document_digest"]
+            session_network = narrowing_summary(self.frame_id)
+            if session_network is not None and (
+                capability.mode == "host_only" and capability.declaration == "declared"
+            ):
+                loaded_dict["session_network"] = session_network
         return None
+
+    def _announce_skill_network(self, notice: dict[str, Any]) -> None:
+        """Put "this Skill now narrows the session's network" on the timeline.
+
+        A host_only manifest holds every later Host request in the frame to
+        its domains, and nothing told the user: the load card said "loaded"
+        and the first sign was a refused request. Its own card, emitted by
+        every path that binds (native load, a Cell's load, a Skill file read).
+        """
+
+        if self.on_step is None:
+            return
+        step_id = "s-" + uuid.uuid4().hex[:12]
+        count = len(notice.get("domains") or ())
+        try:
+            self.on_step(
+                {
+                    "phase": "begin",
+                    "step_id": step_id,
+                    "kind": "network",
+                    "title": f"{notice.get('skill')} limits this session's network",
+                    "input": {"skill": notice.get("skill")},
+                }
+            )
+            self.on_step(
+                {
+                    "phase": "end",
+                    "step_id": step_id,
+                    "status": "done",
+                    "output": dict(notice),
+                    "summary": f"limited to {_plural(count, 'domain')}",
+                }
+            )
+        except Exception:  # noqa: BLE001 - a notice must never break a load
+            pass
 
     def _m_remember(self, spec: dict) -> dict:
         """Persist a durable memory the daemon injects into future sessions

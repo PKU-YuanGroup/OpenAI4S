@@ -11,8 +11,26 @@ capabilities:
       - api.openalex.org
       - doi.org
       - pubmed.ncbi.nlm.nih.gov
+      # PubMed E-utilities (esearch/efetch/esummary), the API behind "a
+      # PubMed query" in the Grounding section below.
+      - eutils.ncbi.nlm.nih.gov
       - europepmc.org
+      - clinicaltrials.gov
       - api.typesafe.ai
+      # web_search: the hosts of every engine it can be configured to use,
+      # so loading this Skill does not switch web search off. Subdomains
+      # match by suffix (www.bing.com, html./lite.duckduckgo.com,
+      # www.mojeek.com). export.arxiv.org answers arXiv-id queries.
+      - ollama.com
+      - open.feedcoopapi.com
+      - api.tavily.com
+      - api.you.com
+      - ydc-index.io
+      - mcp.parallel.ai
+      - duckduckgo.com
+      - bing.com
+      - mojeek.com
+      - export.arxiv.org
 metadata:
   # Non-biomodel: sends user's query (and contact email when configured) to
   # Crossref and OpenAlex for literature lookup.
