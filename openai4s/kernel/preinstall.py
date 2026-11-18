@@ -210,14 +210,87 @@ def _pip_install(
     if constraints:
         cmd += ["--constraint", constraints]
     cmd += pip_names
+    env, workdir = _install_environment(None if own else target)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired:
         return False, f"package install timed out after {timeout}s"
     except Exception as e:  # noqa: BLE001
         return False, str(e)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
     log = (proc.stdout or "") + (proc.stderr or "")
     return proc.returncode == 0, log[-4000:]
+
+
+#: What pip and uv need from the daemon's environment beyond the kernel child
+#: env: their own configuration (index URLs and mirrors, trusted hosts, cache)
+#: and the proxies the network may require. Provider keys and the daemon's
+#: other secrets are not among them.
+_INSTALL_PASSTHROUGH_PREFIXES = ("PIP_", "UV_")
+_INSTALL_PASSTHROUGH = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "all_proxy",
+    }
+)
+
+
+def _install_environment(interpreter: str | None) -> tuple[dict[str, str], str]:
+    """The environment and working directory a package install runs with.
+
+    An install runs a foreign interpreter (the session kernel's environment)
+    and the build backends of what it fetches; its ``.pth`` files and
+    sitecustomize run first. With the daemon's environment they could read
+    the provider keys kernel workers are scrubbed of, so the install gets the
+    kernel's scrubbed child env plus pip/uv configuration and proxies. The OS
+    sandbox `run_confined_probe` adds is not applied: pip needs the network and
+    write access to the environment's site-packages. The working directory is
+    a fresh temp dir, never the daemon's, which ``python -m pip`` would put
+    first on ``sys.path``.
+    """
+    workdir = tempfile.mkdtemp(prefix="openai4s-install-")
+    env_root: str | None = None
+    if interpreter:
+        try:
+            parent = Path(interpreter).resolve().parent
+            if parent.name in ("bin", "Scripts"):
+                env_root = str(parent.parent)
+        except OSError:
+            env_root = None
+    try:
+        from openai4s.kernel.environment import build_kernel_environment
+
+        env = build_kernel_environment(mode="probe", cwd=workdir, env_root=env_root)
+    except Exception:  # noqa: BLE001 - a scrub failure must not pass secrets on
+        env = {
+            "PATH": os.environ.get("PATH", os.defpath),
+            "HOME": os.environ.get("HOME", workdir),
+            "TMPDIR": workdir,
+        }
+    # The kernel env synthesizes PYTHONPATH for the worker runtime; pip and
+    # the build backends it runs need nothing from the product's tree.
+    env.pop("PYTHONPATH", None)
+    for name, value in os.environ.items():
+        if name in _INSTALL_PASSTHROUGH or name.startswith(
+            _INSTALL_PASSTHROUGH_PREFIXES
+        ):
+            env[name] = value
+    return env, workdir
 
 
 _CONFLICT_MARKERS = (

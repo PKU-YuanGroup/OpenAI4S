@@ -229,7 +229,14 @@ package that interpreter already has, so an install can add packages but never
 move an existing one: a resolver conflict is reported as a refused version
 change. A requested name that pip would read as an option (one starting with
 `-`, such as `--index-url=…` or `-r file`) or that carries a control character
-is refused before anything runs.
+is refused before anything runs. The install runs that environment's
+interpreter (its `.pth` files and sitecustomize first) and the build backends
+of what it fetches, so it gets the kernel's scrubbed child environment plus
+pip/uv settings (`PIP_*`, `UV_*`) and proxy variables — not the daemon's
+provider keys — and a fresh working directory. It is not run inside the OS
+kernel sandbox, because pip needs the network and write access to the
+environment's site-packages; it can still read what the daemon's user can
+read, which is why every install asks first.
 
 A durable card is not a replay token. While the daemon is still running, a
 decision wakes the exact blocked call. After a daemon restart that thread is

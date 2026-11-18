@@ -18,6 +18,8 @@ the install itself fails (network, resolver), the result stays a pip failure.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -298,3 +300,36 @@ def test_ordinary_requirement_specifiers_still_reach_pip(monkeypatch):
     result = preinstall.install(specs)
     assert result["ok"] is True
     assert spy.commands and spy.commands[0][-len(specs) :] == specs
+
+
+def test_an_install_gets_the_kernels_scrubbed_env_not_the_daemons(monkeypatch):
+    """An install runs a foreign interpreter (its .pth files and sitecustomize
+    first) and the build backends of what it fetches. They get the kernel's
+    scrubbed child env plus pip/uv settings and proxies, never the daemon's
+    provider keys, and a fresh working directory instead of the daemon's."""
+    seen: dict = {}
+
+    def run(cmd, **kwargs):
+        seen.update(kwargs)
+        seen["cwd_existed"] = os.path.isdir(kwargs["cwd"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(preinstall, "_has_pip", lambda: True)
+    monkeypatch.setattr(preinstall.subprocess, "run", run)
+    monkeypatch.setenv("ARK_API_KEY", "not-a-real-provider-key")
+    monkeypatch.setenv("OPENAI4S_LLM_API_KEY", "not-a-real-provider-key-2")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+
+    ok, _log = preinstall._pip_install(["tabulate"])
+
+    assert ok is True
+    env = seen["env"]
+    assert "ARK_API_KEY" not in env and "OPENAI4S_LLM_API_KEY" not in env
+    assert not any("not-a-real-provider-key" in value for value in env.values())
+    assert env["PIP_INDEX_URL"] == "https://mirror.example/simple"
+    assert env["HTTPS_PROXY"] == "http://proxy.example:8080"
+    assert "PYTHONPATH" not in env
+    assert seen["cwd"] != os.getcwd() and seen["cwd_existed"]
+    assert not os.path.exists(seen["cwd"]), "the install workdir was left behind"
+    assert seen["stdin"] is subprocess.DEVNULL
