@@ -20,6 +20,7 @@ import {
   stream as liveStream,
 } from "../../stores/stream";
 import { loadArtifacts } from "../artifacts/load";
+import { syncPendingApproval } from "../messages/approval";
 import { settleRunningCards } from "../messages/cardState";
 import { $ } from "../messages/dom";
 import { canContinueFailure, failureCodeHint, failureMeta } from "../messages/failure";
@@ -68,6 +69,34 @@ export function failureHint(detail: unknown): string {
 /** Terminal statuses of a turn that ran to its end (not failed, stopped or blocked). */
 const PLAN_TURN_FINISHED = ["completed", "success", "done", "ready"];
 
+/**
+ * What the Stop that ends this turn wants the status line to keep saying (the
+ * background cells it stopped too, the queued message that runs next). The
+ * accepted cancel usually answers before the `cancelled` event, whose
+ * teardown used to clear that line at once.
+ */
+let stopNote = "";
+/** The part worth repeating when a queued message starts right after the Stop. */
+let stopCarry = "";
+let carried = { text: "", at: 0 };
+
+export function noteForStop(text: string, carry = ""): void {
+  if (running.value) {
+    stopNote = text;
+    stopCarry = carry;
+  } else if (carry) {
+    // The turn already ended (its `cancelled` event beat the answer).
+    carried = { text: carry, at: Date.now() };
+  }
+}
+
+/** What the last Stop said that the next queued turn's start should keep saying. */
+export function takeStopCarry(withinMs = 15000): string {
+  const text = Date.now() - carried.at <= withinMs ? carried.text : "";
+  carried = { text: "", at: 0 };
+  return text;
+}
+
 export function turnDone(status: string, detail?: unknown): void {
   noteHistoryMutation();
   running.value = false;
@@ -88,7 +117,14 @@ export function turnDone(status: string, detail?: unknown): void {
   }
   const mm = $("#messages");
   if (mm) mm.querySelectorAll(".md.cursor").forEach((n) => n.classList.remove("cursor"));
-  hint(status === "failed" ? failureHint(detail) : "", status === "failed");
+  const note = status === "cancelled" ? stopNote : "";
+  if (status === "cancelled" && stopCarry) carried = { text: stopCarry, at: Date.now() };
+  stopNote = "";
+  stopCarry = "";
+  hint(status === "failed" ? failureHint(detail) : note, status === "failed");
+  // A turn that ended took its approval wait with it (an open card left over
+  // is answered by `reconcilePermissionCards`); the title and row follow.
+  syncPendingApproval();
   closeTurnTicket();
   notebookOnTurnDone();
   if (currentId.value) {

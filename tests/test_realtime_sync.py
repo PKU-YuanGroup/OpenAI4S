@@ -547,6 +547,63 @@ def test_a_root_frame_update_is_announced_to_sidebars_not_viewing_it(tmp_path):
         runner.close()
 
 
+def test_a_waiting_approval_is_its_own_state_for_sidebars_and_status(
+    monkeypatch, tmp_path
+):
+    # While an approval was pending every surface said "running": the
+    # sidebar, GET /status (`processing`) and the tab. An approval request now
+    # reaches the sidebars as its own status, and the list and the status
+    # route say whether a turn is waiting on one.
+    hub = WSHub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    pending: set[str] = set()
+    monkeypatch.setattr(
+        gateway_mod.SessionRunner,
+        "approval_waiting",
+        staticmethod(lambda root: root in pending),
+    )
+    try:
+        project = runner.store.create_project(name="Assays")
+        pid = project["project_id"]
+        fid = runner.store.new_frame(kind="turn", project_id=pid, status="ready")
+        sidebar = _DirectoryConn(pid)
+        hub.add(sidebar)
+
+        pending.add(fid)
+        hub.broadcast(fid, {"type": "await_permission", "frame_id": fid})
+        pending.discard(fid)
+        hub.broadcast(fid, {"type": "permission_resolved", "frame_id": fid})
+        assert [
+            (e["type"], e["status"], e.get("awaiting_approval")) for e in sidebar.sent
+        ] == [
+            ("session_status", "approval", True),
+            ("session_status", "approval", False),
+        ]
+    finally:
+        runner.close()
+
+
+def test_the_broker_answers_whether_a_session_waits_on_an_approval(tmp_path):
+    from openai4s.permissions import broker
+
+    hub = WSHub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    try:
+        fid = runner.store.new_frame(kind="turn", status="ready")
+        assert runner.approval_waiting(fid) is False
+        live = broker()
+        with live._lock:
+            live._by_root.setdefault(fid, set()).add("perm-test")
+        try:
+            assert runner.approval_waiting(fid) is True
+        finally:
+            with live._lock:
+                live._by_root.pop(fid, None)
+        assert runner.approval_waiting(fid) is False
+    finally:
+        runner.close()
+
+
 # --------------------------------------------------------------------------
 # a Notebook cell is not an agent turn, live or reloaded
 # --------------------------------------------------------------------------

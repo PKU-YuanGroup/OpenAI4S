@@ -8,6 +8,7 @@
 
 import { LANG, t } from "../../i18n/runtime";
 import { permCards, running } from "../../stores/stream";
+import { syncPendingApproval } from "../messages/approval";
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
 import { adoptIntoLiveStream, ensure, placeInLiveStream, type LiveStream } from "../messages/stream";
@@ -55,6 +56,8 @@ type PermHandle = {
   /** What `markPermCard` was told, so a language switch can say it again. */
   allowed?: boolean;
   scope?: string | null;
+  /** Re-say an open card's composed labels (the rule picker) after a language switch. */
+  relabel?: () => void;
 };
 
 function rec(value: unknown): Record<string, unknown> {
@@ -191,8 +194,62 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
   return { lines, code };
 }
 
-export function defaultRememberScope(m: PermEvent): string {
-  return m && m.dangerous ? "once" : "conversation";
+/**
+ * Every card starts at "once": a standing rule is written only when the user
+ * widens the scope. It used to start at "this conversation" with the whole
+ * raw command as the rule -- a rule the next, different command never matched.
+ */
+export function defaultRememberScope(_m: PermEvent): string {
+  return "once";
+}
+
+/**
+ * The rule a widened scope starts from, never `*`. For a shell command that is
+ * its prefix (`python3 -c *`): the exact string never comes back. The server
+ * offers a prefix only for a single simple command, and a wildcard bash rule
+ * only ever covers single simple commands. Other tools start from their exact
+ * target (a path, a domain, a server/tool), which does recur.
+ */
+export function defaultRememberPattern(m: PermEvent): string {
+  const patterns = (m.suggested_patterns || []).filter((p) => !!p && p !== "*");
+  if (m.tool === "bash") {
+    const prefix = patterns.find((p) => p.endsWith(" *"));
+    if (prefix) return prefix;
+  }
+  return patterns[0] || String(m.target || "");
+}
+
+/** Feature-local copy for the "remember as" rule picker. */
+const RULE_COPY: Record<"en" | "zh", Record<string, string>> = {
+  en: {
+    exactCommand: "This exact command",
+    everything: "Everything (not recommended)",
+    prefixNote:
+      "Covers single commands that start like this; a chain with ; && | or > still asks.",
+    everythingNote: "Allows every call of this kind in the chosen scope without asking.",
+  },
+  zh: {
+    exactCommand: "仅这条命令",
+    everything: "全部（不建议）",
+    prefixNote: "放行以此开头的单条命令；含 ; && | > 等的组合命令仍会询问。",
+    everythingNote: "在所选范围内，这类操作全部不再询问。",
+  },
+};
+
+function ruleCopy(key: string): string {
+  return RULE_COPY[LANG === "zh" ? "zh" : "en"][key] || key;
+}
+
+function ruleChipLabel(m: PermEvent, pattern: string): string {
+  if (pattern === "*") return ruleCopy("everything");
+  if (m.tool === "bash" && pattern === String(m.target || "")) return ruleCopy("exactCommand");
+  return pattern;
+}
+
+function ruleNote(m: PermEvent, pattern: string): string {
+  if (pattern === "*") return ruleCopy("everythingNote");
+  if (m.tool === "bash" && pattern.endsWith(" *")) return ruleCopy("prefixNote");
+  return "";
 }
 
 /** Feature-local copy: `i18n/en.ts` / `zh.ts` are generated extracts of app.js. */
@@ -263,6 +320,7 @@ export function relabelPermissionCards(): void {
   for (const id of Object.keys(reg)) {
     const h = reg[id];
     if (h && h.resolved && h.card.isConnected) markPermCard(id, !!h.allowed, h.scope ?? null, h.resolution);
+    else if (h && !h.resolved && h.card.isConnected && h.relabel) h.relabel();
   }
 }
 
@@ -346,6 +404,9 @@ export function markPermCard(
     };
     h.card.appendChild(cont);
   }
+  // Not while a reopen paints history off-DOM: that registry is not the one
+  // on screen until the paint swaps it in (messages/open.ts syncs then).
+  if (h.card.isConnected) syncPendingApproval();
 }
 
 export function renderPermissionCard(m: PermEvent): void {
@@ -357,6 +418,7 @@ export function renderPermissionCard(m: PermEvent): void {
     // Rendered from stored history by a reopen; the replayed (or re-sent
     // pending) event places it in the running turn, as a step's does.
     if (adoptIntoLiveStream(prev.card)) down();
+    if (!prev.resolved) syncPendingApproval({ reveal: true });
     return;
   }
   let st: LiveStream | null = null;
@@ -378,6 +440,8 @@ export function renderPermissionCard(m: PermEvent): void {
   }
   reg[id] = handle;
   down();
+  // The turn is blocked on this card: say so everywhere and bring it into view.
+  syncPendingApproval({ reveal: true });
 }
 
 /** A durable approval request as `GET /frames/{fid}/approvals` returns it. */
@@ -504,19 +568,37 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   patWrap.appendChild(labelEl("div", "perm-lbl", "perm.lbl.rememberRule"));
   const patIn = el("input", "perm-in") as HTMLInputElement;
   patIn.type = "text";
-  patIn.value = (m.suggested_patterns && m.suggested_patterns[0]) || m.target || "*";
+  patIn.value = defaultRememberPattern(m);
   patWrap.appendChild(patIn);
+  const ruleChips: HTMLElement[] = [];
+  const note = el("div", "perm-note");
+  const paintRule = (): void => {
+    const value = patIn.value.trim();
+    ruleChips.forEach((chip) => {
+      chip.classList.toggle("active", chip.dataset.pattern === value);
+      chip.textContent = ruleChipLabel(m, String(chip.dataset.pattern || ""));
+    });
+    note.textContent = ruleNote(m, value);
+  };
   if (m.suggested_patterns && m.suggested_patterns.length > 1) {
     const chips = el("div", "perm-chips");
     m.suggested_patterns.forEach((p) => {
-      const c = el("button", "perm-chip", p);
+      // Named for what they cover; the exact pattern is the input's value.
+      const c = el("button", "perm-chip" + (p === "*" ? " danger" : ""), ruleChipLabel(m, p));
+      c.dataset.pattern = p;
+      c.title = p;
       c.onclick = () => {
         patIn.value = p;
+        paintRule();
       };
+      ruleChips.push(c);
       chips.appendChild(c);
     });
     patWrap.appendChild(chips);
   }
+  patIn.oninput = paintRule;
+  patWrap.appendChild(note);
+  paintRule();
   card.appendChild(patWrap);
 
   const fb = el("input", "perm-fb") as HTMLInputElement;
@@ -532,7 +614,8 @@ function buildPermissionCard(m: PermEvent): PermHandle {
     allow.disabled = deny.disabled = true;
     const body: Record<string, unknown> = { decision_id: m.decision_id, allow: ok, scope };
     if (choices.length) body.pattern = choice;
-    else if (scope !== "once") body.pattern = patIn.value.trim() || "*";
+    // An emptied rule falls back to the narrow default, not to allow-everything.
+    else if (scope !== "once") body.pattern = patIn.value.trim() || defaultRememberPattern(m) || "*";
     if (!ok && fb.value.trim()) body.message = fb.value.trim();
     let resolution: unknown;
     try {
@@ -575,7 +658,7 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   btns.appendChild(allow);
   btns.appendChild(deny);
   card.appendChild(btns);
-  return { card, allow, deny, resolved: false };
+  return { card, allow, deny, resolved: false, relabel: paintRule };
 }
 
 export function resolvePermissionCard(m: PermEvent): void {

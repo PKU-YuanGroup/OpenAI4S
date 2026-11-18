@@ -3998,6 +3998,39 @@ class SessionRunner:
         ]
         return max(timestamps) if timestamps else None
 
+    def background_cells(self, root_frame_id: str) -> list[dict]:
+        """This session's background cells, as the workbench lists them.
+
+        Stop ends a turn's background cells with it, but a cell left running
+        on purpose, or launched from the Notebook, had no place on screen and
+        no way to be stopped.
+        """
+        st = self._existing_state(root_frame_id)
+        dispatcher = st.dispatcher if st is not None else None
+        executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
+        summaries = getattr(executor, "summaries", None)
+        if not callable(summaries):
+            return []
+        try:
+            return list(summaries())
+        except Exception:  # noqa: BLE001 - a listing never fails the request
+            traceback.print_exc()
+            return []
+
+    def stop_background_cell(self, root_frame_id: str, exec_id: str) -> dict:
+        """Stop one of this session's background cells (SIGINT, then a kill)."""
+        st = self._existing_state(root_frame_id)
+        dispatcher = st.dispatcher if st is not None else None
+        executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
+        stop = getattr(executor, "stop", None)
+        if not callable(stop):
+            return {
+                "ok": False,
+                "exec_id": exec_id,
+                "reason": "no such background cell",
+            }
+        return dict(stop(str(exec_id)))
+
     def _interrupt_background(self, st: SessionState) -> None:
         dispatcher = st.dispatcher
         executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
@@ -4283,20 +4316,40 @@ class SessionRunner:
         `session_status` event. A sub-agent's frame update is not the
         session's state and is not forwarded.
         """
-        if event.get("type") != "frame_update":
+        kind = event.get("type")
+        # An approval request blocks the turn until someone answers it, so the
+        # sidebars say "waiting for approval" rather than "running". Every
+        # request in the tree is the root's (the broker keys them by root).
+        approval = kind in ("await_permission", "permission_resolved")
+        if not approval and kind != "frame_update":
             return
-        if event.get("frame_id") not in (None, root_frame_id):
+        if not approval and event.get("frame_id") not in (None, root_frame_id):
             return
         notify = getattr(self.hub, "notify_directory", None)
         if not callable(notify):
             return
         frame = self.store.get_frame(root_frame_id) or {}
         project_id = frame.get("project_id")
-        notify(
-            root_frame_id,
-            project_id,
-            _session_status_event(root_frame_id, project_id, event.get("status")),
+        payload = _session_status_event(
+            root_frame_id, project_id, "approval" if approval else event.get("status")
         )
+        if approval:
+            payload["awaiting_approval"] = self.approval_waiting(root_frame_id)
+        notify(root_frame_id, project_id, payload)
+
+    @staticmethod
+    def approval_waiting(root_frame_id: str) -> bool:
+        """Whether this session's turn is blocked on an approval request.
+
+        For display only: unlike `_permission_pending`, an unreadable broker
+        answers False rather than True.
+        """
+        try:
+            from openai4s.permissions import broker
+
+            return bool(broker().is_pending(root_frame_id))
+        except Exception:  # noqa: BLE001 - a status read never fails a request
+            return False
 
     def latest_unused_session(
         self,
@@ -17695,6 +17748,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             if _session_is_unused(store, fj):
                                 continue
                             fj["running"] = f["frame_id"] in running
+                            # A running turn blocked on an approval request:
+                            # the sidebar says so rather than "running".
+                            fj["awaiting_approval"] = bool(
+                                fj["running"] and runner.approval_waiting(f["frame_id"])
+                            )
                             fj["kernel_alive"] = runner.kernel_alive(f["frame_id"])
                             fj["_cursor"] = (
                                 int(f["created_at"] or 0),

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  applyNavigation,
   isAttentionDock,
   isAttentionSurface,
   localSessionPath,
@@ -140,5 +141,29 @@ describe("M-02 target → local navigation closed set", () => {
     expect(docks.filter((d) => d === "security")).toHaveLength(1);
     expect(docks.filter((d) => d === "compute")).toHaveLength(1);
     expect(docks.every((d) => (DOCKS as readonly string[]).includes(d))).toBe(true);
+  });
+});
+
+describe("following an attention card", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("opens an approval on its card in the conversation, not on the timeline pane", async () => {
+    // "Approve" from the home page used to open the action timeline beside
+    // the chat, squeezing it until the card's Allow button was off screen.
+    const opened: unknown[] = [];
+    const panes: unknown[] = [];
+    vi.stubGlobal("openConversation", (fid: string, pid: string | null) => {
+      opened.push([fid, pid]);
+    });
+    vi.stubGlobal("setActiveTab", (pane: unknown) => panes.push(pane));
+    await applyNavigation(navigationFromTarget({ surface: "session", dock: "security", frame_id: "f-a" }, "p")!);
+    expect(opened).toEqual([["f-a", "p"]]);
+    expect(panes).toEqual([]);
+
+    // Every other kind still opens its dock.
+    await applyNavigation(navigationFromTarget({ surface: "session", dock: "recovery", frame_id: "f-b" }, "p")!);
+    expect(panes).toEqual([ATTENTION_PANE]);
   });
 });

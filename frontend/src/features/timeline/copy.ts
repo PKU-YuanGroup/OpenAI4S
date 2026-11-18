@@ -44,3 +44,30 @@ const COPY: CopyTable = {
 };
 
 export const computeRecordsT = copyLookup(COPY);
+
+/** The queued follow-up strip above the composer (`queue.ts`). */
+const QUEUE_COPY: CopyTable = {
+  en: {
+    "queueRow.headNote": "they run in order when the current turn ends or is stopped",
+    "queueRow.edit": "Edit",
+    "queueRow.editTitle": "Take this message out of the queue and back into the composer to edit it",
+    "queueRow.editUnavailable":
+      "Only the start of this message is in this tab, so it cannot be edited here; drop it and type it again",
+    "queueRow.editBusy": "The composer already holds a draft: send or clear it first, then edit the queued message",
+    "queueRow.editing": "Taken out of the queue: edit it and send it again (it rejoins at the end of the queue)",
+    "queueRow.started": "Now running your queued message: “{0}”",
+    "queueRow.stopping": "Stopping the current turn… {0} queued message(s) will run next",
+  },
+  zh: {
+    "queueRow.headNote": "当前任务结束或被停止后依次运行",
+    "queueRow.edit": "编辑",
+    "queueRow.editTitle": "把这条消息撤出队列，放回输入框修改",
+    "queueRow.editUnavailable": "本标签页只有这条消息的开头，无法在这里编辑；可以撤回后重新输入",
+    "queueRow.editBusy": "输入框里还有未发送的内容：先发送或清空它，再编辑排队的消息",
+    "queueRow.editing": "已撤出队列：修改后重新发送即可（会重新排到队尾）",
+    "queueRow.started": "开始处理你排队的消息：“{0}”",
+    "queueRow.stopping": "正在停止当前任务… 排队的 {0} 条消息会接着运行",
+  },
+};
+
+export const queueT = copyLookup(QUEUE_COPY);

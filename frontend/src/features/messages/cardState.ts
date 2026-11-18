@@ -19,6 +19,7 @@
 import { LANG } from "../../i18n/runtime";
 import { paintIcon } from "../icons/paths";
 import type { WsMessage } from "../ws/types";
+import { declinedCell, declinedMeta, type Declined } from "./declined";
 import { messagesHost } from "./dom";
 
 /** Feature-local copy: en.ts / zh.ts are generated extracts. */
@@ -35,7 +36,7 @@ function copy(key: "cardTitle" | "stopped" | "failed"): string {
 const DEFAULT_CELL_TITLE = /^Running analysis · cell (\d+)$/;
 
 /** Every settled state a card can reach; "running" is the only unsettled one. */
-const SETTLED = new Set(["ok", "failed", "stopped", "ended"]);
+const SETTLED = new Set(["ok", "failed", "stopped", "ended", "declined"]);
 
 function glyphOf(card: HTMLElement): HTMLElement | null {
   return card.querySelector(".ic") as HTMLElement | null;
@@ -64,12 +65,55 @@ export function cardSettled(card: HTMLElement): boolean {
 }
 
 function settle(card: HTMLElement, state: string, icon: string): void {
+  paintElapsed(card);
   card.classList.remove("running");
   card.classList.add(state);
   card.dataset.state = state;
   const glyph = glyphOf(card);
   if (glyph) paintIcon(glyph, icon, 16);
   retitle(card);
+}
+
+/**
+ * A running cell's elapsed time on its card. A long cell with no output used
+ * to show one still glyph for minutes; the time keeps moving while it runs and
+ * stays as the cell's duration once it ends. Shown from two seconds on.
+ */
+function paintElapsed(card: HTMLElement, now: number = Date.now()): void {
+  const started = Number(card.dataset.startedAt || 0);
+  if (!started) return;
+  const head = card.querySelector(".a-head") as HTMLElement | null;
+  if (!head) return;
+  let label = head.querySelector(".a-time") as HTMLElement | null;
+  const ms = Math.max(0, now - started);
+  if (ms < 2000) return;
+  if (!label) {
+    label = document.createElement("span");
+    label.className = "a-time";
+    head.appendChild(label);
+  }
+  label.textContent = formatElapsed(ms);
+}
+
+function formatElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const ss = String(total % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+
+function tickElapsed(): void {
+  const running = liveCards().filter((card) => card.dataset.state === "running");
+  if (!running.length && elapsedTimer) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+    return;
+  }
+  const now = Date.now();
+  running.forEach((card) => paintElapsed(card, now));
 }
 
 /**
@@ -84,6 +128,8 @@ export function markCardRunning(card: HTMLElement, event?: WsMessage | null): vo
   if (event && event.cell_index != null) card.dataset.cellIndex = String(event.cell_index).slice(0, 32);
   const glyph = glyphOf(card);
   if (glyph) paintIcon(glyph, "loader", 16);
+  card.dataset.startedAt = String(Date.now());
+  if (!elapsedTimer && typeof setInterval === "function") elapsedTimer = setInterval(tickElapsed, 1000);
 }
 
 /** Stop glyph, neutral bar, "Stopped · N lines". Idempotent; an outcome wins. */
@@ -97,6 +143,17 @@ export function markCardFailed(card: HTMLElement): void {
   if (cardSettled(card)) return;
   settle(card, "failed", "x");
   prefixMeta(card, copy("failed"));
+}
+
+/**
+ * The cell ended because a Host call in it was refused (denied, or refused by
+ * a rule): a lock and a neutral bar, "You declined · not run", not the failed
+ * card's red ✗.
+ */
+export function markCardDeclined(card: HTMLElement, declined: Declined): void {
+  if (cardSettled(card)) return;
+  settle(card, "declined", "lock");
+  prefixMeta(card, declinedMeta(declined));
 }
 
 export function markCardSucceeded(card: HTMLElement): void {
@@ -132,7 +189,12 @@ export function settleLiveCellCard(event: WsMessage | null | undefined): void {
     null;
   if (!card) return;
   const status = String(event.status || (event.error ? "error" : "ok"));
-  if (status === "error") markCardFailed(card);
+  // A cell that raised because its Host call was refused, or cancelled by a
+  // Stop while it waited for approval, did not fail.
+  const declined = status === "error" ? declinedCell(event.error) : null;
+  if (declined && declined.kind === "stopped") markCardStopped(card);
+  else if (declined) markCardDeclined(card, declined);
+  else if (status === "error") markCardFailed(card);
   else if (status === "interrupted") markCardStopped(card);
   else if (status === "ok") markCardSucceeded(card);
 }

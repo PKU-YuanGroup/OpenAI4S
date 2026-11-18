@@ -214,6 +214,24 @@ describe("WS protocol handlers", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it("session_status marks a session waiting for approval, and clears it", () => {
+    setLoadSessionsImpl(vi.fn());
+    currentId.value = "viewed";
+    const other: Record<string, unknown> = { id: "elsewhere", running: true };
+    sessions.value = [{ id: "viewed", running: false }, other];
+
+    onEvent({ type: "session_status", frame_id: "elsewhere", project_id: "p", status: "approval", awaiting_approval: true });
+    expect(other.awaiting_approval).toBe(true);
+    expect(other.running).toBe(true);
+    onEvent({ type: "session_status", frame_id: "elsewhere", project_id: "p", status: "approval", awaiting_approval: false });
+    expect(other.awaiting_approval).toBe(false);
+    expect(other.running).toBe(true);
+    onEvent({ type: "session_status", frame_id: "elsewhere", project_id: "p", status: "approval", awaiting_approval: true });
+    onEvent({ type: "session_status", frame_id: "elsewhere", project_id: "p", status: "cancelled" });
+    expect(other.awaiting_approval).toBe(false);
+    expect(other.running).toBe(false);
+  });
+
   it("artifact_created upserts from nested, flat, and bare payloads", () => {
     const load = vi.fn();
     setLoadArtifactsImpl(load);

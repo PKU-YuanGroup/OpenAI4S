@@ -1769,7 +1769,9 @@ html:not([data-theme-instant]) .modal-box,html:not([data-theme-instant]) .nb-car
 .msg.assistant > .activity,
 .msg.assistant > .step,
 .msg.assistant > .plan-card,
-.msg.assistant > .perm-card{content-visibility:auto;contain-intrinsic-size:auto 72px}
+.msg.assistant > .perm-card.resolved{content-visibility:auto;contain-intrinsic-size:auto 72px}
+/* An open approval card is never a 72px placeholder: the follow-scroll and
+   messages/approval.ts measure it to keep its Allow/Deny buttons on screen. */
 
 /* ---- sticky composer elevation when scrolled ---- */
 .composer-wrap{position:relative;z-index:5;background:linear-gradient(180deg,transparent,var(--bg) 28%)}
@@ -1810,15 +1812,27 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 
 /* ---- queued follow-ups ----------------------------------------------------
    The composer stays usable while a turn runs, so what is waiting behind that
-   turn has to be visible. Sits between the composer card and the hint line, so
-   it reads as "what your next Enter joins" rather than as transcript. */
-.queue-strip{margin:6px auto 0;width:min(var(--col),calc(100% - 48px));border:.5px solid var(--border-btn);border-radius:var(--radius-card);background:var(--bg-000);padding:6px 8px}
+   turn has to be visible. Sits directly above the composer card, so it reads
+   as "what your next Enter joins" rather than as transcript, and showing it
+   never moves the card's own buttons. */
+.queue-strip{margin:0 auto 6px;width:min(var(--col),calc(100% - 48px));border:.5px solid var(--border-btn);border-radius:var(--radius-card);background:var(--bg-000);padding:6px 8px}
 .queue-head{font-size:11px;color:var(--text-400);margin:0 2px 4px}
 .queue-row{display:flex;align-items:baseline;gap:8px;padding:3px 2px;font-size:12px;min-width:0}
 .queue-pos{color:var(--text-400);flex:none;font-variant-numeric:tabular-nums}
 .queue-preview{color:var(--text-200);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .queue-meta{color:var(--text-400);font-size:11px;flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .queue-cancel{flex:none}
+.queue-row{align-items:center}
+/* background cells still running in this session, each with its own Stop (send/background.ts) */
+.bg-strip{width:min(var(--col),calc(100% - 48px));margin:0 auto 8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+.bg-head{margin:0 2px 4px;font-size:11px;color:var(--text-400);cursor:help}
+.bg-row{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 2px;font-size:12px}
+.bg-code{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);color:var(--text-200)}
+.bg-origin{flex:none;color:var(--text-400);font-size:11px}
+.bg-tail{flex:0 1 32%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11px;color:var(--text-400)}
+.bg-time{flex:none;color:var(--text-400);font-variant-numeric:tabular-nums}
+.bg-stop{flex:none;height:24px;padding:0 9px;font-size:12px}
+.queue-edit{flex:none;height:24px;padding:0 9px;font-size:12px}
 /* A message typed while a turn was running: shown in the transcript in the
    order it will run, but visibly not yet the live one. */
 .msg.user.queued .bubble{opacity:.72}
@@ -2006,6 +2020,11 @@ html[data-theme="dark"] .toggle:disabled{background:var(--bg-300)}
 .session.running .s-dot{display:inline-block;order:2;width:10px;height:10px;border:1.5px solid var(--text-000);border-right-color:transparent;border-radius:50%;background:transparent;animation:spin 1s linear infinite}
 .s-badge.run{background:transparent;color:var(--text-400);font-weight:500;animation:none}
 .s-badge.live{background:var(--success)}
+/* a turn blocked on an approval request: not a spinner, a call to act */
+.session.awaiting .s-dot{border:0;background:var(--warn);animation:none}
+.s-badge.run.approval{background:var(--warn-bg);color:var(--warn-text);font-weight:600}
+.jump-pill.approval{border-color:var(--warn);background:var(--warn-bg);color:var(--warn-text)}
+.jump-pill.approval:hover{background:var(--warn-bg);color:var(--warn-text)}
 .folder-head{height:36px;padding:0 12px;border-radius:var(--radius);font-size:14px;font-weight:500;color:var(--text-000)}
 .folder-count{background:var(--bg-200);border-radius:999px;padding:0 7px}
 .side-foot{padding:12px 0 0;margin-top:4px;gap:4px}
@@ -2197,6 +2216,12 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-fb{height:40px;margin-top:14px;padding:0 14px;font-size:14px}
 .perm-chip{border:1px solid var(--border);border-radius:6px;background:var(--bg)}
 .perm-chip:hover{background:var(--bg-100)}
+/* the rule picker names what each choice covers; `*` is marked, never preselected */
+.perm-chip.active{border-color:var(--ink);background:var(--ink);color:var(--bg)}
+.perm-chip.danger{color:var(--danger)}
+.perm-chip.danger.active{border-color:var(--danger);background:var(--danger);color:#fff}
+.perm-note{margin-top:6px;font-size:12.5px;line-height:1.45;color:var(--text-300)}
+.perm-note:empty{display:none}
 .perm-btns{justify-content:flex-end;gap:8px;margin-top:14px}
 .perm-deny{order:1;height:40px;padding:0 20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text-000);font-size:14px;font-weight:500}
 .perm-deny:hover{background:var(--bg);border-color:var(--danger);color:var(--danger)}
@@ -2215,6 +2240,8 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-card.allowed,.perm-card.denied{border-color:var(--border)}
 .perm-card.allowed .perm-status{color:var(--text-200)}
 .perm-card.allowed .perm-status::before{content:"✓ "}
+/* a denial is the user's own answer (or a Stop's), not an error: no red */
+.perm-card.denied .perm-status{color:var(--text-200)}
 .perm-status{margin:8px 0 0;font-size:13px;font-weight:500}
 .perm-card.resolved .perm-status{margin:0 0 0 auto}
 .perm-sec-h{font-size:14px;font-weight:500}
@@ -2243,6 +2270,18 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .nb-icon.on,html[data-theme="dark"] .nb-icon.on{border-color:var(--ink);background:var(--ink);color:var(--bg)}
 #cancel-btn.nb-icon{border-color:var(--ink);background:var(--ink);color:var(--bg)}
 #cancel-btn.nb-icon svg{width:12px;height:12px}
+/* An active plan / explore mode: a labelled chip beside the composer tools
+   for as long as it shapes the next message; a click turns it off. */
+.nb-mode{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 9px 0 10px;border:1px solid var(--ink);border-radius:999px;background:var(--ink);color:var(--bg);font-size:12.5px;font-weight:500;white-space:nowrap;cursor:pointer;flex:none}
+.nb-mode .ic{display:inline-flex}
+.nb-mode .nb-mode-x{opacity:.7}
+.nb-mode:hover .nb-mode-x{opacity:1}
+@media (max-width:480px){.nb-mode>span:not(.ic){display:none}}
+/* a menu row that explains itself (sessions/chrome.ts `desc`) */
+.ctx-item.has-desc{align-items:flex-start;padding-top:7px;padding-bottom:7px;height:auto}
+.ctx-item.has-desc .ic{margin-top:2px}
+.ctx-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ctx-desc{max-width:280px;font-size:12px;line-height:1.4;color:var(--text-400);white-space:normal}
 .nb-model{height:32px;padding:0 8px;gap:6px;border-radius:var(--radius);color:var(--text-200);font-size:14px;font-weight:500}
 .nb-model:hover{background:var(--bg-100);color:var(--text-000)}
 .nb-model select{font-size:14px;font-weight:500;max-width:220px}
@@ -2258,7 +2297,9 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .composer-refs{padding:8px 2px 0}
 .msg-ref-chip{padding:2px 9px;border:0;border-radius:999px;background:var(--bg-200);color:var(--text-200);font-size:12px}
 .msg-ref-chip.unresolved{border:1px solid var(--warn);background:transparent;color:var(--warn-text)}
-.queue-strip{margin-top:8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+.queue-strip{margin-bottom:8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+/* the frozen legacy shell still places the strip under the card */
+.notebook+.queue-strip{margin-top:8px}
 .annot-chip{border:1px solid var(--border);background:var(--bg-100)}
 
 /* ---- empty session: the headline, the starters and the composer sit
@@ -2686,13 +2727,22 @@ html[data-theme="dark"] #dash-project-search{background-image:url("data:image/sv
 html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(--text-000)}
 
 /* ---- the composer's send button: coral when there is text, cream when the
-   composer is empty, and the stop button takes its place while a turn runs ---- */
+   composer is empty. While a turn runs the stop button (a filled square) sits
+   beside it, never in its place: Send stays clickable and queues the draft ---- */
 .nb-right>.nb-model{order:1}
 .nb-right>#cancel-btn,.nb-right>.nb-send{order:2}
+/* the running turn's elapsed time, just before Stop (send/progress.ts) */
+.nb-right>.turn-clock{order:2;flex:none;padding:0 2px;font-size:12.5px;color:var(--text-400);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* the session's token use so far, in the conversation header */
+.session-usage{flex:none;height:28px;padding:0 10px;border:1px solid var(--border);border-radius:999px;background:transparent;color:var(--text-300);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
+.session-usage:hover{background:var(--bg-100);color:var(--text-000)}
+@media (max-width:480px){.session-usage{display:none}}
+/* a running cell's elapsed time on its card (messages/cardState.ts), before the chevron */
+.activity .a-head .chev-t{order:1}
+.activity .a-head .a-time{flex:none;color:var(--text-400);font-size:12px;font-variant-numeric:tabular-nums}
 .nb-send{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;padding:0;border:0;border-radius:999px;background:var(--clay);color:#fff;cursor:pointer}
 .nb-send:active{background:var(--clay-em)}
 .nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--line);color:var(--text-400);cursor:default}
 html[data-theme="dark"] .nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--bg-300)}
-.nb-right:has(#cancel-btn:not(.hidden)) .nb-send{display:none}
 @media (max-width:900px){.nb-send{width:40px;height:40px;min-width:40px;min-height:40px}}
 @media (max-width:900px){body.sidebar-collapsed #sidebar{box-shadow:none}}

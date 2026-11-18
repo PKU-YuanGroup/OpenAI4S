@@ -279,6 +279,9 @@ export function Shell() {
                 </button>
               </div>
               <div class="conv-head-actions">
+                {/* The session's token use so far (send/progress.ts); opens the
+                    usage breakdown. */}
+                <button id="session-usage" class="session-usage hidden" type="button" />
                 <button
                   id="session-menu-btn"
                   class="icon-ghost"
@@ -315,6 +318,13 @@ export function Shell() {
                   最新
                 </span>
               </button>
+              {/* Background cells still running in this session, each with its
+                  own Stop (send/background.ts). */}
+              <div id="bg-strip" class="bg-strip hidden" />
+              {/* `renderQueueStrip` lists queued follow-ups here, above the card
+                  they were typed in, so a queued row never lands where the
+                  Stop or Send button was a moment ago. */}
+              <div id="queue-strip" class="queue-strip hidden" />
               <div class="notebook">
                 <div class="nb-tray">
                   <div class="nb-head">
@@ -355,24 +365,19 @@ export function Shell() {
                         data-icon-size="18"
                         type="button"
                       />
-                      <button
-                        id="plan-toggle"
-                        class="nb-icon hidden"
-                        data-i18n-title="composer.planMode"
-                        title="计划模式"
-                        data-icon="grid"
-                        data-icon-size="20"
-                        type="button"
-                      />
-                      <button
-                        id="explore-toggle"
-                        class="nb-icon hidden"
-                        data-i18n-title="composer.exploreMode"
-                        title="自主探索"
-                        data-icon="compass"
-                        data-icon-size="20"
-                        type="button"
-                      />
+                      {/* Switched on from the session options menu; while a
+                          mode is on its chip stays here, saying so, and a
+                          click turns it off (send.ts bindComposer). */}
+                      <button id="plan-toggle" class="nb-mode hidden" type="button">
+                        <span class="ic" data-icon="grid" data-icon-size="14" />
+                        <span data-i18n="composer.planMode">计划模式</span>
+                        <span class="ic nb-mode-x" data-icon="x" data-icon-size="12" />
+                      </button>
+                      <button id="explore-toggle" class="nb-mode hidden" type="button">
+                        <span class="ic" data-icon="compass" data-icon-size="14" />
+                        <span data-i18n="composer.exploreMode">自主探索</span>
+                        <span class="ic nb-mode-x" data-icon="x" data-icon-size="12" />
+                      </button>
                       {/* `bindMic` looks this up at boot. With the tools on the
                           left rather than where legacy had it, so the composer
                           still ends in the send button. */}
@@ -387,12 +392,16 @@ export function Shell() {
                       />
                     </div>
                     <div class="nb-right">
+                      {/* How long the running turn has been going (send/progress.ts). */}
+                      <span id="turn-clock" class="turn-clock hidden" role="timer" aria-live="off" />
+                      {/* Shown beside Send while a turn runs, never in its
+                          place: Send stays clickable and queues the draft. */}
                       <button
                         id="cancel-btn"
                         class="nb-icon hidden"
                         data-i18n-title="nb.kernel.stopLabel"
                         title="停止"
-                        data-icon="stop"
+                        data-icon="stop-square"
                         data-icon-size="18"
                         type="button"
                       />
@@ -413,9 +422,6 @@ export function Shell() {
                   </div>
                 </div>
               </div>
-              {/* `renderQueueStrip` lists queued follow-ups here, each with the
-                  only control that cancels one. */}
-              <div id="queue-strip" class="queue-strip hidden" />
               <div id="composer-refs" class="composer-refs hidden" />
               <div
                 class="composer-hint"

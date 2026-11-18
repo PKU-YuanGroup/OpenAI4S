@@ -7,10 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: String }));
 
+import { t } from "../../i18n/runtime";
 import { _sessionScope, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
+import { approvalCopy, approvalPendingFor } from "../messages/approval";
 import { api } from "./api";
-import { loadSessions } from "./load";
+import { loadSessions, sessionRow } from "./load";
 
 class FakeNode {
   tagName = "DIV";
@@ -26,6 +28,7 @@ class FakeNode {
   setAttribute() {}
   getAttribute() { return null; }
   addEventListener() {}
+  querySelectorAll() { return []; }
 }
 
 let rebuilds = 0;
@@ -52,6 +55,31 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("a session row waiting for approval", () => {
+  function texts(node: FakeNode): string[] {
+    return [node.textContent, ...node.children.flatMap((child) => texts(child))].filter(Boolean);
+  }
+
+  it("says it waits for approval instead of running, from the server or from this tab", () => {
+    const waiting = sessionRow({ id: "f-w", name: "Assay", running: true, awaiting_approval: true }) as unknown as FakeNode;
+    expect(waiting.className).toContain("awaiting");
+    expect(texts(waiting)).toContain(approvalCopy("badge"));
+    expect(texts(waiting)).not.toContain(t("dash.badge.running"));
+
+    const plain = sessionRow({ id: "f-r", name: "Fit", running: true }) as unknown as FakeNode;
+    expect(texts(plain)).toContain(t("dash.badge.running"));
+
+    // The open session's card is known here before the list is re-read.
+    approvalPendingFor.value = "f-r";
+    try {
+      const local = sessionRow({ id: "f-r", name: "Fit", running: true }) as unknown as FakeNode;
+      expect(texts(local)).toContain(approvalCopy("badge"));
+    } finally {
+      approvalPendingFor.value = null;
+    }
+  });
 });
 
 describe("the sidebar during a sessions read", () => {

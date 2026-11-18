@@ -2379,6 +2379,45 @@ def test_stopping_a_turn_stops_only_the_background_cells_it_launched():
     executor.shutdown(timeout_per_job=0.5)
 
 
+def test_a_person_can_see_and_stop_one_background_cell():
+    """SEC-8 (UI): a cell left running had no place on screen and no way to
+    be stopped. `summaries` names each cell without its source, and `stop`
+    stops exactly one, answering before the cell has unwound."""
+    kernels: list[_InterruptibleKernel] = []
+
+    def factory():
+        kernels.append(_InterruptibleKernel())
+        return kernels[-1]
+
+    executor = BackgroundExecutor(factory, dispatcher=None)
+    keep = executor.launch("# warm-up\nwatch()", origin="user")
+    target = executor.launch(
+        "import time\nfor i in range(600):\n    print('tick', i)", turn_id="turn-1"
+    )
+    for kernel in kernels:
+        assert kernel.entered.wait(1)
+
+    rows = {row["exec_id"]: row for row in executor.summaries()}
+    assert rows[keep["exec_id"]]["code_preview"] == "watch()"
+    assert rows[keep["exec_id"]]["launched_by"] == "user"
+    assert rows[target["exec_id"]]["code_preview"] == "import time"
+    assert rows[target["exec_id"]]["launched_by"] == "agent"
+    assert rows[target["exec_id"]]["status"] == "running"
+    assert "range(600)" not in str(rows)  # a preview, not the source
+
+    assert executor.stop(target["exec_id"]) == {
+        "ok": True,
+        "exec_id": target["exec_id"],
+        "status": "stopping",
+    }
+    assert _wait_terminal(executor, target["exec_id"])["status"] == "interrupted"
+    assert executor.peek(keep["exec_id"])["status"] == "running"
+    again = executor.stop(target["exec_id"])
+    assert again["ok"] is False and again["status"] == "interrupted"
+    assert executor.stop("exec-nope")["ok"] is False
+    executor.shutdown(timeout_per_job=0.5)
+
+
 def test_a_turn_stop_kills_a_cell_that_ignores_sigint():
     kernel = _HungKernel()  # interrupt() does nothing; only kill releases it
     executor = BackgroundExecutor(lambda: kernel, dispatcher=None)

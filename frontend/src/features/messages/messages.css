@@ -78,6 +78,17 @@
   color: var(--text-400);
 }
 
+/*
+ * A refusal is not a failure (messages/declined.ts): a cell or step whose Host
+ * call the user denied, a rule refused, or a Stop cancelled while it waited
+ * for approval keeps a neutral glyph, never the failed card's red.
+ */
+.activity.declined .a-head .ic,
+.step.declined .s-ic,
+.step.declined .s-meta {
+  color: var(--text-400);
+}
+
 
 .activity.failed .a-head .ic {
   color: var(--danger);

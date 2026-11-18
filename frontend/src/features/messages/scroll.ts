@@ -7,7 +7,15 @@
  * 5509).
  */
 
+import { t } from "../../i18n/runtime";
 import { _messagesFollow } from "../../stores/ui";
+import {
+  approvalCardInView,
+  approvalCopy,
+  pendingApprovalCard,
+  revealPendingApproval,
+  setApprovalPillPainter,
+} from "./approval";
 import { $, messagesHost } from "./dom";
 import { cancelFrame, scheduleFrame } from "./raf";
 
@@ -29,15 +37,71 @@ export function paintJumpPill(): void {
   const m = messagesHost();
   const pill = $("#jump-pill");
   if (!m || !pill) return;
-  pill.classList.toggle("hidden", messagesAtBottom(m, 60));
+  // An open approval card the user cannot see turns the pill into a pointer
+  // to it: the turn is blocked on that card, not on the newest row.
+  const card = pendingApprovalCard();
+  const toApproval = !!card && !approvalCardInView(card, m);
+  paintPillMode(pill, toApproval);
+  pill.classList.toggle("hidden", !toApproval && messagesAtBottom(m, 60));
 }
+
+/**
+ * Swap the pill's label between "Latest" and "Approval needed". The static
+ * labels carry `data-i18n` for a language switch's repaint; while the pill
+ * points at a card those attributes are parked, so a repaint cannot put
+ * "Latest" back over it.
+ */
+let pillToApproval = false;
+
+function paintPillMode(pill: HTMLElement, toApproval: boolean): void {
+  if (!toApproval && !pillToApproval) return;
+  pillToApproval = toApproval;
+  const label = pill.querySelector(".jp-lbl") as HTMLElement | null;
+  pill.classList.toggle("approval", toApproval);
+  if (toApproval) {
+    if (label) {
+      if (label.dataset.i18n) {
+        label.dataset.i18nParked = label.dataset.i18n;
+        delete label.dataset.i18n;
+      }
+      label.textContent = approvalCopy("pill");
+    }
+    if (pill.dataset.i18nTitle) {
+      pill.dataset.i18nTitleParked = pill.dataset.i18nTitle;
+      delete pill.dataset.i18nTitle;
+    }
+    pill.title = approvalCopy("pillTitle");
+    return;
+  }
+  if (label) {
+    if (label.dataset.i18nParked) {
+      label.dataset.i18n = label.dataset.i18nParked;
+      delete label.dataset.i18nParked;
+    }
+    label.textContent = t("conv.jumpLastLabel");
+  }
+  if (pill.dataset.i18nTitleParked) {
+    pill.dataset.i18nTitle = pill.dataset.i18nTitleParked;
+    delete pill.dataset.i18nTitleParked;
+  }
+  pill.title = t("conv.jumpLast");
+}
+
+/** Where the last flush left the view, to tell a reader's move from growth. */
+let lastScrollTop = 0;
 
 function flushScroll(): void {
   scrollRaf = 0;
   const m = messagesHost();
   if (!m) return;
   if (pendingMeasure) {
-    _messagesFollow.value = messagesAtBottom(m);
+    // Following stops only when the reader moves up. Content that grew below
+    // the view (a gallery's images arriving, a step card opening) leaves the
+    // view short of the bottom without anyone scrolling; measuring "at the
+    // bottom?" then dropped follow, and the stream stopped following until
+    // the user pressed "Latest" again.
+    if (messagesAtBottom(m)) _messagesFollow.value = true;
+    else if (m.scrollTop < lastScrollTop - 1) _messagesFollow.value = false;
     pendingMeasure = false;
   }
   const follow = pendingDown;
@@ -51,6 +115,7 @@ function flushScroll(): void {
     m.scrollTop = m.scrollHeight;
     _messagesFollow.value = true;
   }
+  lastScrollTop = m.scrollTop;
   paintJumpPill();
 }
 
@@ -80,6 +145,10 @@ function onMessagesScroll(): void {
 }
 
 function onJumpPillClick(): void {
+  if (pillToApproval && revealPendingApproval()) {
+    paintJumpPill();
+    return;
+  }
   down(true);
 }
 
@@ -91,16 +160,56 @@ function onJumpPillClick(): void {
  */
 export function bindMessageScroll(host?: HTMLElement | null): void {
   unbindMessageScroll();
+  // An open approval card repaints the pill (approval.ts cannot import this
+  // module: sessions/chrome -> sessions/dom -> here already imports it).
+  setApprovalPillPainter(paintJumpPill);
   const m = host || messagesHost();
   const pill = $("#jump-pill");
   if (m) {
     m.addEventListener("scroll", onMessagesScroll, { passive: true });
     boundHost = m;
+    lastScrollTop = m.scrollTop || 0;
+    watchGrowth(m);
   }
   if (pill) {
     pill.addEventListener("click", onJumpPillClick);
     boundPill = pill;
   }
+}
+
+let growthObserver: ResizeObserver | null = null;
+let childObserver: MutationObserver | null = null;
+
+/** While following, a transcript row that grows keeps the view at the bottom. */
+function keepFollowing(): void {
+  if (_messagesFollow.value !== false) down();
+}
+
+/**
+ * Content that grows without a new chunk -- a figure loading, a gallery
+ * filling in, a step card opening -- left a following view short of the
+ * bottom. Every row of the transcript is watched for a size change, and rows
+ * added later are watched as they arrive.
+ */
+function watchGrowth(m: HTMLElement): void {
+  if (typeof ResizeObserver !== "function") return;
+  const resize = new ResizeObserver(keepFollowing);
+  growthObserver = resize;
+  const watch = (node: Node): void => {
+    if (node && node.nodeType === 1) resize.observe(node as Element);
+  };
+  const kids = (m as { children?: ArrayLike<Node> }).children;
+  if (kids) Array.from(kids).forEach(watch);
+  if (typeof MutationObserver !== "function") return;
+  childObserver = new MutationObserver((records) => {
+    for (const record of records) {
+      record.addedNodes.forEach(watch);
+      record.removedNodes.forEach((node) => {
+        if (node.nodeType === 1) resize.unobserve(node as Element);
+      });
+    }
+  });
+  childObserver.observe(m, { childList: true });
 }
 
 export function unbindMessageScroll(): void {
@@ -112,11 +221,16 @@ export function unbindMessageScroll(): void {
     boundPill.removeEventListener("click", onJumpPillClick);
     boundPill = null;
   }
+  growthObserver?.disconnect();
+  growthObserver = null;
+  childObserver?.disconnect();
+  childObserver = null;
   cancelFrame(scrollRaf);
   scrollRaf = 0;
   pendingDown = false;
   pendingForce = false;
   pendingMeasure = false;
+  pillToApproval = false;
 }
 
 /** Flush a pending rAF immediately (tests). */

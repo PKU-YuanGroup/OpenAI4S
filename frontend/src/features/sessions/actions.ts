@@ -20,8 +20,12 @@ import { openConversation, resumeWatch } from "./conversation";
 // and `callLane` answers a missing name with `undefined` rather than throwing --
 // so Stop sent no request at all and `turnDone` never ran. `turnDone` is a
 // hoisted function declaration, so the sessions<->send cycle resolves at call time.
-import { turnDone } from "../send/turn";
+import { noteForStop, turnDone } from "../send/turn";
+import { sendCopy } from "../send/copy";
+import { backgroundStoppedHint, refreshBackgroundCells } from "../send/background";
 import { scopedExecutionRequest } from "../timeline/execution-request";
+import { queueT } from "../timeline/copy";
+import { queuedFollowUpCount } from "../timeline/queue";
 import { $, clearConversationChrome, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
 import { assignFolder, invalidateFolders, loadProjects, loadSessions, renderSessions } from "./load";
@@ -214,13 +218,18 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
         }
       },
     },
+    // The two modes used to be bare names here, explained only by a hint that
+    // flashed when one was switched on. Each says what it does, and an active
+    // one stays visible as a chip beside the composer (send.ts bindComposer).
     {
       label: checked(!!planMode.value) + t("composer.planMode"),
+      desc: sendCopy("planDesc"),
       icon: "grid",
       onClick: () => $("#plan-toggle")?.click(),
     },
     {
       label: checked(!!exploreMode.value) + t("composer.exploreMode"),
+      desc: sendCopy("exploreDesc"),
       icon: "compass",
       onClick: () => $("#explore-toggle")?.click(),
     },
@@ -584,9 +593,31 @@ export async function cancelTurn(): Promise<void> {
   // was aimed at is the one markTurnStopping has to be told about.
   const fid = currentId.value;
   if (!fid) return;
+  // Stop ends the running turn only. Follow-ups queued behind it keep their
+  // places and the first starts at once, so the hint says that up front
+  // instead of leaving a Stop that "did nothing" (the next turn's Stop button,
+  // placeholder and spinner look exactly like the stopped one's).
+  const queued = queuedFollowUpCount();
   try {
     const result = await scopedExecutionRequest(fid, "cancel", "composer cancel");
-    if (cancelNamedTheRunningTurn(result)) markTurnStopping(fid);
+    if (cancelNamedTheRunningTurn(result)) {
+      markTurnStopping(fid);
+      if (fid !== currentId.value) return;
+      // The background cells this turn started were stopped with it; say so,
+      // and how many, rather than leaving them to be discovered.
+      const background = backgroundStoppedHint(result);
+      const parts = [
+        background,
+        queued && running.value ? queueT("queueRow.stopping", queued) : "",
+      ].filter(Boolean);
+      if (parts.length) {
+        hint(parts.join("；"), false, running.value);
+        // The turn's teardown keeps the line instead of clearing it, and a
+        // queued message starting next keeps the background part.
+        noteForStop(parts.join("；"), background);
+      }
+      if (background) void refreshBackgroundCells();
+    }
   } catch (error) {
     hint(t("nb.action.failed", apiErrorText(error)), true);
   }

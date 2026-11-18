@@ -14,6 +14,7 @@ import {
   importSessionPackage,
   sessionMenu,
   sessionOptionsMenu,
+  showContextUsage,
 } from "./actions";
 import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
 import { newSession, routeInitialView } from "./conversation";
@@ -290,6 +291,9 @@ export function bindWorkbench(): Promise<void> {
   }
   const cancel = $("#cancel-btn");
   if (cancel) cancel.onclick = () => void cancelTurn();
+  // The header's token chip (send/progress.ts) opens the usage breakdown.
+  const usage = $("#session-usage");
+  if (usage) usage.onclick = () => void showContextUsage();
   // The Shell has rendered #messages and #jump-pill by now.
   bindMessageScroll();
   const composer = $("#composer");

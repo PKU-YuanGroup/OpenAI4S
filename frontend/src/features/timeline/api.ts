@@ -63,9 +63,11 @@ export async function optionalApi(paths: string[]): Promise<unknown> {
   return null;
 }
 
-export function hint(message: string, isError?: boolean): void {
+export function hint(message: string, isError?: boolean, spin?: boolean): void {
   const fn = (globalThis as { hint?: unknown }).hint;
-  if (isReady(fn)) (fn as (m: string, e?: boolean) => void)(message, isError);
+  if (!isReady(fn)) return;
+  if (spin) (fn as (m: string, e?: boolean, s?: boolean) => void)(message, isError, spin);
+  else (fn as (m: string, e?: boolean) => void)(message, isError);
 }
 
 export function laneCall(name: string, ...args: unknown[]): unknown {

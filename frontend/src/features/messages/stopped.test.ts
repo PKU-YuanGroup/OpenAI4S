@@ -533,6 +533,40 @@ describe("live activity card outcome", () => {
     expect(label(second)).toBe("Running analysis · cell 6");
   });
 
+  it("a cell whose Host call was declined is a refusal, not a failure; a Stop while waiting is stopped", () => {
+    startStream();
+    const declined = startCell(8, "c8");
+    onEvent({
+      type: "notebook_cell_finished",
+      frame_id: "frame-1",
+      root_frame_id: "frame-1",
+      producing_cell_id: "c8",
+      cell_index: 8,
+      status: "error",
+      error:
+        'Traceback (most recent call last):\n  File "<kernel:8>", line 1, in <module>\n' +
+        "RuntimeError: bash: Permission denied: denied by user; command was not executed",
+    });
+    expect(declined.dataset.state).toBe("declined");
+    expect(icon(declined)).toBe("lock");
+    expect(declined.querySelector(".meta")!.textContent).toContain("You declined");
+    expect(declined.querySelector(".meta")!.textContent).not.toContain("Failed");
+
+    feed("text", "Next.\n", { type: "text_chunk", block_type: "text" });
+    const stopped = startCell(9, "c9");
+    onEvent({
+      type: "notebook_cell_finished",
+      frame_id: "frame-1",
+      root_frame_id: "frame-1",
+      producing_cell_id: "c9",
+      cell_index: 9,
+      status: "error",
+      error: "RuntimeError: host.web_fetch error: Permission denied: turn cancelled",
+    });
+    expect(stopped.dataset.state).toBe("stopped");
+    expect(icon(stopped)).toBe("stop");
+  });
+
   it("a card whose outcome never arrived does not stay running after the turn", () => {
     for (const status of ["completed", "failed"]) {
       startStream();

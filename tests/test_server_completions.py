@@ -145,6 +145,59 @@ def test_code_outcome_narration_uses_real_error_and_redacts_secrets():
     assert "hidden source" not in text
 
 
+def test_a_refused_host_call_is_narrated_as_a_refusal_not_a_failure():
+    # A denial used to read "这个 Cell 执行失败：RuntimeError: bash: host
+    # authorization unavailable; command was not executed": the user's own
+    # "no" as a crash, in English internals.
+    action = CodeCell("python", "host.bash('ls')")
+
+    def outcome(last_line: str) -> ExecutionOutcome:
+        return ExecutionOutcome(
+            observation=(
+                "[Observation]\nERROR (cell line 1):\nTraceback (most recent call last):\n"
+                f'  File "<kernel:3>", line 1, in <module>\n{last_line}'
+            )
+        )
+
+    declined = outcome(
+        "RuntimeError: bash: Permission denied: 不需要定义工具; command was not executed"
+    )
+    zh = outcome_narration(action, declined, "zh")
+    assert "执行失败" not in zh and "RuntimeError" not in zh
+    assert "未获批准" in zh and "不需要定义工具" in zh
+    en = outcome_narration(action, declined, "en")
+    assert "failed" not in en.lower() and "Permission denied" not in en
+    assert "not approved" in en and "不需要定义工具" in en
+
+    no_reason = outcome(
+        "RuntimeError: host.web_fetch error: Permission denied: denied by user"
+    )
+    assert "被你拒绝了" in outcome_narration(action, no_reason, "zh")
+    assert "declined by you" in outcome_narration(action, no_reason, "en")
+
+    stopped = outcome(
+        "RuntimeError: bash: Permission denied: turn cancelled; command was not executed"
+    )
+    assert outcome_narration(action, stopped, "zh") == ""
+
+    timed_out = outcome(
+        "RuntimeError: host.mcp_call error: Permission denied: approval timed out"
+    )
+    assert "超时" in outcome_narration(action, timed_out, "zh")
+
+    # An OS PermissionError is a real failure and is still narrated as one.
+    os_error = outcome("PermissionError: [Errno 13] Permission denied: '/etc/shadow'")
+    assert "执行失败" in outcome_narration(action, os_error, "zh")
+
+    for line in (
+        outcome_narration(action, declined, "zh"),
+        outcome_narration(action, declined, "en"),
+        outcome_narration(action, no_reason, "zh"),
+        outcome_narration(action, timed_out, "en"),
+    ):
+        assert is_progress_narration(line), line
+
+
 def test_code_only_success_has_honest_running_and_actual_output_status():
     action = CodeCell("python", "print('a')\nprint('b')")
     outcome = ExecutionOutcome(

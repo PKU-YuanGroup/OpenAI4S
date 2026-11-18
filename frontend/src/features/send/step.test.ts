@@ -412,6 +412,64 @@ describe("a loaded Skill's network limit", () => {
     expect(card.querySelector(".s-q")!.textContent).toBe("“GLP-1 Alzheimer”");
   });
 
+  it("a step the user declined is a refusal in the UI language, not a red failure", async () => {
+    await setLang("zh");
+    const card = buildStepCard({
+      step_id: "d-1",
+      kind: "tool",
+      title: "Defining dynamic tool noop",
+      status: "error",
+      summary: "failed: Permission denied: denied by user",
+      input: { name: "noop" },
+      output: { error: "Permission denied: denied by user" },
+    }).card as unknown as El;
+    expect(card.classes.has("err")).toBe(false);
+    expect(card.classes.has("declined")).toBe(true);
+    expect(card.querySelector(".s-meta")!.textContent).toBe("你拒绝了 · 未执行");
+    expect(card.textContent).not.toContain("Permission denied");
+  });
+
+  it("a step a Stop cancelled while it waited for approval says stopped, not denied", async () => {
+    await setLang("zh");
+    const handle = buildStepCard({
+      step_id: "d-2",
+      kind: "bash",
+      title: "Running ls",
+      status: "error",
+      summary: "failed: Permission denied: turn cancelled",
+      input: { command: "ls" },
+      output: { error: "Permission denied: turn cancelled" },
+    });
+    const card = open(handle);
+    expect(card.classes.has("err")).toBe(false);
+    expect(card.querySelector(".s-meta")!.textContent).toBe("已随任务停止 · 未执行");
+    expect(card.textContent).not.toContain("已拒绝");
+    expect(card.textContent).not.toContain("turn cancelled");
+  });
+
+  it("a rule's refusal keeps its reason, and a real error stays a failure", async () => {
+    await setLang("en");
+    const refused = open(
+      buildStepCard({
+        step_id: "d-3",
+        kind: "mcp",
+        status: "error",
+        output: { error: "Permission denied: blocked by a standing 'deny' permission rule" },
+      }),
+    );
+    expect(refused.querySelector(".s-meta")!.textContent).toBe("Not approved · not run");
+    expect(refused.textContent).toContain("Reason: blocked by a standing 'deny' permission rule");
+    const failed = buildStepCard({
+      step_id: "d-4",
+      kind: "bash",
+      status: "error",
+      summary: "failed: exit 1",
+      output: { error: "PermissionError: [Errno 13] Permission denied: '/etc/shadow'" },
+    }).card as unknown as El;
+    expect(failed.classes.has("err")).toBe(true);
+    expect(failed.classes.has("declined")).toBe(false);
+  });
+
   it("an ordinary load card keeps the server's summary", () => {
     const card = buildStepCard({
       step_id: "l-2",

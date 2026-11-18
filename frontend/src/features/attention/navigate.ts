@@ -7,6 +7,7 @@
  */
 
 import { isReady } from "../../compat/stub";
+import { revealApprovalWhenReady } from "../messages/approval";
 import { binds } from "../sessions/binds";
 import { callLane } from "../sessions/lane";
 import {
@@ -104,6 +105,13 @@ export async function applyNavigation(nav: AttentionNavigation): Promise<void> {
     await bag.openConversation(nav.frameId, nav.projectId);
   } else {
     await binds.openConversation(nav.frameId, nav.projectId);
+  }
+  if (nav.dock === "security") {
+    // "Approve" means the approval card, which is in the conversation. The
+    // timeline pane it used to open squeezed the chat to a narrow column
+    // with the card's Allow button off screen.
+    revealApprovalWhenReady(nav.frameId);
+    return;
   }
   callLane("setActiveTab", nav.pane);
   scheduleDockFocus(nav.dock);

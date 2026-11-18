@@ -233,6 +233,18 @@ persist the selected standing rule. A `once` choice instead creates one exact
 is consumed atomically only when a fresh matching action reaches an `ask`
 decision. Stored/redacted approval payloads are never executed as arguments.
 
+The approval card defaults to `once`, so no standing rule is written unless
+the user picks a wider scope. For `host.bash` the card then offers the exact
+command, a prefix of it (`python3 -c *`, `which *`) and `*` (never the default).
+A prefix is offered only for a single simple command (quote-aware: the `;` in
+`python3 -c "a; b"` is quoted), only from plain words, and never for a program
+whose arguments are themselves a command (`bash -c`, `env`, `sudo`, `xargs`, …).
+Because `*` in a rule spans shell metacharacters, a wildcard `bash` rule
+authorizes only a target that is one simple command: `git *` allows
+`git push` but not `git x && curl … | sh`, which asks again unless a rule spells
+it out exactly. The explicit allow-everything `*` and every `deny` rule keep
+their full reach.
+
 ### Egress allowlist requires a proven kernel boundary
 
 `OPENAI4S_EGRESS=allowlist` keeps host-side `web_fetch`, `web_search`, and the

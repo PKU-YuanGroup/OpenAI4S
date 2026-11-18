@@ -716,6 +716,78 @@ class BackgroundExecutor:
             ).start()
         return [job.exec_id for job in jobs]
 
+    def summaries(self) -> list[dict]:
+        """What a person needs to recognise a background cell and stop it.
+
+        Not the source: its first statement and the last line it printed, both
+        passed through the free-text redactor, plus status and timing. The
+        session's own Notebook keeps the full record.
+        """
+        from openai4s.observability import redact_text
+
+        with self._lock:
+            jobs = list(self._jobs.values())
+        out: list[dict] = []
+        for job in jobs:
+            snapshot = job.peek()
+            first = next(
+                (
+                    line.strip()
+                    for line in str(job.code or "").splitlines()
+                    if line.strip() and not line.strip().startswith("#")
+                ),
+                "",
+            )
+            printed = [
+                line.strip()
+                for line in str(snapshot.get("stdout") or "").splitlines()
+                if line.strip()
+            ]
+            out.append(
+                {
+                    "exec_id": job.exec_id,
+                    "status": snapshot["status"],
+                    "started_at": snapshot["started_at"],
+                    "ended_at": snapshot["ended_at"],
+                    "interrupted": snapshot["interrupted"],
+                    "stop_requested": bool(job.stop_requested),
+                    "launched_by": "agent" if job.turn_id else "user",
+                    "code_preview": redact_text(first)[:120],
+                    "output_tail": redact_text(printed[-1])[:200] if printed else "",
+                }
+            )
+        return out
+
+    def stop(self, exec_id: str, *, grace_s: float = 5.0) -> dict:
+        """Stop one running cell on a person's request, as a turn's Stop does.
+
+        SIGINT, then an exact kill after ``grace_s``, on its own thread: the
+        request is answered at once instead of waiting for the cell to unwind.
+        """
+        with self._lock:
+            job = self._jobs.get(str(exec_id))
+            if job is None:
+                return {
+                    "ok": False,
+                    "exec_id": exec_id,
+                    "reason": "no such background cell",
+                }
+            if job.status != "running":
+                return {
+                    "ok": False,
+                    "exec_id": exec_id,
+                    "status": job.status,
+                    "reason": "the background cell is not running",
+                }
+            job.stop_requested = True
+        threading.Thread(
+            target=self._stop_job,
+            args=(job, grace_s),
+            name=f"openai4s-bg-stop-{job.exec_id}",
+            daemon=True,
+        ).start()
+        return {"ok": True, "exec_id": job.exec_id, "status": "stopping"}
+
     @staticmethod
     def _stop_job(job: _BackgroundJob, grace_s: float) -> None:
         kernel = job._kernel

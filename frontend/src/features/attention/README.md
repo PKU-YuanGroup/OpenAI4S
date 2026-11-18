@@ -15,8 +15,8 @@ M-02 Dashboard "needs attention" stream. Cards come from `GET /api/v1/attention`
 | [`copy.ts`](copy.ts) | M-02 overlay strings (does not rewrite generated i18n). |
 | [`index.ts`](index.ts) | Public re-exports. |
 | [`mutations.ts`](mutations.ts) | Maps approve/restore/retry hints onto existing POST routes. |
-| [`navigate.test.ts`](navigate.test.ts) | Closed-set target → local session path + exact dock; URL fields ignored. |
-| [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`. |
+| [`navigate.test.ts`](navigate.test.ts) | Closed-set target → local session path + exact dock; URL fields ignored; an approval opens on its card, not the timeline. |
+| [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`. An approval (`security` dock) opens the session on its card in the conversation, not on the timeline pane. |
 | [`parse.ts`](parse.ts) | Closed-set item parse and `cardsFromItems` mapping. |
 | [`poll.ts`](poll.ts) | `shouldFetchAttention`: read only while the dashboard is on screen and the page is visible. |
 | [`state.ts`](state.ts) | Lane-local signals. Not promoted into `stores/`. |

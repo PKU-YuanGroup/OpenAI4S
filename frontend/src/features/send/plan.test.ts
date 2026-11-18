@@ -57,7 +57,7 @@ import { t } from "../../i18n/runtime";
 import { _openGen, currentId } from "../../stores/session";
 import { planPending, planPendingTurn, planReady, planStatus, running } from "../../stores/stream";
 import { discardPlan, renderPlanCard } from "./plan";
-import { turnDone } from "./turn";
+import { noteForStop, takeStopCarry, turnDone } from "./turn";
 
 function walk(node: FakeNode, found: FakeNode[] = []): FakeNode[] {
   found.push(node);
@@ -266,5 +266,32 @@ describe("the approval card after a plan-mode turn without a structured plan", (
     turnDone("completed", {});
     expect(approvalCards()).toHaveLength(0);
     expect(planPending.value).toBe(true);
+  });
+});
+
+describe("what a Stop said outlives the turn's teardown", () => {
+  it("keeps the stop note through turnDone and carries the background part to the next queued turn", async () => {
+    const chrome = await import("../sessions/chrome");
+    const spy = vi.spyOn(chrome, "hint").mockImplementation(() => {});
+    const full = "已停止，并停止了本回合启动的 1 个后台任务；排队的 1 条消息会接着运行";
+    const carry = "已停止，并停止了本回合启动的 1 个后台任务";
+    try {
+      running.value = true;
+      noteForStop(full, carry);
+      turnDone("cancelled", { execution_id: "exec-stopped" });
+      expect(spy).toHaveBeenCalledWith(full, false);
+      expect(takeStopCarry()).toBe(carry);
+      expect(takeStopCarry()).toBe("");
+      // A turn that ended before the Stop's answer arrived carries it at once.
+      running.value = false;
+      noteForStop(full, carry);
+      expect(takeStopCarry()).toBe(carry);
+      // An ordinary end says nothing it was not told.
+      running.value = true;
+      turnDone("completed", { execution_id: "exec-next" });
+      expect(spy).toHaveBeenLastCalledWith("", false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
