@@ -769,11 +769,11 @@
       "integrated": "P1-A",
       "plan_conclusion": "纳入，保留独特项",
       "status": "closed",
-      "status_note": "the Python/R/Bundle selector is in the UI (`NOTEBOOK_EXPORTS`) and on the route; this audit added a fourth `markdown` form, both languages in execution order, for reading rather than re-running. The previous `open` label predated the selector.",
+      "status_note": "the Python/R/Bundle selector is in the UI (`NOTEBOOK_EXPORTS`) and on the route; this audit added a fourth `markdown` form, both languages in execution order, for reading rather than re-running. The previous `open` label predated the selector. NB-1 (2026-11-18) made the primary download the cleaned notebook (`variant=clean`); the raw Python/R/Bundle execution logs remain in the menu and are the route's default.",
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "f90bc3dffb7146884233e67990c555b853f06e28a4b0b89f0a45dfa81e16fa4d"
+      "evidence_digest": "740ac9ead55a04bffd0f9ab9a50746910e1c77cbedafecf588bdbac6642e4077"
     },
     {
       "source": "R7",

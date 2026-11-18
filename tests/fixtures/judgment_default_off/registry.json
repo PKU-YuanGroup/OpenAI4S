@@ -288,7 +288,7 @@
     }
   },
   {
-    "description": "Install extra packages into the current kernel (pip).",
+    "description": "Install extra packages into the environment the kernel runs in. Needs the user's approval; never changes the version of an installed package.",
     "name": "env_create",
     "parameters": {
       "properties": {
