@@ -8984,10 +8984,15 @@ class SessionRunner:
         capture: CaptureResult,
         cell_id: str,
     ) -> list[str]:
-        """Map host-side reads to versions when Stage 8 is enabled."""
+        """Map the worker-observed reads to versions and record Cell lineage.
 
-        if not self.cfg.roadmap_features.stage8_live_notebook_lineage:
-            return []
+        Always on. This used to return ``[]`` unless the Stage 8 flag was set,
+        and the caller stores the return value as the Cell's read set, so with
+        the flag off (the default) every Cell's observed reads were erased and
+        provenance said "no recorded inputs" even for read_csv -> to_csv.
+        Stage 8 now gates only the official live Notebook.
+        """
+
         del request, before
         return bind_cell_lineage(
             self.store,

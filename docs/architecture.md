@@ -188,10 +188,14 @@ credential bypass.
 #### Stage 8 live Notebook and lineage
 
 `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE=1` makes the live Notebook a first-class
-execution path on the same kernel generation and FIFO coordinator. Host-side
-file reads (Python and R) map to Artifact versions; a later write in that Cell
-creates an input→output lineage edge. Reviewer snapshots cite those version
-ids. Agent, user REPL, repair, and review scratch remain distinct owners.
+execution path on the same kernel generation and FIFO coordinator. Agent, user
+REPL, repair, and review scratch remain distinct owners.
+
+Cell lineage does not need the flag. Host-side file reads (Python and R) map to
+Artifact versions; a later write in that Cell creates an input→output lineage
+edge. Reviewer snapshots cite those version ids. Until this was ungated, the
+default configuration erased every Cell's observed reads, so provenance showed
+no inputs even for a plain `read_csv` → `to_csv`.
 
 #### Stage 9 Artifact workbench
 
