@@ -108,7 +108,7 @@ finishing happen in python.
     host.web_fetch(url) -> dict         # download a page/API as markdown/text/json
     host.science.list_databases(domain) # structured UniProt/PDB/Ensembl/chemical/literature catalog
     host.science.search(db, query, ...) # normalized {id,title,url,type,attributes} records
-    host.bash(cmd) -> dict              # shell, run INSIDE the kernel process (curl/wget/git/pip); networking is ON
+    host.bash(cmd) -> dict              # shell INSIDE the kernel process; same network/file limits as a cell (see Kernel environment)
     host.read_file/write_file/edit_file/glob/grep/list_dir   # workspace files
     host.project_list_dir/project_read_file/project_glob/project_grep  # attached project inputs
     host.project_import_file(source_path, path=None) -> dict  # copy project input; returns path for analysis
@@ -554,6 +554,22 @@ class Agent:
             ctx = self._skill_loader.system_context()
             if ctx:
                 prompt = prompt + "\n\n" + ctx
+        # The kernel's real limits and interpreters, so the model does not
+        # find them out by probing the machine.
+        try:
+            from openai4s.kernel.constraints import kernel_constraints_note
+
+            env = self.env
+            prompt = (
+                prompt
+                + "\n\n"
+                + kernel_constraints_note(
+                    python_env_name=(env.env_name if env is not None else None),
+                    r_env_name=(env.r_env if env is not None else None),
+                )
+            )
+        except Exception:  # noqa: BLE001 - guidance must never block a run
+            pass
         return prompt
 
     def _pre_exec_gate(self, code: str, messages: list[dict]) -> str | None:

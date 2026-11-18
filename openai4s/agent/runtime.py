@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import queue
+import re
 import sys
 import threading
 import time
@@ -1755,6 +1756,57 @@ def evidence_cell_id(dispatcher: Any, cell_id: Any) -> str | None:
     return str(cell_id)
 
 
+#: A package install a Cell attempted, by tool.
+_INSTALL_ATTEMPT = re.compile(
+    r"\bpip3?\s+install\b|Could not install packages|\bconda\s+install\b|"
+    r"\bmamba\s+install\b|install\.packages\s*\(|BiocManager::install|"
+    r"Installing package[s]? into",
+    re.IGNORECASE,
+)
+#: How the OS sandbox's refusal reads from inside pip, conda and R.
+_SANDBOX_REFUSAL = re.compile(
+    r"Operation not permitted|Read-only file system|Permission denied|"
+    r"is not writable|Failed to establish a new connection|"
+    r"Network is unreachable|cannot open URL|unable to access index for "
+    r"repository|failed to create lock directory|"
+    r"Temporary failure in name resolution|nodename nor servname",
+    re.IGNORECASE,
+)
+
+
+def _install_refusal_hint(text: str) -> str | None:
+    """Say plainly that a package install was refused by the sandbox.
+
+    pip's "[Errno 1] Operation not permitted" and R's "'lib' is not
+    writable" read like a fixable local problem, so the model went on to try
+    another library directory, another channel, a proxy. Only while the
+    kernel is sandboxed without raw network: elsewhere the same words are an
+    ordinary failure.
+    """
+
+    if not text or not _INSTALL_ATTEMPT.search(text):
+        return None
+    if not _SANDBOX_REFUSAL.search(text):
+        return None
+    try:
+        from openai4s.kernel.constraints import expected_posture
+
+        posture = expected_posture()
+    except Exception:  # noqa: BLE001 - a hint must not break an Observation
+        return None
+    if posture.get("backend") is None or posture.get("raw_network"):
+        return None
+    return (
+        "[system] Installing packages from a Cell is refused here: the kernel's "
+        "sandbox blocks direct network and writes outside the session "
+        "workspace, so retrying, another library directory or another install "
+        'channel will not help. Call host.env.list(["pkg"]) to find an '
+        'environment that already has the package (host.env.use("<name>")), '
+        "or ask for one with env_setup / host.env.create, which the user "
+        "approves."
+    )
+
+
 def format_observation(result: dict, *, cell_id: str | None = None) -> str:
     """Format one kernel result as the stable observation protocol.
 
@@ -1793,6 +1845,9 @@ def format_observation(result: dict, *, cell_id: str | None = None) -> str:
                 "[system] `host` is a pre-injected Python singleton. Use it "
                 "directly; never `import host` or `from host import ...`."
             )
+    install_hint = _install_refusal_hint("\n".join((out, err, str(error or ""))))
+    if install_hint:
+        parts.append(install_hint)
     if not out and not err and not error:
         parts.append("(no output)")
     usage = result.get("usage") or {}
