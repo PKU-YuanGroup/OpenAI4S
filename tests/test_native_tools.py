@@ -63,7 +63,16 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
         source = by_name[spec.name]
         assert spec.description == source.description
         assert spec.input_schema["type"] == "object"
-        assert spec.input_schema["properties"] == source.parameters["properties"]
+        # The provider projection (science_search offers only the databases
+        # this daemon serves) may narrow a value set; it never adds, drops or
+        # renames a parameter.
+        assert (
+            spec.input_schema["properties"]
+            == source.provider_input_schema()["properties"]
+        )
+        assert spec.input_schema["properties"].keys() == (
+            source.parameters["properties"].keys()
+        )
         assert spec.input_schema["required"] == source.parameters["required"]
         assert spec.input_schema["additionalProperties"] is False
         assert spec.input_schema is not source.parameters

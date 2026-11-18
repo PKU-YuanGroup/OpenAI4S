@@ -139,6 +139,35 @@ class ScienceSearchTool(Tool):
     resource_target_key = "database"
     side_effect_class = WORKSPACE_WRITE
 
+    def provider_input_schema(self) -> dict:
+        """Offer the model only the databases this daemon can search.
+
+        The enum lists every connector this version ships, including the three
+        behind the Stage 10 flag (pubmed, clinicaltrials, clinvar), which is
+        off by default; a model that picked one got "unknown scientific
+        database". Validation keeps the full enum, so the service's own answer
+        still names the choices for a caller that reaches it another way.
+        """
+
+        from openai4s.host.science import ScienceConnectorError, ScienceConnectorService
+
+        schema = super().provider_input_schema()
+        database = schema.get("properties", {}).get("database")
+        if not isinstance(database, dict) or not isinstance(database.get("enum"), list):
+            return schema
+        try:
+            served = ScienceConnectorService(stage10=_stage10(None)).list_databases(
+                "all"
+            )
+        except (ScienceConnectorError, ValueError):
+            # An unreadable flag is the daemon's to report; keep the full list.
+            return schema
+        available = {str(row.get("id") or "") for row in served.get("databases") or []}
+        narrowed = [item for item in database["enum"] if item in available]
+        if narrowed:
+            database["enum"] = narrowed
+        return schema
+
     def writes_files_for(self, runtime: Any) -> bool:
         return _stage10(runtime)
 

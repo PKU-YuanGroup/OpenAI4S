@@ -32,6 +32,40 @@ def test_science_tools_are_two_flat_schema_checked_registry_entries():
     )
 
 
+_STAGE10_ONLY = {"pubmed", "clinicaltrials", "clinvar"}
+
+
+def _offered_databases() -> list[str]:
+    from openai4s.tools.native import control_tool_specs
+
+    (spec,) = control_tool_specs([ScienceSearchTool()])
+    return list(spec.input_schema["properties"]["database"]["enum"])
+
+
+def test_the_model_is_offered_only_the_databases_this_daemon_searches(monkeypatch):
+    """The schema named 13 databases while 10 were served by default.
+
+    A model that picked pubmed got "unknown scientific database 'pubmed'".
+    """
+
+    monkeypatch.delenv("OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS", raising=False)
+    served = ScienceListDatabasesTool().execute(None, {"domain": "all"})
+    offered = _offered_databases()
+    assert set(offered) == {item["id"] for item in served["databases"]}
+    assert not _STAGE10_ONLY & set(offered)
+    # The provider projection narrows; Host validation keeps the vocabulary.
+    assert (
+        ScienceSearchTool().validation_error({"database": "pubmed", "query": "x"})
+        is None
+    )
+    assert set(ScienceSearchTool().parameters["properties"]["database"]["enum"]) >= (
+        _STAGE10_ONLY
+    )
+
+    monkeypatch.setenv("OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS", "1")
+    assert _STAGE10_ONLY <= set(_offered_databases())
+
+
 def test_science_catalog_executes_without_network():
     result = ScienceListDatabasesTool().execute(None, {"domain": "chemistry"})
 

@@ -372,7 +372,7 @@ streams，验证真实 RPC worker 重启后原结果恢复且不重放 action。
 | [`test_connector_manifests.py`](test_connector_manifests.py) | connector manifest 必须描述 connector，而不是给它加装饰。对着 connector 自己的离线 fixture 证明每条 required 路径既存在又承重——删掉它 adapter 就返回不了记录。没有后半条，manifest 会漂向罗列一切「有了更好」的字段，而基于它的 canary 会对无关紧要的东西报警。 |
 | [`test_connector_canary.py`](test_connector_canary.py) | canary 的唯一职责是把宕机和契约变化区分开。用注入的 fetch（无网络）驱动分类器走过：健康的 200、required 字段被改名的 200（漂移）、超时、HTML 的 200、以及重试后成功的瞬时失败。把这个区分弄反——无论哪个方向——都是失败模式：对宕机报警会被静音，对漂移沉默则毫无意义。 |
 | [`test_platform_support.py`](test_platform_support.py) | Windows 不受支持，而「不受支持」必须意味着被拒绝。真正承重的测试不是「它会不会抛异常」，而是**「它是否在 spawn 之前抛」**——在 `Popen` 之后才拒绝能骗过一个天真的检查，却完全背离意图。变异检验：拿掉守卫、把 Windows 加进支持集、以及把拒绝降级为警告（也就是最初的缺陷本身），三者都会导致测试失败。 |
-| [`test_science_control_tools.py`](test_science_control_tools.py) | 关于科学检索两个表面（原生的与内核内的）的三个测试：两个扁平且做过 schema 检查的注册表条目、一个不用网络也能跑的目录，以及只编码顶层字段的 Host wire。 |
+| [`test_science_control_tools.py`](test_science_control_tools.py) | 关于科学检索两个表面（原生的与内核内的）的测试：两个扁平且做过 schema 检查的注册表条目、一个不用网络也能跑的目录、只编码顶层字段的 Host wire，以及只向模型提供本守护进程可检索的数据库的 provider schema（Stage 10 的三个库只在开关打开时出现），而 Host 校验仍保留完整词表。 |
 | [`test_sdk_compute.py`](test_sdk_compute.py) | worker 侧的 `host.compute` 命名空间：provider、实例、传输、attach、清理。带安全锋刃的是路径处理——本地路径按允许名单做相对化，绝对路径直接拒绝。 |
 | [`test_security.py`](test_security.py) | 纵深防御的几层，LLM 全程被 mock。快路径和失败即放行的那几处，要和拦截一样仔细读：常规代码根本不进分类器，而注入筛查在没有配置 key 时是失败即放行的。不失败即放行的是 query 的拒绝名单——即使用拆分标识符绕，它也把 `host.query` 挡在设置、connector 与秘密表之外。 |
 | [`test_search_settings.py`](test_search_settings.py) | 备用搜索引擎：保存的顺序与开关（新安装沿用原有顺序，拒绝没有可用引擎的配置）、首次设置选项、豆包配额回退确认（已记住的规则直接生效，新的确认只在有人时弹出，选中的引擎就是规则的 pattern）、调度器接线，以及 `/search/config`。 |
