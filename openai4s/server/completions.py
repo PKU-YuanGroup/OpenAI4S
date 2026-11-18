@@ -173,11 +173,20 @@ def outcome_narration(
     # no output, so every result had to be dug out of the Notebook. Say the
     # cell finished, show the first lines it printed, and flag stderr.
     stdout = _section_body(observation, "stdout:")
+    # A long stdout reaches the model as a head, an omission marker and a
+    # tail; counting that preview's lines reported "160 lines" for 3001. Show
+    # only the head, and give the real size the marker states.
+    omitted = _OMITTED_MARKER.search(stdout)
+    total_chars = omitted.group(1) if omitted else None
+    if omitted:
+        stdout = stdout[: omitted.start()].rstrip()
     stderr_lines = _line_count(_section_body(observation, "stderr:"))
     stdout_lines = _line_count(stdout)
     parts: list[str] = []
     if stdout_lines:
         shown = min(stdout_lines, _PREVIEW_LINES)
+        if total_chars:
+            shown = -1  # never "the whole output" when the model saw a cut
         if zh:
             parts.append(
                 "Cell 已运行结束，输出："
@@ -191,7 +200,14 @@ def outcome_narration(
                 else "The cell finished. First lines of its output:"
             )
         parts.append("```text\n" + _output_preview(stdout) + "\n```")
-        if shown < stdout_lines:
+        if total_chars:
+            parts.append(
+                f"（输出很长，共 {total_chars} 个字符，完整输出在 Notebook。）"
+                if zh
+                else f"(The output is long: {total_chars} characters in total; the "
+                "full output is in the Notebook.)"
+            )
+        elif shown < stdout_lines:
             parts.append(
                 f"（共 {stdout_lines} 行，完整输出在 Notebook。）"
                 if zh
@@ -213,6 +229,10 @@ def outcome_narration(
     return "\n".join(parts)
 
 
+#: The omission marker ``agent.runtime._budgeted`` puts into a long section.
+_OMITTED_MARKER = re.compile(
+    r"\n*\[\.\.\. [\d,]+ characters omitted \u2014 full ([\d,]+) chars[^\n]*"
+)
 #: How much of a cell's stdout the chat repeats after it runs.
 _PREVIEW_LINES = 6
 _PREVIEW_LINE_CHARS = 200

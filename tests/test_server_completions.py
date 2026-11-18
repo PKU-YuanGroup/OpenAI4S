@@ -309,3 +309,21 @@ def test_every_progress_line_this_module_writes_is_recognised():
         "我先看一下缺失值的分布。",
     ):
         assert not is_progress_narration(prose), prose
+
+
+def test_a_truncated_output_reports_its_real_size_not_the_preview_lines():
+    """A long stdout reaches the model as head + omission marker + tail; the
+    status counted that preview ("160 stdout line(s)" for 3001 lines)."""
+    from openai4s.agent.runtime import format_observation
+
+    out = "\n".join(f"row {i} " + "x" * 40 for i in range(3001))
+    observation = format_observation(
+        {"stdout": out, "stderr": "", "error": None, "cwd": None}
+    )
+    outcome = ExecutionOutcome(observation=observation)
+    en = outcome_narration(CodeCell("python", "x"), outcome, "en")
+    assert en.startswith("The cell finished. First lines of its output:")
+    assert f"{len(out):,} characters in total" in en
+    assert "lines in total" not in en and "omitted" not in en
+    zh = outcome_narration(CodeCell("python", "x"), outcome, "zh")
+    assert f"共 {len(out):,} 个字符" in zh
