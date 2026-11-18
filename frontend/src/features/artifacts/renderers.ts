@@ -41,6 +41,7 @@ import {
   type MolfileModel,
 } from "./catalog";
 import { renderSheet } from "./sheet";
+import { renderTablePreview } from "./table-preview";
 import { renderHtmlPreview } from "./preview";
 import { renderNotebookArtifact } from "./notebook";
 import { partialNotice, previewDownload } from "./partial";
@@ -772,6 +773,8 @@ export function renderArtifactDescriptor(
   else if (rendererId === "markdown") renderMarkdownArtifact(content, target, url);
   else if (rendererId === "notebook") renderNotebookArtifact(content, target, url);
   else if (rendererId === "table") renderTableArtifact(content, target, url, renderer);
+  // ART-11: a workbook or a gzip file is read by the server, never in the browser.
+  else if (rendererId === "spreadsheet" || rendererId === "compressed") renderTablePreview(content, target, url);
   else if (rendererId === "text") renderTextArtifact(content, target, url);
   else renderDownloadArtifact(content, target, url);
 }

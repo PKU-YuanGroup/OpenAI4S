@@ -97,7 +97,7 @@ function isBlankRow(row: string[]): boolean {
 }
 
 /** Cells up to the last non-blank one; trailing separators add no column. */
-function filledWidth(row: string[]): number {
+export function filledWidth(row: string[]): number {
   let width = row.length;
   while (width > 0 && !String(row[width - 1]).trim()) width--;
   return width;
@@ -109,7 +109,7 @@ function filledWidth(row: string[]): number {
  * dropped. A repeat takes pandas' `.1`, `.2` suffix; a cell past the header is
  * keyed by its position, as array rows are.
  */
-function columnNames(header: string[], width: number): string[] {
+export function columnNames(header: string[], width: number): string[] {
   const seen = new Set<string>();
   const names: string[] = [];
   for (let i = 0; i < width; i++) {

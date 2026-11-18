@@ -188,13 +188,18 @@ export function retrievalSourcePanel(src: Record<string, unknown>): HTMLElement 
   return box;
 }
 
-/** app.js:9458-9461 */
+/**
+ * app.js:9458-9461. ART-11: a gzip stream or an Office Open XML zip is a
+ * binary container (`…openxmlformats…` contains "xml"); the server refuses a
+ * text save over one, so the editor is not offered.
+ */
 export function isTextEditable(a: ArtifactRow | null | undefined): boolean {
   if (!a) return false;
   const nm = (a.filename || "").toLowerCase();
   const ct = a.content_type || "";
   if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg|pdb|cif|mol|mol2|sdf|xyz|pdf)$/i.test(nm))
     return false;
+  if (/\.(gz|gzip|tgz|xlsx)$/i.test(nm) || /gzip|openxmlformats/i.test(ct)) return false;
   return (
     /\.(md|markdown|txt|log|csv|tsv|json|py|js|ts|fasta|fa|nwk|treefile|xml|ya?ml|sh|r|tex|html?|css)$/i.test(
       nm,

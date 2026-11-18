@@ -6,6 +6,7 @@ import {
   filterSheetRows,
   renderSheet,
   sheetCap,
+  sheetHiddenText,
   sheetShape,
   sheetShapeText,
   SHEET_MAX_CELLS,
@@ -273,6 +274,23 @@ describe("interactive default table (ART-3)", () => {
     toggle.onclick?.();
     expect(all("th")).toHaveLength(SHEET_MAX_COLUMNS);
     expect(SHEET_MAX_CELLS).toBe(SHEET_MAX_ROWS * SHEET_MAX_COLUMNS);
+  });
+
+  it("a head of a larger file says the file's shape, as a partial-preview notice (ART-11)", () => {
+    vi.stubGlobal("document", { createElement: (tag: string) => new LiveNode(tag) });
+    const host = new LiveNode("div");
+    const wide = Array.from({ length: 2 }, (_, r) =>
+      Object.fromEntries(Array.from({ length: 103 }, (_, c) => ["c" + c, String(r + c)])),
+    );
+    const summary = "900,000 rows × 103 columns, showing the first 2 rows";
+    renderSheet(host as unknown as HTMLElement, wide, { summary });
+    const note = childrenByTag(host, "div").find((n) => n.className.includes("renderer-completeness"))!;
+    expect(note.attrs.role).toBe("status");
+    expect(note.attrs["data-state"]).toBe("partial");
+    // The head's own "2 rows" never replaces the file's count; what the drawn
+    // table leaves out is still said.
+    expect(note.textContent).toBe(summary + " " + sheetHiddenText({ rows: 2, columns: 103 }, 2, 100));
+    expect(note.textContent).not.toContain(sheetShapeText({ rows: 2, columns: 103 }, 2, 103));
   });
 
   it("pure helpers: comparison and filtering", () => {

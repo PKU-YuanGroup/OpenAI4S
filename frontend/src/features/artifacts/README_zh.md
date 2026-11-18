@@ -45,6 +45,8 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限；ART-3 表头排序（数值序、空值置后、回到文件原序、键盘）、`列名:值` 与任意列筛选及匹配计数、显示全部列开关及其提示。 |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。ART-3：默认（未开工作台）表格点击表头排序（升序、降序、文件原序），按子串或 `列名:值` 筛选，超过 100 列时可按需显示全部列，绘制行数按同样的 50 万单元格预算截断；全部在前端对已读取的行完成。 |
 | [`state.ts`](state.ts) | 车道局部 M-03 signal。不上升进 `stores/`。 |
+| [`table-preview.ts`](table-preview.ts) | ART-11：浏览器不整份读取的表格——超过 8 MiB 读取预算的 CSV、`.xlsx` 工作簿（工作表标签）或 gzip 文件——经 `GET /artifacts/{id}/preview-table` 读取确切版本的前若干行。用 `renderSheet` 绘制，其提示改为整份文件的规模（“共 900,000 行 × 6 列，仅显示前 100 行（文件 39.0 MB，……）”），保留确切版本下载，并逐一说明拒绝原因（`not_tabular`、`unsupported_format` 等），不提供无意义的重试。每个视图只发一个请求，随视图或更新的工作表请求取消，30 秒期限后结束。另含 gzip 磁贴与 gzip/工作簿判定。文案在它自己的表里。 |
+| [`table-preview.test.ts`](table-preview.test.ts) | 路由路径与响应校验、行记录的键（重复表头、xlsx 行号）、文件规模句（精确、下限、gzip、超出预算）、拒绝文案、切换工作表时较慢的旧响应不会覆盖、500 后重试、期限、随视图取消、默认表格查看器在超预算和二进制字节时的移交，以及不读取任何字节的 gzip 磁贴。 |
 | [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。全局 FIFO 前缀队列（最多 4 个在途、共享 15 秒期限），每个磁贴 DOM 元素登记为缓存键的消费者，`pruneThumbReads()` 只在全部消费者都离开文档时中止并释放图片 blob URL；同一版本缓存未命中时，仍有磁贴在显示则复用那份 blob，全部消费者离开后才释放；被截断的文本/分子磁贴标“部分预览”，被截断的数据磁贴只显示列名、不显示行数。行列数标签按界面语言显示（“241 行 · 11 列”），按非 UTF-8 解码的磁贴会标出编码（UP-4）。图片磁贴按 8 MiB 主预览上限整文件读取（前缀无法解码），绝不把产物 URL 赋给 `img.src`；超过 256 KiB 磁贴预算的位图先缩成 480 px 副本，磁贴只保留该副本。 |
 | [`text-encoding.ts`](text-encoding.ts) | UP-4 所有有界文本读取共用的解码：UTF-16 BOM 判定 UTF-16，合法 UTF-8 即 UTF-8（去 BOM），合法 GB18030 且读起来是中文文本才判为 GB18030，否则仍按 UTF-8 加替换字符；只读前缀时丢弃截断处的半个字符。与 `openai4s/server/text_decoding.py` 相同。 |
 | [`text-encoding.test.ts`](text-encoding.test.ts) | UTF-8 及其 BOM 不变、识别 GBK、UTF-16 LE/BE BOM、二进制与 Windows-1252 不会被当成中文、面向用户的编码名称。 |

@@ -91,6 +91,29 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         interactive=True,
         capabilities=("view",),
     ),
+    # ART-11: both viewers show the first rows that ``preview-table`` returns
+    # (sheet names too, for a workbook) and nothing more, hence only ``view``.
+    # Legacy binary ``.xls`` has no parser and stays on the download renderer.
+    Renderer(
+        "spreadsheet",
+        "Excel workbook",
+        kinds=("spreadsheet", "workbook"),
+        content_types=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        extensions=(".xlsx",),
+        interactive=True,
+        capabilities=("view",),
+    ),
+    Renderer(
+        "compressed",
+        "Compressed file (gzip)",
+        kinds=("compressed",),
+        content_types=("application/gzip", "application/x-gzip"),
+        extensions=(".gz",),
+        interactive=True,
+        capabilities=("view",),
+    ),
     Renderer(
         "image",
         "Image",
@@ -179,6 +202,7 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
             ".parquet",
             ".arrow",
             ".feather",
+            ".xls",
         ),
         interactive=False,
         capabilities=("metadata", "versions", "provenance"),
@@ -309,13 +333,21 @@ class RendererRegistry:
         # (or content type ``application/json``), which would otherwise route
         # the file to the plain-text renderer and never reach the notebook
         # preview. Only the notebook renderer declares ``.ipynb``, so this
-        # narrow pre-pass cannot capture a non-notebook artifact.
-        notebook = next(
-            (item for item in self._renderers if item.renderer_id == "notebook"),
-            None,
-        )
-        if notebook is not None and extension and extension in notebook.extensions:
-            return notebook, "extension"
+        # narrow pre-pass cannot capture a non-notebook artifact. A `.gz` or
+        # `.xlsx` is a container in the same sense (ART-11): an upload
+        # registered before gzip typing stored `x.csv.gz` as ``text/csv``,
+        # which sent gzip bytes to the table renderer.
+        for container_id in ("notebook", "compressed", "spreadsheet"):
+            container = next(
+                (item for item in self._renderers if item.renderer_id == container_id),
+                None,
+            )
+            if (
+                container is not None
+                and extension
+                and extension in container.extensions
+            ):
+                return container, "extension"
         for renderer in self._renderers:
             if kind and kind in renderer.kinds:
                 return renderer, "kind"

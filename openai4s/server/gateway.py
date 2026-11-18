@@ -97,6 +97,7 @@ from openai4s.review import review_evidence
 from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.server import (
     artifact_index_routes,
+    artifact_preview_routes,
     artifact_refs,
     artifact_workbench_routes,
     attention_routes,
@@ -649,6 +650,14 @@ def _iso(ms: int | float | None) -> str | None:
         return None
 
 
+#: The media type of a compressed file, by the ``encoding`` half of a guess.
+_COMPRESSED_CTYPES = {
+    "gzip": "application/gzip",
+    "bzip2": "application/x-bzip2",
+    "xz": "application/x-xz",
+}
+
+
 def _guess_ctype(name: str) -> str:
     low = name.lower()
     # structure / science formats first (mimetypes mis-maps some, e.g. .pdb)
@@ -660,7 +669,12 @@ def _guess_ctype(name: str) -> str:
         return "chemical/x-xyz"
     if low.endswith((".fasta", ".fa", ".nwk", ".treefile", ".log")):
         return "text/plain; charset=utf-8"
-    ctype, _ = mimetypes.guess_type(name)
+    ctype, encoding = mimetypes.guess_type(name)
+    if encoding:
+        # ART-11: `x.csv.gz` guesses ("text/csv", "gzip"). The bytes are the
+        # compressed container; typing them by the inner name sent a gzip
+        # file to the table viewer and decoded it as text.
+        return _COMPRESSED_CTYPES.get(encoding, "application/octet-stream")
     if ctype:
         return ctype
     if low.endswith((".md", ".markdown", ".txt", ".tsv")):
@@ -16570,6 +16584,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if auto_mode_routes.handle(self, method, sub, q, runner):
                 return
             if artifact_workbench_routes.handle(self, method, sub, q, runner):
+                return
+            # ART-11: flag-independent, unlike the workbench group above.
+            if artifact_preview_routes.handle(self, method, sub, q, runner):
                 return
             if onboarding_routes.handle(
                 self,

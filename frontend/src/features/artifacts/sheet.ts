@@ -52,6 +52,26 @@ export function appendSheetShape(
   return note;
 }
 
+/** What the drawn table leaves out of `shape`, or "" when it draws everything. */
+export function sheetHiddenText(
+  shape: { rows: number; columns: number },
+  shownRows: number,
+  shownColumns: number,
+): string {
+  const hiddenRows = Math.max(0, shape.rows - shownRows);
+  const hiddenColumns = Math.max(0, shape.columns - shownColumns);
+  if (hiddenRows && hiddenColumns) {
+    return translate(
+      "nb.table.bothHidden",
+      hiddenRows.toLocaleString(),
+      hiddenColumns.toLocaleString(),
+    );
+  }
+  if (hiddenRows) return translate("nb.table.rowsHidden", hiddenRows.toLocaleString());
+  if (hiddenColumns) return translate("nb.table.colsHidden", hiddenColumns.toLocaleString());
+  return "";
+}
+
 /** The shape sentence plus what the drawn table leaves out. */
 export function sheetShapeText(
   shape: { rows: number; columns: number },
@@ -59,19 +79,18 @@ export function sheetShapeText(
   shownColumns: number,
 ): string {
   const text = translate("viewer.table.shape", shape.rows.toLocaleString(), shape.columns.toLocaleString());
-  const hiddenRows = Math.max(0, shape.rows - shownRows);
-  const hiddenColumns = Math.max(0, shape.columns - shownColumns);
-  let hidden = "";
-  if (hiddenRows && hiddenColumns) {
-    hidden = translate(
-      "nb.table.bothHidden",
-      hiddenRows.toLocaleString(),
-      hiddenColumns.toLocaleString(),
-    );
-  } else if (hiddenRows) hidden = translate("nb.table.rowsHidden", hiddenRows.toLocaleString());
-  else if (hiddenColumns) hidden = translate("nb.table.colsHidden", hiddenColumns.toLocaleString());
+  const hidden = sheetHiddenText(shape, shownRows, shownColumns);
   return hidden ? text + " " + hidden : text;
 }
+
+export type SheetOptions = {
+  /**
+   * The whole file's shape when `rows` is only its head (ART-11). It replaces
+   * the "N rows × M columns" sentence, which would describe the head alone,
+   * and the note becomes the preview's partial-completeness notice.
+   */
+  summary?: string;
+};
 
 /** "Show all columns" keeps the drawn table within the default cell budget. */
 export const SHEET_MAX_CELLS = SHEET_MAX_ROWS * SHEET_MAX_COLUMNS;
@@ -137,13 +156,23 @@ export function filterSheetRows(
  * every column, with the drawn rows cut to the same cell budget. All of it is
  * client-side and needs no server flag.
  */
-export function renderSheet(container: HTMLElement, rows: Record<string, unknown>[]): void {
+export function renderSheet(
+  container: HTMLElement,
+  rows: Record<string, unknown>[],
+  options: SheetOptions = {},
+): void {
   if (!rows.every((row) => row !== null && typeof row === "object" && !Array.isArray(row))) {
     container.appendChild(el("pre", "renderer-source", JSON.stringify(rows, null, 2)));
     return;
   }
   const cap = sheetCap(rows);
   const note = appendSheetShape(container, rows, cap.safeRows.length, cap.columns.length);
+  const summary = options.summary || "";
+  if (summary) {
+    note.className = "renderer-note renderer-completeness";
+    note.setAttribute("data-state", "partial");
+    note.setAttribute("role", "status");
+  }
   const allKeys = cap.shape.keys;
   const state: { query: string; sortKey: string; dir: 0 | 1 | -1; allColumns: boolean } = {
     query: "",
@@ -196,11 +225,13 @@ export function renderSheet(container: HTMLElement, rows: Record<string, unknown
     status.textContent = notes.join(" · ");
     // The shape sentence follows the drawn columns and the display cap; rows a
     // filter leaves out are the status line's business, not "not shown" here.
-    note.textContent = sheetShapeText(
-      cap.shape,
-      state.query.trim() ? cap.shape.rows : drawn.length,
-      columns.length,
-    );
+    const shownRows = state.query.trim() ? cap.shape.rows : drawn.length;
+    if (summary) {
+      const hidden = sheetHiddenText(cap.shape, shownRows, columns.length);
+      note.textContent = hidden ? summary + " " + hidden : summary;
+    } else {
+      note.textContent = sheetShapeText(cap.shape, shownRows, columns.length);
+    }
     if (widen) {
       widen.textContent = state.allColumns
         ? filesT("sheet.columns.first", SHEET_MAX_COLUMNS)

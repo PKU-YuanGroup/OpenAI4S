@@ -264,3 +264,50 @@ table.sheet th[data-sort="desc"]::after {
   background: var(--bg-200, #efe9de);
   border-radius: 3px;
 }
+
+/* ART-11: a workbook's sheet tabs above its first rows, and the gzip tile. */
+.preview-sheets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 10px 14px 0;
+}
+.preview-sheets-label {
+  margin-right: 4px;
+  font-size: 12px;
+  color: var(--text-400, #6c6a64);
+}
+.preview-sheet {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-300, #55534e);
+  background: transparent;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.preview-sheet:hover {
+  color: var(--text-000, #141413);
+  background: var(--bg-200, #efe9de);
+}
+.preview-sheet.active {
+  color: var(--text-000, #141413);
+  background: var(--bg-200, #efe9de);
+  border-color: var(--text-400, #6c6a64);
+  cursor: default;
+}
+.thumb-compressed {
+  flex-direction: column;
+  gap: 4px;
+}
+.thumb-kind {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-300, #55534e);
+}

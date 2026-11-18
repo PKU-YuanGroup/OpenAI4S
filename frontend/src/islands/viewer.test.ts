@@ -31,6 +31,19 @@ describe("isTextEditable (app.js:9458-9461)", () => {
     expect(isTextEditable({ id: "1", filename: "blob", content_type: "text/plain" })).toBe(true);
     expect(isTextEditable({ id: "1", filename: "blob", content_type: "application/json" })).toBe(true);
   });
+
+  it("never offers a text editor over a gzip stream or a workbook (ART-11)", () => {
+    // `…openxmlformats…` contains "xml"; a stale `.csv.gz` row still says text/csv.
+    expect(
+      isTextEditable({
+        id: "1",
+        filename: "cohort.xlsx",
+        content_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }),
+    ).toBe(false);
+    expect(isTextEditable({ id: "1", filename: "counts.csv.gz", content_type: "text/csv" })).toBe(false);
+    expect(isTextEditable({ id: "1", filename: "data.csv", content_type: "application/gzip" })).toBe(false);
+  });
 });
 
 

@@ -170,7 +170,27 @@ _BINARY_EXT = (
     ".mol2",
     ".sdf",
     ".xyz",
+    ".gz",
+    ".gzip",
+    ".tgz",
+    ".xlsx",
 )
+#: ART-11: gzip is gzip by its magic number, whatever the file is called. A
+#: ``.csv`` holding ``gzip -c`` output was typed ``text/csv``, and its bytes were
+#: decoded as a table in the viewer and its thumbnail.
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _content_type_for_bytes(declared: str, head: bytes) -> str:
+    return "application/gzip" if head.startswith(_GZIP_MAGIC) else declared
+
+
+def _file_head(path: Path, size: int = 2) -> bytes:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(size)
+    except OSError:
+        return b""
 
 
 class ArtifactOperationError(Exception):
@@ -2969,13 +2989,16 @@ class ArtifactManager:
                 record = self.store.commit_artifact_upload(
                     path=str(target),
                     filename=stored_filename,
-                    content_type=(
+                    content_type=_content_type_for_bytes(
                         (
-                            exact_artifact.get("content_type")
-                            or self.guess_content_type(stored_filename)
-                        )
-                        if exact_artifact is not None
-                        else self.guess_content_type(target.name)
+                            (
+                                exact_artifact.get("content_type")
+                                or self.guess_content_type(stored_filename)
+                            )
+                            if exact_artifact is not None
+                            else self.guess_content_type(target.name)
+                        ),
+                        raw[:2],
                     ),
                     size_bytes=len(raw),
                     checksum=hashlib.sha256(raw).hexdigest(),
@@ -3543,7 +3566,10 @@ class ArtifactManager:
         record_fields: dict[str, Any] = {
             "path": str(path),
             "filename": relative,
-            "content_type": self.guess_content_type(relative),
+            "content_type": _content_type_for_bytes(
+                self.guess_content_type(relative),
+                _file_head(frozen.path if frozen is not None else path),
+            ),
             "size_bytes": size,
             "checksum": checksum,
             "producing_cell_id": cell_id,
@@ -4139,7 +4165,14 @@ def _capture_snippet(index: int) -> str:
 def is_text_editable(filename: str | None, content_type: str | None) -> bool:
     name = (filename or "").lower()
     content = (content_type or "").lower()
-    if content.startswith("image/") or name.endswith(_BINARY_EXT):
+    # A gzip stream or an Office Open XML zip (``…openxmlformats…`` contains
+    # "xml") is a binary container; saving text over it destroys the file.
+    if (
+        content.startswith("image/")
+        or "gzip" in content
+        or "openxmlformats" in content
+        or name.endswith(_BINARY_EXT)
+    ):
         return False
     return (
         name.endswith(_TEXT_EDIT_EXT)

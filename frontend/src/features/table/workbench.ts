@@ -2,11 +2,13 @@ import { artifactWorkbench, _kc } from "../../stores/notebook";
 import {
   api,
   apiErrorText,
+  ArtifactReadError,
   el,
   fetchArtifactText,
   isArtifactReadAborted,
   LEGACY_TABLE_PREVIEW_CHARACTERS,
   looksBinary,
+  PREVIEW_READ_MAX_BYTES,
   previewReadSignal,
   translate,
 } from "../artifacts/api";
@@ -17,6 +19,7 @@ import { previewSlice } from "../artifacts/cache";
 import { partialNotice, previewDownload } from "../artifacts/partial";
 import { parseTable } from "../csv/csv";
 import { renderSheet } from "../artifacts/sheet";
+import { renderTablePreview } from "../artifacts/table-preview";
 import { planTableViewer, tableCatalogPosture } from "./catalog";
 import { tableT } from "./copy";
 import {
@@ -95,19 +98,45 @@ function legacySourceStatus(
   previewDownload(container, a, url);
 }
 
-/** Flag-off path: client parse + capped sheet. Never hits /table/profile or /export.csv. */
+function legacyBinaryCard(container: HTMLElement, a: ArtifactRow, url: string): void {
+  const card = el("div", "download-artifact");
+  card.appendChild(el("strong", null, a.filename || "artifact"));
+  const link = el("a", "solid-btn small", translate("common.download"));
+  link.setAttribute("href", url);
+  link.setAttribute("download", a.filename || "artifact");
+  card.appendChild(link);
+  container.appendChild(card);
+}
+
+/** The row's size is already over what the browser may read for a preview. */
+function overReadBudget(a: ArtifactRow): boolean {
+  return typeof a.size_bytes === "number" && a.size_bytes > PREVIEW_READ_MAX_BYTES;
+}
+
+/**
+ * Flag-off path: client parse + capped sheet. Never hits /table/profile or /export.csv.
+ *
+ * ART-11: a file over the read budget is not refused any more; the server's
+ * bounded `preview-table` head is shown instead, with the file's row count. A
+ * file whose bytes are not text (gzip or a workbook stored under a table type)
+ * is handed to the same route, which reads it by its bytes, and keeps the
+ * binary card when the server says it is not a table either.
+ */
 export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: string): void {
+  if (overReadBudget(a)) {
+    renderTablePreview(container, a, url, { reason: "too_large" });
+    return;
+  }
   fetchArtifactText(url, { signal: previewReadSignal(container), onEncoding: noteEncodingIn(container) })
     .then((text) => {
       if (!container.isConnected) return;
       if (looksBinary(text)) {
-        const card = el("div", "download-artifact");
-        card.appendChild(el("strong", null, a.filename || "artifact"));
-        const link = el("a", "solid-btn small", translate("common.download"));
-        link.setAttribute("href", url);
-        link.setAttribute("download", a.filename || "artifact");
-        card.appendChild(link);
-        container.appendChild(card);
+        renderTablePreview(container, a, url, {
+          onRefused: () => {
+            legacyBinaryCard(container, a, url);
+            return true;
+          },
+        });
         return;
       }
       const rows = parseTable(text, a);
@@ -122,6 +151,10 @@ export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: s
     })
     .catch((error: unknown) => {
       if (isArtifactReadAborted(error) || !container.isConnected) return;
+      if (error instanceof ArtifactReadError && error.kind === "too_large") {
+        renderTablePreview(container, a, url, { reason: "too_large" });
+        return;
+      }
       renderLegacyFailure(container, a, url, error);
     });
 }

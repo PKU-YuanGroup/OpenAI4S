@@ -15,6 +15,7 @@ import {
   THUMB_READ_MAX_BYTES,
 } from "./api";
 import { filesT, readFailureText } from "./copy";
+import { compressedTile, isCompressedArtifact } from "./table-preview";
 import { encodingLabel } from "./text-encoding";
 import type { ArtifactRow } from "./types";
 import { MOL_EXT, TEXT_EXT } from "./types";
@@ -554,7 +555,11 @@ export function tileThumb(a: ArtifactRow): HTMLElement {
   const t = el("div", "thumb");
   const ct = a.content_type || "";
   const nm = (a.filename || "").toLowerCase();
-  if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm)) {
+  // ART-11: checked first, because a `.csv.gz` may still carry `text/csv`;
+  // its bytes are compressed and a text preview of them is noise.
+  if (isCompressedArtifact(a)) {
+    t.appendChild(compressedTile());
+  } else if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm)) {
     fillImageThumb(t, a);
   } else if (/csv|tsv/.test(ct) || /\.(csv|tsv)$/i.test(nm)) {
     const d = el("div", "data");

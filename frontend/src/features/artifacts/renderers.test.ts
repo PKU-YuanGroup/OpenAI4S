@@ -1192,7 +1192,8 @@ describe("every preview entry fails visibly and retries (A1)", () => {
     expect(successNode(root, success), `${id} did not recover`).toBe(true);
   });
 
-  it.each(cases)("$id reports the read limit with retry and the exact-version download", async ({ id, body, success }) => {
+  // ART-11: the table no longer stops at the read limit; see the test below.
+  it.each(cases.filter(({ id }) => id !== "table"))("$id reports the read limit with retry and the exact-version download", async ({ id, body, success }) => {
     setArtifactsFetch(
       async () =>
         ({
@@ -1221,6 +1222,42 @@ describe("every preview entry fails visibly and retries (A1)", () => {
     retry!.onclick?.();
     await flush();
     expect(successNode(root, success), `${id} did not recover`).toBe(true);
+  });
+
+  it("table over the read limit shows the server's bounded head, with retry and the exact-version download (ART-11)", async () => {
+    const calls: string[] = [];
+    let previewStatus = 500;
+    const head = {
+      kind: "table", format: "csv", delimiter: ",", encoding: "utf-8", compression: null,
+      inner_filename: null, sheets: [], sheet: null, columns: ["a", "b"], row_numbers: null,
+      rows: [["1", "2"]], total_rows: 900000, total_rows_lower_bound: null, total_columns: 2,
+      truncated: true, size_bytes: 40 * 1024 * 1024,
+    };
+    setArtifactsFetch(async (url) => {
+      calls.push(url);
+      if (url.includes("/preview-table")) {
+        return previewStatus === 200
+          ? new Response(JSON.stringify(head), { status: 200 })
+          : new Response(JSON.stringify({ error: "boom" }), { status: previewStatus });
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-length": String(9 * 1024 * 1024) }),
+        body: { cancel: async () => {}, getReader: () => { throw new Error("the body must not be read"); } },
+      } as unknown as Response;
+    });
+    const root = mount("table");
+    // The read limit hands over to the server's head of this exact version...
+    await vi.waitFor(() => expect(card(root)).toBeTruthy());
+    expect(calls).toContain("/api/v1/artifacts/a/preview-table?version_id=v1");
+    // ...whose own failure is visible, retryable and keeps the download.
+    expect(downloadHref(root)).toBe("/api/v1/artifacts/versions/v1");
+    previewStatus = 200;
+    retryButton(root)!.onclick?.();
+    await vi.waitFor(() => expect(walk(root).some((node) => node.tagName === "TABLE")).toBe(true));
+    expect(texts(root).some((text) => text.includes((900000).toLocaleString()))).toBe(true);
+    expect(downloadHref(root)).toBe("/api/v1/artifacts/versions/v1");
   });
 
   it("pdf fails beside the frame, keeps sibling panels, and opens at the page chosen meanwhile", async () => {
