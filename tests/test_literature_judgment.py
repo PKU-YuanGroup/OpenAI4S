@@ -661,3 +661,107 @@ def test_check_claims_rows_carry_the_billed_usage(kernel_mod) -> None:
     assert rows["missing"]["status"] == "not_found_needs_review"
     assert rows["missing"]["usage"] == {}
     assert rows["cached"]["usage"] == {}
+
+
+# --- SKL-1: a failed literature lookup is an error, never "0 hits" ----------
+#
+# `litrev_get` called `host.web_fetch` with its 20,000-character default; one
+# OpenAlex page is ~130,000 characters, so the JSON came back truncated, failed
+# to parse, and was swallowed as None — every `search_openalex` returned [].
+
+
+class _FetchHost:
+    def __init__(self, responder) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self._responder = responder
+
+    def get_user_email(self):
+        raise RuntimeError("no contact address")
+
+    def web_fetch(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self._responder(url, kwargs)
+
+
+def test_search_openalex_asks_for_the_whole_page_and_only_the_fields_it_uses(
+    kernel_mod,
+):
+    page = {
+        "results": [
+            {
+                "doi": "https://doi.org/10.1/x",
+                "title": "GLP-1 and cognition",
+                "publication_year": 2024,
+                "cited_by_count": 12,
+                "primary_location": {"source": {"display_name": "Lancet"}},
+                "open_access": {"oa_url": None},
+            }
+        ]
+    }
+    host = _FetchHost(lambda url, kw: {"content": json.dumps(page), "truncated": False})
+    kernel_mod.lr_sdk = lambda: host
+
+    hits = kernel_mod.search_openalex("GLP-1 Alzheimer", n=5)
+
+    assert hits == [
+        {
+            "doi": "10.1/x",
+            "title": "GLP-1 and cognition",
+            "year": 2024,
+            "cited_by": 12,
+            "venue": "Lancet",
+            "oa_url": None,
+        }
+    ]
+    url, kwargs = host.calls[0]
+    assert kwargs["max_chars"] == kernel_mod.LITREV_MAX_CHARS
+    assert "select=doi,title,publication_year,cited_by_count" in url
+
+
+def test_a_truncated_or_unparsable_page_raises_instead_of_reading_as_empty(kernel_mod):
+    truncated = _FetchHost(
+        lambda url, kw: {"content": '{"results": [', "truncated": True}
+    )
+    kernel_mod.lr_sdk = lambda: truncated
+    with pytest.raises(kernel_mod.LiteratureLookupError, match="larger than"):
+        kernel_mod.search_openalex("anything")
+
+    garbled = _FetchHost(
+        lambda url, kw: {"content": '{"results": [', "truncated": False}
+    )
+    kernel_mod.lr_sdk = lambda: garbled
+    with pytest.raises(kernel_mod.LiteratureLookupError, match="not valid JSON"):
+        kernel_mod.search_openalex("anything")
+
+
+def test_a_rate_limit_is_retried_once_then_reported(kernel_mod, monkeypatch):
+    def refuse(url, kw):
+        raise RuntimeError("web_fetch: HTTP Error 429: Too Many Requests")
+
+    host = _FetchHost(refuse)
+    kernel_mod.lr_sdk = lambda: host
+    monkeypatch.setattr(kernel_mod.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(kernel_mod.LiteratureLookupError, match="429"):
+        kernel_mod.search_openalex("anything")
+    assert len(host.calls) == 2
+    # Non-strict callers (DOI verification falls back to doi.org) still get None.
+    assert kernel_mod.litrev_get("https://api.crossref.org/works/10.1/x") is None
+
+
+def test_expand_citations_treats_an_unknown_doi_as_empty_but_not_a_failure(kernel_mod):
+    def not_found(url, kw):
+        raise RuntimeError("web_fetch: HTTP Error 404: Not Found")
+
+    kernel_mod.lr_sdk = lambda: _FetchHost(not_found)
+    assert kernel_mod.expand_citations("10.1/unknown") == {
+        "references": [],
+        "cited_by": [],
+    }
+
+    def blocked(url, kw):
+        raise RuntimeError("skill host_only manifest does not declare destination")
+
+    kernel_mod.lr_sdk = lambda: _FetchHost(blocked)
+    with pytest.raises(kernel_mod.LiteratureLookupError, match="manifest"):
+        kernel_mod.expand_citations("10.1/x")
