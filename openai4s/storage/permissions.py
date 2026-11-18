@@ -463,7 +463,12 @@ class PermissionRuleRepository:
                 continue
             if rule["decision"] == "deny":
                 return "deny"
-            if _rule_widens_compound_bash(tool, pattern_input or "", rule_pattern):
+            # Only a rule that grants is narrowed to simple commands. A wildcard
+            # `ask` rule still covers a chain: skipping it let a broad allow
+            # (`*`) win for `rm -rf x; echo y` over the user's `rm *` -> ask.
+            if rule["decision"] == "allow" and _rule_widens_compound_bash(
+                tool, pattern_input or "", rule_pattern
+            ):
                 continue
             key = (
                 0 if rule_tool in ("*", "") else 1,

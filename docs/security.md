@@ -239,11 +239,12 @@ command, a prefix of it (`python3 -c *`, `which *`) and `*` (never the default).
 A prefix is offered only for a single simple command (quote-aware: the `;` in
 `python3 -c "a; b"` is quoted), only from plain words, and never for a program
 whose arguments are themselves a command (`bash -c`, `env`, `sudo`, `xargs`, …).
-Because `*` in a rule spans shell metacharacters, a wildcard `bash` rule
+Because `*` in a rule spans shell metacharacters, a wildcard `bash` allow rule
 authorizes only a target that is one simple command: `git *` allows
 `git push` but not `git x && curl … | sh`, which asks again unless a rule spells
-it out exactly. The explicit allow-everything `*` and every `deny` rule keep
-their full reach.
+it out exactly. The explicit allow-everything `*`, every `deny` rule and every
+wildcard `ask` rule keep their full reach, so `rm *` → ask still asks for
+`rm -rf x; echo y` even under an allow-everything rule.
 
 ### Egress allowlist requires a proven kernel boundary
 
