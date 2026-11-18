@@ -48,10 +48,9 @@ const COPY: CopyTable = {
     "onboarding.test.needProfile": "先在第 1 步选择或添加一个模型，才能测试连接。",
     "onboarding.readiness.network": "联网",
     "onboarding.readiness.appNetwork":
-      "应用联网（OpenAI4S 替智能体发出的请求：网页搜索、读取网页、科学数据库）：{0}",
+      "应用联网（OpenAI4S 替智能体发出的请求：网页搜索、读取网页、科学数据库）：{0}。调用模型服务不受这个开关影响。",
     "onboarding.readiness.appNetworkOn": "已允许",
     "onboarding.readiness.appNetworkOff": "已关闭",
-    "onboarding.readiness.modelAlways": "调用模型服务不受这个开关影响。",
     "onboarding.readiness.egressOff": "域名限制：未开启，应用联网可以访问任何网站。",
     "onboarding.readiness.egressOn": "域名限制：已开启，应用联网只能访问白名单里的域名和你批准过的域名。",
     "onboarding.readiness.kernelNetwork":
@@ -67,6 +66,10 @@ const COPY: CopyTable = {
     "onboarding.readiness.yes": "是",
     "onboarding.readiness.no": "否",
     "onboarding.env.title": "科研环境（Python / R）",
+    "onboarding.env.state.ready": "已就绪：Python 和 R 科研环境里的常用包都已核对。",
+    "onboarding.env.state.needs_setup": "这些可选环境还没有创建。",
+    "onboarding.env.state.needs_repair": "环境已创建，但缺少一些软件包。",
+    "onboarding.env.state.unavailable": "这台电脑上暂时无法检查这些环境。",
     "onboarding.env.optional":
       "这些是 OpenAI4S 管理的可选环境，装好了固定版本的常用科研包。没有它们时，Python 代码在 OpenAI4S 自己的 Python（内置环境 base）里运行，R 代码用这台电脑上找到的 R。只有管理员要求使用标准环境时，缺少它们才会阻止运行代码（那时工作台顶部会有提示）。",
     "onboarding.env.missing": "还没有创建的环境",
@@ -131,10 +134,9 @@ const COPY: CopyTable = {
     "onboarding.test.needProfile": "Choose or add a model in step 1 before testing the connection.",
     "onboarding.readiness.network": "Network access",
     "onboarding.readiness.appNetwork":
-      "App networking (requests OpenAI4S makes for the agent: web search, reading web pages, science databases): {0}",
+      "App networking (requests OpenAI4S makes for the agent: web search, reading web pages, science databases): {0}. Calls to the model service are not affected by this switch.",
     "onboarding.readiness.appNetworkOn": "allowed",
     "onboarding.readiness.appNetworkOff": "off",
-    "onboarding.readiness.modelAlways": "Calls to the model service are not affected by this switch.",
     "onboarding.readiness.egressOff": "Domain limit: off; app networking can reach any website.",
     "onboarding.readiness.egressOn":
       "Domain limit: on; app networking reaches only allowlisted domains and the ones you approved.",
@@ -152,6 +154,10 @@ const COPY: CopyTable = {
     "onboarding.readiness.yes": "yes",
     "onboarding.readiness.no": "no",
     "onboarding.env.title": "Science environments (Python / R)",
+    "onboarding.env.state.ready": "Ready: the common packages in the Python and R science environments were checked.",
+    "onboarding.env.state.needs_setup": "These optional environments have not been created yet.",
+    "onboarding.env.state.needs_repair": "The environments exist but are missing some packages.",
+    "onboarding.env.state.unavailable": "These environments could not be checked on this computer right now.",
     "onboarding.env.optional":
       "These optional environments are managed by OpenAI4S and hold pinned versions of common science packages. Without them, Python code runs in OpenAI4S's own Python (the built-in base environment) and R code uses the R found on this computer. Missing environments block code only when an administrator requires the standard environments (the workbench then shows a notice at the top).",
     "onboarding.env.missing": "Environments not created yet",

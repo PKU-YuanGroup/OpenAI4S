@@ -3,10 +3,7 @@ import { useEffect, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { copyFailedText, copyText } from "../../features/chrome/clipboard";
 import { localClock } from "../../features/chrome/dom";
-import {
-  standardReadinessStateText,
-  type StandardReadiness,
-} from "../../features/customize/environment";
+import type { StandardReadiness } from "../../features/customize/environment";
 import { hint } from "../../features/customize/host";
 import { ot } from "../../features/onboarding/copy";
 import type { OnboardingNetwork, OnboardingStatus } from "../../features/onboarding/status";
@@ -39,6 +36,15 @@ export function CopyCommand({ item }: { item: { command: string; label: string }
   );
 }
 
+/** The card's one-line state, without "standard profile" or "readiness" jargon. */
+function environmentSummary(readiness: StandardReadiness): string {
+  if (readiness.ready) return ot("onboarding.env.state.ready");
+  if (readiness.state === "needs_setup" || readiness.state === "needs_repair") {
+    return ot("onboarding.env.state." + readiness.state);
+  }
+  return ot("onboarding.env.state.unavailable");
+}
+
 /** A standard environment's name with what it is: "python" alone read as "your Python". */
 function environmentLabel(name: string): string {
   const key = "onboarding.env.name." + name;
@@ -69,7 +75,7 @@ export function EnvironmentCard({
       <div class="standard-readiness-head">
         <div>
           <div class="standard-readiness-title">{ot("onboarding.env.title")}</div>
-          <div class="standard-readiness-summary">{standardReadinessStateText(readiness)}</div>
+          <div class="standard-readiness-summary">{environmentSummary(readiness)}</div>
         </div>
         {action}
       </div>
@@ -149,8 +155,7 @@ function NetworkCard({
           network.allow_network
             ? ot("onboarding.readiness.appNetworkOn")
             : ot("onboarding.readiness.appNetworkOff"),
-        )}{" "}
-        {ot("onboarding.readiness.modelAlways")}
+        )}
       </div>
       <div class="ds" data-network="egress">
         {network.egress === "allowlist"

@@ -212,7 +212,7 @@ describe("readiness in-place refresh", () => {
     expect(text(alert)).toContain("onboarding.readiness.refreshFailed");
     expect(text(alert)).toContain("disconnected");
     // The previous readiness result is still rendered, not cleared.
-    expect(text(environmentCard(panel))).toContain("environment.readiness.needsSetup");
+    expect(text(environmentCard(panel))).toContain("onboarding.env.state.needs_setup");
     // The action is the retry.
     (button.props!.onClick as () => void)();
     expect(onRefresh).toHaveBeenCalledTimes(1);
