@@ -671,6 +671,28 @@ def test_ipython_syntax_fails_with_a_hint():
         assert "SyntaxError" in plain and "IPython" not in plain
 
 
+def test_input_fails_at_once_and_stdin_is_not_the_protocol_pipe():
+    """RUN-9: `input()` used to block on the protocol pipe forever."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        asked = k.execute("input('sample name? ')")
+        assert "StdinNotImplementedError" in asked["error"]
+        assert "no interactive input" in asked["error"]
+        # Code that handles end-of-input takes its no-input path.
+        handled = k.execute(
+            "try:\n    input()\nexcept EOFError:\n    print('no input')"
+        )
+        assert handled["stdout"] == "no input\n"
+        assert k.execute("import sys\nsys.stdin.read()")["stdout"] == "''\n"
+        child = k.execute(
+            "import subprocess, sys\n"
+            "subprocess.run([sys.executable, '-c', "
+            "'import sys; print(len(sys.stdin.read()))'], capture_output=True, "
+            "text=True, timeout=30).stdout.strip()"
+        )
+        assert child["stdout"] == "'0'\n"
+        assert k.execute("1 + 1")["stdout"] == "2\n"
+
+
 def test_error_lineno():
     with Kernel(dispatcher=_echo_dispatcher) as k:
         r = k.execute("a = 1\nb = 2\nraise ValueError('boom')")

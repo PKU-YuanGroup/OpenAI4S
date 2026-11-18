@@ -30,6 +30,7 @@ Protocol (JSON-per-line):
 from __future__ import annotations
 
 import ast
+import builtins
 import hashlib
 import io
 import json
@@ -259,6 +260,17 @@ def _setup_protocol_channels() -> None:
     # Alias fd 1 -> fd 2: stray writes to stdout now hit stderr, never the wire.
     try:
         os.dup2(2, 1)
+    except OSError:
+        pass
+    # And fd 0 -> /dev/null, for the same reason in the other direction. It was
+    # still the protocol pipe, so `input()` in a cell -- or any subprocess that
+    # inherited stdin -- blocked on it forever, and would have consumed the
+    # next protocol frame had one arrived. Reading stdin now sees EOF at once.
+    try:
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        if devnull != 0:  # 0 itself when fd 0 was closed: already in place
+            os.dup2(devnull, 0)
+            os.close(devnull)
     except OSError:
         pass
 
@@ -875,6 +887,21 @@ def display(*objs: object) -> None:
 
 
 _NS["display"] = display
+
+
+class StdinNotImplementedError(EOFError):
+    """`input()` in a cell: nobody is at a terminal to answer it.
+
+    An EOFError, so code that already handles end-of-input (`except EOFError`)
+    takes its no-input path; IPython's kernel raises an error of this name.
+    """
+
+
+def _no_interactive_input(prompt: object = "") -> str:
+    raise StdinNotImplementedError(
+        "input() is not supported: OpenAI4S cells have no interactive input. "
+        "Set the value in the code instead, e.g. name = 'sample_1'."
+    )
 
 
 def _drain_skill_sidecar_loads() -> list[dict]:
@@ -1827,6 +1854,9 @@ def main() -> None:
     _setup_protocol_channels()
     if not _initialize_manager_attestation():
         return
+    # stdin is /dev/null now (see `_setup_protocol_channels`); make `input()`
+    # say why it cannot work instead of failing with a bare EOFError.
+    builtins.input = _no_interactive_input
     # Kernel mode is process identity established by the manager at spawn.
     # Capture both it and the runner object in this driver frame. This keeps
     # ordinary cell mutations of ``os.environ`` and ``__main__`` globals from
