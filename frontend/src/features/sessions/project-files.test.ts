@@ -250,6 +250,7 @@ describe("project folder persistence", () => {
     await openProject("B");
     expect(binds.newSession).toHaveBeenCalledExactlyOnceWith("B", {
       restoreOnFailure: { frameId: "session-A", projectId: "A" },
+      reuseEmpty: true,
     });
   });
 

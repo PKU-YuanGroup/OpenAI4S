@@ -204,10 +204,15 @@ def test_another_executions_user_message_is_not_carried_into_a_new_window():
 # --------------------------------------------------------------------------
 
 
-def _call(port, method, path, *, token):
+def _call(port, method, path, *, token, body=None):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
     try:
-        conn.request(method, API + path, headers={local_auth.TOKEN_HEADER: token})
+        headers = {local_auth.TOKEN_HEADER: token}
+        payload = None
+        if body is not None:
+            payload = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        conn.request(method, API + path, body=payload, headers=headers)
         response = conn.getresponse()
         return response.status, json.loads(response.read() or b"{}")
     finally:
@@ -281,6 +286,82 @@ def test_the_approvals_route_returns_every_decision_in_order(tmp_path):
 
         status, missing = _call(port, "GET", "/frames/f-never/approvals", token=token)
         assert status == 404, missing
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        runner.close()
+
+
+# --------------------------------------------------------------------------
+# a session with only an upload is a session; a project visit reuses one
+# --------------------------------------------------------------------------
+
+
+def test_an_uploaded_session_stays_listed_and_a_project_visit_reuses_an_empty_one(
+    tmp_path,
+):
+    httpd, port = bound_gateway_server()
+    cfg = _cfg(tmp_path, host="127.0.0.1", port=port)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    httpd.RequestHandlerClass = gateway_mod.make_handler(cfg, runner.hub, runner)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    token = local_auth.load_or_mint(cfg.data_dir)
+
+    def call(method, path, body=None):
+        return _call(port, method, path, token=token, body=body)
+
+    try:
+        status, project = call("POST", "/projects", {"name": "qPCR"})
+        assert status == 200, project
+        pid = project["project_id"]
+
+        # The first visit has nothing to reuse and creates a session.
+        status, first = call(
+            "POST", "/frames", {"project_id": pid, "reuse_empty": True}
+        )
+        assert status == 200, first
+        # Its only content is an upload: it was hidden from the list while the
+        # project card counted it, and the next visit created another frame.
+        status, uploaded = call(
+            "POST",
+            "/uploads",
+            {
+                "filename": "plate.csv",
+                "content_base64": "Z2VuZSxjdAo=",
+                "project_id": pid,
+                "frame_id": first["id"],
+            },
+        )
+        assert status == 200, uploaded
+        status, listed = call("GET", f"/frames?project_id={pid}")
+        assert status == 200, listed
+        assert [row["id"] for row in listed["frames"]] == [first["id"]]
+
+        # The uploaded session is in use, so a visit makes a new empty one...
+        status, empty = call(
+            "POST", "/frames", {"project_id": pid, "reuse_empty": True}
+        )
+        assert status == 200, empty
+        assert empty["id"] != first["id"]
+        # ...and every later visit lands in that same one.
+        for _visit in range(2):
+            status, again = call(
+                "POST", "/frames", {"project_id": pid, "reuse_empty": True}
+            )
+            assert status == 200, again
+            assert again["id"] == empty["id"]
+        # An explicit new session is still new.
+        status, fresh = call("POST", "/frames", {"project_id": pid})
+        assert status == 200, fresh
+        assert fresh["id"] not in {first["id"], empty["id"]}
+        roots = [
+            frame["frame_id"]
+            for frame in runner.store.browse_frames(project_id=pid, limit=50)
+        ]
+        assert sorted(roots) == sorted([first["id"], empty["id"], fresh["id"]])
+        # The empty ones stay out of the list.
+        status, listed = call("GET", f"/frames?project_id={pid}")
+        assert [row["id"] for row in listed["frames"]] == [first["id"]]
     finally:
         httpd.shutdown()
         httpd.server_close()

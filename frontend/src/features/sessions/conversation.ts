@@ -56,7 +56,7 @@ export async function newSession(projectId?: string, options?: NewSessionOptions
     // With a conversation already open there is nothing to share: uploads bind
     // to currentId directly, so the only thing the shared promise could do is
     // collapse two deliberate New-session clicks into one frame.
-    const creation = createUploadSession(targetProject, { fresh });
+    const creation = createUploadSession(targetProject, { fresh, reuseEmpty: !!options?.reuseEmpty });
     const frameId = await creation;
     if (currentId.value === frameId && (project.value || null) === targetProject) {
       // The shared creation adopted its own frame and is still opening it.

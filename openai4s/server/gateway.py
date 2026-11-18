@@ -4190,6 +4190,42 @@ class SessionRunner:
         self.project_history_autosave.schedule_session(fid)
         return fid
 
+    def latest_unused_session(
+        self,
+        project_id: str,
+        *,
+        owner_user_id: str | None = None,
+        visible_to_user_id: str | None = None,
+    ) -> str | None:
+        """The newest root session in this project that nobody has used yet.
+
+        "Unused" is the predicate the session list hides (`_session_is_unused`),
+        so a frame reused here is exactly one the user could not otherwise
+        reach. Team mode reuses only the caller's own frames; another member's
+        empty session is theirs. Nothing is reused while the project is being
+        deleted or while the frame runs anything.
+        """
+        with self._lock:
+            if project_id in self._deleting_projects:
+                return None
+        running = self.running_frames()
+        for frame in self.store.browse_frames(
+            project_id=project_id,
+            roots_only=True,
+            limit=20,
+            visible_to_user_id=visible_to_user_id,
+        ):
+            fid = str(frame.get("frame_id") or "")
+            if not fid or fid in running or self._execution_active(fid):
+                continue
+            if owner_user_id is not None:
+                owner = self.store.team.session_owner(fid) or {}
+                if owner.get("user_id") != owner_user_id:
+                    continue
+            if _session_is_unused(self.store, _frame_json(frame, self.store)):
+                return fid
+        return None
+
     def delete_project(self, project_id: str) -> dict[str, Any]:
         roots: tuple[str, ...] = ()
         with self._lock:
@@ -17398,13 +17434,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         for f in batch:
                             fj = _frame_json(f, store)
                             # hide abandoned empty sessions (no messages, no
-                            # cells, no title) — but keep REPL-only sessions
-                            if (
-                                not fj["message_count"]
-                                and not fj.get("name")
-                                and not fj.get("task_summary")
-                                and not store.cell_count(f["frame_id"])
-                            ):
+                            # cells, no title, no files) — but keep REPL-only
+                            # sessions and ones that only received an upload
+                            if _session_is_unused(store, fj):
                                 continue
                             fj["running"] = f["frame_id"] in running
                             fj["kernel_alive"] = runner.kernel_alive(f["frame_id"])
@@ -17448,7 +17480,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "POST /projects or list them with GET /projects",
                             "project_id_required",
                         )
-                    fid = runner.create_session(
+                    # `reuse_empty`: entering a project with nothing listed
+                    # (the workbench's project open). Every entry used to
+                    # create another frame nobody had used, each hidden from
+                    # the list, so the project accumulated empty sessions.
+                    fid = (
+                        runner.latest_unused_session(
+                            pid,
+                            owner_user_id=self._team_owner_user_id(),
+                            visible_to_user_id=self._team_visibility_filter(),
+                        )
+                        if b.get("reuse_empty") is True
+                        else None
+                    ) or runner.create_session(
                         pid,
                         model=b.get("model"),
                         owner_user_id=self._team_owner_user_id(),
@@ -20985,6 +21029,26 @@ def _frame_json(f: dict | None, store: Store) -> dict:
     out["model_profile_id"] = f.get("model_profile_id") or None
     out["model_profile_revision"] = f.get("model_profile_revision") or None
     return out
+
+
+def _session_is_unused(store: Store, fj: dict) -> bool:
+    """A session nobody has used: no message, title, Cell or file.
+
+    The session list hides these (abandoned "New session" clicks), and a
+    project open reuses one rather than minting another. A file counts: a
+    session that has only received an upload was hidden from the list while
+    its project card counted it, and the upload could be found only through
+    the project's file view.
+    """
+    fid = str(fj.get("id") or "")
+    return bool(
+        fid
+        and not fj.get("message_count")
+        and not fj.get("name")
+        and not fj.get("task_summary")
+        and not store.cell_count(fid)
+        and not store.list_artifacts({"root_frame_id": fid})
+    )
 
 
 #: The approval-card fields a history read may republish from a request's

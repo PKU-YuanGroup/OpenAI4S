@@ -388,8 +388,14 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
   } else {
     const origin = pendingProjectOrigin;
     const retained = currentId.value;
-    if (retained) await binds.newSession(id, { restoreOnFailure: { frameId: retained, projectId: previousProject } });
-    else await binds.newSession(id);
+    // Nothing listed: land in the newest session nobody has used, if there
+    // is one, instead of creating another empty frame on every visit.
+    if (retained) {
+      await binds.newSession(id, {
+        restoreOnFailure: { frameId: retained, projectId: previousProject },
+        reuseEmpty: true,
+      });
+    } else await binds.newSession(id, { reuseEmpty: true });
     if (pendingProjectOrigin === origin) pendingProjectOrigin = null;
   }
 }

@@ -128,4 +128,14 @@ describe("project navigation owns every pending list read", () => {
     expect(project.value).toBe("A");
     expect(folders.value).toEqual([{ folder_id: "folder-A" }]);
   });
+
+  it("asks to reuse an unused session when the project lists none", async () => {
+    // Every visit to a project whose sessions were all empty created another
+    // empty frame; the server now hands back the newest unused one instead.
+    vi.mocked(api).mockImplementation(async (path) =>
+      path.startsWith("/frames?") ? { frames: [] } : response(path));
+    await openProject("A");
+    expect(binds.openConversation).not.toHaveBeenCalled();
+    expect(binds.newSession).toHaveBeenCalledWith("A", { reuseEmpty: true });
+  });
 });

@@ -118,7 +118,7 @@ describe("session navigation owns every response", () => {
 
   it("a successful empty read creates once, and Home invalidates a parked open", async () => {
     await openProject("A");
-    expect(binds.newSession).toHaveBeenCalledExactlyOnceWith("A");
+    expect(binds.newSession).toHaveBeenCalledExactlyOnceWith("A", { reuseEmpty: true });
     vi.mocked(binds.newSession).mockClear();
     const old = deferred(); vi.mocked(api).mockReturnValueOnce(old.promise);
     const opening = openProject("A");

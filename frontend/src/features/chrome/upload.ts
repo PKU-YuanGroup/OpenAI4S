@@ -95,7 +95,7 @@ export function readUploadFile(file: File): Promise<string> {
  */
 export function createUploadSession(
   projectId: string | null,
-  options?: { fresh?: boolean },
+  options?: { fresh?: boolean; reuseEmpty?: boolean },
 ): UploadCreation {
   const shared = !(options && options.fresh);
   const key = projectId ? `project:${projectId}` : "project:<none>";
@@ -115,6 +115,9 @@ export function createUploadSession(
       body: JSON.stringify({
         project_id: projectId || undefined,
         model: defaultModelName.value,
+        // A project open may land in the newest session nobody has used
+        // rather than adding another empty one on every visit.
+        ...(options && options.reuseEmpty ? { reuse_empty: true } : {}),
       }),
     })) as { id?: string } | null;
     const frameId = (f && f.id) || "";
