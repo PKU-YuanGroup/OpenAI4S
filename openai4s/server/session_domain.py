@@ -797,7 +797,11 @@ class SessionDomainService:
             language=language,
             branch_id=self.store.active_session_branch(root_frame_id),
             variant=variant,
-            title=str((frame or {}).get("name") or "") or None,
+            # The name the sidebar shows: a set name, else the summary.
+            title=str(
+                (frame or {}).get("name") or (frame or {}).get("task_summary") or ""
+            )
+            or None,
         )
 
     def execution_sources(self, root_frame_id: str) -> dict[str, Any]:

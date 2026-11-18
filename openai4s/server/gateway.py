@@ -18877,7 +18877,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 fid = m.group(1)
                 frame = store.get_frame(fid) or {}
-                title = str(frame.get("name") or "").strip() or f"session-{fid}"
+                # The name the sidebar shows: a set name, else the summary.
+                title = (
+                    str(frame.get("name") or frame.get("task_summary") or "").strip()
+                    or f"session-{fid}"
+                )
                 self._serve_artifact_bundle(
                     store.list_artifacts({"root_frame_id": fid}),
                     f"{title}-artifacts.zip",
@@ -19344,7 +19348,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     raise GatewayError(
                         409, str(error), "session_not_exportable"
                     ) from error
-                title = str(frame.get("name") or "").strip()
+                title = str(
+                    frame.get("name") or frame.get("task_summary") or ""
+                ).strip()
                 self._send(
                     200,
                     exported["data"],

@@ -713,5 +713,10 @@ def test_the_route_serves_the_clean_notebook_under_the_session_title(tmp_path):
         raw_code, raw_body, _ctype, _extra = get("language=python")
         assert raw_code == 200
         assert "variant" not in json.loads(raw_body)["metadata"]["openai4s"]
+
+        # A session nobody renamed is shown by its summary; so is its file.
+        runner.store.update_frame(root, name="", task_summary="Cohort QC")
+        _code, _body, _ctype, extra = get("variant=clean")
+        assert 'filename="Cohort QC.ipynb"' in extra["Content-Disposition"]
     finally:
         runner.close()
