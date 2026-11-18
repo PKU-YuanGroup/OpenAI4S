@@ -353,6 +353,38 @@ describe("a loaded Skill's network limit", () => {
     expect(card.querySelector(".s-net-blocked")!.querySelector("pre")!.textContent).toBe(reason);
   });
 
+  it("a search the limit refused reads as blocked, not as 0 results", async () => {
+    await setLang("zh");
+    const reason =
+      "skill host_only manifest does not declare any enabled search engine (You.com, DuckDuckGo/Bing/Mojeek): the loaded text-features Skill limits this session's network to 1 domain (api.typesafe.ai).";
+    const card = buildStepCard({
+      step_id: "q-1",
+      kind: "search",
+      title: "Searching the web",
+      status: "error",
+      summary: "failed: " + reason,
+      input: { query: "GLP-1 Alzheimer" },
+      output: {
+        error: reason,
+        blocked: {
+          by: "skill_network",
+          skills: ["text-features"],
+          domains: ["api.typesafe.ai"],
+          destination: "",
+          search: true,
+        },
+      },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能的联网限制拦下");
+    // A refusal is its own state: neither the red failure nor a neutral done.
+    expect(card.classes.has("warn")).toBe(true);
+    expect(card.classes.has("err")).toBe(false);
+    const text = card.querySelector(".s-net-text")!.textContent;
+    expect(text).toContain("text-features 把本会话联网限定为 1 个域名");
+    expect(text).toContain("这次检索没有发出");
+    expect(card.querySelector(".s-q")!.textContent).toBe("“GLP-1 Alzheimer”");
+  });
+
   it("an ordinary load card keeps the server's summary", () => {
     const card = buildStepCard({
       step_id: "l-2",

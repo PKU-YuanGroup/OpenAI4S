@@ -1301,7 +1301,9 @@ def test_search_blocked_by_a_bound_manifest_does_not_blame_rate_limits(monkeypat
 
     The search engines are outside that list, so every one of them is refused
     before a connection. The empty result said "they may be rate-limiting;
-    retry shortly", and a model did exactly that, twelve times.
+    retry shortly", and a model did exactly that, twelve times. A later
+    "0 results" with the reason in a note still read as "nothing on the web"
+    on the card, so the search is now refused outright (SKL-3).
     """
 
     from openai4s import webtools
@@ -1330,12 +1332,13 @@ def test_search_blocked_by_a_bound_manifest_does_not_blame_rate_limits(monkeypat
         source="load_skill",
     )
     with frame_scope("frame-narrowed-search"):
-        narrowed = webtools.web_search("KRAS G12C resistance", engines=("builtin",))
-    assert narrowed["count"] == 0
-    assert "rate-limiting" not in narrowed["note"]
-    # The domains the note names, compared whole rather than searched for.
-    named = narrowed["note"].split("Host requests to ", 1)[1]
-    named = named.split(", and the search engines", 1)[0]
+        with pytest.raises(EgressBlocked) as refused:
+            webtools.web_search("KRAS G12C resistance", engines=("builtin",))
+    reason = str(refused.value)
+    assert "rate-limiting" not in reason
+    assert "retrying will not help" in reason
+    # The domains the refusal names, compared whole rather than searched for.
+    named = reason.split("network to 2 domains (", 1)[1].split(")", 1)[0]
     assert named.split(", ") == ["api.openalex.org", "doi.org"]
 
 

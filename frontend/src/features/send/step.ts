@@ -672,15 +672,23 @@ function paintStepBody(handle: StepHandle): void {
 export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
   const { card, meta, ic, step } = handle;
   const status = step.status || "running";
+  // Refused by a loaded Skill's network limit: not a crash, and not "0 results".
+  const blocked = status !== "running" && !!blockedView(step);
   card.classList.toggle("running", status === "running");
-  card.classList.toggle("err", status === "error");
-  card.classList.toggle("warn", status === "warning");
+  card.classList.toggle("err", status === "error" && !blocked);
+  card.classList.toggle("warn", status === "warning" || blocked);
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
     meta.textContent = step.kind === "review" ? sendCopy("reviewing") : "";
   } else {
     ic.innerHTML = icon(
-      status === "error" ? "x" : status === "warning" ? "alert-triangle" : stepIcon(step.kind),
+      blocked
+        ? "lock"
+        : status === "error"
+          ? "x"
+          : status === "warning"
+            ? "alert-triangle"
+            : stepIcon(step.kind),
       14,
     );
     meta.textContent =

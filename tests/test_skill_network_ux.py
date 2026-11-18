@@ -286,3 +286,95 @@ def test_the_cell_hears_the_hosts_reason_not_authorization_unavailable():
     assert str(unavailable.value) == (
         "bash: host authorization unavailable; command was not executed"
     )
+
+
+# --- SKL-3: a search the limit refuses is a refusal, not "0 results" --------
+
+
+def _bind_narrow_skill(frame_id: str, domains: list[str]) -> None:
+    from openai4s.server.skill_network_admission import bind_skill_load
+    from openai4s.skills_loader.capabilities import declared_capability
+
+    bind_skill_load(
+        frame_id=frame_id,
+        action_group_id=None,
+        skill_id="text-features",
+        version="v",
+        document_digest="d",
+        capability=declared_capability("host_only", domains, source="frontmatter"),
+        source="load_skill",
+    )
+
+
+def _no_network(monkeypatch):
+    from openai4s import webtools
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a refused search must not open a connection")
+
+    monkeypatch.setattr(webtools, "_http_get", refuse)
+    monkeypatch.setattr(webtools, "_post_json", refuse)
+
+
+def test_a_search_no_engine_can_serve_is_refused_not_empty(monkeypatch):
+    from openai4s import webtools
+    from openai4s.egress import EgressBlocked
+    from openai4s.server.skill_network_admission import frame_scope
+
+    _no_network(monkeypatch)
+    _bind_narrow_skill("frame-search", ["api.typesafe.ai"])
+    with frame_scope("frame-search"):
+        with pytest.raises(EgressBlocked) as refused:
+            webtools.web_search("GLP-1 Alzheimer cognition", engines=("you", "builtin"))
+    reason = str(refused.value)
+    assert reason.startswith(
+        "skill host_only manifest does not declare any enabled search engine "
+        "(You.com, DuckDuckGo/Bing/Mojeek)"
+    )
+    assert (
+        "the loaded text-features Skill limits this session's network to 1 domain"
+        in reason
+    )
+    assert "retrying will not help" in reason
+
+
+def test_engines_a_skill_declares_still_search(monkeypatch):
+    """literature-review now declares the engine hosts, so search keeps working."""
+
+    from openai4s import webtools
+    from openai4s.server.skill_network_admission import frame_scope
+
+    _no_network(monkeypatch)
+    lit = SkillLoader().get("literature-review")
+    _bind_narrow_skill("frame-search-lit", list(lit.network.domains))
+    hit = [{"title": "t", "url": "https://example.org/p", "snippet": "s"}]
+    monkeypatch.setattr(
+        webtools, "_builtin_search", lambda *_a, **_k: (hit, "duckduckgo", None)
+    )
+    monkeypatch.setattr(webtools, "_you_search", lambda *_a, **_k: [])
+    with frame_scope("frame-search-lit"):
+        result = webtools.web_search("GLP-1 Alzheimer", engines=("you", "builtin"))
+    assert result["count"] == 1 and result["source"] == "duckduckgo"
+
+
+def test_the_refused_search_card_is_marked_blocked(tmp_path, monkeypatch):
+    disp, steps = _dispatcher(tmp_path, "frame-search-card")
+    _no_network(monkeypatch)
+    _bind_narrow_skill("frame-search-card", ["api.typesafe.ai"])
+    result = disp("web_search", [{"query": "GLP-1 Alzheimer cognition"}])
+    assert set(result) == {"error"}
+    assert "does not declare any enabled search engine" in result["error"]
+    end = next(step for step in steps if step.get("phase") == "end")
+    assert end["status"] == "error"
+    assert end["summary"].startswith(
+        "failed: skill host_only manifest does not declare any enabled search engine"
+    )
+    blocked = end["output"]["blocked"]
+    assert blocked == {
+        "by": "skill_network",
+        "skills": ["text-features"],
+        "domains": ["api.typesafe.ai"],
+        "destination": "",
+        "search": True,
+    }
+    disp.store.close()

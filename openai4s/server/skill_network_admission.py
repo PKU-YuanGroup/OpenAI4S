@@ -777,6 +777,23 @@ def undeclared_destination_reason(
     )
 
 
+def search_engines_reason(engines: Sequence[str]) -> str:
+    """Why a web search was refused: no enabled engine is a declared host.
+
+    A refused search used to come back as "0 results" with the reason in a
+    note, so it read as "nothing on the web" and the model retried it.
+    """
+
+    key = str(_CURRENT_FRAME.get() or "").strip()
+    named = ", ".join(str(item) for item in engines if item) or "none"
+    return (
+        f"{UNDECLARED_MARK} any enabled search engine ({named}): "
+        f"{_limit_clause(bindings_for(key))}. The search was not sent and "
+        "retrying will not help; use the Skill's own lookup helpers, or "
+        "host.web_fetch on one of those domains."
+    )
+
+
 def undeclared_destination_reason_for_frame(
     host: str, frame_id: str | None = None
 ) -> str:

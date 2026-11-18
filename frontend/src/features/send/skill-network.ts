@@ -31,6 +31,8 @@ const COPY: CopyTable = {
     "net.blocked.explain": "{0} 把本会话联网限定为 {1} 个域名，{2} 不在其中，这个请求没有发出，也不需要你批准。",
     "net.blocked.unnamed": "已加载的技能",
     "net.blocked.reason": "原始原因",
+    "net.blocked.search":
+      "{0} 把本会话联网限定为 {1} 个域名，已启用的搜索引擎都不在其中，这次检索没有发出——这不是「网上没有结果」。",
   },
   en: {
     "net.notice.title": "Loaded {0}: this session's network is limited to {1}",
@@ -45,6 +47,8 @@ const COPY: CopyTable = {
       "{0} limits this session's network to {1}; {2} is not one of them, so the request was not sent and needs no approval.",
     "net.blocked.unnamed": "A loaded Skill",
     "net.blocked.reason": "Original reason",
+    "net.blocked.search":
+      "{0} limits this session's network to {1}, and none of the enabled search engines is one of them, so the search was not sent. This is not \"no results\".",
   },
 };
 
@@ -167,9 +171,10 @@ export function blockedBody(view: BlockedView, reason: string): HTMLElement {
   const box = el("div", "s-net s-net-blocked");
   const who = view.skill || netT("net.blocked.unnamed");
   const count = domainCount(view.domains.length);
-  box.appendChild(
-    el("div", "s-net-text", netT("net.blocked.explain", who, count, view.destination || "?")),
-  );
+  const text = view.search
+    ? netT("net.blocked.search", who, count)
+    : netT("net.blocked.explain", who, count, view.destination || "?");
+  box.appendChild(el("div", "s-net-text", text));
   if (view.domains.length) box.appendChild(domainList(view.domains));
   if (reason) {
     box.appendChild(el("div", "s-net-head", netT("net.blocked.reason")));
