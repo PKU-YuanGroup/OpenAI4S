@@ -278,6 +278,25 @@ describe("the allowlist on Network", () => {
     expect(text(head(tree))).toContain("OPENAI4S_EGRESS=allowlist");
     expect(text(head(tree))).toContain("www.nejm.org");
   });
+
+  // ENV-3 follow-up: the switch governs the app's own requests; code in cells
+  // is the kernel sandbox's business, which nothing on this tab opens.
+  it("tells app networking from kernel networking", async () => {
+    routes({
+      "GET /preferences/builtin-allowlist": () =>
+        Promise.resolve(response({ enabled: true, egress_mode: "off", granted: [], groups: [] })),
+    });
+    hooks.begin("tab");
+    NetworkTab();
+    await settle();
+    hooks.begin("tab");
+    const tree = NetworkTab() as Node;
+    const sub = String(find(tree, (node) => typeof node.props?.sub === "string")!.props!.sub);
+    expect(text(tree)).toMatch(/App networking|应用联网/);
+    expect(sub).toMatch(/App networking|应用联网/);
+    expect(sub).toMatch(/Kernel networking|内核联网/);
+    expect(sub).not.toContain("web_fetch");
+  });
 });
 
 describe("Independent Ollama web key on Network", () => {
