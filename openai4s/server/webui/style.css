@@ -106,6 +106,11 @@ button{font:inherit;cursor:pointer}
    calls and runs code) has to be readable before the click, not after. */
 .dash-example{padding:0 20px 20px;text-align:center}
 .dash-example .btn{margin:0 auto}
+/* NAV-4: the example run's own notice (running / finished / N cells failed). */
+.dash-example-status{display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px 20px;margin:0 0 10px;border:.5px solid var(--border);border-radius:var(--radius-card);background:var(--bg-000)}
+.dash-example-msg{font-size:14px;line-height:1.5;color:var(--text-200)}
+.dash-example-status[data-phase="error"] .dash-example-msg{color:var(--danger)}
+.dash-example-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
 .dash-example-hint{margin-top:8px;color:var(--text-400);font-size:12px;line-height:1.5;max-width:46em;margin-left:auto;margin-right:auto}
 .d-row{display:flex;align-items:center;gap:12px;padding:13px 16px;cursor:pointer;border-bottom:.5px solid var(--border)}
 .d-row:last-child{border-bottom:0}
@@ -428,6 +433,15 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .rightdock{width:var(--dock-w,680px);border-left:.5px solid var(--border);background:var(--bg);display:flex;flex-direction:column;height:100vh;min-width:0;position:relative}
 .rightdock.collapsed{display:none}
 .rightdock.wide{width:min(900px,64vw)}
+/* NAV-2: the chat column keeps a usable width. The dock gives way first: it
+   is never wider than what leaves #main 440px, and never narrower than 360px.
+   A 1024px window with the sidebar open used to leave the chat ~140px. */
+@media (min-width:901px){
+  .rightdock{width:clamp(360px,var(--dock-w,680px),calc(100vw - var(--side-w,272px) - 440px))}
+  .rightdock.wide{width:clamp(360px,min(900px,64vw),calc(100vw - var(--side-w,272px) - 440px))}
+  body.sidebar-collapsed .rightdock{width:clamp(360px,var(--dock-w,680px),calc(100vw - 440px))}
+  body.sidebar-collapsed .rightdock.wide{width:clamp(360px,min(900px,64vw),calc(100vw - 440px))}
+}
 .dock-head{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:8px 10px}
 .dock-tabs{display:flex;gap:4px;flex:1;min-width:0;overflow:auto;align-items:center}
 .dock-tab{display:inline-flex;align-items:center;gap:6px;background:transparent;border:0;padding:6px 12px;height:32px;font-size:14px;color:var(--text-200);white-space:nowrap;border-radius:var(--radius);max-width:240px;flex:none}
@@ -569,6 +583,23 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .mol-view{flex:1;min-height:340px;position:relative}
 .mol-foot{padding:6px 12px;border-top:.5px solid var(--border);background:var(--bg-100);font-size:12px;color:var(--text-200)}
 .modal-body .mol-view{min-height:520px}
+.mol-meta{display:flex;align-items:baseline;gap:4px 12px;padding:8px 14px 0;font-size:12px;line-height:1.45;color:var(--text-200)}
+.mol-meta-info{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+.mol-meta-info>*+*::before{content:"·";margin:0 6px;color:var(--text-400)}
+.mol-meta-id{font-family:var(--mono);font-weight:600;color:var(--text-000)}
+.mol-meta-chains,.mol-meta-atoms{white-space:nowrap;color:var(--text-400)}
+.mol-meta .mol-tag{margin-left:auto;white-space:nowrap}
+.mol-lbl-gap{margin-left:8px}
+.mol-style:disabled{opacity:.45;cursor:not-allowed}
+.mol-style:disabled:hover{background:var(--bg-200);color:var(--text-200)}
+.mol-legend{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-200);font-variant-numeric:tabular-nums}
+.mol-legend[hidden]{display:none}
+.mol-key{display:inline-flex;align-items:center;gap:3px}
+.mol-swatch{width:10px;height:10px;border-radius:2px;flex:none}
+.mol-grad{width:64px;height:8px;border-radius:2px;box-shadow:inset 0 0 0 .5px var(--border)}
+.mol-foot-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px}
+.mol-hint{flex:1 1 240px;min-width:0}
+.mol-foot .mol-act{height:24px}
 
 /* Artifact renderer registry: the server selects a renderer/version descriptor;
    these components only visualize bytes and never execute artifact content. */
@@ -716,7 +747,7 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .ctx-item.danger{color:var(--danger)}.ctx-item.danger .ic{color:var(--danger)}.ctx-item.danger:hover{background:var(--danger-bg)}
 
 /* composer autocomplete */
-.composer-ac{position:absolute;left:0;right:0;margin:0 auto;bottom:88px;width:min(var(--col),calc(100% - 48px));max-height:240px;overflow:auto;display:flex;flex-direction:column;background:var(--bg-000);border:.5px solid var(--border-btn);border-radius:var(--radius-card);box-shadow:var(--shadow-pop);z-index:9;padding:6px}
+.composer-ac{position:absolute;left:0;right:0;margin:0 auto;bottom:88px;width:min(var(--col),calc(100% - 48px));max-height:min(360px,50vh);overflow:auto;display:flex;flex-direction:column;background:var(--bg-000);border:.5px solid var(--border-btn);border-radius:var(--radius-card);box-shadow:var(--shadow-pop);z-index:9;padding:6px}
 .composer-ac .ac-list{overflow:auto;min-height:0;flex:1 1 auto}
 .ac-item{display:flex;align-items:baseline;gap:10px;padding:6px 8px;border-radius:8px;cursor:pointer}
 .ac-item.on,.ac-item:hover{background:var(--bg-200)}
@@ -1033,6 +1064,12 @@ body.has-key-banner #sidebar,body.has-key-banner #main,body.has-key-banner #righ
 .step .s-fig-cap{padding:6px 9px;font-size:11px;color:var(--text-300);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .step .s-q{color:var(--text-300);font-style:italic}
 .step .s-note{color:var(--text-400);font-size:12.5px}
+/* a loaded Skill's network limit: its notice, the Skill's load card, a refusal */
+.step.s-net-limited .s-ic{color:var(--warn,#b8860b)}
+.step .s-net{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:9px;background:var(--bg-200,rgba(18,18,18,.04));color:var(--text-200);font-size:12.5px;line-height:1.45}
+.step .s-net-head{color:var(--text-400);font-size:12px}
+.step .s-net-doms{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+.step .s-net-dom{font-family:var(--mono);font-size:11.5px;padding:1px 6px;border-radius:6px;background:var(--bg-000);border:.5px solid var(--border);color:var(--text-300)}
 /* search results */
 .step .s-res{display:flex;flex-direction:column;gap:1px;padding:5px 0;border-top:1px solid var(--border,rgba(18,18,18,.05))}
 .step .s-res:first-child{border-top:none}
@@ -1189,8 +1226,12 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 
 /* ---- tablet: give the chat more room; slim the right dock ---- */
 @media (max-width:1180px){
-  .rightdock{width:min(var(--dock-w,520px),60vw)}
-  .rightdock.wide{width:min(680px,58vw)}
+  .rightdock{width:clamp(360px,min(var(--dock-w,520px),60vw),calc(100vw - var(--side-w,272px) - 440px))}
+  .rightdock.wide{width:clamp(360px,min(680px,58vw),calc(100vw - var(--side-w,272px) - 440px))}
+}
+@media (min-width:901px) and (max-width:1180px){
+  body.sidebar-collapsed .rightdock{width:clamp(360px,min(var(--dock-w,520px),60vw),calc(100vw - 440px))}
+  body.sidebar-collapsed .rightdock.wide{width:clamp(360px,min(680px,58vw),calc(100vw - 440px))}
 }
 
 /* ---- narrow / mobile: single column; sidebar & dock become overlays ---- */
@@ -1336,6 +1377,10 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .runtime-state.failed{color:var(--danger);background:var(--danger-bg)}
 .runtime-state.ended{color:var(--text-400);background:var(--bg-200)}
 .runtime-chip{display:inline-flex;align-items:baseline;gap:5px;min-width:0;border-left:var(--hair);padding-left:8px;font-size:11px}
+/* NAV-6: the runtime ids are diagnostics, folded under "Technical details". */
+.runtime-ids{display:inline-flex;align-items:baseline;gap:7px;flex-wrap:wrap;min-width:0;font-size:11px}
+.runtime-ids>summary{cursor:pointer;color:var(--text-400)}
+.runtime-ids[open]{flex-basis:100%}
 .runtime-key{color:var(--text-400)}
 .runtime-val{color:var(--text-200);font-family:var(--mono);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nb-live-badge.busy,.nb-live-badge.restoring{border-color:var(--clay);color:var(--clay-em)}
@@ -1502,6 +1547,12 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .context-layer{display:flex;align-items:center;gap:5px;padding:5px 0;border-top:var(--hair);font-size:11px}
 .context-layer-name{flex:1;min-width:0;color:var(--text-200);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .context-layer-tokens{color:var(--text-400);font:10px var(--mono)}
+/* NAV-6: diagnostics (model context) and raw sandbox values are collapsed. */
+.workbench-diagnostics>summary.workbench-panel-title{cursor:pointer;margin-bottom:0;color:var(--text-300)}
+.workbench-diagnostics[open]>summary.workbench-panel-title{margin-bottom:8px}
+.workbench-diagnostics-hint{margin-bottom:6px;color:var(--text-400);font-size:11px;line-height:1.45}
+.security-raw{margin-top:6px;border-top:var(--hair);padding-top:5px}
+.security-raw>summary{cursor:pointer;color:var(--text-300);font-size:11px}
 .context-history{margin-top:6px;border-top:var(--hair);padding-top:5px}
 .context-history>summary{cursor:pointer;color:var(--text-300);font-size:11px}
 .context-history-row{display:flex;align-items:center;gap:5px;padding:5px 0;border-top:var(--hair);font-size:10px}
@@ -1635,6 +1686,10 @@ body.sidebar-collapsed .col-resizer-side{display:none}
   background:var(--bg-000);border:.5px solid var(--border);border-radius:999px;padding:3px 10px;box-shadow:var(--shadow-soft);
   opacity:0;transition:opacity .2s;pointer-events:none}
 .annot-wrap:hover .zoom-hint{opacity:.9}
+/* ART-15: at fit the pill and the zoom bar sit in reserved margins instead of
+   over the figure's title and axis; the pill stays one line. */
+.zoom-hint{white-space:nowrap;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
+.annot-zoom:not(.zoomed) .annot-stage{margin:44px auto 64px}
 
 @media (max-width:900px){
   .col-resizer{display:none}
@@ -1763,7 +1818,9 @@ html:not([data-theme-instant]) .modal-box,html:not([data-theme-instant]) .nb-car
 .msg.assistant > .activity,
 .msg.assistant > .step,
 .msg.assistant > .plan-card,
-.msg.assistant > .perm-card{content-visibility:auto;contain-intrinsic-size:auto 72px}
+.msg.assistant > .perm-card.resolved{content-visibility:auto;contain-intrinsic-size:auto 72px}
+/* An open approval card is never a 72px placeholder: the follow-scroll and
+   messages/approval.ts measure it to keep its Allow/Deny buttons on screen. */
 
 /* ---- sticky composer elevation when scrolled ---- */
 .composer-wrap{position:relative;z-index:5;background:linear-gradient(180deg,transparent,var(--bg) 28%)}
@@ -1804,15 +1861,27 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 
 /* ---- queued follow-ups ----------------------------------------------------
    The composer stays usable while a turn runs, so what is waiting behind that
-   turn has to be visible. Sits between the composer card and the hint line, so
-   it reads as "what your next Enter joins" rather than as transcript. */
-.queue-strip{margin:6px auto 0;width:min(var(--col),calc(100% - 48px));border:.5px solid var(--border-btn);border-radius:var(--radius-card);background:var(--bg-000);padding:6px 8px}
+   turn has to be visible. Sits directly above the composer card, so it reads
+   as "what your next Enter joins" rather than as transcript, and showing it
+   never moves the card's own buttons. */
+.queue-strip{margin:0 auto 6px;width:min(var(--col),calc(100% - 48px));border:.5px solid var(--border-btn);border-radius:var(--radius-card);background:var(--bg-000);padding:6px 8px}
 .queue-head{font-size:11px;color:var(--text-400);margin:0 2px 4px}
 .queue-row{display:flex;align-items:baseline;gap:8px;padding:3px 2px;font-size:12px;min-width:0}
 .queue-pos{color:var(--text-400);flex:none;font-variant-numeric:tabular-nums}
 .queue-preview{color:var(--text-200);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .queue-meta{color:var(--text-400);font-size:11px;flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .queue-cancel{flex:none}
+.queue-row{align-items:center}
+/* background cells still running in this session, each with its own Stop (send/background.ts) */
+.bg-strip{width:min(var(--col),calc(100% - 48px));margin:0 auto 8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+.bg-head{margin:0 2px 4px;font-size:11px;color:var(--text-400);cursor:help}
+.bg-row{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 2px;font-size:12px}
+.bg-code{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);color:var(--text-200)}
+.bg-origin{flex:none;color:var(--text-400);font-size:11px}
+.bg-tail{flex:0 1 32%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11px;color:var(--text-400)}
+.bg-time{flex:none;color:var(--text-400);font-variant-numeric:tabular-nums}
+.bg-stop{flex:none;height:24px;padding:0 9px;font-size:12px}
+.queue-edit{flex:none;height:24px;padding:0 9px;font-size:12px}
 /* A message typed while a turn was running: shown in the transcript in the
    order it will run, but visibly not yet the live one. */
 .msg.user.queued .bubble{opacity:.72}
@@ -2000,6 +2069,11 @@ html[data-theme="dark"] .toggle:disabled{background:var(--bg-300)}
 .session.running .s-dot{display:inline-block;order:2;width:10px;height:10px;border:1.5px solid var(--text-000);border-right-color:transparent;border-radius:50%;background:transparent;animation:spin 1s linear infinite}
 .s-badge.run{background:transparent;color:var(--text-400);font-weight:500;animation:none}
 .s-badge.live{background:var(--success)}
+/* a turn blocked on an approval request: not a spinner, a call to act */
+.session.awaiting .s-dot{border:0;background:var(--warn);animation:none}
+.s-badge.run.approval{background:var(--warn-bg);color:var(--warn-text);font-weight:600}
+.jump-pill.approval{border-color:var(--warn);background:var(--warn-bg);color:var(--warn-text)}
+.jump-pill.approval:hover{background:var(--warn-bg);color:var(--warn-text)}
 .folder-head{height:36px;padding:0 12px;border-radius:var(--radius);font-size:14px;font-weight:500;color:var(--text-000)}
 .folder-count{background:var(--bg-200);border-radius:999px;padding:0 7px}
 .side-foot{padding:12px 0 0;margin-top:4px;gap:4px}
@@ -2110,6 +2184,12 @@ html[data-theme="dark"] .activity .a-head:hover{background:var(--bg-100)}
 .generated,.uploaded{margin:4px auto 20px}
 .gen-label{margin-bottom:10px;font-size:13px;font-weight:500;letter-spacing:0;color:var(--text-400)}
 .gen-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px}
+.generated>summary.gen-label,.uploaded>summary.gen-label{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;margin-bottom:0;width:max-content}
+.generated>summary.gen-label::-webkit-details-marker,.uploaded>summary.gen-label::-webkit-details-marker{display:none}
+.generated>summary.gen-label::before,.uploaded>summary.gen-label::before{content:"\25B8";font-size:10px;transition:transform .15s}
+.generated[open]>summary.gen-label::before,.uploaded[open]>summary.gen-label::before{transform:rotate(90deg)}
+.generated[open]>summary.gen-label,.uploaded[open]>summary.gen-label{margin-bottom:10px}
+.generated,.uploaded{margin-top:2px;margin-bottom:10px}
 .tile{width:auto;gap:8px;padding:6px 6px 10px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg);box-shadow:none}
 .tile:hover{border-color:var(--bg-300);background:var(--bg-100);box-shadow:none}
 .tile .thumb{height:84px;border:0;border-radius:var(--radius);background:var(--bg-200)}
@@ -2171,6 +2251,11 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-sub{margin:2px 0 16px 48px;font-size:14px;color:var(--text-300)}
 .perm-detail{margin-bottom:14px;padding:12px 16px;border-radius:var(--radius);background:var(--dark);color:var(--on-dark);font-size:13px}
 .perm-detail.mono{font:13px/1.6 var(--mono)}
+/* what the user is approving: target environment, sandbox, a dynamic tool's code */
+.perm-ctx{margin:-6px 0 10px;font-size:13px;line-height:1.5;color:var(--text-200);overflow-wrap:anywhere}
+.perm-codewrap{margin:0 0 10px}
+.perm-codewrap>summary{cursor:pointer}
+.perm-code{max-height:320px;margin:0;padding:12px 16px;overflow:auto;border-radius:var(--radius);background:var(--dark);color:var(--on-dark);font:12px/1.55 var(--mono);white-space:pre}
 .perm-lbl{margin:12px 0 6px;font-size:13px;font-weight:500;color:var(--text-300)}
 .perm-scope{gap:4px}
 .perm-seg{height:30px;padding:0 12px;border:1px solid transparent;border-radius:var(--radius);background:transparent;color:var(--text-300);font-size:13px;font-weight:500}
@@ -2180,6 +2265,12 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-fb{height:40px;margin-top:14px;padding:0 14px;font-size:14px}
 .perm-chip{border:1px solid var(--border);border-radius:6px;background:var(--bg)}
 .perm-chip:hover{background:var(--bg-100)}
+/* the rule picker names what each choice covers; `*` is marked, never preselected */
+.perm-chip.active{border-color:var(--ink);background:var(--ink);color:var(--bg)}
+.perm-chip.danger{color:var(--danger)}
+.perm-chip.danger.active{border-color:var(--danger);background:var(--danger);color:#fff}
+.perm-note{margin-top:6px;font-size:12.5px;line-height:1.45;color:var(--text-300)}
+.perm-note:empty{display:none}
 .perm-btns{justify-content:flex-end;gap:8px;margin-top:14px}
 .perm-deny{order:1;height:40px;padding:0 20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text-000);font-size:14px;font-weight:500}
 .perm-deny:hover{background:var(--bg);border-color:var(--danger);color:var(--danger)}
@@ -2193,11 +2284,13 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-card.resolved .perm-head{flex:none;gap:10px}
 .perm-card.resolved .perm-ic{padding:0;background:transparent}
 .perm-card.resolved .perm-title{font-size:14px;font-weight:500}
-.perm-card.resolved .perm-sub{display:none}
+.perm-card.resolved .perm-sub,.perm-card.resolved .perm-ctx,.perm-card.resolved .perm-codewrap{display:none}
 .perm-card.resolved .perm-detail{flex:1 1 160px;min-width:0;max-height:none;margin:0;padding:0;overflow:hidden;background:transparent;color:var(--text-200);white-space:nowrap;text-overflow:ellipsis}
 .perm-card.allowed,.perm-card.denied{border-color:var(--border)}
 .perm-card.allowed .perm-status{color:var(--text-200)}
 .perm-card.allowed .perm-status::before{content:"✓ "}
+/* a denial is the user's own answer (or a Stop's), not an error: no red */
+.perm-card.denied .perm-status{color:var(--text-200)}
 .perm-status{margin:8px 0 0;font-size:13px;font-weight:500}
 .perm-card.resolved .perm-status{margin:0 0 0 auto}
 .perm-sec-h{font-size:14px;font-weight:500}
@@ -2226,6 +2319,18 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .nb-icon.on,html[data-theme="dark"] .nb-icon.on{border-color:var(--ink);background:var(--ink);color:var(--bg)}
 #cancel-btn.nb-icon{border-color:var(--ink);background:var(--ink);color:var(--bg)}
 #cancel-btn.nb-icon svg{width:12px;height:12px}
+/* An active plan / explore mode: a labelled chip beside the composer tools
+   for as long as it shapes the next message; a click turns it off. */
+.nb-mode{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 9px 0 10px;border:1px solid var(--ink);border-radius:999px;background:var(--ink);color:var(--bg);font-size:12.5px;font-weight:500;white-space:nowrap;cursor:pointer;flex:none}
+.nb-mode .ic{display:inline-flex}
+.nb-mode .nb-mode-x{opacity:.7}
+.nb-mode:hover .nb-mode-x{opacity:1}
+@media (max-width:480px){.nb-mode>span:not(.ic){display:none}}
+/* a menu row that explains itself (sessions/chrome.ts `desc`) */
+.ctx-item.has-desc{align-items:flex-start;padding-top:7px;padding-bottom:7px;height:auto}
+.ctx-item.has-desc .ic{margin-top:2px}
+.ctx-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ctx-desc{max-width:280px;font-size:12px;line-height:1.4;color:var(--text-400);white-space:normal}
 .nb-model{height:32px;padding:0 8px;gap:6px;border-radius:var(--radius);color:var(--text-200);font-size:14px;font-weight:500}
 .nb-model:hover{background:var(--bg-100);color:var(--text-000)}
 .nb-model select{font-size:14px;font-weight:500;max-width:220px}
@@ -2241,7 +2346,9 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .composer-refs{padding:8px 2px 0}
 .msg-ref-chip{padding:2px 9px;border:0;border-radius:999px;background:var(--bg-200);color:var(--text-200);font-size:12px}
 .msg-ref-chip.unresolved{border:1px solid var(--warn);background:transparent;color:var(--warn-text)}
-.queue-strip{margin-top:8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+.queue-strip{margin-bottom:8px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg)}
+/* the frozen legacy shell still places the strip under the card */
+.notebook+.queue-strip{margin-top:8px}
 .annot-chip{border:1px solid var(--border);background:var(--bg-100)}
 
 /* ---- empty session: the headline, the starters and the composer sit
@@ -2629,6 +2736,8 @@ html[data-theme="dark"] #dash-project-search{background-image:url("data:image/sv
 .share-close:hover{background:var(--bg-100)}
 .share-text{margin:0;font-size:15px;line-height:1.6;color:var(--text-200)}
 .share-scope{margin:0;padding:14px 16px;border-radius:var(--radius);background:var(--bg-200);font-size:14px;line-height:1.55;color:var(--text-200)}
+.share-setup{margin:0;padding-left:1.4em;font-size:14px;line-height:1.6;color:var(--text-200)}
+.share-setup li{margin:.35em 0}
 .share-label{font-size:14px;font-weight:500;color:var(--text-000)}
 .share-box>.share-label{margin-bottom:-12px}
 .share-url-row{display:flex;gap:8px}
@@ -2667,13 +2776,22 @@ html[data-theme="dark"] #dash-project-search{background-image:url("data:image/sv
 html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(--text-000)}
 
 /* ---- the composer's send button: coral when there is text, cream when the
-   composer is empty, and the stop button takes its place while a turn runs ---- */
+   composer is empty. While a turn runs the stop button (a filled square) sits
+   beside it, never in its place: Send stays clickable and queues the draft ---- */
 .nb-right>.nb-model{order:1}
 .nb-right>#cancel-btn,.nb-right>.nb-send{order:2}
+/* the running turn's elapsed time, just before Stop (send/progress.ts) */
+.nb-right>.turn-clock{order:2;flex:none;padding:0 2px;font-size:12.5px;color:var(--text-400);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* the session's token use so far, in the conversation header */
+.session-usage{flex:none;height:28px;padding:0 10px;border:1px solid var(--border);border-radius:999px;background:transparent;color:var(--text-300);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
+.session-usage:hover{background:var(--bg-100);color:var(--text-000)}
+@media (max-width:480px){.session-usage{display:none}}
+/* a running cell's elapsed time on its card (messages/cardState.ts), before the chevron */
+.activity .a-head .chev-t{order:1}
+.activity .a-head .a-time{flex:none;color:var(--text-400);font-size:12px;font-variant-numeric:tabular-nums}
 .nb-send{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;padding:0;border:0;border-radius:999px;background:var(--clay);color:#fff;cursor:pointer}
 .nb-send:active{background:var(--clay-em)}
 .nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--line);color:var(--text-400);cursor:default}
 html[data-theme="dark"] .nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--bg-300)}
-.nb-right:has(#cancel-btn:not(.hidden)) .nb-send{display:none}
 @media (max-width:900px){.nb-send{width:40px;height:40px;min-width:40px;min-height:40px}}
 @media (max-width:900px){body.sidebar-collapsed #sidebar{box-shadow:none}}

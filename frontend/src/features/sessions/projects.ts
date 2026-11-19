@@ -30,8 +30,8 @@ import {
 import { beginNavigation } from "./navigation";
 import { chooseSessionPackage, downloadArtifactBundle } from "./actions";
 import { recoverConversation } from "../messages/open";
-import { projectFilesCopy, projectHistoryCopy } from "./copy";
-import { openProjectFiles, resetProjectFolderPicker } from "./project-files";
+import { displayProjectName, projectFilesCopy, projectHistoryCopy } from "./copy";
+import { openProjectFiles, projectFolderErrorText, resetProjectFolderPicker } from "./project-files";
 import { openProjectHistory } from "./project-history";
 
 type ProjectLike = {
@@ -46,7 +46,7 @@ type ProjectLike = {
 
 export function projName(id: string | null | undefined): string {
   const p = (projects.value as ProjectLike[]).find((x) => (x.project_id || x.id) === id);
-  return p ? p.name || t("proj.fallbackName") : t("proj.fallbackName");
+  return p ? displayProjectName(p) || t("proj.fallbackName") : t("proj.fallbackName");
 }
 
 export function sanitizeProjectLineage(payload: unknown): {
@@ -388,8 +388,14 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
   } else {
     const origin = pendingProjectOrigin;
     const retained = currentId.value;
-    if (retained) await binds.newSession(id, { restoreOnFailure: { frameId: retained, projectId: previousProject } });
-    else await binds.newSession(id);
+    // Nothing listed: land in the newest session nobody has used, if there
+    // is one, instead of creating another empty frame on every visit.
+    if (retained) {
+      await binds.newSession(id, {
+        restoreOnFailure: { frameId: retained, projectId: previousProject },
+        reuseEmpty: true,
+      });
+    } else await binds.newSession(id, { reuseEmpty: true });
     if (pendingProjectOrigin === origin) pendingProjectOrigin = null;
   }
 }
@@ -457,6 +463,8 @@ function showProjectModalError(text: string): void {
   }
   box.textContent = text;
   box.classList.toggle("hidden", !text);
+  // The form scrolls on a short screen; bring the refusal into view.
+  if (text && typeof box.scrollIntoView === "function") box.scrollIntoView({ block: "nearest" });
 }
 
 export async function submitProjectModal(): Promise<void> {
@@ -495,7 +503,7 @@ export async function submitProjectModal(): Promise<void> {
       closeProjectModal();
     }
   } catch (e) {
-    showProjectModalError(t("artifact.save.err", apiErrorText(e)));
+    showProjectModalError(t("artifact.save.err", projectFolderErrorText(e)));
   } finally {
     if (btn) btn.disabled = false;
   }

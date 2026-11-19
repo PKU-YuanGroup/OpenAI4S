@@ -13,17 +13,26 @@ import {
   filesLoadedLimit,
   filesIndexMode,
   filesIndexReq,
+  filesKind,
   filesNextCursor,
   filesOrigin,
   filesQuery,
+  filesShowHidden,
+  filesSort,
 } from "./state";
-import type { ArtifactIndexPage, ArtifactRow, FilesOrigin } from "./types";
+import type { ArtifactIndexPage, ArtifactRow, FilesKind, FilesOrigin, FilesSort } from "./types";
 import { FILES_PAGE_SIZE } from "./types";
 
 export type FilesFilter = {
   q: string;
   contentType: string;
   origin: FilesOrigin;
+  /** ART-12 human category; "" is every kind. */
+  kind?: FilesKind;
+  /** ART-12: rows hidden from the list are included. */
+  hidden?: boolean;
+  /** ART-12 session-list order. */
+  sort?: FilesSort;
 };
 
 export function currentFilesFilter(): FilesFilter {
@@ -31,7 +40,53 @@ export function currentFilesFilter(): FilesFilter {
     q: filesQuery.value.trim(),
     contentType: filesContentType.value.trim(),
     origin: filesOrigin.value,
+    kind: filesKind.value,
+    hidden: filesShowHidden.value,
+    sort: filesSort.value,
   };
+}
+
+/**
+ * ART-12 human categories, in precedence order: a file is the first kind
+ * whose extension or content-type prefix matches, and "other" is the rest.
+ * The server's `ARTIFACT_KINDS` (openai4s/storage/artifacts.py) is the same
+ * table, so both scopes agree.
+ */
+const KIND_RULES: ReadonlyArray<
+  readonly [Exclude<FilesKind, "" | "other">, readonly string[], readonly string[]]
+> = [
+  [
+    "table",
+    ["csv", "tsv", "tab", "xlsx", "xls", "parquet", "feather", "arrow"],
+    [
+      "text/csv",
+      "text/tab-separated-values",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml",
+      "application/vnd.ms-excel",
+    ],
+  ],
+  ["image", ["png", "jpg", "jpeg", "gif", "webp", "svg", "tif", "tiff", "bmp"], ["image/"]],
+  [
+    "report",
+    ["md", "markdown", "rst", "pdf", "html", "htm", "docx", "doc", "tex", "ipynb", "txt"],
+    ["text/markdown", "application/pdf", "text/html", "application/x-ipynb+json"],
+  ],
+  [
+    "code",
+    ["py", "r", "sh", "bash", "js", "ts", "sql", "jl", "m", "c", "cpp", "h", "java", "rs", "go", "yaml", "yml", "toml"],
+    ["text/x-python", "text/x-r", "application/x-sh"],
+  ],
+];
+
+/** The human category of one file (ART-12). */
+export function artifactKind(a: Pick<ArtifactRow, "filename" | "content_type">): Exclude<FilesKind, ""> {
+  const name = String(a.filename || "").toLowerCase();
+  const type = String(a.content_type || "").toLowerCase();
+  for (const [kind, extensions, prefixes] of KIND_RULES) {
+    if (extensions.some((ext) => name.endsWith("." + ext))) return kind;
+    if (prefixes.some((prefix) => type.startsWith(prefix))) return kind;
+  }
+  return "other";
 }
 
 /** Cursor identity includes scope, owner, and the complete filter. */
@@ -43,6 +98,9 @@ export function filterFingerprint(filter: FilesFilter, pid = "", scope = "projec
     q: filter.q,
     contentType: filter.contentType,
     origin: filter.origin,
+    kind: filter.kind || "",
+    hidden: !!filter.hidden,
+    sort: filter.sort || "newest",
   });
 }
 
@@ -61,20 +119,44 @@ export function filterArtifactsClient(rows: ArtifactRow[], filter: FilesFilter):
   const ct = filter.contentType.toLowerCase();
   const out: ArtifactRow[] = [];
   for (const a of rows) {
-    if ((a.priority || 0) < 0) continue;
+    if ((a.priority || 0) < 0 && !filter.hidden) continue;
     const name = String(a.filename || "");
     if (q && !name.toLowerCase().includes(q)) continue;
     if (ct && !String(a.content_type || "").toLowerCase().includes(ct)) continue;
     if (filter.origin && originOf(a) !== filter.origin) continue;
+    if (filter.kind && artifactKind(a) !== filter.kind) continue;
     out.push(a);
   }
   return out;
 }
 
-function sortPriorityThenId(rows: ArtifactRow[]): ArtifactRow[] {
+const nameCollator =
+  typeof Intl !== "undefined" && typeof Intl.Collator === "function"
+    ? new Intl.Collator(undefined, { numeric: true, sensitivity: "base" })
+    : null;
+
+function createdMs(a: ArtifactRow): number {
+  const value = Date.parse(String(a.created_at || ""));
+  return Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * ART-12: starred first, then the chosen order. The list used to fall back to
+ * the artifact id -- random hex -- so it was neither by name nor by time.
+ */
+export function sortArtifactsForFiles(rows: ArtifactRow[], sort: FilesSort = "newest"): ArtifactRow[] {
   return rows.slice().sort((x, y) => {
     const dp = (y.priority || 0) - (x.priority || 0);
     if (dp) return dp;
+    if (sort === "name") {
+      const a = String(x.filename || "");
+      const b = String(y.filename || "");
+      const byName = nameCollator ? nameCollator.compare(a, b) : a < b ? -1 : a > b ? 1 : 0;
+      if (byName) return byName;
+    } else {
+      const dt = createdMs(y) - createdMs(x);
+      if (dt) return sort === "oldest" ? -dt : dt;
+    }
     return String(y.id).localeCompare(String(x.id));
   });
 }
@@ -119,7 +201,8 @@ export function filesGridPending(): boolean {
 export function filesGridArtifacts(): ArtifactRow[] {
   if (!filesListingIsCurrent()) return [];
   if (filesScope.value !== "project" && (!currentId.value || artifactsFrameId.value !== currentId.value || artifactsFrameGeneration.value !== _openGen.value)) return [];
-  return filesIndexItems.value.filter((a) => (a.priority || 0) >= 0);
+  const showHidden = filesShowHidden.value;
+  return filesIndexItems.value.filter((a) => showHidden || (a.priority || 0) >= 0);
 }
 
 function fetchArtifactIndex(
@@ -132,6 +215,8 @@ function fetchArtifactIndex(
     q: filter.q,
     contentType: filter.contentType,
     origin: filter.origin,
+    kind: filter.kind || "",
+    hidden: !!filter.hidden,
     cursor,
     limit,
   });
@@ -183,7 +268,7 @@ export async function browseFiles(opts: BrowseFilesOpts = {}): Promise<void> {
 
   if (scope !== "project") {
     const src = fid && artifactsFrameId.value === fid && artifactsFrameGeneration.value === _openGen.value ? artifactsSignal.value as ArtifactRow[] : [];
-    const filtered = filterArtifactsClient(sortPriorityThenId(src), filter);
+    const filtered = filterArtifactsClient(sortArtifactsForFiles(src, filter.sort), filter);
     // Re-slice the current snapshot rather than appending a stale prefix.
     const items = filtered.slice(0, capacity);
     if (!owns()) return;
@@ -271,5 +356,22 @@ export function setFilesContentType(value: string): void {
 
 export function setFilesOrigin(value: FilesOrigin): void {
   filesOrigin.value = value === "uploaded" || value === "generated" ? value : "";
+  dropFilesCursor();
+}
+
+const KINDS: readonly FilesKind[] = ["", "table", "image", "report", "code", "other"];
+
+export function setFilesKind(value: string): void {
+  filesKind.value = (KINDS as readonly string[]).includes(value) ? (value as FilesKind) : "";
+  dropFilesCursor();
+}
+
+export function setFilesSort(value: string): void {
+  filesSort.value = value === "oldest" || value === "name" ? value : "newest";
+  dropFilesCursor();
+}
+
+export function setFilesShowHidden(value: boolean): void {
+  filesShowHidden.value = !!value;
   dropFilesCursor();
 }

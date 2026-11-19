@@ -27,7 +27,9 @@ The public model-facing surface remains two tools:
 - `science_list_dbs(domain?)` lists sources, query hints, filters, and the
   normalized result contract.
 - `science_search(database, query, limit?, cursor?, filters?, timeout?)`
-  searches one source and returns typed records.
+  searches one source and returns typed records. The `database` values the
+  model is offered are the ones this daemon serves: the three Stage 10
+  sources appear only while `OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS` is on.
 
 Every result uses the same envelope:
 

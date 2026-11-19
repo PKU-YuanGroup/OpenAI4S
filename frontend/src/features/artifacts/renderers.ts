@@ -1,9 +1,12 @@
 import { isReady } from "../../compat/stub";
 import { parseTable } from "../csv/csv";
+import { typesetMath } from "../md/math";
 import { renderMd } from "../md/render";
+import { noteEncodingIn } from "./encoding-note";
+import { resolveRelativeImages } from "./markdown-assets";
 import { publicText } from "../scrub/scrub";
 import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
-import { applyArtifactIframeSandbox } from "../../islands/frames";
+import { applyPdfFrame } from "../../islands/frames";
 import { molTeardown } from "../../islands/mol";
 import {
   artifactMediaType,
@@ -38,6 +41,7 @@ import {
   type MolfileModel,
 } from "./catalog";
 import { renderSheet } from "./sheet";
+import { renderTablePreview } from "./table-preview";
 import { renderHtmlPreview } from "./preview";
 import { renderNotebookArtifact } from "./notebook";
 import { partialNotice, previewDownload } from "./partial";
@@ -121,7 +125,7 @@ function appendResidues(
 }
 
 export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, { signal: previewReadSignal(container) })
+  fetchArtifactText(url, { signal: previewReadSignal(container), onEncoding: noteEncodingIn(container) })
     .then((text) => {
       if (!container.isConnected) return;
       const slice = previewSlice(text, MARKDOWN_PREVIEW_CHARACTERS);
@@ -131,8 +135,12 @@ export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, u
       // the end of the report.
       if (slice.truncated) partialNotice(container, slice.shown.length);
       const markdown = el("div", "md renderer-markdown");
-      markdown.innerHTML = renderMd(slice.shown);
+      // ART-2: TeX becomes inert `.md-math` placeholders typeset by a lazily
+      // loaded KaTeX, and `![](growth.png)` resolves to the sibling Artifact.
+      markdown.innerHTML = renderMd(slice.shown, { math: true, relativeImages: true });
       container.appendChild(markdown);
+      void typesetMath(markdown);
+      resolveRelativeImages(markdown, a);
       if (slice.truncated) {
         partialNotice(container, slice.shown.length);
         previewDownload(container, a, url);
@@ -200,7 +208,7 @@ export function renderStructuredText(
 }
 
 export function renderTextArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, { signal: previewReadSignal(container) })
+  fetchArtifactText(url, { signal: previewReadSignal(container), onEncoding: noteEncodingIn(container) })
     .then((text) => {
       if (!container.isConnected) return;
       const ct = String(a.content_type || "").toLowerCase();
@@ -649,7 +657,8 @@ function renderImageGlue(content: HTMLElement, a: ArtifactRow, url: string): voi
 
 function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void {
   const frame = el("iframe");
-  applyArtifactIframeSandbox(frame, "pdf");
+  applyPdfFrame(frame);
+  frame.title = a.filename || "PDF";
   frame.dataset.currentPage = "1";
   content.appendChild(frame);
   const load = (): void => {
@@ -702,6 +711,13 @@ function renderMolecule3dGlue(content: HTMLElement, a: ArtifactRow, url: string,
     .catch(readFailure(content, a, url, () => renderMolecule3dGlue(content, a, url, nm)));
 }
 
+/** ART-15: the viewer's kind in the reader's language; unknown ids keep the server label. */
+export function rendererLabel(rendererId: string, serverLabel?: unknown): string {
+  const key = "viewer.kind." + rendererId;
+  const label = filesT(key);
+  return label !== key ? label : publicText(String(serverLabel || rendererId), 80);
+}
+
 export function renderArtifactDescriptor(
   body: HTMLElement,
   a: ArtifactRow,
@@ -717,12 +733,17 @@ export function renderArtifactDescriptor(
   const shell = el("div", "renderer-shell");
   shell.dataset.rendererId = rendererId;
   const meta = el("div", "renderer-meta");
-  meta.appendChild(el("span", "renderer-name", publicText(renderer.label || rendererId, 80)));
-  const match =
-    descriptor.matched_by === "compatibility"
-      ? translate("viewer.renderer.compat")
-      : translate("viewer.renderer.matched", publicText(descriptor.matched_by || "metadata", 30));
-  meta.appendChild(el("span", "renderer-detail", match));
+  // ART-15: what the viewer is, in the reader's language. The server label
+  // ("Binary artifact") and how the renderer was matched ("匹配：content_type")
+  // were developer metadata; the match is kept only as a tooltip.
+  const name = el("span", "renderer-name", rendererLabel(rendererId, renderer.label));
+  if (descriptor.matched_by && descriptor.matched_by !== "compatibility") {
+    name.title = publicText(String(renderer.label || rendererId), 80) + " · " + publicText(String(descriptor.matched_by), 30);
+  }
+  meta.appendChild(name);
+  if (descriptor.matched_by === "compatibility") {
+    meta.appendChild(el("span", "renderer-detail", translate("viewer.renderer.compat")));
+  }
   if (descriptor.matched_by === "compatibility") {
     // The compatibility descriptor is what a failed catalog read degrades to.
     // Retrying re-requests the catalog and the server descriptor in place, so
@@ -735,13 +756,15 @@ export function renderArtifactDescriptor(
     meta.appendChild(retry);
   }
   if (target._exactVersion) {
-    meta.appendChild(
-      el(
-        "span",
-        "renderer-version",
-        translate("viewer.renderer.version", publicText(String(target.version_id), 12)),
-      ),
+    // "固定版本" for a pinned historical tab, "最新版本" for the latest one; the
+    // version id is a tooltip, not the subtitle (ART-15).
+    const version = el(
+      "span",
+      "renderer-version",
+      filesT(a._exactVersion ? "viewer.version.pinned" : "viewer.version.latest"),
     );
+    version.title = publicText(String(target.version_id), 64);
+    meta.appendChild(version);
   } else {
     // No version identity: the preview reads latest, and this is visible.
     meta.appendChild(el("span", "renderer-version", filesT("viewer.preview.latest")));
@@ -764,6 +787,8 @@ export function renderArtifactDescriptor(
   else if (rendererId === "markdown") renderMarkdownArtifact(content, target, url);
   else if (rendererId === "notebook") renderNotebookArtifact(content, target, url);
   else if (rendererId === "table") renderTableArtifact(content, target, url, renderer);
+  // ART-11: a workbook or a gzip file is read by the server, never in the browser.
+  else if (rendererId === "spreadsheet" || rendererId === "compressed") renderTablePreview(content, target, url);
   else if (rendererId === "text") renderTextArtifact(content, target, url);
   else renderDownloadArtifact(content, target, url);
 }

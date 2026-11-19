@@ -84,8 +84,7 @@ async function movingHeadExport(page, api, row) {
   await page.locator("#files-btn").click();
   await page.locator('.files-scope [data-scope="frame"]').click();
   await page.locator(".files-search").fill(row.filename);
-  await page.locator(".files-filter-type").fill("");
-  await page.locator(".files-filter-type").press("Tab");
+  await page.locator(".files-filter-type").selectOption("");
   await page.locator('.files-origin [data-origin="all"]').click();
   await page.locator(`#results-list .art[data-artifact-id="${row.id}"]`).click();
   assert.equal(await page.evaluate(() => !!window.S.dockArtifact._exactVersion), false);

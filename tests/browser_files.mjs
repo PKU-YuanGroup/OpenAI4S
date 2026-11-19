@@ -10,11 +10,23 @@ async function openFiles(page, fid, pid) {
   await page.locator("#files-btn").click();
   await page.locator('.files-scope [data-scope="frame"]').click();
 }
-async function filter(page, query = "", type = "", origin = "all") {
+// ART-12: the type filter is a select of human kinds ("" = all, table, image,
+// report, code, other), no longer a MIME substring box.
+async function filter(page, query = "", kind = "", origin = "all") {
   await page.locator(".files-search").fill(query);
-  await page.locator(".files-filter-type").fill(type);
-  await page.locator(".files-filter-type").press("Tab");
+  await page.locator(".files-filter-type").selectOption(kind);
   await page.locator(`.files-origin [data-origin="${origin}"]`).click();
+}
+// The kind the product files a row under, asked of the server's own
+// `artifact-index?kind=` filter (one category table on both sides) rather
+// than re-implemented here.
+async function kindOf(api, pid, row) {
+  for (const kind of ["table", "image", "report", "code", "other"]) {
+    const result = await api(`/projects/${pid}/artifact-index?q=${encodeURIComponent(row.filename)}&kind=${kind}&limit=50`);
+    assert.equal(result.status, 200);
+    if ((result.body.artifacts || []).some((a) => (a.artifact_id || a.id) === row.id)) return kind;
+  }
+  throw new Error(`no kind lists ${row.filename}`);
 }
 async function grid(page, expected, more) {
   let snapshot;
@@ -73,10 +85,11 @@ export async function realArtifactFilesCheck(page, api, { frame_id: fid, project
   assert.ok(row && !row.is_user_upload, "reuse actual generated Ark artifact provenance");
   assert.equal(typeof row.version_id, "string");
   assert.ok(row.version_id, "record the current immutable version after earlier editor checks");
+  const kind = await kindOf(api, pid, row);
   await openFiles(page, fid, pid);
-  await filter(page, row.filename, row.content_type, "generated");
+  await filter(page, row.filename, kind, "generated");
   assert.deepEqual(await grid(page, 1, false), [row.id]);
-  await filter(page, row.filename, row.content_type, "uploaded");
+  await filter(page, row.filename, kind, "uploaded");
   await grid(page, 0, false);
   await filter(page);
   return { artifactId: row.id, versionId: row.version_id || row.latest_version_id, filename: row.filename };
@@ -116,11 +129,11 @@ export async function filesChecks(page, api) {
   await page.locator(".files-load-more").click(); await grid(page, 125, false);
   // All three filters are applied via actual controls and checked by identity.
   for (const [origin, count] of [["uploaded", 30], ["generated", 33]]) {
-    await filter(page, "report", "text/csv", origin);
+    await filter(page, "report", "table", origin);
     const ids = await grid(page, count, false);
     assert.deepEqual(new Set(ids), new Set(rows.filter((a) => a.filename.includes("report") && a.content_type.includes("text/csv") && !!a.is_user_upload === (origin === "uploaded")).map((a) => a.id)));
   }
-  await filter(page, "missing-report", "text/csv", "generated");
+  await filter(page, "missing-report", "table", "generated");
   await grid(page, 0, false);
   assert.match(await page.locator(".files-empty").textContent(), /No files match|没有匹配/);
   await filter(page); await grid(page, 50, true);
@@ -168,7 +181,7 @@ export async function filesChecks(page, api) {
   assert.deepEqual(await grid(page, 1, false), [only]);
   await filter(page); await grid(page, 2, false);
   await page.locator('.files-scope [data-scope="project"]').click();
-  await filter(page, "report-uploaded-000.csv", "text/csv", "uploaded");
+  await filter(page, "report-uploaded-000.csv", "table", "uploaded");
   const original = rows.find((a) => a.filename === "report-uploaded-000.csv");
   assert.deepEqual(new Set(await grid(page, 2, false)), new Set([original.id, duplicate]));
   await filter(page);

@@ -170,6 +170,52 @@ def _configured_bash_allowed_roots() -> list[str]:
     return [item for item in raw.split(os.pathsep) if item.strip()]
 
 
+def _with_install_target(
+    view: tuple[str, str, dict], active_env_bin: str | None
+) -> tuple[str, str, dict]:
+    """Name the environment an ``env_setup`` really installs into.
+
+    The step card and the approval card both read this view, so the user sees
+    "Installing lifelines into lab_env" with the interpreter path before
+    approving, instead of the caller's label.
+    """
+    from openai4s.tools.env_create import install_target
+
+    kind, title, data = view
+    interpreter, environment = install_target(active_env_bin)
+    return (
+        kind,
+        f"{title} into {environment}",
+        {**data, "environment": environment, "interpreter": interpreter or ""},
+    )
+
+
+def _with_shell_context(
+    view: tuple[str, str, dict],
+    active_env_bin: str | None,
+    sandbox: Mapping[str, Any] | None,
+) -> tuple[str, str, dict]:
+    """Say where a ``host.bash`` command will run before the user approves it.
+
+    The card showed only the command, so approving ``python3 -m pip install``
+    gave no hint that ``python3`` resolves to the kernel environment's
+    interpreter (a conda env's ``bin`` leads PATH), or whether the command runs
+    inside the kernel sandbox and may reach the network.
+    """
+    from openai4s.tools.env_create import install_target
+
+    kind, title, data = view
+    interpreter, environment = install_target(active_env_bin)
+    extra: dict[str, Any] = {"environment": environment, "python": interpreter or ""}
+    if isinstance(sandbox, Mapping):
+        extra["sandbox"] = {
+            "backend": sandbox.get("backend"),
+            "enforced": sandbox.get("enforced") is True,
+            "network": sandbox.get("network_policy"),
+        }
+    return (kind, title, {**data, **extra})
+
+
 def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     """(kind, title, input) for a visible tool call, else None."""
     a = args[0] if args and isinstance(args[0], dict) else {}
@@ -328,12 +374,23 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
             if args and isinstance(args[0], str)
             else (a.get("name") or a.get("env") or "")
         )
-        return ("env", f"Switching to the {name} environment", {"name": name})
-    if method == "env_setup":
+        from openai4s.tools.env_use import EnvUseTool
+
+        local = EnvUseTool.is_local(name)
         return (
             "env",
-            f"Setting up the {a.get('name') or 'analysis'} environment",
-            {"name": a.get("name"), "packages": a.get("packages", [])},
+            f"Switching to the {'local ' if local else ''}{name} environment",
+            {"name": name, "local": local},
+        )
+    if method == "env_setup":
+        # ``name`` is the caller's free-text label, not the environment the
+        # packages go into; the dispatcher adds the real target (see
+        # ``_with_install_target``).
+        packages = [str(p) for p in (a.get("packages") or []) if p]
+        return (
+            "env",
+            "Installing " + ", ".join(packages) if packages else "Installing packages",
+            {"label": a.get("name"), "packages": packages},
         )
     if method == "save_artifact":
         fn = a.get("filename") or Path(a.get("path", "")).name
@@ -411,10 +468,22 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
             },
         )
     if method == "dynamic_tool_define":
+        # This view is what the approval card shows. It carried only the name,
+        # so a "high risk" card asked the user to approve up to 100,000
+        # characters of Python they could not see. The schema caps every field,
+        # so the whole definition fits.
         return (
             "tool",
             f"Defining dynamic tool {a.get('name') or ''}",
-            {"name": a.get("name"), "ttl_s": a.get("ttl_s")},
+            {
+                "name": a.get("name"),
+                "description": a.get("description"),
+                "implementation": a.get("implementation"),
+                "input_schema": a.get("input_schema"),
+                "output_schema": a.get("output_schema"),
+                "smoke_args": a.get("smoke_args"),
+                "ttl_s": a.get("ttl_s"),
+            },
         )
     if method == "dynamic_tool_promote":
         return (
@@ -983,7 +1052,9 @@ def _delegate_step_projection(result: Any, ok: bool) -> tuple[dict, str, str]:
     return ({"raw": _short(safe, 2000)}, "malformed result", "error")
 
 
-def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]:
+def _step_end(
+    method: str, kind: str, result: Any, ok: bool, *, frame_id: str | None = None
+) -> tuple[dict, str]:
     """(output, one-line summary) for a finished step."""
     if kind == "delegate":
         # Before the generic declared-failure read: a max_turns envelope
@@ -999,7 +1070,15 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
         # Timeline) nothing to act on.
         reason = " ".join(str(err).split()) if err else ""
         summary = "failed" if not reason else f"failed: {reason[:160]}"
-        return ({"error": str(err)[:600] if err else "failed"}, summary)
+        failure: dict[str, Any] = {"error": str(err)[:600] if err else "failed"}
+        # A loaded Skill's network limit refused it: the card says so, not a
+        # bare failure (a refused search used to read "0 results").
+        from openai4s.server.skill_network_admission import refusal_view
+
+        blocked = refusal_view(reason, frame_id)
+        if blocked is not None:
+            failure["blocked"] = blocked
+        return (failure, summary)
     r = result if isinstance(result, dict) else {}
     if kind == "search":
         raw = result if isinstance(result, list) else r.get("results")
@@ -1105,14 +1184,19 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
                 {"content": text[:24000], "chars": len(text)},
                 _plural(len(text), "char") + " read",
             )
-        return (
-            {
-                "name": r.get("name"),
-                "description": r.get("description"),
-                "content": (r.get("content") or "")[:24000],
-            },
-            "loaded",
-        )
+        card = {
+            "name": r.get("name"),
+            "description": r.get("description"),
+            "content": (r.get("content") or "")[:24000],
+        }
+        # A host_only Skill narrows every later Host request in the session;
+        # the card has to say so, not just "loaded".
+        session_network = r.get("session_network")
+        if isinstance(session_network, dict) and session_network.get("domains"):
+            card["session_network"] = session_network
+            count = len(session_network["domains"])
+            return (card, f"loaded · network limited to {_plural(count, 'domain')}")
+        return (card, "loaded")
     if kind == "env":
         used = r.get("env")
         if isinstance(used, dict) and used.get("name"):  # env_use → switch
@@ -1283,6 +1367,7 @@ class HostDispatcher:
         # parallel read-only native tools: each approval must point back to its
         # own provider tool call rather than merely to the surrounding turn.
         self._action_context_local = threading.local()
+        self._cell_origin_local = threading.local()
         # Optional RL parent binding for nested Host RPC facts. The binding is
         # thread-local because one dispatcher serves foreground and background
         # workers concurrently.
@@ -1572,6 +1657,38 @@ class HostDispatcher:
     def _current_action_context(self) -> dict[str, Any]:
         value = getattr(self._action_context_local, "value", None)
         return dict(value) if isinstance(value, dict) else {}
+
+    @contextmanager
+    def bind_cell_origin(self, origin: str | None) -> Iterator[None]:
+        """Name who submitted the Cell whose Host calls follow (SEC-8).
+
+        The host binds it around ``kernel.execute`` on the thread that
+        dispatches that Cell's Host calls, so code inside the Cell cannot
+        choose it -- unlike the ``origin`` a caller may pass to
+        ``host.exec_background``.
+        """
+
+        local = getattr(self, "_cell_origin_local", None)
+        if local is None:
+            local = self._cell_origin_local = threading.local()
+        marker = object()
+        previous = getattr(local, "value", marker)
+        local.value = str(origin) if origin else None
+        try:
+            yield
+        finally:
+            if previous is marker:
+                try:
+                    del local.value
+                except AttributeError:
+                    pass
+            else:
+                local.value = previous
+
+    def _current_cell_origin(self) -> str | None:
+        local = getattr(self, "_cell_origin_local", None)
+        value = getattr(local, "value", None) if local is not None else None
+        return str(value) if value else None
 
     @contextmanager
     def bind_rl_context(self, context: Mapping[str, Any] | None) -> Iterator[None]:
@@ -2395,6 +2512,12 @@ class HostDispatcher:
         if self.on_step is not None:
             try:
                 view = _step_begin(method, args)
+                if method == "env_setup" and view is not None:
+                    view = _with_install_target(view, self.active_env_bin)
+                if method == "authorize_bash" and view is not None:
+                    view = _with_shell_context(
+                        view, self.active_env_bin, self._current_sandbox_status()
+                    )
             except Exception:  # noqa: BLE001 — step projection must never break a call
                 view = None
             if view is not None:
@@ -2591,6 +2714,15 @@ class HostDispatcher:
                 ok = False
                 return result
             if requires_approval:
+                # A refusal no approval can change is answered before anyone
+                # is asked. A loaded Skill's network manifest refused the
+                # request only after the user had approved it, so the card
+                # read "allowed" beside the failure.
+                policy_refusal = self._refusal_before_approval(method, args)
+                if policy_refusal is not None:
+                    result = {"error": policy_refusal}
+                    ok = False
+                    return result
                 permission_method = "bash" if method == "authorize_bash" else method
                 target = _gate_target(permission_method, args)
                 from openai4s.permissions import broker
@@ -2754,7 +2886,9 @@ class HostDispatcher:
                     step_result = result
                     if step_result is None and raised_error is not None:
                         step_result = {"error": raised_error}
-                    output, summary = _step_end(method, view[0], step_result, ok)
+                    output, summary = _step_end(
+                        method, view[0], step_result, ok, frame_id=self.frame_id
+                    )
                     if view[0] == "delegate":
                         # Delegate-specific status read at the decision site:
                         # the envelope's task_status is authoritative, and the
@@ -3255,6 +3389,19 @@ class HostDispatcher:
 
         return self._bash_authorization.record_result(spec or {})
 
+    def _refusal_before_approval(self, method: str, args: list) -> str | None:
+        """The policy refusal a gated call would get, asked before the gate."""
+
+        spec = args[0] if args and isinstance(args[0], dict) else {}
+        try:
+            if method == "authorize_bash":
+                return self._bash_authorization.policy_refusal(spec)
+            from openai4s.server.skill_network_admission import request_refusal
+
+            return request_refusal(method, spec)
+        except Exception:  # noqa: BLE001 - the handler still enforces the policy
+            return None
+
     def _m_egress_check(self, spec: dict) -> dict:
         """Read-only egress verdict for domains the kernel-local host.bash saw.
 
@@ -3419,6 +3566,8 @@ class HostDispatcher:
             bind_skill_load,
             load_event_metadata,
             load_needs_posture,
+            narrowing_notice,
+            narrowing_summary,
             skill_binding,
         )
 
@@ -3479,14 +3628,57 @@ class HostDispatcher:
             "skill_loaded",
             metadata=metadata,
         )
+        notice = narrowing_notice(self.frame_id, candidate)
         bind_skill_load(frame_id=self.frame_id, **binding)
+        if notice is not None:
+            self._announce_skill_network(notice)
         loaded_dict = loaded if isinstance(loaded, dict) else None
         if loaded_dict is not None:
             loaded_dict["skill_id"] = skill.name
             loaded_dict["action_group_id"] = metadata["action_group_id"]
             loaded_dict["manifest_digest"] = metadata["manifest_digest"]
             loaded_dict["document_digest"] = metadata["document_digest"]
+            session_network = narrowing_summary(self.frame_id)
+            if session_network is not None and (
+                capability.mode == "host_only" and capability.declaration == "declared"
+            ):
+                loaded_dict["session_network"] = session_network
         return None
+
+    def _announce_skill_network(self, notice: dict[str, Any]) -> None:
+        """Put "this Skill now narrows the session's network" on the timeline.
+
+        A host_only manifest holds every later Host request in the frame to
+        its domains, and nothing told the user: the load card said "loaded"
+        and the first sign was a refused request. Its own card, emitted by
+        every path that binds (native load, a Cell's load, a Skill file read).
+        """
+
+        if self.on_step is None:
+            return
+        step_id = "s-" + uuid.uuid4().hex[:12]
+        count = len(notice.get("domains") or ())
+        try:
+            self.on_step(
+                {
+                    "phase": "begin",
+                    "step_id": step_id,
+                    "kind": "network",
+                    "title": f"{notice.get('skill')} limits this session's network",
+                    "input": {"skill": notice.get("skill")},
+                }
+            )
+            self.on_step(
+                {
+                    "phase": "end",
+                    "step_id": step_id,
+                    "status": "done",
+                    "output": dict(notice),
+                    "summary": f"limited to {_plural(count, 'domain')}",
+                }
+            )
+        except Exception:  # noqa: BLE001 - a notice must never break a load
+            pass
 
     def _m_remember(self, spec: dict) -> dict:
         """Persist a durable memory the daemon injects into future sessions
@@ -4101,8 +4293,26 @@ class HostDispatcher:
                 )
             }
         code = spec["code"] if isinstance(spec, dict) else str(spec)
-        origin = spec.get("origin", "agent") if isinstance(spec, dict) else "agent"
-        return self._bg().launch(code, origin=origin)
+        # An agent launch belongs to the current turn, so stopping that turn
+        # stops it too (``stop_turn_background``); a manual Notebook cell's
+        # launch does not. Which one this is is the host's call, never the
+        # caller's: an agent Cell could pass origin="user" to keep its worker
+        # alive past Stop. Only a Cell the host itself ran as the user's is left
+        # out; an unknown origin (a background worker's own launch) stays with
+        # the turn.
+        launched_by_user = self._current_cell_origin() == "user"
+        origin = "user" if launched_by_user else "agent"
+        turn_id = None if launched_by_user else self._task_turn_id
+        return self._bg().launch(code, origin=origin, turn_id=turn_id)
+
+    def stop_turn_background(self) -> list[str]:
+        """Stop the background cells the current agent turn launched."""
+
+        executor = self._bg_executor
+        turn_id = self._task_turn_id
+        if executor is None or not turn_id:
+            return []
+        return list(executor.stop_turn(turn_id))
 
     def _m_exec_peek(self, exec_id: str) -> dict:
         executor = self._bg()

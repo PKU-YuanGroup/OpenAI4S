@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Protocol
 
 from openai4s.artifact_paths import ignored_artifact_path
@@ -170,7 +170,27 @@ _BINARY_EXT = (
     ".mol2",
     ".sdf",
     ".xyz",
+    ".gz",
+    ".gzip",
+    ".tgz",
+    ".xlsx",
 )
+#: ART-11: gzip is gzip by its magic number, whatever the file is called. A
+#: ``.csv`` holding ``gzip -c`` output was typed ``text/csv``, and its bytes were
+#: decoded as a table in the viewer and its thumbnail.
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _content_type_for_bytes(declared: str, head: bytes) -> str:
+    return "application/gzip" if head.startswith(_GZIP_MAGIC) else declared
+
+
+def _file_head(path: Path, size: int = 2) -> bytes:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(size)
+    except OSError:
+        return b""
 
 
 class ArtifactOperationError(Exception):
@@ -2367,14 +2387,45 @@ class ArtifactManager:
         *,
         broadcast: Broadcast | None = None,
     ) -> dict:
-        """Rename artifact metadata; the historical live file stays in place."""
+        """Rename an Artifact and the live file it names in the workspace (ART-12).
+
+        This used to rename metadata only: the workspace kept the old file, the
+        new name could drop the extension, and it could repeat another file's
+        name in the same session. Now the name keeps its folder and (when the
+        person typed none) its extension, a name another Artifact or another
+        workspace file already uses is refused with 409 ``artifact_exists``,
+        and the live file moves through the pinned, no-follow parent directory
+        with every version that recorded its path. An Artifact whose live file
+        is already gone is renamed in metadata and says so (``moved: false``).
+        """
         if not filename:
             raise ArtifactOperationError(400, "filename required")
         artifact = self.store.get_artifact(artifact_id)
         if not artifact:
             raise ArtifactOperationError(404, "artifact not found")
+        filename = self._renamed_filename(str(artifact.get("filename") or ""), filename)
         self.live_path({**artifact, "filename": filename})
-        self.store.rename_artifact(artifact_id, filename)
+        if filename == artifact.get("filename"):
+            return {
+                "ok": True,
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "moved": False,
+            }
+        duplicate = self.store.artifact_by_scope_filename(
+            filename,
+            root_frame_id=artifact.get("root_frame_id"),
+            project_id=str(artifact.get("project_id") or "default"),
+        )
+        if duplicate is not None and duplicate.get("artifact_id") != artifact_id:
+            raise ArtifactOperationError(
+                409,
+                f"a file named {filename!r} already exists in this session",
+                "artifact_exists",
+            )
+        moved = self._move_live_file(artifact, filename)
+        if moved is None:
+            self.store.rename_artifact(artifact_id, filename)
         root_frame_id = artifact.get("root_frame_id")
         self._notify(
             root_frame_id,
@@ -2388,7 +2439,103 @@ class ArtifactManager:
             },
             broadcast,
         )
-        return {"ok": True, "artifact_id": artifact_id, "filename": filename}
+        return {
+            "ok": True,
+            "artifact_id": artifact_id,
+            "filename": filename,
+            "moved": moved is not None,
+        }
+
+    @staticmethod
+    def _renamed_filename(current: str, requested: str) -> str:
+        """The new relative name: same folder, and the old extension if none was typed.
+
+        A bare name stays in the file's folder; a name that repeats the folder
+        is accepted as written; moving to another folder is refused, because
+        that is a move, not a rename.
+        """
+        requested = requested.strip().replace("\\", "/")
+        current_path = PurePosixPath(current.replace("\\", "/"))
+        new_path = PurePosixPath(requested)
+        if new_path.is_absolute() or ".." in new_path.parts:
+            raise ArtifactOperationError(
+                400, "artifact live path escapes its workspace"
+            )
+        if not new_path.name or new_path.name in {".", ".."} or "\x00" in requested:
+            raise ArtifactOperationError(400, "filename is invalid")
+        if len(new_path.parts) > 1 and new_path.parent != current_path.parent:
+            raise ArtifactOperationError(
+                400, "rename keeps the file in its folder; give a file name only"
+            )
+        name = new_path.name
+        old_suffix = current_path.suffix
+        # "笔记 改名后" for "notes.txt" keeps ".txt": a dropped extension is
+        # almost always an accident, and an explicit new one is respected.
+        if old_suffix and not PurePosixPath(name).suffix and not name.endswith("."):
+            name += old_suffix
+        parent = current_path.parent
+        return name if str(parent) in {"", "."} else str(parent / name)
+
+    def _move_live_file(self, artifact: dict, filename: str) -> bool | None:
+        """Move the live file to ``filename``'s name; None when there is none to move.
+
+        Runs under the upload lock. Both names are resolved inside the pinned,
+        no-follow parent directory, so a kernel that swaps a workspace folder
+        for a link cannot redirect the move, and a destination that exists is
+        refused rather than overwritten. The rows follow the file in one
+        transaction; if they cannot, the file goes back.
+        """
+        try:
+            root, old_target, _stored = self._exact_artifact_target(artifact)
+        except ArtifactOperationError:
+            return None
+        new_target = old_target.with_name(PurePosixPath(filename).name)
+        current = self.store.version_meta(str(artifact.get("latest_version_id") or ""))
+        recorded = str((current or {}).get("path") or "")
+        try:
+            parent = self._open_upload_parent(root, old_target, create=False)
+        except (OSError, RuntimeError):
+            return None
+        with parent:
+            try:
+                if not stat.S_ISREG(parent.lstat(old_target).st_mode):
+                    return None
+            except FileNotFoundError:
+                return None
+            except OSError as error:
+                record_diagnostic(error, surface="artifacts:rename:lstat")
+                return None
+            if parent.exists(new_target):
+                raise ArtifactOperationError(
+                    409,
+                    f"a file named {new_target.name!r} already exists in the workspace",
+                    "artifact_exists",
+                )
+            try:
+                parent.replace(old_target, new_target)
+                parent.fsync()
+            except OSError as error:
+                record_diagnostic(error, surface="artifacts:rename:move")
+                raise ArtifactOperationError(500, "renaming the file failed") from error
+            new_recorded = (
+                str(new_target)
+                if Path(recorded).is_absolute() or not recorded
+                else str(PurePosixPath(recorded).with_name(new_target.name))
+            )
+            try:
+                self.store.move_artifact(
+                    str(artifact.get("artifact_id")),
+                    filename,
+                    old_path=recorded,
+                    new_path=new_recorded,
+                )
+            except Exception as error:
+                try:
+                    parent.replace(new_target, old_target)
+                except OSError as undo:
+                    record_diagnostic(undo, surface="artifacts:rename:undo")
+                raise ArtifactOperationError(500, "renaming the file failed") from error
+        return True
 
     @staticmethod
     def _upload_bytes(payload: dict) -> bytes:
@@ -2559,9 +2706,18 @@ class ArtifactManager:
         )
         raw = raw_override if raw_override is not None else self._upload_bytes(payload)
 
+        if_exists = "version"
         if exact_artifact is not None:
             root, target, stored_filename = self._exact_artifact_target(exact_artifact)
         else:
+            if_exists = self._upload_if_exists(payload)
+            if if_exists == "rename":
+                filename = self._free_upload_name(
+                    filename,
+                    frame_id=frame_id,
+                    workspace_frame_id=workspace_frame_id,
+                    project_id=project_id,
+                )
             root, target, stored_filename = self._upload_target(
                 frame_id=workspace_frame_id,
                 filename=filename,
@@ -2587,7 +2743,76 @@ class ArtifactManager:
                 restore_source_version_id=restore_source_version_id,
                 materialise_source_version_id=materialise_source_version_id,
                 producing_cell_id=producing_cell_id,
+                if_exists=if_exists,
             )
+
+    #: What an upload whose name is taken does. ``version`` (the default, and
+    #: what every caller got before UP-3) publishes a new version of the
+    #: existing Artifact; ``error`` refuses with 409 ``artifact_exists`` so
+    #: the client can ask the person; ``rename`` stores it under the first
+    #: free ``name-2.ext``.
+    UPLOAD_IF_EXISTS = ("version", "error", "rename")
+
+    @classmethod
+    def _upload_if_exists(cls, payload: dict) -> str:
+        value = payload.get("if_exists")
+        if value in (None, ""):
+            return "version"
+        if value not in cls.UPLOAD_IF_EXISTS:
+            raise ArtifactOperationError(
+                400,
+                "if_exists must be one of " + ", ".join(cls.UPLOAD_IF_EXISTS),
+            )
+        return str(value)
+
+    @staticmethod
+    def _numbered_name(name: str, number: int) -> str:
+        """``data.csv`` → ``data-2.csv``; a compression suffix stays last."""
+        stem, suffix = os.path.splitext(name)
+        if suffix.lower() in {".gz", ".bz2", ".xz", ".zst", ".zip"}:
+            inner_stem, inner = os.path.splitext(stem)
+            if inner and inner_stem:
+                stem, suffix = inner_stem, inner + suffix
+        if not stem:
+            stem, suffix = name, ""
+        return f"{stem}-{number}{suffix}"
+
+    def _free_upload_name(
+        self,
+        filename: Any,
+        *,
+        frame_id: Any,
+        workspace_frame_id: Any,
+        project_id: Any,
+    ) -> str:
+        """The first name in this scope that neither an Artifact nor a file uses.
+
+        Runs under the upload lock, so no other upload can take the name
+        between this check and the publish; a scope the write would refuse is
+        left for the write to report.
+        """
+        name = Path(str(filename)).name
+        try:
+            _explicit, root_frame_id, scope_project = self.store.artifact_write_scope(
+                frame_id=frame_id, project_id=project_id
+            )
+        except ValueError:
+            return name
+        for number in range(1, 1000):
+            candidate = name if number == 1 else self._numbered_name(name, number)
+            _root, target, _stored = self._upload_target(
+                frame_id=workspace_frame_id, filename=candidate, exact=False
+            )
+            taken = self.store.artifact_by_scope_filename(
+                candidate,
+                root_frame_id=root_frame_id,
+                project_id=scope_project,
+            ) is not None or os.path.lexists(target)
+            if not taken:
+                return candidate
+        raise ArtifactOperationError(
+            409, "no free name is left for this upload", "artifact_exists"
+        )
 
     def _upload_locked_in_parent(
         self,
@@ -2605,6 +2830,7 @@ class ArtifactManager:
         restore_source_version_id: str | None,
         materialise_source_version_id: str | None,
         producing_cell_id: str | None,
+        if_exists: str = "version",
     ) -> dict:
         """Run one upload using only the pinned live-parent descriptor."""
 
@@ -2643,6 +2869,14 @@ class ArtifactManager:
             raise FileExistsError(
                 f"{stored_filename!r} already exists in this session; "
                 "materialising would create a duplicate Artifact"
+            )
+        if if_exists == "error" and (existing is not None or target_exists):
+            # UP-3: the person decides between a new version and a second
+            # file; nothing has been staged yet, so the refusal is free.
+            raise ArtifactOperationError(
+                409,
+                f"a file named {stored_filename!r} already exists in this session",
+                "artifact_exists",
             )
 
         previous_file: _PinnedUploadFile | None = None
@@ -2882,13 +3116,16 @@ class ArtifactManager:
                 record = self.store.commit_artifact_upload(
                     path=str(target),
                     filename=stored_filename,
-                    content_type=(
+                    content_type=_content_type_for_bytes(
                         (
-                            exact_artifact.get("content_type")
-                            or self.guess_content_type(stored_filename)
-                        )
-                        if exact_artifact is not None
-                        else self.guess_content_type(target.name)
+                            (
+                                exact_artifact.get("content_type")
+                                or self.guess_content_type(stored_filename)
+                            )
+                            if exact_artifact is not None
+                            else self.guess_content_type(target.name)
+                        ),
+                        raw[:2],
                     ),
                     size_bytes=len(raw),
                     checksum=hashlib.sha256(raw).hexdigest(),
@@ -3122,6 +3359,48 @@ class ArtifactManager:
             broadcast,
         )
         return {"ok": True}
+
+    def capture_background(
+        self,
+        session: ArtifactSession,
+        exec_id: str,
+        before: WorkspaceSnapshot,
+        emit: EventSink,
+    ) -> list[dict]:
+        """Register what one finished background cell wrote (ART-5).
+
+        Foreground capture diffs the workspace around each Cell, so a file an
+        ``exec_background`` job wrote between Cells was never captured: its
+        figures and tables existed on disk while the completion claimed them
+        and the Artifact list did not. The job's lifetime snapshots at launch
+        and calls this when it ends. Bytes a foreground Cell already captured
+        (same name, same checksum as the head) are not versioned again.
+        """
+        after = self.snapshot(session.workspace)
+        records: list[dict] = []
+        for raw in sorted(
+            path for path, mark in after.items() if before.get(path) != mark
+        ):
+            path = Path(raw)
+            try:
+                relative = str(path.relative_to(session.workspace))
+                existing = self.store.artifact_by_filename(
+                    relative, session.root_frame_id, strict=True
+                )
+                head = (
+                    self.store.version_meta(existing["latest_version_id"])
+                    if existing and existing.get("latest_version_id")
+                    else None
+                )
+                if head and head.get("checksum") == self.checksum(path):
+                    continue
+                record = self.register_file(session, path, exec_id, emit)
+            except Exception as error:  # noqa: BLE001 — one file never blocks the rest
+                record_diagnostic(error, surface="artifacts:capture:background")
+                continue
+            if record is not None:
+                records.append(record)
+        return records
 
     def snapshot(self, workspace: Path) -> WorkspaceSnapshot:
         """Return kernel-owned file identities for deliverable change detection.
@@ -3456,7 +3735,10 @@ class ArtifactManager:
         record_fields: dict[str, Any] = {
             "path": str(path),
             "filename": relative,
-            "content_type": self.guess_content_type(relative),
+            "content_type": _content_type_for_bytes(
+                self.guess_content_type(relative),
+                _file_head(frozen.path if frozen is not None else path),
+            ),
             "size_bytes": size,
             "checksum": checksum,
             "producing_cell_id": cell_id,
@@ -3626,6 +3908,7 @@ class ArtifactManager:
         producer_frame_id: str | None = None,
         honor_delegated_claims: bool = True,
         artifact_receipts: Mapping[str, Mapping[str, Any]] | None = None,
+        cell_failed: bool = False,
     ) -> CaptureResult:
         receipt_map = (
             artifact_receipt_map(artifact_receipts.values())
@@ -3641,7 +3924,9 @@ class ArtifactManager:
         figures: list[str] = []
         if language == "python" and run_system_cell is not None:
             try:
-                response = run_system_cell(_capture_snippet(cell_index))
+                response = run_system_cell(
+                    _capture_snippet(cell_index, save=not cell_failed)
+                )
                 for line in (response.get("stdout") or "").splitlines():
                     if line.startswith("__OSFIGS__"):
                         try:
@@ -4022,7 +4307,55 @@ class ArtifactManager:
         return packages
 
 
-def _capture_snippet(index: int) -> str:
+class BackgroundCaptureLifetime:
+    """A background job's writer lease that also captures what the job wrote.
+
+    ``BackgroundExecutor`` holds its lifetime from spawn to the worker
+    thread's final shutdown, which is exactly the job's write window. This
+    wraps the session's background admission lease: snapshot on enter,
+    ``capture_background`` on exit, then release the lease. Capture is best
+    effort -- a failure is recorded and never changes the job's outcome.
+    """
+
+    def __init__(
+        self,
+        manager: "ArtifactManager",
+        session: ArtifactSession,
+        lease: Any,
+        emit: EventSink,
+    ) -> None:
+        self._manager = manager
+        self._session = session
+        self._lease = lease
+        self._emit = emit
+        self._before: WorkspaceSnapshot | None = None
+        self._exec_id = "background"
+
+    def bind_background_exec(self, exec_id: str) -> None:
+        self._exec_id = str(exec_id or "background")
+
+    def __enter__(self) -> Any:
+        entered = self._lease.__enter__()
+        try:
+            self._before = self._manager.snapshot(self._session.workspace)
+        except Exception as error:  # noqa: BLE001 — no baseline, no capture
+            record_diagnostic(error, surface="artifacts:capture:background")
+            self._before = None
+        return entered
+
+    def __exit__(self, *exc_info: Any) -> Any:
+        try:
+            if self._before is not None:
+                self._manager.capture_background(
+                    self._session, self._exec_id, self._before, self._emit
+                )
+        except Exception as error:  # noqa: BLE001 — the job's outcome stands
+            record_diagnostic(error, surface="artifacts:capture:background")
+        finally:
+            return self._lease.__exit__(*exc_info)
+
+
+def _capture_snippet(index: int, *, save: bool = True) -> str:
     # pyplot is read from sys.modules, never imported, as in
     # kernel/guards.py: importing it builds matplotlib's font list, and an
     # enforced sandbox gives each kernel an empty private MPLCONFIGDIR. The
@@ -4031,6 +4364,16 @@ def _capture_snippet(index: int) -> str:
     # so a font scan (8-48s on macOS) ran after the Cell and the Stop or the
     # daemon shutdown waited it out. A process that has not imported pyplot
     # has no pyplot figures to capture.
+    #
+    # ART-7: a figure the Cell already saved was saved a second time as
+    # figure_cellN_k.png, and a failed Cell's half-drawn figure became a
+    # deliverable. Each open figure is still closed, but it is saved only when
+    # the Cell did not fail and the figure has unsaved drawing: it was never
+    # rendered (`stale`), or it was changed after the Cell's last savefig. The
+    # snippet wraps Figure.savefig once so later Cells mark what they save to
+    # a file (a save into a buffer, as an inline display does, is not a file);
+    # before that wrap exists (the first plotting Cell) a rendered, unchanged
+    # figure is taken as saved.
     return (
         "import json as __oj\n"
         "__osfigs=[]\n"
@@ -4038,12 +4381,32 @@ def _capture_snippet(index: int) -> str:
         " import sys as __sys\n"
         " __plt=__sys.modules.get('matplotlib.pyplot')\n"
         " if __plt is not None:\n"
+        "  __F=__sys.modules['matplotlib.figure'].Figure\n"
+        "  __marked=getattr(__F.savefig,'__openai4s_marks__',False)\n"
         "  for __n in list(__plt.get_fignums()):\n"
         f"   __nm='figure_cell{index}_'+str(__n)+'.png'\n"
         "   try:\n"
-        "    __plt.figure(__n).savefig(__nm,dpi=130,bbox_inches='tight')\n"
-        "    __plt.close(__n); __osfigs.append(__nm)\n"
+        "    __f=__plt.figure(__n)\n"
+        "    __kept=not getattr(__f,'stale',True) and (not __marked or "
+        "getattr(__f,'_openai4s_saved',False))\n"
+        f"    if {bool(save)} and not __kept:\n"
+        "     __f.savefig(__nm,dpi=130,bbox_inches='tight')\n"
+        "     __osfigs.append(__nm)\n"
+        "    __plt.close(__n)\n"
         "   except Exception: pass\n"
+        "  if not __marked:\n"
+        "   __orig=__F.savefig\n"
+        "   def __openai4s_savefig(self,*a,__o=__orig,**k):\n"
+        "    __r=__o(self,*a,**k)\n"
+        "    __t=a[0] if a else k.get('fname')\n"
+        "    if isinstance(__t,(str,bytes)) or hasattr(__t,'__fspath__'):\n"
+        "     try: self._openai4s_saved=True\n"
+        "     except Exception: pass\n"
+        "    return __r\n"
+        "   __openai4s_savefig.__openai4s_marks__=True\n"
+        "   __openai4s_savefig.__wrapped__=__orig\n"
+        "   __openai4s_savefig.__doc__=__orig.__doc__\n"
+        "   __F.savefig=__openai4s_savefig\n"
         "except Exception: pass\n"
         "print('__OSFIGS__'+__oj.dumps(__osfigs))\n"
     )
@@ -4052,7 +4415,14 @@ def _capture_snippet(index: int) -> str:
 def is_text_editable(filename: str | None, content_type: str | None) -> bool:
     name = (filename or "").lower()
     content = (content_type or "").lower()
-    if content.startswith("image/") or name.endswith(_BINARY_EXT):
+    # A gzip stream or an Office Open XML zip (``…openxmlformats…`` contains
+    # "xml") is a binary container; saving text over it destroys the file.
+    if (
+        content.startswith("image/")
+        or "gzip" in content
+        or "openxmlformats" in content
+        or name.endswith(_BINARY_EXT)
+    ):
         return False
     return (
         name.endswith(_TEXT_EDIT_EXT)

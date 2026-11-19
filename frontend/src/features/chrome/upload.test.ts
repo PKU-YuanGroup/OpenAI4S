@@ -3,6 +3,7 @@ import { _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   UPLOAD_STATE,
+  UPLOAD_TIMING,
   UPLOAD_WAIT_LIMIT_MS,
   createUploadSession,
   pendingUploadsFor,
@@ -15,6 +16,22 @@ import {
 } from "./upload";
 
 type FetchCall = { path: string; body: Record<string, unknown> };
+
+// UP-3: the same-name prompt is the person's answer; tests decide it.
+const conflict = vi.hoisted(() => ({
+  answer: "rename" as "rename" | "version" | "cancel",
+  asked: [] as string[],
+}));
+vi.mock("./upload-conflict", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./upload-conflict")>();
+  return {
+    ...actual,
+    askUploadConflict: async (name: string) => {
+      conflict.asked.push(name);
+      return conflict.answer;
+    },
+  };
+});
 
 function stubDom(workspaceHidden = false): void {
   const workspace = {
@@ -342,5 +359,201 @@ describe("F-20 composer uploads (app.js:11049-11199)", () => {
 
   it("the stall budget stays at the app.js value", () => {
     expect(UPLOAD_WAIT_LIMIT_MS).toBe(120000);
+  });
+
+  describe("a taken name asks before anything is replaced (UP-3)", () => {
+    function stubTakenName(stored: string): FetchCall[] {
+      const calls: FetchCall[] = [];
+      vi.stubGlobal("fetch", (url: string, opts: { body?: string }) => {
+        const path = String(url).replace("/api/v1", "");
+        const body = opts && opts.body ? (JSON.parse(opts.body) as Record<string, unknown>) : {};
+        calls.push({ path, body });
+        const taken = path === "/uploads" && body.if_exists === "error";
+        const payload = taken
+          ? { error: "a file named a.csv already exists in this session", code: "artifact_exists", status: 409 }
+          : { artifact_id: "a-1", filename: body.if_exists === "rename" ? stored : body.filename };
+        return Promise.resolve({
+          ok: !taken,
+          status: taken ? 409 : 200,
+          text: () => Promise.resolve(JSON.stringify(payload)),
+        });
+      });
+      return calls;
+    }
+
+    beforeEach(() => {
+      conflict.asked.length = 0;
+      stubReader((f) => `data:text/csv;base64,${f.name}`);
+      currentId.value = "frame_a";
+    });
+
+    it("every upload is first sent with if_exists=error", async () => {
+      const calls = stubFetch(() => ({ filename: "a.csv" }));
+      const [result] = await uploadFiles([file("a.csv")]);
+      expect(result?.ok).toBe(true);
+      expect(calls.find((c) => c.path === "/uploads")?.body.if_exists).toBe("error");
+      expect(conflict.asked).toEqual([]);
+    });
+
+    it("keep both re-sends with rename and reports the stored name", async () => {
+      conflict.answer = "rename";
+      const calls = stubTakenName("a-2.csv");
+      const [result] = await uploadFiles([file("a.csv")]);
+      expect(conflict.asked).toEqual(["a.csv"]);
+      expect(calls.filter((c) => c.path === "/uploads").map((c) => c.body.if_exists)).toEqual(["error", "rename"]);
+      expect(result).toMatchObject({ ok: true, filename: "a-2.csv" });
+      expect(UPLOAD_STATE.failures.size).toBe(0);
+    });
+
+    it("replace re-sends as a new version", async () => {
+      conflict.answer = "version";
+      const calls = stubTakenName("unused");
+      const [result] = await uploadFiles([file("a.csv")]);
+      expect(calls.filter((c) => c.path === "/uploads").map((c) => c.body.if_exists)).toEqual(["error", "version"]);
+      expect(result).toMatchObject({ ok: true, filename: "a.csv" });
+    });
+
+    it("cancel writes nothing, is not a failure, and does not hold a send", async () => {
+      conflict.answer = "cancel";
+      const calls = stubTakenName("unused");
+      const [result] = await uploadFiles([file("a.csv")]);
+      expect(calls.filter((c) => c.path === "/uploads")).toHaveLength(1);
+      expect(result).toMatchObject({ ok: true, skipped: true });
+      const ready = await waitForPendingUploads("frame_a", null, null);
+      expect(ready.ok).toBe(true);
+    });
+  });
+});
+
+describe("UP-1/UP-2: several files and a busy session", () => {
+  beforeEach(() => {
+    resetStoreFields();
+    UPLOAD_STATE.pending.clear();
+    UPLOAD_STATE.failures.clear();
+    UPLOAD_STATE.creations.clear();
+    stubDom();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** fetch stub with per-request status codes and in-flight tracking. */
+  function stubSequencedFetch(
+    respond: (path: string, body: Record<string, unknown>) => { status: number; body: unknown },
+  ): { calls: FetchCall[]; maxInFlight: () => number } {
+    const calls: FetchCall[] = [];
+    let inFlight = 0;
+    let max = 0;
+    vi.stubGlobal("fetch", async (url: string, opts: { body?: string }) => {
+      const path = String(url).replace("/api/v1", "");
+      const body = opts && opts.body ? (JSON.parse(opts.body) as Record<string, unknown>) : {};
+      calls.push({ path, body });
+      inFlight += 1;
+      max = Math.max(max, inFlight);
+      await Promise.resolve();
+      await Promise.resolve();
+      inFlight -= 1;
+      const answer = respond(path, body);
+      return {
+        ok: answer.status < 400,
+        status: answer.status,
+        text: () => Promise.resolve(JSON.stringify(answer.body ?? {})),
+      };
+    });
+    return { calls, maxInFlight: () => max };
+  }
+
+  it("a multi-file selection uploads one file at a time and every file lands", async () => {
+    stubReader((f) => `data:text/csv;base64,${f.name}`);
+    const { calls, maxInFlight } = stubSequencedFetch(() => ({ status: 200, body: {} }));
+    currentId.value = "frame_a";
+
+    const results = await uploadFiles([file("a.csv"), file("b.csv"), file("c.csv")]);
+
+    expect(results.map((r) => r.ok)).toEqual([true, true, true]);
+    expect(calls.filter((c) => c.path === "/uploads")).toHaveLength(3);
+    expect(maxInFlight()).toBe(1);
+  });
+
+  it("a same-name question holds the queue and a cancelled file is neither uploaded nor failed (UP-1 + UP-3)", async () => {
+    stubReader((f) => `data:text/csv;base64,${f.name}`);
+    conflict.asked.length = 0;
+    conflict.answer = "cancel";
+    const { calls, maxInFlight } = stubSequencedFetch((path, body) => {
+      if (path === "/uploads" && body.filename === "taken.csv" && body.if_exists === "error") {
+        return { status: 409, body: { error: "exists", code: "artifact_exists", status: 409 } };
+      }
+      return { status: 200, body: { filename: body.filename } };
+    });
+    currentId.value = "frame_a";
+
+    const results = await uploadFiles([file("taken.csv"), file("new.csv")]);
+
+    expect(conflict.asked).toEqual(["taken.csv"]);
+    expect(results.map((r) => [r.filename, r.ok, !!r.skipped])).toEqual([
+      ["taken.csv", true, true],
+      ["new.csv", true, false],
+    ]);
+    // The second file was sent only after the question about the first.
+    expect(calls.filter((c) => c.path === "/uploads").map((c) => c.body.filename)).toEqual([
+      "taken.csv",
+      "new.csv",
+    ]);
+    expect(maxInFlight()).toBe(1);
+    expect(UPLOAD_STATE.failures.size).toBe(0);
+  });
+
+  it("a busy session queues the upload until its run ends, then sends it", async () => {
+    stubReader((f) => `data:text/csv;base64,${f.name}`);
+    const original = { ...UPLOAD_TIMING };
+    UPLOAD_TIMING.sleep = () => Promise.resolve();
+    let uploads = 0;
+    let statusPolls = 0;
+    const { calls } = stubSequencedFetch((path) => {
+      if (path === "/uploads") {
+        uploads += 1;
+        return uploads === 1
+          ? {
+              status: 409,
+              body: {
+                error: "session workspace is busy with another execution",
+                code: "trusted_capture_busy",
+                status: 409,
+              },
+            }
+          : { status: 200, body: {} };
+      }
+      if (path === "/frames/frame_a/status") {
+        statusPolls += 1;
+        return { status: 200, body: { running: statusPolls < 3 } };
+      }
+      return { status: 200, body: {} };
+    });
+    currentId.value = "frame_a";
+    try {
+      const results = await uploadFiles([file("late.csv")]);
+      expect(results[0]?.ok).toBe(true);
+      expect(statusPolls).toBe(3);
+      expect(calls.filter((c) => c.path === "/uploads")).toHaveLength(2);
+    } finally {
+      Object.assign(UPLOAD_TIMING, original);
+    }
+  });
+
+  it("a refusal that is not a busy session fails at once and is recorded", async () => {
+    stubReader((f) => `data:text/csv;base64,${f.name}`);
+    stubSequencedFetch((path) =>
+      path === "/uploads"
+        ? { status: 413, body: { error: "too large", code: "payload_too_large" } }
+        : { status: 200, body: {} },
+    );
+    currentId.value = "frame_a";
+
+    const results = await uploadFiles([file("a.csv"), file("b.csv")]);
+
+    expect(results.map((r) => r.ok)).toEqual([false, false]);
+    expect(UPLOAD_STATE.failures.size).toBe(1);
   });
 });

@@ -51,6 +51,8 @@ export function useVendorKey(
           ? t(`${prefix}.keyConfigured`)
           : t(`${prefix}.keyMissing`);
   const keyBad = loaded && (!!failure || (!keyConfigured && !arkKeyReused));
+  /** Read, no failure, and no key the outbound resolver would send. */
+  const missing = loaded && !failure && !keyConfigured && !arkKeyReused;
   const placeholder = arkKeyReused
     ? t(`${prefix}.keyPlaceholderArk`)
     : keyConfigured
@@ -92,5 +94,5 @@ export function useVendorKey(
     }
   };
 
-  return { loaded, key, setKey, savingKey, saveKey, keyState, keyBad, placeholder };
+  return { loaded, key, setKey, savingKey, saveKey, keyState, keyBad, missing, placeholder };
 }

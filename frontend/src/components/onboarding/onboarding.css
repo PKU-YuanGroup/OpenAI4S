@@ -84,6 +84,39 @@
   opacity: 1;
   color: var(--text-200, #3d3d3a);
 }
+/* NAV-3: the rail's steps are buttons; a number, or a tick once done. */
+#onboarding .onb-rail .onb-step {
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+}
+#onboarding .onb-rail .onb-step:hover:not(:disabled):not(.active) {
+  background: var(--bg-100, #f5f0e8);
+  color: var(--text-000, #141413);
+}
+#onboarding .onb-rail .onb-step:focus-visible {
+  outline: 2px solid var(--focus, var(--text-000, #141413));
+  outline-offset: 2px;
+}
+#onboarding .onb-step-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border, #e6dfd8);
+  font-size: 12px;
+  font-variant-numeric: lining-nums;
+}
+#onboarding .onb-step.done .onb-step-n {
+  border-color: var(--success, #3f7d58);
+  color: var(--success-text, #2f6b45);
+}
+#onboarding .onb-step.active .onb-step-n {
+  border-color: var(--text-000, #141413);
+}
 /* The path picker inside the first step is a segmented control, not a rail. */
 #onboarding .onb-path > .onb-steps {
   align-self: flex-start;
@@ -149,6 +182,21 @@
 }
 #onboarding .onb-choice input {
   accent-color: var(--ink, #141413);
+}
+/* NAV-1: a choice with a second line (the environment-configured model). */
+#onboarding .onb-choice-env {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+#onboarding .onb-choice-name,
+#onboarding .onb-choice-sub {
+  display: block;
+}
+#onboarding .onb-choice-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-400, #6c6a64);
 }
 #onboarding .cust-row {
   display: flex;

@@ -1,5 +1,5 @@
 import type { WindowExportsTarget } from "../../compat/window-exports";
-import { connectWS } from "./connect";
+import { connectWS, watchDirectory } from "./connect";
 import { registerBuiltinHandlers } from "./handlers";
 import { onEvent } from "./registry";
 
@@ -20,7 +20,9 @@ export {
   handleIncomingMessage,
   setWebSocketImpl,
   sub,
+  subDirectory,
   unsub,
+  watchDirectory,
   wsUrl,
 } from "./connect";
 export type { WsConstructor, WsSocket } from "./connect";
@@ -58,5 +60,6 @@ export function bootWs(
   installWs(target);
   if (typeof WebSocket === "function" && import.meta.env.MODE !== "test") {
     connectWS();
+    watchDirectory();
   }
 }

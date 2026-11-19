@@ -309,6 +309,19 @@ def blocked_error(domain: str) -> dict:
     return {"error": blocked_message(domain)}
 
 
+def _skill_refusal(host: str) -> str:
+    """The refusal for a host a bound Skill manifest does not declare."""
+
+    try:
+        from openai4s.server.skill_network_admission import (
+            undeclared_destination_reason_for_frame,
+        )
+
+        return undeclared_destination_reason_for_frame(host)
+    except Exception:  # noqa: BLE001 - the wording must not decide the refusal
+        return f"skill host_only manifest does not declare destination {host!r}"
+
+
 def check_url(url: str) -> None:
     """Raise EgressBlocked if `url`'s domain is outside the allowlist. No-op in
     ``off`` mode. Called per redirect hop by webtools so a public → blocked
@@ -339,9 +352,7 @@ def check_url(url: str) -> None:
         except Exception:  # noqa: BLE001
             blocked_by_skill = None
     if blocked_by_skill:
-        raise EgressBlocked(
-            f"skill host_only manifest does not declare destination {blocked_by_skill!r}"
-        )
+        raise EgressBlocked(_skill_refusal(blocked_by_skill))
     if egress_mode() != "allowlist":
         return
     host = domain_of(url)

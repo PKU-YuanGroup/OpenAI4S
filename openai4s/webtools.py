@@ -1038,6 +1038,53 @@ _ENGINE_LABELS = {
     "parallel": "Parallel",
     "builtin": "DuckDuckGo/Bing/Mojeek",
 }
+#: The hosts each engine connects to. A loaded Skill's ``host_only`` manifest
+#: refuses every other host, so an engine none of whose hosts it declares
+#: cannot answer, and is not tried.
+_BUILTIN_SEARCH_HOSTS = (
+    "html.duckduckgo.com",
+    "www.bing.com",
+    "lite.duckduckgo.com",
+    "www.mojeek.com",
+)
+
+
+def _engine_hosts(engine: str) -> tuple[str, ...]:
+    if engine == "tavily":
+        return ("api.tavily.com",)
+    if engine == "you":
+        keyed = bool(os.environ.get("YDC_API_KEY", "").strip())
+        return (
+            urllib.parse.urlsplit(_YOU_KEYED_URL if keyed else _YOU_FREE_URL).hostname
+            or "",
+        )
+    if engine == "parallel":
+        from openai4s.parallel_search import ENDPOINT
+
+        return (urllib.parse.urlsplit(ENDPOINT).hostname or "",)
+    if engine == "builtin":
+        return _BUILTIN_SEARCH_HOSTS
+    return ()
+
+
+def _engines_within(
+    engines: Sequence[str], declared: Sequence[str]
+) -> tuple[list[str], list[str]]:
+    """(engines that would run, those a Skill's declared domains allow)."""
+
+    from openai4s.server.skill_network_admission import domain_in_declared
+
+    runnable = [
+        engine
+        for engine in engines
+        if engine in _ENGINE_LABELS and (engine != "tavily" or _tavily_key())
+    ]
+    allowed = [
+        engine
+        for engine in runnable
+        if any(domain_in_declared(host, declared) for host in _engine_hosts(engine))
+    ]
+    return runnable, allowed
 
 
 def web_search(
@@ -1082,6 +1129,21 @@ def web_search(
             "note": "no web search engine is enabled — turn one on in "
             "Settings → Network",
         }
+    narrowed = _skill_declared_domains()
+    if narrowed is not None:
+        runnable, allowed = _engines_within(engines, narrowed)
+        if runnable and not allowed:
+            # Refused, not "0 results": every engine would be refused before a
+            # connection, and an empty result read as "nothing on the web".
+            from openai4s.egress import EgressBlocked
+            from openai4s.server.skill_network_admission import search_engines_reason
+
+            raise EgressBlocked(
+                search_engines_reason([_ENGINE_LABELS[e] for e in runnable])
+            )
+        engines = [
+            engine for engine in engines if engine not in runnable or engine in allowed
+        ]
     tried: list[str] = []
     failures: list[str] = []
     for engine in engines:
@@ -1125,25 +1187,14 @@ def web_search(
             return out
     failed = f" Failed: {'; '.join(failures)}." if failures else ""
     reached = ", ".join(tried) or "none reached"
-    narrowed = _skill_declared_domains()
-    if narrowed is not None:
-        # Every engine was refused before a connection, so "rate-limiting;
-        # retry shortly" sent the caller into a loop that could not succeed.
-        note = (
-            f"no results from any engine ({reached}): a loaded Skill's network "
-            "manifest limits this session's Host requests to "
-            f"{', '.join(narrowed) or 'no domain at all'}, and the search "
-            "engines are outside that list, so retrying will not help. Use "
-            "the Skill's own lookup helpers, or host.web_fetch on one of "
-            f"those domains.{failed}"
-        )
-    else:
-        note = (
-            f"no results from any engine ({reached}) "
-            "— they may be rate-limiting; retry shortly with different "
-            "terms, or use host.web_fetch on a known URL / a specific "
-            f"database API instead.{failed}"
-        )
+    # A search no engine could be sent for was refused above; this one reached
+    # at least one engine the session's network allows.
+    note = (
+        f"no results from any engine ({reached}) "
+        "— they may be rate-limiting; retry shortly with different "
+        "terms, or use host.web_fetch on a known URL / a specific "
+        f"database API instead.{failed}"
+    )
     return {"query": query, "count": 0, "results": [], "note": note}
 
 

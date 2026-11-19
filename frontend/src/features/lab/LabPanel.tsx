@@ -19,11 +19,17 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
   zh: {
     title: "OpenMHS 实验室",
     sub: "OpenAI4S 通过 OpenMHS 标准接入的模拟实验设备：内置 3 台演示设备，另可从市场一键安装 746 台。端点强制安全，每条回执哈希链存证。",
-    setupTitle: "先准备 OpenMHS",
-    setupBody: "实验室需要 OpenMHS（SDK、参考主机和市场里的设备驱动）。点下面的按钮会下载固定版本（约 35 MB）到数据目录，之后一切都在本机运行。",
-    setupBtn: "一键准备 OpenMHS",
+    setupTitle: "实验室（可选）",
+    setupBody: "让智能体操作模拟的实验仪器（例如加样器、流动反应器、机械臂），每一步都留下可核查的记录。不做仪器相关的实验，可以不管这个标签，或者把它隐藏。",
+    setupNeeds: "使用前需要下载 OpenMHS 仪器组件（约 35 MB，存放在数据目录，之后都在本机运行）。",
+    setupBtn: "下载并准备实验室",
     settingUp: "正在下载 OpenMHS…",
     manual: "也可以在终端运行：",
+    hideTab: "隐藏实验室标签",
+    hideTabHint: "以后可以在 设置 → 通用 里重新显示。",
+    tabSetting: "实验室标签（OpenMHS 模拟仪器）",
+    tabShown: "已显示：右侧面板里有「实验室」标签。",
+    tabHidden: "已隐藏：不做仪器实验时可以一直隐藏。",
     start: "启动实验室",
     stop: "停止",
     starting: "启动中…",
@@ -89,11 +95,17 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
   en: {
     title: "OpenMHS Lab",
     sub: "Simulated instruments reached through the OpenMHS standard: three built-in demo devices, plus 746 more from the market in one click. The endpoint enforces safety; every receipt is hash-chained.",
-    setupTitle: "Set up OpenMHS first",
-    setupBody: "The lab needs OpenMHS (the SDK, the reference host and the market's driver packages). The button downloads the pinned release (about 35 MB) into your data directory; everything then runs on this machine.",
-    setupBtn: "Set up OpenMHS",
+    setupTitle: "Lab (optional)",
+    setupBody: "Lets the agent operate simulated lab instruments (liquid handlers, flow reactors, a robot arm), keeping a verifiable record of every step. If you do not run instrument experiments, ignore this tab or hide it.",
+    setupNeeds: "It needs the OpenMHS instrument components first (about 35 MB, stored in your data directory; everything then runs on this machine).",
+    setupBtn: "Download and set up the lab",
     settingUp: "Downloading OpenMHS…",
     manual: "Or in a terminal:",
+    hideTab: "Hide the Lab tab",
+    hideTabHint: "You can show it again under Settings → General.",
+    tabSetting: "Lab tab (OpenMHS simulated instruments)",
+    tabShown: "Shown: the right panel has a Lab tab.",
+    tabHidden: "Hidden: keep it hidden if you do not run instrument experiments.",
     start: "Start lab",
     stop: "Stop",
     starting: "Starting…",
@@ -161,6 +173,51 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
 function tr(key: string): string {
   const table = COPY[LANG] || COPY.en;
   return table[key] || COPY.en[key] || key;
+}
+
+/** The Lab's own copy, for the Settings row that shows or hides its tab. */
+export function labCopy(key: "tabSetting" | "tabShown" | "tabHidden"): string {
+  return tr(key);
+}
+
+const LAB_TAB_KEY = "os-lab-tab";
+
+/**
+ * The person hid the Lab tab (NAV-6). It sits in every session's dock and
+ * most people never run instrument experiments; the choice is per browser,
+ * like the language and theme, and Settings -> General brings the tab back.
+ */
+export function labTabHidden(): boolean {
+  try {
+    return localStorage.getItem(LAB_TAB_KEY) === "hidden";
+  } catch {
+    return false;
+  }
+}
+
+/** Show the choice on the page: `body.lab-tab-hidden` hides the tab (lab.css). */
+export function applyLabTabPreference(hidden = labTabHidden()): void {
+  // Runs when the module loads: it must never throw into whatever imported it.
+  try {
+    document.body.classList.toggle("lab-tab-hidden", hidden);
+  } catch {
+    /* no document (yet): nothing to show */
+  }
+}
+
+export function setLabTabHidden(hidden: boolean): void {
+  try {
+    if (hidden) localStorage.setItem(LAB_TAB_KEY, "hidden");
+    else localStorage.removeItem(LAB_TAB_KEY);
+  } catch {
+    /* blocked storage: the choice lasts for this page */
+  }
+  applyLabTabPreference(hidden);
+  // Hidden while on screen: move the dock to the Notebook rather than leave
+  // a pane whose tab is gone.
+  if (hidden && typeof document !== "undefined" && document.querySelector('[data-dock-tab="lab"].active')) {
+    void import("../artifacts/ui").then((ui) => ui.setActiveTab("notebook"));
+  }
 }
 
 const ACCESS_LABEL: Record<string, { zh: string; en: string }> = {
@@ -613,9 +670,13 @@ export function LabPanel() {
   if (status && !status.available) {
     return (
       <div class="lab-root" ref={root}>
+        {/* NAV-6: the tab is in every session and opened on "Set up OpenMHS
+            first" with a git command. Say what it is in one sentence, how
+            to set it up, and let people who never use it hide it. */}
         <section class="lab-setup">
           <h3>{tr("setupTitle")}</h3>
           <p>{tr("setupBody")}</p>
+          <p class="lab-muted">{tr("setupNeeds")}</p>
           <button
             class="lab-btn primary big"
             type="button"
@@ -625,7 +686,13 @@ export function LabPanel() {
             {working === "setup" ? tr("settingUp") : tr("setupBtn")}
           </button>
           <p class="lab-muted">
-            {tr("manual")} <code>git submodule update --init third_party/OpenMHS</code> · <code>openai4s lab setup</code>
+            {tr("manual")} <code>openai4s lab setup</code>
+          </p>
+          <p class="lab-muted">
+            <button class="lab-btn" type="button" data-action="lab-hide-tab" onClick={() => setLabTabHidden(true)}>
+              {tr("hideTab")}
+            </button>{" "}
+            {tr("hideTabHint")}
           </p>
           {error ? <p class="lab-error">{error}</p> : null}
         </section>

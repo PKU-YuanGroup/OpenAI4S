@@ -202,6 +202,47 @@ absence of a browser subscriber never silently allows a request. Outside an
 explicitly enabled Stage 7 `auto_review`, headless execution defaults to deny
 unless the operator explicitly sets `OPENAI4S_UNATTENDED_APPROVAL=allow`.
 
+A refusal that no approval can change is answered before the approval gate,
+so nobody is asked to approve a request that would then fail: for `host.bash`,
+the static safety precheck, secret paths, the egress allowlist and a loaded
+Skill's `host_only` network manifest; for `web_fetch`, `web_download` and
+`request_network_access`, a destination the bound manifest does not declare.
+The refusal names the Skill and the domains it allows, and the Cell receives
+that reason, not a generic "host authorization unavailable". `authorize_bash`
+still runs the same checks at issuance, where they are the boundary.
+
+The model is told the kernel's limits before it meets them. The Web and CLI
+system prompts carry a "Kernel environment" paragraph built from the sandbox
+configuration (`openai4s/kernel/constraints.py`; no worker, no self-test):
+whether direct network from Cells and `host.bash` is blocked, that installs
+into an existing environment are refused and `env_setup` / `host.env.create`
+is the route instead, that writes are confined to the workspace, and which
+Python and R the kernels run on (home written as `~`). A Cell whose package
+install the sandbox refused gets a one-line hint in its Observation saying so.
+This is guidance, not enforcement: what a Cell can actually read or reach is
+still decided only by the OS sandbox.
+
+That install route asks every time (`env_setup` defaults to `ask`), and the
+card names the packages and the environment they go into. It installs into
+the interpreter the session kernel runs, not the daemon's own, and pins every
+package that interpreter already has, so an install can add packages but never
+move an existing one: a resolver conflict is reported as a refused version
+change. A requested name that pip would read as an option (one starting with
+`-`, such as `--index-url=…` or `-r file`) or that carries a control character
+is refused before anything runs. The agent's installs (`env_setup` /
+`host.env.create`) accept only package names from the index, optionally with
+`[extras]` and version clauses (`numpy==2.0.1`, `scikit-learn>=1.4,<2`): a path,
+a `file:`, VCS or HTTP URL, a PEP 508 direct reference (`pkg @ url`) or an
+environment marker is refused, because it is an install source whose build code
+would run as the daemon user outside the kernel sandbox. The install runs that environment's
+interpreter (its `.pth` files and sitecustomize first) and the build backends
+of what it fetches, so it gets the kernel's scrubbed child environment plus
+pip/uv settings (`PIP_*`, `UV_*`) and proxy variables — not the daemon's
+provider keys — and a fresh working directory. It is not run inside the OS
+kernel sandbox, because pip needs the network and write access to the
+environment's site-packages; it can still read what the daemon's user can
+read, which is why every install asks first.
+
 A durable card is not a replay token. While the daemon is still running, a
 decision wakes the exact blocked call. After a daemon restart that thread is
 gone: approving the surviving card records that the old operation **did not
@@ -212,6 +253,19 @@ persist the selected standing rule. A `once` choice instead creates one exact
 `root_frame_id` + tool + permission-target grant, expires after 15 minutes, and
 is consumed atomically only when a fresh matching action reaches an `ask`
 decision. Stored/redacted approval payloads are never executed as arguments.
+
+The approval card defaults to `once`, so no standing rule is written unless
+the user picks a wider scope. For `host.bash` the card then offers the exact
+command, a prefix of it (`python3 -c *`, `which *`) and `*` (never the default).
+A prefix is offered only for a single simple command (quote-aware: the `;` in
+`python3 -c "a; b"` is quoted), only from plain words, and never for a program
+whose arguments are themselves a command (`bash -c`, `env`, `sudo`, `xargs`, …).
+Because `*` in a rule spans shell metacharacters, a wildcard `bash` allow rule
+authorizes only a target that is one simple command: `git *` allows
+`git push` but not `git x && curl … | sh`, which asks again unless a rule spells
+it out exactly. The explicit allow-everything `*`, every `deny` rule and every
+wildcard `ask` rule keep their full reach, so `rm *` → ask still asks for
+`rm -rf x; echo y` even under an allow-everything rule.
 
 ### Egress allowlist requires a proven kernel boundary
 
@@ -368,15 +422,42 @@ remote origins, and unverified reverse-proxy topologies therefore receive no
 executable preview grant. Keep the daemon loopback-bound and treat grant URLs
 as sensitive, temporary links.
 
+### PDF previews are first-party blobs
+
+The Workbench shows a PDF by reading its bytes through the same bounded,
+cancellable preview read as an image, minting a `blob:` URL typed
+`application/pdf`, and framing that blob. The shell's `frame-src` therefore
+admits `blob:` beside `'self'` (and the sandbox origin). This widens framing to
+documents the app itself created and nothing else: a blob URL can only be
+minted by script running on the app origin, and `script-src 'self'` keeps that
+to the shipped bundles. The PDF frame carries **no** `sandbox` attribute:
+Chromium will not run its PDF viewer in a sandboxed frame (any `sandbox`
+value sets the "sandboxed plugins" flag, which no token lifts), so a sandboxed
+PDF frame only ever showed an error page. The frame never loads an Artifact
+URL: its document is the typed blob, which the browser hands to its PDF viewer
+and never parses as HTML, so PDF content cannot run script on the app origin.
+The alternative -- framing the app-origin Artifact URL, whose response keeps
+`sandbox allow-same-origin` and `script-src 'none'` -- was not taken: it would
+bypass the preview read budget and cancellation, and a PDF stored under
+another content type would turn the preview into a download. Untrusted
+Artifact and grant responses still frame nothing (`default-src 'none'`).
+
 ### The Notebook REPL is off by default
 
-The web UI's right-hand Notebook is a **read-only execution trace** by default.
-The developer REPL is disabled and only appears when
-`OPENAI4S_NOTEBOOK_REPL=1`. With it off, the mutating `kernel/*` routes
-(`execute`, `env`, `restart`, `stop`, `start`, `interrupt`) return `403`;
-`kernel/install` remains available because it backs Customize → Compute. When
-enabled, the input is multiline, selects Python/R, and appends a new immutable
-Cell through the same FIFO execution coordinator as Agent work. Interrupts
+The web UI's right-hand Notebook is a **read-only execution trace** by default:
+it shows the code the agent ran and its output, and says where manual cells are
+turned on. Manual cells (the REPL) are a switch in Settings → General, off by
+default and persisted in the settings store (`GET`/`PUT /notebook/settings`).
+In team mode only an admin can change it, because it lets every member run
+arbitrary code from the Notebook panel; members can read it.
+`OPENAI4S_NOTEBOOK_REPL=1` still forces it on, and then the switch cannot turn
+it off. With it off, the mutating `kernel/*` routes (`execute`, `restart`,
+`stop`, `start`, `interrupt`) return `403`; `kernel/install` remains available
+because it backs Customize → Compute, and `kernel/env` because choosing the
+session's Python/R environment (session options menu) runs no code — only the
+session's owner or an admin may change it. When enabled, the
+input is multiline, selects Python/R, and appends a new immutable Cell through
+the same FIFO execution coordinator as Agent work. Interrupts
 must carry the exact `execution_id`, `owner.kind`, and `owner.id`; broad
 session-level SIGINT is rejected.
 
@@ -426,6 +507,28 @@ it:
 - `projects.folder_path` (a linked project's absolute host path) reads as `NULL` from agent SQL and is absent from `host.query.schema()`, so a cell cannot learn where the folder is and open files the read-only project tools refuse. `SELECT * FROM projects` keeps working.
 
 Credential values passed to `host.credentials.set(name, value)` are held only in an in-memory vault (never persisted). To keep that true end to end, the **RPC audit log** redacts them: `credentials_get` / `credentials_list` are not logged at all, and `credentials_set` is logged for audit **with its args redacted** — the plaintext value never enters `host_call_log`. The replay tape recorder likewise skips `credentials_set`, so an exported notebook cannot carry a plaintext credential. `host.judge` is a different projection on the same log: `args_preview` keeps a template id only when the judgment registry resolves it and replaces state and params with fixed markers (`<redacted judge state>`, `<redacted judge params>`). The call stays on the replay tape, and `result_preview` stays. `result_digest` stays too, except for a soft-fail error, which is stored without one.
+
+### Local project folder roots
+
+A project's linked folder is a read grant: the project tools can list, search,
+read and import anything under it that the daemon's account can read, except
+credential paths and the `.openai4s/` history directory. Grants exist only on a
+standalone loopback daemon, and the folder must be inside an allowed root: the
+home directory, the system temporary directory (`TMPDIR`) and `/tmp`, the
+mounted-volume directories, or `OPENAI4S_PROJECT_ROOTS`. `/`, `/etc` and other
+system directories are refused. Containment is checked on the canonical path,
+so a link inside a root that points outside it is refused, and later reads
+re-check the root and walk it with no-follow descriptors.
+
+`/tmp` is a root because that is what people mean by "the temporary
+directory". On Linux the system temporary directory usually is `/tmp`, so it
+was already allowed; on macOS `/tmp` is `/private/tmp`, not the per-user
+`TMPDIR`, and a folder there was refused. It adds no exposure the home
+directory and `TMPDIR` lack: reads stay
+within the daemon account's own permissions, and the history archive is written
+with no-follow opens, `0700` directories and `0600` files. Other local accounts
+can write to `/tmp`, so link a folder you created there, not one another
+account owns, as you would on a shared mounted volume.
 
 ### Correlation IDs and structured logs
 

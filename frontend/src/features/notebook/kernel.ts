@@ -9,8 +9,11 @@ import { computed } from "@preact/signals";
 import { isReady } from "../../compat/stub";
 import {
   _kc,
+  _replDrafts,
+  _replLanguage,
   artifactWorkbench,
   pendingReplIdentity,
+  variableInspector,
   type KernelCache,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
@@ -39,6 +42,7 @@ import {
   notebookFetch,
   notifyLoadArtifacts,
 } from "./cells";
+import { nbLabelT, nbT } from "./copy";
 import { nbRender } from "./scroll";
 import type { KernelEnvRow, KernelStatus, NotebookCell } from "./types";
 
@@ -195,6 +199,28 @@ function shortRuntime(value: unknown): string {
   return text ? (text.length > 12 ? text.slice(0, 8) + "…" : text) : t("runtime.none");
 }
 
+/**
+ * The runtime badge's words, one answer for the Notebook badge and the
+ * Timeline's runtime strip. "Ended · view only" was shown for a kernel that
+ * had never started, and the Timeline kept saying it after the Notebook
+ * stopped; an "ended" mode is told apart by the kernel's own state: not
+ * started, exited (crashed: a generation ran and its process is gone),
+ * stopped, or ended. The dictionary's zh labels were English ("Busy", "Live").
+ */
+export function runtimeStatusText(
+  mode: string,
+  kernel: KernelStatus | null = currentKernelStatus(),
+): string {
+  if (mode === "ended" && kernel) {
+    const idle = !kernel.alive && !kernel.turn_running;
+    if (idle && (kernel.state || "none") === "none") {
+      return kernel.generation_id ? nbT("nb.kernel.stateExited") : nbT("nb.kernel.notStarted");
+    }
+    if (idle && kernel.state === "stopped") return t("nb.kernel.stateStopped");
+  }
+  return nbT("nb.runtime." + mode);
+}
+
 /** The runtime badge's mode: runtimeSummary().status without the rest. */
 export function runtimeStatus(): string {
   const queue = (executionQueue.value || {}) as { owner?: unknown };
@@ -319,15 +345,37 @@ export const replBusy = computed(() => {
 export const forkPending = field<string | null>(() => null);
 export const forkBusy = computed(() => !!forkPending.value && forkPending.value === currentId.value);
 
+/**
+ * A Stop/Start/Restart in flight for a session. The header showed the old
+ * generation and "Busy" until the request returned, with nothing saying a
+ * restart had been asked for -- and a restart waits its turn behind whatever
+ * owns the kernel.
+ */
+export const kernelAction = field<{ sid: string; action: string } | null>(() => null);
+
 /** app.js:9911-9918 */
 export async function kernelCtl(action: string): Promise<void> {
-  if (!currentId.value) return;
+  const sid = currentId.value;
+  if (!sid) return;
   if (action === "restart" && !globalThis.confirm(t("nb.kernel.restartConfirm"))) return;
   if (action === "stop" && !globalThis.confirm(t("nb.kernel.stopConfirm"))) return;
+  const ticket = { sid, action };
+  kernelAction.value = ticket;
+  if (dockIsNotebook()) nbRender();
   try {
-    await notebookFetch(`/frames/${currentId.value}/kernel/${action}`, { method: "POST" });
+    if (action === "restart") {
+      // A restart queues behind the execution that owns the kernel. The
+      // user's own running cell is about to lose its namespace anyway, so
+      // interrupt it rather than make the restart wait for it to finish; an
+      // agent turn is not the restart button's to stop, so say it waits.
+      if (identityForOwner(executionQueue.value, "user_repl")) await interruptRepl();
+      else if (identityForOwner(executionQueue.value, "agent")) hint(nbT("nb.kernel.restartWaits"));
+    }
+    await notebookFetch(`/frames/${sid}/kernel/${action}`, { method: "POST" });
   } catch (e) {
     hint(t("nb.kernel.opFailed", apiErrorText(e)), true);
+  } finally {
+    if (kernelAction.value === ticket) kernelAction.value = null;
   }
   invalidateKernelCache();
   if (dockIsNotebook()) nbRender();
@@ -363,7 +411,10 @@ export async function executeNotebookCode(code: string, language: string): Promi
     } | null;
     if (accepted && pending && pending.execution_id === executionId) {
       const owner = response && (response.owner as { kind?: string; id?: string } | undefined);
-      if (owner && owner.kind && owner.id) pendingReplIdentity.value = { ...pending, owner };
+      // `accepted` lets a resync settle this execution from the queue alone
+      // (`reconcilePendingRepl`); before it the queue may not list it yet.
+      pendingReplIdentity.value =
+        owner && owner.kind && owner.id ? { ...pending, owner, accepted: true } : { ...pending, accepted: true };
     }
     hint(t("nb.action.queued", language === "r" ? "R" : "Python"));
     if (!accepted && currentId.value === frameId) {
@@ -381,6 +432,42 @@ export async function executeNotebookCode(code: string, language: string): Promi
       pendingReplIdentity.value = null;
     }
     if (currentId.value === frameId && dockIsNotebook()) nbRender();
+  }
+}
+
+/**
+ * Settle a REPL execution whose terminal event this page never received.
+ *
+ * Only `execution_state` used to clear `pendingReplIdentity`. A socket the
+ * server dropped (a flood of output overflowed its queue) loses that event,
+ * and when the resubscribe declares a gap nothing replays it -- the input
+ * stayed disabled until a reload. After a gap the server's queue is the
+ * truth: an accepted execution it no longer lists has finished.
+ */
+export async function reconcilePendingRepl(frameId: string): Promise<void> {
+  const before = pendingReplIdentity.value as { frame_id?: string; execution_id?: string; accepted?: boolean } | null;
+  if (!before || before.frame_id !== frameId || !before.accepted || !before.execution_id) return;
+  let snapshot: unknown;
+  try {
+    snapshot = await notebookFetch(`/frames/${frameId}/execution-queue`);
+  } catch {
+    return;
+  }
+  const now = pendingReplIdentity.value as { execution_id?: string } | null;
+  if (!now || now.execution_id !== before.execution_id) return;
+  const queue = (snapshot && typeof snapshot === "object" ? snapshot : {}) as {
+    owner?: { execution_id?: string } | null;
+    queue?: Array<{ execution_id?: string } | null>;
+  };
+  const listed = [queue.owner].concat(queue.queue || []).some((item) => !!item && item.execution_id === before.execution_id);
+  if (listed) return;
+  pendingReplIdentity.value = null;
+  invalidateKernelCache();
+  if (currentId.value === frameId) {
+    void loadExecutionLog(frameId).catch(() => {});
+    notifyLoadArtifacts(frameId);
+    scheduleWorkbenchRefresh();
+    nbRender();
   }
 }
 
@@ -475,6 +562,11 @@ export async function nbSwitchEnv(name: string): Promise<void> {
       body: JSON.stringify({ env: name }),
     });
     if (r && r.error) hint(t("nb.kernel.envSwitchFailed", r.error), true);
+    // Only a running Python kernel loses its variables; an R pick and a kernel
+    // that never started lose nothing, and saying "variables cleared" there
+    // was untrue.
+    else if (r && r.language === "r") hint(nbT("nb.env.rSelected", name));
+    else if (r && r.state !== "running") hint(nbT("nb.env.selectedIdle", name));
     else hint(t("nb.kernel.envSwitched", name));
   } catch (e) {
     hint(t("nb.kernel.envSwitchFailed", apiErrorText(e)), true);
@@ -483,6 +575,24 @@ export async function nbSwitchEnv(name: string): Promise<void> {
   if (choice && choice.sid === sid && choice.name === name) envChoice.value = { ...choice, posting: false };
   invalidateKernelCache();
   if (dockIsNotebook()) nbRender();
+}
+
+/**
+ * Forget the Variable Inspector's reads that describe a namespace that is
+ * gone. It went on listing a restarted kernel's variables as if current.
+ */
+function dropInspectedNamespaces(languages: string[]): void {
+  const state = variableInspector.value;
+  if (!state || !state.results) return;
+  const results = { ...state.results };
+  let changed = false;
+  for (const language of languages) {
+    if (language in results) {
+      delete results[language];
+      changed = true;
+    }
+  }
+  if (changed) variableInspector.value = { ...state, results };
 }
 
 /** kernel_status WS body. app.js:5347-5356 */
@@ -494,6 +604,9 @@ export function handleKernelStatus(m: WsMessage): void {
     const env = m.env as { name?: string } | undefined;
     hint(t("kernel.envChanged", (env && env.name) || t("kernel.envChanged.default")));
   }
+  // A restart also drops the R kernel (the next R cell starts a fresh one).
+  if (m.status === "restarted" || m.status === "stopped") dropInspectedNamespaces(["python", "r"]);
+  else if (m.status === "env_changed") dropInspectedNamespaces([m.language === "r" ? "r" : "python"]);
   invalidateKernelCache();
   if (m.sandbox) {
     // Scrubbed like every other security write, and only the sandbox half:
@@ -542,6 +655,40 @@ export async function interruptRepl(): Promise<void> {
   }
 }
 
+/** Code an executed cell handed to the REPL input, applied once by the panel. */
+export const replLoad = field<{ seq: number; code: string; language: "python" | "r" } | null>(() => null);
+let replLoads = 0;
+
+/**
+ * "Edit as new cell": put an executed cell's code in the REPL input to change
+ * and run as a new cell. Executed cells are immutable history; before this the
+ * only way to change one line was copy, scroll down, paste, edit.
+ */
+export function editAsNewCell(cell: NotebookCell): void {
+  const code = String(cell.source || "");
+  if (!code.trim()) return;
+  const language = /^r\b/i.test(String(cell.language || cell.kernel_id || "python")) ? "r" : "python";
+  const drafts = _replDrafts.value || { python: "", r: "" };
+  drafts[language] = code;
+  _replLanguage.value = language;
+  replLoads += 1;
+  replLoad.value = { seq: replLoads, code, language };
+  nbRender();
+}
+
+/** Earlier REPL submissions in this session, oldest first, for ↑/↓. */
+export function replHistory(language: string): string[] {
+  const entries: string[] = [];
+  for (const cell of notebookDisplayEntries()) {
+    if (cell.origin !== "user") continue;
+    const slot = /^r\b/i.test(String(cell.language || cell.kernel_id || "python")) ? "r" : "python";
+    const source = String(cell.source || "");
+    if (slot !== language || !source.trim() || entries[entries.length - 1] === source) continue;
+    entries.push(source);
+  }
+  return entries;
+}
+
 /**
  * Copy a cell's source, and say which way it went. Without a clipboard
  * (plain-http LAN deployments) or with the permission refused, this said
@@ -584,7 +731,7 @@ export async function promoteNotebookCell(cell: NotebookCell): Promise<void> {
       body: JSON.stringify({ cell_id: nbCellKey(cell) }),
     });
     notifyLoadArtifacts(currentId.value);
-    hint(t("nb.action.promoted", (art && art.filename) || ""));
+    hint(nbLabelT("nb.action.promoted", (art && art.filename) || ""));
   } catch (error) {
     hint(t("nb.action.failed", apiErrorText(error)), true);
   }

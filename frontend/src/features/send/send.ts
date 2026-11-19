@@ -13,6 +13,7 @@
  * pinned dispatch id, never whatever `currentId` happens to hold.
  */
 
+import { effect } from "@preact/signals";
 import { LANG, onLanguageChange, planModePayload, t } from "../../i18n/runtime";
 import {
   _environmentStatusRefreshFailed,
@@ -47,6 +48,14 @@ import {
 } from "../chrome/upload";
 import { loadSkillsCatalog } from "../autocomplete/catalog";
 import { acHoldSend, acPending } from "../autocomplete/composer";
+import {
+  clearMentions,
+  composerMentions,
+  mentionsPayload,
+  restoreMentions,
+  stripRefVersions,
+  type ComposerMention,
+} from "../autocomplete/mentions";
 import { effProject } from "../customize/host";
 import { composerChoiceMark, composerModelChoicePending, modelT, noteAdmittedModelBinding, noteSessionModelBinding } from "../customize/models";
 import { $, el } from "../messages/dom";
@@ -56,7 +65,7 @@ import { api, apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { enableComposer, grow } from "../sessions/dom";
 import { loadSessions } from "../sessions/load";
-import { renderComposerRefChips } from "../sessions/transcript";
+import { renderComposerRefChips, renderMessageRefChips } from "../sessions/transcript";
 import { sub } from "../ws/connect";
 import {
   admissionSettled,
@@ -71,6 +80,8 @@ import {
 } from "./environment";
 import { callLane, setCancelHidden } from "./host";
 import { iconEl } from "./icon";
+import { bindBackgroundCells } from "./background";
+import { bindTurnProgress } from "./progress";
 import {
   acceptTurnTicket,
   openTurnTicket,
@@ -178,6 +189,19 @@ function mintAdmissionId(): string {
   return "resv-" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * This send's correlation id. It only has to tell this tab's bubbles apart
+ * (the server bounds and sanitises it), so a non-CSPRNG fallback is enough
+ * where the platform has none -- unlike the admission id above.
+ */
+export function newRequestId(): string {
+  const bytes = new Uint8Array(12);
+  const cryptoObj = (globalThis as { crypto?: Crypto }).crypto;
+  if (cryptoObj && cryptoObj.getRandomValues) cryptoObj.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return "web-" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** How long an unanswered POST /message keeps its optimistic bubble protected. */
 export const SUBMISSION_GRACE_MS = 5000;
 
@@ -198,6 +222,9 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   if (!text && !anns.length) return;
   const composerAtStart = $("#composer") as HTMLTextAreaElement | null;
   const composerDraft = composerAtStart ? composerAtStart.value : "";
+  // The `@` pins this draft carries, read with the draft (ART-16). Only the
+  // composer's own text takes them: a programmatic send has its own words.
+  const sentMentions = composerDraft.trim() === text ? composerMentions(text) : [];
   const sourceFrameId = currentId.value || null;
   const sourceProjectId = effProject() || project.value || null;
   const sourceOpenGen = _openGen.value || 0;
@@ -383,10 +410,22 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   const es = $(".empty-session");
   if (es) es.remove();
   const confirmHistorySubmission = beginHistorySubmission();
+  // Sent as `X-Request-Id`: the turn's `user_message` event carries it back,
+  // so this tab recognises its own bubble instead of showing the question twice.
+  const requestId = newRequestId();
   const w = el("div", "msg user");
+  w.dataset.requestId = requestId;
   const b = el("div", "bubble");
-  b.textContent = text || t("send.imageAnnotationFallback");
+  // As a reload shows it: a typed `@name#v-<id>` reads as `@name`.
+  b.textContent = stripRefVersions(text) || t("send.imageAnnotationFallback");
   w.appendChild(b);
+  // The same chips a reload draws from the stored `artifact_refs`.
+  if (sentMentions.length) {
+    renderMessageRefChips(
+      w,
+      sentMentions.map((m) => ({ display_name: m.filename, version_id: m.version_id, artifact_id: m.artifact_id })),
+    );
+  }
   if (anns.length) w.appendChild(annotAttachment(anns));
   if (queueing) w.classList.add("queued");
   const host = $("#messages");
@@ -426,7 +465,10 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   // what this call sends: a programmatic send (a permission's Continue, a plan
   // approval) carries its own text, and the user's unrelated draft is theirs.
   const composer = $("#composer") as HTMLTextAreaElement | null;
-  if (composer && composer.value === composerDraft && composerDraft.trim() === text) composer.value = "";
+  if (composer && composer.value === composerDraft && composerDraft.trim() === text) {
+    composer.value = "";
+    clearMentions();
+  }
   grow();
   renderComposerRefChips();
   if (annIds.length) {
@@ -443,12 +485,15 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   try {
     const accepted = (await api(`/frames/${dispatchFrameId}/message`, {
       method: "POST",
+      headers: { "content-type": "application/json", "X-Request-Id": requestId },
       body: JSON.stringify({
         input_data: { request: payload },
         plan: planNow,
         explore: exploreNow,
         annotation_ids: annIds,
         annotation_reservation_id: admissionId || undefined,
+        // `{filename, version_id}` per `@` pin; the text carries the names only.
+        mentions: sentMentions.length ? mentionsPayload(sentMentions) : undefined,
         wait: false,
       }),
     })) as {
@@ -528,7 +573,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         standardProfileReadiness.value = unavailableReadinessSnapshot();
         renderEnvironmentReadinessBanner();
       }
-      if (onDispatchFrame()) settleRefusedBubble(w, text);
+      if (onDispatchFrame()) settleRefusedBubble(w, text, sentMentions);
       if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
       if (onDispatchFrame()) {
         callLane("openCust", "compute");
@@ -546,7 +591,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     // the bubble is the only copy left and stays, marked not sent. A 5xx may
     // still have been admitted, and keeps both as before.
     const notAdmitted = refused && Number(err.status) < 500;
-    if (notAdmitted && onDispatchFrame()) settleRefusedBubble(w, text);
+    if (notAdmitted && onDispatchFrame()) settleRefusedBubble(w, text, sentMentions);
     let lasting = t("toast.sendFailed", apiErrorText(e));
     let settingsCode = err?.code;
     if (
@@ -678,14 +723,18 @@ const NOT_SENT_COPY: Record<"en" | "zh", string> = {
 /**
  * Put a refused message's text back, unless something new was typed since.
  * True when nothing of the refused text is lost: it went back into an empty
- * composer, or there was no text to keep (an annotation-only send).
+ * composer, or there was no text to keep (an annotation-only send). Its `@`
+ * pins go back with the text, so a retry still sends the versions picked.
  */
-function restoreDraft(text: string): boolean {
+function restoreDraft(text: string, mentions: readonly ComposerMention[] = []): boolean {
   if (!text) return true;
   const box = $("#composer") as HTMLTextAreaElement | null;
   if (!box) return false;
   const restored = !box.value.trim();
-  if (restored) box.value = text;
+  if (restored) {
+    box.value = text;
+    restoreMentions(mentions);
+  }
   grow();
   renderComposerRefChips();
   return restored;
@@ -697,8 +746,8 @@ function restoreDraft(text: string): boolean {
  * optimistic bubble go; otherwise the bubble is the last copy and stays,
  * marked not sent (the pre-existing `.msg.user.cancelled` style).
  */
-function settleRefusedBubble(w: HTMLElement, text: string): void {
-  if (restoreDraft(text)) {
+function settleRefusedBubble(w: HTMLElement, text: string, mentions: readonly ComposerMention[] = []): void {
+  if (restoreDraft(text, mentions)) {
     w.remove();
     return;
   }
@@ -708,6 +757,29 @@ function settleRefusedBubble(w: HTMLElement, text: string): void {
 }
 
 type ComposerDispatch = (text: string) => unknown;
+
+/**
+ * Plan mode and explore mode are switched on from the session options menu,
+ * and their composer buttons used to be hidden for good: once on, nothing on
+ * screen said a mode was shaping the next message. While a mode is on its
+ * chip shows beside the composer tools, with what it does in its title, and a
+ * click turns it off. Repainted on every change of the mode and of language.
+ */
+function bindModeChip(
+  chip: HTMLElement,
+  isOn: () => boolean,
+  nameKey: string,
+  descKey: "planDesc" | "exploreDesc",
+): void {
+  const paint = () => {
+    const on = isOn();
+    chip.classList.toggle("hidden", !on);
+    chip.classList.toggle("on", on);
+    chip.title = sendCopy("modeChipTitle", t(nameKey), sendCopy(descKey));
+  };
+  effect(paint);
+  onLanguageChange(paint);
+}
 
 /**
  * Bind the composer keydown and the two mode toggles. `main.tsx` calls this
@@ -733,6 +805,7 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       planToggle.classList.toggle("on", planMode.value);
       hint(planMode.value ? t("plan.toggle.on") : "");
     };
+    bindModeChip(planToggle, () => !!planMode.value, "composer.planMode", "planDesc");
   }
   const exploreToggle = document.getElementById("explore-toggle");
   if (exploreToggle && !exploreToggle.dataset.sendBound) {
@@ -746,18 +819,25 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       exploreToggle.classList.toggle("on", exploreMode.value);
       hint(exploreMode.value ? t("explore.toggle.on") : "");
     };
+    bindModeChip(exploreToggle, () => !!exploreMode.value, "composer.exploreMode", "exploreDesc");
   }
   const sendBtn = document.getElementById("send-btn");
   if (sendBtn && !sendBtn.dataset.sendBound) {
     sendBtn.dataset.sendBound = "1";
+    // Send stays on screen while a turn runs, beside Stop, and queues the
+    // draft; its label says so rather than promising an immediate send.
     const label = () => {
-      const text = sendCopy("send");
+      const text = sendCopy(running.value ? "queue" : "send");
       sendBtn.title = text;
       sendBtn.setAttribute("aria-label", text);
     };
-    label();
+    effect(label);
     onLanguageChange(label);
   }
+  // The turn clock beside Stop and the session's token chip.
+  bindTurnProgress();
+  // Background cells still running, above the composer, each stoppable.
+  bindBackgroundCells();
   // Delegated on the document root, not on the node: a re-created #composer
   // (a keyed or conditional subtree, a second render()) keeps its Enter
   // handler with nothing to rebind. Bubble phase, so the autocomplete's

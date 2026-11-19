@@ -285,8 +285,9 @@ it("conversation strip tiles open the latest tab rather than pinning the head at
   const { artifacts } = await import("../../stores/artifacts");
   const { renderConversationArtifacts } = await import("./ui");
   class Node {
-    children: Node[] = []; textContent = ""; className = ""; id = ""; src = "";
+    children: Node[] = []; textContent = ""; className = ""; id = ""; src = ""; open = false;
     onclick?: () => unknown;
+    ontoggle?: () => unknown;
     appendChild(child: Node) { this.children.push(child); return child; }
     insertBefore(child: Node) { this.children.push(child); return child; }
     querySelector() { return null; }
@@ -309,8 +310,18 @@ it("conversation strip tiles open the latest tab rather than pinning the head at
   try {
     renderConversationArtifacts();
     const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+    // ART-9: the strip starts as one collapsed line with no tiles built.
+    const strip = walk(host).find((node) => node.className === "generated");
+    expect(strip?.open).toBe(false);
+    expect(walk(host).find((node) => node.className === "tile")).toBeUndefined();
+    strip!.open = true;
+    strip!.ontoggle?.();
     const tile = walk(host).find((node) => node.className === "tile");
     expect(tile).toBeDefined();
+    // A repaint (a new artifact, a reload of the list) keeps the reader's choice.
+    renderConversationArtifacts();
+    const strips = walk(host).filter((node) => node.className === "generated");
+    expect(strips[strips.length - 1]?.open).toBe(true);
     await tile?.onclick?.();
     const state = viewerVersionState.value as { status?: string } | null;
     expect(state?.status).toBe("latest");

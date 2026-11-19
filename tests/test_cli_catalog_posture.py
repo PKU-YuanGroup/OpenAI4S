@@ -22,6 +22,9 @@ _ASK_BY_DEFAULT = {
     "promote_dynamic_tool",
     "activate_dynamic_tool_version",
     "rollback_dynamic_tool_version",
+    # Package installs ask since permission seed v7 (they change an
+    # interpreter the user owns), so an unattended CLI turn never offers them.
+    "env_create",
 }
 
 

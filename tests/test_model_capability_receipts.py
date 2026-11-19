@@ -11,6 +11,7 @@ cache: a decision that disagrees with the displayed receipt is the bug.
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import sqlite3
 import threading
@@ -868,7 +869,11 @@ def test_a_probe_that_finishes_after_an_edit_is_persisted_but_not_adopted(
 def test_shared_endpoint_latest_observation_wins_and_deletion_restores_survivor(
     tmp_path, monkeypatch
 ):
-    store, service = _service(tmp_path)
+    # Two probes inside one millisecond tie on observed_at, and F10 breaks the
+    # tie by the (random) receipt id, so B's observation was "latest" only most
+    # of the time: 3 failures in 40 runs, on main as well. A strictly increasing
+    # clock makes B's observation the later one, which is what this test means.
+    store, service = _service_with_clock(tmp_path, itertools.count(1_000, 1_000))
     first = _create_profile(
         service,
         name="first",

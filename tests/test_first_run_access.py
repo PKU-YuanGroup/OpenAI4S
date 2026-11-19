@@ -95,7 +95,7 @@ def unauthenticated(tmp_path, monkeypatch):
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_class = gateway_mod.make_handler(cfg, _Hub(), runner)
 
-    def get(path, accept):
+    def get(path, accept, accept_language=None):
         handler = object.__new__(handler_class)
         handler._correlation_id = "req-1"
         sent: dict = {}
@@ -107,6 +107,8 @@ def unauthenticated(tmp_path, monkeypatch):
         handler.command = "GET"
         handler.path = path
         handler.headers = {"Content-Length": "0", "Accept": accept}
+        if accept_language is not None:
+            handler.headers["Accept-Language"] = accept_language
         handler.close_connection = False
         handler._route("GET")
         return sent
@@ -126,6 +128,30 @@ def test_a_browser_gets_a_page_it_can_act_on(unauthenticated):
     assert "already signed in" in body
     assert "docker exec" in body
     assert "&lt;container&gt;" in body
+
+
+def test_the_page_names_a_command_that_works_without_path(unauthenticated):
+    """NAV-5: ./setup.sh installs into the checkout's .venv, which a new
+    terminal does not have on PATH, so `openai4s url` alone answered
+    "command not found". The page names the forms that work from the folder."""
+    body = unauthenticated("/", "text/html").get("body", b"").decode("utf-8")
+    assert "uv run openai4s url" in body
+    assert ".venv/bin/openai4s url" in body
+    assert "OPENAI4S_DATA_DIR" in body
+
+
+def test_the_page_follows_a_chinese_browser(unauthenticated):
+    """NAV-5: the page was English-only; the SPA's language setting is behind
+    the same gate, so the browser's Accept-Language is all there is."""
+    zh = unauthenticated("/", "text/html", "zh-CN,zh;q=0.9,en;q=0.8")
+    assert zh["code"] == 401
+    body = zh["body"].decode("utf-8")
+    assert "需要访问令牌" in body
+    assert "openai4s url" in body and "uv run openai4s url" in body
+    assert "docker exec &lt;container&gt; openai4s url" in body
+    en = unauthenticated("/", "text/html", "en-US,en;q=0.9,zh;q=0.8")
+    body = en["body"].decode("utf-8")
+    assert "Access token required" in body and "需要" not in body
 
 
 def test_a_script_still_gets_json(unauthenticated):

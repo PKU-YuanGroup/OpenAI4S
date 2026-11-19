@@ -453,8 +453,10 @@ def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_
         "openai4s/permissions.py",
         "openai4s/server/guardian_enforce.py",
     ]
+    # ART-14: Cell read lineage no longer waits for this flag (the gateway's
+    # gated binding erased every Cell's observed reads); only the official
+    # live Notebook still reads it.
     assert sorted(consumers.pop("stage8_live_notebook_lineage")) == [
-        "openai4s/server/gateway.py",
         "openai4s/server/notebook_lineage.py",
     ]
     assert consumers.pop("stage9_artifact_workbench") == [

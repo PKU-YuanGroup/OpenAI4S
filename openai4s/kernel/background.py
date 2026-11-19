@@ -102,6 +102,8 @@ class _BackgroundJob:
         "_last_flush_ms",
         "_flush_lock",
         "_flush_timer",
+        "turn_id",
+        "stop_requested",
     )
 
     def __init__(self, exec_id: str, code: str, *, persistent: bool = False):
@@ -128,6 +130,10 @@ class _BackgroundJob:
         self._lifetime: Any = None
         self.persistent = persistent
         self.receipt_degraded = False
+        # The agent turn that launched this cell, so stopping that turn can
+        # stop it too; None for a user/REPL launch, which no turn owns.
+        self.turn_id: str | None = None
+        self.stop_requested = False
 
     def _on_chunk(self, text: str) -> None:
         if not text:
@@ -213,10 +219,15 @@ class BackgroundExecutor:
     FLUSH_BYTES = 16 * 1024
     FLUSH_INTERVAL_MS = 1000
 
-    def _enter_lifetime(self) -> Any:
+    def _enter_lifetime(self, exec_id: str | None = None) -> Any:
         if self._lifetime_factory is None:
             return None
         lifetime = self._lifetime_factory()
+        # A lifetime that records what the job produced (the Web session's
+        # capture of the files it wrote) needs to know which job that is.
+        bind = getattr(lifetime, "bind_background_exec", None)
+        if exec_id and callable(bind):
+            bind(exec_id)
         enter = getattr(lifetime, "__enter__", None)
         exit_ = getattr(lifetime, "__exit__", None)
         if not callable(enter) or not callable(exit_):
@@ -235,14 +246,17 @@ class BackgroundExecutor:
             raise RuntimeError("background execution admission is unavailable")
         exit_(None, None, None)
 
-    def launch(self, code: str, origin: str = "agent") -> dict:
+    def launch(
+        self, code: str, origin: str = "agent", turn_id: str | None = None
+    ) -> dict:
         exec_id = f"exec-{uuid.uuid4().hex[:12]}"
         persistent = self.receipts is not None
         job = _BackgroundJob(exec_id, code, persistent=persistent)
+        job.turn_id = str(turn_id) if turn_id else None
         # Enter before claiming a process slot.  Foreground capture and this
         # increment are decided under the coordinator's one short lock, so a
         # background worker can never appear in the check/start gap.
-        job._lifetime = self._enter_lifetime()
+        job._lifetime = self._enter_lifetime(exec_id)
         # Claim the slot BEFORE the kernel exists. The old order checked
         # `_closed`, released the lock, spawned, and registered afterwards --
         # so any number of concurrent launches passed the check together and
@@ -370,8 +384,14 @@ class BackgroundExecutor:
                 # paths, or provider details, so expose one stable error while
                 # still converging KeyboardInterrupt/SystemExit fault paths to
                 # a terminal state that releases their process slot.
-                terminal_status = "failed"
-                terminal_error = "background execution failed"
+                if job.stop_requested:
+                    # Stopping the turn killed a worker that ignored SIGINT:
+                    # that is the stop working, not the cell failing.
+                    terminal_status = "interrupted"
+                    terminal_interrupted = True
+                else:
+                    terminal_status = "failed"
+                    terminal_error = "background execution failed"
             finally:
                 try:
                     try:
@@ -427,6 +447,9 @@ class BackgroundExecutor:
             with self._lock:
                 if self._closed:
                     raise RuntimeError("background executor is closed")
+                if job.stop_requested:
+                    # Its turn was stopped while the worker was spawning.
+                    raise RuntimeError("background execution stopped with its turn")
                 job._thread = thread
                 thread.start()
         except BaseException:
@@ -664,6 +687,125 @@ class BackgroundExecutor:
     def list_jobs(self) -> list[dict]:
         with self._lock:
             return [j.peek() for j in self._jobs.values()]
+
+    def stop_turn(self, turn_id: str, *, grace_s: float = 5.0) -> list[str]:
+        """Stop the running cells a cancelled agent turn launched.
+
+        Stop used to end the turn and leave these running to completion, with
+        nothing on screen to show them or stop them. Each one gets SIGINT and,
+        if it is still running after ``grace_s``, an exact kill. The ids come
+        back at once; the escalation runs on its own thread so a worker that
+        ignores SIGINT never holds up the Stop request.
+        """
+        if not turn_id:
+            return []
+        with self._lock:
+            jobs = [
+                job
+                for job in self._jobs.values()
+                if job.status == "running" and job.turn_id == turn_id
+            ]
+            for job in jobs:
+                job.stop_requested = True
+        for job in jobs:
+            threading.Thread(
+                target=self._stop_job,
+                args=(job, grace_s),
+                name=f"openai4s-bg-stop-{job.exec_id}",
+                daemon=True,
+            ).start()
+        return [job.exec_id for job in jobs]
+
+    def summaries(self) -> list[dict]:
+        """What a person needs to recognise a background cell and stop it.
+
+        Not the source: its first statement and the last line it printed, both
+        passed through the free-text redactor, plus status and timing. The
+        session's own Notebook keeps the full record.
+        """
+        from openai4s.observability import redact_text
+
+        with self._lock:
+            jobs = list(self._jobs.values())
+        out: list[dict] = []
+        for job in jobs:
+            snapshot = job.peek()
+            first = next(
+                (
+                    line.strip()
+                    for line in str(job.code or "").splitlines()
+                    if line.strip() and not line.strip().startswith("#")
+                ),
+                "",
+            )
+            printed = [
+                line.strip()
+                for line in str(snapshot.get("stdout") or "").splitlines()
+                if line.strip()
+            ]
+            out.append(
+                {
+                    "exec_id": job.exec_id,
+                    "status": snapshot["status"],
+                    "started_at": snapshot["started_at"],
+                    "ended_at": snapshot["ended_at"],
+                    "interrupted": snapshot["interrupted"],
+                    "stop_requested": bool(job.stop_requested),
+                    "launched_by": "agent" if job.turn_id else "user",
+                    "code_preview": redact_text(first)[:120],
+                    "output_tail": redact_text(printed[-1])[:200] if printed else "",
+                }
+            )
+        return out
+
+    def stop(self, exec_id: str, *, grace_s: float = 5.0) -> dict:
+        """Stop one running cell on a person's request, as a turn's Stop does.
+
+        SIGINT, then an exact kill after ``grace_s``, on its own thread: the
+        request is answered at once instead of waiting for the cell to unwind.
+        """
+        with self._lock:
+            job = self._jobs.get(str(exec_id))
+            if job is None:
+                return {
+                    "ok": False,
+                    "exec_id": exec_id,
+                    "reason": "no such background cell",
+                }
+            if job.status != "running":
+                return {
+                    "ok": False,
+                    "exec_id": exec_id,
+                    "status": job.status,
+                    "reason": "the background cell is not running",
+                }
+            job.stop_requested = True
+        threading.Thread(
+            target=self._stop_job,
+            args=(job, grace_s),
+            name=f"openai4s-bg-stop-{job.exec_id}",
+            daemon=True,
+        ).start()
+        return {"ok": True, "exec_id": job.exec_id, "status": "stopping"}
+
+    @staticmethod
+    def _stop_job(job: _BackgroundJob, grace_s: float) -> None:
+        kernel = job._kernel
+        if kernel is not None:
+            try:
+                kernel.interrupt()
+            except Exception:  # noqa: BLE001 — escalate to the exact kill
+                pass
+        thread = job._thread
+        if thread is not None:
+            thread.join(timeout=max(0.0, grace_s))
+        if thread is None or thread.is_alive():
+            kernel = job._kernel
+            if kernel is not None:
+                try:
+                    kernel.kill_worker()
+                except Exception:  # noqa: BLE001 — worker may already be gone
+                    pass
 
     def shutdown(self, timeout_per_job: float = 5.0) -> int:
         """Interrupt then exact-kill every running background worker."""

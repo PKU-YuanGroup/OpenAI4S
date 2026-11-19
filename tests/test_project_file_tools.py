@@ -342,3 +342,49 @@ def test_walking_project_history_spends_the_search_time_budget(
     runner = GlobFilesTool() if tool == "glob" else ContentSearchTool()
     result = runner.execute(ReadOnlyProjectFiles(source.resolve()), arguments)
     assert result.get("scan_truncated") is True, result
+
+
+@pytest.mark.skipif(os.name != "posix", reason="native capture needs POSIX dirfds")
+def test_a_native_project_import_is_an_input_not_generated(tmp_path):
+    """UP-5: an imported project file was listed under "generated"."""
+    from openai4s.config import LLMConfig
+    from openai4s.server.gateway import SessionRunner, WSHub
+    from openai4s.tools.registry import execute_tool_call
+
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "plate.csv").write_text("well,ct\nA1,20\n")
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = SessionRunner(cfg, WSHub(), start_idle_sweeper=False)
+    try:
+        project = runner.store.create_project(name="P", folder_path=str(source))
+        frame = runner.store.new_frame(
+            kind="turn", project_id=project["project_id"], status="ready"
+        )
+        state = runner._state(frame, project["project_id"])
+        dispatcher = runner._ensure_runtime(state)
+        for tool in ("project_import_file", "read_file", "write_file"):
+            runner.store.set_permission_rule(
+                scope="global", scope_id="", tool=tool, pattern="*", decision="allow"
+            )
+        call = {
+            "id": "import-plate",
+            "name": "project_import_file",
+            "arguments": {"source_path": "plate.csv"},
+        }
+        observation, ok = runner._invoke_control_with_artifacts(
+            state,
+            call,
+            lambda _event: None,
+            lambda: execute_tool_call(dispatcher, call),
+        )
+        assert ok, observation
+        rows = runner.store.list_artifacts({"root_frame_id": frame})
+        imported = [row for row in rows if row["filename"].endswith("plate.csv")]
+        assert imported, rows
+        assert all(row["is_user_upload"] for row in imported)
+    finally:
+        runner.close()

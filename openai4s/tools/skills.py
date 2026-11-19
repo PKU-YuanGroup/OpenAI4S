@@ -440,6 +440,56 @@ class LoadSkillTool(Tool):
         )
         return runtime.invoke(self.host_method, name)
 
+    def render_observation(self, result: Any) -> str | None:
+        """Lead with what the load changed outside the recipe text.
+
+        The default view of a load is the SKILL.md body alone, so a load that
+        narrowed the session's network said nothing about it, and the model
+        learned of the limit one refused request at a time.
+        """
+
+        if not isinstance(result, dict) or not isinstance(result.get("content"), str):
+            return None
+        notes = load_notes(result)
+        if not notes:
+            return None
+        from openai4s.tools.registry import _render_result_body
+
+        return "\n".join(notes) + "\n\n" + _render_result_body(result)
+
+
+def load_notes(result: Any) -> list[str]:
+    """Model-facing lines a Skill load result carries beside its recipe."""
+
+    if not isinstance(result, dict):
+        return []
+    notes: list[str] = []
+    session_network = result.get("session_network")
+    domains = (
+        session_network.get("domains") if isinstance(session_network, dict) else None
+    )
+    if isinstance(domains, list) and domains:
+        notes.append(
+            "[network] Loading this Skill limits this session's Host network "
+            "requests (web_fetch, web_search, web_download, and URLs in "
+            "host.bash) to these domains: "
+            + ", ".join(str(item) for item in domains)
+            + ". A request to any other host is refused before it is sent, "
+            "and approving it cannot widen the limit."
+        )
+    import_hint = result.get("import")
+    if isinstance(import_hint, str) and import_hint.strip():
+        # The loader's hint ends in a "# why" comment; the statement is what
+        # the model runs.
+        statement = import_hint.split(" # ", 1)[0].strip()
+        notes.append(
+            "[helpers] This Skill's helper functions live in its kernel.py and "
+            "are not in the kernel until you import them. In a ```python cell, "
+            f"run: {statement} -- then use its functions. Do not read or exec "
+            "kernel.py by hand."
+        )
+    return notes
+
 
 class ReadSkillFileTool(Tool):
     """Read one file inside a Skill directory — a reference, not the recipe.

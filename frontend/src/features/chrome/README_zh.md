@@ -12,7 +12,7 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`chrome.css`](chrome.css) | 本车道样式：palette / team / resizer 类名。 |
 | [`clipboard.test.ts`](clipboard.test.ts) | 异步 API 以方法形式调用；被拒时退回选区复制；两条路都不可用时返回 false。 |
 | [`clipboard.ts`](clipboard.ts) | `copyText()`：所有复制按钮共用的剪贴板写入，只有确认写入成功才返回 `true`。 |
-| [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `localDateTime` / `localClock` / `hint` / `grow`。`icon` 取自共享的 `icons/paths.ts` 表。 |
+| [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `localDateTime` / `localClock` / `hint` / `grow`。`icon` 取自共享的 `icons/paths.ts` 表。 `ago` / `agoMs` 按界面语言给出相对时间（刚刚 / 3 分钟前，just now / 3m）。 |
 | [`host.ts`](host.ts) | 用 `isReady` 查 window 能力。不 import `window-exports`。 |
 | [`index.ts`](index.ts) | `bootChrome()`：window 赋值、快捷键、绑定、`bootTeam`。每一步相互隔离，某一步抛错不会让其余绑定落空。 |
 | [`layout.test.ts`](layout.test.ts) | `os-layout` 持久化、compact/wide 类、列宽钳制、站点存储被禁用，以及某一步抛错后 `bootChrome()` 仍绑定其后各步，且不再重复绑定归 artifacts 所有的 `#files-btn`。 |
@@ -26,5 +26,7 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`resizer.i18n.test.ts`](resizer.i18n.test.ts) | 列宽拖拽柄的提示不会是裸键 `resizer.drag`，并随字典加载和语言切换更新。 |
 | [`team.test.ts`](team.test.ts) | 身份芯片、admin 面板、guest 重定向、团队模态走陷阱、审计时间按毫秒时间戳显示、晚到的目录读取不会覆盖较新的目录列表、admin 分节标题随界面语言显示。 |
 | [`team.ts`](team.ts) | 团队 IIFE。`/auth/me` 探测；admin/files 模态走陷阱。只有最新一次目录读取会渲染，也只有它会改变上传目标。admin 分节标题取自本地中英文案表。 |
-| [`upload.test.ts`](upload.test.ts) | 选择时刻锁定目的地、四条 batch 匹配、单飞、重试覆盖旧失败、失败集 64 上限。 |
-| [`upload.ts`](upload.ts) | 文件选择 / 粘贴 / 拖放上传、`UPLOAD_STATE`、首个会话的单飞，以及 send 屏障用的 `waitForPendingUploads`。 |
+| [`upload.test.ts`](upload.test.ts) | 选择时刻锁定目的地、四条 batch 匹配、单飞、重试覆盖旧失败、失败集 64 上限；UP-3：每次上传先带 `if_exists: "error"`，保留两者 / 替换 / 取消分别重发或跳过，取消不算失败。 |
+| [`upload.ts`](upload.ts) | 文件选择 / 粘贴 / 拖放上传、`UPLOAD_STATE`、首个会话的单飞（带 `reuseEmpty` 时向 `POST /frames` 要项目中最新的未使用会话），以及 send 屏障用的 `waitForPendingUploads`。同名文件先被拒绝（`if_exists: "error"`），再按 `upload-conflict.ts` 的回答重发（UP-3）；被取消的文件记为 `skipped`，不算失败。多文件一次选中时逐个上传，每个文件都会等会话空闲（409 `trusted_capture_busy`）再发，期间显示逐个进度，最后给一条汇总（UP-1/UP-2）。 |
+| [`upload-conflict.ts`](upload-conflict.ts) | UP-3 同名上传提示：「保留两者」（`name-2.ext`）、「替换为新版本」或「取消」；并发上传的对话框排队逐个显示，「对本批其余同名文件执行相同操作」回答整批，Esc/点遮罩/其它关闭方式一律视为取消；功能内中英文案（`uploadT`）。 |
+| [`upload-conflict.test.ts`](upload-conflict.test.ts) | 编号规则与服务端一致、对话框按序逐个显示、按批记忆、无法显示时取消。 |

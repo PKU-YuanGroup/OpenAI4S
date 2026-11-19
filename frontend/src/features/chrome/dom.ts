@@ -4,7 +4,24 @@
  * Icon paths come from the shared table in features/icons/paths.ts.
  */
 
+import { copyLookup } from "../../i18n/copy";
 import { iconSvg } from "../icons/paths";
+
+/** Relative time in the UI language: "刚刚 / 3 分钟前" read "just now / 3m" in Chinese. */
+const AGO = copyLookup({
+  zh: { "ago.now": "刚刚", "ago.m": "{0} 分钟前", "ago.h": "{0} 小时前", "ago.d": "{0} 天前" },
+  en: { "ago.now": "just now", "ago.m": "{0}m", "ago.h": "{0}h", "ago.d": "{0}d" },
+});
+
+/** "just now" / "3m" / "2h" / "5d" for a time in ms; "" for none. */
+export function agoMs(ms: number, now = Date.now()): string {
+  if (!ms) return "";
+  const d = (now - ms) / 1000;
+  if (d < 60) return AGO("ago.now");
+  if (d < 3600) return AGO("ago.m", (d / 60) | 0);
+  if (d < 86400) return AGO("ago.h", (d / 3600) | 0);
+  return AGO("ago.d", (d / 86400) | 0);
+}
 
 export function $(sel: string): HTMLElement | null {
   if (typeof document === "undefined") return null;
@@ -37,11 +54,7 @@ export function ago(iso: string | null | undefined): string {
   if (!iso) return "";
   const ts = new Date(iso).getTime();
   if (isNaN(ts)) return "";
-  const d = (Date.now() - ts) / 1000;
-  if (d < 60) return "just now";
-  if (d < 3600) return (d / 60 | 0) + "m";
-  if (d < 86400) return (d / 3600 | 0) + "h";
-  return (d / 86400 | 0) + "d";
+  return agoMs(ts);
 }
 
 const pad2 = (value: number) => String(value).padStart(2, "0");

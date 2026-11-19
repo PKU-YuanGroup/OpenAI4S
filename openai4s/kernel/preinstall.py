@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -137,12 +138,45 @@ def _has_pip() -> bool:
         return False
 
 
+def _target_has_pip(python: str) -> bool:
+    """Whether a *foreign* interpreter can run ``python -m pip``.
+
+    This runs that interpreter, so its ``.pth`` files and sitecustomize run
+    too. It is a probe like `freeze_for`'s and is confined the same way
+    (scrubbed child env and the OS boundary), never run with the daemon's
+    environment and the provider keys in it.
+    """
+    from openai4s.security.sandbox import SandboxConfigurationError
+
+    try:
+        proc = run_confined_probe([python, "-m", "pip", "--version"], timeout=60)
+    except SandboxConfigurationError:
+        # A mistyped boundary is never a reason to degrade; see `_confined_probe`.
+        raise
+    except Exception:  # noqa: BLE001 - no boundary under enforce, or no pip
+        return False
+    return proc.returncode == 0
+
+
 def _pip_install(
-    pip_names: list[str], *, upgrade: bool = False, timeout: int = 1800
+    pip_names: list[str],
+    *,
+    upgrade: bool = False,
+    timeout: int = 1800,
+    python: str | None = None,
+    constraints: str | None = None,
 ) -> tuple[bool, str]:
+    """Install into ``python`` (default: this interpreter).
+
+    ``constraints`` is a pip/uv constraints file; :func:`install` passes one
+    that pins every package already present so an install can add packages but
+    never move an existing one.
+    """
     if not pip_names:
         return True, ""
-    if _has_pip():
+    own = python is None or _is_this_interpreter(str(python))
+    target = sys.executable if own else str(python)
+    if own and _has_pip():
         cmd = [
             sys.executable,
             "-m",
@@ -152,46 +186,301 @@ def _pip_install(
             "--disable-pip-version-check",
             "--no-input",
         ]
+    elif not own and _target_has_pip(target):
+        # Another environment (the session kernel's conda env): its own pip
+        # installs into its own site-packages. No --break-system-packages: an
+        # older pip in a conda env rejects the flag, and conda envs are not
+        # PEP 668 "externally managed".
+        cmd = [
+            target,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-input",
+        ]
     else:
-        # No pip module: fall back to a `uv` binary on PATH, pointed at this
+        # No pip module: fall back to a `uv` binary on PATH, pointed at the
         # same interpreter. Only tool *selection* falls back — a failed install
         # under a present pip is reported as-is rather than retried with uv,
         # which would blur what actually broke.
         uv = shutil.which("uv")
         if uv is None:
             return False, (
-                f"{sys.executable} has no pip module and no `uv` binary was "
+                f"{target} has no pip module and no `uv` binary was "
                 "found on PATH. Install pip into this environment "
                 "(python -m ensurepip --upgrade), or install uv, then retry."
             )
-        cmd = [uv, "pip", "install", "--python", sys.executable]
+        cmd = [uv, "pip", "install", "--python", target]
     if upgrade:
         cmd.append("--upgrade")
+    if constraints:
+        cmd += ["--constraint", constraints]
     cmd += pip_names
+    env, workdir = _install_environment(None if own else target)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired:
         return False, f"package install timed out after {timeout}s"
     except Exception as e:  # noqa: BLE001
         return False, str(e)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
     log = (proc.stdout or "") + (proc.stderr or "")
     return proc.returncode == 0, log[-4000:]
 
 
-def install(pip_names: list[str], *, upgrade: bool = False) -> dict:
+#: What pip and uv need from the daemon's environment beyond the kernel child
+#: env: their own configuration (index URLs and mirrors, trusted hosts, cache)
+#: and the proxies the network may require. Provider keys and the daemon's
+#: other secrets are not among them.
+_INSTALL_PASSTHROUGH_PREFIXES = ("PIP_", "UV_")
+_INSTALL_PASSTHROUGH = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "all_proxy",
+    }
+)
+
+
+def _install_environment(interpreter: str | None) -> tuple[dict[str, str], str]:
+    """The environment and working directory a package install runs with.
+
+    An install runs a foreign interpreter (the session kernel's environment)
+    and the build backends of what it fetches; its ``.pth`` files and
+    sitecustomize run first. With the daemon's environment they could read
+    the provider keys kernel workers are scrubbed of, so the install gets the
+    kernel's scrubbed child env plus pip/uv configuration and proxies. The OS
+    sandbox `run_confined_probe` adds is not applied: pip needs the network and
+    write access to the environment's site-packages. The working directory is
+    a fresh temp dir, never the daemon's, which ``python -m pip`` would put
+    first on ``sys.path``.
+    """
+    workdir = tempfile.mkdtemp(prefix="openai4s-install-")
+    env_root: str | None = None
+    if interpreter:
+        try:
+            parent = Path(interpreter).resolve().parent
+            if parent.name in ("bin", "Scripts"):
+                env_root = str(parent.parent)
+        except OSError:
+            env_root = None
+    try:
+        from openai4s.kernel.environment import build_kernel_environment
+
+        env = build_kernel_environment(mode="probe", cwd=workdir, env_root=env_root)
+    except Exception:  # noqa: BLE001 - a scrub failure must not pass secrets on
+        env = {
+            "PATH": os.environ.get("PATH", os.defpath),
+            "HOME": os.environ.get("HOME", workdir),
+            "TMPDIR": workdir,
+        }
+    # The kernel env synthesizes PYTHONPATH for the worker runtime; pip and
+    # the build backends it runs need nothing from the product's tree.
+    env.pop("PYTHONPATH", None)
+    for name, value in os.environ.items():
+        if name in _INSTALL_PASSTHROUGH or name.startswith(
+            _INSTALL_PASSTHROUGH_PREFIXES
+        ):
+            env[name] = value
+    return env, workdir
+
+
+_CONFLICT_MARKERS = (
+    "ResolutionImpossible",
+    "conflicting dependencies",
+    "Cannot install",
+    "No solution found when resolving",
+)
+
+
+def _keep_installed_constraints(python: str) -> tuple[str | None, str | None]:
+    """Write a constraints file pinning every package ``python`` already has.
+
+    Returns ``(path, None)``, or ``(None, reason)`` when the installed set
+    cannot be read: an install whose effect on existing packages cannot be
+    bounded is refused rather than attempted.
+    """
+    frozen = freeze_for(python)
+    if frozen is None:
+        return None, (
+            f"could not read the packages already installed in {python}; "
+            "refused to install so that no existing package version changes"
+        )
+    pins = sorted(
+        {
+            f"{entry['name']}=={entry['version']}"
+            for entry in frozen
+            if isinstance(entry, dict) and entry.get("name") and entry.get("version")
+        }
+    )
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", prefix="openai4s-keep-installed-", delete=False
+    )
+    with handle:
+        handle.write("\n".join(pins) + "\n")
+    return handle.name, None
+
+
+def _pip_option_like(spec: str) -> bool:
+    """A requested package that pip (or ``uv pip``) would read as an option.
+
+    Each name is one argv element after ``install``, so ``--index-url=…``,
+    ``-r file``, ``-e git+…`` or ``--target …`` would change *where from* or
+    *where to* everything installs rather than naming a package. A control
+    character has no place in a requirement either.
+    """
+    return spec.startswith("-") or any(ord(ch) < 32 or ord(ch) == 127 for ch in spec)
+
+
+#: What an agent may ask to install: a project name from the index, with
+#: optional extras and version clauses (`numpy==2.0.1`, `scikit-learn>=1.4,<2`,
+#: `lifelines[all]`). Anything else pip accepts -- a path, a `file:`, VCS or
+#: HTTP URL, a PEP 508 direct reference (`pkg @ url`) -- is an install
+#: *source*, whose build backend would run as the daemon user outside the
+#: kernel sandbox. Environment markers are left out too.
+_VERSION_CLAUSE = r"(?:===|==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9.*+!_-]+"
+_REGISTRY_REQUIREMENT = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+    r"(?:\[\s*[A-Za-z0-9._-]+(?:\s*,\s*[A-Za-z0-9._-]+)*\s*\])?"
+    r"(?:\s*" + _VERSION_CLAUSE + r"(?:\s*,\s*" + _VERSION_CLAUSE + r")*)?"
+)
+_ARCHIVE_SUFFIXES = (
+    ".whl",
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz",
+    ".tar.xz",
+    ".txz",
+)
+
+
+def _not_a_registry_requirement(spec: str) -> bool:
+    """True for anything but an index project name with extras and versions."""
+    return not _REGISTRY_REQUIREMENT.fullmatch(spec) or spec.lower().endswith(
+        _ARCHIVE_SUFFIXES
+    )
+
+
+def install(
+    pip_names: list[str],
+    *,
+    upgrade: bool = False,
+    python: str | None = None,
+    preserve_installed: bool = False,
+    registry_only: bool = False,
+) -> dict:
     """On-demand install of one or more packages. Returns a structured result.
 
     Idempotent for already-present packages when ``upgrade`` is False.
+
+    ``python`` selects the interpreter to install into (default: this one).
+    ``preserve_installed`` pins every package that interpreter already has, so
+    the install may only *add* packages: one that needs to upgrade or downgrade
+    an existing package (lifelines pulling pandas 3 back to 2) fails and says so.
+
+    ``registry_only`` (the agent's installs) accepts only index project names
+    with extras and version clauses, never a path, URL or direct reference.
     """
     pip_names = [p.strip() for p in pip_names if p and p.strip()]
+    target = str(python) if python else sys.executable
     if not pip_names:
-        return {"ok": True, "installed": [], "failed": [], "log": "nothing to do"}
-    ok, log = _pip_install(pip_names, upgrade=upgrade)
+        return {
+            "ok": True,
+            "installed": [],
+            "failed": [],
+            "log": "nothing to do",
+            "interpreter": target,
+        }
+    option_like = [name for name in pip_names if _pip_option_like(name)]
+    if option_like:
+        refusal = (
+            f"refused {', '.join(repr(name) for name in option_like)}: a package "
+            "to install cannot start with '-' or contain a control character, "
+            "because pip would read it as an option (an index URL, a "
+            "requirements file, an install target) instead of a package. "
+            "Nothing was installed."
+        )
+        return {
+            "ok": False,
+            "installed": [],
+            "failed": [{"name": ", ".join(option_like), "error": refusal}],
+            "log": refusal,
+            "interpreter": target,
+        }
+    sources = (
+        [name for name in pip_names if _not_a_registry_requirement(name)]
+        if registry_only
+        else []
+    )
+    if sources:
+        refusal = (
+            f"refused {', '.join(repr(name) for name in sources)}: an agent install "
+            "takes package names from the index, optionally with [extras] and "
+            "versions (for example numpy==2.0.1), not a path, URL, VCS link, "
+            "direct reference or environment marker, whose build code would run "
+            "outside the kernel sandbox. Nothing was installed."
+        )
+        return {
+            "ok": False,
+            "installed": [],
+            "failed": [{"name": ", ".join(sources), "error": refusal}],
+            "log": refusal,
+            "interpreter": target,
+        }
+    constraints = None
+    if preserve_installed:
+        constraints, refusal = _keep_installed_constraints(target)
+        if refusal is not None:
+            return {
+                "ok": False,
+                "installed": [],
+                "failed": [{"name": ", ".join(pip_names), "error": refusal}],
+                "log": refusal,
+                "interpreter": target,
+            }
+    try:
+        ok, log = _pip_install(
+            pip_names, upgrade=upgrade, python=python, constraints=constraints
+        )
+    finally:
+        if constraints:
+            try:
+                os.unlink(constraints)
+            except OSError:
+                pass
+    error = log[-600:]
+    if not ok and preserve_installed and any(m in log for m in _CONFLICT_MARKERS):
+        error = (
+            f"installing {', '.join(pip_names)} would change the version of a "
+            "package already installed in this environment, so it was refused "
+            "and nothing was changed. Use a package version compatible with the "
+            "installed ones, or ask the user to change the environment. "
+            f"Resolver output: {log[-400:]}"
+        )
     result = {
         "ok": ok,
         "installed": pip_names if ok else [],
-        "failed": ([] if ok else [{"name": ", ".join(pip_names), "error": log[-600:]}]),
+        "failed": ([] if ok else [{"name": ", ".join(pip_names), "error": error}]),
         "log": log,
+        "interpreter": target,
     }
     return result
 

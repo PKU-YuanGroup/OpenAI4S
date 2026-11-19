@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import queue
+import re
 import sys
 import threading
 import time
@@ -1755,6 +1756,97 @@ def evidence_cell_id(dispatcher: Any, cell_id: Any) -> str | None:
     return str(cell_id)
 
 
+#: Name-resolution / connection failures a sandboxed cell produces when it
+#: tries to reach the network itself (Python, pip, curl and R spellings).
+_NETWORK_BLOCKED = re.compile(
+    r"Failed to resolve|NameResolutionError|nodename nor servname provided|"
+    r"Temporary failure in name resolution|Name or service not known|"
+    r"Could not resolve host|getaddrinfo failed|"
+    r"cannot open URL|unable to access index for repository",
+    re.IGNORECASE,
+)
+#: A package install a Cell attempted, by tool.
+_INSTALL_ATTEMPT = re.compile(
+    r"\bpip3?\s+install\b|Could not install packages|\bconda\s+install\b|"
+    r"\bmamba\s+install\b|install\.packages\s*\(|BiocManager::install|"
+    r"Installing package[s]? into",
+    re.IGNORECASE,
+)
+#: How the OS sandbox's refusal reads from inside pip, conda and R.
+_SANDBOX_REFUSAL = re.compile(
+    r"Operation not permitted|Read-only file system|Permission denied|"
+    r"is not writable|Failed to establish a new connection|"
+    r"Network is unreachable|cannot open URL|unable to access index for "
+    r"repository|failed to create lock directory|"
+    r"Temporary failure in name resolution|nodename nor servname",
+    re.IGNORECASE,
+)
+
+
+def _sandboxed_without_network() -> bool:
+    """Whether a new kernel is sandboxed with direct network denied.
+
+    Only then are these failures policy. Without a sandbox, or with raw
+    network allowed, the same words are an ordinary failure (an outage, a
+    read-only path) and a hint calling them policy would mislead.
+    """
+
+    try:
+        from openai4s.kernel.constraints import expected_posture
+
+        posture = expected_posture()
+    except Exception:  # noqa: BLE001 - a hint must not break an Observation
+        return False
+    return posture.get("backend") is not None and not posture.get("raw_network")
+
+
+def _install_refusal_hint(text: str) -> str | None:
+    """Say plainly that a package install was refused by the sandbox.
+
+    pip's "[Errno 1] Operation not permitted" and R's "'lib' is not
+    writable" read like a fixable local problem, so the model went on to try
+    another library directory, another channel, a proxy.
+    """
+
+    if not text or not _INSTALL_ATTEMPT.search(text):
+        return None
+    if not _SANDBOX_REFUSAL.search(text) or not _sandboxed_without_network():
+        return None
+    return (
+        "[system] Installing packages from a Cell is refused here: the kernel's "
+        "sandbox blocks direct network and writes outside the session "
+        "workspace, so retrying, another library directory or another install "
+        'channel will not help. Call host.env.list(["pkg"]) to find an '
+        'environment that already has the package (host.env.use("<name>")), '
+        "or ask for one with env_setup / host.env.create, which the user "
+        "approves."
+    )
+
+
+def _network_refusal_hint(text: str) -> str | None:
+    """Say that a cell's own network access was denied by policy (ENV-3).
+
+    A sandboxed cell that tries to reach the network fails at name
+    resolution, which reads like an outage: in the review a model spent 13
+    minutes retrying pip, switching kernels and probing the machine because
+    nothing said the denial was policy.
+    """
+
+    if not text or not _NETWORK_BLOCKED.search(text):
+        return None
+    if not _sandboxed_without_network():
+        return None
+    return (
+        "[system] This looks like blocked network access. OpenAI4S's "
+        "kernel sandbox denies direct network from cells by default, "
+        "including pip/conda/install.packages run inside a cell, so "
+        "retrying will not help. Fetch data with host.web_fetch, "
+        "host.web_search or science_search; to install a package use "
+        "host.env.create (the user approves it), or tell the user what "
+        "to install."
+    )
+
+
 def format_observation(result: dict, *, cell_id: str | None = None) -> str:
     """Format one kernel result as the stable observation protocol.
 
@@ -1793,6 +1885,11 @@ def format_observation(result: dict, *, cell_id: str | None = None) -> str:
                 "[system] `host` is a pre-injected Python singleton. Use it "
                 "directly; never `import host` or `from host import ...`."
             )
+    # At most one sandbox hint: the install one is the more specific.
+    combined = "\n".join((out, err, str(error or "")))
+    sandbox_hint = _install_refusal_hint(combined) or _network_refusal_hint(combined)
+    if sandbox_hint:
+        parts.append(sandbox_hint)
     if not out and not err and not error:
         parts.append("(no output)")
     usage = result.get("usage") or {}

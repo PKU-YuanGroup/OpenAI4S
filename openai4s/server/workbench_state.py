@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 from openai4s.agent.compaction import estimate_context
 from openai4s.llm.capabilities import get_model_capabilities
+from openai4s.server.notebook_lineage import notebook_repl_setting
 
 
 class WorkbenchStore(Protocol):
@@ -338,10 +339,13 @@ class SessionWorkbenchStateService:
                 "unattended": _unattended_posture(),
             },
             "notebook": {
+                # The environment forces manual cells on; otherwise the
+                # Settings switch decides (notebook_lineage).
                 "interactive": bool(
                     str(os.environ.get("OPENAI4S_NOTEBOOK_REPL", "")).strip().lower()
                     in {"1", "true", "yes", "on"}
                 )
+                or bool(notebook_repl_setting(self.store))
             },
         }
 

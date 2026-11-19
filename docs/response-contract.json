@@ -157,6 +157,17 @@
         404
       ]
     },
+    "/artifacts/([^/]+)/preview-table": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/artifacts/([^/]+)/priority": {
       "content_types": [
         "application/json"
@@ -894,6 +905,17 @@
         404
       ]
     },
+    "/frames/([^/]+)/approvals": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/artifacts": {
       "content_types": [
         "application/json"
@@ -953,6 +975,30 @@
       "statuses": [
         200,
         404
+      ]
+    },
+    "/frames/([^/]+)/background": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/background/([^/]+)/stop": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404,
+        409
       ]
     },
     "/frames/([^/]+)/branches": {
@@ -1226,7 +1272,7 @@
         "json"
       ],
       "statuses": [
-        403,
+        200,
         404
       ]
     },
@@ -1965,6 +2011,19 @@
       ],
       "statuses": [
         200
+      ]
+    },
+    "/notebook/settings": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        400,
+        405
       ]
     },
     "/notes/([^/]+)": {

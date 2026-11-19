@@ -74,6 +74,8 @@ class El {
     return node.tagName === "BODY";
   }
   appendChild(child: El): El {
+    // A DOM append moves a node that already has a parent.
+    child.remove();
     child.parent = this;
     this.children.push(child);
     return child;
@@ -81,6 +83,10 @@ class El {
   remove(): void {
     if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
     this.parent = null;
+  }
+  contains(node: El | null): boolean {
+    for (let cur = node; cur; cur = cur.parent) if (cur === this) return true;
+    return false;
   }
   setAttribute(): void {}
   querySelector(sel: string): El | null {
@@ -224,11 +230,13 @@ describe("opening a session whose turn is still running", () => {
       input: { code: "fit()" },
     }) as unknown as El;
     // The replay of the live turn: text_reset, then the same step's events.
-    startStream();
+    const live = startStream() as unknown as { wrap: El };
     addLiveStep({ step_id: "s-run", kind: "code", status: "running", input: { code: "fit()" } });
     updateLiveStep({ step_id: "s-run", status: "done", output: { stdout: "converged" } });
 
     expect(messages.querySelectorAll(".step")).toHaveLength(1);
+    // Moved into the replayed turn, where its event put it live.
+    expect(stored.parent).toBe(live.wrap);
     expect(stored.classes.has("running")).toBe(false);
     stored.querySelector(".s-head")!.onclick!();
     expect(stored.querySelector(".oc-out")!.textContent).toBe("converged");
@@ -259,5 +267,218 @@ describe("artifact step card", () => {
     expect(viewer.dock).toHaveBeenCalledTimes(1);
     expect(viewer.open).toHaveBeenCalledWith(expect.objectContaining({ id: "a-1", filename: "fig.png" }));
     expect(hintBox.textContent).toContain(t("toast.failed", "version lookup failed"));
+  });
+
+  it("shows and opens the version this step produced, not the latest (ART-4)", async () => {
+    viewer.open.mockReturnValue(Promise.resolve());
+    const handle = buildStepCard({
+      step_id: "s-2",
+      kind: "artifact",
+      status: "done",
+      output: { artifacts: [{ filename: "volcano.png", artifact_id: "a-9", version_id: "v-old" }] },
+    });
+    const card = open(handle);
+    const img = card.querySelector("img") as unknown as { src?: string } | null;
+    expect(String(img?.src || "")).toContain("/artifacts/versions/v-old");
+    const name = card.querySelector(".s-fn.clk")!;
+    name.onclick!();
+    await settle();
+    expect(viewer.open).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "a-9", version_id: "v-old", _exactVersion: true }),
+    );
+  });
+});
+
+describe("a loaded Skill's network limit", () => {
+  afterEach(async () => {
+    await setLang("en");
+  });
+
+  const DOMAINS = ["api.crossref.org", "api.openalex.org", "eutils.ncbi.nlm.nih.gov"];
+  const NOTICE = {
+    step_id: "n-1",
+    kind: "network",
+    title: "literature-review limits this session's network",
+    status: "done",
+    summary: "limited to 3 domains",
+    input: { skill: "literature-review" },
+    output: {
+      notice: "skill_network",
+      skill: "literature-review",
+      skill_domains: DOMAINS,
+      skills: ["literature-review"],
+      domains: DOMAINS,
+    },
+  };
+
+  it("the notice card names the Skill and the count in the UI language, the domains on expand", async () => {
+    await setLang("zh");
+    const card = buildStepCard(NOTICE).card as unknown as El;
+    expect(card.querySelector(".s-lbl")!.textContent).toBe(
+      "已加载 literature-review：本会话联网限定为 3 个域名",
+    );
+    expect(card.querySelector(".s-meta")!.textContent).toBe("3 个域名");
+    expect(card.classes.has("s-net-limited")).toBe(true);
+    expect(card.querySelectorAll(".s-net-dom").map((chip) => chip.textContent)).toEqual(DOMAINS);
+  });
+
+  it("the English notice pluralizes the count", () => {
+    const card = buildStepCard({ ...NOTICE, output: { ...NOTICE.output, domains: ["doi.org"] } })
+      .card as unknown as El;
+    expect(card.querySelector(".s-lbl")!.textContent).toBe(
+      "Loaded literature-review: this session's network is limited to 1 domain",
+    );
+  });
+
+  it("the Skill's load card says it narrowed the session, not just loaded", async () => {
+    await setLang("zh");
+    const card = buildStepCard({
+      step_id: "l-1",
+      kind: "skill",
+      title: "Loading literature-review skill guidance",
+      status: "done",
+      summary: "loaded · network limited to 3 domains",
+      input: { name: "literature-review" },
+      output: {
+        name: "literature-review",
+        content: "# Literature review",
+        session_network: { skills: ["literature-review"], domains: DOMAINS },
+      },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-meta")!.textContent).toBe("已加载 · 本会话联网限定为 3 个域名");
+    expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
+  });
+
+  it("a shell command the limit refused says so instead of a bare failure", async () => {
+    await setLang("zh");
+    const reason =
+      "skill host_only manifest does not declare destination 'eutils.ncbi.nlm.nih.gov': the loaded literature-review Skill limits this session's network to 3 domains";
+    const card = buildStepCard({
+      step_id: "b-1",
+      kind: "bash",
+      title: "Running curl",
+      status: "error",
+      summary: "failed: " + reason,
+      input: { command: "curl -s https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi" },
+      output: {
+        error: reason,
+        blocked: {
+          by: "skill_network",
+          skills: ["literature-review"],
+          domains: DOMAINS,
+          destination: "eutils.ncbi.nlm.nih.gov",
+          search: false,
+        },
+      },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能的联网限制拦下");
+    const text = card.querySelector(".s-net-text")!.textContent;
+    expect(text).toContain("literature-review 把本会话联网限定为 3 个域名");
+    expect(text).toContain("eutils.ncbi.nlm.nih.gov 不在其中");
+    expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
+    // The server's own words stay available below the explanation.
+    expect(card.querySelector(".s-net-blocked")!.querySelector("pre")!.textContent).toBe(reason);
+  });
+
+  it("a search the limit refused reads as blocked, not as 0 results", async () => {
+    await setLang("zh");
+    const reason =
+      "skill host_only manifest does not declare any enabled search engine (You.com, DuckDuckGo/Bing/Mojeek): the loaded text-features Skill limits this session's network to 1 domain (api.typesafe.ai).";
+    const card = buildStepCard({
+      step_id: "q-1",
+      kind: "search",
+      title: "Searching the web",
+      status: "error",
+      summary: "failed: " + reason,
+      input: { query: "GLP-1 Alzheimer" },
+      output: {
+        error: reason,
+        blocked: {
+          by: "skill_network",
+          skills: ["text-features"],
+          domains: ["api.typesafe.ai"],
+          destination: "",
+          search: true,
+        },
+      },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能的联网限制拦下");
+    // A refusal is its own state: neither the red failure nor a neutral done.
+    expect(card.classes.has("warn")).toBe(true);
+    expect(card.classes.has("err")).toBe(false);
+    const text = card.querySelector(".s-net-text")!.textContent;
+    expect(text).toContain("text-features 把本会话联网限定为 1 个域名");
+    expect(text).toContain("这次检索没有发出");
+    expect(card.querySelector(".s-q")!.textContent).toBe("“GLP-1 Alzheimer”");
+  });
+
+  it("a step the user declined is a refusal in the UI language, not a red failure", async () => {
+    await setLang("zh");
+    const card = buildStepCard({
+      step_id: "d-1",
+      kind: "tool",
+      title: "Defining dynamic tool noop",
+      status: "error",
+      summary: "failed: Permission denied: denied by user",
+      input: { name: "noop" },
+      output: { error: "Permission denied: denied by user" },
+    }).card as unknown as El;
+    expect(card.classes.has("err")).toBe(false);
+    expect(card.classes.has("declined")).toBe(true);
+    expect(card.querySelector(".s-meta")!.textContent).toBe("你拒绝了 · 未执行");
+    expect(card.textContent).not.toContain("Permission denied");
+  });
+
+  it("a step a Stop cancelled while it waited for approval says stopped, not denied", async () => {
+    await setLang("zh");
+    const handle = buildStepCard({
+      step_id: "d-2",
+      kind: "bash",
+      title: "Running ls",
+      status: "error",
+      summary: "failed: Permission denied: turn cancelled",
+      input: { command: "ls" },
+      output: { error: "Permission denied: turn cancelled" },
+    });
+    const card = open(handle);
+    expect(card.classes.has("err")).toBe(false);
+    expect(card.querySelector(".s-meta")!.textContent).toBe("已随任务停止 · 未执行");
+    expect(card.textContent).not.toContain("已拒绝");
+    expect(card.textContent).not.toContain("turn cancelled");
+  });
+
+  it("a rule's refusal keeps its reason, and a real error stays a failure", async () => {
+    await setLang("en");
+    const refused = open(
+      buildStepCard({
+        step_id: "d-3",
+        kind: "mcp",
+        status: "error",
+        output: { error: "Permission denied: blocked by a standing 'deny' permission rule" },
+      }),
+    );
+    expect(refused.querySelector(".s-meta")!.textContent).toBe("Not approved · not run");
+    expect(refused.textContent).toContain("Reason: blocked by a standing 'deny' permission rule");
+    const failed = buildStepCard({
+      step_id: "d-4",
+      kind: "bash",
+      status: "error",
+      summary: "failed: exit 1",
+      output: { error: "PermissionError: [Errno 13] Permission denied: '/etc/shadow'" },
+    }).card as unknown as El;
+    expect(failed.classes.has("err")).toBe(true);
+    expect(failed.classes.has("declined")).toBe(false);
+  });
+
+  it("an ordinary load card keeps the server's summary", () => {
+    const card = buildStepCard({
+      step_id: "l-2",
+      kind: "skill",
+      status: "done",
+      summary: "loaded",
+      output: { name: "figure-style", content: "# Figure style" },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-meta")!.textContent).toBe("loaded");
+    expect(card.classes.has("s-net-limited")).toBe(false);
   });
 });

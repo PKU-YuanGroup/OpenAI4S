@@ -195,14 +195,18 @@ def test_seed_upgrade_adds_defaults_and_revokes_legacy_skill_edit_allow(tmp_path
                 scope="global",
                 tool=tool,
                 pattern=pattern,
-                # v1-v3 shipped this executable mutation as a silent allow.
-                decision="allow" if tool == "skills_edit" else decision,
+                # v1-v3 shipped this executable mutation as a silent allow,
+                # and v1-v6 shipped package installs (env_setup) the same way.
+                decision="allow" if tool in {"skills_edit", "env_setup"} else decision,
             )
     store.set_setting("perm_seeded", "1")
 
     repository.seed_defaults()
 
     assert repository.resolve(tool="science_search", pattern_input="uniprot") == "allow"
+    # v7: a legacy silent install allow becomes ask, so the user sees every
+    # package install and which environment it targets.
+    assert repository.resolve(tool="env_setup", pattern_input="lifelines") == "ask"
     assert repository.resolve(tool="skills_edit", pattern_input="QC") == "ask"
     assert repository.resolve(tool="mcp_call", pattern_input="server/tool") == "ask"
     assert (
@@ -220,7 +224,7 @@ def test_seed_upgrade_adds_defaults_and_revokes_legacy_skill_edit_allow(tmp_path
     assert [(rule["pattern"], rule["decision"]) for rule in mcp_rules] == [
         ("volcengine-datapro/dataPro_search", "allow")
     ]
-    assert store.get_setting("perm_seed_version") == "6"
+    assert store.get_setting("perm_seed_version") == "7"
 
 
 def test_seed_security_upgrade_revokes_markerless_legacy_skill_edit_allow(tmp_path):
@@ -239,7 +243,7 @@ def test_seed_security_upgrade_revokes_markerless_legacy_skill_edit_allow(tmp_pa
 
     assert repository.resolve(tool="skills_edit", pattern_input="QC") == "ask"
     assert store.get_setting("perm_seeded") == "1"
-    assert store.get_setting("perm_seed_version") == "6"
+    assert store.get_setting("perm_seed_version") == "7"
 
 
 @pytest.mark.parametrize("decision", ["ask", "deny", None])
@@ -267,7 +271,7 @@ def test_seed_security_upgrade_preserves_stricter_skill_edit_rules(tmp_path, dec
     assert [rule["decision"] for rule in rules] == (
         [] if decision is None else [decision]
     )
-    assert store.get_setting("perm_seed_version") == "6"
+    assert store.get_setting("perm_seed_version") == "7"
 
 
 def test_seed_rules_commit_before_marker_and_recover_after_marker_failure(tmp_path):

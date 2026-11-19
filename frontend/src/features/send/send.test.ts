@@ -13,7 +13,9 @@ vi.mock("../sessions/load", () => loadMock);
 import { setLang, t } from "../../i18n/runtime";
 import { currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
+import { clearMentions, composerMentions, rememberMention } from "../autocomplete/mentions";
 import { UPLOAD_STATE } from "../chrome/upload";
+import { renderRefProblems } from "./problems";
 import { send } from "./send";
 import { closeTurnTicket } from "./ticket";
 
@@ -57,6 +59,7 @@ describe("send()", () => {
     await setLang("en");
     resetStoreFields();
     closeTurnTicket();
+    clearMentions();
     UPLOAD_STATE.pending.clear();
     UPLOAD_STATE.failures.clear();
     UPLOAD_STATE.creations.clear();
@@ -113,6 +116,66 @@ describe("send()", () => {
     await send(nodes.composer!.value);
     expect(posted()).toHaveLength(1);
     expect(nodes.composer!.value).toBe("");
+  });
+
+  it("a picked @ file is sent as `@name` with its version beside the text (ART-16)", async () => {
+    rememberMention({
+      filename: "cohort_clinical_markers.csv",
+      version_id: "v-9f5c06efc35e",
+      artifact_id: "a-cohort",
+      root_frame_id: "frame_1",
+    });
+    nodes.composer!.value = "@cohort_clinical_markers.csv 这个文件一共多少行？";
+    await send(nodes.composer!.value);
+    const body = posted()[0]!;
+    // The words are what the user typed; the hash is not among them.
+    expect((body.input_data as { request?: string }).request).toBe("@cohort_clinical_markers.csv 这个文件一共多少行？");
+    expect(JSON.stringify(body.input_data)).not.toContain("#v-");
+    expect(body.mentions).toEqual([{ filename: "cohort_clinical_markers.csv", version_id: "v-9f5c06efc35e" }]);
+    // The live bubble: the text as typed, and the chip a reload draws.
+    const row = nodes.messages!.children[0] as FakeEl;
+    const bubble = row.children[0] as FakeEl;
+    expect(bubble.textContent).toBe("@cohort_clinical_markers.csv 这个文件一共多少行？");
+    const chips = row.children[1] as FakeEl;
+    expect(JSON.stringify(chips.children.map((chip) => (chip as FakeEl).title))).toContain("v-9f5c06efc35e");
+    // The draft went out, and its pins with it.
+    expect(nodes.composer!.value).toBe("");
+    expect(composerMentions("@cohort_clinical_markers.csv")).toEqual([]);
+  });
+
+  it("a typed text-form pin is sent as typed and reads as @name in the live bubble", async () => {
+    nodes.composer!.value = "@counts.csv#v-abcdef123456 rows?";
+    await send(nodes.composer!.value);
+    // The server still resolves the text form; only the bubble hides the hash,
+    // exactly as the reloaded row does.
+    expect((posted()[0]!.input_data as { request?: string }).request).toBe("@counts.csv#v-abcdef123456 rows?");
+    const row = nodes.messages!.children[0] as FakeEl;
+    expect((row.children[0] as FakeEl).textContent).toBe("@counts.csv rows?");
+  });
+
+  it("a ref problem card names the reference as @name; the server's message keeps the version", () => {
+    renderRefProblems([
+      { ref: "cohort.csv#v-9f5c06efc35e", code: "not_found", message: "no artifact version v-9f5c06efc35e is available here" },
+    ]);
+    const card = nodes.messages!.children[0] as FakeEl;
+    const row = card.children[1] as FakeEl;
+    expect((row.children[0] as FakeEl).textContent).toBe("@cohort.csv");
+    expect((row.children[1] as FakeEl).textContent).toContain("v-9f5c06efc35e");
+  });
+
+  it("a pin whose token was deleted before send is not sent", async () => {
+    rememberMention({ filename: "a.csv", version_id: "v-aaaaaaaaaaaa", artifact_id: "a", root_frame_id: "" });
+    nodes.composer!.value = "never mind the file";
+    await send(nodes.composer!.value);
+    expect(posted()[0]).not.toHaveProperty("mentions");
+  });
+
+  it("a programmatic send does not take the composer's pins", async () => {
+    rememberMention({ filename: "a.csv", version_id: "v-aaaaaaaaaaaa", artifact_id: "a", root_frame_id: "" });
+    nodes.composer!.value = "next: @a.csv";
+    await send("Continue with @a.csv as planned.");
+    expect(posted()[0]).not.toHaveProperty("mentions");
+    expect(composerMentions(nodes.composer!.value)).toHaveLength(1);
   });
 
   it("a /skill send after a failed catalog read still gets its directive next time", async () => {

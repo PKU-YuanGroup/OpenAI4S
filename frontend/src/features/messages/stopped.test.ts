@@ -533,6 +533,57 @@ describe("live activity card outcome", () => {
     expect(label(second)).toBe("Running analysis · cell 6");
   });
 
+  it("a cell whose Host call was declined is a refusal, not a failure; a Stop while waiting is stopped", () => {
+    startStream();
+    const declined = startCell(8, "c8");
+    onEvent({
+      type: "notebook_cell_finished",
+      frame_id: "frame-1",
+      root_frame_id: "frame-1",
+      producing_cell_id: "c8",
+      cell_index: 8,
+      status: "error",
+      error:
+        'Traceback (most recent call last):\n  File "<kernel:8>", line 1, in <module>\n' +
+        "RuntimeError: bash: Permission denied: denied by user; command was not executed",
+    });
+    expect(declined.dataset.state).toBe("declined");
+    expect(icon(declined)).toBe("lock");
+    expect(declined.querySelector(".meta")!.textContent).toContain("You declined");
+    expect(declined.querySelector(".meta")!.textContent).not.toContain("Failed");
+
+    feed("text", "Next.\n", { type: "text_chunk", block_type: "text" });
+    const stopped = startCell(9, "c9");
+    onEvent({
+      type: "notebook_cell_finished",
+      frame_id: "frame-1",
+      root_frame_id: "frame-1",
+      producing_cell_id: "c9",
+      cell_index: 9,
+      status: "error",
+      error: "RuntimeError: host.web_fetch error: Permission denied: turn cancelled",
+    });
+    expect(stopped.dataset.state).toBe("stopped");
+    expect(icon(stopped)).toBe("stop");
+  });
+
+  // I18N-1: a Chinese UI showed "Running analysis · cell 1" while the cell ran
+  // and only "分析 · 单元 1" once it ended.
+  it("shows the generated running title in the UI language", async () => {
+    await setLang("zh");
+    try {
+      startStream();
+      const card = startCell(8, "c8");
+      expect(label(card)).toBe("正在分析 · 单元 8");
+      finished("c8", 8, "ok");
+      expect(label(card)).toBe("分析 · 单元 8");
+      const own = startCell(9, "c9", "Fit the growth model");
+      expect(label(own)).toBe("Fit the growth model");
+    } finally {
+      await setLang("en");
+    }
+  });
+
   it("a card whose outcome never arrived does not stay running after the turn", () => {
     for (const status of ["completed", "failed"]) {
       startStream();

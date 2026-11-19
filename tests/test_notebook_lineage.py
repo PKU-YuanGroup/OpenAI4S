@@ -363,3 +363,57 @@ def test_user_repl_reads_agent_namespace_on_the_shared_generation(tmp_path):
         assert "agent_marker" in names
     finally:
         runner.close()
+
+
+def test_cell_lineage_is_recorded_without_the_stage8_flag(tmp_path):
+    """ART-14: the read -> version mapping sat behind the Stage 8 flag, and the
+    gated binding *returned* ``[]``, which the Cell stored as its read set. With
+    the flag off (the default) every observed read was erased, so provenance
+    showed "no recorded inputs" even for ``read_csv('upload.csv').to_csv('x.csv')``.
+    """
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    assert cfg.roadmap_features.stage8_live_notebook_lineage is False
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    try:
+        store = runner.store
+        root = store.new_frame(kind="turn", project_id="default", status="ready")
+        workspace = cfg.data_dir / "ws"
+        workspace.mkdir(parents=True)
+        manager = ArtifactManager(
+            data_dir=cfg.data_dir,
+            store=store,
+            workspace_for=lambda _frame: workspace,
+            broadcast=lambda *_args: None,
+            guess_content_type=lambda _name: "text/csv",
+            checksum=lambda path: hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        session = SimpleNamespace(
+            root_frame_id=root, project_id="default", workspace=workspace
+        )
+        _generation(store, root, "python", sys.executable, "base")
+        (workspace / "upload.csv").write_text("v\n1\n", encoding="utf-8")
+        uploaded = manager.capture(
+            session, 1, "cell-1", {}, lambda event: None, language="python"
+        )
+
+        before = manager.snapshot(workspace)
+        (workspace / "x.csv").write_text("v\n1\n", encoding="utf-8")
+        derived = manager.capture(
+            session, 2, "cell-2", before, lambda event: None, language="python"
+        )
+        derived.files_read = ["upload.csv"]  # what the worker observed
+
+        reads = runner._bind_notebook_lineage(  # noqa: SLF001
+            session, None, before, derived, "cell-2"
+        )
+
+        assert reads == ["upload.csv"]
+        inputs = store.lineage_inputs(derived.artifacts[0]["version_id"])
+        assert {item["version_id"] for item in inputs} == {
+            uploaded.artifacts[0]["version_id"]
+        }
+    finally:
+        runner.close()

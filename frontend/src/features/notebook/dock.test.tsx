@@ -16,15 +16,28 @@ vi.mock("preact/hooks", () => ({
 }));
 
 import { effect } from "@preact/signals";
-import { i18nReady, t } from "../../i18n/runtime";
+import { LANG, i18nReady, setLang, t } from "../../i18n/runtime";
 import { cells, liveCells, pendingReplIdentity } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { actionTimeline, branchState } from "../../stores/timeline";
 import { resetStoreFields } from "../../stores/signal-field";
 import { notebookDisplayEntries } from "./cells";
-import { forkPending, invalidateKernelCache, kernelView } from "./kernel";
-import { CellActions, CellList, CellOutput, KernelChips, NotebookDock, StatusStrip } from "./Notebook";
+import { forkPending, invalidateKernelCache, kernelView, runtimeStatusText } from "./kernel";
+import {
+  CellActions,
+  CellList,
+  CellOutput,
+  KernelChips,
+  NotebookDock,
+  StatusStrip,
+  kernelExitText,
+  kernelStatusLine,
+  outputIsLong,
+  outputLabel,
+  writtenImages,
+} from "./Notebook";
+import { nbLabelT, nbT } from "./copy";
 
 type VNode = {
   type?: unknown;
@@ -204,7 +217,9 @@ describe("Notebook cell actions", () => {
     branchState.value = { capabilities: { fork_from_cell: true, promote: true } };
     const cell = { producing_cell_id: "c", source: "x = 1", fork_checkpoint_id: "cp1" };
     const row = (): VNode[] => buttons(CellActions({ cell }));
-    const [, rerun, fork] = row();
+    const button = (label: string): VNode => row().find((b) => textOf(b) === label)!;
+    const rerun = button(t("nb.action.rerun"));
+    const fork = button(t("nb.action.fork"));
     expect(rerun!.props?.disabled).toBe(false);
     expect(fork!.props?.disabled).toBe(false);
     pendingReplIdentity.value = {
@@ -213,9 +228,10 @@ describe("Notebook cell actions", () => {
       owner: { kind: "user_repl", id: "repl-1" },
     };
     forkPending.value = "frame-1";
-    const [, rerunBusy, forkBusyButton] = row();
-    expect(rerunBusy!.props?.disabled).toBe(true);
-    expect(forkBusyButton!.props?.disabled).toBe(true);
+    expect(button(t("nb.action.rerun")).props?.disabled).toBe(true);
+    expect(button(t("nb.action.fork")).props?.disabled).toBe(true);
+    // Loading a cell into the input runs nothing, so it stays available.
+    expect(button(nbT("nb.action.edit")).props?.disabled).toBe(false);
   });
 });
 
@@ -237,6 +253,128 @@ describe("Notebook reading gate", () => {
       expect(painted.map((node) => node.key)).toEqual(["shown"]);
     } finally {
       dispose();
+    }
+  });
+});
+
+describe("Notebook after a kernel crash", () => {
+  it("explains a dead kernel in the reader's language, with its exit status", () => {
+    const oom =
+      "the kernel process exited before this cell finished (exit code -9: killed with " +
+      "SIGKILL, which usually means it ran out of memory); variables from earlier cells " +
+      "are lost and the next cell starts a fresh kernel (kernel_execution_failed req-1)";
+    expect(kernelExitText(oom)).toBe(nbT("nb.crash.notice", nbT("nb.crash.oom", "-9")));
+    const segv = oom.replace(/\(exit code -9[^)]*\)/, "(killed by signal 11 (SIGSEGV))");
+    expect(kernelExitText(segv)).toBe(nbT("nb.crash.notice", nbT("nb.crash.signal", "11 (SIGSEGV)")));
+    expect(kernelExitText("NameError: name 'x' is not defined")).toBeNull();
+  });
+
+  it("marks where a new kernel generation starts, per language", () => {
+    const cell = (id: string, generation: string, language = "python") => ({
+      producing_cell_id: id,
+      cell_index: id,
+      generation_id: generation,
+      language,
+      status: "ok",
+    });
+    const tree = CellList({
+      entries: [
+        cell("a", "gen-1"),
+        cell("r1", "r-gen-1", "r"),
+        cell("b", "gen-1"),
+        cell("c", "gen-2"),
+        cell("r2", "r-gen-1", "r"),
+      ],
+    });
+    const keys = listed(tree).map((node) => String(node.key));
+    expect(keys).toEqual(["a", "r1", "b", "gen:c", "c", "r2"]);
+    expect(textOf(listed(tree)[3])).toBe(nbT("nb.generation.divider"));
+  });
+});
+
+describe("Notebook cell output disclosure", () => {
+  it("names stdout and stderr apart, and says how long a long output is", () => {
+    expect(textOf(CellOutput({ text: "4\n", isError: false, live: false }))).toContain(nbT("nb.output.stdout"));
+    expect(textOf(CellOutput({ text: "warn\n", isError: true, live: false }))).toContain(nbT("nb.output.stderr"));
+    const long = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n");
+    expect(outputIsLong(long)).toBe(true);
+    expect(outputIsLong("a\nb\n")).toBe(false);
+    expect(outputIsLong("x".repeat(7000))).toBe(true);
+    expect(outputLabel(long, false, false)).toBe(nbT("nb.output.long", nbT("nb.output.stdout"), 200));
+    // A running cell is never labelled (or collapsed) as long.
+    expect(outputLabel(long, false, true)).toBe(nbT("nb.output.stdout"));
+  });
+});
+
+describe("Notebook images a cell wrote", () => {
+  it("shows saved image files inline, once, beside captured figures", () => {
+    const cell = {
+      producing_cell_id: "c-img",
+      figures: ["figure_cell3_1.png"],
+      files_written: ["figure_cell3_1.png", "plots/volcano.png", "Rplot_2_01.png", "table.csv", "Rplots.pdf"],
+    };
+    expect(writtenImages(cell)).toEqual(["plots/volcano.png", "Rplot_2_01.png"]);
+    const many = { files_written: Array.from({ length: 20 }, (_, i) => `p${i}.png`) };
+    expect(writtenImages(many)).toHaveLength(8);
+  });
+});
+
+describe("Notebook read-only mode (NB-5)", () => {
+  it("tells a kernel that never ran from one that ended, stopped or exited", () => {
+    const env = { python_version: "3.11" };
+    expect(kernelStatusLine({ state: "none", env }).text).toBe(nbT("nb.status.notStarted", "Python 3.11"));
+    expect(kernelStatusLine({ state: "ended", generation_id: "g", env }).text).toBe(t("nb.status.ended", "Python 3.11"));
+    expect(kernelStatusLine({ state: "stopped", generation_id: "g", env }).text).toBe(nbT("nb.status.stopped", "Python 3.11"));
+    expect(kernelStatusLine({ state: "none", generation_id: "g", env }).text).toBe(nbT("nb.status.exited", "Python 3.11"));
+    expect(kernelStatusLine({ alive: true, state: "running", env }).cls).toBe("ready");
+  });
+
+  it("says what the read-only Notebook is and where manual cells are turned on", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { state: "none" }, envs: null, cur: null };
+    const text = textOf(StatusStrip());
+    expect(text).toContain(nbT("nb.readonly.hint"));
+    expect(text).toContain(nbT("nb.readonly.openSettings"));
+    expect(textOf(KernelChips({ entries: [] }))).toContain(nbT("nb.kernel.notStarted"));
+  });
+
+  it("calls a kernel whose process died 'exited', not 'not started' or 'view only'", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { state: "none", generation_id: "g-dead" }, envs: null, cur: null };
+    const chips = textOf(KernelChips({ entries: [] }));
+    expect(chips).toContain(nbT("nb.kernel.stateExited"));
+    expect(chips).not.toContain(nbT("nb.kernel.notStarted"));
+  });
+
+  // I18N-1: owner chips, cell states and the Variable Inspector were English
+  // in a Chinese UI.
+  it("labels owners, cell states and the variable inspector in Chinese", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      expect(nbLabelT("nb.owner.agent")).toBe("智能体");
+      expect(nbLabelT("nb.cell.current")).toBe("当前");
+      expect(nbLabelT("nb.variables.title")).toBe("变量查看器");
+      expect(nbLabelT("nb.action.promote")).toBe("保存为产物");
+      expect(nbT("nb.cell.status.ok")).toBe("完成");
+      expect(nbLabelT("nb.kernel.stopLabel")).toBe(t("nb.kernel.stopLabel"));
+    } finally {
+      await setLang(original);
+    }
+  });
+
+  // Follow-up A: the Timeline's runtime strip said "Ended · view only" for a
+  // kernel that never started after the Notebook badge stopped saying it; both
+  // read one function now, and its words are not English in Chinese.
+  it("names the runtime state the same way for the badge and the Timeline", () => {
+    expect(runtimeStatusText("ended", { state: "none" })).toBe(nbT("nb.kernel.notStarted"));
+    expect(runtimeStatusText("ended", { state: "none", generation_id: "g" })).toBe(nbT("nb.kernel.stateExited"));
+    expect(runtimeStatusText("ended", { state: "stopped", generation_id: "g" })).toBe(t("nb.kernel.stateStopped"));
+    expect(runtimeStatusText("ended", { state: "ended", generation_id: "g" })).toBe(nbT("nb.runtime.ended"));
+    expect(runtimeStatusText("ended", null)).toBe(nbT("nb.runtime.ended"));
+    expect(runtimeStatusText("busy", { alive: true })).toBe(nbT("nb.runtime.busy"));
+    for (const mode of ["live", "busy", "ended", "restoring", "partial", "failed"]) {
+      expect(runtimeStatusText(mode, null)).not.toMatch(/view only|仅供查看/);
     }
   });
 });

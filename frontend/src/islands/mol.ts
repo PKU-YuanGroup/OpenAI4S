@@ -19,12 +19,35 @@ import { esc } from "../features/md/esc";
 import { themeIsDark } from "../features/theme/theme";
 import { el } from "./dom";
 import { translate } from "./host";
+import { molT } from "./mol-copy";
+import {
+  B_GRADIENT_CSS,
+  MOL_SCHEMES,
+  PDB_FORMATS,
+  chainColor,
+  hexColor,
+  labelAnchor,
+  molStyleSpec,
+  parsePdbHeader,
+  residueKey,
+  residueLabel,
+  schemeAvailable,
+  schemeColorFunc,
+  structureFacts,
+  type MolAtom,
+  type MolScheme,
+  type StructureFacts,
+  type StructureHeader,
+} from "./mol-facts";
 
 export const MOL_VENDOR_SRC = "/static/vendor/3Dmol-min.js";
 
 type MolModel = {
-  selectedAtoms?: (sel: Record<string, never>) => Array<{ atom?: string; name?: string }>;
+  selectedAtoms?: (sel: Record<string, never>) => MolAtom[];
 };
+
+/** A 3Dmol label, only ever handed back to `removeLabel`. */
+type MolLabel = object;
 
 type MolViewer = {
   clear?: () => void;
@@ -34,9 +57,36 @@ type MolViewer = {
   removeAllSurfaces?: () => void;
   setStyle: (sel: Record<string, unknown>, style: Record<string, unknown>) => void;
   addSurface?: (typ: unknown, opts: Record<string, unknown>) => void;
+  setClickable?: (sel: Record<string, unknown>, clickable: boolean, callback: (atom: MolAtom) => void) => void;
+  addLabel?: (text: string, options: Record<string, unknown>) => MolLabel;
+  removeLabel?: (label: MolLabel) => void;
+  removeAllLabels?: () => void;
+  getView?: () => number[];
+  setView?: (view: number[]) => void;
   zoomTo: () => void;
   render: () => void;
 };
+
+/** A dark chip with light text reads on the light and the dark background alike. */
+const LABEL_STYLE = {
+  fontSize: 13,
+  fontColor: "white",
+  backgroundColor: "#1c1c19",
+  backgroundOpacity: 0.8,
+  borderThickness: 0,
+  inFront: true,
+  alignment: "bottomCenter",
+};
+/** Chains listed by ID in the facts line and the legend; more are counted. */
+const CHAIN_LIST_MAX = 8;
+
+function chainSummary(chains: readonly string[]): string {
+  const n = chains.length;
+  if (!n) return "";
+  if (n > CHAIN_LIST_MAX) return molT("mol.chains.many", n);
+  const list = chains.join(molT("mol.chains.sep"));
+  return n === 1 ? molT("mol.chains.one", list) : molT("mol.chains", n, list);
+}
 
 type Mol3D = {
   createViewer: (el: HTMLElement, opts: { backgroundColor: string }) => MolViewer;
@@ -140,41 +190,71 @@ export function molTeardown(root?: Element | null): void {
   syncMolBridge();
 }
 
-/** app.js:9622-9673 — container-agnostic, style selector, atom count, download, label. */
+/**
+ * app.js:9622-9673 — container-agnostic, style and colour selectors, reset
+ * view, click-to-label residues, the PDB ID/title/chains line, atom count.
+ */
 export function molecule(container: HTMLElement, url: string, nm: string): void {
   molTeardown(container);
   const controller = new AbortController();
   const signal = controller.signal;
   container.innerHTML = "";
   const wrap = el("div", "mol-wrap");
-  wrap.appendChild(el("div", "mol-tag", "Using 3Dmol.js viewer"));
+  // What the structure is (PDB ID, title, chains, atoms) fills in once it is read.
+  const meta = el("div", "mol-meta");
+  const info = el("span", "mol-meta-info");
+  meta.appendChild(info);
+  meta.appendChild(el("span", "mol-tag", translate("mol.tag")));
+  wrap.appendChild(meta);
   const bar = el("div", "mol-bar");
-  bar.appendChild(el("span", "mol-lbl", "Style:"));
+  bar.appendChild(el("span", "mol-lbl", translate("mol.styleLabel")));
   let cur = "cartoon";
+  let scheme: MolScheme = "default";
   const pills: Record<string, HTMLButtonElement> = {};
-  (
-    [
-      ["cartoon", "Cartoon"],
-      ["stick", "Stick"],
-      ["sphere", "Sphere"],
-      ["surface", "Surface"],
-      ["line", "Line"],
-    ] as Array<[string, string]>
-  ).forEach(([val, lab]) => {
-    const b = el("button", "mol-style" + (val === cur ? " on" : ""), lab);
+  ["cartoon", "stick", "sphere", "surface", "line"].forEach((val) => {
+    const b = el("button", "mol-style" + (val === cur ? " on" : ""), translate("mol.style." + val));
     b.onclick = () => {
       cur = val;
       Object.values(pills).forEach((x) => x.classList.remove("on"));
       b.classList.add("on");
-      applyStyle(val);
+      applyStyle();
     };
     pills[val] = b;
     bar.appendChild(b);
   });
-  const cnt = el("span", "mol-count", "");
-  bar.appendChild(cnt);
+  bar.appendChild(el("span", "mol-lbl mol-lbl-gap", molT("mol.color.label")));
+  const schemePills = {} as Record<MolScheme, HTMLButtonElement>;
+  MOL_SCHEMES.forEach((val) => {
+    const b = el("button", "mol-style" + (val === scheme ? " on" : ""), molT("mol.color." + val));
+    // Chain and B-factor colouring wait for the structure: a file may carry neither.
+    b.disabled = val !== "default";
+    b.onclick = () => {
+      if (b.disabled) return;
+      scheme = val;
+      Object.values(schemePills).forEach((x) => x.classList.remove("on"));
+      b.classList.add("on");
+      applyStyle();
+      renderLegend();
+    };
+    schemePills[val] = b;
+    bar.appendChild(b);
+  });
+  const legend = el("span", "mol-legend");
+  legend.hidden = true;
+  bar.appendChild(legend);
   const view = el("div", "mol-view");
-  const foot = el("div", "mol-foot", translate("mol.foot"));
+  const foot = el("div", "mol-foot mol-foot-row");
+  foot.appendChild(el("span", "mol-hint", molT("mol.hint")));
+  const reset = el("button", "outline-btn small mol-act", molT("mol.reset"));
+  reset.title = molT("mol.reset.title");
+  reset.disabled = true;
+  reset.onclick = () => resetView();
+  foot.appendChild(reset);
+  // Present (disabled) before the first label, so labelling never reflows the canvas.
+  const clear = el("button", "outline-btn small mol-act", molT("mol.labels.clear"));
+  clear.disabled = true;
+  clear.onclick = () => clearLabels();
+  foot.appendChild(clear);
   wrap.appendChild(bar);
   wrap.appendChild(view);
   wrap.appendChild(foot);
@@ -194,19 +274,12 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
   const fmt = nm.split(".").pop() || "pdb";
   let viewer: MolViewer | null = null;
   let caOnly = false;
-  // For coarse / CA-only models (e.g. synthetic backbones) plain cartoon renders
-  // nothing, so we draw a trace tube + CA spheres so the structure is never blank.
-  const spec = (style: string): Record<string, unknown> =>
-    style === "cartoon"
-      ? caOnly
-        ? { cartoon: { color: "spectrum", style: "trace" }, sphere: { colorscheme: "Jmol", radius: 0.5 } }
-        : { cartoon: { color: "spectrum" } }
-      : style === "stick"
-        ? { stick: { colorscheme: "Jmol" } }
-        : style === "sphere"
-          ? { sphere: { colorscheme: "Jmol" } }
-          : { line: { colorscheme: "Jmol" } };
-  const applyStyle = (style: string): void => {
+  let atoms: MolAtom[] = [];
+  let facts: StructureFacts = { chains: [], bRange: null };
+  /** The view right after the first fit: what reset view returns to. */
+  let home: number[] | null = null;
+  const labels = new Map<string, MolLabel>();
+  const applyStyle = (): void => {
     if (!viewer) return;
     try {
       if (viewer.removeAllSurfaces) viewer.removeAllSurfaces();
@@ -214,16 +287,96 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
       /* surface API optional */
     }
     const runtime = molApi();
-    if (style === "surface") {
-      viewer.setStyle({}, { cartoon: { color: "spectrum" } });
+    const spec = molStyleSpec(cur, caOnly, schemeColorFunc(scheme, facts));
+    viewer.setStyle({}, spec.style);
+    if (spec.surface) {
       try {
         if (viewer.addSurface && runtime && runtime.SurfaceType)
-          viewer.addSurface(runtime.SurfaceType.VDW, { opacity: 0.85, color: "white" });
+          viewer.addSurface(runtime.SurfaceType.VDW, spec.surface);
       } catch {
         /* surface optional */
       }
-    } else viewer.setStyle({}, spec(style));
+    }
+    // Ligands, ions and water keep element colours in every scheme.
     viewer.setStyle({ hetflag: true }, { stick: { colorscheme: "Jmol" } });
+    viewer.render();
+  };
+  const renderLegend = (): void => {
+    legend.innerHTML = "";
+    legend.hidden = scheme === "default";
+    legend.title = scheme === "bfactor" ? molT("mol.legend.bfactor") : "";
+    if (scheme === "chain") {
+      facts.chains.slice(0, CHAIN_LIST_MAX).forEach((chain, index) => {
+        const key = el("span", "mol-key");
+        const swatch = el("span", "mol-swatch");
+        swatch.style.background = hexColor(chainColor(index));
+        key.appendChild(swatch);
+        key.appendChild(el("span", null, chain));
+        legend.appendChild(key);
+      });
+      const more = facts.chains.length - CHAIN_LIST_MAX;
+      if (more > 0) legend.appendChild(el("span", "mol-key", "+" + more));
+    } else if (scheme === "bfactor" && facts.bRange) {
+      const [lo, hi] = facts.bRange;
+      legend.appendChild(el("span", null, lo.toFixed(1)));
+      const gradient = el("span", "mol-grad");
+      gradient.style.background = B_GRADIENT_CSS;
+      legend.appendChild(gradient);
+      legend.appendChild(el("span", null, hi.toFixed(1)));
+    }
+  };
+  const showFacts = (header: StructureHeader | null, atomCount: number): void => {
+    info.innerHTML = "";
+    if (header && header.idCode) info.appendChild(el("span", "mol-meta-id", header.idCode));
+    const title = header ? header.title || header.classification : "";
+    if (title) info.appendChild(el("span", "mol-meta-title", title));
+    const chains = chainSummary(facts.chains);
+    if (chains) info.appendChild(el("span", "mol-meta-chains", chains));
+    if (atomCount) {
+      const count = molT(atomCount === 1 ? "mol.atoms.one" : "mol.atoms", atomCount.toLocaleString());
+      info.appendChild(el("span", "mol-meta-atoms", count));
+    }
+    (["chain", "bfactor"] as const).forEach((val) => {
+      const available = schemeAvailable(val, facts);
+      schemePills[val].disabled = !available;
+      schemePills[val].title = available ? "" : molT("mol.color." + val + ".none");
+    });
+  };
+  const resetView = (): void => {
+    if (!viewer || stale()) return;
+    // The first fit's view brings back the orientation and pan; zoomTo()
+    // then refits and restores the clipping slab.
+    if (home && viewer.setView) viewer.setView([...home]);
+    viewer.zoomTo();
+    viewer.render();
+  };
+  const syncLabels = (): void => {
+    clear.disabled = labels.size === 0;
+    clear.textContent = labels.size
+      ? molT("mol.labels.clearCount", labels.size)
+      : molT("mol.labels.clear");
+  };
+  /** Click a residue to label it; click it again to remove the label. */
+  const toggleLabel = (atom: MolAtom): void => {
+    if (!viewer || stale() || !viewer.addLabel || !viewer.removeLabel) return;
+    const key = residueKey(atom);
+    const shown = labels.get(key);
+    if (shown) {
+      labels.delete(key);
+      viewer.removeLabel(shown);
+    } else {
+      const position = labelAnchor(atoms, atom);
+      if (!position) return;
+      labels.set(key, viewer.addLabel(residueLabel(atom), { ...LABEL_STYLE, position }));
+    }
+    syncLabels();
+  };
+  const clearLabels = (): void => {
+    if (!viewer) return;
+    if (viewer.removeAllLabels) viewer.removeAllLabels();
+    else labels.forEach((label) => viewer?.removeLabel?.(label));
+    labels.clear();
+    syncLabels();
     viewer.render();
   };
   // Superseded by a later structure, or its view was replaced meanwhile.
@@ -264,7 +417,6 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
           session.viewer = viewer;
           syncMolBridge();
           const model = viewer.addModel(data, fmt);
-          let atoms: Array<{ atom?: string; name?: string }> = [];
           try {
             atoms = model.selectedAtoms ? model.selectedAtoms({}) : [];
           } catch {
@@ -278,9 +430,23 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
           } catch {
             caOnly = false;
           }
-          cnt.textContent = n ? n.toLocaleString() + " atoms" : "";
-          applyStyle(cur);
+          facts = structureFacts(atoms);
+          // The header is parsed from the text already read, not fetched again.
+          showFacts(PDB_FORMATS.has(fmt) ? parsePdbHeader(data) : null, n);
+          applyStyle();
+          try {
+            if (viewer.setClickable && viewer.addLabel && viewer.removeLabel)
+              viewer.setClickable({}, true, toggleLabel);
+          } catch {
+            /* labels are optional; the structure still renders */
+          }
           viewer.zoomTo();
+          try {
+            home = viewer.getView ? viewer.getView() : null;
+          } catch {
+            home = null;
+          }
+          reset.disabled = false;
           viewer.render();
         } catch {
           preFallback(view, data);

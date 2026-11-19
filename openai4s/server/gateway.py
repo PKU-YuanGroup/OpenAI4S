@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import inspect
 import io
 import json
 import mimetypes
@@ -97,6 +98,7 @@ from openai4s.review import review_evidence
 from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.server import (
     artifact_index_routes,
+    artifact_preview_routes,
     artifact_refs,
     artifact_workbench_routes,
     attention_routes,
@@ -136,6 +138,7 @@ from openai4s.server.artifact_workbench import (
 from openai4s.server.artifacts import (
     ArtifactManager,
     ArtifactOperationError,
+    BackgroundCaptureLifetime,
     PromotionTarget,
     WorkspaceSnapshot,
     artifact_receipt_map,
@@ -216,6 +219,7 @@ from openai4s.server.scientific_review import ScientificReviewService
 from openai4s.server.security_headers import (
     artifact_content_disposition,
     artifact_security_headers,
+    download_content_disposition,
     embeddable_security_headers,
     ketcher_editor_security_headers,
     sandboxed_artifact_security_headers,
@@ -419,26 +423,56 @@ def _wants_html(headers) -> bool:
     return "text/html" in accept
 
 
-def _unauthorized_page() -> bytes:
+def _unauthorized_page(accept_language: str = "") -> bytes:
     """What a first-run user sees instead of `{"error": "unauthorized"}`.
 
     No token in it, and nothing fetched: the page is the whole recovery path,
-    because every asset it could load is behind the same gate.
+    because every asset it could load is behind the same gate. It follows the
+    browser's first language (Chinese or English) because the SPA's language
+    setting is one of those gated assets.
     """
-    return (
-        "<!doctype html><meta charset=utf-8>"
-        "<title>OpenAI4S — access token required</title>"
+    first = str(accept_language or "").split(",")[0].strip().casefold()
+    style = (
         "<style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;"
         "max-width:34rem;margin:12vh auto;padding:0 1.5rem;color:#222}"
         "code{background:#f4f4f5;padding:.15em .4em;border-radius:4px;"
         "font:13px ui-monospace,SFMono-Regular,Menlo,monospace}"
         "p{margin:.9em 0}@media(prefers-color-scheme:dark){body{background:#18181b;"
         "color:#e4e4e7}code{background:#27272a}}</style>"
-        "<h1>Access token required</h1>"
+    )
+    if first.startswith("zh"):
+        return (
+            "<!doctype html><html lang=zh-CN><meta charset=utf-8>"
+            "<title>OpenAI4S \u2014 需要访问令牌</title>"
+            + style
+            + "<h1>需要访问令牌</h1>"
+            "<p>这个服务可以执行代码，所以没有凭据时不会响应——即使在本机上也一样。</p>"
+            "<p>在终端运行下面的命令，然后打开它打印出的链接：</p>"
+            "<p><code>openai4s url</code></p>"
+            "<p>如果终端提示 <code>command not found</code>，请在 OpenAI4S "
+            "文件夹里改用 <code>uv run openai4s url</code>（或 "
+            "<code>.venv/bin/openai4s url</code>）。如果启动时设置过 "
+            "<code>OPENAI4S_DATA_DIR</code> 或 <code>OPENAI4S_PORT</code>，"
+            "运行这条命令时也要带上同样的变量。</p>"
+            "<p>用这个链接打开一次后，浏览器会记住登录，之后不用再输入。</p>"
+            "<p>如果你用的是桌面应用，退出后重新打开即可，应用打开的页面已经登录。</p>"
+            "<p>在容器里运行时，请执行 "
+            "<code>docker exec &lt;container&gt; openai4s url</code>。</p>"
+        ).encode("utf-8")
+    return (
+        "<!doctype html><html lang=en><meta charset=utf-8>"
+        "<title>OpenAI4S \u2014 access token required</title>"
+        + style
+        + "<h1>Access token required</h1>"
         "<p>This daemon can execute code, so it does not answer without a "
         "credential \u2014 even on this machine.</p>"
         "<p>Run this in a terminal and open the URL it prints:</p>"
         "<p><code>openai4s url</code></p>"
+        "<p>If the terminal says <code>command not found</code>, run it from "
+        "the OpenAI4S folder as <code>uv run openai4s url</code> (or "
+        "<code>.venv/bin/openai4s url</code>). If OpenAI4S was started with "
+        "<code>OPENAI4S_DATA_DIR</code> or <code>OPENAI4S_PORT</code>, set the "
+        "same variables for this command.</p>"
         "<p>Opening that link once sets a cookie for this browser; you will "
         "not need it again.</p>"
         "<p>If you launched the desktop app, quit it and open it again. The "
@@ -464,6 +498,10 @@ MAX_MESSAGE_CHARS = 200_000
 #: to every subscriber of the session on every queue change, so carrying the
 #: whole 200,000-character message there would multiply it across the wire.
 QUEUE_PREVIEW_CHARS = 160
+
+#: Artifact priority for files the product writes for itself (context spills).
+#: Negative priority is the existing "hidden from lists" state.
+_INTERNAL_ARTIFACT_PRIORITY = -1
 
 
 def queue_preview(text: str) -> str:
@@ -649,6 +687,14 @@ def _iso(ms: int | float | None) -> str | None:
         return None
 
 
+#: The media type of a compressed file, by the ``encoding`` half of a guess.
+_COMPRESSED_CTYPES = {
+    "gzip": "application/gzip",
+    "bzip2": "application/x-bzip2",
+    "xz": "application/x-xz",
+}
+
+
 def _guess_ctype(name: str) -> str:
     low = name.lower()
     # structure / science formats first (mimetypes mis-maps some, e.g. .pdb)
@@ -660,7 +706,12 @@ def _guess_ctype(name: str) -> str:
         return "chemical/x-xyz"
     if low.endswith((".fasta", ".fa", ".nwk", ".treefile", ".log")):
         return "text/plain; charset=utf-8"
-    ctype, _ = mimetypes.guess_type(name)
+    ctype, encoding = mimetypes.guess_type(name)
+    if encoding:
+        # ART-11: `x.csv.gz` guesses ("text/csv", "gzip"). The bytes are the
+        # compressed container; typing them by the inner name sent a gzip
+        # file to the table viewer and decoded it as text.
+        return _COMPRESSED_CTYPES.get(encoding, "application/octet-stream")
     if ctype:
         return ctype
     if low.endswith((".md", ".markdown", ".txt", ".tsv")):
@@ -900,6 +951,9 @@ class WSConnection:
     def __init__(self, wfile) -> None:
         self.wfile = wfile
         self.subs: set[str] = set()
+        #: The session directory this tab's sidebar shows: a project id, "*"
+        #: for every project (Home), or None when the client never asked.
+        self.directory: str | None = None
         self.alive = True
         #: Team mode: "may this connection still receive that session?", set
         #: by the WS handler which owns identity re-resolution. None (the
@@ -1407,12 +1461,23 @@ class WSHub:
 
     def _record(self, rid: str, obj: dict) -> None:
         t = obj.get("type")
-        # Approval cards have their own durable replay source.  In particular,
-        # resolving a card after daemon restart is not a live Agent turn and
-        # must not create a phantom running resume buffer.
-        if t in {"await_permission", "permission_resolved"}:
-            return
         buf = self._live.get(rid)
+        # Approval cards have their own durable replay source (the pending
+        # snapshot and `GET /frames/{fid}/approvals`). In particular, resolving
+        # a card after daemon restart is not a live Agent turn and must not
+        # create a phantom running resume buffer.
+        #
+        # Inside a running turn's window they are recorded, though. Left out,
+        # every approval was a numbered hole: each reconnect after one was
+        # declared a gap (and deferred the history reload behind the running
+        # turn), a decision made while a tab was away never reached it, and a
+        # reopened turn could not place its approval cards between the steps
+        # and prose they came between.
+        if t in {"await_permission", "permission_resolved"}:
+            if buf is not None and buf.get("running"):
+                self._append_live_event(buf, obj)
+                self._trim_live_events(buf)
+            return
         event_execution = str(obj.get("execution_id") or "")
         # A `processing` naming a new execution is a BOUNDARY, and it has to be
         # read before the staleness test -- which would otherwise judge it
@@ -1456,13 +1521,26 @@ class WSHub:
             # no execution id today, so taking the field verbatim would wipe
             # the id the `processing` boundary just established and hand the
             # window straight back to whichever late event arrived next.
+            inherited = event_execution or (
+                str(buf.get("execution_id") or "") if buf else ""
+            )
+            # The turn's own request was broadcast between its `processing`
+            # boundary and this reset. Starting the window over without it
+            # would leave a reconnecting tab that missed it with a hole it can
+            # only fill by refetching history, which a running turn defers.
+            carried = [
+                event
+                for event in ((buf.get("events") or []) if buf else [])
+                if buf.get("running")
+                and event.get("type") == "user_message"
+                and str(event.get("execution_id") or "") == inherited
+            ]
             self._install_live_buffer(
                 rid,
                 self._new_live_buffer(
-                    [obj],
+                    [*carried, obj],
                     scope="turn",
-                    execution_id=event_execution
-                    or (str(buf.get("execution_id") or "") if buf else ""),
+                    execution_id=inherited,
                 ),
             )
             return
@@ -1593,6 +1671,7 @@ class WSHub:
             buf.setdefault("active_cell_sizes", {}).pop(cell_id, None)
         if t in (
             "text_chunk",
+            "user_message",
             "notebook_cell_start",
             "notebook_cell_finished",
             "kernel_status",
@@ -1864,6 +1943,34 @@ class WSHub:
         with self._lock:
             conns = list(self._conns)
         return any(c.alive and root_frame_id in c.subs for c in conns)
+
+    def notify_directory(
+        self, root_frame_id: str, project_id: str | None, obj: dict
+    ) -> None:
+        """Tell every tab whose sidebar lists this session's project about it.
+
+        Session events reach only the tabs subscribed to that one session, so
+        a sidebar never learned that another session had started, stopped or
+        appeared: a session stopped in one tab still spun as running in all
+        the others minutes later. Unsequenced on purpose -- a directory is not
+        a session stream, and a number here would desynchronise a cursor.
+        Visibility is asked per connection outside the hub lock, exactly as a
+        broadcast does.
+        """
+        with self._lock:
+            targets = [
+                c
+                for c in self._conns
+                if c.alive
+                and getattr(c, "directory", None) is not None
+                and getattr(c, "directory", None) in ("*", project_id)
+            ]
+        for c in targets:
+            allowed = c.refresh_visibility(root_frame_id)
+            if allowed is None:
+                allowed = c.may_receive(root_frame_id)
+            if allowed:
+                c.send_json(dict(obj))
 
     def replay(self, root_frame_id: str, conn: "WSConnection") -> None:
         """Send the buffered current-turn events to a single (re)connecting
@@ -2526,9 +2633,10 @@ needed; do not use `list_dir` or `write_file`; do not use `read_text_file` or \
 `exec_background`.
 4. GET DATA / RUN: to READ a paper, abstract, web page, or HTTP/JSON API (e.g. the \
 GEO/PubMed/UniProt record behind an accession), use `host.web_fetch(url)` — it renders a \
-visible "Reading …" card and IS the research step the user wants to see. Reserve \
-`host.bash("curl -L ...")` for downloading BINARY or large data files (.gz, .h5, .tar, \
-archives) that web_fetch would mangle; do NOT use curl/`requests` to read pages you could \
+visible "Reading …" card and IS the research step the user wants to see. Download \
+BINARY or large data files (.gz, .h5, .tar, archives) that web_fetch would mangle with \
+`host.web_download(url, path)` (curl in `host.bash` works only where the kernel has \
+direct network); do NOT use curl/`requests` to read pages you could \
 `host.web_fetch`. Then run normal Python cells (import the domain packages and run the \
 real pipeline). Emit those cells directly as fenced assistant content.
 5. WRITE THE REPORT with `host.write_file("summary_report.md", ...)` and refine it \
@@ -2577,8 +2685,10 @@ kernel only when NO prebuilt env has the package.
 - `host.search_skills("...")` — find relevant skills; `host.load_skill("name")` — load \
 one skill's full protocol (SKILL.md) and follow it.
 - `host.bash(cmd, timeout=..., workdir=...)` — run a shell command INSIDE the kernel \
-process, in your working directory (networking is on: curl/wget/git/pip all work; the \
-host itself never executes shell — only your python/R cells do).
+process, in your working directory. It has the kernel's limits (see "Kernel \
+environment" below): where the sandbox blocks direct network, curl/wget/pip/git \
+fetches fail there too. The host itself never executes shell — only your python/R \
+cells do.
 - `host.read_file / host.write_file / host.edit_file / host.glob / host.grep / \
 host.list_dir` — file tools scoped to your working directory (edit_file does an exact \
 string replace; grep/glob search your files).
@@ -2592,8 +2702,9 @@ supplies an existing local checkpoint path, import it into the confined session 
 and hash it. A staged asset is not admitted until a real backend inference canary succeeds.
 - `host.delegate(request, name="SPECIALIST")` — hand a self-contained sub-task to a \
 specialist; `host.mcp.call(server, tool, args)` — call a connector (MCP) tool.
-`import requests`/`httpx` and raw Python are available too, but they do NOT replace \
-`host.web_search`/`host.web_fetch`/`host.bash` for looking things up: the host tools \
+`import requests`/`httpx` reach the network only where the kernel has direct \
+network (see "Kernel environment"), and they do NOT replace \
+`host.web_search`/`host.web_fetch` for looking things up: the host tools \
 render as activity cards, go through the network + provenance layer, and are what the \
 user expects to SEE happen. For any external lookup, reach for `host.web_search` FIRST — \
 do not silently substitute a raw-Python script for the visible research step.
@@ -3120,6 +3231,7 @@ class SessionRunner:
         observer = getattr(self.hub, "add_event_observer", None)
         if callable(observer):
             observer(self.project_history_autosave.observe)
+            observer(self._announce_session_status)
         if start_idle_sweeper:
             self.recovery.start()
             self._share_boot_restore()
@@ -3900,6 +4012,39 @@ class SessionRunner:
         ]
         return max(timestamps) if timestamps else None
 
+    def background_cells(self, root_frame_id: str) -> list[dict]:
+        """This session's background cells, as the workbench lists them.
+
+        Stop ends a turn's background cells with it, but a cell left running
+        on purpose, or launched from the Notebook, had no place on screen and
+        no way to be stopped.
+        """
+        st = self._existing_state(root_frame_id)
+        dispatcher = st.dispatcher if st is not None else None
+        executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
+        summaries = getattr(executor, "summaries", None)
+        if not callable(summaries):
+            return []
+        try:
+            return list(summaries())
+        except Exception:  # noqa: BLE001 - a listing never fails the request
+            traceback.print_exc()
+            return []
+
+    def stop_background_cell(self, root_frame_id: str, exec_id: str) -> dict:
+        """Stop one of this session's background cells (SIGINT, then a kill)."""
+        st = self._existing_state(root_frame_id)
+        dispatcher = st.dispatcher if st is not None else None
+        executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
+        stop = getattr(executor, "stop", None)
+        if not callable(stop):
+            return {
+                "ok": False,
+                "exec_id": exec_id,
+                "reason": "no such background cell",
+            }
+        return dict(stop(str(exec_id)))
+
     def _interrupt_background(self, st: SessionState) -> None:
         dispatcher = st.dispatcher
         executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
@@ -4175,6 +4320,86 @@ class SessionRunner:
         )
         self.project_history_autosave.schedule_session(fid)
         return fid
+
+    def _announce_session_status(self, root_frame_id: str, event: dict) -> None:
+        """Hub observer: a root session's lifecycle reaches every sidebar.
+
+        `frame_update` goes only to the tabs viewing that session; this
+        re-announces its root-level transitions (processing, terminal,
+        renamed, titled) to the tabs listing the session's project as a
+        `session_status` event. A sub-agent's frame update is not the
+        session's state and is not forwarded.
+        """
+        kind = event.get("type")
+        # An approval request blocks the turn until someone answers it, so the
+        # sidebars say "waiting for approval" rather than "running". Every
+        # request in the tree is the root's (the broker keys them by root).
+        approval = kind in ("await_permission", "permission_resolved")
+        if not approval and kind != "frame_update":
+            return
+        if not approval and event.get("frame_id") not in (None, root_frame_id):
+            return
+        notify = getattr(self.hub, "notify_directory", None)
+        if not callable(notify):
+            return
+        frame = self.store.get_frame(root_frame_id) or {}
+        project_id = frame.get("project_id")
+        payload = _session_status_event(
+            root_frame_id, project_id, "approval" if approval else event.get("status")
+        )
+        if approval:
+            payload["awaiting_approval"] = self.approval_waiting(root_frame_id)
+        notify(root_frame_id, project_id, payload)
+
+    @staticmethod
+    def approval_waiting(root_frame_id: str) -> bool:
+        """Whether this session's turn is blocked on an approval request.
+
+        For display only: unlike `_permission_pending`, an unreadable broker
+        answers False rather than True.
+        """
+        try:
+            from openai4s.permissions import broker
+
+            return bool(broker().is_pending(root_frame_id))
+        except Exception:  # noqa: BLE001 - a status read never fails a request
+            return False
+
+    def latest_unused_session(
+        self,
+        project_id: str,
+        *,
+        owner_user_id: str | None = None,
+        visible_to_user_id: str | None = None,
+    ) -> str | None:
+        """The newest root session in this project that nobody has used yet.
+
+        "Unused" is the predicate the session list hides (`_session_is_unused`),
+        so a frame reused here is exactly one the user could not otherwise
+        reach. Team mode reuses only the caller's own frames; another member's
+        empty session is theirs. Nothing is reused while the project is being
+        deleted or while the frame runs anything.
+        """
+        with self._lock:
+            if project_id in self._deleting_projects:
+                return None
+        running = self.running_frames()
+        for frame in self.store.browse_frames(
+            project_id=project_id,
+            roots_only=True,
+            limit=20,
+            visible_to_user_id=visible_to_user_id,
+        ):
+            fid = str(frame.get("frame_id") or "")
+            if not fid or fid in running or self._execution_active(fid):
+                continue
+            if owner_user_id is not None:
+                owner = self.store.team.session_owner(fid) or {}
+                if owner.get("user_id") != owner_user_id:
+                    continue
+            if _session_is_unused(self.store, _frame_json(frame, self.store)):
+                return fid
+        return None
 
     def delete_project(self, project_id: str) -> dict[str, Any]:
         roots: tuple[str, ...] = ()
@@ -6074,6 +6299,19 @@ class SessionRunner:
                 )
         except Exception:  # noqa: BLE001
             pass
+        # What a Cell cannot do here (no direct network, no installs into an
+        # environment, workspace-only writes) and which R/Python it runs on,
+        # so the model does not find out by probing the machine.
+        try:
+            from openai4s.kernel import environments as envmod
+            from openai4s.kernel.constraints import kernel_constraints_note
+
+            ctx += "\n\n" + kernel_constraints_note(
+                python_env_name=st.env_name or envmod.default_env_name(),
+                r_env_name=getattr(st, "r_env_name", None),
+            )
+        except Exception:  # noqa: BLE001
+            pass
         # The Action Ledger, rather than UI prose/execution-log projections,
         # is the canonical provider history.  Rebuild complete action groups
         # after the freshly composed system prompt on every daemon resume.
@@ -6282,7 +6520,14 @@ class SessionRunner:
         # was created by a tool-only turn before any language kernel existed.
         # The lease spans the whole background job and is the atomic peer of
         # every trusted foreground capture boundary.
-        dispatcher.background_execution_lease = st.trusted_capture.background
+        # ART-5: the same lifetime captures what the job wrote when it ends --
+        # foreground capture only sees files changed during a Cell.
+        dispatcher.background_execution_lease = lambda: BackgroundCaptureLifetime(
+            self.artifacts,
+            st,
+            st.trusted_capture.background(),
+            self.hub.emitter(st.root_frame_id),
+        )
         self._configure_background_kernel_factory(st, dispatcher)
         # Refresh per-turn model/delegation wiring without replacing the stable
         # dispatcher (and without starting Python).
@@ -7812,6 +8057,18 @@ class SessionRunner:
                     runner.cancel_all("parent execution cancelled")
                 except Exception:  # noqa: BLE001 - parent cancel still succeeds
                     traceback.print_exc()
+            # Background cells the stopped turn launched stop with it; they
+            # used to run to completion with no way to see or stop them.
+            dispatcher = state.dispatcher if state is not None else None
+            stop_background = getattr(dispatcher, "stop_turn_background", None)
+            if callable(stop_background):
+                try:
+                    stopped = list(stop_background() or [])
+                except Exception:  # noqa: BLE001 - parent cancel still succeeds
+                    traceback.print_exc()
+                    stopped = []
+                if stopped:
+                    result = {**result, "background_stopped": stopped}
         with self._lock:
             self.reviews.cancel_locked(root_frame_id)
         # Release any pending permission prompt for this conversation (deny).
@@ -8116,7 +8373,7 @@ class SessionRunner:
             "cell_count": (st.cell_index if st else 0),
             "manual_stop": bool(supervisor_status and supervisor_status["manual_stop"]),
             "env": self._env_summary(st),
-            "repl_enabled": official_notebook_enabled(self.cfg),
+            "repl_enabled": official_notebook_enabled(self.cfg, self.store),
             "artifact_workbench": official_workbench_enabled(self.cfg),
             "view_only": bool(quarantine),
             "trust_state": "quarantined" if quarantine else "trusted",
@@ -8380,9 +8637,16 @@ class SessionRunner:
 
         st = self._sessions.get(root_frame_id) if root_frame_id else None
         current = self._selected_env_name(st) if st else envmod.default_env_name()
+        # The R channel's selection (host.env.use or a user's pick), else the
+        # env its live kernel resolved against; None is the default resolution.
+        dispatcher = getattr(st, "dispatcher", None) if st else None
+        current_r = (
+            getattr(dispatcher, "active_r_env", None) if dispatcher else None
+        ) or (getattr(st, "r_env_name", None) if st else None)
         return {
             "environments": envmod.list_environments(with_packages=True),
             "current": current,
+            "current_r": current_r,
             "default": envmod.default_env_name(),
             "pending": (st.pending_env if st else None),
         }
@@ -8402,12 +8666,12 @@ class SessionRunner:
         if env is None:
             return {"error": f"unknown environment: {env_name!r}"}
         if env.interpreter is None:
+            if env.rscript:
+                return self._select_r_env(root_frame_id, env, project_id)
             return {
                 "error": (
-                    f"'{env_name}' is a {env.language} environment with "
-                    "no Python — the notebook kernel needs a Python "
-                    "interpreter. R-only envs run ```r cells (the agent can "
-                    'pin one with host.env.use("' + env_name + '")).'
+                    f"'{env_name}' has neither a Python nor an R interpreter "
+                    "and cannot run cells; pick another environment."
                 )
             }
         if self.store.leases.workload_for_session(root_frame_id):
@@ -8468,6 +8732,46 @@ class SessionRunner:
             "generation_id": lease.generation_id if lease else None,
             "language": env.language,
             "python_version": env.python_version(),
+            "frame_id": root_frame_id,
+        }
+
+    def _select_r_env(self, root_frame_id: str, env, project_id: str) -> dict:
+        """A user's pick of an R environment for this session's R cells.
+
+        Retargets the R channel the way `host.env.use` does: the next R cell's
+        `_ensure_r_kernel` starts (or replaces) the R kernel in this
+        environment. Nothing starts now, and the Python kernel is untouched.
+        It used to be refused, so an R environment could not be chosen at all.
+        """
+        if self.store.leases.workload_for_session(root_frame_id):
+            return {
+                "error": (
+                    "environment switching is unavailable while a cluster "
+                    "compute session is bound; release it and request a new "
+                    "allocation with the desired environment"
+                )
+            }
+        st = self._state(root_frame_id, project_id)
+        dispatcher = self._ensure_runtime(st)
+        dispatcher.active_r_env = env.name
+        status = st.kernels.status("r")
+        self.hub.emitter(root_frame_id)(
+            {
+                "type": "kernel_status",
+                "frame_id": root_frame_id,
+                "status": "env_changed",
+                "language": "r",
+                "env": {"name": env.name, "language": "r"},
+            }
+        )
+        return {
+            "ok": True,
+            "state": status["state"],
+            "env": env.name,
+            "generation": status["generation"],
+            "generation_id": status.get("generation_id"),
+            "language": "r",
+            "python_version": None,
             "frame_id": root_frame_id,
         }
 
@@ -8563,6 +8867,7 @@ class SessionRunner:
         explore: bool = False,
         task_mode: str | None = None,
         on_admitted: Callable[[MessageJob], None] | None = None,
+        mentions: list[dict] | None = None,
     ) -> MessageJob:
         """Start a user turn in a background thread.
 
@@ -8629,7 +8934,8 @@ class SessionRunner:
             # rewritable while the item waits, so re-reading it at render time
             # would show a queued item running under a configuration it is not.
             metadata={
-                "preview": queue_preview(text),
+                # Display text: a text-form `@name#v-<id>` previews as `@name`.
+                "preview": queue_preview(artifact_refs.display_text(text)),
                 "model_profile_id": job.model_profile_id,
                 "model_profile_revision": job.model_profile_revision,
             },
@@ -8716,6 +9022,9 @@ class SessionRunner:
                                 job.model_profile_revision,
                             ),
                             task_mode=task_mode,
+                            # Only when there are any: a turn without pins
+                            # calls `run_message` exactly as it always has.
+                            **({"mentions": mentions} if mentions else {}),
                         )
                         result.setdefault("job_id", job.job_id)
                         result.setdefault("execution_id", ticket.execution_id)
@@ -8953,10 +9262,15 @@ class SessionRunner:
         capture: CaptureResult,
         cell_id: str,
     ) -> list[str]:
-        """Map host-side reads to versions when Stage 8 is enabled."""
+        """Map the worker-observed reads to versions and record Cell lineage.
 
-        if not self.cfg.roadmap_features.stage8_live_notebook_lineage:
-            return []
+        Always on. This used to return ``[]`` unless the Stage 8 flag was set,
+        and the caller stores the return value as the Cell's read set, so with
+        the flag off (the default) every Cell's observed reads were erased and
+        provenance said "no recorded inputs" even for read_csv -> to_csv.
+        Stage 8 now gates only the official live Notebook.
+        """
+
         del request, before
         return bind_cell_lineage(
             self.store,
@@ -8997,6 +9311,7 @@ class SessionRunner:
         emit,
         language: str,
         artifact_receipts: list[dict[str, Any]] | None = None,
+        cell_failed: bool = False,
     ) -> CaptureResult:
         kernel = st.kernel
         run_system_cell = (
@@ -9014,6 +9329,7 @@ class SessionRunner:
             run_system_cell=run_system_cell,
             drain_remote_provenance=self._remote_provenance_drain(st),
             artifact_receipts=artifact_receipt_map(artifact_receipts or []),
+            cell_failed=cell_failed,
         )
 
     def _invoke_control_with_artifacts(self, st, call, emit, invoke):
@@ -9108,6 +9424,12 @@ class SessionRunner:
                 artifact_receipts=artifact_receipts,
             )
             captured_holder.append(captured)
+            if tool_name == "project_import_file" and captured.artifacts:
+                # UP-5: a copy of the person's own project file is an input,
+                # like an upload, not something the agent generated.
+                self.store.mark_user_inputs(
+                    [str(item.get("artifact_id") or "") for item in captured.artifacts]
+                )
             if captured.artifacts:
                 self._emit_artifact_step(
                     st,
@@ -10568,6 +10890,7 @@ class SessionRunner:
         explore: bool = False,
         frozen_binding: tuple[str, int] | None = None,
         task_mode: str | None = None,
+        mentions: list[dict] | None = None,
     ) -> dict:
         st = self._state(root_frame_id, project_id)
         if frozen_binding:
@@ -10672,6 +10995,9 @@ class SessionRunner:
             # prompt followed it instead of titling, so the 80-character
             # "[Plan Mode] Do not execute ..." placeholder became the title.
             title_text = plan_mode_request_text(user_text) if st.plan else user_text
+            # And without a text-form pin's `#v-<id>`: the title is display
+            # text, and the hash is the version, not the user's words (ART-16).
+            title_text = artifact_refs.display_text(title_text)
             if not (frame.get("name") or frame.get("task_summary")):
                 title_placeholder = re.sub(r"\s+", " ", title_text).strip()[:80]
                 self.store.update_frame(root_frame_id, task_summary=title_placeholder)
@@ -10703,7 +11029,18 @@ class SessionRunner:
                     root_frame_id, title_text, self._llm_cfg(st), title_placeholder
                 )
             # resolve @filename references → inject the artifact content (M4)
-            resolved, message_refs = self._resolve_mentions(st, user_text)
+            resolved, message_refs = self._resolve_mentions(st, user_text, mentions)
+            if annos:
+                # The pins the user sent with this message, for the bubble's
+                # attachment chip after a reload (SYNC-5); the instructions
+                # built from them go only into the model's copy below.
+                self.store.update_message_metadata(
+                    stored_user_message["message_id"],
+                    {"annotations": _annotation_summaries(annos)},
+                )
+                block = _format_annotations_block(annos)
+                if block:
+                    resolved = (resolved + "\n\n" + block).strip()
             if message_refs:
                 # Stamped after the row exists, not passed at INSERT: resolving
                 # can materialise a sibling session's file into this workspace,
@@ -10716,6 +11053,53 @@ class SessionRunner:
                     stored_user_message["message_id"],
                     {"artifact_refs": message_refs},
                 )
+            # The request is part of the stream, not only of the sender's DOM.
+            # The sending tab inserted its own bubble before the POST, but every
+            # other tab viewing this session learned about the turn only from
+            # its narration, and a queued follow-up never appeared anywhere but
+            # in the tab that typed it -- until a reload read the stored row.
+            # `request_id` is the id the 202 returned (the sender's own
+            # `X-Request-Id`), so the sender can recognise its optimistic bubble;
+            # `message_id` lets a reopened transcript skip the row it already
+            # rendered from REST.
+            emit(
+                {
+                    "type": "user_message",
+                    "frame_id": root_frame_id,
+                    "message_id": stored_user_message.get("message_id"),
+                    "role": "user",
+                    "content": user_text,
+                    "created_at": _iso(stored_user_message.get("created_at")),
+                    "request_id": turn_request_id,
+                    **(
+                        {"execution_id": execution.execution_id}
+                        if getattr(execution, "execution_id", "")
+                        else {}
+                    ),
+                    **(
+                        {
+                            "artifact_refs": _message_artifact_refs(
+                                {"metadata": {"artifact_refs": message_refs}}
+                            )
+                        }
+                        if message_refs
+                        else {}
+                    ),
+                    **(
+                        {
+                            "annotations": _message_annotations(
+                                {
+                                    "metadata": {
+                                        "annotations": _annotation_summaries(annos)
+                                    }
+                                }
+                            )
+                        }
+                        if annos
+                        else {}
+                    ),
+                }
+            )
             remote_ctx = _remote_gpu_runtime_context(
                 user_text, data_dir=self.cfg.data_dir
             )
@@ -11039,6 +11423,9 @@ class SessionRunner:
                         artifact.get("artifact_id") or artifact.get("id")
                     )
                     != artifact.get("latest_version_id")
+                    # Hidden rows (internal context spills, files the user
+                    # hid) are not this turn's deliverables.
+                    and int(artifact.get("priority") or 0) >= 0
                 ]
                 if self.stage1_trusted_delivery:
                     # Same-head captures do not move latest_version_id. Their
@@ -11753,8 +12140,15 @@ class SessionRunner:
         )
         return identity
 
-    def _resolve_mentions(self, st: SessionState, text: str) -> tuple[str, list[dict]]:
+    def _resolve_mentions(
+        self, st: SessionState, text: str, mentions: list[dict] | None = None
+    ) -> tuple[str, list[dict]]:
         """Append the content of any @-referenced artifact to the prompt.
+
+        `mentions` are the request's structured pins (ART-16): the workbench
+        writes `@name` and sends the version beside it, so the stored text and
+        everything derived from it stay free of `#v-<id>`. The version reaches
+        the model in the appended block's header, here, and nowhere else.
 
         The resolution itself lives in `server/artifact_refs.py`. What used to
         be here read the artifact's *live path*, so the same reference meant
@@ -11780,6 +12174,7 @@ class SessionRunner:
                 st, version_id, name
             ),
             on_resolved=sent.append,
+            mentions=mentions,
         )
         if problems:
             # Emitted, not raised: the turn should still run. A user who
@@ -11935,6 +12330,10 @@ class SessionRunner:
                 snapshot_path=(
                     str(frozen_context.path) if frozen_context is not None else None
                 ),
+                # The model's own spill, not a result: hidden like a file the
+                # user hid, so the gallery, Files panel and completion summary
+                # stop listing it (ART-10). It stays readable by version.
+                priority=_INTERNAL_ARTIFACT_PRIORITY,
             )
         except Exception:
             if frozen_context is not None:
@@ -11948,6 +12347,7 @@ class SessionRunner:
                 "artifact": {
                     "id": record["artifact_id"],
                     **record,
+                    "priority": _INTERNAL_ARTIFACT_PRIORITY,
                 },
             },
         )
@@ -12388,9 +12788,19 @@ class SessionRunner:
         def run_cell(kernel):
             binder = getattr(kernel, "bind_action_context", None)
             receipt_binder = getattr(st.dispatcher, "bind_artifact_receipt_scope", None)
+            # SEC-8: who submitted this Cell, bound host-side for its Host
+            # calls, so `host.exec_background` cannot claim another origin.
+            origin_binder = getattr(st.dispatcher, "bind_cell_origin", None)
+            # NB-9: the session's cell number, so the kernel names this cell's
+            # code `<cell N>` in tracebacks -- the number the chat card and the
+            # Notebook show. Only for kernels whose execute takes it.
+            label = _cell_label_kwargs(kernel, getattr(st, "cell_index", None))
             with (
-                receipt_binder() if callable(receipt_binder) else nullcontext([])
-            ) as artifact_receipts:
+                (
+                    receipt_binder() if callable(receipt_binder) else nullcontext([])
+                ) as artifact_receipts,
+                origin_binder(origin) if callable(origin_binder) else nullcontext(),
+            ):
                 if callable(binder):
                     with binder(action_context):
                         result = kernel.execute(
@@ -12398,6 +12808,7 @@ class SessionRunner:
                             origin=origin,
                             on_chunk=on_chunk,
                             cell_id=cell_id,
+                            **label,
                         )
                 else:
                     result = kernel.execute(
@@ -12405,6 +12816,7 @@ class SessionRunner:
                         origin=origin,
                         on_chunk=on_chunk,
                         cell_id=cell_id,
+                        **label,
                     )
             if artifact_receipts:
                 result["_openai4s_artifact_receipts"] = list(artifact_receipts)
@@ -12727,6 +13139,12 @@ class SessionRunner:
         step_input = {"files": files, "environment": environment or self._kernel_id(st)}
         if language:
             step_input["language"] = language
+        if getattr(emit, "chat_projection", True) is False:
+            # A Notebook REPL cell's "Saving …" step: kept for the record, but
+            # marked so the transcript leaves it out on reload exactly as the
+            # live chat did (it has no turn to belong to, and it used to sit
+            # alone above the empty-session welcome).
+            step_input["origin"] = "notebook"
         step_output = {"artifacts": saved}
         summary = f"{len(saved)} artifact" + ("" if len(saved) == 1 else "s")
         sid = "s-" + uuid.uuid4().hex[:12]
@@ -13405,6 +13823,11 @@ class SessionRunner:
             def emit_notebook(event: dict) -> None:
                 if event.get("type") not in {"text_chunk", "step", "step_update"}:
                     emit(event)
+
+            # The step rows this cell persists are Notebook-only too (see
+            # `_emit_artifact_step`): the chat never showed them live, so a
+            # reload must not show them either.
+            setattr(emit_notebook, "chat_projection", False)
 
             info = self._execute_and_log(
                 st,
@@ -15557,7 +15980,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             # names `openai4s url`, and the desktop-app and
                             # container recoveries that actually work.
                             self._send(
-                                401, _unauthorized_page(), "text/html; charset=utf-8"
+                                401,
+                                _unauthorized_page(
+                                    self.headers.get("Accept-Language", "")
+                                ),
+                                "text/html; charset=utf-8",
                             )
                             return
                         self._json(
@@ -16238,13 +16665,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             zf.write(path, arcname)
                         except OSError:
                             continue
-                safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-")
-                if not safe_name.lower().endswith(".zip"):
-                    safe_name += ".zip"
+                name = str(filename or "artifacts").strip() or "artifacts"
+                if not name.lower().endswith(".zip"):
+                    name += ".zip"
                 self._stream_file(
                     tmp_path,
                     "application/zip",
-                    {"Content-Disposition": f'attachment; filename="{safe_name}"'},
+                    {
+                        # A person's name for the bundle (session title,
+                        # project name), with an ASCII fallback and the exact
+                        # UTF-8 name for current browsers.
+                        "Content-Disposition": download_content_disposition(
+                            name, "artifacts.zip"
+                        )
+                    },
                     security=artifact_security_headers(),
                 )
             finally:
@@ -16485,7 +16919,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if share_create and method == "POST":
                 if not runner._share_enabled():
                     raise GatewayError(
-                        403, "sharing is disabled; enable it in Settings"
+                        403,
+                        "sharing is disabled; enable it in the Share dialog "
+                        "(session menu → Share) or with `openai4s share enable`",
                     )
                 if not cfg.share.configured:
                     raise GatewayError(
@@ -16570,6 +17006,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if auto_mode_routes.handle(self, method, sub, q, runner):
                 return
             if artifact_workbench_routes.handle(self, method, sub, q, runner):
+                return
+            # ART-11: flag-independent, unlike the workbench group above.
+            if artifact_preview_routes.handle(self, method, sub, q, runner):
                 return
             if onboarding_routes.handle(
                 self,
@@ -17116,6 +17555,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         "running": runner.example_seed.running(),
                         "seeds_at_startup": _demo_seed_enabled(),
                         "error": runner.example_seed.last_error(),
+                        # How the last run here ended ({"cells", "failed"}),
+                        # so the home page can say "finished" or "2 of 6
+                        # cells did not complete" instead of going quiet.
+                        "result": runner.example_seed.last_result(),
                     }
                 )
                 return
@@ -17350,15 +17793,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         for f in batch:
                             fj = _frame_json(f, store)
                             # hide abandoned empty sessions (no messages, no
-                            # cells, no title) — but keep REPL-only sessions
-                            if (
-                                not fj["message_count"]
-                                and not fj.get("name")
-                                and not fj.get("task_summary")
-                                and not store.cell_count(f["frame_id"])
-                            ):
+                            # cells, no title, no files) — but keep REPL-only
+                            # sessions and ones that only received an upload
+                            if _session_is_unused(store, fj):
                                 continue
                             fj["running"] = f["frame_id"] in running
+                            # A running turn blocked on an approval request:
+                            # the sidebar says so rather than "running".
+                            fj["awaiting_approval"] = bool(
+                                fj["running"] and runner.approval_waiting(f["frame_id"])
+                            )
                             fj["kernel_alive"] = runner.kernel_alive(f["frame_id"])
                             fj["_cursor"] = (
                                 int(f["created_at"] or 0),
@@ -17400,7 +17844,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "POST /projects or list them with GET /projects",
                             "project_id_required",
                         )
-                    fid = runner.create_session(
+                    # `reuse_empty`: entering a project with nothing listed
+                    # (the workbench's project open). Every entry used to
+                    # create another frame nobody had used, each hidden from
+                    # the list, so the project accumulated empty sessions.
+                    fid = (
+                        runner.latest_unused_session(
+                            pid,
+                            owner_user_id=self._team_owner_user_id(),
+                            visible_to_user_id=self._team_visibility_filter(),
+                        )
+                        if b.get("reuse_empty") is True
+                        else None
+                    ) or runner.create_session(
                         pid,
                         model=b.get("model"),
                         owner_user_id=self._team_owner_user_id(),
@@ -17441,7 +17897,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json(_frame_json(frame, store))
                     return
                 if method == "DELETE":
+                    deleted = store.get_frame(fid) or {}
                     runner.delete_session(fid)
+                    # Other tabs' sidebars drop the row without a reload.
+                    notify = getattr(hub, "notify_directory", None)
+                    if callable(notify) and deleted:
+                        project_id = deleted.get("project_id")
+                        notify(
+                            fid,
+                            project_id,
+                            _session_status_event(fid, project_id, "deleted"),
+                        )
                     self._json({"ok": True})
                     return
             m = re.fullmatch(r"/frames/([^/]+)/messages", sub)
@@ -17525,6 +17991,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             **(
                                 {"review_status": _message_review_gate(mm)}
                                 if _message_review_gate(mm)
+                                else {}
+                            ),
+                            # The pins a message was sent with (SYNC-5), so a
+                            # reload shows the same attachment chip the live
+                            # bubble did instead of instruction text.
+                            **(
+                                {"annotations": _message_annotations(mm)}
+                                if _message_annotations(mm)
                                 else {}
                             ),
                             **_message_candidate_identity(mm),
@@ -17633,6 +18107,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 req = (
                     (b.get("input_data") or {}).get("request") or b.get("request") or ""
                 )
+                # Structured `@file` pins (ART-16), checked before anything is
+                # reserved: a malformed list is refused, never half-applied.
+                try:
+                    mentions = artifact_refs.parse_mentions(b.get("mentions"))
+                except ValueError as error:
+                    raise GatewayError(400, str(error), "invalid_mentions") from error
                 f = store.get_frame(fid) or {}
                 pid = f.get("project_id") or "default"
                 # Fold pinned image annotations into the message so the remote
@@ -17691,9 +18171,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "admission_replayed",
                         )
 
-                    block = _format_annotations_block(annos)
-                    if block:
-                        req = (req + "\n\n" + block).strip() if req.strip() else block
+                    # SYNC-5: the request stays the user's own words. The
+                    # instruction block used to be concatenated here, so after
+                    # a reload the bubble showed the product's injected
+                    # instructions as if the user had typed them; run_message
+                    # now adds the block to the model's copy only. A pin-only
+                    # send keeps the user's comments as its text.
+                    if not req.strip():
+                        req = _annotation_comments_text(annos)
                 # The job id the refusal path must be able to retract,
                 # recorded BEFORE the write rather than after it.
                 #
@@ -17744,6 +18229,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         explore=bool(b.get("explore")),
                         task_mode=b.get("task_mode"),
                         on_admitted=_persist_correlation,
+                        **({"mentions": mentions} if mentions else {}),
                     )
                 except BaseException:
                     # Every synchronous refusal lands here -- the 413 on an
@@ -18046,6 +18532,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     return
                 self._json(resolution)
+                return
+            # ---- approval history: every request this session asked, in order ----
+            m = re.fullmatch(r"/frames/([^/]+)/approvals", sub)
+            if m and method == "GET":
+                fr = store.get_frame(m.group(1))
+                if fr is None:
+                    raise GatewayError(404, "session not found")
+                root = fr.get("root_frame_id") or m.group(1)
+                self._json(
+                    {
+                        "root_frame_id": root,
+                        "approvals": [
+                            _approval_json(row)
+                            for row in store.list_permission_requests(
+                                root_frame_id=root
+                            )
+                        ],
+                    }
+                )
                 return
             # ---- permission rules: list (per conversation) / upsert / delete ----
             m = re.fullmatch(r"/frames/([^/]+)/permissions", sub)
@@ -18486,9 +18991,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/artifacts\.zip", sub)
             if m and method == "GET":
                 fid = m.group(1)
+                frame = store.get_frame(fid) or {}
+                # The name the sidebar shows: a set name, else the summary.
+                title = (
+                    str(frame.get("name") or frame.get("task_summary") or "").strip()
+                    or f"session-{fid}"
+                )
                 self._serve_artifact_bundle(
                     store.list_artifacts({"root_frame_id": fid}),
-                    f"session-{fid}-artifacts.zip",
+                    f"{title}-artifacts.zip",
                 )
                 return
             m = re.fullmatch(r"/projects/([^/]+)/artifacts\.zip", sub)
@@ -18498,7 +19009,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._team_filter_artifacts(
                         store.list_artifacts({"project_id": pid})
                     ),
-                    f"project-{pid}-artifacts.zip",
+                    f"{str((store.get_project(pid) or {}).get('name') or '').strip() or 'project-' + pid}"
+                    "-artifacts.zip",
                 )
                 return
             m = re.fullmatch(r"/frames/([^/]+)/artifacts/promote", sub)
@@ -18860,16 +19372,38 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         400,
                     )
                     return
+                # `variant=clean` is the notebook a person re-runs: failed and
+                # diagnostic cells left out, figures embedded, narration as
+                # Markdown. Without it every export stays the execution log.
+                variant = (q.get("variant") or [None])[0]
+                if variant is not None and str(variant).lower() not in {
+                    "raw",
+                    "clean",
+                }:
+                    self._json({"error": "variant must be raw or clean"}, 400)
+                    return
+                if (
+                    str(variant or "").lower() == "clean"
+                    and language is not None
+                    and str(language).lower() not in {"python", "r"}
+                ):
+                    self._json(
+                        {"error": "a clean notebook is python or r (or automatic)"},
+                        400,
+                    )
+                    return
                 exported = runner.session_domain.notebook_export(
-                    m.group(1), language=language
+                    m.group(1), language=language, variant=variant
                 )
                 self._send(
                     200,
                     exported["data"],
                     exported["content_type"],
                     {
-                        "Content-Disposition": (
-                            f'attachment; filename="{exported["filename"]}"'
+                        # The clean form is named after the session title, so
+                        # the RFC 5987 form carries non-ASCII names safely.
+                        "Content-Disposition": download_content_disposition(
+                            exported["filename"], "notebook"
                         ),
                         "X-Content-SHA256": exported["sha256"],
                     },
@@ -18929,13 +19463,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     raise GatewayError(
                         409, str(error), "session_not_exportable"
                     ) from error
+                title = str(
+                    frame.get("name") or frame.get("task_summary") or ""
+                ).strip()
                 self._send(
                     200,
                     exported["data"],
                     exported["content_type"],
                     {
-                        "Content-Disposition": (
-                            f'attachment; filename="{exported["filename"]}"'
+                        "Content-Disposition": download_content_disposition(
+                            (
+                                f"{title}.openai4s-session.zip"
+                                if title
+                                else exported["filename"]
+                            ),
+                            exported["filename"],
                         ),
                         "X-Content-SHA256": exported["sha256"],
                         "X-OpenAI4S-Session-Schema": str(exported["schema_version"]),
@@ -20123,6 +20665,34 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
 
             # ---- memory ----
+            if sub == "/notebook/settings":
+                # The Settings switch for manual Notebook cells. Instance-wide
+                # (team_policy.INSTANCE_CONFIG_PATHS: admins change it), read
+                # by everyone; the environment variable still forces it on.
+                from openai4s.server.notebook_lineage import (
+                    notebook_settings,
+                    set_notebook_repl,
+                )
+
+                if method in ("PUT", "PATCH"):
+                    want = self._body().get("repl_enabled")
+                    if not isinstance(want, bool):
+                        raise GatewayError(
+                            400,
+                            "repl_enabled must be a JSON boolean",
+                            "invalid_repl_enabled",
+                        )
+                    set_notebook_repl(store, want)
+                elif method != "GET":
+                    raise GatewayError(405, "method not allowed")
+                self._json(
+                    notebook_settings(
+                        cfg,
+                        store,
+                        can_change=team_policy.may_change_instance_config(self),
+                    )
+                )
+                return
             if sub == "/memory/enabled":
                 if method == "GET":
                     self._json({"enabled": _memory_enabled(store), "override": None})
@@ -20606,7 +21176,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     ),
                 )
             except ArtifactOperationError as error:
-                raise GatewayError(error.code, error.message) from error
+                # `artifact_exists` (ART-12) is what the client branches on.
+                raise GatewayError(
+                    error.code, error.message, error.error_code
+                ) from error
 
         def _upload(self, b: dict) -> dict:
             try:
@@ -20644,7 +21217,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     ),
                 )
             except ArtifactOperationError as error:
-                raise GatewayError(error.code, error.message) from error
+                # The stable code (e.g. `artifact_exists`) is what a client
+                # branches on; the status alone covers several refusals.
+                raise GatewayError(
+                    error.code, error.message, error.error_code
+                ) from error
 
         def _delete_artifact(self, artifact_id: str) -> dict:
             try:
@@ -20872,6 +21449,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         rid = msg.get("root_frame_id") or msg.get("frame_id")
                         if rid:
                             hub.unsubscribe(rid, conn)
+                    elif t == "view_directory":
+                        # The project whose session list this tab shows, or
+                        # none (Home lists every project). Each session event
+                        # is still checked against this login's visibility
+                        # before it is sent, so naming a project grants
+                        # nothing.
+                        pid = msg.get("project_id")
+                        conn.directory = (
+                            str(pid) if isinstance(pid, str) and pid else "*"
+                        )
             finally:
                 conn.close()  # stop the writer thread + mark dead
                 hub.remove(conn)
@@ -20917,6 +21504,86 @@ def _frame_json(f: dict | None, store: Store) -> dict:
     # column the list leaves out would read as "unpinned" for a pinned session.
     out["model_profile_id"] = f.get("model_profile_id") or None
     out["model_profile_revision"] = f.get("model_profile_revision") or None
+    return out
+
+
+def _session_status_event(
+    root_frame_id: str, project_id: str | None, status: object
+) -> dict:
+    """The directory event a sidebar applies (see `WSHub.notify_directory`)."""
+    return {
+        "type": "session_status",
+        "frame_id": root_frame_id,
+        "project_id": project_id,
+        "status": status,
+    }
+
+
+def _session_is_unused(store: Store, fj: dict) -> bool:
+    """A session nobody has used: no message, title, Cell or file.
+
+    The session list hides these (abandoned "New session" clicks), and a
+    project open reuses one rather than minting another. A file counts: a
+    session that has only received an upload was hidden from the list while
+    its project card counted it, and the upload could be found only through
+    the project's file view.
+    """
+    fid = str(fj.get("id") or "")
+    return bool(
+        fid
+        and not fj.get("message_count")
+        and not fj.get("name")
+        and not fj.get("task_summary")
+        and not store.cell_count(fid)
+        and not store.list_artifacts({"root_frame_id": fid})
+    )
+
+
+#: The approval-card fields a history read may republish from a request's
+#: stored `await_permission` payload. An allowlist: the payload also carries
+#: ledger identities (action group, tool call, resource keys) that the card
+#: never showed and no client needs.
+_APPROVAL_CARD_FIELDS = (
+    "tool",
+    "kind",
+    "title",
+    "input",
+    "target",
+    "suggested_patterns",
+    "scopes",
+    "sub_agent",
+    "dangerous",
+    "choices",
+    "policy_review_kind",
+    "resolved_file_path",
+)
+
+
+def _approval_json(row: dict) -> dict:
+    """One durable approval request as the transcript shows it.
+
+    The live card came from the `await_permission` event and its outcome from
+    `permission_resolved`; neither was part of the stored history, so a reload
+    lost every decision -- including a denial and the reason typed with it --
+    and each tab showed only the cards it happened to be open for.
+    """
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    out: dict = {
+        "decision_id": row.get("decision_id"),
+        "frame_id": payload.get("frame_id") or row.get("root_frame_id"),
+        "state": row.get("state"),
+        "scope": row.get("scope"),
+        "message": row.get("message"),
+        "resolution_context": row.get("resolution_context"),
+        "created_at": _iso(row.get("created_at")),
+        "resolved_at": _iso(row.get("resolved_at")),
+    }
+    for key in _APPROVAL_CARD_FIELDS:
+        if key in payload:
+            out[key] = payload[key]
+    out["tool"] = out.get("tool") or row.get("tool")
+    out["target"] = out.get("target") or row.get("target") or ""
+    out["dangerous"] = bool(out.get("dangerous") or row.get("dangerous"))
     return out
 
 
@@ -20977,6 +21644,37 @@ def _completion_separator(assistant_visible: list) -> str:
     if any(str(block.get("text") or "").strip() for block in assistant_visible):
         return "\n\n"
     return ""
+
+
+def _message_annotations(message: dict) -> list[dict[str, Any]]:
+    """The pins a user message carried, projected for the attachment chip.
+
+    Allowlisted like the other metadata projections: a number, the file's
+    display name, the comment and its kind -- the user's own words, nothing
+    the product added.
+    """
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, dict) or not isinstance(raw.get("annotations"), list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw["annotations"][:100]:
+        if not isinstance(item, dict):
+            continue
+        number = item.get("number")
+        out.append(
+            {
+                "number": number if isinstance(number, int) else None,
+                "kind": str(item.get("kind") or "image")[:16],
+                "artifact_name": str(item.get("artifact_name") or "artifact")[:255],
+                "body": str(item.get("body") or "")[:2000],
+            }
+        )
+    return out
 
 
 def _message_failure(message: dict) -> dict | None:
@@ -21307,6 +22005,52 @@ def _figure_with_pins(raw: bytes, pins: list) -> tuple[str | None, str]:
     return base64.b64encode(buf.getvalue()).decode("ascii"), "image/png"
 
 
+def _cell_label_kwargs(kernel: Any, index: Any) -> dict[str, str]:
+    """``{"cell_label": "N"}`` when ``kernel.execute`` accepts it, else ``{}``."""
+    if not isinstance(index, int) or isinstance(index, bool) or index < 1:
+        return {}
+    try:
+        params = inspect.signature(kernel.execute).parameters
+    except (TypeError, ValueError, AttributeError):
+        return {}
+    if "cell_label" in params or any(
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+    ):
+        return {"cell_label": str(index)}
+    return {}
+
+
+def _annotation_comments_text(annos: list) -> str:
+    """The user's own pinned comments, as the text of a pin-only message."""
+    lines = []
+    for item in annos or []:
+        if not item:
+            continue
+        body = str(item.get("body") or "").strip()
+        if body:
+            lines.append(f"[{item.get('number')}] {body}")
+    return "\n".join(lines)
+
+
+def _annotation_summaries(annos: list) -> list[dict[str, Any]]:
+    """What a stored user message records about the pins it carried."""
+    out: list[dict[str, Any]] = []
+    for item in annos or []:
+        if not item:
+            continue
+        out.append(
+            {
+                "annotation_id": item.get("annotation_id") or item.get("id"),
+                "number": item.get("number"),
+                "kind": str(item.get("kind") or "image"),
+                "artifact_id": item.get("artifact_id"),
+                "artifact_name": item.get("artifact_name") or "artifact",
+                "body": str(item.get("body") or "")[:2000],
+            }
+        )
+    return out
+
+
 def _format_annotations_block(annos: list) -> str:
     """Render pinned image annotations as a compact feedback block the agent can
     act on: which file, where on it (fraction + rough zone), and the comment.
@@ -21340,14 +22084,17 @@ def _format_annotations_block(annos: list) -> str:
     lines = [
         "【图像标注反馈】用户直接在生成的图像上用图钉标注了修改意见。"
         "本条消息随附了标注后的图像（红色圆圈=图钉位置，圈内数字=下列标注编号）——"
-        "请先看图、对照红圈确认要改的元素，再修改并重新出图：",
+        "请先看图、对照红圈确认每条标注指的是哪个元素。",
+        "标注若是提问（例如问某个点或某条线是什么），直接回答，不要修改或覆盖图像。",
+        "标注若是修改意见，再按下面的步骤改图：",
         "1) 先定位生成下述图像的代码——查看本会话此前的代码单元与工作区文件；"
         "若不确定，用 host.glob/host.grep 按文件名或绘图关键字（savefig/plt/matplotlib）搜索。"
         "自动截图名形如 figure_cellN_*.png，其中 N 是生成它的代码单元序号。",
         "2) 逐条应用标注意见。以随附图上的红圈为准定位对应的子图/柱子/标签/元素；"
         "文字里的百分比坐标 (x 向右, y 向下) 仅作辅助。",
-        "3) 重新运行绘图代码，覆盖写回同名图像文件（不要改文件名），确保每条改动在新图上可见；完成后简述改了什么。",
-        "需要修改的图像：",
+        "3) 重新运行绘图代码，写回同名图像文件（不要改文件名，旧版本会保留在版本历史里），"
+        "确保每条改动在新图上可见；完成后简述改了什么。",
+        "被标注的图像：",
     ]
     for (art_id, name), items in by_art.items():
         mm = re.search(r"figure_cell(\d+)_", str(name or ""))
@@ -21640,6 +22387,7 @@ class _ExampleSeedState:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._last_error: str | None = None
+        self._last_result: dict[str, int] | None = None
 
     def running(self) -> bool:
         with self._lock:
@@ -21648,6 +22396,16 @@ class _ExampleSeedState:
     def last_error(self) -> str | None:
         with self._lock:
             return self._last_error
+
+    def last_result(self) -> dict[str, int] | None:
+        """How the last run in this daemon ended: ``{"cells", "failed"}``.
+
+        The home page said nothing when the example finished: its card simply
+        disappeared, whether all six cells ran or two crashed. ``None`` until
+        a run started here has finished (or when the example already existed).
+        """
+        with self._lock:
+            return dict(self._last_result) if self._last_result else None
 
     def start(self, cfg: Config, runner: "SessionRunner") -> bool:
         """Begin seeding on a background thread. False if one is already going.
@@ -21661,10 +22419,13 @@ class _ExampleSeedState:
             if self._thread is not None and self._thread.is_alive():
                 return False
             self._last_error = None
+            self._last_result = None
 
             def _run() -> None:
                 try:
-                    _seed_demo_session(cfg, runner)
+                    result = _seed_demo_session(cfg, runner)
+                    with self._lock:
+                        self._last_result = result if isinstance(result, dict) else None
                 except Exception as exc:  # noqa: BLE001 - reported, never raised
                     with self._lock:
                         self._last_error = f"{type(exc).__name__}: {exc}"
@@ -21863,8 +22624,9 @@ def _seed_datapro_connector(cfg: Config) -> None:
 # records + sequences come from the live UniProt REST API (with a small bundle of
 # REAL reference sequences as an offline fallback — real public data, never
 # fabricated), the biochemistry / hydropathy / pairwise-identity numbers are
-# deterministic computations over those real sequences (Biopython + the
-# Kyte-Doolittle scale), and the 3D structure is a real coordinate download from
+# deterministic computations over those real sequences (Biopython when
+# installed, otherwise the same formulas in plain Python, + the Kyte-Doolittle
+# scale), and the 3D structure is a real coordinate download from
 # the RCSB PDB API. Nothing uses np.random, hardcoded stand-ins, or a placeholder
 # structure — consistent with the app's no-fabrication policy. A failed live
 # fetch degrades to the bundled real data or an honest "unavailable" note, never
@@ -21970,25 +22732,101 @@ print('rendered hydropathy profile for %s (%d residues) via %s'
       % (ref['accession'], len(_seq), api_source))
 """
 _DEMO_CSV = r"""
-# Cell 4/6 -- REAL per-protein biochemistry (Biopython ProtParam) + REAL pairwise
-# %% identity to the reference (global alignment). Every number is computed from
-# the real sequences above; nothing is randomised or hardcoded.
+# Cell 4/6 -- REAL per-protein biochemistry + REAL pairwise % identity to the
+# reference (global alignment). Every number is computed from the real
+# sequences above; nothing is randomised or hardcoded. Biopython is used when it
+# is installed; otherwise the same standard formulas run in plain Python.
 import pandas as pd
-from Bio.SeqUtils.ProtParam import ProteinAnalysis
 try:
-    from Bio import Align
-    from Bio.Align import substitution_matrices
-    _al = Align.PairwiseAligner()
-    _al.mode = 'global'
-    _al.open_gap_score = -10
-    _al.extend_gap_score = -0.5
-    _al.substitution_matrix = substitution_matrices.load('BLOSUM62')
-except Exception:
-    _al = None
+    from Bio.SeqUtils.ProtParam import ProteinAnalysis
+except ImportError:
+    ProteinAnalysis = None
+_al = None
+if ProteinAnalysis is not None:
+    try:
+        from Bio import Align
+        from Bio.Align import substitution_matrices
+        _al = Align.PairwiseAligner()
+        _al.mode = 'global'
+        _al.open_gap_score = -10
+        _al.extend_gap_score = -0.5
+        _al.substitution_matrix = substitution_matrices.load('BLOSUM62')
+    except Exception:
+        _al = None
+
+# Plain-Python fallback: average amino-acid masses, the Bjellqvist pK set and
+# the Kyte-Doolittle scale (the tables Biopython ProtParam uses), and a
+# Needleman-Wunsch global alignment (match +1, mismatch -1, gap -2).
+_MASS = {'A': 89.0932, 'R': 174.201, 'N': 132.1179, 'D': 133.1027,
+         'C': 121.1582, 'Q': 146.1445, 'E': 147.1293, 'G': 75.0666,
+         'H': 155.1546, 'I': 131.1729, 'L': 131.1729, 'K': 146.1876,
+         'M': 149.2113, 'F': 165.1891, 'P': 115.1305, 'S': 105.0926,
+         'T': 119.1192, 'W': 204.2252, 'Y': 181.1885, 'V': 117.1463}
+_KD4 = {'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5,
+        'E': -3.5, 'G': -0.4, 'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9,
+        'M': 1.9, 'F': 2.8, 'P': -1.6, 'S': -0.8, 'T': -0.7, 'W': -0.9,
+        'Y': -1.3, 'V': 4.2}
+
+def _isoelectric_point(s):
+    _nt = {'A': 7.59, 'M': 7.0, 'S': 6.93, 'P': 8.36, 'T': 6.82,
+           'V': 7.44, 'E': 7.7}.get(s[0], 7.5)
+    _ct = {'D': 4.55, 'E': 4.75}.get(s[-1], 3.55)
+    _pos = [(1, _nt)] + [(s.count(a), k) for a, k in
+                         (('K', 10.0), ('R', 12.0), ('H', 5.98))]
+    _neg = [(1, _ct)] + [(s.count(a), k) for a, k in
+                         (('D', 4.05), ('E', 4.45), ('C', 9.0), ('Y', 10.0))]
+    def _charge(ph):
+        return (sum(n / (10 ** (ph - k) + 1) for n, k in _pos)
+                - sum(n / (10 ** (k - ph) + 1) for n, k in _neg))
+    _lo, _hi, _ph = 4.05, 12.0, 7.775
+    while _hi - _lo > 0.0001:
+        if _charge(_ph) > 0:
+            _lo = _ph
+        else:
+            _hi = _ph
+        _ph = (_lo + _hi) / 2
+    return _ph
+
+def _nw_identity(a, b):
+    _prev = [-2 * j for j in range(len(b) + 1)]
+    _back = [[2] * (len(b) + 1)]
+    for i in range(1, len(a) + 1):
+        _cur, _ptr = [-2 * i], [1]
+        for j in range(1, len(b) + 1):
+            _d = _prev[j - 1] + (1 if a[i - 1] == b[j - 1] else -1)
+            _u, _l = _prev[j] - 2, _cur[j - 1] - 2
+            _best = max(_d, _u, _l)
+            _cur.append(_best)
+            _ptr.append(0 if _best == _d else (1 if _best == _u else 2))
+        _back.append(_ptr)
+        _prev = _cur
+    i, j, _same, _cols = len(a), len(b), 0, 0
+    while i > 0 and j > 0:
+        _p = _back[i][j]
+        if _p == 0:
+            _cols += 1
+            _same += a[i - 1] == b[j - 1]
+            i, j = i - 1, j - 1
+        elif _p == 1:
+            i -= 1
+        else:
+            j -= 1
+    return round(100.0 * _same / _cols, 1) if _cols else None
+
+if ProteinAnalysis is not None:
+    biochem_source = 'Biopython ProtParam + PairwiseAligner (BLOSUM62)'
+else:
+    biochem_source = ('built-in formulas (Biopython is not installed): average '
+                      'residue masses, Bjellqvist pK, Kyte-Doolittle GRAVY, '
+                      'Needleman-Wunsch identity; instability index needs '
+                      'Biopython')
+print('biochemistry via', biochem_source)
 
 def _pct_identity(a, b):
     if a == b:
         return 100.0
+    if ProteinAnalysis is None:
+        return _nw_identity(a, b)
     if _al is None:
         return None
     try:
@@ -22008,13 +22846,21 @@ for e in entries:
     _seq = e['sequence']
     _row = {'accession': e['accession'], 'organism': e['organism'],
             'length': len(_seq)}
-    if set(_seq) <= _STD:
+    if set(_seq) <= _STD and ProteinAnalysis is not None:
         _pa = ProteinAnalysis(_seq)
         _row.update({'molecular_weight_da': round(_pa.molecular_weight(), 1),
                      'isoelectric_point': round(_pa.isoelectric_point(), 2),
                      'gravy': round(_pa.gravy(), 3),
                      'aromaticity': round(_pa.aromaticity(), 3),
                      'instability_index': round(_pa.instability_index(), 1)})
+    elif set(_seq) <= _STD:
+        _row.update({
+            'molecular_weight_da': round(
+                sum(_MASS[c] for c in _seq) - (len(_seq) - 1) * 18.0153, 1),
+            'isoelectric_point': round(_isoelectric_point(_seq), 2),
+            'gravy': round(sum(_KD4[c] for c in _seq) / len(_seq), 3),
+            'aromaticity': round(sum(_seq.count(c) for c in 'FWY') / len(_seq), 3),
+            'instability_index': None})
     else:
         _row.update({'molecular_weight_da': None, 'isoelectric_point': None,
                      'gravy': None, 'aromaticity': None, 'instability_index': None})
@@ -22090,13 +22936,13 @@ _report = (
     '- GRAVY (mean Kyte-Doolittle hydropathy): ' + _gv + '\n\n'
     '## What was computed\n'
     '- Per-protein biochemistry (length, MW, pI, GRAVY, aromaticity,\n'
-    '  instability) via Biopython ProtParam -> family_biochemistry.csv\n'
-    '- Pairwise % identity to the reference via a real global alignment (BLOSUM62)\n'
+    '  instability) -> family_biochemistry.csv\n'
+    '- Pairwise % identity to the reference via a real global alignment\n'
     '- A Kyte-Doolittle hydropathy profile of the reference (see the figure)\n\n'
     '## Provenance\n'
-    'UniProt REST API, RCSB PDB API, Biopython (ProtParam / PairwiseAligner),\n'
-    'and the Kyte-Doolittle hydropathy scale. Re-running these cells reproduces\n'
-    'every value.\n'
+    'UniProt REST API, RCSB PDB API, the Kyte-Doolittle hydropathy scale, and\n'
+    'for the biochemistry and identity: ' + str(biochem_source) + '.\n'
+    'Re-running these cells reproduces every value.\n'
 )
 open('nif3_report.md', 'w').write(_report)
 print('wrote nif3_report.md')
@@ -22121,13 +22967,16 @@ def _retire_demo_frame(runner: "SessionRunner", frame_id: str) -> None:
         traceback.print_exc()
 
 
-def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
+def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] | None:
     """Populate the example project with one real, fully-executed session that
     calls live external APIs (UniProt REST, RCSB PDB) and the bundled MCP
     connector, so the UI (thumbnails, 3Dmol viewer, notebook, provenance) has
     working, API-driven data on boot. Idempotent: keyed on the session name, so
     an existing install picks up the upgraded example on the next restart, and
-    any demo session from an older version is retired in the process."""
+    any demo session from an older version is retired in the process.
+
+    Returns ``{"cells": N, "failed": M}`` for a run it performed, ``None`` when
+    the example was already there."""
     store = get_store(cfg.db_path)
     roots = store.browse_frames(project_id="proj_example", roots_only=True, limit=200)
     # Retire superseded demo sessions (exact legacy names only) so the upgraded
@@ -22136,7 +22985,7 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         if (r.get("name") or "") in _LEGACY_DEMO_NAMES:
             _retire_demo_frame(runner, r.get("frame_id") or r.get("id"))
     if any((r.get("name") or "") == _DEMO_SESSION_NAME for r in roots):
-        return  # current demo already present
+        return None  # current demo already present
     fid = store.new_frame(
         kind="turn", project_id="proj_example", status="done", model=cfg.llm.model
     )
@@ -22163,7 +23012,7 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         name=_DEMO_SESSION_NAME,
         task_summary="Pull NIF3/DUF34 family records + sequences from the UniProt "
         "REST API, compute real per-protein biochemistry and pairwise "
-        "identity (Biopython) with a Kyte-Doolittle hydropathy "
+        "identity with a Kyte-Doolittle hydropathy "
         "profile, fetch a representative structure from the RCSB PDB "
         "API, and write a reproducible report — every value real.",
     )
@@ -22212,7 +23061,7 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
             {
                 "filename": "family_biochemistry.csv",
                 "line": "- **family_biochemistry.csv** — per-protein length "
-                "/ MW / pI / GRAVY / % identity (Biopython)\n",
+                "/ MW / pI / GRAVY / % identity\n",
                 "label": "biochemistry table",
             },
         ),
@@ -22267,7 +23116,7 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
     # Describe only the materials that were actually produced. Every
     # deliverable is conditional in practice — the structure needs a live
     # RCSB download, the figure/table/report need optional science libraries
-    # the lightweight install does not ship (matplotlib, Biopython, pandas) —
+    # the lightweight install does not ship (matplotlib, pandas) —
     # so every line branches on the artifact store rather than over-claiming.
     _produced = {
         a.get("filename") for a in store.list_artifacts({"root_frame_id": fid})
@@ -22293,12 +23142,33 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
             )
     if cell_failures:
         # An honest header beats the reassuring one: some cells crashed, so
-        # "every value is real" must not be claimed on their behalf.
+        # "every value is real" must not be claimed on their behalf. A missing
+        # module is the common cause, so name it and say how to install it
+        # rather than leaving the reader to guess.
+        missing_modules = sorted(
+            {
+                match.group(1).split(".")[0]
+                for failure in cell_failures
+                for match in [re.search(r"No module named '([^']+)'", failure)]
+                if match
+            }
+        )
+        install_hint = ""
+        if missing_modules:
+            install_hint = (
+                "\nMissing Python module(s): "
+                + ", ".join(f"`{name}`" for name in missing_modules)
+                + ". The example uses the science extra (numpy, pandas, "
+                "matplotlib). From a source checkout run `uv sync --extra "
+                "science` (or `./setup.sh`); for a pip install run `pip install "
+                '"openai4s[science]"`. Restart OpenAI4S afterwards so new '
+                "kernels pick them up.\n"
+            )
         _header = (
             f"{len(cell_failures)} of {len(demo_plan)} example cells did not "
-            "complete on this install (commonly a missing optional science "
-            "dependency such as Biopython or pandas):\n"
+            "complete on this install:\n"
             + "".join(f"- {failure}\n" for failure in cell_failures)
+            + install_hint
             + "\nEvery value that **was** produced is computed from real data "
             "(no simulated or placeholder values), and the materials below "
             "list only what was actually produced."
@@ -22325,3 +23195,4 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         "**Files** panel to view each material.",
     )
     store.update_frame(fid, status="done")
+    return {"cells": len(demo_plan), "failed": len(cell_failures)}

@@ -190,6 +190,28 @@
 #cust .skill-form {
   gap: 6px;
 }
+/* Skills tab: the search box over 612 skills, and a skill's network limit. */
+#cust .skill-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 8px;
+}
+#cust .skill-search-count {
+  padding: 4px 0 8px;
+}
+#cust .skill-net {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-400);
+}
+#cust .skill-net > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--warn-text, #8a5b08);
+}
+#cust .skill-net .ds {
+  overflow-wrap: anywhere;
+}
 #cust .cust-input {
   min-height: 40px;
   padding: 8px 14px;

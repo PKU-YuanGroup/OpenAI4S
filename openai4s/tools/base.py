@@ -279,6 +279,15 @@ class Tool:
             self.parameters, unknown_properties=self.unknown_properties
         )
 
+    def provider_input_schema(self) -> dict:
+        """The schema declared to the model; by default the enforced one.
+
+        A tool whose usable values depend on configuration narrows this
+        projection so the model is offered only what will work. The Host keeps
+        validating against ``input_schema``.
+        """
+        return self.input_schema()
+
     def validation_error(self, arguments: Any) -> str | None:
         """Return a canonical detail string, or None when arguments are valid."""
         issues = validate_json_schema(
@@ -311,7 +320,7 @@ class Tool:
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.input_schema(),
+                "parameters": self.provider_input_schema(),
                 "strict": self.supports_provider_strict(),
             },
         }

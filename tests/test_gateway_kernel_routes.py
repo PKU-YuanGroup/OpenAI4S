@@ -143,8 +143,16 @@ def test_status_combines_the_turn_and_the_kernel(tmp_path):
         # completed, cancelled and failed alike, and a client reopening a
         # session needs to know which before it can restore anything.
         "status": "ready",
+        # A turn blocked on an approval request reads `processing` like any
+        # running turn; this is what tells the two apart.
+        "awaiting_approval": False,
         "kernel": {"state": "busy"},
     }
+
+    runner.approval_waiting = lambda f: f == fid
+    code, payload = _call(handler, "GET", f"/frames/{fid}/status")
+    assert code == 200
+    assert payload["awaiting_approval"] is True
 
 
 @pytest.mark.stubbed_backend
@@ -246,6 +254,54 @@ def test_selecting_an_environment_passes_the_requested_name_through(tmp_path):
 
 
 @pytest.mark.stubbed_backend
+def test_choosing_an_environment_is_not_gated_by_the_manual_cells_switch(tmp_path):
+    """ENV-6: the session options menu offers the runtime environment whether
+    or not manual Notebook cells are on; choosing one runs no code."""
+    runner, handler, fid = _setup(tmp_path)
+    assert runner.cfg.notebook_repl is False
+    seen = []
+    runner.set_env = lambda frame, name, project: seen.append(name) or {"ok": True}
+
+    code, payload = _call(
+        handler, "POST", f"/frames/{fid}/kernel/env", body={"env": "struct"}
+    )
+
+    assert (code, payload) == (200, {"ok": True})
+    assert seen == ["struct"]
+
+
+def test_an_r_environment_retargets_the_r_channel_without_starting_it(
+    tmp_path, monkeypatch
+):
+    """ENV-6: picking an R environment used to be refused outright."""
+    from openai4s.kernel import environments as envmod
+
+    runner, _handler, fid = _setup(tmp_path)
+    r_only = SimpleNamespace(
+        name="r-lab", language="r", interpreter=None, rscript="/opt/r/bin/Rscript"
+    )
+    real = envmod.get_environment
+    monkeypatch.setattr(
+        envmod,
+        "get_environment",
+        lambda name: r_only if name == "r-lab" else real(name),
+    )
+
+    result = runner.set_env(fid, "r-lab", "proj-kernel")
+
+    assert result["ok"] is True and result["language"] == "r"
+    assert result["env"] == "r-lab"
+    assert runner.list_environments(fid)["current_r"] == "r-lab"
+    assert runner.kernel_status(fid)["alive"] is False  # nothing was started
+
+    no_runtime = SimpleNamespace(
+        name="empty", language="r", interpreter=None, rscript=None
+    )
+    monkeypatch.setattr(envmod, "get_environment", lambda name: no_runtime)
+    assert "neither a Python nor an R" in runner.set_env(fid, "empty", "p")["error"]
+
+
+@pytest.mark.stubbed_backend
 def test_the_environment_name_may_arrive_under_either_key(tmp_path):
     """`b.get("env") or b.get("name")`. Two spellings, one route -- a detail
     that is invisible unless someone writes it down before moving it."""
@@ -260,14 +316,12 @@ def test_the_environment_name_may_arrive_under_either_key(tmp_path):
     assert seen == ["struct", "r", ""]
 
 
-@pytest.mark.parametrize(
-    "action", ["execute", "env", "restart", "stop", "start", "interrupt"]
-)
-def test_the_six_repl_routes_stay_gated_when_the_notebook_is_read_only(
+@pytest.mark.parametrize("action", ["execute", "restart", "stop", "start", "interrupt"])
+def test_the_five_repl_routes_stay_gated_when_the_notebook_is_read_only(
     tmp_path, action
 ):
     """Already covered elsewhere, repeated here because the extraction moves
-    all six gates at once and the group needs its own regression."""
+    the gates at once and the group needs its own regression."""
     runner, handler, fid = _setup(tmp_path)
     assert runner.cfg.notebook_repl is False
 
@@ -275,6 +329,69 @@ def test_the_six_repl_routes_stay_gated_when_the_notebook_is_read_only(
 
     assert code == 403
     assert "disabled" in payload["error"]
+
+
+def test_the_settings_switch_turns_manual_cells_on_and_off(tmp_path):
+    """NB-5: manual Notebook cells were reachable only through an env var."""
+    runner, handler, fid = _setup(tmp_path)
+
+    code, payload = _call(handler, "GET", "/notebook/settings")
+    assert (code, payload) == (
+        200,
+        {"repl_enabled": False, "env_forced": False, "can_change": True},
+    )
+    assert _call(handler, "POST", f"/frames/{fid}/kernel/stop")[0] == 403
+
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": True}
+    )
+    assert code == 200 and payload["repl_enabled"] is True
+    assert runner.kernel_status(fid)["repl_enabled"] is True
+    assert _call(handler, "POST", f"/frames/{fid}/kernel/stop")[0] == 200
+
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": False}
+    )
+    assert payload["repl_enabled"] is False
+    code, payload = _call(handler, "POST", f"/frames/{fid}/kernel/stop")
+    assert code == 403
+    assert "Settings" in payload["error"]
+
+
+def test_the_switch_takes_a_boolean_and_cannot_turn_off_the_environment(tmp_path):
+    from openai4s.server.errors import GatewayError
+
+    _runner, handler, _fid = _setup(tmp_path, notebook_repl=True)
+    with pytest.raises(GatewayError) as refused:
+        _call(handler, "PUT", "/notebook/settings", body={"repl_enabled": "false"})
+    assert refused.value.code == 400
+
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": False}
+    )
+    assert (code, payload) == (
+        200,
+        {"repl_enabled": True, "env_forced": True, "can_change": False},
+    )
+
+
+def test_members_read_the_switch_but_only_an_admin_changes_it(tmp_path):
+    from openai4s.server.errors import GatewayError
+
+    _runner, handler, _fid = _setup(tmp_path)
+    handler._team_identity = SimpleNamespace(is_admin=False, user_id="member")
+    code, payload = _call(handler, "GET", "/notebook/settings")
+    assert code == 200 and payload["can_change"] is False
+    with pytest.raises(GatewayError) as refused:
+        _call(handler, "PUT", "/notebook/settings", body={"repl_enabled": True})
+    assert refused.value.code == 403
+    assert refused.value.error_code == "admin_only"
+
+    handler._team_identity = SimpleNamespace(is_admin=True, user_id="admin")
+    code, payload = _call(
+        handler, "PUT", "/notebook/settings", body={"repl_enabled": True}
+    )
+    assert code == 200 and payload["repl_enabled"] is True
 
 
 @pytest.mark.stubbed_backend
@@ -543,3 +660,120 @@ def test_the_quarantine_guard_still_covers_the_mutating_routes(spec, tmp_path):
     with pytest.raises(gateway_mod.GatewayError) as raised:
         _call(handler, spec.method, path, body={"code": "1"})
     assert raised.value.code == 423, f"{spec.name} is not write-protected"
+
+
+def test_a_session_cell_traceback_uses_the_cell_number_the_notebook_shows(tmp_path):
+    """NB-9: through the real runner and kernel, a failed cell's traceback
+    names `<cell N>` with N the cell_index the Notebook and the chat card show,
+    not the worker's private counter."""
+    runner, _handler, fid = _setup(tmp_path, notebook_repl=True)
+    try:
+        runner.run_repl(fid, "proj-kernel", "a = 1")
+        outcome = runner.run_repl(fid, "proj-kernel", "b = 2\n1 / 0")
+        cell = outcome["cell"]
+        index = cell.get("cell_index")
+        assert isinstance(index, int) and index >= 2
+        assert f'File "<cell {index}>", line 2, in <module>' in cell["error"]
+    finally:
+        runner.close()
+
+
+def test_the_cell_number_is_only_offered_to_kernels_that_take_it():
+    class _Takes:
+        def execute(
+            self, code, origin="agent", on_chunk=None, *, cell_id=None, cell_label=None
+        ):
+            return {}
+
+    class _Fake:
+        def execute(self, code, origin="agent", on_chunk=None, *, cell_id=None):
+            return {}
+
+    assert gateway_mod._cell_label_kwargs(_Takes(), 7) == {"cell_label": "7"}
+    assert gateway_mod._cell_label_kwargs(_Fake(), 7) == {}
+    assert gateway_mod._cell_label_kwargs(_Takes(), None) == {}
+    assert gateway_mod._cell_label_kwargs(_Takes(), True) == {}
+
+
+# --------------------------------------------------------------------------
+# a session's background cells: seen and stoppable (SEC-8)
+# --------------------------------------------------------------------------
+
+
+def test_a_manual_cells_background_launch_is_the_users_whatever_origin_it_claims(
+    tmp_path,
+):
+    """SEC-8 wiring, through the real runner and kernel: the gateway binds the
+    Cell's origin host-side around `kernel.execute`, so a manual Notebook
+    cell's `host.exec_background` is the user's even when it passes
+    `origin="agent"`, and an agent turn's Stop leaves it alone. Without the
+    binding the launch is "unknown" and would be tied to the turn."""
+    runner, _handler, fid = _setup(tmp_path, notebook_repl=True)
+    runner.store.set_permission_rule(
+        scope="global", tool="exec_background", pattern="*", decision="allow"
+    )
+    try:
+        # The session dispatcher exists once the kernel has started.
+        runner.run_repl(fid, "proj-kernel", "warm = 1")
+        st = runner._state(fid, "proj-kernel")
+        st.dispatcher.set_task_evidence_scope(turn_id="turn-1")
+        outcome = runner.run_repl(
+            fid,
+            "proj-kernel",
+            'job = host.exec_background("import time\\ntime.sleep(30)", origin="agent")',
+        )
+        assert not outcome["cell"].get("error"), outcome["cell"].get("error")
+        cells = runner.background_cells(fid)
+        assert len(cells) == 1
+        assert cells[0]["launched_by"] == "user"
+        assert st.dispatcher.stop_turn_background() == []
+        runner.stop_background_cell(fid, cells[0]["exec_id"])
+    finally:
+        runner.close()
+
+
+def test_a_session_with_no_background_cells_lists_none(tmp_path):
+    """Real response, no stub: a session that never launched one."""
+    _runner, handler, fid = _setup(tmp_path)
+
+    code, payload = _call(handler, "GET", f"/frames/{fid}/background")
+
+    assert code == 200
+    assert payload == {"frame_id": fid, "cells": []}
+
+
+@pytest.mark.stubbed_backend
+def test_the_background_routes_list_and_stop_through_the_runner(tmp_path):
+    runner, handler, fid = _setup(tmp_path)
+    cell = {
+        "exec_id": "exec-abc123",
+        "status": "running",
+        "started_at": 1,
+        "ended_at": None,
+        "interrupted": False,
+        "stop_requested": False,
+        "launched_by": "agent",
+        "code_preview": "for i in range(600):",
+        "output_tail": "tick 3",
+    }
+    stops: list[tuple] = []
+    runner.background_cells = lambda f: [cell] if f == fid else []
+
+    def stop(f, exec_id):
+        stops.append((f, exec_id))
+        if exec_id == "exec-abc123":
+            return {"ok": True, "exec_id": exec_id, "status": "stopping"}
+        return {"ok": False, "exec_id": exec_id, "reason": "no such background cell"}
+
+    runner.stop_background_cell = stop
+
+    code, payload = _call(handler, "GET", f"/frames/{fid}/background")
+    assert code == 200 and payload == {"frame_id": fid, "cells": [cell]}
+
+    code, payload = _call(handler, "POST", f"/frames/{fid}/background/exec-abc123/stop")
+    assert code == 200 and payload["status"] == "stopping"
+    code, payload = _call(handler, "POST", f"/frames/{fid}/background/exec-gone/stop")
+    assert code == 409 and payload["ok"] is False
+    code, payload = _call(handler, "POST", f"/frames/{fid}/background/-bad/stop")
+    assert code == 400
+    assert stops == [(fid, "exec-abc123"), (fid, "exec-gone")]

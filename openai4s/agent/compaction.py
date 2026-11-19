@@ -889,6 +889,75 @@ def _write_workspace_content_blob(
     return rel
 
 
+def _workspace_text_ref(digest: str) -> str:
+    """The plain-text sibling of a workspace blob, for line-window reads."""
+    return _workspace_context_ref(digest)[: -len(".json")] + ".txt"
+
+
+def _write_exclusive_text_at(dir_fd: int | None, name: str, data: bytes) -> bool:
+    """Write ``data`` at ``name`` atomically; True when ``name`` now holds it.
+
+    The workspace is agent-writable, so a file already at the name is never
+    replaced: it is accepted only if it is exactly these bytes, otherwise the
+    caller names no text copy at all.
+    """
+    try:
+        status = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(status.st_mode) or status.st_size != len(data):
+            return False
+        return _read_bounded(name, len(data) + 1, dir_fd=dir_fd) == data
+    base, leaf = os.path.split(name)
+    tmp = os.path.join(base, f".{leaf}.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+    fd = os.open(
+        tmp,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_CLOEXEC,
+        0o644,
+        dir_fd=dir_fd,
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if dir_fd is None:
+            os.replace(tmp, name)
+        else:
+            os.rename(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp, dir_fd=dir_fd)
+        raise
+    return True
+
+
+def _write_workspace_text_copy(
+    workspace: Path | str, digest: str, content: Any
+) -> str | None:
+    """Best-effort plain-text copy a cell or ``read_text_file`` can page through.
+
+    The JSON blob holds the text as one escaped string, so the only way to
+    read part of a long skill document was ``json.load(...)['content'][n:m]``
+    in Cell after Cell. The same text, with its real line breaks, can be read
+    a window of lines at a time.
+    """
+    if not _DIR_FD_OK:
+        return None
+    text = content if isinstance(content, str) else _json_text(content)
+    rel = PurePosixPath(_workspace_text_ref(digest))
+    try:
+        root = Path(workspace).expanduser().resolve()
+        _confine(root, str(rel), "kernel workspace")
+        with _open_below(root, rel.parent) as dir_fd:
+            if not _write_exclusive_text_at(dir_fd, rel.name, text.encode("utf-8")):
+                return None
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return str(rel)
+
+
 def _preview(content: Any, limit: int) -> str:
     text = content if isinstance(content, str) else _json_text(content)
     normalized = " ".join(text.split())
@@ -897,18 +966,30 @@ def _preview(content: Any, limit: int) -> str:
     return normalized[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _read_back_hint(workspace_ref: str | None) -> str | None:
+def _read_back_hint(
+    workspace_ref: str | None, text_ref: str | None = None
+) -> str | None:
     """How a Python or R cell opens the workspace copy.
 
     Anchored on ``OPENAI4S_WORKSPACE``, which is exported into every Python
     and R worker's environment: the hint survives a cell that changed
     directory, works in a kernel that has no ``host`` object (R), and never
-    prints an absolute path or ``$HOME`` into the context.
+    prints an absolute path or ``$HOME`` into the context. With a text copy,
+    the first way offered is a window of lines through the ordinary file
+    tools, so a long document is read a page at a time.
     """
     if workspace_ref is None:
         return None
+    paged = (
+        f"page through it with read_text_file(path={text_ref!r}, offset=0, "
+        "limit=200), moving offset (the 0-based first line) on by limit -- in a "
+        f"Python cell host.read_file({text_ref!r}, offset=0, limit=200)"
+        "['content']; or "
+        if text_ref
+        else ""
+    )
     return (
-        f"read the full text: JSON at {workspace_ref!r} under the kernel "
+        f"read the full text: {paged}JSON at {workspace_ref!r} under the kernel "
         "workspace ($OPENAI4S_WORKSPACE), key 'content' -- Python: import json, "
         "os; json.load(open(os.path.join(os.environ['OPENAI4S_WORKSPACE'], "
         f"{workspace_ref!r})))['content']; R: jsonlite::fromJSON(file.path("
@@ -982,6 +1063,7 @@ def externalize_large_outputs(
         # losing the copy must not lose the compaction (the archive or the
         # Artifact still holds the bytes).
         workspace_ref: str | None = None
+        text_ref: str | None = None
         if workspace_root is not None:
             try:
                 workspace_ref = _write_workspace_content_blob(
@@ -989,7 +1071,9 @@ def externalize_large_outputs(
                 )
             except (OSError, ValueError, RuntimeError):
                 workspace_ref = None
-        read_back = _read_back_hint(workspace_ref)
+            if workspace_ref is not None:
+                text_ref = _write_workspace_text_copy(workspace_root, digest, content)
+        read_back = _read_back_hint(workspace_ref, text_ref)
         if artifact_archiver is not None:
             archived = dict(
                 artifact_archiver(

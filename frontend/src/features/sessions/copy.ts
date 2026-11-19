@@ -29,6 +29,15 @@ export const projectFilesCopy = copyLookup({
     error: "Could not read this path: {0}",
     retry: "Retry",
     projectOpenFailed: "Could not open {0}. Your current conversation is still open.",
+    showHidden: "Show hidden folders",
+    outsideRoots: "Project folders must be inside your home folder (~), a temporary folder (/tmp or $TMPDIR; on macOS, /tmp is /private/tmp), a mounted volume (/Volumes on macOS; /media, /mnt or /run/media on Linux), or a folder listed in the OPENAI4S_PROJECT_ROOTS environment variable.",
+    folderNotFound: "This folder does not exist. Check the path.",
+    notAFolder: "Enter the full path of a folder (not a file) on this computer, starting with / or ~.",
+    credentialFolder: "Credential folders such as ~/.ssh or ~/.aws cannot be project folders.",
+    historyFolder: "A .openai4s history folder cannot be a project folder. Choose the folder that contains it.",
+    overlapsData: "A project folder cannot contain, or be inside, the OpenAI4S data folder.",
+    localOnly: "Project folders are available only when OpenAI4S runs on this computer for one user.",
+    accessDenied: "OpenAI4S cannot read this folder. On macOS, allow the app or terminal that runs OpenAI4S in System Settings → Privacy & Security → Files and Folders.",
   },
   zh: {
     folder: "项目文件夹（可选）",
@@ -56,6 +65,15 @@ export const projectFilesCopy = copyLookup({
     error: "无法读取此路径：{0}",
     retry: "重试",
     projectOpenFailed: "无法打开 {0}，已保留当前会话。",
+    showHidden: "显示隐藏文件夹",
+    outsideRoots: "项目文件夹须位于主目录（~）、临时目录（/tmp 或 $TMPDIR；macOS 上的 /tmp 即 /private/tmp）、外接卷（macOS 为 /Volumes；Linux 为 /media、/mnt 或 /run/media），或环境变量 OPENAI4S_PROJECT_ROOTS 列出的目录之内。",
+    folderNotFound: "找不到这个文件夹，请检查路径。",
+    notAFolder: "请填写此电脑上某个文件夹（不是文件）的完整路径，以 / 或 ~ 开头。",
+    credentialFolder: "凭据目录（如 ~/.ssh、~/.aws）不能作为项目文件夹。",
+    historyFolder: "不能把 .openai4s 历史目录设为项目文件夹，请选择包含它的文件夹。",
+    overlapsData: "项目文件夹不能包含 OpenAI4S 数据目录，也不能位于其中。",
+    localOnly: "项目文件夹仅在 OpenAI4S 以本机单用户方式运行时可用。",
+    accessDenied: "OpenAI4S 无法读取这个文件夹。在 macOS 上，请在「系统设置 → 隐私与安全性 → 文件与文件夹」中允许运行 OpenAI4S 的应用或终端访问它。",
   },
 });
 
@@ -104,6 +122,50 @@ export const projectHistoryCopy = copyLookup({
   },
 });
 
+/** Home dashboard strings the generated dictionaries do not carry (NAV-4). */
+export const dashCopy = copyLookup({
+  en: {
+    "dash.example.runningNote": "The example analysis is running; it takes a minute or two. Open the session to watch it.",
+    "dash.example.done": "The example analysis finished: all {0} cells ran without an error.",
+    "dash.example.doneFailed": "The example analysis ended: {0} of {1} cells did not complete. The session says why.",
+    "dash.example.ended": "The example analysis ended. Open the session to see the results.",
+    "dash.example.open": "Open the example session",
+    "dash.example.dismiss": "Dismiss",
+    "dash.sessions.allAbove": "Running sessions and the ones waiting for you are listed above.",
+    "dash.example.project": "Example project",
+    "dash.example.tag": "Example",
+  },
+  zh: {
+    "dash.example.runningNote": "示例分析正在运行，大约需要一两分钟。可以打开会话看它运行。",
+    "dash.example.done": "示例分析已完成：{0} 个单元都运行完毕，没有出错。",
+    "dash.example.doneFailed": "示例分析已结束：{1} 个单元中有 {0} 个没有完成，会话里写明了原因。",
+    "dash.example.ended": "示例分析已结束，打开会话查看结果。",
+    "dash.example.open": "打开示例会话",
+    "dash.example.dismiss": "知道了",
+    "dash.sessions.allAbove": "正在运行和等你处理的会话显示在上方。",
+    "dash.example.project": "示例项目",
+    "dash.example.tag": "示例",
+  },
+});
+
+/** The project the daemon seeds on first boot, under the name it seeds it with. */
+const SEEDED_EXAMPLE = { id: "proj_example", name: "Example project" };
+
+/**
+ * A project's name as shown. The seeded example project is stored as
+ * "Example project" (I18N-1: English in a Chinese UI); while it still has that
+ * name it is shown in the UI language. A renamed project shows its own name.
+ */
+export function displayProjectName(
+  project: { project_id?: string; id?: string; name?: string } | null | undefined,
+): string {
+  if (!project) return "";
+  const name = project.name || "";
+  return (project.project_id || project.id) === SEEDED_EXAMPLE.id && name === SEEDED_EXAMPLE.name
+    ? dashCopy("dash.example.project")
+    : name;
+}
+
 /** Feature-owned copy; the frozen legacy dictionaries remain generated. */
 export function sessionCopy(key: "sessionsError" | "foldersError" | "retry"): string {
   const copy = LANG === "en" ? {
@@ -140,15 +202,35 @@ export function actionFailedCopy(detail: string): string {
 }
 
 /** Share dialog labels the generated dictionaries do not carry. */
-export function shareCopy(key: "linkLabel" | "updateDesc" | "revokeDesc"): string {
+export function shareCopy(
+  key:
+    | "linkLabel"
+    | "updateDesc"
+    | "revokeDesc"
+    | "setupIntro"
+    | "setupEnv"
+    | "setupRestart"
+    | "setupEnable"
+    | "setupDocs",
+): string {
   const copy = LANG === "en" ? {
     linkLabel: "Read-only link",
     updateDesc: "The link stays the same; its content becomes this session's latest state.",
     revokeDesc: "The link stops working immediately.",
+    setupIntro: "Sharing publishes a read-only snapshot through a relay server you run. No relay is configured yet, so this session cannot be shared. To set it up:",
+    setupEnv: "Set OPENAI4S_SHARE_RELAY_URL and OPENAI4S_SHARE_AUTH_TOKEN (and OPENAI4S_SHARE_BASE_DOMAIN) in the .env file in the OpenAI4S folder. The relay itself runs on a public host with “openai4s relay”.",
+    setupRestart: "Restart OpenAI4S.",
+    setupEnable: "Open this dialog again and click Enable sharing, or run “openai4s share enable”.",
+    setupDocs: "Full steps: docs/webshare.md in the OpenAI4S repository.",
   } : {
     linkLabel: "只读链接",
     updateDesc: "链接不变，内容换成当前会话的最新状态。",
     revokeDesc: "撤销后立即失效。",
+    setupIntro: "分享会通过你自己运行的中转服务器（relay）发布一份只读快照。目前还没有配置中转服务器，所以这个会话还不能分享。配置步骤：",
+    setupEnv: "在 OpenAI4S 文件夹的 .env 文件里设置 OPENAI4S_SHARE_RELAY_URL 和 OPENAI4S_SHARE_AUTH_TOKEN（以及 OPENAI4S_SHARE_BASE_DOMAIN）。中转服务器本身用「openai4s relay」部署在一台公网主机上。",
+    setupRestart: "重启 OpenAI4S。",
+    setupEnable: "再次打开这个对话框，点「启用分享」；或在终端运行「openai4s share enable」。",
+    setupDocs: "完整步骤见 OpenAI4S 仓库里的 docs/webshare.md。",
   };
   return copy[key];
 }

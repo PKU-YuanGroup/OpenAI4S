@@ -1,6 +1,10 @@
 /* Lab panel (OpenMHS simulated lab), a dock pane beside the Notebook.
    Uses the workbench tokens from style.css; series colours are the validated
    reference categorical slots 1-5, stepped separately for the dark surface. */
+/* NAV-6: the person hid the Lab tab (Settings -> General shows it again). */
+body.lab-tab-hidden [data-dock-tab="lab"] {
+  display: none;
+}
 .lab-root {
   --lab-s1: #2a78d6;
   --lab-s2: #eb6834;

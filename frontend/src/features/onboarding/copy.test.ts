@@ -37,10 +37,10 @@ describe("feature-local copy lookup", () => {
   });
 
   it("is what the onboarding and judgment copy use", () => {
-    expect(ot("onboarding.readiness.egress", "off")).toBe("egress：off");
+    expect(ot("onboarding.readiness.platform", "Linux")).toBe("系统：Linux");
     expect(judgmentT("judgment.testLatency", 12)).toBe("延迟：12 ms");
     i18n.lang = "en";
-    expect(ot("onboarding.readiness.egress", "off")).toBe("egress: off");
+    expect(ot("onboarding.readiness.platform", "Linux")).toBe("System: Linux");
     expect(judgmentT("judgment.testLatency", 12)).toBe("latency: 12 ms");
     i18n.dict = { "judgment.testLatency": "{0}ms" };
     expect(judgmentT("judgment.testLatency", 12)).toBe("12ms");

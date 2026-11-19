@@ -1,5 +1,7 @@
 import { useState } from "preact/hooks";
 import { t } from "../../i18n";
+import { copyLookup } from "../../i18n/copy";
+import { rankSkillItems, skillToAcItem, type AcItem } from "../../features/autocomplete/rank";
 import { api, apiErrorText } from "../../features/customize/api";
 import { closeCust, refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
@@ -18,16 +20,64 @@ import { Empty, Hdr, IconGhost, Pill, Toggle } from "./ui";
 
 type Skill = Record<string, unknown>;
 
+/** Search and network-limit strings the generated dictionaries do not carry. */
+const st = copyLookup({
+  zh: {
+    "skills.search": "搜索技能：名称、说明里的词或中文关键词",
+    "skills.searchCount": "{0} 个匹配",
+    "skills.searchNone": "没有匹配「{0}」的技能",
+    "skills.net": "限定联网 · {0} 个域名",
+    "skills.netTip": "加载这个技能后，本会话的联网请求只能访问它声明的这些域名：",
+  },
+  en: {
+    "skills.search": "Search skills: name, a word from the description, or a Chinese keyword",
+    "skills.searchCount": "{0} matches",
+    "skills.searchNone": "No skill matches “{0}”",
+    "skills.net": "Limits network · {0} domains",
+    "skills.netTip": "Loading this skill limits the session's network requests to the domains it declares:",
+  },
+});
+
+/** The domains a `host_only` skill narrows a session to, or null. */
+export function skillNetworkDomains(s: Skill): string[] | null {
+  const caps = s.capabilities && typeof s.capabilities === "object" ? (s.capabilities as Skill) : {};
+  const network = caps.network && typeof caps.network === "object" ? (caps.network as Skill) : {};
+  if (network.mode !== "host_only") return null;
+  return asList(network.domains).map((domain) => String(domain));
+}
+
 function skillScope(s: Skill): "project" | "bundled" | "personal" {
   if (s.scope === "project") return "project";
   if (s.scope === "bundled") return "bundled";
   return "personal";
 }
 
+/**
+ * The catalog rows matching `query`, best first -- the `/` picker's ranking,
+ * so a skill found one way is found the other.
+ */
+export function searchSkills(skills: Skill[], query: string): Skill[] {
+  const byItem = new Map<AcItem, Skill>();
+  const items = skills.map((s) => {
+    const domains = skillNetworkDomains(s);
+    const item = skillToAcItem({
+      name: asString(s.name),
+      displayName: asString(s.displayName || s.name),
+      // The domains are searchable too: "pubmed" finds the skill that reaches it.
+      description: asString(s.description) + (domains ? " " + domains.join(" ") : ""),
+      collection: s.collection,
+    });
+    byItem.set(item, s);
+    return item;
+  });
+  return rankSkillItems(items, query).map((item) => byItem.get(item) as Skill);
+}
+
 export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
   const scope = skillScope(s);
   const name = asString(s.displayName || s.name);
   const note = skillReadinessNoteText(s);
+  const domains = skillNetworkDomains(s);
   const enabled = useOptimisticToggle(s.enabled !== false, (on) =>
     api(`/skills/catalog/${encodeURIComponent(asString(s.name))}/enabled`, {
       method: "PUT",
@@ -42,6 +92,14 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
         </div>
         <div class="ds">{asString(s.description)}</div>
         {note ? <div class="ds prof-warn">{note}</div> : null}
+        {domains ? (
+          <details class="skill-net">
+            <summary>{st("skills.net", domains.length)}</summary>
+            <div class="ds">
+              {st("skills.netTip")} {domains.join(", ")}
+            </div>
+          </details>
+        ) : null}
       </div>
       <IconGhost
         name="message-square"
@@ -103,6 +161,7 @@ export function SkillsTab() {
   const [err, setErr] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [openCollections, setOpenCollections] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState("");
   const pid = customizeProject.value;
 
   useTabRead(
@@ -129,6 +188,34 @@ export function SkillsTab() {
 
   if (err) return <div>{err}</div>;
 
+  const search = (
+    <input
+      class="cust-input skill-search"
+      type="search"
+      value={query}
+      placeholder={st("skills.search")}
+      aria-label={st("skills.search")}
+      onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+    />
+  );
+  const trimmed = query.trim();
+  if (trimmed) {
+    // A search reaches collection members too: 561 of the 612 skills are inside one.
+    const hits = searchSkills(skills, trimmed);
+    return (
+      <div>
+        <Hdr title={t("palette.group.skills")} sub={t("cust.skills.desc", skills.length)} />
+        {search}
+        <div class="cust-note skill-search-count" role="status">
+          {hits.length ? st("skills.searchCount", hits.length) : st("skills.searchNone", trimmed)}
+        </div>
+        {hits.map((s) => (
+          <SkillRow key={asString(s.name) + asString(s.scope)} s={s} pid={pid} />
+        ))}
+      </div>
+    );
+  }
+
   const singles: Skill[] = [];
   const collections = new Map<string, Skill[]>();
   skills.forEach((s) => {
@@ -145,6 +232,7 @@ export function SkillsTab() {
   return (
     <div>
       <Hdr title={t("palette.group.skills")} sub={t("cust.skills.desc", skills.length)} />
+      {search}
       <div class="cust-row">
         <div class="info">
           <div class="nm">{t("cust.skills.yourSkills")}</div>

@@ -159,6 +159,9 @@ def outcome_narration(
     observation = str(getattr(outcome, "observation", "") or "")
     error = _error_headline(observation)
     zh = language == "zh"
+    refusal = _host_refusal(error) if error else None
+    if refusal is not None:
+        return _refusal_narration(refusal, zh)
     if error:
         return (
             f"这个 Cell 执行失败：`{error}`。下一轮会依据真实 traceback 修复。"
@@ -168,29 +171,136 @@ def outcome_narration(
     if getattr(outcome, "completion", None) is not None:
         return ""
 
-    stdout_lines = _section_line_count(observation, "stdout:")
-    stderr_lines = _section_line_count(observation, "stderr:")
-    details: list[str] = []
+    # "No exception" is not "success": a cell whose subprocess exited 1 used
+    # to be narrated as "completed successfully", and the narration carried
+    # no output, so every result had to be dug out of the Notebook. Say the
+    # cell finished, show the first lines it printed, and flag stderr.
+    stdout = _section_body(observation, "stdout:")
+    # A long stdout reaches the model as a head, an omission marker and a
+    # tail; counting that preview's lines reported "160 lines" for 3001. Show
+    # only the head, and give the real size the marker states.
+    omitted = _OMITTED_MARKER.search(stdout)
+    total_chars = omitted.group(1) if omitted else None
+    if omitted:
+        stdout = stdout[: omitted.start()].rstrip()
+    stderr_lines = _line_count(_section_body(observation, "stderr:"))
+    stdout_lines = _line_count(stdout)
+    parts: list[str] = []
     if stdout_lines:
-        details.append(
-            f"stdout {stdout_lines} 行" if zh else f"{stdout_lines} stdout line(s)"
+        shown = min(stdout_lines, _PREVIEW_LINES)
+        if total_chars:
+            shown = -1  # never "the whole output" when the model saw a cut
+        if zh:
+            parts.append(
+                "Cell 已运行结束，输出："
+                if shown == stdout_lines
+                else "Cell 已运行结束，输出的前几行："
+            )
+        else:
+            parts.append(
+                "The cell finished. Output:"
+                if shown == stdout_lines
+                else "The cell finished. First lines of its output:"
+            )
+        parts.append("```text\n" + _output_preview(stdout) + "\n```")
+        if total_chars:
+            parts.append(
+                f"（输出很长，共 {total_chars} 个字符，完整输出在 Notebook。）"
+                if zh
+                else f"(The output is long: {total_chars} characters in total; the "
+                "full output is in the Notebook.)"
+            )
+        elif shown < stdout_lines:
+            parts.append(
+                f"（共 {stdout_lines} 行，完整输出在 Notebook。）"
+                if zh
+                else f"({stdout_lines} lines in total; the full output is in the Notebook.)"
+            )
+    elif stderr_lines:
+        parts.append("Cell 已运行结束。" if zh else "The cell finished.")
+    else:
+        parts.append(
+            "Cell 已运行结束，没有输出。" if zh else "The cell finished with no output."
         )
     if stderr_lines:
-        details.append(
-            f"stderr {stderr_lines} 行" if zh else f"{stderr_lines} stderr line(s)"
-        )
-    if details:
-        joined = "、".join(details) if zh else " and ".join(details)
-        return (
-            f"这个 Cell 已成功完成，产生了 {joined}；实际输出已记录在 Notebook。"
+        parts.append(
+            f"另有 stderr {stderr_lines} 行，可能包含警告或错误，请在 Notebook 查看。"
             if zh
-            else f"This cell completed successfully with {joined}; the actual output is recorded in the Notebook."
+            else f"It also wrote {stderr_lines} stderr line(s), which may contain "
+            "warnings or errors; see the Notebook."
+        )
+    return "\n".join(parts)
+
+
+#: The omission marker ``agent.runtime._budgeted`` puts into a long section.
+_OMITTED_MARKER = re.compile(
+    r"\n*\[\.\.\. [\d,]+ characters omitted \u2014 full ([\d,]+) chars[^\n]*"
+)
+
+
+#: A Cell that raised because a Host call in it was refused: the user denied
+#: it, a rule or policy refused it, or the turn was stopped while it waited.
+#: (`sdk/bash.py` words a bash refusal; the worker words every other Host one.)
+_HOST_REFUSAL = re.compile(
+    r"^(?:RuntimeError:\s*)?(?:bash:\s*|host\.[\w.]+ error:\s*)Permission denied:\s*"
+    r"(?P<reason>.*?)(?:;\s*command was not executed)?\s*$"
+)
+_REFUSAL_PREFIXES = (
+    "这个 Cell 里需要批准的操作",
+    "An action in this cell that needed approval",
+)
+
+
+def _host_refusal(headline: str) -> str | None:
+    """The refusal's reason when ``headline`` is a Host refusal, else None."""
+
+    match = _HOST_REFUSAL.match(headline or "")
+    return match.group("reason").strip() if match else None
+
+
+def _refusal_narration(reason: str, zh: bool) -> str:
+    """A refusal is not a failure: no "this cell failed", no raw RuntimeError."""
+
+    if reason == "turn cancelled":
+        # The turn's own stop marker says what happened.
+        return ""
+    if reason == "approval timed out":
+        return (
+            "这个 Cell 里需要批准的操作等待批准超时，没有执行。"
+            if zh
+            else "An action in this cell that needed approval timed out waiting for it and did not run."
+        )
+    if not reason or reason == "denied by user":
+        return (
+            "这个 Cell 里需要批准的操作被你拒绝了，没有执行。智能体会据此调整下一步。"
+            if zh
+            else "An action in this cell that needed approval was declined by you and did not run. "
+            "The agent will adjust its next step."
         )
     return (
-        "这个 Cell 已成功完成（没有 stdout 或 stderr）；运行状态已保留在 Notebook。"
+        f"这个 Cell 里需要批准的操作未获批准，没有执行（原因：{reason}）。智能体会据此调整下一步。"
         if zh
-        else "This cell completed successfully with no stdout or stderr; its runtime state is recorded in the Notebook."
+        else f"An action in this cell that needed approval was not approved and did not run "
+        f"(reason: {reason}). The agent will adjust its next step."
     )
+
+
+#: How much of a cell's stdout the chat repeats after it runs.
+_PREVIEW_LINES = 6
+_PREVIEW_LINE_CHARS = 200
+_FENCE = "`" * 3
+
+
+def _output_preview(stdout: str) -> str:
+    lines = []
+    for line in stdout.splitlines()[:_PREVIEW_LINES]:
+        line = _BEARER.sub("Bearer <redacted>", line)
+        line = _SECRET_ASSIGNMENT.sub(r"\1\2<redacted>", line)
+        if len(line) > _PREVIEW_LINE_CHARS:
+            line = line[: _PREVIEW_LINE_CHARS - 1] + "…"
+        # A fence inside the output would close the block early.
+        lines.append(line.replace(_FENCE, "'" * 3))
+    return "\n".join(lines)
 
 
 def completion_message(
@@ -239,9 +349,21 @@ def completion_message(
         parts.append(heading + "\n" + "\n".join(f"- {item}" for item in fresh_bullets))
 
     artifact_lines = _artifact_lines(artifacts, trusted_delivery=trusted_delivery)
-    if artifact_lines:
+    # ART-8: scripts, logs and copies of inputs are how the result was made,
+    # not the result; listing them with the figures and tables buried the
+    # deliverables. They stay linked, on one line after the deliverables.
+    deliverables = [line for kind, line in artifact_lines if kind == "deliverable"]
+    process = [line for kind, line in artifact_lines if kind == "process"]
+    if deliverables:
         heading = "产物：" if zh else "Artifacts:"
-        parts.append(heading + "\n" + "\n".join(artifact_lines))
+        parts.append(heading + "\n" + "\n".join(f"- {link}" for link in deliverables))
+    if process:
+        heading = (
+            f"过程文件（脚本、日志、输入副本，{len(process)} 个）："
+            if zh
+            else f"Working files (scripts, logs, input copies; {len(process)}):"
+        )
+        parts.append(heading + " " + ("、" if zh else ", ").join(process))
 
     if not parts and previous:
         return ""
@@ -296,7 +418,7 @@ def _structured_body(value: Any) -> str:
         return ""
     if isinstance(value, dict):
         items = [
-            f"- {str(key)[:120]}: {_compact_value(item)}"
+            f"- {_readable_key(str(key))[:120]}: {_compact_value(item)}"
             for key, item in list(value.items())[:20]
         ]
         return "\n".join(items)[:4000]
@@ -306,7 +428,20 @@ def _structured_body(value: Any) -> str:
     return str(value).strip()[:4000]
 
 
+_SNAKE_KEY = re.compile(r"[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+")
+
+
+def _readable_key(key: str) -> str:
+    """``cox_tmb_HR_low`` reads as "cox tmb HR low" (ART-8); prose keys stay."""
+
+    return key.replace("_", " ") if _SNAKE_KEY.fullmatch(key) else key
+
+
 def _compact_value(value: Any) -> str:
+    if isinstance(value, float) and not isinstance(value, bool):
+        # 0.42712345 -> 0.4271; exponent forms stay as repr, which is clearer.
+        short = format(value, ".4g")
+        return short if "e" not in short else repr(value)
     if isinstance(value, str):
         return value.strip()[:500]
     if isinstance(value, (dict, list, tuple)):
@@ -337,20 +472,24 @@ def _error_headline(observation: str) -> str:
     return headline[:240]
 
 
-def _section_line_count(observation: str, marker: str) -> int:
+def _section_body(observation: str, marker: str) -> str:
     needle = "\n" + marker + "\n"
     start = observation.find(needle)
     if start < 0:
-        return 0
+        return ""
     body = observation[start + len(needle) :]
     stops = [
         index
-        for boundary in ("\nstderr:", "\nERROR", "\n[usage")
+        for boundary in ("\nstderr:", "\nERROR", "\n[system]", "\n[usage")
         if (index := body.find(boundary)) >= 0
     ]
     if stops:
         body = body[: min(stops)]
-    return len(body.rstrip().splitlines()) if body.rstrip() else 0
+    return body.rstrip()
+
+
+def _line_count(body: str) -> int:
+    return len(body.splitlines()) if body else 0
 
 
 def _summary_already_visible(output: Any, summary: str, previous: str) -> bool:
@@ -366,10 +505,29 @@ def _summary_already_visible(output: Any, summary: str, previous: str) -> bool:
     return False
 
 
+#: Suffixes and folders of files that record how a result was made.
+_PROCESS_SUFFIXES = frozenset(
+    {".py", ".r", ".sh", ".bash", ".ipynb", ".log", ".pyc", ".tmp", ".bak", ".rds"}
+)
+_PROCESS_DIRS = ("project-inputs/", "inputs/", "__pycache__/", ".openai4s")
+
+
+def _artifact_kind(name: str) -> str:
+    lower = name.lower().replace("\\", "/")
+    dot = lower.rfind(".")
+    suffix = lower[dot:] if dot > lower.rfind("/") else ""
+    if suffix in _PROCESS_SUFFIXES:
+        return "process"
+    if lower.startswith(_PROCESS_DIRS) or any(f"/{d}" in lower for d in _PROCESS_DIRS):
+        return "process"
+    return "deliverable"
+
+
 def _artifact_lines(
     artifacts: Iterable[dict], *, trusted_delivery: bool = False
-) -> list[str]:
-    lines: list[str] = []
+) -> list[tuple[str, str]]:
+    """``(kind, markdown link)`` per artifact, deliverables and process files."""
+    lines: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for artifact in artifacts:
         if not isinstance(artifact, dict):
@@ -392,7 +550,7 @@ def _artifact_lines(
             continue
         seen.add(key)
         label = name.replace("[", "\\[").replace("]", "\\]")
-        lines.append(f"- [{label}]({target})")
+        lines.append((_artifact_kind(name), f"[{label}]({target})"))
     return lines
 
 
@@ -400,11 +558,69 @@ def _normalized(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip().casefold()
 
 
+#: The status lines this module writes around actions. A notebook export and
+#: anything else that wants only the model's own narration filters these out;
+#: ``tests/test_server_completions.py`` checks every template is recognised so
+#: the two cannot drift apart.
+_PROGRESS_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"我已经准备好一个 (?:R|Python) Cell，正在执行；真实输出会持续记录到 Notebook。",
+        r"I have prepared a (?:R|Python) cell and am running it now; its actual "
+        r"output will be recorded in the Notebook\.",
+        r"我正在执行 \d+ 个相关步骤，并会根据返回结果继续分析。",
+        r"I am running \d+ related steps and will continue from their returned "
+        r"results\.",
+        r"我先检索相关来源，随后会说明检索结果如何影响下一步分析。",
+        r"I am searching relevant sources first, then I will explain how the "
+        r"results affect the next analysis step\.",
+        r"我正在读取并核对这个来源中的关键证据。",
+        r"I am reading this source and checking its key evidence\.",
+        r"我正在保存阶段性结果，写出的文件会加入 Artifacts。",
+        r"I am saving the current results; written files will be added to "
+        r"Artifacts\.",
+        r"我先检查相关文件和数据，再根据实际内容继续分析。",
+        r"I am inspecting the relevant files and data before continuing from "
+        r"their actual contents\.",
+        r"我正在准备适合这一步分析的运行环境。",
+        r"I am preparing the appropriate runtime environment for this analysis "
+        r"step\.",
+        r"我正在执行下一步，并会把关键结果反馈在对话中。",
+        r"I am running the next step and will report its key result in the "
+        r"conversation\.",
+        r"_(?:已停止：已达到自动模式预算。|已由用户停止。|Stopped: the Auto Mode "
+        r"budget was reached\.|Stopped by user\.)_",
+    )
+)
+_PROGRESS_PREFIXES = (
+    "The cell finished",
+    "Cell 已运行结束",
+    "This cell failed: `",
+    "这个 Cell 执行失败：`",
+    *_REFUSAL_PREFIXES,
+    # Written by earlier versions; still in stored sessions.
+    "This cell completed successfully",
+    "这个 Cell 已成功完成",
+)
+
+
+def is_progress_narration(text: Any) -> bool:
+    """Whether ``text`` is a status line written here, not the model's prose."""
+
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if value.startswith(_PROGRESS_PREFIXES):
+        return True
+    return any(pattern.fullmatch(value) for pattern in _PROGRESS_PATTERNS)
+
+
 __all__ = [
     "CANCEL_REASONS",
     "action_narration",
     "cancellation_marker",
     "completion_message",
+    "is_progress_narration",
     "outcome_narration",
     "response_language",
 ]

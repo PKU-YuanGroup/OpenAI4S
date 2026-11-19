@@ -676,3 +676,68 @@ def test_priority_hidden_rows_are_filtered_before_pagination(server):
     status, body = client.get(f"/projects/{pid}/artifact-index")
     assert status == 200
     assert body == {"artifacts": [], "next_cursor": None, "has_more": False}
+
+
+def test_human_kinds_and_shown_hidden_rows(server):
+    """ART-12: categories instead of MIME substrings, and hidden rows on request."""
+    _cfg, runner, client = server
+    pid = _project(runner.store)
+    frame = runner.create_session(pid)
+    files = {
+        "cohort.csv": "text/csv",
+        "cohort.xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "growth.png": "image/png",
+        "plot.svg": "image/svg+xml",
+        "report.md": "text/markdown",
+        "paper.pdf": "application/pdf",
+        "analysis.py": "text/x-python",
+        "model.pt": "application/octet-stream",
+        "values.json": "application/json",
+    }
+    ids = {}
+    for name, ctype in files.items():
+        ids[name] = _save(
+            runner.store,
+            root_frame_id=frame,
+            project_id=pid,
+            filename=name,
+            content_type=ctype,
+        )["artifact_id"]
+
+    def names(**params):
+        status, body = client.get(f"/projects/{pid}/artifact-index?{urlencode(params)}")
+        assert status == 200, body
+        return sorted(row["filename"] for row in body["artifacts"])
+
+    assert names(kind="table") == ["cohort.csv", "cohort.xlsx"]
+    assert names(kind="image") == ["growth.png", "plot.svg"]
+    assert names(kind="report") == ["paper.pdf", "report.md"]
+    assert names(kind="code") == ["analysis.py"]
+    assert names(kind="other") == ["model.pt", "values.json"]
+    assert len(names()) == len(files)
+
+    runner.store.set_priority(ids["growth.png"], -1)
+    assert names(kind="image") == ["plot.svg"]
+    assert names(kind="image", hidden="1") == ["growth.png", "plot.svg"]
+    status, body = client.get(f"/projects/{pid}/artifact-index?hidden=1")
+    hidden_row = [r for r in body["artifacts"] if r["filename"] == "growth.png"][0]
+    assert hidden_row["priority"] == -1
+
+    status, body = client.get(f"/projects/{pid}/artifact-index?kind=tables")
+    assert status == 400 and body["code"] == "invalid_kind"
+    # A cursor is bound to the kind as it is to every other filter.
+    for name in ("a.csv", "b.csv", "c.csv"):
+        _save(
+            runner.store,
+            root_frame_id=frame,
+            project_id=pid,
+            filename=name,
+            content_type="text/csv",
+        )
+    status, first = client.get(f"/projects/{pid}/artifact-index?kind=table&limit=2")
+    assert status == 200 and first["has_more"]
+    cursor = first["next_cursor"]
+    status, body = client.get(
+        f"/projects/{pid}/artifact-index?kind=image&limit=2&cursor={cursor}"
+    )
+    assert status == 400 and body["code"] == "invalid_cursor"

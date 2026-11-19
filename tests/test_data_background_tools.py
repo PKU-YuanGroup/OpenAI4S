@@ -37,7 +37,10 @@ class FakeBackgroundExecutor:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
-    def launch(self, code: str, origin: str = "agent") -> dict:
+    def launch(
+        self, code: str, origin: str = "agent", turn_id: str | None = None
+    ) -> dict:
+        del turn_id  # the real executor scopes Stop by it; nothing to stop here
         self.calls.append(("launch", code, origin))
         return {"exec_id": "exec-1", "status": "running"}
 

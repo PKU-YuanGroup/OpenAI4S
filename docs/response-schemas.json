@@ -354,6 +354,39 @@
         "type": "object"
       }
     },
+    "DELETE /artifacts/([^/]+)/preview-table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /artifacts/([^/]+)/priority [error]": {
       "schema": {
         "properties": {
@@ -2172,6 +2205,39 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/approvals [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/artifacts [error]": {
       "schema": {
         "properties": {
@@ -2305,6 +2371,72 @@
       }
     },
     "DELETE /frames/([^/]+)/auto-mode [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/background [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/background/([^/]+)/stop [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -4799,6 +4931,31 @@
         },
         "required": [
           "enabled"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /notebook/settings [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -7984,6 +8141,143 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/preview-table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/preview-table [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "compression": {
+            "type": "null"
+          },
+          "delimiter": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "encoding": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "inner_filename": {
+            "type": "null"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "row_numbers": {
+            "items": {
+              "type": "integer"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "sheet": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "sheets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "total_columns": {
+            "type": "integer"
+          },
+          "total_rows": {
+            "type": "integer"
+          },
+          "total_rows_lower_bound": {
+            "type": "null"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "columns",
+          "compression",
+          "delimiter",
+          "encoding",
+          "filename",
+          "format",
+          "inner_filename",
+          "kind",
+          "row_numbers",
+          "rows",
+          "sheet",
+          "sheets",
+          "size_bytes",
+          "total_columns",
+          "total_rows",
+          "total_rows_lower_bound",
+          "truncated",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/priority [error]": {
       "schema": {
         "properties": {
@@ -8276,6 +8570,9 @@
           "descending": {
             "type": "boolean"
           },
+          "encoding": {
+            "type": "string"
+          },
           "filename": {
             "type": "string"
           },
@@ -8317,6 +8614,7 @@
           "column_types",
           "columns",
           "descending",
+          "encoding",
           "filename",
           "filters",
           "limit",
@@ -9923,6 +10221,9 @@
           "current": {
             "type": "string"
           },
+          "current_r": {
+            "type": "null"
+          },
           "default": {
             "type": "string"
           },
@@ -9988,6 +10289,7 @@
         },
         "required": [
           "current",
+          "current_r",
           "default",
           "environments",
           "pending"
@@ -10317,6 +10619,24 @@
           "project_id": {
             "type": "string"
           },
+          "result": {
+            "properties": {
+              "cells": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "cells",
+              "failed"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
           "running": {
             "type": "boolean"
           },
@@ -10334,6 +10654,7 @@
           "error",
           "frame_id",
           "project_id",
+          "result",
           "running",
           "seeded",
           "seeds_at_startup",
@@ -10844,6 +11165,9 @@
           "frames": {
             "items": {
               "properties": {
+                "awaiting_approval": {
+                  "type": "boolean"
+                },
                 "conversation_type": {
                   "type": "string"
                 },
@@ -10927,6 +11251,7 @@
                 }
               },
               "required": [
+                "awaiting_approval",
                 "conversation_type",
                 "created_at",
                 "folder_id",
@@ -12103,6 +12428,135 @@
         "type": "object"
       }
     },
+    "GET /frames/([^/]+)/approvals [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/approvals [ok]": {
+      "schema": {
+        "properties": {
+          "approvals": {
+            "items": {
+              "properties": {
+                "created_at": {
+                  "type": "string"
+                },
+                "dangerous": {
+                  "type": "boolean"
+                },
+                "decision_id": {
+                  "type": "string"
+                },
+                "frame_id": {
+                  "type": "string"
+                },
+                "input": {
+                  "properties": {
+                    "command": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "command"
+                  ],
+                  "type": "object"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "resolution_context": {
+                  "type": "null"
+                },
+                "resolved_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "scope": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "scopes": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "created_at",
+                "dangerous",
+                "decision_id",
+                "frame_id",
+                "input",
+                "kind",
+                "message",
+                "resolution_context",
+                "resolved_at",
+                "scope",
+                "scopes",
+                "state",
+                "target",
+                "title",
+                "tool"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "root_frame_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "approvals",
+          "root_frame_id"
+        ],
+        "type": "object"
+      }
+    },
     "GET /frames/([^/]+)/artifacts [ok]": {
       "schema": {
         "type": "array"
@@ -13016,6 +13470,56 @@
           "schema_version",
           "selection",
           "writable"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/background [ok]": {
+      "schema": {
+        "properties": {
+          "cells": {
+            "type": "array"
+          },
+          "frame_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cells",
+          "frame_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/background/([^/]+)/stop [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -14551,6 +15055,9 @@
           "current": {
             "type": "string"
           },
+          "current_r": {
+            "type": "null"
+          },
           "default": {
             "type": "string"
           },
@@ -14616,6 +15123,7 @@
         },
         "required": [
           "current",
+          "current_r",
           "default",
           "environments",
           "pending"
@@ -16783,6 +17291,9 @@
     "GET /frames/([^/]+)/status [ok]": {
       "schema": {
         "properties": {
+          "awaiting_approval": {
+            "type": "boolean"
+          },
           "frame_id": {
             "type": "string"
           },
@@ -16900,6 +17411,7 @@
           }
         },
         "required": [
+          "awaiting_approval",
           "frame_id",
           "kernel",
           "running",
@@ -18283,6 +18795,27 @@
         },
         "required": [
           "enabled"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /notebook/settings [ok]": {
+      "schema": {
+        "properties": {
+          "can_change": {
+            "type": "boolean"
+          },
+          "env_forced": {
+            "type": "boolean"
+          },
+          "repl_enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "can_change",
+          "env_forced",
+          "repl_enabled"
         ],
         "type": "object"
       }
@@ -23721,6 +24254,39 @@
         "type": "object"
       }
     },
+    "PATCH /artifacts/([^/]+)/preview-table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /artifacts/([^/]+)/priority [ok]": {
       "schema": {
         "properties": {
@@ -25922,6 +26488,39 @@
         "type": "object"
       }
     },
+    "PATCH /frames/([^/]+)/approvals [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /frames/([^/]+)/artifacts [error]": {
       "schema": {
         "properties": {
@@ -26232,6 +26831,72 @@
           "schema_version",
           "selection",
           "writable"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/background [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/background/([^/]+)/stop [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -28824,6 +29489,31 @@
         },
         "required": [
           "enabled"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /notebook/settings [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -31750,6 +32440,39 @@
         "type": "object"
       }
     },
+    "POST /artifacts/([^/]+)/preview-table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /artifacts/([^/]+)/priority [ok]": {
       "schema": {
         "properties": {
@@ -31856,6 +32579,9 @@
           "filename": {
             "type": "string"
           },
+          "moved": {
+            "type": "boolean"
+          },
           "ok": {
             "type": "boolean"
           }
@@ -31863,6 +32589,7 @@
         "required": [
           "artifact_id",
           "filename",
+          "moved",
           "ok"
         ],
         "type": "object"
@@ -33518,6 +34245,24 @@
           "project_id": {
             "type": "string"
           },
+          "result": {
+            "properties": {
+              "cells": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "cells",
+              "failed"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
           "running": {
             "type": "boolean"
           },
@@ -33535,6 +34280,7 @@
           "error",
           "frame_id",
           "project_id",
+          "result",
           "running",
           "seeded",
           "seeds_at_startup",
@@ -36748,6 +37494,39 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/approvals [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/artifacts [error]": {
       "schema": {
         "properties": {
@@ -36942,6 +37721,60 @@
           "path",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/background [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/background/([^/]+)/stop [error]": {
+      "schema": {
+        "properties": {
+          "exec_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exec_id",
+          "ok",
+          "reason"
         ],
         "type": "object"
       }
@@ -38044,41 +38877,17 @@
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)/kernel/env [error]": {
-      "schema": {
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "error": {
-            "type": "string"
-          },
-          "request_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "code",
-          "error",
-          "request_id",
-          "status"
-        ],
-        "type": "object"
-      }
-    },
     "POST /frames/([^/]+)/kernel/env [ok]": {
       "schema": {
         "properties": {
+          "error": {
+            "type": "string"
+          },
           "ok": {
             "type": "boolean"
           }
         },
-        "required": [
-          "ok"
-        ],
+        "required": [],
         "type": "object"
       }
     },
@@ -38163,6 +38972,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "interpreter": {
+            "type": "string"
           },
           "log": {
             "type": "string"
@@ -38333,8 +39145,17 @@
     "POST /frames/([^/]+)/kernel/stop [ok]": {
       "schema": {
         "properties": {
+          "cancelled_queued": {
+            "type": "array"
+          },
+          "frame_id": {
+            "type": "string"
+          },
           "ok": {
             "type": "boolean"
+          },
+          "state": {
+            "type": "string"
           }
         },
         "required": [
@@ -40735,6 +41556,9 @@
           "installed": {
             "type": "array"
           },
+          "interpreter": {
+            "type": "string"
+          },
           "log": {
             "type": "string"
           },
@@ -40745,6 +41569,7 @@
         "required": [
           "failed",
           "installed",
+          "interpreter",
           "log",
           "ok"
         ],
@@ -41878,6 +42703,31 @@
         },
         "required": [
           "enabled"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /notebook/settings [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -46273,6 +47123,39 @@
         "type": "object"
       }
     },
+    "PUT /artifacts/([^/]+)/preview-table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /artifacts/([^/]+)/priority [ok]": {
       "schema": {
         "properties": {
@@ -48417,6 +49300,39 @@
         "type": "object"
       }
     },
+    "PUT /frames/([^/]+)/approvals [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /frames/([^/]+)/artifacts [error]": {
       "schema": {
         "properties": {
@@ -48550,6 +49466,72 @@
       }
     },
     "PUT /frames/([^/]+)/auto-mode [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/background [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/background/([^/]+)/stop [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -51040,6 +52022,52 @@
         },
         "required": [
           "enabled"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /notebook/settings [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /notebook/settings [ok]": {
+      "schema": {
+        "properties": {
+          "can_change": {
+            "type": "boolean"
+          },
+          "env_forced": {
+            "type": "boolean"
+          },
+          "repl_enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "can_change",
+          "env_forced",
+          "repl_enabled"
         ],
         "type": "object"
       }

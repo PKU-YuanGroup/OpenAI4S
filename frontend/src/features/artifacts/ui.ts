@@ -4,7 +4,7 @@ import {
 } from "../../stores/artifacts";
 import { currentId, sessions } from "../../stores/session";
 import { activeTab, dock, openTabs, provMode } from "../../stores/ui";
-import { bytes, callWindow, el, icon, translate } from "./api";
+import { api, apiErrorText, bytes, callWindow, el, icon, translate } from "./api";
 import { artifactTabKey } from "./cache";
 import { filesT } from "./copy";
 import {
@@ -14,7 +14,7 @@ import {
   versionResolveMessage,
 } from "./deeplink";
 import { labTabLabel, mountLab } from "../lab";
-import { browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
+import { artifactKind, browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
 import { abortPreviewReads } from "./api";
@@ -101,12 +101,25 @@ export function renderDockTabs(): void {
   if (activeTab.value === "timeline") timeline.classList.add("active");
   timeline.onclick = () => setActiveTab("timeline");
   bar.appendChild(timeline);
-  if (activeTab.value === "files") {
-    const files = tabBtn("button", "files", "Files");
-    files.classList.add("active");
+  // ART-15: Files stays a tab once the dock has shown it, so opening a file
+  // from the list no longer makes the way back disappear.
+  if (activeTab.value === "files") filesTabShown = true;
+  if (filesTabShown) {
+    const files = tabBtn("button", "files", translate("dock.tab.files"));
+    if (activeTab.value === "files") files.classList.add("active");
+    files.onclick = () => setActiveTab("files");
     bar.appendChild(files);
   }
+  // Many open files overflow the strip; the active tab is scrolled into view
+  // instead of being pushed off the right edge (ART-15).
+  const active = typeof bar.querySelector === "function" ? bar.querySelector(".dock-tab.active") : null;
+  if (active && typeof (active as HTMLElement).scrollIntoView === "function") {
+    (active as HTMLElement).scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
 }
+
+/** The Files tab joins the strip the first time the Files pane is shown. */
+let filesTabShown = false;
 
 export function showDockPane(pane: string): void {
   if (typeof document === "undefined") return;
@@ -196,6 +209,9 @@ export function sessionNameFor(frameId: string | null | undefined): string {
   return (f && (f.name || f.task_summary)) || translate("conv.title.default");
 }
 
+/** ART-9: strips the reader opened, by `session:kind`; collapsed is the default. */
+const stripOpen = new Map<string, boolean>();
+
 export function renderConversationArtifacts(): void {
   if (typeof document === "undefined") return;
   document.querySelectorAll(".generated, .uploaded").forEach((n) => n.remove());
@@ -216,22 +232,43 @@ export function renderConversationArtifacts(): void {
     return tile;
   };
   const CAP = 6;
-  const section = (cls: string, label: string, list: ArtifactRow[]) => {
+  const section = (cls: string, label: string, list: ArtifactRow[], title?: string) => {
     if (!list.length) return;
-    const g = el("div", cls);
-    g.appendChild(el("div", "gen-label", `${label} · ${list.length}`));
+    // ART-9: the strips sat at the end of the conversation as two rows of
+    // cards, ~60% of a 1024x768 viewport, pushing the running cell and the
+    // latest narration out of view. They are one collapsed line now; the
+    // reader's choice to open one is kept for the session across repaints,
+    // and tiles (and their thumbnail reads) are built only once opened.
+    const g = el("details", cls) as HTMLDetailsElement;
+    const key = `${currentId.value || ""}:${cls}`;
+    const heading = el("summary", "gen-label", `${label} · ${list.length}`);
+    if (title) heading.title = title;
+    g.appendChild(heading);
     const tiles = el("div", "gen-tiles");
-    if (list.length <= CAP) {
-      list.forEach((a) => tiles.appendChild(mkTile(a)));
-    } else {
-      list.slice(0, CAP - 1).forEach((a) => tiles.appendChild(mkTile(a)));
-      const more = el("div", "tile tile-more");
-      more.appendChild(el("div", "tile-more-n", translate("gen.more", list.length - (CAP - 1))));
-      more.onclick = () => {
-        more.remove();
-        list.slice(CAP - 1).forEach((a) => tiles.appendChild(mkTile(a)));
-      };
-      tiles.appendChild(more);
+    let built = false;
+    const build = () => {
+      if (built) return;
+      built = true;
+      if (list.length <= CAP) {
+        list.forEach((a) => tiles.appendChild(mkTile(a)));
+      } else {
+        list.slice(0, CAP - 1).forEach((a) => tiles.appendChild(mkTile(a)));
+        const more = el("div", "tile tile-more");
+        more.appendChild(el("div", "tile-more-n", translate("gen.more", list.length - (CAP - 1))));
+        more.onclick = () => {
+          more.remove();
+          list.slice(CAP - 1).forEach((a) => tiles.appendChild(mkTile(a)));
+        };
+        tiles.appendChild(more);
+      }
+    };
+    g.ontoggle = () => {
+      stripOpen.set(key, !!g.open);
+      if (g.open) build();
+    };
+    if (stripOpen.get(key) === true) {
+      g.open = true;
+      build();
     }
     g.appendChild(tiles);
     const host = document.getElementById("messages");
@@ -242,7 +279,9 @@ export function renderConversationArtifacts(): void {
     }
     host.insertBefore(g, review || null);
   };
-  section("uploaded", translate("art.uploaded"), arts.filter((a) => a.is_user_upload));
+  // UP-5: the person's own files -- uploads and project-folder imports -- are
+  // inputs; only what the agent produced is "generated".
+  section("uploaded", filesT("art.inputs"), arts.filter((a) => a.is_user_upload), filesT("art.inputs.title"));
   section("generated", translate("art.generated"), arts.filter((a) => !a.is_user_upload));
   callWindow("down");
 }
@@ -300,26 +339,60 @@ function paintFilesGrid(): void {
       return;
     }
     const filter = currentFilesFilter();
-    const msg = filter.q || filter.contentType || filter.origin
+    const msg = filter.q || filter.contentType || filter.origin || filter.kind
       ? filesT("files.noMatches")
       : filesScope.value === "project" ? translate("files.emptyProject") : translate("files.empty");
     list.appendChild(el("div", "files-empty", msg));
     return;
   }
   arts.forEach((a) => {
-    const card = el("div", "art");
+    const hidden = (a.priority || 0) < 0;
+    const card = el("div", hidden ? "art art-hidden" : "art");
     card.dataset.artifactId = a.id;
     card.appendChild(tileThumbBig(a));
     card.appendChild(
       el("div", "a-name", ((a.priority || 0) > 0 ? "⭐ " : "") + (a.filename || "artifact")),
     );
-    card.appendChild(el("div", "a-meta", (a.content_type || "") + " · " + bytes(a.size_bytes)));
+    // ART-12: a kind a person reads ("表格"), not a MIME type that overflows.
+    const meta = el("div", "a-meta", filesT("files.filter.kind." + artifactKind(a)) + " · " + bytes(a.size_bytes));
+    meta.title = String(a.content_type || "");
+    card.appendChild(meta);
+    if (hidden) {
+      // Hidden used to be one-way: listed again only through "show hidden".
+      const row = el("div", "a-hidden");
+      row.appendChild(el("span", "a-hidden-badge", filesT("files.hiddenBadge")));
+      const unhide = el("button", "outline-btn small", filesT("artifact.unhide"));
+      unhide.setAttribute("type", "button");
+      unhide.onclick = (event: Event) => {
+        event.stopPropagation();
+        void unhideArtifact(a);
+      };
+      row.appendChild(unhide);
+      card.appendChild(row);
+    }
     if (filesScope.value === "project") {
       card.appendChild(el("div", "a-src", translate("files.fromSession", sessionNameFor(a.root_frame_id))));
     }
     card.onclick = () => presentViewer(a);
     list.appendChild(card);
   });
+}
+
+/** ART-12: put a hidden file back in the list. */
+export async function unhideArtifact(a: ArtifactRow): Promise<void> {
+  try {
+    await api(`/artifacts/${encodeURIComponent(a.id)}/priority`, {
+      method: "POST",
+      body: JSON.stringify({ priority: 0 }),
+    });
+    a.priority = 0;
+    callWindow("hint", filesT("artifact.unhidden", a.filename || ""));
+    if (currentId.value) await loadArtifacts(currentId.value);
+    if (filesScope.value === "project") await browseFiles({ refresh: true });
+    renderFilesGrid();
+  } catch (error) {
+    callWindow("hint", filesT("artifact.unhideFailed", apiErrorText(error)), true);
+  }
 }
 
 let renderViewerImpl: (() => void) | null = null;

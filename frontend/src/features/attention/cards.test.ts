@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { actionLabelFor, cardsFromItems, parseAttentionItem } from "./parse";
+import { LANG, setLang } from "../../i18n/runtime";
+import {
+  actionLabelFor,
+  agoFromMs,
+  cardsFromItems,
+  needsDecision,
+  parseAttentionItem,
+} from "./parse";
 import { mutationRouteForHint } from "./mutations";
 import { DOCK_FOR, SOURCE_KINDS, type AttentionSourceKind } from "./types";
 
@@ -173,5 +180,37 @@ describe("M-02 retry/approve/restore stay on existing mutation routes", () => {
     expect(mutationRouteForHint("watch", "f1")).toBeNull();
     expect(mutationRouteForHint("inspect", "f1")).toBeNull();
     expect(mutationRouteForHint("queue:2", "f1")).toBeNull();
+  });
+});
+
+// NAV-4: "Needs attention" listed sessions that were merely running, so a
+// session waiting for approval took two rows there before its Running card.
+describe("Needs attention lists decisions only", () => {
+  it("drops running and queued sessions and remote jobs that are simply running", () => {
+    const shown = cardsFromItems(SIX, { now: NOW }).filter(needsDecision);
+    expect(shown.map((c) => c.sourceKind).sort()).toEqual([
+      "approval",
+      "blocked",
+      "compute",
+      "recovery",
+    ]);
+    const runningJob = cardsFromItems(
+      [fixture("compute", { severity: "medium", state: "running" })],
+      { now: NOW },
+    );
+    expect(runningJob.filter(needsDecision)).toEqual([]);
+  });
+
+  it("says how long ago in the UI language", async () => {
+    const before = LANG;
+    await setLang("zh");
+    try {
+      expect(agoFromMs(NOW - 10_000, NOW)).toBe("刚刚");
+      expect(agoFromMs(NOW - 3 * 60_000, NOW)).toBe("3 分钟前");
+      expect(agoFromMs(NOW - 2 * 3_600_000, NOW)).toBe("2 小时前");
+    } finally {
+      await setLang(before);
+    }
+    if (before === "en") expect(agoFromMs(NOW - 3 * 60_000, NOW)).toBe("3m");
   });
 });

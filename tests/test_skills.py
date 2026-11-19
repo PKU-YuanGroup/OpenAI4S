@@ -1241,5 +1241,46 @@ def test_the_pinned_collection_still_matches_its_manifest():
     assert problems == [], "\n".join(problems)
 
 
+def test_a_load_says_how_to_import_the_helpers_it_does_not_import(tmp_path):
+    """kernel.py promised "auto-loaded"; nothing imports a sidecar for you.
+
+    The model printed `before: {...: False}` and spent minutes finding and
+    exec-ing kernel.py. The load result now carries the import line, the
+    model's view of the load leads with it, and no bundled recipe or sidecar
+    still promises an automatic load.
+    """
+
+    from openai4s.config import Config
+    from openai4s.host.skills import SkillService
+    from openai4s.tools.registry import format_tool_result, get_tool
+
+    service = SkillService(Config(data_dir=tmp_path / "data"))
+    loaded = service.load("literature-review")
+    assert loaded["import"].startswith(
+        'import importlib; k = importlib.import_module("literature-review.kernel")'
+    )
+    text = format_tool_result(get_tool("load_skill"), loaded)
+    assert text.startswith("[Tool: load_skill]\n[helpers] This Skill's helper")
+    assert (
+        'run: import importlib; k = importlib.import_module("literature-review.kernel")'
+        " -- then use its functions" in text
+    )
+    assert "Do not read or exec kernel.py by hand" in text
+    # A Skill without a sidecar says nothing about one.
+    plain = service.load("borzoi")
+    assert "import" not in plain
+    assert "[helpers]" not in format_tool_result(get_tool("load_skill"), plain)
+
+    repo = Path(__file__).resolve().parent.parent
+    promises = []
+    for path in sorted((repo / "skills").glob("*/kernel.py")) + sorted(
+        (repo / "skills").glob("*/SKILL.md")
+    ):
+        text = path.read_text("utf-8").lower()
+        if "auto-loaded" in text and "not auto-imported" not in text:
+            promises.append(str(path.relative_to(repo)))
+    assert promises == []
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

@@ -7,7 +7,9 @@ from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import ExecutionOutcome
 from openai4s.server.completions import (
     action_narration,
+    cancellation_marker,
     completion_message,
+    is_progress_narration,
     outcome_narration,
     response_language,
 )
@@ -143,6 +145,59 @@ def test_code_outcome_narration_uses_real_error_and_redacts_secrets():
     assert "hidden source" not in text
 
 
+def test_a_refused_host_call_is_narrated_as_a_refusal_not_a_failure():
+    # A denial used to read "这个 Cell 执行失败：RuntimeError: bash: host
+    # authorization unavailable; command was not executed": the user's own
+    # "no" as a crash, in English internals.
+    action = CodeCell("python", "host.bash('ls')")
+
+    def outcome(last_line: str) -> ExecutionOutcome:
+        return ExecutionOutcome(
+            observation=(
+                "[Observation]\nERROR (cell line 1):\nTraceback (most recent call last):\n"
+                f'  File "<kernel:3>", line 1, in <module>\n{last_line}'
+            )
+        )
+
+    declined = outcome(
+        "RuntimeError: bash: Permission denied: 不需要定义工具; command was not executed"
+    )
+    zh = outcome_narration(action, declined, "zh")
+    assert "执行失败" not in zh and "RuntimeError" not in zh
+    assert "未获批准" in zh and "不需要定义工具" in zh
+    en = outcome_narration(action, declined, "en")
+    assert "failed" not in en.lower() and "Permission denied" not in en
+    assert "not approved" in en and "不需要定义工具" in en
+
+    no_reason = outcome(
+        "RuntimeError: host.web_fetch error: Permission denied: denied by user"
+    )
+    assert "被你拒绝了" in outcome_narration(action, no_reason, "zh")
+    assert "declined by you" in outcome_narration(action, no_reason, "en")
+
+    stopped = outcome(
+        "RuntimeError: bash: Permission denied: turn cancelled; command was not executed"
+    )
+    assert outcome_narration(action, stopped, "zh") == ""
+
+    timed_out = outcome(
+        "RuntimeError: host.mcp_call error: Permission denied: approval timed out"
+    )
+    assert "超时" in outcome_narration(action, timed_out, "zh")
+
+    # An OS PermissionError is a real failure and is still narrated as one.
+    os_error = outcome("PermissionError: [Errno 13] Permission denied: '/etc/shadow'")
+    assert "执行失败" in outcome_narration(action, os_error, "zh")
+
+    for line in (
+        outcome_narration(action, declined, "zh"),
+        outcome_narration(action, declined, "en"),
+        outcome_narration(action, no_reason, "zh"),
+        outcome_narration(action, timed_out, "en"),
+    ):
+        assert is_progress_narration(line), line
+
+
 def test_code_only_success_has_honest_running_and_actual_output_status():
     action = CodeCell("python", "print('a')\nprint('b')")
     outcome = ExecutionOutcome(
@@ -154,13 +209,52 @@ def test_code_only_success_has_honest_running_and_actual_output_status():
     assert "actual output" in running
     assert "print('a')" not in running
     text = outcome_narration(action, outcome, "en", had_public_prose=False)
-    assert "2 stdout line(s)" in text
+    assert text == "The cell finished. Output:\n```text\na\nb\n```"
     assert "running this analysis stage" not in text
     # Pre-action prose describes intent, not the execution result, so it must
     # not suppress the short post-Cell status.
-    assert "2 stdout line(s)" in outcome_narration(
+    assert "```text\na\nb\n```" in outcome_narration(
         action, outcome, had_public_prose=True
     )
+
+
+def test_post_cell_status_shows_output_and_never_calls_a_cell_successful():
+    """RUN-1: the status said "completed successfully with N stdout line(s);
+    the actual output is recorded in the Notebook" 40+ times a session --
+    including for a cell whose pip subprocess exited 1. It now shows the first
+    lines the cell printed, says the cell *finished*, and flags stderr."""
+    action = CodeCell("python", "run()")
+    many = "\n".join(f"row {i}" for i in range(1, 11))
+    outcome = ExecutionOutcome(
+        observation=(
+            "[Observation]\nstdout:\n" + many + "\nstderr:\nWARNING: pip exited 1\n"
+            "[system] This looks like blocked network access.\n"
+            "[usage wall=1s cpu=1s rss=1kb]"
+        )
+    )
+    en = outcome_narration(action, outcome, "en")
+    assert "successfully" not in en
+    assert en.startswith("The cell finished. First lines of its output:")
+    assert "row 6" in en and "row 7" not in en
+    assert "(10 lines in total; the full output is in the Notebook.)" in en
+    assert "1 stderr line(s), which may contain warnings or errors" in en
+    assert "blocked network" not in en  # a [system] hint is not stdout
+
+    zh = outcome_narration(action, outcome, "zh")
+    assert "成功" not in zh
+    assert zh.startswith("Cell 已运行结束，输出的前几行：")
+    assert "（共 10 行，完整输出在 Notebook。）" in zh
+    assert "另有 stderr 1 行" in zh
+
+    quiet = ExecutionOutcome(observation="[Observation]\n(no output)")
+    assert outcome_narration(action, quiet, "zh") == "Cell 已运行结束，没有输出。"
+
+    secret = ExecutionOutcome(
+        observation="[Observation]\nstdout:\napi_key=sk-live-123\nok ``` fence"
+    )
+    shown = outcome_narration(action, secret, "en")
+    assert "sk-live-123" not in shown and "api_key=<redacted>" in shown
+    assert shown.count("```") == 2  # the output's own fence cannot close ours
 
 
 def test_agent_prompt_documents_the_delegation_task_status_contract():
@@ -223,3 +317,104 @@ def test_completion_action_narration_does_not_expose_submit_source():
 
     assert text == ""
     assert "submit_output" not in text
+
+
+def test_every_progress_line_this_module_writes_is_recognised():
+    """The clean notebook export (NB-1) drops progress lines and keeps the
+    model's narration. Recognition lives next to the templates; this walks
+    every template so a reworded line cannot silently leak into exports."""
+    actions = [
+        CodeCell("python", "print(1)"),
+        CodeCell("r", "print(1)"),
+        NativeToolBatch(calls=(_call("web_search"), _call("web_fetch"))),
+        *(
+            NativeToolBatch(calls=(_call(name),))
+            for name in (
+                "web_search",
+                "web_fetch",
+                "write_file",
+                "read_text_file",
+                "env_use",
+                "something_else",
+            )
+        ),
+    ]
+    outcomes = [
+        ExecutionOutcome(observation="[Observation]\nstdout:\nok"),
+        ExecutionOutcome(observation="[Observation]\n(no output)"),
+        ExecutionOutcome(observation="[Observation]\nstderr:\nwarn"),
+        ExecutionOutcome(
+            observation="[Observation]\nERROR (cell line 1):\nTraceback\nValueError: x"
+        ),
+    ]
+    for language in ("en", "zh"):
+        lines = [action_narration(action, language) for action in actions]
+        lines += [
+            outcome_narration(CodeCell("python", "x"), outcome, language)
+            for outcome in outcomes
+        ]
+        lines += [cancellation_marker(r, language) for r in ("user", "auto_budget")]
+        for line in lines:
+            assert line and is_progress_narration(line), line
+    for prose in (
+        "Ages are right-skewed (median 61).",
+        "I am running a sensitivity analysis next because the effect is small.",
+        "我先看一下缺失值的分布。",
+    ):
+        assert not is_progress_narration(prose), prose
+
+
+def test_a_truncated_output_reports_its_real_size_not_the_preview_lines():
+    """A long stdout reaches the model as head + omission marker + tail; the
+    status counted that preview ("160 stdout line(s)" for 3001 lines)."""
+    from openai4s.agent.runtime import format_observation
+
+    out = "\n".join(f"row {i} " + "x" * 40 for i in range(3001))
+    observation = format_observation(
+        {"stdout": out, "stderr": "", "error": None, "cwd": None}
+    )
+    outcome = ExecutionOutcome(observation=observation)
+    en = outcome_narration(CodeCell("python", "x"), outcome, "en")
+    assert en.startswith("The cell finished. First lines of its output:")
+    assert f"{len(out):,} characters in total" in en
+    assert "lines in total" not in en and "omitted" not in en
+    zh = outcome_narration(CodeCell("python", "x"), outcome, "zh")
+    assert f"共 {len(out):,} 个字符" in zh
+
+
+def test_the_summary_separates_deliverables_and_reads_metrics_plainly():
+    """ART-8: 14 "artifacts" mixed figures and tables with helper scripts and
+    copies of inputs, and metrics read as raw keys (cox_tmb_HR_low: 0.42712)."""
+    artifacts = [
+        {"artifact_id": "a1", "filename": "fig1_survival.png", "version_id": "v-1"},
+        {"artifact_id": "a2", "filename": "cox_results.csv", "version_id": "v-2"},
+        {"artifact_id": "a3", "filename": "survival_lib.py", "version_id": "v-3"},
+        {
+            "artifact_id": "a4",
+            "filename": "project-inputs/cohort.csv",
+            "version_id": "v-4",
+        },
+    ]
+    text = completion_message(
+        {
+            "output": {
+                "summary": "Done.",
+                "metrics": {"cox_tmb_HR_low": 0.427123, "n": 120},
+            }
+        },
+        artifacts,
+        language="en",
+    )
+    deliverables = text.split("Artifacts:\n", 1)[1].split("\n\n", 1)[0]
+    assert "fig1_survival.png" in deliverables and "cox_results.csv" in deliverables
+    assert "survival_lib.py" not in deliverables
+    assert "Working files (scripts, logs, input copies; 2):" in text
+    assert "[survival_lib.py](" in text and "[project-inputs/cohort.csv](" in text
+    assert "- cox tmb HR low: 0.4271" in text
+    assert "- n: 120" in text
+
+    zh = completion_message(
+        {"output": {"summary": "完成"}}, artifacts[2:], language="zh"
+    )
+    assert "产物：" not in zh
+    assert "过程文件（脚本、日志、输入副本，2 个）：" in zh

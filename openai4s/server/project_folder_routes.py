@@ -33,6 +33,8 @@ _FILE = contract.RouteSpec(
 ROUTES = contract.validate_routes((_PICKER, _FILES, _FILE))
 MAX_ENTRIES = 500
 MAX_PREVIEW_BYTES = 256 * 1024
+#: Where people keep data; the picker lists them first in the home directory.
+COMMON_HOME_FOLDERS = ("Documents", "Desktop", "Downloads")
 
 
 def require_local_request(handler: Any, cfg: Any) -> None:
@@ -54,7 +56,13 @@ def _relative(raw: str) -> str:
     return "" if str(path) == "." else path.as_posix()
 
 
-def local_folders(raw: str) -> dict:
+def local_folders(raw: str, *, show_hidden: bool = False) -> dict:
+    """List a folder's subfolders for the picker.
+
+    Dot-folders (``.cache``, ``.conda``…) filled the first screen of a home
+    directory, so they are left out unless ``show_hidden``; credential
+    directories stay out either way.
+    """
     current = Path(validate_folder_path(raw or str(Path.home()), browsing=True) or "")
     entries = []
     truncated = False
@@ -64,6 +72,8 @@ def local_folders(raw: str) -> dict:
             if index >= MAX_SCAN_ENTRIES or time.monotonic() > deadline:
                 truncated = True
                 break
+            if not show_hidden and entry.name.startswith("."):
+                continue
             if ReadOnlyProjectFiles.is_secret_path(str(current / entry.name)):
                 continue
             if entry.is_dir(follow_symlinks=False):
@@ -71,7 +81,14 @@ def local_folders(raw: str) -> dict:
                     truncated = True
                     break
                 entries.append({"name": entry.name, "path": str(current / entry.name)})
-    entries.sort(key=lambda entry: entry["name"].casefold())
+    at_home = str(current) == os.path.realpath(Path.home())
+    pinned = COMMON_HOME_FOLDERS if at_home else ()
+    entries.sort(
+        key=lambda entry: (
+            pinned.index(entry["name"]) if entry["name"] in pinned else len(pinned),
+            entry["name"].casefold(),
+        )
+    )
     return {
         "path": str(current),
         # A grant root is as far up as the picker may browse.
@@ -157,7 +174,8 @@ def handle(handler: Any, method: str, sub: str, q: dict, cfg: Any, store: Any) -
         require_local_request(handler, cfg)
         raw = (q.get("path") or [""])[0]
         if picker:
-            result = local_folders(raw)
+            hidden = (q.get("hidden") or [""])[0] in ("1", "true")
+            result = local_folders(raw, show_hidden=hidden)
         else:
             match = files or file
             assert match is not None

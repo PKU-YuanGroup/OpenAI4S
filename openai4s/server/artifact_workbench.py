@@ -20,6 +20,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from openai4s.server.text_decoding import decode_text
+
 KETCHER_VERSION = "3.7.0"
 KETCHER_VENDOR = Path(__file__).resolve().parent / "webui" / "vendor" / "ketcher"
 ANNOTATION_KINDS = frozenset({"image", "pdf", "html"})
@@ -985,7 +987,7 @@ class ArtifactWorkbenchService:
 
     def _table_rows(
         self, artifact: Mapping[str, Any], version_id: str | None = None
-    ) -> tuple[str, str, list[list[str]], str]:
+    ) -> tuple[str, str, list[list[str]], str, str]:
         """Load one exact snapshot as a rectangular table.
 
         A provided ``version_id`` is resolved as that immutable snapshot and
@@ -1005,14 +1007,18 @@ class ArtifactWorkbenchService:
         else:
             resolved, snapshot = self._version_snapshot(artifact)
         name = str(artifact.get("filename") or "")
+        encoding = ""
         if name.lower().endswith(".parquet"):
             rows = read_parquet_rows(snapshot)
         else:
             raw = _bounded_snapshot_bytes(snapshot)
-            rows = parse_delimited(raw.decode("utf-8", "replace"), name)
+            # UP-4: a GBK/GB18030 or UTF-16 table decodes as itself, not as
+            # UTF-8 replacement characters.
+            text, encoding = decode_text(raw)
+            rows = parse_delimited(text, name)
         meta = self.store.version_meta(resolved) or {}
         checksum = str(meta.get("checksum") or "")
-        return resolved, name, rows, checksum
+        return resolved, name, rows, checksum, encoding
 
     def table(
         self,
@@ -1026,7 +1032,9 @@ class ArtifactWorkbenchService:
         version_id: str | None = None,
     ) -> dict[str, Any]:
         artifact = self._artifact(artifact_id)
-        resolved, name, rows, _checksum = self._table_rows(artifact, version_id)
+        resolved, name, rows, _checksum, encoding = self._table_rows(
+            artifact, version_id
+        )
         result = query_table(
             rows,
             sort=sort,
@@ -1038,6 +1046,38 @@ class ArtifactWorkbenchService:
         result["artifact_id"] = artifact_id
         result["version_id"] = resolved
         result["filename"] = name
+        if encoding:
+            result["encoding"] = encoding
+        return result
+
+    def preview_table(
+        self,
+        artifact_id: str,
+        *,
+        version_id: str | None = None,
+        sheet: str | None = None,
+    ) -> dict[str, Any]:
+        """ART-11: the bounded head of a large, gzip or xlsx table.
+
+        Not gated by the Stage 9 flag: the default viewer calls it when a file
+        is over its own read budget or is a container it cannot parse. The
+        snapshot is resolved exactly as ``/table`` resolves it -- an explicit
+        version must belong to this Artifact and is never replaced by latest.
+        """
+
+        from openai4s.server.table_preview import preview_table
+
+        artifact = self._artifact(artifact_id)
+        resolved, snapshot = self._version_snapshot(artifact, version_id or None)
+        name = str(artifact.get("filename") or "")
+        meta = self.store.version_meta(resolved) or {}
+        result = preview_table(
+            snapshot,
+            filename=name,
+            content_type=str(meta.get("content_type") or ""),
+            sheet=sheet or None,
+        )
+        result.update(artifact_id=artifact_id, version_id=resolved, filename=name)
         return result
 
     def table_profile(
@@ -1058,7 +1098,9 @@ class ArtifactWorkbenchService:
         if not requested:
             raise WorkbenchError(400, "version_id is required", "invalid_query")
         artifact = self._artifact(artifact_id)
-        resolved, _name, rows, checksum = self._table_rows(artifact, requested)
+        resolved, _name, rows, checksum, _encoding = self._table_rows(
+            artifact, requested
+        )
         prepared = materialize_table(rows, filters=filters)
         cache_key = canonical_profile_key(checksum, prepared["filters"])
         cached = profile_cache_get(cache_key)
@@ -1111,7 +1153,9 @@ class ArtifactWorkbenchService:
         if not requested:
             raise WorkbenchError(400, "version_id is required", "invalid_query")
         artifact = self._artifact(artifact_id)
-        resolved, name, rows, checksum = self._table_rows(artifact, requested)
+        resolved, name, rows, checksum, _encoding = self._table_rows(
+            artifact, requested
+        )
         prepared = materialize_table(
             rows, sort=sort, descending=descending, filters=filters
         )

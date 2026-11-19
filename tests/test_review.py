@@ -935,8 +935,11 @@ def test_project_artifact_zip_contains_current_files_and_deduplicates_names(tmp_
     code, body, ctype, headers = sends[-1]
     assert code == 200
     assert ctype == "application/zip"
+    # ASCII name for old clients plus the exact UTF-8 name (RFC 5987), so a
+    # project or session title in Chinese survives the download.
     assert headers["Content-Disposition"] == (
-        'attachment; filename="project-default-artifacts.zip"'
+        'attachment; filename="project-default-artifacts.zip"; '
+        "filename*=UTF-8''project-default-artifacts.zip"
     )
     with zipfile.ZipFile(io.BytesIO(body)) as archive:
         assert set(archive.namelist()) == {

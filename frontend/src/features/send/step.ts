@@ -14,9 +14,10 @@ import { dockOpen, openViewer } from "../artifacts/ui";
 import type { ArtifactRow } from "../artifacts/types";
 import { mdHighlight } from "../md/highlight";
 import { renderMd } from "../md/render";
+import { declinedMeta, declinedReason, declinedStep } from "../messages/declined";
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
-import { ensure, sealText, type LiveStream } from "../messages/stream";
+import { adoptIntoLiveStream, ensure, placeInLiveStream, type LiveStream } from "../messages/stream";
 import { shortRuntime } from "../notebook/kernel";
 import { publicText } from "../scrub/scrub";
 import { apiErrorText } from "../sessions/api";
@@ -25,6 +26,17 @@ import { publicList } from "../timeline/sanitize";
 import { appendSemanticSkillSearch } from "../judgment/chips";
 import { sendCopy } from "./copy";
 import { icon, iconEl } from "./icon";
+import {
+  blockedBody,
+  blockedView,
+  loadView,
+  marksNetworkLimit,
+  networkNoticeBody,
+  noticeView,
+  stepNetworkLabel,
+  stepNetworkMeta,
+} from "./skill-network";
+import { stepSummaryText, stepTitleText } from "./step-title";
 
 export type Step = {
   step_id?: string;
@@ -68,6 +80,7 @@ const STEP_ICON: Record<string, string> = {
   mcp: "link",
   fold: "box",
   code: "terminal",
+  network: "lock",
 };
 
 export function stepIcon(kind: string | undefined): string {
@@ -80,9 +93,18 @@ function rec(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function openArt(meta: { artifact_id?: unknown; filename?: unknown; content_type?: unknown; size_bytes?: unknown }): void {
+function openArt(meta: {
+  artifact_id?: unknown;
+  version_id?: unknown;
+  filename?: unknown;
+  content_type?: unknown;
+  size_bytes?: unknown;
+}): void {
   if (!meta || !meta.artifact_id) return;
   dockOpen();
+  // ART-4: a step card shows the version that step produced; opening it must
+  // show that version too, not whatever a later cell overwrote it with.
+  const version = typeof meta.version_id === "string" && meta.version_id ? meta.version_id : "";
   // openViewer may resolve a version first; a failure there belongs to this
   // click, not to an unhandled rejection.
   void Promise.resolve(
@@ -92,6 +114,7 @@ function openArt(meta: { artifact_id?: unknown; filename?: unknown; content_type
       filename: meta.filename != null ? String(meta.filename) : undefined,
       content_type: meta.content_type != null ? String(meta.content_type) : undefined,
       size_bytes: typeof meta.size_bytes === "number" ? meta.size_bytes : undefined,
+      ...(version ? { version_id: version, _exactVersion: true } : {}),
     } as ArtifactRow),
   ).catch((error: unknown) => hint(t("toast.failed", apiErrorText(error)), true));
 }
@@ -355,8 +378,35 @@ export function stepBody(step: Step): HTMLElement {
     box.appendChild(delegateStepBody(inp, out));
     return box;
   }
+  const blocked = blockedView(step);
+  if (blocked) {
+    if (inp.command) {
+      box.appendChild(codeBlock(String(inp.command), { term: true, lang: "bash", langLabel: "shell" }));
+    } else if (inp.query) box.appendChild(el("div", "s-q", "“" + String(inp.query) + "”"));
+    else if (inp.url) box.appendChild(el("div", "s-q", String(inp.url)));
+    box.appendChild(blockedBody(blocked, out.error != null ? String(out.error) : ""));
+    return box;
+  }
+  // Refused, not failed: what was asked for, and the reason in plain words
+  // rather than the server's "Permission denied: …" in an error block.
+  const declined = step.status === "error" ? declinedStep(out) : null;
+  if (declined) {
+    if (inp.command) {
+      box.appendChild(codeBlock(String(inp.command), { term: true, lang: "bash", langLabel: "shell" }));
+    } else if (inp.query) box.appendChild(el("div", "s-q", "“" + String(inp.query) + "”"));
+    else if (inp.url) box.appendChild(el("div", "s-q", String(inp.url)));
+    box.appendChild(el("div", "s-note", declinedMeta(declined)));
+    const reason = declinedReason(declined);
+    if (reason) box.appendChild(el("div", "s-note", reason));
+    return box;
+  }
   if (out.error) {
     box.appendChild(clipPre(out.error, "d-del"));
+    return box;
+  }
+  const notice = noticeView(step);
+  if (notice) {
+    box.appendChild(networkNoticeBody(notice));
     return box;
   }
   if (k === "review") {
@@ -456,6 +506,8 @@ export function stepBody(step: Step): HTMLElement {
   }
   if (k === "skill") {
     if (appendSemanticSkillSearch(box, out)) return box;
+    const limited = loadView(step);
+    if (limited) box.appendChild(networkNoticeBody(limited));
     if (out.content) {
       const md = el("div", "md s-skill");
       md.innerHTML = renderMd(String(out.content));
@@ -610,7 +662,13 @@ export function stepBody(step: Step): HTMLElement {
         const fig = el("figure", "s-fig");
         fig.title = t("step.artifact.openArtifact");
         const im = el("img") as HTMLImageElement;
-        im.src = artUrl({ id: String(a.artifact_id) } as ArtifactRow);
+        // ART-4: the head URL plus a cache-buster served the LATEST bytes, so
+        // an old card silently changed once the figure was redrawn.
+        im.src = artUrl(
+          (typeof a.version_id === "string" && a.version_id
+            ? { id: String(a.artifact_id), version_id: a.version_id, _exactVersion: true }
+            : { id: String(a.artifact_id) }) as ArtifactRow,
+        );
         im.alt = String(a.filename || t("step.fig.altFallback"));
         im.loading = "lazy";
         fig.appendChild(im);
@@ -645,21 +703,51 @@ function paintStepBody(handle: StepHandle): void {
 export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
   const { card, meta, ic, step } = handle;
   const status = step.status || "running";
+  // Refused by a loaded Skill's network limit: not a crash, and not "0 results".
+  const blocked = status !== "running" && !!blockedView(step);
+  // Denied by the user, refused by a rule, or cancelled by a Stop while it
+  // waited for approval: a refusal, shown neutrally, never as a failure.
+  const declined = status === "error" && !blocked ? declinedStep(step.output) : null;
   card.classList.toggle("running", status === "running");
-  card.classList.toggle("err", status === "error");
-  card.classList.toggle("warn", status === "warning");
+  card.classList.toggle("err", status === "error" && !blocked && !declined);
+  card.classList.toggle("warn", status === "warning" || blocked);
+  card.classList.toggle("declined", !!declined);
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
     meta.textContent = step.kind === "review" ? sendCopy("reviewing") : "";
   } else {
     ic.innerHTML = icon(
-      status === "error" ? "x" : status === "warning" ? "alert-triangle" : stepIcon(step.kind),
+      blocked
+        ? "lock"
+        : declined
+          ? declined.kind === "stopped"
+            ? "stop"
+            : "lock"
+          : status === "error"
+            ? "x"
+            : status === "warning"
+              ? "alert-triangle"
+              : stepIcon(step.kind),
       14,
     );
     meta.textContent =
-      (step.summary != null ? String(step.summary) : "") ||
+      stepNetworkMeta(step) ||
+      (declined ? declinedMeta(declined) : "") ||
+      (step.summary != null ? stepSummaryText(String(step.summary)) : "") ||
       (step.output && rec(step.output).error ? t("step.status.failed") : "");
   }
+  // I18N-1: the host words titles in English; an update can retitle a card.
+  if (step.title) {
+    const label = card.querySelector(".s-lbl");
+    if (label) label.textContent = stepTitleText(String(step.title));
+  }
+  // A loaded Skill's network limit: the server words these in English.
+  const netLabel = stepNetworkLabel(step);
+  if (netLabel) {
+    const label = card.querySelector(".s-lbl");
+    if (label) label.textContent = netLabel;
+  }
+  card.classList.toggle("s-net-limited", marksNetworkLimit(step));
   if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") {
     card.classList.add("open");
   }
@@ -704,7 +792,7 @@ export function buildStepCard(step: Step, paint: StepPaint = {}): StepHandle {
       ),
     );
   }
-  h.appendChild(el("span", "s-lbl", String(step.title || step.kind || t("step.card.defaultTitle"))));
+  h.appendChild(el("span", "s-lbl", stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")))));
   const meta = el("span", "s-meta", "");
   h.appendChild(meta);
   const chev = el("span", "s-chev");
@@ -733,6 +821,18 @@ function stepRegistry(): Record<string, StepHandle> {
   return els;
 }
 
+type DemotableStream = LiveStream & { toolCard?: HTMLElement & { _demoted?: boolean } };
+
+/** A Cell's activity card that steps follow becomes the "Code" group head. */
+function demoteToolCard(st: DemotableStream): void {
+  if (st.toolCard && !st.toolCard._demoted) {
+    st.toolCard.classList.add("has-steps");
+    st.toolCard._demoted = true;
+    const lbl = st.toolCard.querySelector(".lbl");
+    if (lbl) lbl.textContent = t("step.label.code");
+  }
+}
+
 export function addLiveStep(m: Record<string, unknown>): void {
   const existing = stepRegistry()[String(m.step_id || "")];
   if (existing && existing.card && existing.card.isConnected) {
@@ -741,12 +841,15 @@ export function addLiveStep(m: Record<string, unknown>): void {
     if (m.input != null) existing.step.input = rec(m.input);
     if (m.status) existing.step.status = String(m.status);
     applyStepState(existing, LAZY_BODY);
+    // A reopened running session rendered this stored step from REST before
+    // the turn's replay reached its `step` event: it belongs here, between
+    // the prose before and after it, as it was shown live.
+    if (adoptIntoLiveStream(existing.card)) demoteToolCard(liveStream.value as DemotableStream);
     down();
     return;
   }
-  const st = ensure() as (LiveStream & { toolCard?: HTMLElement & { _demoted?: boolean } }) | null;
+  const st = ensure() as DemotableStream | null;
   if (!st) return;
-  sealText(st);
   const handle = buildStepCard(
     {
       step_id: m.step_id != null ? String(m.step_id) : undefined,
@@ -758,16 +861,8 @@ export function addLiveStep(m: Record<string, unknown>): void {
     LAZY_BODY,
   );
   if (m.step_id) stepRegistry()[String(m.step_id)] = handle;
-  st.wrap.appendChild(handle.card);
-  if (st.toolCard && !st.toolCard._demoted) {
-    st.toolCard.classList.add("has-steps");
-    st.toolCard._demoted = true;
-    const lbl = st.toolCard.querySelector(".lbl");
-    if (lbl) lbl.textContent = t("step.label.code");
-  }
-  st.md = el("div", "md");
-  st.wrap.appendChild(st.md);
-  st.text = "";
+  placeInLiveStream(handle.card, st);
+  demoteToolCard(st);
   liveStream.value = st;
   if (m.kind === "review") hint(sendCopy("reviewing"), false, true);
   down();

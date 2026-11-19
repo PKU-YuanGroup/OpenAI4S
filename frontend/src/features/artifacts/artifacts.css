@@ -172,3 +172,240 @@
   height: auto;
   border-radius: var(--radius, 8px);
 }
+
+/* ART-2: TeX in Markdown Artifacts. The source stays visible (monospace)
+   until KaTeX's lazy chunk replaces it, and when a formula cannot render. */
+.renderer-markdown .md-math:not(.md-math-done) {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.92em;
+  white-space: pre-wrap;
+}
+.renderer-markdown .md-math-block {
+  display: block;
+  margin: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.renderer-markdown .md-math-block.md-math-done {
+  text-align: center;
+}
+.renderer-markdown .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.renderer-markdown .md-relimg-missing {
+  color: var(--text-400, #6c6a64);
+  font-size: 0.92em;
+}
+
+/* ART-3: the default table viewer's filter, column toggle and sortable
+   headers. Sorting happens on the rows already read; no server flag. */
+.sheet-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+.sheet-filter {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 420px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: inherit;
+  background: var(--bg-000, #faf9f5);
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius, 8px);
+}
+.sheet-status {
+  font-size: 12px;
+  color: var(--text-400, #6c6a64);
+}
+.sheet-hold {
+  overflow-x: auto;
+}
+table.sheet th[tabindex] {
+  cursor: pointer;
+  user-select: none;
+}
+table.sheet th[data-sort="asc"]::after {
+  content: " \25B2";
+  font-size: 0.75em;
+  color: var(--text-400, #6c6a64);
+}
+table.sheet th[data-sort="desc"]::after {
+  content: " \25BC";
+  font-size: 0.75em;
+  color: var(--text-400, #6c6a64);
+}
+
+/* UP-4: a preview or tile decoded as something other than UTF-8 says so. */
+.renderer-encoding {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-300, #55534e);
+  background: var(--bg-100, #f5f0e8);
+  border-radius: var(--radius, 8px);
+}
+.thumb-encoding {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-300, #55534e);
+  background: var(--bg-200, #efe9de);
+  border-radius: 3px;
+}
+
+/* ART-11: a workbook's sheet tabs above its first rows, and the gzip tile. */
+.preview-sheets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 10px 14px 0;
+}
+.preview-sheets-label {
+  margin-right: 4px;
+  font-size: 12px;
+  color: var(--text-400, #6c6a64);
+}
+.preview-sheet {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-300, #55534e);
+  background: transparent;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.preview-sheet:hover {
+  color: var(--text-000, #141413);
+  background: var(--bg-200, #efe9de);
+}
+.preview-sheet.active {
+  color: var(--text-000, #141413);
+  background: var(--bg-200, #efe9de);
+  border-color: var(--text-400, #6c6a64);
+  cursor: default;
+}
+.thumb-compressed {
+  flex-direction: column;
+  gap: 4px;
+}
+.thumb-kind {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-300, #55534e);
+}
+
+/* ART-12: order, hidden files and the human type filter. */
+.files-toolbar-extra {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.files-sort {
+  height: 32px;
+  font: inherit;
+  font-size: 13px;
+  padding: 0 8px;
+  border: 1px solid var(--border, #e6dfd8);
+  background: var(--bg, #faf9f5);
+  color: inherit;
+  border-radius: var(--radius, 8px);
+}
+.files-show-hidden {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-300, #55534e);
+  cursor: pointer;
+}
+.files-show-hidden input {
+  margin: 0;
+}
+.art.art-hidden > :not(.a-hidden) {
+  opacity: 0.55;
+}
+.art .a-hidden {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.art .a-hidden-badge {
+  font-size: 11px;
+  color: var(--text-400, #6c6a64);
+}
+
+/* UP-5: the bound project folder, read-only, above the session's files. */
+.files-project-folder {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius, 8px);
+  background: var(--bg-100, #f5f0e8);
+}
+.files-project-folder summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.files-project-folder-title {
+  flex: none;
+  white-space: nowrap;
+}
+.files-project-folder-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-400, #6c6a64);
+}
+.files-project-folder-note {
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--text-400, #6c6a64);
+}
+.files-project-folder-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.files-project-folder-entry {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: 999px;
+  background: var(--bg-000, #faf9f5);
+  color: inherit;
+  cursor: pointer;
+}

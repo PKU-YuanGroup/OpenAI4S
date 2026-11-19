@@ -25,6 +25,8 @@ export type HistoryMessage = {
   review_status?: unknown;
   metadata?: Record<string, unknown>;
   artifact_refs?: unknown[];
+  /** The pins a user message was sent with (SYNC-5). */
+  annotations?: unknown[];
 };
 
 export type MessagePage = {

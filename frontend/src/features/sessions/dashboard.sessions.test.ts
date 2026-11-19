@@ -64,7 +64,20 @@ vi.mock("./dom", () => ({
 import { t } from "../../i18n";
 import { api } from "./api";
 import { sessionCopy } from "./copy";
-import { loadDashboard, onDashPoll, renderDashRecent, startDashPoll, stopDashPoll } from "./dashboard";
+import {
+  loadDashboard,
+  onDashPoll,
+  renderDashRecent,
+  renderDashRunning,
+  resetExampleRun,
+  runCardSubtitle,
+  startDashPoll,
+  stopDashPoll,
+} from "./dashboard";
+import { attentionCards } from "../attention/state";
+import type { AttentionCardModel } from "../attention/types";
+import { dashCopy, displayProjectName } from "./copy";
+import { LANG, setLang } from "../../i18n/runtime";
 
 /** Every text painted under `node`. */
 function texts(node: FakeEl | null | undefined): string[] {
@@ -106,6 +119,8 @@ beforeEach(() => {
 
 afterEach(() => {
   stopDashPoll();
+  resetExampleRun();
+  attentionCards.value = [];
   vi.unstubAllGlobals();
 });
 
@@ -200,5 +215,122 @@ describe("a /frames read that fails on the dashboard", () => {
     retry!.onclick!();
     await vi.waitFor(() => expect(texts(dom["#dash-sessions"])).not.toContain(sessionCopy("sessionsError")));
     expect(texts(dom["#dash-sessions"])).toContain("Titration run");
+  });
+});
+
+// NAV-4: a session waiting for approval showed under "Needs attention" (twice,
+// with its running row), again as a Running card, and again under Recent.
+describe("one place per session on the home page", () => {
+  const FRAMES = [
+    { id: "f-run", name: "Running fit", running: true, message_count: 2, updated_at: "2026-11-18T08:00:00Z" },
+    { id: "f-wait", name: "Waiting fit", running: true, message_count: 2, updated_at: "2026-11-18T08:01:00Z" },
+    { id: "f-done", name: "Finished fit", running: false, message_count: 2, updated_at: "2026-11-18T07:00:00Z" },
+  ];
+
+  beforeEach(() => {
+    dom["#dash-running"] = fakeEl();
+    dom["#dash-running-count"] = fakeEl();
+    attentionCards.value = [{ frameId: "f-wait", sourceKind: "approval" } as AttentionCardModel];
+  });
+
+  it("lists a waiting session only under Needs attention and a running one only under Running", () => {
+    renderDashRunning(FRAMES);
+    renderDashRecent(FRAMES);
+    const running = texts(dom["#dash-running"]);
+    const recent = texts(dom["#dash-sessions"]);
+    expect(running).toContain("Running fit");
+    expect(running).not.toContain("Waiting fit");
+    expect(recent).toEqual(expect.arrayContaining(["Finished fit"]));
+    expect(recent).not.toContain("Running fit");
+    expect(recent).not.toContain("Waiting fit");
+  });
+
+  it("says the sessions are above instead of 'no sessions yet' when all of them are", () => {
+    vi.mocked(api).mockResolvedValue({} as never);
+    renderDashRecent(FRAMES.slice(0, 2));
+    const recent = texts(dom["#dash-sessions"]);
+    expect(recent).toEqual([dashCopy("dash.sessions.allAbove")]);
+    expect(api).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat the session's name under a Running card's title", () => {
+    const project = { project_id: "p1", name: "qPCR project" };
+    expect(runCardSubtitle({ name: "ΔΔCt analysis", task_summary: "ΔΔCt analysis of the plate" }, project)).toBe(
+      "qPCR project",
+    );
+    expect(runCardSubtitle({ name: "ΔΔCt analysis", task_summary: "Fit a standard curve" }, project)).toBe(
+      "qPCR project · Fit a standard curve",
+    );
+    expect(runCardSubtitle({ task_summary: "Fit a standard curve" }, null)).toBe("");
+  });
+});
+
+// I18N-1: the seeded project read "Example project" with an "Example" tag in
+// a Chinese UI. Shown in the UI language while it keeps the seeded name.
+describe("the seeded example project's name", () => {
+  it("is said in the UI language until the user renames it", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      expect(displayProjectName({ project_id: "proj_example", name: "Example project" })).toBe("示例项目");
+      expect(displayProjectName({ project_id: "proj_example", name: "我的示例" })).toBe("我的示例");
+      expect(displayProjectName({ project_id: "p-2", name: "Example project" })).toBe("Example project");
+      expect(dashCopy("dash.example.tag")).toBe("示例");
+    } finally {
+      await setLang(original);
+    }
+  });
+});
+
+// NAV-4: after "Run the example analysis" the card vanished as soon as the
+// session existed, and nothing said when it finished or that cells failed.
+describe("the example run's notice", () => {
+  it("follows the run and says how many cells did not complete", async () => {
+    const ticks: Array<() => void> = [];
+    vi.stubGlobal("window", {
+      setInterval: (tick: () => void) => {
+        ticks.push(tick);
+        intervals.add(ticks.length);
+        return ticks.length;
+      },
+    });
+    vi.stubGlobal("document", { hidden: false, createDocumentFragment: () => fakeEl("fragment") });
+    let status: Record<string, unknown> = { running: false, seeded: false, error: null };
+    vi.mocked(api).mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (path === "/example/session" && init?.method === "POST") {
+        status = { running: true, seeded: false, started: true, frame_id: null };
+        return status;
+      }
+      if (path === "/example/session") return status;
+      if (path.startsWith("/frames")) return { frames: [] };
+      if (path.startsWith("/projects")) return { projects: [] };
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    renderDashRecent([]);
+    await vi.waitFor(() => expect(api).toHaveBeenCalledWith("/example/session"));
+    const cta = dom["#dash-sessions"]!.children.find((node) => node.cls === "dash-example")!;
+    const button = cta.children.find((node) => node.tag === "button")!;
+    expect(button.cls).toBe("solid-btn");
+    button.onclick!();
+    await vi.waitFor(() =>
+      expect(texts(dom["#dash-sessions"])).toContain(dashCopy("dash.example.runningNote")),
+    );
+    expect(ticks).toHaveLength(1);
+
+    status = {
+      running: false,
+      seeded: true,
+      frame_id: "f-example",
+      project_id: "proj_example",
+      error: null,
+      result: { cells: 6, failed: 2 },
+    };
+    ticks[0]!();
+    await vi.waitFor(() =>
+      expect(texts(dom["#dash-sessions"])).toContain(dashCopy("dash.example.doneFailed", 2, 6)),
+    );
+    expect(texts(dom["#dash-sessions"])).toContain(dashCopy("dash.example.open"));
+    expect(intervals.size).toBe(0);
   });
 });

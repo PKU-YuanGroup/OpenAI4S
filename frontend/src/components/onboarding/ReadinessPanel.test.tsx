@@ -212,7 +212,7 @@ describe("readiness in-place refresh", () => {
     expect(text(alert)).toContain("onboarding.readiness.refreshFailed");
     expect(text(alert)).toContain("disconnected");
     // The previous readiness result is still rendered, not cleared.
-    expect(text(environmentCard(panel))).toContain("environment.readiness.needsSetup");
+    expect(text(environmentCard(panel))).toContain("onboarding.env.state.needs_setup");
     // The action is the retry.
     (button.props!.onClick as () => void)();
     expect(onRefresh).toHaveBeenCalledTimes(1);
@@ -232,5 +232,81 @@ describe("readiness in-place refresh", () => {
     const panel = ReadinessPanel({ status: ONBOARDING }) as Node;
     expect(find(panel, (node) => node.type === "button")).toBeNull();
     expect(text(panel)).not.toContain("onboarding.readiness.lastRead");
+  });
+});
+
+// NAV-3: "Packages missing from python: numpy, scipy, pandas …" named the
+// conda environment called python (not created yet), read as the Python the
+// sessions run on, and said nothing about whether any of it mattered.
+describe("readiness card wording", () => {
+  const base = {
+    enabled: true,
+    ready: false,
+    state: "needs_setup",
+    remediation: null,
+  };
+
+  it("lists an environment that does not exist once, not its manifest as missing packages", () => {
+    const readiness = {
+      ...base,
+      missing_environments: ["python"],
+      missing_packages: { python: ["numpy", "pandas"], r: [] },
+    } as unknown as StandardReadiness;
+    const card = text(EnvironmentCard({ readiness }));
+    expect(card).toContain("onboarding.env.missing");
+    expect(card).toContain("onboarding.env.optional");
+    expect(card).not.toContain("numpy");
+    expect(card).not.toContain("onboarding.env.missingPackages");
+  });
+
+  it("names the environment a package is missing from when that environment exists", () => {
+    const readiness = {
+      ...base,
+      state: "needs_repair",
+      missing_environments: [],
+      missing_packages: { python: ["scipy"] },
+    } as unknown as StandardReadiness;
+    const card = text(EnvironmentCard({ readiness }));
+    expect(card).toContain("onboarding.env.missingPackages python");
+    expect(card).toContain("scipy");
+  });
+
+  it("does not call a ready environment optional", () => {
+    const readiness = {
+      ...base,
+      ready: true,
+      state: "ready",
+      missing_environments: [],
+      missing_packages: {},
+    } as unknown as StandardReadiness;
+    expect(text(EnvironmentCard({ readiness }))).not.toContain("onboarding.env.optional");
+  });
+});
+
+// ENV-3 follow-up: the network card says what the app reaches for the agent
+// and what code in cells can do, instead of naming flags.
+describe("network card", () => {
+  function networkCard(status: OnboardingStatus): string {
+    const panel = ReadinessPanel({ status }) as Node;
+    const node = find(panel, (n) => typeof n.type === "function" && "network" in (n.props || {}))!;
+    return text((node.type as (props: unknown) => unknown)(node.props));
+  }
+
+  it("tells app networking from kernel networking", () => {
+    const card = networkCard(ONBOARDING);
+    expect(card).toContain("onboarding.readiness.appNetwork onboarding.readiness.appNetworkOff");
+    expect(card).toContain("onboarding.readiness.kernelNetwork");
+    expect(card).toContain("onboarding.readiness.egressOff");
+    expect(card).not.toContain("egress:");
+  });
+
+  it("says when the domain limit is on and app networking is allowed", () => {
+    const status = {
+      ...ONBOARDING,
+      network: { allow_network: true, egress: "allowlist", contacted: false },
+    } as unknown as OnboardingStatus;
+    const card = networkCard(status);
+    expect(card).toContain("onboarding.readiness.appNetworkOn");
+    expect(card).toContain("onboarding.readiness.egressOn");
   });
 });

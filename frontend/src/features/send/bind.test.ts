@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { exploreMode, planMode, running } from "../../stores/stream";
 import { UPLOAD_STATE } from "../chrome/upload";
+import { sendCopy } from "./copy";
 import { installSend } from "./index";
 import { bindComposer } from "./send";
 import * as chrome from "../sessions/chrome";
@@ -275,5 +277,85 @@ describe("bindComposer", () => {
     onClick(click(true));
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch).toHaveBeenLastCalledWith("again");
+  });
+
+  it("keeps an active plan or explore mode on screen as a chip, and a click turns it off", () => {
+    // The toggles used to be hidden for good: once a mode was switched on from
+    // the options menu nothing on screen said it was shaping the next message.
+    const chip = () => {
+      const classes = new Set(["nb-mode", "hidden"]);
+      return {
+        dataset: {} as Record<string, string>,
+        onclick: null as (() => void) | null,
+        title: "",
+        classes,
+        classList: {
+          toggle: (name: string, force?: boolean) => {
+            const on = force === undefined ? !classes.has(name) : force;
+            if (on) classes.add(name);
+            else classes.delete(name);
+            return on;
+          },
+          remove: (name: string) => classes.delete(name),
+        },
+      };
+    };
+    const plan = chip();
+    const explore = chip();
+    stubDocument({ composer: fakeComposer(), "plan-toggle": plan, "explore-toggle": explore });
+    planMode.value = false;
+    exploreMode.value = false;
+    try {
+      bindComposer(vi.fn());
+      expect(plan.classes.has("hidden")).toBe(true);
+      expect(explore.classes.has("hidden")).toBe(true);
+
+      planMode.value = true;
+      expect(plan.classes.has("hidden")).toBe(false);
+      expect(plan.title).toContain(sendCopy("planDesc"));
+      expect(explore.classes.has("hidden")).toBe(true);
+
+      // Switching explore on (the menu clicks the toggle) turns plan off.
+      explore.onclick!();
+      expect(exploreMode.value).toBe(true);
+      expect(planMode.value).toBe(false);
+      expect(plan.classes.has("hidden")).toBe(true);
+      expect(explore.classes.has("hidden")).toBe(false);
+      expect(explore.title).toContain(sendCopy("exploreDesc"));
+
+      // The visible chip is its own off switch.
+      explore.onclick!();
+      expect(exploreMode.value).toBe(false);
+      expect(explore.classes.has("hidden")).toBe(true);
+    } finally {
+      planMode.value = false;
+      exploreMode.value = false;
+    }
+  });
+
+  it("labels the send button as queueing while a turn runs, and as sending again after", () => {
+    // Send stays on screen beside Stop while a turn runs; a click then queues
+    // the draft, and the button says so instead of promising to send now.
+    const attrs: Record<string, string> = {};
+    const sendBtn = {
+      dataset: {} as Record<string, string>,
+      title: "",
+      setAttribute: (name: string, value: string) => {
+        attrs[name] = value;
+      },
+    };
+    stubDocument({ composer: fakeComposer(), "send-btn": sendBtn });
+    running.value = false;
+    try {
+      bindComposer(vi.fn());
+      expect(sendBtn.title).toBe(sendCopy("send"));
+      running.value = true;
+      expect(sendBtn.title).toBe(sendCopy("queue"));
+      expect(attrs["aria-label"]).toBe(sendCopy("queue"));
+      running.value = false;
+      expect(sendBtn.title).toBe(sendCopy("send"));
+    } finally {
+      running.value = false;
+    }
   });
 });

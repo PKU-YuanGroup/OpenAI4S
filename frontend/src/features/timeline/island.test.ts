@@ -15,6 +15,8 @@ import { _kc, pendingReplIdentity } from "../../stores/notebook";
 import { delegationState, executionQueue } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { setNotebookRenderImpl } from "../notebook/scroll";
+import { kernelView } from "../notebook/kernel";
+import { nbT } from "../notebook/copy";
 import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
 import {
@@ -25,12 +27,21 @@ import {
   rememberExecutionState,
   renderActionTimeline,
   renderBranchPanel,
+  renderContextPanel,
   renderDelegationPanel,
+  renderSecurityPanel,
 } from "./island";
-import { renderQueueStrip } from "./queue";
+import { timelineLocalClock, timelineOverviewExactTime } from "./model";
+import { queueT, timelineT } from "./copy";
+import { noteQueuedTurnStarted, queuedFollowUpCount, renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
-import { sanitizeActionTimeline, sanitizeBranches, sanitizeContext } from "./sanitize";
+import {
+  sanitizeActionTimeline,
+  sanitizeBranches,
+  sanitizeContext,
+  sanitizeSecurity,
+} from "./sanitize";
 import { provenanceT } from "../execution/copy";
 import { LANG, setLang, t } from "../../i18n/runtime";
 
@@ -600,6 +611,130 @@ describe("queue strip", () => {
     expect(posts).toHaveLength(1);
     // Accepted: until the queue stops listing it, the row cannot be sent again.
     expect(doc.querySelector("#queue-strip .queue-cancel")!.disabled).toBe(true);
+  });
+
+  it("shows what the user wrote, never the ticket's branch, execution or profile ids", () => {
+    const doc = mountDocument();
+    S.currentId = "frame-ids";
+    S.executionQueue = {
+      owner: null,
+      queue: [
+        {
+          ...queued("exec-1a024afbd38943d1adff57c92774b6ca", "再画一张箱线图"),
+          branch_id: "f-7b6633dadc1a",
+          metadata: { preview: "再画一张箱线图", model_profile_id: "prof-9", model_profile_revision: 3 },
+        },
+      ],
+    };
+    renderQueueStrip();
+    const text = doc.getElementById("queue-strip")!.textContent;
+    expect(text).toContain("再画一张箱线图");
+    for (const internal of ["exec-1a024afbd", "f-7b6633dadc1a", "prof-9"]) {
+      expect(text).not.toContain(internal);
+    }
+  });
+
+  it("Edit takes the queued message out of the queue and back into the composer, in full", async () => {
+    const doc = mountDocument();
+    const calls = stubApi(() => ({ ok: true }));
+    const hints: string[] = [];
+    vi.stubGlobal("hint", (message: string) => hints.push(message));
+    const messages = doc.createElement("div");
+    messages.id = "messages";
+    doc.body.appendChild(messages);
+    const bubbleRow = doc.createElement("div");
+    bubbleRow.className = "msg user queued";
+    bubbleRow.dataset.executionId = "exec-e";
+    const bubble = doc.createElement("div");
+    bubble.className = "bubble";
+    const full = "第一行\n第二行：" + "很长的说明".repeat(60);
+    bubble.textContent = full;
+    bubbleRow.appendChild(bubble);
+    messages.appendChild(bubbleRow);
+    const composer = doc.createElement("textarea");
+    composer.id = "composer";
+    doc.body.appendChild(composer);
+    S.currentId = "frame-e";
+    S.executionQueue = { owner: null, queue: [queued("exec-e", full.replace(/\s+/g, " ").slice(0, 159) + "…")] };
+    renderQueueStrip();
+    const edit = doc.querySelector("#queue-strip .queue-edit")!;
+    expect(edit.disabled).toBe(false);
+    edit.click();
+    await flush();
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.path).toBe("/frames/frame-e/cancel");
+    expect((calls[0]!.body as { execution_id: string; reason: string }).execution_id).toBe("exec-e");
+    expect((calls[0]!.body as { reason: string }).reason).toContain("edit");
+    expect(composer.value).toBe(full);
+    expect(bubbleRow.isConnected).toBe(false);
+    expect(doc.activeElement).toBe(composer);
+    expect(hints.at(-1)).toBe(queueT("queueRow.editing"));
+  });
+
+  it("Edit keeps a draft already in the composer and takes nothing out of the queue", async () => {
+    const doc = mountDocument();
+    const calls = stubApi(() => ({ ok: true }));
+    const hints: string[] = [];
+    vi.stubGlobal("hint", (message: string) => hints.push(message));
+    const composer = doc.createElement("textarea");
+    composer.id = "composer";
+    composer.value = "my unsent draft";
+    doc.body.appendChild(composer);
+    S.currentId = "frame-f";
+    S.executionQueue = { owner: null, queue: [queued("exec-f", "short follow-up")] };
+    renderQueueStrip();
+    doc.querySelector("#queue-strip .queue-edit")!.click();
+    await flush();
+    expect(calls).toHaveLength(0);
+    expect(composer.value).toBe("my unsent draft");
+    expect(hints.at(-1)).toBe(queueT("queueRow.editBusy"));
+  });
+
+  it("does not offer Edit when this tab has only the cut-off start of the message", () => {
+    const doc = mountDocument();
+    S.currentId = "frame-g";
+    S.executionQueue = { owner: null, queue: [queued("exec-g", "x".repeat(159) + "…")] };
+    renderQueueStrip();
+    const edit = doc.querySelector("#queue-strip .queue-edit")!;
+    expect(edit.disabled).toBe(true);
+    expect(edit.title).toBe(queueT("queueRow.editUnavailable"));
+  });
+
+  it("says when a message this tab queued starts running", () => {
+    const doc = mountDocument();
+    const hints: string[] = [];
+    vi.stubGlobal("hint", (message: string) => hints.push(message));
+    const messages = doc.createElement("div");
+    messages.id = "messages";
+    doc.body.appendChild(messages);
+    const row = doc.createElement("div");
+    row.className = "msg user queued";
+    row.dataset.executionId = "exec-next";
+    const bubble = doc.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = "然后把结果画出来";
+    row.appendChild(bubble);
+    messages.appendChild(row);
+    expect(noteQueuedTurnStarted("exec-other")).toBe(false);
+    expect(hints).toEqual([]);
+    expect(noteQueuedTurnStarted("exec-next")).toBe(true);
+    expect(hints).toEqual([queueT("queueRow.started", "然后把结果画出来")]);
+    // After a Stop that also stopped background cells, the line keeps saying so.
+    noteQueuedTurnStarted("exec-next", "已停止，并停止了本回合启动的 1 个后台任务");
+    expect(hints.at(-1)).toBe(
+      "已停止，并停止了本回合启动的 1 个后台任务；" + queueT("queueRow.started", "然后把结果画出来"),
+    );
+  });
+
+  it("counts the queued follow-ups a Stop hands the session to", () => {
+    S.executionQueue = {
+      owner: null,
+      queue: [queued("exec-1"), queued("exec-2"), { ...queued("exec-3"), owner: { kind: "user_repl", id: "r" } }],
+    };
+    expect(queuedFollowUpCount()).toBe(2);
+    S.executionQueue = null;
+    expect(queuedFollowUpCount()).toBe(0);
   });
 
   it("offers the ✕ again when the cancel was refused", async () => {
@@ -1182,5 +1317,113 @@ describe("scheduled workbench refresh", () => {
     reads.release();
     await vi.advanceTimersByTimeAsync(10);
     expect(reads.paths.slice(first)).toEqual(["/frames/frame-q/delegations"]);
+  });
+});
+
+// I18N-1: the Timeline's titles, kinds and panel names were English in a
+// Chinese UI ("Action Timeline", "Python Cell", "Branch · Checkpoint").
+describe("timeline words", () => {
+  it("are Chinese in a Chinese UI where the generated dictionary has English", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      expect(timelineT("timeline.title")).toBe("行动时间线");
+      expect(timelineT("timeline.kind.python")).toBe("Python 单元");
+      expect(timelineT("branch.forkDefault", "x")).toBe("分叉 x");
+      // Keys the table does not name are the dictionary's.
+      expect(timelineT("timeline.refresh")).toBe(t("timeline.refresh"));
+      await setLang("en");
+      expect(timelineT("timeline.title")).toBe(t("timeline.title"));
+    } finally {
+      await setLang(original);
+    }
+  });
+});
+
+// Follow-up A: only the Notebook badge stopped saying "Ended · view only" for
+// a kernel that never started; the Timeline's runtime strip kept it.
+describe("runtime strip", () => {
+  it("says 'not started' for a kernel that never ran, and 'exited' for one that died", () => {
+    const doc = mountDocument();
+    const frames = stubFrames();
+    stubApi(() => undefined);
+    installTimeline({});
+    showTimeline("frame-r", [group("g-1", 1)]);
+    kernelView.value = { sid: "frame-r", st: { state: "none" }, envs: null, cur: null };
+    renderActionTimeline();
+    expect(doc.querySelector(".runtime-state")?.textContent).toBe(nbT("nb.kernel.notStarted"));
+    // NAV-6: the branch / generation / revision ids are folded away.
+    const ids = doc.querySelector(".runtime-summary details.runtime-ids") as unknown as FakeElement;
+    expect(ids).toBeTruthy();
+    expect(ids.open).toBeFalsy();
+    kernelView.value = { sid: "frame-r", st: { state: "none", generation_id: "g-dead" }, envs: null, cur: null };
+    renderActionTimeline();
+    frames.run();
+    expect(doc.querySelector(".runtime-state")?.textContent).toBe(nbT("nb.kernel.stateExited"));
+  });
+});
+
+// NAV-6: a developer view -- raw sandbox self-test JSON, "durable-policy",
+// token layers on view, and UTC times with no zone.
+describe("side panels in a scientist's words", () => {
+  /** Text of `node`, leaving out what sits inside a closed <details>. */
+  function visibleText(node: FakeElement): string {
+    if (node.tagName === "DETAILS" && !node.open) {
+      const summary = node.kids.find((kid) => kid.tagName === "SUMMARY");
+      return summary ? summary.textContent : "";
+    }
+    if (!node.kids.length) return node.textContent;
+    return node.kids.map(visibleText).join(" ");
+  }
+
+  it("shows sandbox status in plain words and keeps the raw self-test under details", () => {
+    mountDocument();
+    S.securityState = sanitizeSecurity({
+      sandbox: {
+        state: "enforced",
+        backend: "seatbelt",
+        enforced: true,
+        self_test_passed: true,
+        network_policy: "blocked",
+        detail: 'python: sandbox-exec detected; self-test passed: {"allowed_roots_readable": null}',
+      },
+      permission: { mode: "durable-policy", pending_count: 2 },
+    });
+    const panel = renderSecurityPanel() as unknown as FakeElement;
+    const shown = visibleText(panel);
+    expect(shown).not.toContain("{");
+    expect(shown).not.toContain("durable-policy");
+    expect(shown).toContain("macOS sandbox-exec");
+    const raw = panel.querySelector("details.security-raw") as unknown as FakeElement;
+    expect(raw).toBeTruthy();
+    expect(raw.open).toBeFalsy();
+    expect(raw.textContent).toContain("allowed_roots_readable");
+  });
+
+  it("keeps the model context's token layers in a closed diagnostics section", () => {
+    mountDocument();
+    S.contextState = sanitizeContext({
+      token_count: 10592,
+      layers: [{ name: "System prompt", kind: "system", token_count: 10592 }],
+    });
+    const panel = renderContextPanel() as unknown as FakeElement;
+    const details = panel.querySelector("details.workbench-diagnostics") as unknown as FakeElement;
+    expect(details).toBeTruthy();
+    expect(details.open).toBeFalsy();
+    expect(visibleText(panel)).not.toContain("10592");
+  });
+
+  it("names local times with their zone instead of UTC without one", () => {
+    const ms = Date.UTC(2026, 10, 18, 12, 21, 56, 159);
+    const local = new Date(ms);
+    const exact = timelineOverviewExactTime(ms);
+    expect(exact).not.toMatch(/Z$/);
+    expect(exact).toMatch(/\(UTC[+-]\d{2}:\d{2}\)$/);
+    expect(exact).toContain(
+      `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:56.159`,
+    );
+    expect(timelineLocalClock(ms)).toBe(
+      `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:56.159`,
+    );
   });
 });

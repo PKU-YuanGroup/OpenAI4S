@@ -119,3 +119,39 @@ describe("share dialog Copy", () => {
     expect(link.selected).toBe(1);
   });
 });
+
+function allText(node: FakeNode): string[] {
+  return [node.textContent, ...node.children.flatMap((child) => allText(child))].filter(Boolean);
+}
+
+describe("share dialog without a relay (EXP-2)", () => {
+  function statusReply(status: Record<string, unknown>): void {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      const reply = String(input).endsWith("/share/status") ? status : { shares: [] };
+      return new Response(JSON.stringify(reply));
+    });
+  }
+
+  it.each([
+    ["the default install (disabled, no relay)", { state: "disabled", configured: false }],
+    ["sharing enabled but no relay", { state: "unconfigured", missing: ["relay_url", "auth_token"] }],
+  ])("explains how to set sharing up for %s instead of a bare Close", async (_label, status) => {
+    statusReply(status);
+    await openShareDialog("f");
+    const text = allText(body).join("\n");
+    expect(text).not.toContain(t("share.disabled"));
+    expect(text).toContain("OPENAI4S_SHARE_RELAY_URL");
+    expect(text).toContain("openai4s share enable");
+    expect(text).toContain("docs/webshare.md");
+    const steps = body.find((node) => node.tagName === "OL");
+    expect(steps?.children).toHaveLength(3);
+  });
+
+  it("keeps the Enable button when a relay is configured but sharing is off", async () => {
+    statusReply({ state: "disabled", configured: true });
+    await openShareDialog("f");
+    const enable = body.find((node) => node.tagName === "BUTTON" && node.textContent === t("share.enable"));
+    expect(enable).not.toBeNull();
+    expect(body.find((node) => node.tagName === "OL")).toBeNull();
+  });
+});

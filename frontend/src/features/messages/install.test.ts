@@ -46,6 +46,10 @@ function responseBody(path: string): unknown {
   if (path.includes("/messages?")) return { messages: [], has_earlier: false };
   if (path.endsWith("/steps")) return { steps: [] };
   if (path.endsWith("/status")) return { running: false, status: "completed" };
+  // The session record an open reads when the session list does not show it
+  // (the list here is a mock that never loads): these sessions exist.
+  const frame = path.match(/^\/api\/v1\/frames\/([^/?]+)$/);
+  if (frame) return { id: decodeURIComponent(frame[1] || ""), project_id: null };
   return {};
 }
 

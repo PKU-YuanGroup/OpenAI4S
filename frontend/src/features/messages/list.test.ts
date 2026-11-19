@@ -351,6 +351,35 @@ describe("stored rows, first page and older page alike", () => {
     vi.stubGlobal("document", doc);
   });
 
+  it.each(ROW_RENDERERS)("%s: an annotated message shows the user's words and its pins, not instructions (SYNC-5)", (_name, render) => {
+    const row = render({
+      role: "user",
+      content: "Look at this plot",
+      message_id: "msg-pins",
+      annotations: [{ number: 1, kind: "image", artifact_name: "volcano.png", body: "which gene is this?" }],
+    }) as unknown as RowEl;
+    expect(row.querySelector(".bubble")?.textContent).toBe("Look at this plot");
+    const chip = row.querySelector(".annot-attach");
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toContain("volcano.png");
+    expect(chip!.textContent).toContain("which gene is this?");
+  });
+
+  it.each(ROW_RENDERERS)("%s: a row stored before SYNC-5 hides the injected annotation instructions", (_name, render) => {
+    const row = render({
+      role: "user",
+      content: "Look at this plot\n\n【图像标注反馈】用户直接在生成的图像上用图钉标注了修改意见。\n3) 重新运行绘图代码，覆盖写回同名图像文件",
+      message_id: "msg-legacy",
+    }) as unknown as RowEl;
+    expect(row.querySelector(".bubble")?.textContent).toBe("Look at this plot");
+    const onlyBlock = render({
+      role: "user",
+      content: "【图像标注反馈】用户直接在生成的图像上用图钉标注了修改意见。",
+      message_id: "msg-legacy-2",
+    }) as unknown as RowEl;
+    expect(onlyBlock.querySelector(".bubble")?.textContent).not.toContain("【图像标注反馈】");
+  });
+
   it.each(ROW_RENDERERS)("%s: a reviewed answer keeps its badge and candidate identity", (_name, render) => {
     const row = render({
       role: "assistant",
@@ -455,6 +484,17 @@ describe("stored rows, first page and older page alike", () => {
     expect(chips).toHaveLength(1);
     expect(chips[0]!.textContent).toContain("growth.csv");
     expect(chips[0]!.title).toBe("v-1 · sha256:abcdef012345");
+  });
+
+  it.each(ROW_RENDERERS)("%s: a text-form @name#v-<id> reopens without the hash, the chip keeps it", (_name, render) => {
+    // Written before ART-16, when the `@` menu put the version into the text.
+    const row = render({
+      role: "user",
+      content: "@cohort_clinical_markers.csv#v-9f5c06efc35e 这个文件一共多少行？",
+      artifact_refs: [{ display_name: "cohort_clinical_markers.csv", version_id: "v-9f5c06efc35e" }],
+    }) as unknown as RowEl;
+    expect(row.querySelector(".bubble")!.textContent).toBe("@cohort_clinical_markers.csv 这个文件一共多少行？");
+    expect(row.querySelectorAll(".msg-ref-chip")[0]!.title).toBe("v-9f5c06efc35e");
   });
 
   function forkButton(row: RowEl | null): RowEl | null {

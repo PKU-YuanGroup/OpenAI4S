@@ -2313,3 +2313,206 @@ def test_a_failing_cleanup_neither_masks_the_launch_error_nor_degrades_a_job(
         background_mod._receipt_prune_last_ms = None
         ok._bg_executor.shutdown(timeout_per_job=1.0)
         store.close()
+
+
+class _InterruptibleKernel:
+    """A worker that honours SIGINT: the cell returns ``interrupted``."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.interrupt_calls = 0
+        self.kill_calls = 0
+
+    def execute(self, code, origin="agent", on_chunk=None):
+        del code, origin, on_chunk
+        self.entered.set()
+        self.release.wait(5)
+        return {"stdout": "", "error": None, "interrupted": True}
+
+    def interrupt(self):
+        self.interrupt_calls += 1
+        self.release.set()
+
+    def kill_worker(self):
+        self.kill_calls += 1
+        self.release.set()
+
+    def shutdown(self):
+        self.release.set()
+
+
+def _wait_terminal(executor, exec_id):
+    job = executor._get(exec_id)
+    assert job._thread is not None
+    job._thread.join(5)
+    assert not job._thread.is_alive()
+    return executor.peek(exec_id)
+
+
+def test_stopping_a_turn_stops_only_the_background_cells_it_launched():
+    """SEC-8: Stop ended the turn but its exec_background cells ran on to the
+    end, invisible and unstoppable. Stopping turn B now interrupts B's cells;
+    a cell an earlier turn deliberately left running, and a user/REPL launch,
+    keep running."""
+    kernels: list[_InterruptibleKernel] = []
+
+    def factory():
+        kernels.append(_InterruptibleKernel())
+        return kernels[-1]
+
+    executor = BackgroundExecutor(factory, dispatcher=None)
+    earlier = executor.launch("train()", turn_id="turn-a")
+    stopped_turn = executor.launch("loop()", turn_id="turn-b")
+    user = executor.launch("watch()", origin="user")
+    for kernel in kernels:
+        assert kernel.entered.wait(1)
+
+    assert executor.stop_turn("turn-b") == [stopped_turn["exec_id"]]
+
+    report = _wait_terminal(executor, stopped_turn["exec_id"])
+    assert report["status"] == "interrupted"
+    assert kernels[1].interrupt_calls == 1 and kernels[1].kill_calls == 0
+    assert executor.peek(earlier["exec_id"])["status"] == "running"
+    assert executor.peek(user["exec_id"])["status"] == "running"
+    assert executor.stop_turn("") == []
+    executor.shutdown(timeout_per_job=0.5)
+
+
+def test_a_person_can_see_and_stop_one_background_cell():
+    """SEC-8 (UI): a cell left running had no place on screen and no way to
+    be stopped. `summaries` names each cell without its source, and `stop`
+    stops exactly one, answering before the cell has unwound."""
+    kernels: list[_InterruptibleKernel] = []
+
+    def factory():
+        kernels.append(_InterruptibleKernel())
+        return kernels[-1]
+
+    executor = BackgroundExecutor(factory, dispatcher=None)
+    keep = executor.launch("# warm-up\nwatch()", origin="user")
+    target = executor.launch(
+        "import time\nfor i in range(600):\n    print('tick', i)", turn_id="turn-1"
+    )
+    for kernel in kernels:
+        assert kernel.entered.wait(1)
+
+    rows = {row["exec_id"]: row for row in executor.summaries()}
+    assert rows[keep["exec_id"]]["code_preview"] == "watch()"
+    assert rows[keep["exec_id"]]["launched_by"] == "user"
+    assert rows[target["exec_id"]]["code_preview"] == "import time"
+    assert rows[target["exec_id"]]["launched_by"] == "agent"
+    assert rows[target["exec_id"]]["status"] == "running"
+    assert "range(600)" not in str(rows)  # a preview, not the source
+
+    assert executor.stop(target["exec_id"]) == {
+        "ok": True,
+        "exec_id": target["exec_id"],
+        "status": "stopping",
+    }
+    assert _wait_terminal(executor, target["exec_id"])["status"] == "interrupted"
+    assert executor.peek(keep["exec_id"])["status"] == "running"
+    again = executor.stop(target["exec_id"])
+    assert again["ok"] is False and again["status"] == "interrupted"
+    assert executor.stop("exec-nope")["ok"] is False
+    executor.shutdown(timeout_per_job=0.5)
+
+
+def test_a_turn_stop_kills_a_cell_that_ignores_sigint():
+    kernel = _HungKernel()  # interrupt() does nothing; only kill releases it
+    executor = BackgroundExecutor(lambda: kernel, dispatcher=None)
+    launched = executor.launch("while True: pass", turn_id="turn-1")
+    assert kernel.entered.wait(1)
+
+    assert executor.stop_turn("turn-1", grace_s=0.05) == [launched["exec_id"]]
+
+    report = _wait_terminal(executor, launched["exec_id"])
+    assert kernel.interrupt_calls == 1 and kernel.kill_calls == 1
+    # The kill is the stop working, not the cell failing.
+    assert report["status"] == "interrupted"
+    assert report["error"] is None
+
+
+def test_the_dispatcher_ties_agent_background_launches_to_the_current_turn(
+    tmp_path,
+):
+    cfg, store = _cfg_store(tmp_path)
+    root = _root(store)
+    kernels: list[_InterruptibleKernel] = []
+
+    def factory():
+        kernels.append(_InterruptibleKernel())
+        return kernels[-1]
+
+    dispatcher = _dispatcher(cfg, root, "instance-a", factory)
+    dispatcher.set_task_evidence_scope(turn_id="turn-1")
+    agent = dispatcher._m_exec_background({"code": "loop()"})
+    # A manual Notebook cell's launch: the host bound that Cell's origin.
+    with dispatcher.bind_cell_origin("user"):
+        user = dispatcher._m_exec_background({"code": "loop()"})
+    # An agent Cell claiming to be the user is still the agent's: the
+    # caller-supplied origin decides nothing (it used to skip the turn).
+    with dispatcher.bind_cell_origin("agent"):
+        spoofed = dispatcher._m_exec_background({"code": "loop()", "origin": "user"})
+    for kernel in kernels:
+        assert kernel.entered.wait(1)
+
+    assert sorted(dispatcher.stop_turn_background()) == sorted(
+        [agent["exec_id"], spoofed["exec_id"]]
+    )
+    _join(dispatcher, agent["exec_id"])
+    _join(dispatcher, spoofed["exec_id"])
+    assert dispatcher._m_exec_peek(agent["exec_id"])["status"] == "interrupted"
+    assert dispatcher._m_exec_peek(spoofed["exec_id"])["status"] == "interrupted"
+    assert dispatcher._m_exec_peek(user["exec_id"])["status"] == "running"
+
+    # A later turn's Stop does not reach back into this one's survivors.
+    dispatcher.set_task_evidence_scope(turn_id="turn-2")
+    assert dispatcher.stop_turn_background() == []
+    dispatcher._bg_executor.shutdown(timeout_per_job=0.5)
+    store.close()
+
+
+def test_stopping_an_agent_execution_stops_its_turn_background_cells(tmp_path):
+    """The Stop path (`SessionRunner._after_execution_cancel`) reaches the
+    session dispatcher, and the cancel result names what it stopped."""
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    cfg = Config(
+        data_dir=tmp_path / "data", llm=LLMConfig(provider="deepseek", api_key="k")
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    calls: list[str] = []
+    state = SimpleNamespace(
+        kernels=SimpleNamespace(interrupt_preparing=lambda: None),
+        delegation_runner=None,
+        dispatcher=SimpleNamespace(
+            stop_turn_background=lambda: calls.append("stop") or ["exec-1"]
+        ),
+    )
+    try:
+        with runner._lock:
+            runner._sessions["root-1"] = state
+        agent = runner._after_execution_cancel(
+            "root-1", {"ok": True, "scope": "running", "owner": {"kind": "agent"}}
+        )
+        assert calls == ["stop"]
+        assert agent["background_stopped"] == ["exec-1"]
+
+        # A user REPL cancel is not an agent turn: its background stays.
+        repl = runner._after_execution_cancel(
+            "root-1", {"ok": True, "scope": "running", "owner": {"kind": "user_repl"}}
+        )
+        assert calls == ["stop"] and "background_stopped" not in repl
+    finally:
+        with runner._lock:
+            runner._sessions.pop("root-1", None)
+        runner.close()

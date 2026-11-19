@@ -8,16 +8,16 @@ M-02 Dashboard "needs attention" stream. Cards come from `GET /api/v1/attention`
 
 | File | Responsibility |
 | --- | --- |
-| [`api.ts`](api.ts) | `GET /attention` page fetch; drops late responses when the page is hidden. |
+| [`api.ts`](api.ts) | `GET /attention` page fetch; drops late responses when the page is hidden. Keeps only the cards `needsDecision` accepts. |
 | [`boot.ts`](boot.ts) | Mounts `#dash-attention`; its reads ride the dashboard's 4s poll (`onDashPoll` in `sessions/dashboard.ts`), so they start, stop and pause with it; a language switch reads the page again (card labels are built at read time). |
 | [`boot.test.ts`](boot.test.ts) | A language switch, and only a switch, reads the attention page again; the reads ride the dashboard's poll. |
-| [`cards.test.ts`](cards.test.ts) | Six-kind fixture → one card each; idle/completed → 0; mutation route names. |
+| [`cards.test.ts`](cards.test.ts) | Six-kind fixture → one card each; idle/completed → 0; mutation route names. Needs attention keeps decisions only; relative time follows the UI language. |
 | [`copy.ts`](copy.ts) | M-02 overlay strings (does not rewrite generated i18n). |
 | [`index.ts`](index.ts) | Public re-exports. |
 | [`mutations.ts`](mutations.ts) | Maps approve/restore/retry hints onto existing POST routes. |
-| [`navigate.test.ts`](navigate.test.ts) | Closed-set target → local session path + exact dock; URL fields ignored. |
-| [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`. |
-| [`parse.ts`](parse.ts) | Closed-set item parse and `cardsFromItems` mapping. |
+| [`navigate.test.ts`](navigate.test.ts) | Closed-set target → local session path + exact dock; URL fields ignored; an approval opens on its card, not the timeline. |
+| [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`. An approval (`security` dock) opens the session on its card in the conversation, not on the timeline pane. |
+| [`parse.ts`](parse.ts) | Closed-set item parse and `cardsFromItems` mapping. `needsDecision`: approvals, recoveries, view-only sessions and remote jobs whose state is unknown; a running or queued session is not a decision. `agoFromMs` is the shared localized relative time. |
 | [`poll.ts`](poll.ts) | `shouldFetchAttention`: read only while the dashboard is on screen and the page is visible. |
 | [`state.ts`](state.ts) | Lane-local signals. Not promoted into `stores/`. |
 | [`types.ts`](types.ts) | B-05 item/target types and closed `SOURCE_KINDS` / `SURFACES` / `DOCKS`. |

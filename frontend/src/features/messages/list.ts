@@ -17,6 +17,7 @@ import { t } from "../../i18n/runtime";
 import { artifacts } from "../../stores/artifacts";
 import { currentId, feedback as feedbackSignal } from "../../stores/session";
 import { branchState } from "../../stores/timeline";
+import { stripRefVersions } from "../autocomplete/mentions";
 import { copyFailedText, copyText } from "../chrome/clipboard";
 import {
   forkFromMessage,
@@ -35,6 +36,7 @@ import { iconEl } from "../sessions/icon";
 import { historyT } from "./copy";
 import { el, messagesHost } from "./dom";
 import { failureMeta } from "./failure";
+import { embedArtifactFigures } from "./figures";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { planModeRequestText, planSeed, planSeedMarker } from "./planPrompt";
@@ -45,7 +47,7 @@ export const INITIAL_RENDER_BATCH = 40;
 export type HistoryItem = {
   t: number;
   seq: number;
-  kind: "msg" | "step";
+  kind: "msg" | "step" | "perm";
   v: unknown;
 };
 
@@ -56,6 +58,8 @@ export type StoredMessage = {
   message_id?: string;
   fork_checkpoint_id?: string | null;
   artifact_refs?: unknown;
+  /** The pins the message was sent with (SYNC-5). */
+  annotations?: unknown;
   failure?: { request_id?: unknown; code?: unknown; output_committed?: unknown } | null;
   cancelled?: { request_id?: unknown; execution_id?: unknown; reason?: unknown } | null;
   review_status?: unknown;
@@ -86,12 +90,18 @@ export function forkFromMessageCapability(): boolean {
 type StepRenderer = (step: unknown, target?: ParentNode | null) => Node | null | void;
 
 let renderStoredStepImpl: StepRenderer | null = null;
+let renderStoredPermissionImpl: StepRenderer | null = null;
 let framedRaf = 0;
 let framedOnCancel: (() => void) | null = null;
 
 /** F-11 assigns `renderStoredStep`. Until then steps in the interleaved list are skipped. */
 export function setRenderStoredStepImpl(fn: StepRenderer | null): void {
   renderStoredStepImpl = fn;
+}
+
+/** F-11 assigns the approval-card renderer for stored decisions. */
+export function setRenderStoredPermissionImpl(fn: StepRenderer | null): void {
+  renderStoredPermissionImpl = fn;
 }
 
 export function nextBatchEnd(
@@ -359,15 +369,20 @@ export function renderStored(
   (w as HTMLElement & { _messageText?: string })._messageText = text;
   if (m.role === "user") {
     const b = el("div", "bubble");
-    b.textContent = planModeRequestText(text);
+    // A text-form `@name#v-<id>` reads as `@name`; the chip below names the
+    // version (ART-16). Rows stored before SYNC-5 also hide the product's
+    // annotation instructions. The stored row is unchanged.
+    b.textContent = stripRefVersions(userBubbleText(planModeRequestText(text)));
     w.appendChild(b);
     renderMessageRefChips(w, m.artifact_refs);
+    renderAnnotationChip(w, m.annotations);
     if (canForkFromMessage(m) && typeof m.message_id === "string") {
       w.appendChild(forkMessageControl(m.message_id));
     }
   } else {
     const md = el("div", "md");
     md.innerHTML = renderMd(text);
+    embedArtifactFigures(md);
     w.appendChild(md);
     if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
     const review = m.review_status || (m.metadata && m.metadata.review_status);
@@ -457,6 +472,10 @@ export function renderHistoryItem(
 ): Node | null {
   if (item.kind === "msg") {
     return renderStored(item.v as StoredMessage, target);
+  }
+  if (item.kind === "perm") {
+    const node = renderStoredPermissionImpl ? renderStoredPermissionImpl(item.v, target) : null;
+    return node instanceof Node ? node : null;
   }
   if (renderStoredStepImpl) {
     const node = renderStoredStepImpl(item.v, target);
@@ -573,9 +592,38 @@ export function renderEmptySession(host: ParentNode | null = messagesHost()): vo
   host.appendChild(wrap);
 }
 
+/**
+ * A link to a session that does not exist (or that this login may not see).
+ * The workbench used to open as if it did -- an empty transcript, a usable
+ * composer, and "Invalid running state" in the history banner -- with no way
+ * back but the browser's.
+ */
+export function renderMissingSession(
+  host: ParentNode | null,
+  back: { project?: (() => void) | null; home: () => void },
+): void {
+  if (!host) return;
+  const wrap = el("div", "empty-session missing-session");
+  wrap.setAttribute("role", "alert");
+  wrap.appendChild(el("div", "es-title", historyT("history.missing.title")));
+  wrap.appendChild(el("div", "es-sub", historyT("history.missing.sub")));
+  const actions = el("div", "missing-actions");
+  const button = (label: string, onClick: () => void): void => {
+    const b = el("button", "outline-btn", label) as HTMLButtonElement;
+    b.type = "button";
+    b.onclick = onClick;
+    actions.appendChild(b);
+  };
+  if (back.project) button(historyT("history.missing.project"), back.project);
+  button(historyT("history.missing.home"), back.home);
+  wrap.appendChild(actions);
+  host.appendChild(wrap);
+}
+
 export function interleaveHistory(
   msgs: StoredMessage[],
   steps: Array<{ created_at?: number; seq?: number; [key: string]: unknown }>,
+  approvals: Array<{ created_at?: unknown; [key: string]: unknown }> = [],
 ): HistoryItem[] {
   const items: HistoryItem[] = [];
   for (const mm of msgs) {
@@ -594,8 +642,94 @@ export function interleaveHistory(
       v: s,
     });
   }
+  // An approval is asked while the step that needs it is already on screen,
+  // so on a millisecond tie it follows the step and precedes the prose.
+  for (const a of approvals) {
+    items.push({
+      t: new Date(String(a.created_at || "")).getTime() || 0,
+      seq: 5e14,
+      kind: "perm",
+      v: a,
+    });
+  }
   items.sort((a, b) => a.t - b.t || a.seq - b.seq);
   return items;
+}
+
+/**
+ * A `user_message` event: the request a turn starts from, whichever tab sent
+ * it. The sending tab adopts its own optimistic bubble (matched by the
+ * `X-Request-Id` it sent, or the execution the 202 named); a transcript that
+ * already shows the stored row (a reload's REST read, a replay) keeps it and
+ * gets null back; any other tab shows the question it would otherwise never
+ * have seen.
+ */
+export function showLiveUserMessage(
+  m: Record<string, unknown>,
+  host: ParentNode | null = messagesHost(),
+): HTMLElement | null {
+  if (!host) return null;
+  const id = typeof m.message_id === "string" ? m.message_id : "";
+  const requestId = typeof m.request_id === "string" ? m.request_id : "";
+  const executionId = typeof m.execution_id === "string" ? m.execution_id : "";
+  const rows = Array.from(
+    (host as ParentNode & { querySelectorAll?: (s: string) => ArrayLike<Element> })
+      .querySelectorAll?.(":scope > .msg.user") || [],
+  ) as HTMLElement[];
+  // Already on screen: nothing changes, and the caller is told so (null).
+  if (id && rows.some((row) => row.dataset.messageId === id)) return null;
+  const own = rows.find((row) =>
+    !row.dataset.messageId &&
+    ((requestId && row.dataset.requestId === requestId) ||
+      (executionId && row.dataset.executionId === executionId)));
+  if (own) {
+    if (id) own.dataset.messageId = id;
+    // Its turn is running now; it is no longer waiting in the queue.
+    own.classList.remove("queued");
+    return own;
+  }
+  (host as ParentNode).querySelector?.(":scope > .empty-session")?.remove();
+  return renderStored(
+    {
+      role: "user",
+      content: m.content,
+      created_at: m.created_at,
+      message_id: id || undefined,
+      artifact_refs: m.artifact_refs,
+      annotations: m.annotations,
+    },
+    host,
+  );
+}
+
+/**
+ * Rows stored before SYNC-5 carry the product's annotation instructions after
+ * the user's words ("【图像标注反馈】…"); the bubble shows only the user's part.
+ */
+const INJECTED_ANNOTATION_BLOCK = /(?:^|\n\n)【(?:图像|Workbench )标注反馈】[\s\S]*$/;
+
+export function userBubbleText(text: string): string {
+  const own = text.replace(INJECTED_ANNOTATION_BLOCK, "").trim();
+  return own || (INJECTED_ANNOTATION_BLOCK.test(text) ? t("send.imageAnnotationFallback") : text);
+}
+
+/** The pins a stored user message was sent with: the chip the live bubble shows. */
+function renderAnnotationChip(w: HTMLElement, raw: unknown): void {
+  if (!Array.isArray(raw) || !raw.length) return;
+  const box = el("div", "annot-attach");
+  box.appendChild(iconEl("message-square", 13));
+  box.appendChild(el("span", "annot-attach-t", t("annot.attachCount", raw.length)));
+  const list = el("div", "annot-attach-list");
+  for (const item of raw) {
+    const an = (item || {}) as { number?: unknown; artifact_name?: unknown; body?: unknown };
+    const row = el("div", "annot-attach-row");
+    row.appendChild(el("span", "annot-attach-pin", an.number == null ? "" : String(an.number)));
+    row.appendChild(el("span", "annot-attach-file", String(an.artifact_name || "artifact")));
+    row.appendChild(el("span", "annot-attach-body", "· " + String(an.body || "")));
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+  w.appendChild(box);
 }
 
 setMessageForkRefresh(() => {

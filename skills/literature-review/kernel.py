@@ -1,6 +1,6 @@
 """
-Literature-review helpers. Auto-loaded into the python kernel by the host
-when the skill loads:
+Literature-review helpers; importable once the skill is loaded, not imported
+for you: lr = importlib.import_module("literature-review.kernel"), then lr.*:
 
  verify_dois, crossref_lookup, search_openalex, expand_citations,
  extract_dois, style_pass, screen_passages, check_claims
@@ -48,11 +48,31 @@ def litrev_contact() -> str | None:
     return (r or None) if isinstance(r, str) else None
 
 
-def litrev_get(url: str, timeout: float = 15) -> dict | None:
-    """GET `url` and JSON-decode. One 2s retry on HTTP 429; None on any error."""
+#: Characters requested per JSON page. `host.web_fetch` returns 20,000 by
+#: default, and a truncated JSON document cannot be parsed: one OpenAlex
+#: search page of five works is ~130,000 characters, so every search used to
+#: come back as "0 hits" with no error at all.
+LITREV_MAX_CHARS = 2_000_000
+
+
+class LiteratureLookupError(RuntimeError):
+    """A literature API could not be reached, or answered with something
+    unusable (rate limit, refusal, truncated or non-JSON body).
+
+    Raised by the search helpers instead of returning an empty result, so a
+    failed lookup is never mistaken for "there is no literature on this"."""
+
+
+def litrev_get(url: str, timeout: float = 15, *, strict: bool = False) -> dict | None:
+    """GET `url` and JSON-decode. One 2s retry on HTTP 429.
+
+    On failure returns None, or with ``strict=True`` raises
+    LiteratureLookupError naming the reason. Search helpers are strict; DOI
+    verification is not, because it falls back to the doi.org resolver."""
     c = litrev_contact()
     ua = "ClaudeScience-literature-review/1.0" + (f" (mailto:{c})" if c else "")
     ua = ua.encode("ascii", "ignore").decode("ascii")
+    reason = "no response"
     for attempt in (0, 1):
         try:
             # Through the Host, not urllib. A request made with urllib from
@@ -61,18 +81,36 @@ def litrev_get(url: str, timeout: float = 15) -> dict | None:
             # the product builds for exactly this. `user_agent` exists on the
             # Host call so the polite-pool identity below survives the move.
             response = lr_sdk().web_fetch(
-                url, format="json", timeout=timeout, user_agent=ua
+                url,
+                format="json",
+                timeout=timeout,
+                user_agent=ua,
+                max_chars=LITREV_MAX_CHARS,
             )
-            if response.get("error"):
-                # 429 arrives as a soft error string; the one retry is still
-                # worth taking before giving up on a rate limit.
-                if "429" in str(response["error"]) and attempt == 0:
-                    time.sleep(2)
-                    continue
-                return None
+        except Exception as exc:  # the Host's soft errors arrive as RuntimeError
+            reason = f"{type(exc).__name__}: {exc}"
+            if "429" in reason and attempt == 0:
+                time.sleep(2)
+                continue
+            break
+        if response.get("error"):
+            reason = str(response["error"])
+            # 429 arrives as a soft error string; the one retry is still
+            # worth taking before giving up on a rate limit.
+            if "429" in reason and attempt == 0:
+                time.sleep(2)
+                continue
+            break
+        if response.get("truncated"):
+            reason = f"response is larger than {LITREV_MAX_CHARS:,} characters"
+            break
+        try:
             return json.loads(response.get("content") or "null")
-        except Exception:
-            return None
+        except ValueError as exc:
+            reason = f"response is not valid JSON ({exc})"
+            break
+    if strict:
+        raise LiteratureLookupError(f"{url.split('?', 1)[0]}: {reason}")
     return None
 
 
@@ -183,10 +221,16 @@ def verify_dois(dois: list[str]) -> dict[str, dict]:
 
 def crossref_lookup(ref_string: str) -> dict | None:
     """Find a DOI from a free-text citation (author/title/year). Returns the
-    top CrossRef match as {doi, title, year, score} or None. Use when you have
-    a citation's details but not its DOI — this is the alternative to guessing."""
+    top CrossRef match as {doi, title, year, score}, or None when CrossRef has
+    no match. Raises LiteratureLookupError when CrossRef could not be asked.
+    Use when you have a citation's details but not its DOI — this is the
+    alternative to guessing."""
     q = urllib.parse.quote(ref_string)
-    j = litrev_get(f"https://api.crossref.org/works?query.bibliographic={q}&rows=1")
+    j = litrev_get(
+        f"https://api.crossref.org/works?query.bibliographic={q}&rows=1"
+        "&select=DOI,title,published,score",
+        strict=True,
+    )
     items = (j or {}).get("message", {}).get("items", [])
     if not items:
         return None
@@ -202,14 +246,23 @@ def crossref_lookup(ref_string: str) -> dict | None:
 def search_openalex(query: str, n: int = 10, filters: str = "") -> list[dict]:
     """Search OpenAlex (open scholarly index, ~250M works). Returns up to n
     hits as [{doi, title, year, cited_by, venue, oa_url}]. `filters` is an
-    OpenAlex filter string, e.g. 'from_publication_date:2022-01-01'."""
+    OpenAlex filter string, e.g. 'from_publication_date:2022-01-01'.
+
+    An empty list means OpenAlex found nothing. When OpenAlex could not be
+    asked (rate limit, network policy, a bad response) this raises
+    LiteratureLookupError with the reason instead of returning [] -- a failed
+    search must never read as "no literature exists"."""
     q = urllib.parse.quote(query)
     flt = f"&filter={filters}" if filters else ""
     c = litrev_contact()
     mailto = f"&mailto={urllib.parse.quote(c)}" if c else ""
+    # `select=` keeps a page to the fields used below; a full work record
+    # (abstract index, authorships, concepts) is ~25,000 characters each.
     j = litrev_get(
         f"https://api.openalex.org/works?search={q}&per-page={min(n, 25)}"
-        f"&sort=cited_by_count:desc{flt}{mailto}"
+        f"&select=doi,title,publication_year,cited_by_count,primary_location,"
+        f"open_access&sort=cited_by_count:desc{flt}{mailto}",
+        strict=True,
     )
     out = []
     for w in (j or {}).get("results", [])[:n]:
@@ -235,11 +288,20 @@ def expand_citations(doi: str, n_backward: int = 50, n_forward: int = 15) -> dic
     `cited_by` is the forward step — papers that cite this one (incoming
     citations), via `filter=cites:<id>`. Each entry is {doi, title, year,
     cited_by}. Three OpenAlex requests total; returns empty lists when the DOI
-    is unknown to OpenAlex or the list endpoint is rate-limited."""
+    is unknown to OpenAlex. Raises LiteratureLookupError when OpenAlex could
+    not be asked (rate limit, network policy), rather than returning lists
+    that look empty."""
     c = litrev_contact()
     mailto = f"&mailto={urllib.parse.quote(c)}" if c else ""
     enc = quote_doi_path(doi)
-    work = litrev_get(f"https://api.openalex.org/works/doi:{enc}?select=id{mailto}")
+    try:
+        work = litrev_get(
+            f"https://api.openalex.org/works/doi:{enc}?select=id{mailto}", strict=True
+        )
+    except LiteratureLookupError as exc:
+        if "404" in str(exc):  # the DOI is not in OpenAlex
+            return {"references": [], "cited_by": []}
+        raise
     work_id = ((work or {}).get("id") or "").rsplit("/", 1)[-1]
     if not work_id:
         return {"references": [], "cited_by": []}
@@ -261,7 +323,8 @@ def expand_citations(doi: str, n_backward: int = 50, n_forward: int = 15) -> dic
         j = litrev_get(
             f"https://api.openalex.org/works?filter={filter_expr}"
             f"&select=doi,title,publication_year,cited_by_count"
-            f"&sort=cited_by_count:desc&per-page={min(n, 100)}{mailto}"
+            f"&sort=cited_by_count:desc&per-page={min(n, 100)}{mailto}",
+            strict=True,
         )
         return _rows((j or {}).get("results", []))
 

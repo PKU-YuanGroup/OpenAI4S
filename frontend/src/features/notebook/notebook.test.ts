@@ -22,13 +22,15 @@ import {
   _replDrafts,
   cells,
   liveCells,
+  pendingReplIdentity,
+  variableInspector,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { bytes, PREVIEW_READ_MAX_BYTES } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { resetStoreFields } from "../../stores/signal-field";
-import { running } from "../../stores/stream";
-import { branchState, securityState } from "../../stores/timeline";
+import { _replayGap, running } from "../../stores/stream";
+import { branchState, executionQueue, securityState } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { t } from "../../i18n/runtime";
 import { copyFailedText } from "../chrome/clipboard";
@@ -59,24 +61,37 @@ import {
   notebookArtifactState,
   renderTableInto,
   notebookExportHref,
+  notebookExportLink,
   NOTEBOOK_EXPORTS,
+  relabelNotebookExports,
   resetHighlightMemo,
   resetNotebookCellCaches,
 } from "./chrome";
+import { LANG, setLang } from "../../i18n/runtime";
+import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent } from "./editor";
+import { environmentMenuItems, envSelectable, envSourceLabel } from "./envmenu";
+import { nbT } from "./copy";
 import { installNotebook } from "./install";
 import type { NotebookCell } from "./types";
 import {
   copyNotebookCell,
   currentKernelStatus,
+  editAsNewCell,
   executeNotebookCode,
   forkNotebookCell,
+  handleKernelStatus,
+  kernelAction,
+  kernelCtl,
   forkPending,
   invalidateKernelCache,
   kernelView,
   nbSwitchEnv,
   notebookOnTurnDone,
   refreshKernelState,
+  replBusy,
   replEnabledNow,
+  replHistory,
+  replLoad,
   shortRuntime,
   syncKernel,
 } from "./kernel";
@@ -521,6 +536,74 @@ describe("F-14 Notebook", () => {
       expect(await first).toBe(true);
     });
 
+    it("a REPL execution whose terminal event was lost settles after a replay gap", async () => {
+      // NB-2: a dropped socket lost `execution_state`; the input stayed
+      // disabled until a reload because nothing else cleared the pending run.
+      const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+      let listed = true;
+      const reads: string[] = [];
+      setNotebookApi(async (path) => {
+        reads.push(path);
+        if (path.endsWith("/kernel/execute")) {
+          return { status: "accepted", owner: { kind: "user_repl", id: "x" } };
+        }
+        if (path.endsWith("/execution-queue")) {
+          return listed
+            ? { owner: { execution_id: (pendingReplIdentity.value as { execution_id: string }).execution_id }, queue: [] }
+            : { owner: null, queue: [] };
+        }
+        return { cells: [] };
+      });
+      expect(await executeNotebookCode("for i in range(5000): print(i)", "python")).toBe(true);
+      expect(replBusy.value).toBe(true);
+      _replayGap.value = "frame-1";
+      await tick();
+      expect(reads.filter((p) => p.endsWith("/execution-queue"))).toHaveLength(1);
+      expect(replBusy.value).toBe(true); // still running on the server
+      _replayGap.value = null;
+      listed = false;
+      _replayGap.value = "frame-1";
+      await tick();
+      expect(replBusy.value).toBe(false);
+      expect(pendingReplIdentity.value).toBeNull();
+    });
+
+    it("Restart interrupts the user's own running cell instead of queueing behind it", async () => {
+      // NB-10: a restart waited for the running REPL cell, and the header kept
+      // the old generation and "Busy" with nothing saying a restart was asked.
+      vi.stubGlobal("confirm", () => true);
+      vi.stubGlobal("hint", () => undefined);
+      executionQueue.value = {
+        owner: { execution_id: "repl-1", owner: { kind: "user_repl", id: "repl-1" } },
+        queue: [],
+      };
+      const paths: string[] = [];
+      let seenAction: unknown = "unset";
+      setNotebookApi(async (path) => {
+        paths.push(path);
+        if (path.endsWith("/kernel/restart")) seenAction = kernelAction.value;
+        return { ok: true };
+      });
+      await kernelCtl("restart");
+      expect(paths).toEqual(["/frames/frame-1/kernel/interrupt", "/frames/frame-1/kernel/restart"]);
+      expect(seenAction).toEqual({ sid: "frame-1", action: "restart" });
+      expect(kernelAction.value).toBeNull();
+    });
+
+    it("a restart or stop drops the Variable Inspector's read of the old namespace", () => {
+      variableInspector.value = {
+        language: "python",
+        results: { python: { variables: [{ name: "v" }] }, r: { variables: [] } },
+        loading: null,
+        error: "",
+        request: 1,
+      };
+      handleKernelStatus({ type: "kernel_status", status: "env_changed" });
+      expect(Object.keys(variableInspector.value.results)).toEqual(["r"]);
+      handleKernelStatus({ type: "kernel_status", status: "restarted", generation: 2 });
+      expect(variableInspector.value.results).toEqual({});
+    });
+
     it("Fork sends one request while one is out, and says when the branch exists", async () => {
       branchState.value = { capabilities: { fork_from_cell: true } };
       const hints: string[] = [];
@@ -698,6 +781,84 @@ describe("F-14 Notebook", () => {
       expect(html).toContain("&lt;");
       expect(html).toContain("tb-loc");
       expect(html).toContain("tb-final");
+    });
+
+    it("makes the clean notebook the primary export and keeps the raw log (NB-1)", () => {
+      const primary = NOTEBOOK_EXPORTS[0]!;
+      const raw = NOTEBOOK_EXPORTS[1]!;
+      expect(primary.variant).toBe("clean");
+      expect(notebookExportHref("f-exec-root", primary)).toBe(
+        "/api/v1/frames/f-exec-root/notebook/export?variant=clean",
+      );
+      expect(raw.language).toBe("bundle");
+      expect(notebookExportHref("f-exec-root", raw)).toBe(
+        "/api/v1/frames/f-exec-root/notebook/export?language=bundle",
+      );
+      expect(primary.label?.()).toMatch(/ipynb/);
+      expect(raw.label?.()).not.toBe(primary.label?.());
+    });
+
+    // SYNC-8 follow-up: the split-button is built once per session (or per
+    // provenance panel) and its labels stayed in the language they were built in.
+    it("relabels a built export button when the language changes", async () => {
+      class Node {
+        tagName: string;
+        className = "";
+        textContent = "";
+        innerHTML = "";
+        href = "";
+        onclick: unknown = null;
+        attrs = new Map<string, string>();
+        kids: Node[] = [];
+        constructor(tag: string) {
+          this.tagName = tag.toUpperCase();
+        }
+        setAttribute(name: string, value: string) {
+          this.attrs.set(name, String(value));
+        }
+        getAttribute(name: string) {
+          return this.attrs.has(name) ? this.attrs.get(name)! : null;
+        }
+        appendChild(kid: Node) {
+          this.kids.push(kid);
+          return kid;
+        }
+        querySelectorAll(selector: string): Node[] {
+          const out: Node[] = [];
+          const match = (n: Node) =>
+            selector.startsWith("[")
+              ? n.attrs.has(selector.slice(1, -1))
+              : selector.startsWith(".")
+                ? n.className.split(/\s+/).includes(selector.slice(1))
+                : false;
+          const walk = (n: Node) => n.kids.forEach((kid) => { if (match(kid)) out.push(kid); walk(kid); });
+          walk(this);
+          return out;
+        }
+      }
+      const body = new Node("body");
+      const doc = Object.assign(body, {
+        body,
+        documentElement: new Node("html"),
+        createElement: (tag: string) => new Node(tag),
+      });
+      vi.stubGlobal("document", doc);
+      const before = LANG;
+      try {
+        await setLang("en");
+        body.appendChild(notebookExportLink("f-lang") as unknown as Node);
+        const label = () => body.querySelectorAll("[data-nb-export]").map((n) => n.textContent);
+        expect(label()[0]).toBe(NOTEBOOK_EXPORTS[0]!.label!());
+        const english = label();
+        await setLang("zh");
+        expect(label()[0]).toBe(NOTEBOOK_EXPORTS[0]!.label!());
+        expect(label()).not.toEqual(english);
+        relabelNotebookExports(doc as unknown as ParentNode);
+        expect(label()).toHaveLength(NOTEBOOK_EXPORTS.length);
+      } finally {
+        await setLang(before);
+        vi.unstubAllGlobals();
+      }
     });
 
     it("builds the sources.zip export on the execution-sources route", () => {
@@ -1008,5 +1169,83 @@ describe("Notebook immutable output selection", () => {
       expect(holder.children[0]?.className).toBe("nbc-table-scroll");
       dispose();
     } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+describe("REPL editor keys (NB-7)", () => {
+  it("Tab indents at the caret and every selected line; Shift+Tab dedents", () => {
+    expect(indent({ value: "x = 1", start: 0, end: 0 }, false)).toEqual({ value: "    x = 1", start: 4, end: 4 });
+    const block = "for i in r:\nprint(i)\nprint(2)";
+    const selected = indent({ value: block, start: 12, end: block.length }, false);
+    expect(selected.value).toBe("for i in r:\n    print(i)\n    print(2)");
+    const back = indent({ value: selected.value, start: selected.start, end: selected.end }, true);
+    expect(back.value).toBe(block);
+    // A selection that ends at a line start leaves that line alone.
+    expect(indent({ value: "a\nb\nc", start: 0, end: 2 }, false).value).toBe("    a\nb\nc");
+  });
+
+  it("↑ on the first line recalls earlier input and ↓ walks back to the draft", () => {
+    expect(caretOnFirstLine({ value: "a\nb", start: 1, end: 1 })).toBe(true);
+    expect(caretOnFirstLine({ value: "a\nb", start: 3, end: 3 })).toBe(false);
+    expect(caretOnLastLine({ value: "a\nb", start: 3, end: 3 })).toBe(true);
+    const history = new ReplHistory();
+    const entries = ["x = 1", "y = 2"];
+    expect(history.older(entries, "draft")).toBe("y = 2");
+    expect(history.older(entries, "y = 2")).toBe("x = 1");
+    expect(history.older(entries, "x = 1")).toBeNull();
+    expect(history.newer(entries)).toBe("y = 2");
+    expect(history.newer(entries)).toBe("draft");
+    expect(history.newer(entries)).toBeNull();
+  });
+
+  it("history is this session's REPL cells of the language; Edit loads a cell", () => {
+    cells.value = [
+      { producing_cell_id: "a", origin: "user", language: "python", source: "x = 1" },
+      { producing_cell_id: "b", origin: "agent", language: "python", source: "agent()" },
+      { producing_cell_id: "c", origin: "user", language: "r", source: "y <- 2" },
+      { producing_cell_id: "d", origin: "user", language: "python", source: "x + 1" },
+    ];
+    expect(replHistory("python")).toEqual(["x = 1", "x + 1"]);
+    expect(replHistory("r")).toEqual(["y <- 2"]);
+    editAsNewCell({ producing_cell_id: "c", language: "r", source: "y <- 2" });
+    expect(replLoad.value).toMatchObject({ code: "y <- 2", language: "r" });
+  });
+});
+
+describe("Session options environment picker (ENV-6)", () => {
+  const envs = [
+    { name: "base", language: "python", runnable: true, builtin: true, notable: ["numpy"] },
+    { name: "work", language: "python", runnable: true, builtin: false },
+    { name: "r-mini", language: "r", runnable: false, builtin: false },
+    { name: "broken", language: "python", runnable: false, builtin: true },
+  ];
+
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElement: () => ({ className: "", textContent: "", setAttribute: () => undefined }),
+      querySelector: () => null,
+    });
+  });
+
+  it("labels built-in and local environments and lets an R environment be chosen", () => {
+    expect(envSourceLabel(envs[0]!)).toBe(nbT("nb.env.builtin"));
+    expect(envSourceLabel(envs[1]!)).toBe(nbT("nb.env.local"));
+    expect(envSelectable(envs[2]!)).toBe(true);
+    expect(envSelectable(envs[3]!)).toBe(false);
+
+    const picked: string[] = [];
+    const items = environmentMenuItems({ envs, current: "base", currentR: null }, (name) => picked.push(name));
+    const labels = items.map((item) => ("label" in item && item.label) || (item.node ? item.node.textContent : "sep"));
+    expect(labels[0]).toBe(nbT("nb.env.group", "Python", "base"));
+    expect(labels[1]).toContain("✓  base · " + nbT("nb.env.builtin"));
+    expect(labels[2]).toContain("work · " + nbT("nb.env.local"));
+    expect(labels).toContain(nbT("nb.env.group", "R", nbT("nb.env.default")));
+    const click = (name: string) =>
+      items.find((item) => "label" in item && typeof item.label === "string" && item.label.includes(name + " · "));
+    click("work")!.onClick!();
+    click("r-mini")!.onClick!();
+    click("base")!.onClick!(); // already in use: no request
+    click("broken")!.onClick!(); // cannot run: explained, not sent
+    expect(picked).toEqual(["work", "r-mini"]);
   });
 });

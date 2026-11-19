@@ -186,11 +186,23 @@ def _is_past_tense_starter(word: str) -> bool:
     )
 
 
+def _written_in_another_language(bullet: str) -> bool:
+    """True when the bullet carries a letter English text does not use.
+
+    CJK, kana, Hangul, Cyrillic, Greek, Arabic, an accented Latin letter: the
+    English suffix rule has nothing to say about any of them. Testing only the
+    first word was not enough -- "PyDESeq2 完成 Wald 检验" starts with a
+    package name, and a Chinese session's bullets were refused until the model
+    rewrote them in English.
+    """
+    return any(char.isalpha() and not char.isascii() for char in bullet)
+
+
 def validate_completion_bullets(bullets: list) -> str | None:
     """Require 1-4 non-empty completed-action bullets.
 
-    English bullets retain the past-tense verb guard. CJK languages do not
-    encode tense with the same morphology, so their non-empty verb phrases are
+    English bullets retain the past-tense verb guard. Other languages do not
+    encode tense with the same morphology, so their non-empty phrases are
     accepted instead of being forced through an English suffix rule.
     """
     if not isinstance(bullets, list) or not (1 <= len(bullets) <= 4):
@@ -199,7 +211,7 @@ def validate_completion_bullets(bullets: list) -> str | None:
         if not isinstance(bullet, str) or not bullet.strip():
             return "each completion bullet must be a non-empty string"
         first = first_english_word(bullet)
-        if first is None:
+        if first is None or _written_in_another_language(bullet):
             continue
         if not _is_past_tense_starter(first):
             return (

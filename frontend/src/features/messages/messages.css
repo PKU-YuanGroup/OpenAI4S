@@ -7,7 +7,13 @@
   display: contents;
 }
 
+/* Sits in the transcript's own column (`.msg` is `max-width: var(--col)`,
+   centred), not flush against the conversation pane's left edge. */
 .history-load-status {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: calc(var(--col) + 32px);
+  margin: 0 auto;
   padding: 12px 16px;
   overflow-wrap: anywhere;
   flex-shrink: 0;
@@ -15,6 +21,25 @@
 
 .history-load-status p {
   margin: 6px 0;
+}
+
+/* A link to a session that does not exist (list.ts `renderMissingSession`):
+   the welcome's centred layout, with its way back. */
+.missing-session .missing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* A denied approval's reason (send/permission.ts), on its own row of the
+   compact resolved card. */
+.perm-card .perm-reason {
+  flex: 1 0 100%;
+  color: var(--text-200);
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 /*
@@ -53,6 +78,17 @@
   color: var(--text-400);
 }
 
+/*
+ * A refusal is not a failure (messages/declined.ts): a cell or step whose Host
+ * call the user denied, a rule refused, or a Stop cancelled while it waited
+ * for approval keeps a neutral glyph, never the failed card's red.
+ */
+.activity.declined .a-head .ic,
+.step.declined .s-ic,
+.step.declined .s-meta {
+  color: var(--text-400);
+}
+
 
 .activity.failed .a-head .ic {
   color: var(--danger);
@@ -76,6 +112,16 @@
 /* Only the newest row may continue its turn. */
 .msg:has(~ .msg) .turn-continue {
   display: none;
+}
+
+/* A user row's @-ref chips go on their own line under the bubble, live or
+   reopened, with or without a fork control. Unwrapped, the flex row put them
+   beside the bubble, stretched to its height. */
+.msg.user:has(> .msg-refs) {
+  flex-wrap: wrap;
+}
+.msg.user > .msg-refs {
+  flex: 0 0 100%;
 }
 
 /* A stored user question can fork. Wrap only while the control is shown,
@@ -133,3 +179,6 @@
     min-height: 40px;
   }
 }
+
+/* ART-8: a finished answer's key figures, under their links. */
+.md img.msg-fig{display:block;max-width:min(100%,520px);max-height:360px;margin:8px 0 4px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-000)}

@@ -33,6 +33,100 @@ from openai4s.storage.artifact_observations import (
 from openai4s.storage.frames import visible_session_clause
 from openai4s.storage.like import like_contains
 
+#: Human file categories for the Files filter (ART-12), in precedence order:
+#: a file belongs to the first category whose extension or content-type prefix
+#: matches, and ``other`` is everything none of them claims. The workbench
+#: applies the same table (``frontend/src/features/artifacts/files-index.ts``).
+ARTIFACT_KINDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "table",
+        ("csv", "tsv", "tab", "xlsx", "xls", "parquet", "feather", "arrow"),
+        (
+            "text/csv",
+            "text/tab-separated-values",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml",
+            "application/vnd.ms-excel",
+        ),
+    ),
+    (
+        "image",
+        ("png", "jpg", "jpeg", "gif", "webp", "svg", "tif", "tiff", "bmp"),
+        ("image/",),
+    ),
+    (
+        "report",
+        (
+            "md",
+            "markdown",
+            "rst",
+            "pdf",
+            "html",
+            "htm",
+            "docx",
+            "doc",
+            "tex",
+            "ipynb",
+            "txt",
+        ),
+        ("text/markdown", "application/pdf", "text/html", "application/x-ipynb+json"),
+    ),
+    (
+        "code",
+        (
+            "py",
+            "r",
+            "sh",
+            "bash",
+            "js",
+            "ts",
+            "sql",
+            "jl",
+            "m",
+            "c",
+            "cpp",
+            "h",
+            "java",
+            "rs",
+            "go",
+            "yaml",
+            "yml",
+            "toml",
+        ),
+        ("text/x-python", "text/x-r", "application/x-sh"),
+    ),
+)
+ARTIFACT_KIND_NAMES = tuple(name for name, _ext, _ct in ARTIFACT_KINDS) + ("other",)
+
+
+def _kind_match_sql(
+    extensions: tuple[str, ...], prefixes: tuple[str, ...]
+) -> tuple[str, list[Any]]:
+    parts = ["lower(a.filename) LIKE ?" for _ in extensions]
+    parts += ["lower(COALESCE(a.content_type,'')) LIKE ?" for _ in prefixes]
+    params: list[Any] = [f"%.{ext}" for ext in extensions]
+    params += [f"{prefix}%" for prefix in prefixes]
+    return "(" + " OR ".join(parts) + ")", params
+
+
+def artifact_kind_clause(kind: str) -> tuple[str, list[Any]]:
+    """SQL (over alias ``a``) selecting one human category, with precedence."""
+    if kind not in ARTIFACT_KIND_NAMES:
+        raise ValueError("kind must be one of " + ", ".join(ARTIFACT_KIND_NAMES))
+    earlier: list[tuple[str, list[Any]]] = []
+    for name, extensions, prefixes in ARTIFACT_KINDS:
+        match = _kind_match_sql(extensions, prefixes)
+        if name == kind:
+            sql, params = match
+            for prior_sql, prior_params in earlier:
+                sql += " AND NOT " + prior_sql
+                params = params + prior_params
+            return sql, params
+        earlier.append(match)
+    sql = " AND ".join("NOT " + prior_sql for prior_sql, _ in earlier)
+    params = [param for _, prior_params in earlier for param in prior_params]
+    return "(" + sql + ")", params
+
+
 Clock = Callable[[], int]
 Execute = Callable[[str, tuple], None]
 GetFrame = Callable[[str], dict | None]
@@ -330,6 +424,54 @@ class ArtifactRepository:
                 if any(self._paths_match(path, other) for other in surviving_paths)
             }
         return [path for path in paths if path not in keep]
+
+    def mark_user_inputs(self, artifact_ids: list[str]) -> None:
+        """Record Artifacts as inputs the person provided (UP-5).
+
+        A file copied in from the project folder is the person's data, like an
+        upload, not something the agent produced: it belongs beside uploads
+        (``is_user_upload``), not under "generated".
+        """
+        ids = [str(item) for item in artifact_ids if item]
+        if not ids:
+            return
+        with self._lock:
+            self._connection.executemany(
+                "UPDATE artifacts SET is_user_upload=1 WHERE artifact_id=?",
+                [(item,) for item in ids],
+            )
+            self._connection.commit()
+
+    def move_artifact(
+        self,
+        artifact_id: str,
+        filename: str,
+        *,
+        old_path: str,
+        new_path: str,
+    ) -> None:
+        """Rename an Artifact whose live file moved, in one transaction (ART-12).
+
+        Every version that recorded the old live path now records the new one:
+        the version row's path is the authority for exact edits, restores and
+        read lineage, and it must keep naming the file the rename moved.
+        Frozen snapshots are untouched.
+        """
+        now = self._clock_ms()
+        with self._lock:
+            self._connection.execute(
+                "UPDATE artifacts SET filename=?, updated_at=? WHERE artifact_id=?",
+                (filename, now, artifact_id),
+            )
+            self._connection.execute(
+                "UPDATE artifact_versions SET filename=? WHERE artifact_id=?",
+                (filename, artifact_id),
+            )
+            self._connection.execute(
+                "UPDATE artifact_versions SET path=? WHERE artifact_id=? AND path=?",
+                (new_path, artifact_id, old_path),
+            )
+            self._connection.commit()
 
     def rename_artifact(self, artifact_id: str, filename: str) -> None:
         now = self._clock_ms()
@@ -1710,8 +1852,14 @@ class ArtifactRepository:
         before: tuple[int, str] | None = None,
         limit: int = 50,
         visible_to_user_id: str | None = None,
+        kind: str | None = None,
+        include_hidden: bool = False,
     ) -> list[dict]:
         """Newest-first keyset page of one project's artifacts.
+
+        ``kind`` is a human category (``ARTIFACT_KINDS``) and
+        ``include_hidden`` lists rows hidden from the list (``priority < 0``)
+        too, so a hidden file can be found and shown again (ART-12).
 
         ``before`` is the ``(created_at, artifact_id)`` of the last row of
         the previous page, not an offset. ``created_at`` is a millisecond
@@ -1728,8 +1876,14 @@ class ArtifactRepository:
         ``filename`` only — never path, checksum, or content type. ``origin`` is
         derived from ``is_user_upload`` (``uploaded`` / ``generated``).
         """
-        clauses: list[str] = ["a.project_id=?", "COALESCE(a.priority,0)>=0"]
+        clauses: list[str] = ["a.project_id=?"]
         params: list[Any] = [project_id]
+        if not include_hidden:
+            clauses.append("COALESCE(a.priority,0)>=0")
+        if kind:
+            kind_sql, kind_params = artifact_kind_clause(kind)
+            clauses.append(kind_sql)
+            params.extend(kind_params)
         query = (filename_query or "").strip()
         if query:
             clauses.append("openai4s_filename_lower(a.filename) LIKE ? ESCAPE '\\'")

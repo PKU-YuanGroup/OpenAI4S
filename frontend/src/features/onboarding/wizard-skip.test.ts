@@ -60,7 +60,7 @@ import { ReadinessPanel } from "../../components/onboarding/ReadinessPanel";
 import { WizardHost } from "../../components/onboarding/Wizard";
 import { t } from "../../i18n";
 import { ot } from "./copy";
-import { INITIAL_WIZARD, type PathChoice, type WizardState } from "./machine";
+import { INITIAL_WIZARD, REQUIRED_STEPS, type PathChoice, type WizardState } from "./machine";
 
 type VNode = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
 type Button = { text: string; disabled: boolean; onClick: () => void };
@@ -413,5 +413,41 @@ describe("first-run wizard: skipping while a readiness refresh is waiting", () =
     await gate.promise;
     await Promise.resolve();
     expect(wizard().step).toBe("readiness");
+  });
+});
+
+// NAV-3: the step rail looked clickable and was not (only the Checklist moved
+// between steps), and it did not say which steps were done.
+describe("first-run wizard: the step rail", () => {
+  beforeEach(() => {
+    hooks.reset();
+    api.probeModelProfile.mockReset();
+    render();
+    hooks.slots[REDUCER] = {
+      ...INITIAL_WIZARD,
+      surface: "wizard",
+      step: "test",
+      decided: ["path"],
+    } satisfies WizardState;
+  });
+
+  function rail(): Button[] {
+    return render().filter((b) =>
+      REQUIRED_STEPS.some((step) => b.text.endsWith(ot("onboarding.step." + step))),
+    );
+  }
+
+  it("marks the steps already done and moves to the step pressed", () => {
+    expect(rail().map((b) => b.text)).toEqual([
+      "✓" + ot("onboarding.step.path"),
+      "2" + ot("onboarding.step.test"),
+      "3" + ot("onboarding.step.readiness"),
+      "4" + ot("onboarding.step.project"),
+    ]);
+    rail()[2]!.onClick();
+    expect(wizard().step).toBe("readiness");
+    expect(wizard().decided).toContain("readiness");
+    rail()[0]!.onClick();
+    expect(wizard().step).toBe("path");
   });
 });

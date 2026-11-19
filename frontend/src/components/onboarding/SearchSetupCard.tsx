@@ -1,4 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
+import { copyLookup } from "../../i18n/copy";
 import { api, apiErrorText } from "../../features/customize/api";
 import { hint } from "../../features/customize/host";
 import {
@@ -17,6 +18,29 @@ function currentOrder(config: SearchConfig): string {
   const backups = config.engines.filter((e) => e.usable).map((e) => engineLabel(e.id));
   return (config.doubaoConfigured ? [searchT("search.doubao"), ...backups] : backups).join(" → ");
 }
+
+/**
+ * The choice the current order already is: Doubao when it answers first,
+ * else the first engine that can answer. The card said "Current order:
+ * You.com → …" over five radios none of which was selected.
+ */
+export function currentSearchChoice(config: SearchConfig | null): SetupChoice | null {
+  if (!config) return null;
+  if (config.doubaoConfigured) return "doubao";
+  const first = config.engines.find((e) => e.usable);
+  return first && (CHOICES as readonly string[]).includes(first.id) ? (first.id as SetupChoice) : null;
+}
+
+const DOUBAO_KEY_COPY = copyLookup({
+  zh: {
+    "search.setup.doubaoKeyNote":
+      "豆包搜索需要在这里保存一次 Agent Plan Key。只通过环境变量（OPENAI4S_ARK_API_KEY 或 OPENAI4S_LLM_API_KEY）提供给模型的 Key 不会自动用于搜索，即使它们是同一个套餐 Key。",
+  },
+  en: {
+    "search.setup.doubaoKeyNote":
+      "Doubao search needs the Agent Plan key saved here once. A model key given only through environment variables (OPENAI4S_ARK_API_KEY or OPENAI4S_LLM_API_KEY) is not used for search automatically, even when it is the same plan key.",
+  },
+});
 
 /**
  * First-run setup's one, optional search decision. It lives inside the
@@ -46,11 +70,15 @@ export function SearchSetupCard() {
   }, []);
 
   const tavilyHasKey = !!config?.engines.find((e) => e.id === "tavily")?.keyConfigured;
-  const keyRequired = choice === "doubao" || (choice === "tavily" && !tavilyHasKey);
-  const takesKey = choice === "doubao" || choice === "tavily" || choice === "you";
+  const current = currentSearchChoice(config);
+  // Only a change has anything to apply; the current choice shows as selected.
+  const pending = choice && choice !== current ? choice : null;
+  const keyRequired = pending === "doubao" || (pending === "tavily" && !tavilyHasKey);
+  const takesKey = pending === "doubao" || pending === "tavily" || pending === "you";
 
   const apply = async () => {
-    if (!choice) return;
+    if (!pending) return;
+    const choice = pending;
     const value = key.trim();
     if (keyRequired && !value) {
       hint(searchT("search.setup.needKey"), true);
@@ -72,6 +100,7 @@ export function SearchSetupCard() {
       }
       setConfig(readSearchConfig(next));
       setKey("");
+      setChoice(null);
       hint(searchT("search.setup.applied"));
     } catch (e) {
       hint(apiErrorText(e), true);
@@ -95,7 +124,7 @@ export function SearchSetupCard() {
             type="radio"
             name="onb-search"
             value={id}
-            checked={choice === id}
+            checked={(choice ?? current) === id}
             disabled={busy}
             onChange={() => {
               setChoice(id);
@@ -105,23 +134,28 @@ export function SearchSetupCard() {
           <span>{searchT("search.setup." + id)}</span>
         </label>
       ))}
-      {choice && takesKey ? (
+      {pending === "doubao" ? (
+        <div class="ds" data-search-doubao-note="">
+          {DOUBAO_KEY_COPY("search.setup.doubaoKeyNote")}
+        </div>
+      ) : null}
+      {pending && takesKey ? (
         <input
           class="cust-input"
           type="password"
           autocomplete="off"
           data-onboarding-search-key=""
           placeholder={
-            choice === "doubao"
+            pending === "doubao"
               ? searchT("search.setup.keyPh.doubao")
-              : searchT("search.keyPh." + choice)
+              : searchT("search.keyPh." + pending)
           }
           value={key}
           disabled={busy}
           onInput={(e) => setKey((e.target as HTMLInputElement).value)}
         />
       ) : null}
-      {choice ? (
+      {pending ? (
         <button
           type="button"
           class="outline-btn"

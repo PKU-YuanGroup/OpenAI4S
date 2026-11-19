@@ -3,7 +3,7 @@
 import { LANG, applyStaticI18n, i18nReady, onLanguageChange, setLang, t, type Lang } from "../../i18n";
 import { _titleName, currentId, editingProject } from "../../stores/session";
 import { activeTab } from "../../stores/ui";
-import { renderDockTabs } from "../artifacts/ui";
+import { renderConversationArtifacts, renderDockTabs } from "../artifacts/ui";
 import { cycleTheme, refreshThemeToggle } from "../theme/theme";
 import { setLoadSessionsImpl } from "../ws/handlers";
 import {
@@ -14,6 +14,7 @@ import {
   importSessionPackage,
   sessionMenu,
   sessionOptionsMenu,
+  showContextUsage,
 } from "./actions";
 import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
 import { newSession, routeInitialView } from "./conversation";
@@ -133,12 +134,32 @@ function repaintEmptySession(): void {
 }
 
 /**
+ * The composer as the switch left it. The static repaint resets the
+ * placeholder from its `data-i18n-ph` (the idle "Ask anything…"), so a turn
+ * still running lost its "sending now queues this behind it" until a reload;
+ * the queue strip and the transcript's file strips keep their counts and
+ * relabel.
+ */
+function repaintComposerAndStrips(): void {
+  const composer = $("#composer") as HTMLTextAreaElement | null;
+  if (composer) {
+    composer.placeholder = t(
+      composer.classList.contains("queueing") ? "composer.placeholderQueue" : "composer.placeholder",
+    );
+  }
+  callLane("renderQueueStrip");
+  // Only strips already shown: a running turn removed them until it ends.
+  if ($("#messages > .generated") || $("#messages > .uploaded")) renderConversationArtifacts();
+}
+
+/**
  * app.js `rerenderI18n`: a language switch repaints the views built through
  * `t()` from what they already hold, without new reads -- the dashboard lists,
  * the project menu, the sidebar, an unnamed session's title, the empty
- * session, the dock tabs and the dock pane on screen. Only a switch: the first
- * dictionary load keeps the language, routing waits for it, and a first view
- * that could not wait is repainted by `repaintListsRenderedWithoutDictionaries`.
+ * session, the composer and its strips, the dock tabs and the dock pane on
+ * screen. Only a switch: the first dictionary load keeps the language, routing
+ * waits for it, and a first view that could not wait is repainted by
+ * `repaintListsRenderedWithoutDictionaries`.
  */
 function languageSwitchRepaint(): (lang: Lang) => void {
   let painted = LANG;
@@ -151,6 +172,7 @@ function languageSwitchRepaint(): (lang: Lang) => void {
     renderSessions();
     syncCurrentTitle();
     repaintEmptySession();
+    repaintComposerAndStrips();
     renderDockTabs();
     if (activeTab.value === "timeline") callLane("renderActionTimeline");
     else if (activeTab.value === "notebook") callLane("renderNotebook");
@@ -269,6 +291,9 @@ export function bindWorkbench(): Promise<void> {
   }
   const cancel = $("#cancel-btn");
   if (cancel) cancel.onclick = () => void cancelTurn();
+  // The header's token chip (send/progress.ts) opens the usage breakdown.
+  const usage = $("#session-usage");
+  if (usage) usage.onclick = () => void showContextUsage();
   // The Shell has rendered #messages and #jump-pill by now.
   bindMessageScroll();
   const composer = $("#composer");

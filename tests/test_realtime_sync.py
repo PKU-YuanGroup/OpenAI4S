@@ -1,0 +1,666 @@
+"""Every tab viewing a session, and a reload of it, converge on one transcript.
+
+A usability review opened one session in five tabs and ended a long turn with
+five different transcripts. The pieces that were missing from the stream or
+from the stored history are pinned here:
+
+* the user's own message was inserted only into the sending tab's DOM, so every
+  other tab watched the agent answer a question it never saw;
+* approval decisions lived only in the live `await_permission` /
+  `permission_resolved` events, so a reload showed none of them -- not even a
+  denial and the reason typed with it.
+"""
+
+from __future__ import annotations
+
+import http.client
+import json
+import threading
+import time
+from types import SimpleNamespace
+
+from openai4s.config import Config, LLMConfig
+from openai4s.permissions import PermissionBroker
+from openai4s.server import gateway as gateway_mod
+from openai4s.server import local_auth
+from openai4s.server.gateway import WSHub
+from openai4s.store import get_store
+from tests._ports import bound_gateway_server
+
+API = "/api/v1"
+
+
+class _Hub:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def emitter(self, root_frame_id: str):
+        def emit(event: dict) -> None:
+            event.setdefault("root_frame_id", root_frame_id)
+            self.events.append(event)
+
+        return emit
+
+    def broadcast(self, root_frame_id: str, event: dict) -> None:
+        event.setdefault("root_frame_id", root_frame_id)
+        self.events.append(event)
+
+    def has_subscriber(self, root_frame_id: str) -> bool:
+        del root_frame_id
+        return False
+
+    def drop_frame(self, root_frame_id: str) -> None:
+        del root_frame_id
+
+
+class _Conn:
+    def __init__(self) -> None:
+        self.subs: set[str] = set()
+        self.alive = True
+        self.sent: list[dict] = []
+
+    def send_json(self, obj: dict) -> None:
+        self.sent.append(obj)
+
+    def refresh_visibility(self, root_frame_id: str):
+        del root_frame_id
+        return None
+
+    def may_receive(self, root_frame_id: str) -> bool:
+        del root_frame_id
+        return True
+
+
+def _cfg(tmp_path, **extra) -> Config:
+    return Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        **extra,
+    )
+
+
+# --------------------------------------------------------------------------
+# the user's message is an event
+# --------------------------------------------------------------------------
+
+
+def test_a_turn_broadcasts_the_user_message_it_stored(monkeypatch, tmp_path):
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    runner.store.update_frame(frame_id, name="Existing test session")
+    dispatcher = SimpleNamespace(last_output=None)
+
+    def ensure_runtime(state):
+        state.dispatcher = dispatcher
+        state.messages = [{"role": "system", "content": "sys"}]
+        return dispatcher
+
+    def finish_silently(state, emit, visible):
+        del emit, visible
+        state.last_engine_completion = {"output": {"summary": "Done."}}
+        state.last_model_prose = ""
+        return "submitted"
+
+    monkeypatch.setattr(runner, "_ensure_runtime", ensure_runtime)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_loop", finish_silently)
+
+    result = runner.run_message(frame_id, "default", "  compute the fold change  ")
+    assert result["status"] == "completed"
+
+    stored = [
+        m
+        for m in runner.store.list_branch_message_boundaries(frame_id)
+        if m["role"] == "user"
+    ]
+    assert len(stored) == 1
+    events = [e for e in hub.events if e.get("type") == "user_message"]
+    assert len(events) == 1, [e.get("type") for e in hub.events]
+    event = events[0]
+    # The identity a reopened transcript and the sending tab match against.
+    assert event["message_id"] == stored[0]["message_id"]
+    assert event["content"] == stored[0]["content"]
+    assert event["role"] == "user"
+    assert event["frame_id"] == frame_id
+    assert event["created_at"].endswith("Z")
+    assert event["request_id"]
+    # Before the answer starts: a tab that renders events in arrival order
+    # shows the question above the narration.
+    order = [e.get("type") for e in hub.events]
+    assert order.index("user_message") < order.index("text_reset")
+    processing = [
+        e
+        for e in hub.events
+        if e.get("type") == "frame_update" and e.get("status") == "processing"
+    ]
+    assert processing and processing[0]["request_id"] == event["request_id"]
+
+
+# --------------------------------------------------------------------------
+# ... and the replay window keeps it
+# --------------------------------------------------------------------------
+
+
+def _turn_start(hub: WSHub, frame_id: str, execution_id: str = "exec-1") -> None:
+    hub.broadcast(
+        frame_id,
+        {
+            "type": "frame_update",
+            "frame_id": frame_id,
+            "status": "processing",
+            "execution_id": execution_id,
+        },
+    )
+    hub.broadcast(
+        frame_id,
+        {
+            "type": "user_message",
+            "frame_id": frame_id,
+            "message_id": "m-1",
+            "content": "q",
+            "execution_id": execution_id,
+        },
+    )
+    hub.broadcast(frame_id, {"type": "text_reset", "frame_id": frame_id})
+    hub.broadcast(frame_id, {"type": "text_chunk", "frame_id": frame_id, "chunk": "A"})
+
+
+def test_the_replay_window_keeps_the_turns_user_message_across_text_reset():
+    hub = WSHub()
+    _turn_start(hub, "f1")
+
+    late = _Conn()
+    hub.add(late)
+    hub.subscribe("f1", late)
+    replayed = [e["type"] for e in late.sent]
+    assert replayed[0] == "replay_begin"
+    assert replayed[1:4] == ["user_message", "text_reset", "text_chunk"]
+
+    # A tab that saw the `processing` boundary and then dropped resumes with no
+    # hole: the user message is the next number it is missing.
+    back = _Conn()
+    hub.add(back)
+    hub.subscribe("f1", back, since_seq=1, epoch=hub.epoch)
+    begin = back.sent[0]
+    assert begin["type"] == "replay_begin"
+    assert begin["gap"] is False
+    assert [e["seq"] for e in back.sent[1:-1]] == [2, 3, 4]
+
+
+def test_another_executions_user_message_is_not_carried_into_a_new_window():
+    hub = WSHub()
+    _turn_start(hub, "f1", execution_id="exec-1")
+    hub.broadcast(
+        "f1", {"type": "frame_update", "frame_id": "f1", "status": "completed"}
+    )
+    _turn_start(hub, "f1", execution_id="exec-2")
+    late = _Conn()
+    hub.add(late)
+    hub.subscribe("f1", late)
+    messages = [e for e in late.sent if e.get("type") == "user_message"]
+    assert [e["execution_id"] for e in messages] == ["exec-2"]
+
+
+# --------------------------------------------------------------------------
+# approvals are history
+# --------------------------------------------------------------------------
+
+
+def _call(port, method, path, *, token, body=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+    try:
+        headers = {local_auth.TOKEN_HEADER: token}
+        payload = None
+        if body is not None:
+            payload = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        conn.request(method, API + path, body=payload, headers=headers)
+        response = conn.getresponse()
+        return response.status, json.loads(response.read() or b"{}")
+    finally:
+        conn.close()
+
+
+def test_the_approvals_route_returns_every_decision_in_order(tmp_path):
+    httpd, port = bound_gateway_server()
+    cfg = _cfg(tmp_path, host="127.0.0.1", port=port)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    httpd.RequestHandlerClass = gateway_mod.make_handler(cfg, runner.hub, runner)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    token = local_auth.load_or_mint(cfg.data_dir)
+    store = runner.store
+    try:
+        frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+        for index, (decision_id, created) in enumerate(
+            (("perm-allowed", 1_000), ("perm-denied", 2_000), ("perm-open", 3_000))
+        ):
+            store.create_permission_request(
+                decision_id=decision_id,
+                root_frame_id=frame_id,
+                frame_id=frame_id,
+                project_id="default",
+                tool="bash",
+                target=f"echo {index}",
+                payload={
+                    "type": "await_permission",
+                    "frame_id": frame_id,
+                    "decision_id": decision_id,
+                    "tool": "bash",
+                    "kind": "bash",
+                    "title": f"Run command {index}",
+                    "input": {"command": f"echo {index}"},
+                    "target": f"echo {index}",
+                    "scopes": ["once", "conversation"],
+                    # Ledger identity the card never showed.
+                    "action_group_id": "ag-internal",
+                },
+                created_at=created,
+                expires_at=10**13,
+            )
+        store.resolve_permission_request(
+            "perm-allowed", state="allowed", scope="once", resolved_at=1_500
+        )
+        store.resolve_permission_request(
+            "perm-denied",
+            state="denied",
+            scope="once",
+            message="not on the shared drive",
+            resolved_at=2_500,
+        )
+
+        status, body = _call(port, "GET", f"/frames/{frame_id}/approvals", token=token)
+        assert status == 200, body
+        assert body["root_frame_id"] == frame_id
+        approvals = body["approvals"]
+        assert [a["decision_id"] for a in approvals] == [
+            "perm-allowed",
+            "perm-denied",
+            "perm-open",
+        ]
+        assert [a["state"] for a in approvals] == ["allowed", "denied", "pending"]
+        denied = approvals[1]
+        assert denied["message"] == "not on the shared drive"
+        assert denied["title"] == "Run command 1"
+        assert denied["input"] == {"command": "echo 1"}
+        assert denied["created_at"].endswith("Z")
+        assert denied["resolved_at"].endswith("Z")
+        assert "action_group_id" not in denied
+
+        status, missing = _call(port, "GET", "/frames/f-never/approvals", token=token)
+        assert status == 404, missing
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        runner.close()
+
+
+# --------------------------------------------------------------------------
+# a session with only an upload is a session; a project visit reuses one
+# --------------------------------------------------------------------------
+
+
+def test_an_uploaded_session_stays_listed_and_a_project_visit_reuses_an_empty_one(
+    tmp_path,
+):
+    httpd, port = bound_gateway_server()
+    cfg = _cfg(tmp_path, host="127.0.0.1", port=port)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    httpd.RequestHandlerClass = gateway_mod.make_handler(cfg, runner.hub, runner)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    token = local_auth.load_or_mint(cfg.data_dir)
+
+    def call(method, path, body=None):
+        return _call(port, method, path, token=token, body=body)
+
+    try:
+        status, project = call("POST", "/projects", {"name": "qPCR"})
+        assert status == 200, project
+        pid = project["project_id"]
+
+        # The first visit has nothing to reuse and creates a session.
+        status, first = call(
+            "POST", "/frames", {"project_id": pid, "reuse_empty": True}
+        )
+        assert status == 200, first
+        # Its only content is an upload: it was hidden from the list while the
+        # project card counted it, and the next visit created another frame.
+        status, uploaded = call(
+            "POST",
+            "/uploads",
+            {
+                "filename": "plate.csv",
+                "content_base64": "Z2VuZSxjdAo=",
+                "project_id": pid,
+                "frame_id": first["id"],
+            },
+        )
+        assert status == 200, uploaded
+        status, listed = call("GET", f"/frames?project_id={pid}")
+        assert status == 200, listed
+        assert [row["id"] for row in listed["frames"]] == [first["id"]]
+
+        # The uploaded session is in use, so a visit makes a new empty one...
+        status, empty = call(
+            "POST", "/frames", {"project_id": pid, "reuse_empty": True}
+        )
+        assert status == 200, empty
+        assert empty["id"] != first["id"]
+        # ...and every later visit lands in that same one.
+        for _visit in range(2):
+            status, again = call(
+                "POST", "/frames", {"project_id": pid, "reuse_empty": True}
+            )
+            assert status == 200, again
+            assert again["id"] == empty["id"]
+        # An explicit new session is still new.
+        status, fresh = call("POST", "/frames", {"project_id": pid})
+        assert status == 200, fresh
+        assert fresh["id"] not in {first["id"], empty["id"]}
+        roots = [
+            frame["frame_id"]
+            for frame in runner.store.browse_frames(project_id=pid, limit=50)
+        ]
+        assert sorted(roots) == sorted([first["id"], empty["id"], fresh["id"]])
+        # The empty ones stay out of the list.
+        status, listed = call("GET", f"/frames?project_id={pid}")
+        assert [row["id"] for row in listed["frames"]] == [first["id"]]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        runner.close()
+
+
+# --------------------------------------------------------------------------
+# approval cards look the same in every tab
+# --------------------------------------------------------------------------
+
+
+def _running_turn_with_an_approval(hub: WSHub) -> None:
+    _turn_start(hub, "f1")  # seq 1-4
+    hub.broadcast(
+        "f1",
+        {"type": "await_permission", "frame_id": "f1", "decision_id": "perm-1"},
+    )  # seq 5
+    hub.broadcast(
+        "f1",
+        {
+            "type": "permission_resolved",
+            "frame_id": "f1",
+            "decision_id": "perm-1",
+            "allow": False,
+            "message": "not that file",
+        },
+    )  # seq 6
+    hub.broadcast("f1", {"type": "text_chunk", "frame_id": "f1", "chunk": "B"})  # seq 7
+
+
+def test_a_running_turn_replays_its_approvals_in_place():
+    """A tab opened mid-turn places the cards between the turn's prose, and a
+    tab that was away when the card was answered learns the answer."""
+    hub = WSHub()
+    _running_turn_with_an_approval(hub)
+
+    late = _Conn()
+    hub.add(late)
+    hub.subscribe("f1", late)
+    replayed = [e.get("type") for e in late.sent[1:-1]]
+    assert replayed == [
+        "user_message",
+        "text_reset",
+        "text_chunk",
+        "await_permission",
+        "permission_resolved",
+        "text_chunk",
+    ]
+
+    # The tab that dropped right after the card appeared resumes with no hole,
+    # and with the decision it missed.
+    back = _Conn()
+    hub.add(back)
+    hub.subscribe("f1", back, since_seq=5, epoch=hub.epoch)
+    assert back.sent[0]["gap"] is False
+    resolved = [e for e in back.sent if e.get("type") == "permission_resolved"]
+    assert [(e["seq"], e["message"]) for e in resolved] == [(6, "not that file")]
+
+
+def test_an_approval_outside_a_running_turn_still_opens_no_window():
+    hub = WSHub()
+    hub.broadcast(
+        "f-idle",
+        {
+            "type": "permission_resolved",
+            "frame_id": "f-idle",
+            "decision_id": "perm-after-restart",
+            "allow": True,
+        },
+    )
+    assert "f-idle" not in hub._live
+    assert hub.is_running("f-idle") is False
+
+
+def test_every_tab_is_told_a_denials_reason(tmp_path):
+    store = get_store(_cfg(tmp_path).db_path)
+    store.seed_default_permission_rules()
+    broker = PermissionBroker()
+    events: list[dict] = []
+    broker.register_channel("root-deny", events.append)
+    out: dict = {}
+    thread = threading.Thread(
+        target=lambda: out.__setitem__(
+            "result",
+            broker.gate(
+                store=store, frame_id="root-deny", method="bash", target="rm x"
+            ),
+        )
+    )
+    thread.start()
+    for _ in range(200):
+        if any(e.get("type") == "await_permission" for e in events):
+            break
+        time.sleep(0.01)
+    ask = next(e for e in events if e.get("type") == "await_permission")
+    decision = broker.resolve_result(
+        ask["decision_id"],
+        allow=False,
+        scope="once",
+        message="use the scratch copy",
+        store=store,
+        root_frame_id="root-deny",
+    )
+    thread.join(timeout=5)
+    assert decision["ok"] is True
+    assert out["result"]["allow"] is False
+    resolved = next(e for e in events if e.get("type") == "permission_resolved")
+    assert resolved["state"] == "denied"
+    assert resolved["message"] == "use the scratch copy"
+    assert store.get_permission_request(ask["decision_id"])["message"] == (
+        "use the scratch copy"
+    )
+
+
+# --------------------------------------------------------------------------
+# every sidebar hears about every session in its project
+# --------------------------------------------------------------------------
+
+
+class _DirectoryConn(_Conn):
+    def __init__(self, directory, *, visible=True):
+        super().__init__()
+        self.directory = directory
+        self.visible = visible
+
+    def refresh_visibility(self, root_frame_id):
+        del root_frame_id
+        return self.visible
+
+
+def test_session_status_reaches_the_tabs_listing_that_project_only():
+    hub = WSHub()
+    home = _DirectoryConn("*")
+    same = _DirectoryConn("p1")
+    other = _DirectoryConn("p2")
+    silent = _DirectoryConn(None)
+    hidden = _DirectoryConn("p1", visible=False)
+    for conn in (home, same, other, silent, hidden):
+        hub.add(conn)
+    hub.notify_directory("f-9", "p1", {"type": "session_status", "frame_id": "f-9"})
+    assert [len(c.sent) for c in (home, same, other, silent, hidden)] == [
+        1,
+        1,
+        0,
+        0,
+        0,
+    ]
+    # Not a stream position: no cursor may move on it.
+    assert "seq" not in same.sent[0]
+
+
+def test_a_root_frame_update_is_announced_to_sidebars_not_viewing_it(tmp_path):
+    hub = WSHub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    try:
+        project = runner.store.create_project(name="Assays")
+        pid = project["project_id"]
+        fid = runner.store.new_frame(kind="turn", project_id=pid, status="ready")
+        sidebar = _DirectoryConn(pid)
+        hub.add(sidebar)
+
+        hub.broadcast(
+            fid, {"type": "frame_update", "frame_id": fid, "status": "processing"}
+        )
+        hub.broadcast(
+            fid, {"type": "frame_update", "frame_id": "child-1", "status": "failed"}
+        )
+        hub.broadcast(fid, {"type": "text_chunk", "frame_id": fid, "chunk": "x"})
+        hub.broadcast(
+            fid, {"type": "frame_update", "frame_id": fid, "status": "cancelled"}
+        )
+        assert [
+            (e["type"], e["frame_id"], e["project_id"], e["status"])
+            for e in sidebar.sent
+        ] == [
+            ("session_status", fid, pid, "processing"),
+            ("session_status", fid, pid, "cancelled"),
+        ]
+    finally:
+        runner.close()
+
+
+def test_a_waiting_approval_is_its_own_state_for_sidebars_and_status(
+    monkeypatch, tmp_path
+):
+    # While an approval was pending every surface said "running": the
+    # sidebar, GET /status (`processing`) and the tab. An approval request now
+    # reaches the sidebars as its own status, and the list and the status
+    # route say whether a turn is waiting on one.
+    hub = WSHub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    pending: set[str] = set()
+    monkeypatch.setattr(
+        gateway_mod.SessionRunner,
+        "approval_waiting",
+        staticmethod(lambda root: root in pending),
+    )
+    try:
+        project = runner.store.create_project(name="Assays")
+        pid = project["project_id"]
+        fid = runner.store.new_frame(kind="turn", project_id=pid, status="ready")
+        sidebar = _DirectoryConn(pid)
+        hub.add(sidebar)
+
+        pending.add(fid)
+        hub.broadcast(fid, {"type": "await_permission", "frame_id": fid})
+        pending.discard(fid)
+        hub.broadcast(fid, {"type": "permission_resolved", "frame_id": fid})
+        assert [
+            (e["type"], e["status"], e.get("awaiting_approval")) for e in sidebar.sent
+        ] == [
+            ("session_status", "approval", True),
+            ("session_status", "approval", False),
+        ]
+    finally:
+        runner.close()
+
+
+def test_the_broker_answers_whether_a_session_waits_on_an_approval(tmp_path):
+    from openai4s.permissions import broker
+
+    hub = WSHub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    try:
+        fid = runner.store.new_frame(kind="turn", status="ready")
+        assert runner.approval_waiting(fid) is False
+        live = broker()
+        with live._lock:
+            live._by_root.setdefault(fid, set()).add("perm-test")
+        try:
+            assert runner.approval_waiting(fid) is True
+        finally:
+            with live._lock:
+                live._by_root.pop(fid, None)
+        assert runner.approval_waiting(fid) is False
+    finally:
+        runner.close()
+
+
+# --------------------------------------------------------------------------
+# a Notebook cell is not an agent turn, live or reloaded
+# --------------------------------------------------------------------------
+
+
+def test_a_notebook_cells_saving_step_is_marked_out_of_the_chat(monkeypatch, tmp_path):
+    """The live chat never showed a manual cell's "Saving …" step (the REPL's
+    emitter drops step events), but the persisted row reappeared on reload,
+    alone above the empty-session welcome. The row now says where it came
+    from; an agent cell's row is unchanged."""
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    try:
+        fid = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+
+        def fake_execute(state, code, origin, emit, stream=True, language="python"):
+            del code, stream
+            assert origin == "user"
+            runner._emit_artifact_step(
+                state,
+                "Running analysis",
+                [{"filename": "figure_cell1_1.png"}],
+                emit,
+                "python",
+                language,
+            )
+            return {
+                "result": {"stdout": "", "stderr": "", "error": None},
+                "idx": 1,
+                "cell_id": "cell-1",
+                "state_revision": 1,
+                "generation_id": "gen-1",
+                "figures": [],
+                "files_written": [],
+            }
+
+        monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+        runner.run_repl(fid, "default", "plt.savefig('figure.png')")
+        state = runner._state(fid, "default")
+        runner._emit_artifact_step(
+            state,
+            "Running analysis",
+            [{"filename": "agent.png"}],
+            hub.emitter(fid),
+            "python",
+        )
+
+        steps = runner.store.list_steps(fid)
+        assert [s["title"] for s in steps] == [
+            "Saving figure_cell1_1.png",
+            "Saving agent.png",
+        ]
+        assert steps[0]["input"]["origin"] == "notebook"
+        assert "origin" not in steps[1]["input"]
+        # And, as before, the REPL never streamed it into the chat.
+        assert [e["step_id"] for e in hub.events if e.get("type") == "step"] == [
+            steps[1]["step_id"]
+        ]
+    finally:
+        runner.close()

@@ -109,6 +109,8 @@ def test_kernel_routes_declare_state_mutation_semantics():
         "kernel.install": True,
         "kernel.environments": False,
         "kernel.env": True,
+        "kernel.background": False,
+        "kernel.background_stop": True,
     }
     actual = {spec.name: spec.mutates for spec in kernel_routes.ROUTES}
     assert actual == expected

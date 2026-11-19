@@ -4,6 +4,7 @@ import io
 import json
 import re
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
@@ -185,6 +186,62 @@ def test_the_example_seed_route_reports_state_and_surfaces_its_error(
             time.sleep(0.01)
         handler._api("GET", "/example/session")
         assert "uniprot unreachable" in (seen[-1][0]["error"] or "")
+    finally:
+        runner.close()
+
+
+def test_the_example_seed_route_reports_how_the_last_run_ended(tmp_path, monkeypatch):
+    """NAV-4: the home page went quiet when the example finished -- its card
+    disappeared whether all six cells ran or two crashed. The status route now
+    says how the last run started here ended (`result`: cells and failures);
+    `null` before any run, observed both ways so the frozen shape is honest."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    try:
+        handler = object.__new__(handler_cls)
+        handler.path = "/api/v1/example/session"
+        seen: list[tuple[dict, int]] = []
+        handler._json = lambda obj, code=200: seen.append((obj, code))
+        handler._body = lambda: {"confirm": True}
+
+        handler._api("GET", "/example/session")
+        assert seen[-1][0]["result"] is None
+
+        monkeypatch.setattr(
+            gateway_mod, "_seed_demo_session", lambda *_a: {"cells": 6, "failed": 2}
+        )
+        handler._api("POST", "/example/session")
+        assert seen[-1][0]["started"] is True
+        for _ in range(300):
+            if not runner.example_seed.running():
+                break
+            time.sleep(0.01)
+        handler._api("GET", "/example/session")
+        body, code = seen[-1]
+        assert code == 200
+        assert body["running"] is False
+        assert body["result"] == {"cells": 6, "failed": 2}
+        assert body["error"] is None
+
+        # POST reports the same field, and the POST above could not pin it:
+        # `start()` clears the result and spawns a thread that, with an instant
+        # seed, may finish before the response is built -- so that one
+        # observation froze `result` as `null` on macOS and saw an object on
+        # CI ("breaking"). Once the example exists, POST starts nothing and
+        # answers the finished run's result: the object half, deterministically.
+        store = get_store(cfg.db_path)
+        fid = store.new_frame(
+            kind="turn", project_id="proj_example", status="done", model=cfg.llm.model
+        )
+        store.update_frame(fid, name=gateway_mod._DEMO_SESSION_NAME)
+        handler._api("POST", "/example/session")
+        body, code = seen[-1]
+        assert code == 200
+        assert body["seeded"] is True
+        assert body["started"] is False
+        assert body["result"] == {"cells": 6, "failed": 2}
     finally:
         runner.close()
 
@@ -437,6 +494,11 @@ def test_the_example_seed_message_lists_only_materials_that_really_exist(
     assert "2 of 6 example cells did not complete" in content
     assert "cell 4/6: ModuleNotFoundError: No module named 'Bio'" in content
     assert "cell 6/6: FileNotFoundError" in content
+    # ENV-5: the missing module is named and the reader gets a command to run,
+    # not "commonly a missing optional science dependency" to decode.
+    assert "Missing Python module(s): `Bio`." in content
+    assert "`uv sync --extra science`" in content
+    assert 'pip install "openai4s[science]"' in content
 
     # Materials list exactly what the artifact store holds: produced files are
     # clickable claims, missing ones are honest placeholders.
@@ -473,6 +535,7 @@ def test_the_example_seed_message_keeps_the_full_claim_when_everything_ran(
 
     assert content.startswith("Done — every value in this session")
     assert "did not complete" not in content
+    assert "Missing Python module" not in content
     for name in (
         "**hydropathy figure (PNG)**",
         "**family_biochemistry.csv**",
@@ -480,6 +543,46 @@ def test_the_example_seed_message_keeps_the_full_claim_when_everything_ran(
         "**nif3_report.md**",
     ):
         assert name in content
+
+
+def test_the_example_biochemistry_cell_runs_without_biopython(tmp_path, monkeypatch):
+    """ENV-5: the default install (science extra, no Biopython) ran the example
+    with Cell 4 dying on ``ModuleNotFoundError: No module named 'Bio'`` and
+    Cell 6 on the CSV that Cell 4 never wrote. Cell 4 now falls back to the
+    same standard formulas in plain Python. The expected values are what
+    Biopython ProtParam returns for the bundled reference sequences, so the
+    fallback is checked against the library it stands in for, not itself."""
+    pytest.importorskip("pandas")
+    monkeypatch.setitem(sys.modules, "Bio", None)  # `from Bio...` -> ImportError
+    monkeypatch.chdir(tmp_path)
+    ns: dict = {"__name__": "__kernel__"}
+    # Cell 1 without a `host` falls back to the bundled real sequences.
+    exec(compile(gateway_mod._DEMO_UNIPROT, "<cell1>", "exec"), ns)
+    exec(compile(gateway_mod._DEMO_CSV, "<cell4>", "exec"), ns)
+
+    rows = {r["accession"]: r for r in ns["df"].to_dict(orient="records")}
+    assert set(rows) == {"Q9GZT8", "P0AFP6"}
+    for accession, mw, pi, gravy, aromaticity in (
+        ("Q9GZT8", 41967.6, 6.19, -0.162, 0.056),
+        ("P0AFP6", 26892.1, 5.07, -0.125, 0.069),
+    ):
+        row = rows[accession]
+        assert row["molecular_weight_da"] == mw
+        assert row["isoelectric_point"] == pi
+        assert row["gravy"] == gravy
+        assert row["aromaticity"] == aromaticity
+        assert row["instability_index"] is None  # needs Biopython's DIWV table
+    assert rows["Q9GZT8"]["pct_identity_to_ref"] == 100.0
+    assert 0 < rows["P0AFP6"]["pct_identity_to_ref"] < 100
+    assert (tmp_path / "family_biochemistry.csv").is_file()
+    assert "built-in formulas" in ns["biochem_source"]
+
+    # Cell 6 reads the CSV and cites the method that was actually used.
+    ns["struct_source"] = None
+    exec(compile(gateway_mod._DEMO_MD, "<cell6>", "exec"), ns)
+    report = (tmp_path / "nif3_report.md").read_text()
+    assert "built-in formulas (Biopython is not installed)" in report
+    assert "Biopython (ProtParam" not in report
 
 
 def test_the_example_seed_counts_interrupted_cells_as_failures(tmp_path, monkeypatch):
@@ -1024,9 +1127,12 @@ def test_ws_replay_declares_an_unbuffered_idle_delta_at_the_tail():
     root = "root-replay-tail-gap"
     hub.broadcast(root, {"type": "text_reset", "frame_id": root})  # seq 1
     hub.broadcast(root, {"type": "text_chunk", "chunk": "kept"})  # seq 2
-    # Approval cards replay from their durable source, so they advance the
-    # stream counter but intentionally do not enter the live-turn buffer.
-    hub.broadcast(root, {"type": "await_permission", "request_id": "p1"})  # seq 3
+    # A delegation projection is frame state, not turn stream: it advances the
+    # stream counter but intentionally does not enter the live-turn buffer.
+    # (Approval cards used to be the example; a running turn now records them.)
+    hub.broadcast(
+        root, {"type": "delegation_child_event", "event": "progress"}
+    )  # seq 3
 
     conn = _Recorder()
     hub.add(conn)
@@ -2498,6 +2604,45 @@ def _install_artifact_submission(
     monkeypatch.setattr(runner, "_loop", finish_with_artifact)
     monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
     return captured
+
+
+def test_a_context_spill_is_not_listed_as_a_turn_deliverable(tmp_path, monkeypatch):
+    """ART-10: the model's large-output spill (context-output-*.json) is an
+    Artifact so it stays readable by version, but it was listed first in the
+    gallery and in the completion summary's materials. It is hidden now, and
+    the summary lists only what the turn produced for the user."""
+    import hashlib
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    spilled = {"rows": ["measurement"] * 50}
+    digest = hashlib.sha256(
+        json.dumps(spilled, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    def spill(_record):
+        state = runner._state(frame_id, "default")
+        runner._archive_context_output(
+            state, spilled, {"role": "tool"}, {"sha256": digest}
+        )
+
+    _install_artifact_submission(monkeypatch, runner, after_capture=spill)
+    try:
+        result = runner.run_message(frame_id, "default", "analyze the table")
+        assert result["status"] == "completed"
+        final = [
+            row
+            for row in runner.store.list_branch_message_boundaries(
+                frame_id, branch_id=frame_id
+            )
+            if row["role"] == "assistant"
+        ][-1]["content"]
+        assert "result.csv" in final
+        assert "context-output-" not in final
+    finally:
+        runner.close()
 
 
 def test_stage1_flag_off_keeps_legacy_completion_and_skips_delivery_ledger(
@@ -6286,11 +6431,17 @@ def test_notebook_repl_execute_route_gated_by_flag(monkeypatch, tmp_path):
     handler._body = lambda: {"code": "print(1)"}
     handler._json = lambda obj, code=200: replies.append((code, obj))
 
-    for action in ("execute", "env", "restart", "stop", "start", "interrupt"):
+    for action in ("execute", "restart", "stop", "start", "interrupt"):
         handler._api("POST", f"/frames/{fid}/kernel/{action}")
         assert replies[-1][0] == 403
         assert "disabled" in replies[-1][1]["error"]
     assert called == []  # the gate fired before the kernel path
+    # Choosing the runtime environment runs no code and is offered from the
+    # session options menu, so it is not behind the manual-cells gate (ENV-6).
+    runner.set_env = lambda *a, **k: called.append(("env", a)) or {"ok": True}
+    handler._api("POST", f"/frames/{fid}/kernel/env")
+    assert replies[-1][0] == 200 and called and called[-1][0] == "env"
+    called.clear()
 
     # enabled (OPENAI4S_NOTEBOOK_REPL=1) → queues and returns immediately
     monkeypatch.setenv("OPENAI4S_NOTEBOOK_REPL", "1")
@@ -7643,3 +7794,70 @@ def test_the_session_dispatcher_gets_the_key_the_install_configures(
         assert runner._ensure_runtime(st).cfg.llm.api_key == "rotated-key"
     finally:
         runner.close()
+
+
+def test_an_annotated_message_is_stored_as_the_user_wrote_it(tmp_path, monkeypatch):
+    """SYNC-5: the annotation instructions were concatenated into the user's
+    message, so after a reload the bubble showed the product's injected
+    "【图像标注反馈】…覆盖写回同名图像文件" as if the user had typed it. The stored
+    row now holds the user's words, its metadata records the pins (for the
+    attachment chip), and only the model's copy carries the instructions --
+    which no longer demand an overwrite for a question."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    store = runner.store
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    pin = store.add_annotation(
+        root_frame_id=fid,
+        artifact_id="fx-1",
+        artifact_name="volcano.png",
+        rel_x=0.5,
+        rel_y=0.5,
+        body="这个点是什么基因？",
+    )
+    seen: dict = {}
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def fake_loop(state, emit, visible):
+        seen["model_user"] = state.messages[-1]["content"]
+        return "max_turns"
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", fake_loop)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+    try:
+        runner.run_message(
+            fid,
+            "default",
+            "请看一下这张图",
+            annos=[store.get_annotation(pin["annotation_id"])],
+        )
+        stored = [m for m in store.list_messages(fid) if m["role"] == "user"][-1]
+        assert stored["content"] == "请看一下这张图"
+        metadata = stored.get("metadata")
+        metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+        assert [
+            (a["number"], a["artifact_name"], a["body"])
+            for a in metadata["annotations"]
+        ] == [(1, "volcano.png", "这个点是什么基因？")]
+        model_text = seen["model_user"]
+        if isinstance(model_text, list):  # a vision provider gets parts
+            model_text = "".join(
+                p.get("text", "") for p in model_text if isinstance(p, dict)
+            )
+        assert "请看一下这张图" in model_text
+        assert "【图像标注反馈】" in model_text and "这个点是什么基因？" in model_text
+        assert "直接回答，不要修改或覆盖图像" in model_text
+    finally:
+        runner.close()
+
+
+def test_a_pin_only_message_keeps_the_users_comments_as_its_text():
+    text = gateway_mod._annotation_comments_text(
+        [{"number": 1, "body": "标题改大一点"}, {"number": 2, "body": " "}, None]
+    )
+    assert text == "[1] 标题改大一点"

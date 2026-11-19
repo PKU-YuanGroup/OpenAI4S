@@ -9,6 +9,7 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { filesT } from "../artifacts/copy";
 import { bindComposer } from "../send/send";
 import { loadSkillsCatalog } from "./catalog";
+import { acT } from "./copy";
 import {
   AC_DEBOUNCE_MS,
   AC_INDEX_LIMIT,
@@ -21,6 +22,17 @@ import {
   acUpdate,
   bindComposerAutocomplete,
 } from "./composer";
+import { clearMentions, composerMentions } from "./mentions";
+
+/** The version an `@` row pins. The text gets the name only (ART-16). */
+function pinned(i = 0): string {
+  return ac.items[i]?.mention?.version_id || "";
+}
+
+/** The versions the composer's text still carries, oldest pick first. */
+function pins(): string[] {
+  return composerMentions(composer.value).map((m) => m.version_id);
+}
 
 /** Just enough DOM for the composer popup (no jsdom here). */
 class El {
@@ -146,7 +158,13 @@ function page(rows: unknown[]): unknown {
   return { artifacts: rows, next_cursor: null, has_more: false };
 }
 
-function art(partial: { id: string; filename: string; version_id?: string; priority?: number }): Record<string, unknown> {
+function art(partial: {
+  id: string;
+  filename: string;
+  version_id?: string;
+  priority?: number;
+  root_frame_id?: string;
+}): Record<string, unknown> {
   return { priority: 0, version_id: "", artifact_id: partial.id, ...partial };
 }
 
@@ -238,6 +256,7 @@ beforeEach(() => {
   });
   resetStoreFields();
   acClose();
+  clearMentions();
   inflight = [];
   composer = new Composer();
   composer.id = "composer";
@@ -323,7 +342,8 @@ describe("composer @ mentions use one artifact-index page", () => {
     await older;
     expect(ac.open).toBe(true);
     expect(labels()).toEqual(["abc-new.txt"]);
-    expect(ac.items.map((item) => item.insert)).toEqual(["abc-new.txt#v-new"]);
+    expect(ac.items.map((item) => item.insert)).toEqual(["abc-new.txt"]);
+    expect(pinned()).toBe("v-new");
   });
 
   it("does not show a page fetched for a project the user has left", async () => {
@@ -394,10 +414,31 @@ describe("composer @ mentions use one artifact-index page", () => {
     pending[0]!.resolve(page([art({ id: "a1", filename: "plot.png", version_id: "v-server" })]));
     await update;
     expect(ac.items).toHaveLength(1);
-    expect(ac.items[0]?.insert).toBe("plot.png#v-server");
+    expect(ac.items[0]?.insert).toBe("plot.png");
+    expect(pinned()).toBe("v-server");
   });
 
-  it("inserts the exact version id", async () => {
+  it("writes only the filename and pins the exact version id beside it", async () => {
+    project.value = "proj";
+    currentId.value = "sess";
+    const pending = pendingIndex();
+    type("@pl");
+    const update = acUpdate();
+    await vi.advanceTimersByTimeAsync(AC_DEBOUNCE_MS);
+    pending[0]!.resolve(
+      page([art({ id: "plot", filename: "plot.png", version_id: "v-f85486107c9c", root_frame_id: "other" })]),
+    );
+    await update;
+    expect(ac.items[0]?.insert).toBe("plot.png");
+    acPick(0);
+    // ART-16: the hash used to land in the textarea, the bubble and the title.
+    expect(composer.value).toBe("@plot.png ");
+    expect(composerMentions(composer.value)).toEqual([
+      { filename: "plot.png", version_id: "v-f85486107c9c", artifact_id: "plot", root_frame_id: "other" },
+    ]);
+  });
+
+  it("a pick whose token was deleted again carries no pin", async () => {
     project.value = "proj";
     const pending = pendingIndex();
     type("@pl");
@@ -405,9 +446,10 @@ describe("composer @ mentions use one artifact-index page", () => {
     await vi.advanceTimersByTimeAsync(AC_DEBOUNCE_MS);
     pending[0]!.resolve(page([art({ id: "plot", filename: "plot.png", version_id: "v-f85486107c9c" })]));
     await update;
-    expect(ac.items[0]?.insert).toBe("plot.png#v-f85486107c9c");
     acPick(0);
-    expect(composer.value).toBe("@plot.png#v-f85486107c9c ");
+    expect(pins()).toEqual(["v-f85486107c9c"]);
+    type("never mind");
+    expect(pins()).toEqual([]);
   });
 
   it("omits q for an empty query and says the rows are only the recent page", async () => {
@@ -671,7 +713,8 @@ describe("applied rows stay up while the next @ search is in flight", () => {
 
     await vi.advanceTimersByTimeAsync(AC_DEBOUNCE_MS);
     expectHint("searching");
-    expect(ac.items[ac.idx]?.insert).toBe("plan.md#v-plan");
+    expect(ac.items[ac.idx]?.insert).toBe("plan.md");
+    expect(pinned(ac.idx)).toBe("v-plan");
     expect(highlighted?.parentNode).toBe(list);
     const hint = popup?.children.find((child) => String(child.className).split(/\s+/).includes("ac-hint"));
     expect(hint?.parentNode).toBe(popup);
@@ -685,14 +728,16 @@ describe("applied rows stay up while the next @ search is in flight", () => {
       ]),
     );
     await update;
-    expect(ac.items[ac.idx]?.insert).toBe("plan.md#v-plan");
+    expect(ac.items[ac.idx]?.insert).toBe("plan.md");
+    expect(pinned(ac.idx)).toBe("v-plan");
     expect(labels()[0]).toBe("pca.csv");
 
     type("@pl");
     const narrowed = acUpdate();
     expect(acPending()).toBe(true);
     expect(labels()).toEqual(["plot.png", "plan.md"]);
-    expect(ac.items[ac.idx]?.insert).toBe("plan.md#v-plan");
+    expect(ac.items[ac.idx]?.insert).toBe("plan.md");
+    expect(pinned(ac.idx)).toBe("v-plan");
     await vi.advanceTimersByTimeAsync(AC_DEBOUNCE_MS);
     pending[1]!.resolve(page([art({ id: "plan", filename: "plan.md", version_id: "v-plan" })]));
     await narrowed;
@@ -745,7 +790,8 @@ describe("a dismiss invalidates a late page", () => {
 
       const pick = await startSearch(respectAbort);
       acPick(0);
-      expect(composer.value).toBe("@abc-local.txt#v-local ");
+      expect(composer.value).toBe("@abc-local.txt ");
+      expect(pins()).toEqual(["v-local"]);
       type("@abc");
       deliverLate(pick.pending);
       await pick.update;
@@ -786,14 +832,16 @@ describe("Enter waits for the in-flight page", () => {
     const update = acUpdate();
     await vi.advanceTimersByTimeAsync(AC_DEBOUNCE_MS);
     expect(acPending()).toBe(true);
-    expect(ac.items[ac.idx]?.insert).toBe("plot.png#v-session");
+    expect(ac.items[ac.idx]?.insert).toBe("plot.png");
+    expect(pinned(ac.idx)).toBe("v-session");
     keys.fire(fakeKey("Enter"));
     expect(keys.dispatch).not.toHaveBeenCalled();
     expect(composer.value).toBe("@plot");
     pending[0]!.resolve(page([art({ id: "plot", filename: "plot.png", version_id: "v-server" })]));
     await update;
     expect(keys.dispatch).not.toHaveBeenCalled();
-    expect(composer.value).toBe("@plot.png#v-server ");
+    expect(composer.value).toBe("@plot.png ");
+    expect(pins()).toEqual(["v-server"]);
     expect(ac.open).toBe(false);
   });
 
@@ -920,7 +968,8 @@ describe("a pending @ search across entry points and engines", () => {
       expect(dispatch).not.toHaveBeenCalled();
       pending[0]!.resolve(page([art({ id: "plot", filename: "plot.png", version_id: "v1" })]));
       await update;
-      expect(composer.value).toBe("@plot.png#v1 ");
+      expect(composer.value).toBe("@plot.png ");
+      expect(pins()).toEqual(["v1"]);
     }));
 
   it("without AbortSignal.any a timeout still shows the failure hint", () =>
@@ -957,9 +1006,10 @@ describe("a pending @ search across entry points and engines", () => {
     expect(dispatch).not.toHaveBeenCalled();
     pending[0]!.resolve(page([art({ id: "plot", filename: "plot.png", version_id: "v1" })]));
     await update;
-    expect(composer.value).toBe("@plot.png#v1 ");
+    expect(composer.value).toBe("@plot.png ");
+    expect(pins()).toEqual(["v1"]);
     pointer(listeners, "click");
-    expect(dispatch).toHaveBeenCalledWith("@plot.png#v1 ");
+    expect(dispatch).toHaveBeenCalledWith("@plot.png ");
   });
 
   it("an armed Enter only completes the @ token it was pressed on", async () => {
@@ -1015,7 +1065,8 @@ describe("a pending @ search across entry points and engines", () => {
     await vi.advanceTimersByTimeAsync(AC_DEBOUNCE_MS);
     pending[0]!.resolve(page([art({ id: "plot", filename: "plot.png", version_id: "v1" })]));
     await update;
-    expect(composer.value).toBe("@plot.png#v1 ");
+    expect(composer.value).toBe("@plot.png ");
+    expect(pins()).toEqual(["v1"]);
   });
 
   it("the highlighted file stays highlighted when the index returns a newer version", async () => {
@@ -1039,7 +1090,8 @@ describe("a pending @ search across entry points and engines", () => {
       ]),
     );
     await update;
-    expect(composer.value).toBe("@plan.md#v-plan-new ");
+    expect(composer.value).toBe("@plan.md ");
+    expect(pins()).toEqual(["v-plan-new"]);
   });
 
   it("typing after an armed Enter disarms it", async () => {
@@ -1061,5 +1113,77 @@ describe("a pending @ search across entry points and engines", () => {
     await first;
     expect(composer.value).toBe("@plot");
     expect(ac.open).toBe(true);
+  });
+});
+
+describe("the / skill picker", () => {
+  function catalog(rows: Array<Record<string, unknown>>): void {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ skills: rows })),
+      }),
+    );
+  }
+
+  const LIT = {
+    name: "literature-review",
+    description: "Find, verify, and synthesize scientific literature.",
+  };
+
+  it("lists more than eight rows, scrolling, and says how many there are", async () => {
+    const many = Array.from({ length: 75 }, (_, i) => ({
+      name: `skill-${String(i).padStart(2, "0")}`,
+      description: "d",
+    }));
+    catalog(many);
+    type("/");
+    await acUpdate();
+    expect(ac.open).toBe(true);
+    expect(ac.items).toHaveLength(60);
+    expect(hintText()).toBe(acT("ac.skills.allMore", 75, 60));
+    type("/skill-7");
+    await acUpdate();
+    expect(ac.items[0]!.insert).toBe("skill-70");
+    expect(hintText()).toBe(acT("ac.skills.matches", ac.items.length));
+  });
+
+  it("says nothing matched instead of vanishing, and Escape closes that line", async () => {
+    catalog([LIT]);
+    const { fire } = bindKeys();
+    type("/zzz");
+    await acUpdate();
+    expect(ac.open).toBe(false);
+    expect(hintText()).toBe(acT("ac.skills.none", "zzz"));
+    fire(fakeKey("Escape"));
+    expect(hintText()).toBe("");
+  });
+
+  it("finds a skill by a Chinese keyword and its description", async () => {
+    catalog([{ name: "figure-style", description: "Figure rules." }, LIT]);
+    type("/文献");
+    await acUpdate();
+    expect(ac.items.map((item) => item.insert)).toEqual(["literature-review"]);
+    type("/synthesize");
+    await acUpdate();
+    expect(ac.items.map((item) => item.insert)).toEqual(["literature-review"]);
+  });
+
+  it("opens straight after Chinese text and inserts the skill as its own word", async () => {
+    catalog([LIT]);
+    type("请用/lit");
+    await acUpdate();
+    expect(ac.open).toBe(true);
+    acPick(0);
+    expect(composer.value).toBe("请用 /literature-review ");
+  });
+
+  it("leaves Chinese prose with a slash in it alone", async () => {
+    catalog([LIT]);
+    type("和/或");
+    await acUpdate();
+    expect(ac.open).toBe(false);
+    expect(hintText()).toBe("");
   });
 });

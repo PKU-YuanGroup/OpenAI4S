@@ -7,7 +7,9 @@
 
 import { variableInspector } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
-import { t } from "../../i18n/runtime";
+// The Notebook's label lookup: the dictionary, except the Variable Inspector
+// words its zh extract has in English (I18N-1).
+import { nbLabelT as t } from "../notebook/copy";
 import { runtimeSummary, shortRuntime } from "../notebook/kernel";
 import { publicText } from "../scrub/scrub";
 import { sanitizeVariableInspection } from "../timeline/sanitize";

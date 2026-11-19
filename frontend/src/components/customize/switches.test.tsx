@@ -36,7 +36,12 @@ vi.mock("preact/hooks", () => ({
   },
 }));
 
-const mocks = vi.hoisted(() => ({ fetch: vi.fn(), hint: vi.fn(), alive: (): boolean => true }));
+const mocks = vi.hoisted(() => ({
+  fetch: vi.fn(),
+  hint: vi.fn(),
+  alive: (): boolean => true,
+  notebookReread: vi.fn(),
+}));
 vi.mock("../../i18n", () => ({
   LANG: "en",
   t: (key: string, ...args: unknown[]) => [key, ...args].join(" "),
@@ -53,9 +58,12 @@ vi.mock("../../features/customize/host", async (importOriginal) => ({
   hint: mocks.hint,
 }));
 
+vi.mock("../../features/notebook", () => ({ notebookOnTurnDone: mocks.notebookReread }));
+
 import { ConnectorRow } from "./ConnectorsTab";
 import { MemoryTab } from "./MemoryTab";
 import { NetworkTab } from "./NetworkTab";
+import { NotebookReplSetting } from "./NotebookReplSetting";
 import { SkillRow } from "./SkillsTab";
 import { BuiltinRow } from "./SpecialistsTab";
 import { Toggle } from "./ui";
@@ -152,6 +160,39 @@ describe("Network egress switch", () => {
     await settle();
     expect(writes()).toEqual([["/api/v1/network/status", JSON.stringify({ enabled: false })]]);
     expect(firstSwitch(render(NetworkTab)).props!.on).toBe(false);
+  });
+});
+
+describe("Notebook manual-cells switch (NB-5)", () => {
+  it("writes the switch and makes the open Notebook re-read it", async () => {
+    routes({
+      "GET /notebook/settings": ok({ repl_enabled: false, env_forced: false, can_change: true }),
+      "PUT /notebook/settings": ok({ repl_enabled: true, env_forced: false, can_change: true }),
+    });
+    render(NotebookReplSetting);
+    await settle();
+    const toggle = firstSwitch(render(NotebookReplSetting));
+    expect(toggle.props!.disabled).toBe(false);
+    expect(toggle.props!.on).toBe(false);
+    toggle.props!.onClick!();
+    await settle();
+    expect(writes()).toEqual([["/api/v1/notebook/settings", JSON.stringify({ repl_enabled: true })]]);
+    expect(firstSwitch(render(NotebookReplSetting)).props!.on).toBe(true);
+    expect(mocks.notebookReread).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["forced on by the environment", { repl_enabled: true, env_forced: true, can_change: false }],
+    ["a team member", { repl_enabled: false, env_forced: false, can_change: false }],
+  ])("is locked for %s", async (_who, body) => {
+    routes({ "GET /notebook/settings": ok(body) });
+    render(NotebookReplSetting);
+    await settle();
+    const toggle = firstSwitch(render(NotebookReplSetting));
+    expect(toggle.props!.disabled).toBe(true);
+    toggle.props!.onClick!();
+    await settle();
+    expect(writes()).toEqual([]);
   });
 });
 

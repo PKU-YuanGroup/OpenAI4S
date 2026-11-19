@@ -111,7 +111,8 @@ def test_files_read_are_runtime_observations_not_source_guesses(tmp_path):
         )
 
     assert result["error"] is None
-    assert result["stdout"].strip() == "observed"
+    # The final expression's value (write_text's count) is echoed, as in Jupyter.
+    assert result["stdout"] == "observed\n6\n"
     assert result["files_read"] == ["executed.txt"]
     assert (tmp_path / "write-only.txt").read_text(encoding="utf-8") == "output"
 
@@ -616,6 +617,131 @@ def test_expr_echo():
     with Kernel(dispatcher=_echo_dispatcher) as k:
         r = k.execute("21 * 2")
         assert r["stdout"].strip() == "42"
+
+
+def test_last_expression_of_a_multiline_cell_is_echoed():
+    """Jupyter's rule: the final expression statement is displayed (NB-3)."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        assert k.execute("a = 1\na + 41")["stdout"] == "42\n"
+        # A trailing `;` suppresses it, as in IPython.
+        assert k.execute("a + 1;")["stdout"] == ""
+        assert k.execute("a + 2;  # quiet")["stdout"] == ""
+        # Only the LAST statement, and only when it is an expression.
+        assert k.execute("a + 3\nb = a")["stdout"] == ""
+        # None is not echoed; a call that prints still prints once.
+        assert k.execute("x = 5\nprint('once')")["stdout"] == "once\n"
+        # Non-ASCII before the expression does not move the `;` check.
+        assert k.execute("s = 'π'\nlen('π')  # π")["stdout"] == "1\n"
+
+
+def test_display_prints_each_object_and_is_not_a_listed_variable():
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        assert k.execute("display(1, 'x')")["stdout"] == "1\n'x'\n"
+        names = [v["name"] for v in k.inspect_variables()["variables"]]
+        assert "display" not in names
+
+
+def test_user_tracebacks_start_at_the_cell_not_the_worker():
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        runtime = k.execute("x = 1\n1 / 0")
+        assert "ZeroDivisionError" in runtime["error"]
+        assert "worker.py" not in runtime["error"]
+        assert runtime["error"].startswith("Traceback (most recent call last):")
+        assert 'File "<kernel:' in runtime["error"]
+        assert runtime["trace"]["error_lineno"] == 2
+
+        syntax = k.execute("x = (\n")
+        assert "SyntaxError" in syntax["error"]
+        assert "worker.py" not in syntax["error"]
+        assert "During handling" not in syntax["error"]
+
+
+def test_a_numbered_cell_is_named_by_its_number_in_tracebacks():
+    """NB-9: one cell had three numbers -- the chat's "cell 12", the Notebook's
+    "[30]" and the traceback's `<kernel:23>` (this worker's own counter, which
+    also counts system cells). The host's number now names the cell's code,
+    so a traceback points at the cell the user can see; line numbers and the
+    failing line still resolve, and a reused number stays unique."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        k.execute("print('system cell')")  # advances the worker's own counter
+        failed = k.execute("x = 1\n1 / 0", cell_label=12)
+        assert 'File "<cell 12>", line 2, in <module>' in failed["error"]
+        assert failed["trace"]["error_lineno"] == 2
+        k.execute("def f():\n    return 1 / 0", cell_label=13)
+        nested = k.execute("f()", cell_label=14)
+        assert 'File "<cell 13>", line 2, in f' in nested["error"]
+        assert "return 1 / 0" in nested["error"]  # linecache still serves the source
+        again = k.execute("1 / 0", cell_label=12)
+        assert 'File "<cell 12.' in again["error"]  # unique per compiled cell
+        plain = k.execute("1 / 0")
+        assert 'File "<kernel:' in plain["error"]
+
+
+def test_ipython_syntax_fails_with_a_hint():
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        shell = k.execute("!ls -la")["error"]
+        assert "SyntaxError" in shell and "subprocess.run" in shell
+        install = k.execute("x = 1\n!pip install numpy")["error"]
+        assert "installing packages from a cell is not supported" in install
+        magic = k.execute("%timeit sum(range(10))")["error"]
+        assert "IPython magics" in magic and "timeit" in magic
+        helpq = k.execute("len?")["error"]
+        assert "help(len)" in helpq
+        # An ordinary SyntaxError keeps its own message, with no hint.
+        plain = k.execute("def f(:\n    pass")["error"]
+        assert "SyntaxError" in plain and "IPython" not in plain
+
+
+def test_input_fails_at_once_and_stdin_is_not_the_protocol_pipe():
+    """RUN-9: `input()` used to block on the protocol pipe forever."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        asked = k.execute("input('sample name? ')")
+        assert "StdinNotImplementedError" in asked["error"]
+        assert "no interactive input" in asked["error"]
+        # Code that handles end-of-input takes its no-input path.
+        handled = k.execute(
+            "try:\n    input()\nexcept EOFError:\n    print('no input')"
+        )
+        assert handled["stdout"] == "no input\n"
+        assert k.execute("import sys\nsys.stdin.read()")["stdout"] == "''\n"
+        child = k.execute(
+            "import subprocess, sys\n"
+            "subprocess.run([sys.executable, '-c', "
+            "'import sys; print(len(sys.stdin.read()))'], capture_output=True, "
+            "text=True, timeout=30).stdout.strip()"
+        )
+        assert child["stdout"] == "'0'\n"
+        assert k.execute("1 + 1")["stdout"] == "2\n"
+
+
+def test_modules_written_to_the_working_directory_are_importable(tmp_path):
+    """NB-4: the workspace is on sys.path; the kernel's own directory is not."""
+    with Kernel(dispatcher=_echo_dispatcher, cwd=str(tmp_path)) as k:
+        wrote = k.execute("open('m_review.py', 'w').write('X = 1\\n');")
+        assert wrote["error"] is None
+        imported = k.execute("import m_review\nprint(m_review.X)")
+        assert imported["error"] is None, imported["error"]
+        assert imported["stdout"] == "1\n"
+        # The worker's sibling modules are not importable by bare name.
+        leaked = k.execute("import sink_drain")
+        assert "ModuleNotFoundError" in leaked["error"]
+
+
+def test_a_worker_that_exits_mid_cell_reports_its_status_and_output():
+    """RUN-5: the exit status and the already-streamed stdout survive a crash."""
+    from openai4s.kernel.errors import KernelWorkerExited
+
+    chunks: list[str] = []
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        with pytest.raises(KernelWorkerExited) as caught:
+            k.execute(
+                "import os\nprint('before', flush=True)\nos._exit(3)",
+                on_chunk=chunks.append,
+            )
+    assert "kernel worker exited unexpectedly" in str(caught.value)
+    assert caught.value.exit_code == 3
+    assert caught.value.partial_stdout == "before\n"
+    assert "".join(chunks) == "before\n"
 
 
 def test_error_lineno():

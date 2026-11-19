@@ -304,6 +304,24 @@ def _env_roots() -> list[Path]:
     return roots
 
 
+#: Environments ``openai4s setup`` builds from ``envs/*.yml`` (the CLI's
+#: ``_DEFAULT_ENVS``). They live in whatever conda root the user has, so the
+#: name, not the location, is what marks them as OpenAI4S's own.
+PRODUCT_ENV_NAMES = frozenset({"python", "phylo", "r", "struct"})
+
+
+def _explicit_env_roots() -> set[Path]:
+    """Roots the operator named in ``OPENAI4S_ENV_ROOTS`` for OpenAI4S."""
+    roots: set[Path] = set()
+    for chunk in os.environ.get("OPENAI4S_ENV_ROOTS", "").split(os.pathsep):
+        if chunk.strip():
+            try:
+                roots.add(Path(chunk.strip()).expanduser())
+            except Exception:  # noqa: BLE001
+                continue
+    return roots
+
+
 def _detect_env(env_dir: Path) -> Environment | None:
     """Build an Environment for one env directory, or None if it has no usable
     interpreter."""
@@ -486,6 +504,7 @@ def discover_environments(force: bool = False) -> list[Environment]:
             if environment.name in hidden or environment.name == "base":
                 continue
             found.setdefault(environment.name, environment)
+        explicit_roots = _explicit_env_roots()
         for root in _env_roots():
             if not root.is_dir():
                 continue
@@ -498,6 +517,14 @@ def discover_environments(force: bool = False) -> list[Environment]:
                     continue
                 env = _detect_env(child)
                 if env is not None:
+                    # A conda env found by scanning the user's own conda
+                    # installation is theirs (a "local" env), not one OpenAI4S
+                    # set up. It used to be reported as builtin, so a personal
+                    # research environment read as part of the product and the
+                    # agent switched into it without asking.
+                    env.builtin = (
+                        root in explicit_roots or child.name in PRODUCT_ENV_NAMES
+                    )
                     found[env.name] = env
         base = found.pop("base")
         ordered = [base] + [found[k] for k in sorted(found)]

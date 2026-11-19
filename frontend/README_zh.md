@@ -13,7 +13,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | [`index.html`](index.html) | SPA 外壳。head 加载 `/static/style.css`（与 legacy UI 同一份全局样式；F-21）、经典脚本（非 module）`/static/theme-bootstrap.js`（第一次绘制就带上 `data-theme`）、`/static/favicon.js`（10 fps 钳制）和 `/static/scientific_renderers.js`。应用入口是带 `src=` 的外链 `type="module"`，CSP `script-src 'self'` 不必放行内联脚本。 |
-| [`package.json`](package.json) | 前端包：Preact 10、`@preact/signals`、Vite、Vitest、TypeScript。`private: true`。 |
+| [`package.json`](package.json) | 前端包：Preact 10、`@preact/signals`、KaTeX（Markdown 产物里的公式，只在文档含公式时作为懒加载分块载入）、Vite、Vitest、TypeScript。`private: true`。 |
 | [`package-lock.json`](package-lock.json) | 锁文件，保证 `npm ci` 重建确定。CI 会重建 `webui/dist` 并 `git diff --exit-code`。 |
 | [`.npmrc`](.npmrc) | `engine-strict=true`：Node 版本不在 `package.json` 的 `engines` 范围内时直接拒绝安装，而不是只警告。npm 默认只警告，那行提示会被刷过去，问题要等到 Vitest 或 Vite 莫名报错时才暴露。 |
 | [`PORTING_NOTES.md`](PORTING_NOTES.md) | 逐项把旧 `app.js` 行号映射到新模块。F-03 没有领域内核；F-04 对照 `_serve_index` / package-data / `_WHEEL_REQUIRED`。 |

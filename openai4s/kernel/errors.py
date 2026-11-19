@@ -14,11 +14,30 @@ __all__ = [
     "KernelBusyError",
     "KernelInterruptUnavailable",
     "KernelRestartFailed",
+    "KernelWorkerExited",
 ]
 
 
 class KernelBusyError(RuntimeError):
     """The worker protocol is owned by an in-flight cell transaction."""
+
+
+class KernelWorkerExited(RuntimeError):
+    """The worker process ended while a cell was running.
+
+    A RuntimeError with the message it always had, so existing callers are
+    unchanged. It also carries what a person needs to understand the loss:
+    the exit status (`-9`/`137` is a SIGKILL, typically the out-of-memory
+    killer) and the stdout the cell had already streamed, which used to be
+    discarded with the frame that never arrived.
+    """
+
+    def __init__(
+        self, message: str, *, exit_code: int | None = None, partial_stdout: str = ""
+    ) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.partial_stdout = partial_stdout
 
 
 class KernelInterruptUnavailable(RuntimeError):

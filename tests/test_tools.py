@@ -136,6 +136,9 @@ def test_control_tool_classes_own_their_security_policy():
         "project_grep",
         "project_import_file",
         "env_setup",
+        # Gated so the default rules can allow OpenAI4S's own environments
+        # (``builtin:*``) and ask before the user's own conda envs (``local:*``).
+        "env_use",
         "web_search",
         "web_fetch",
         # Approval-gated for the same reason as web_fetch -- the user is asked

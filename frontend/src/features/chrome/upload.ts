@@ -13,20 +13,29 @@
  * conversation happened to be open when FileReader finished.
  */
 
-import { t } from "../../i18n/runtime";
+import { LANG, t } from "../../i18n/runtime";
 import { defaultModelName } from "../../stores/customize";
 import { effProject } from "../customize/host";
 import { _openGen, currentId, project } from "../../stores/session";
 import { sub } from "../ws/connect";
-import { api, apiErrorText } from "./api";
+import { api, ApiError, apiErrorText } from "./api";
 import { $, hint } from "./dom";
 import { hostFn, isReady } from "./host";
+import { askUploadConflict, uploadT, type UploadConflictBatch } from "./upload-conflict";
 
 export interface UploadResult {
   ok: boolean;
   frameId: string | null;
+  /** The name the file was stored under (a "keep both" answer renames it). */
   filename: string;
+  /** The person cancelled this file at the same-name prompt (UP-3); not a failure. */
+  skipped?: boolean;
   error?: unknown;
+}
+
+/** UP-3: the server's refusal of a taken name, which asks the person. */
+function isUploadConflict(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === "artifact_exists";
 }
 
 export interface UploadBatch {
@@ -95,7 +104,7 @@ export function readUploadFile(file: File): Promise<string> {
  */
 export function createUploadSession(
   projectId: string | null,
-  options?: { fresh?: boolean },
+  options?: { fresh?: boolean; reuseEmpty?: boolean },
 ): UploadCreation {
   const shared = !(options && options.fresh);
   const key = projectId ? `project:${projectId}` : "project:<none>";
@@ -115,6 +124,9 @@ export function createUploadSession(
       body: JSON.stringify({
         project_id: projectId || undefined,
         model: defaultModelName.value,
+        // A project open may land in the newest session nobody has used
+        // rather than adding another empty one on every visit.
+        ...(options && options.reuseEmpty ? { reuse_empty: true } : {}),
       }),
     })) as { id?: string } | null;
     const frameId = (f && f.id) || "";
@@ -211,6 +223,101 @@ export function uploadFailureMatches(
     : !failure.frameId && failure.projectId === projectId;
 }
 
+/** Feature-local copy: `i18n/en.ts` / `zh.ts` are generated extracts of app.js. */
+const UPLOAD_COPY: Record<"en" | "zh", Record<string, string>> = {
+  en: {
+    queued: "The session is busy; {0} will upload as soon as the current run finishes…",
+    progress: "Uploading {0} of {1}: {2}",
+    allDone: "Uploaded {0} files",
+    partial: "Uploaded {0} of {1} files. Not uploaded: {2}",
+  },
+  zh: {
+    queued: "会话正在运行，{0} 会在当前任务结束后自动上传…",
+    progress: "正在上传 {0}/{1}：{2}",
+    allDone: "已上传 {0} 个文件",
+    partial: "已上传 {0}/{1} 个文件。未上传：{2}",
+  },
+};
+
+function uploadCopy(key: string, ...args: string[]): string {
+  let text = UPLOAD_COPY[LANG === "zh" ? "zh" : "en"][key] || key;
+  args.forEach((value, index) => {
+    text = text.split("{" + index + "}").join(value);
+  });
+  return text;
+}
+
+/**
+ * How long a refused upload keeps waiting for its session to go idle. The
+ * server refuses user mutations while a run is active (409
+ * `trusted_capture_busy`) so bytes never land inside a run's completion
+ * delta; the upload waits for the run instead of being dropped.
+ */
+export const UPLOAD_BUSY_WAIT_MS = 30 * 60 * 1000;
+
+/** Injectable timing so tests do not sleep. */
+export const UPLOAD_TIMING = {
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: (): number => Date.now(),
+};
+
+/**
+ * One upload request at a time per page. Every file of a multi-select used to
+ * POST at once; the session gate admits one mutation, so all but one came back
+ * 409 and were dropped behind a hint line the next file overwrote.
+ */
+let uploadChain: Promise<unknown> = Promise.resolve();
+
+function inSeries<T>(job: () => Promise<T>): Promise<T> {
+  const next = uploadChain.then(job, job);
+  uploadChain = next.catch(() => undefined);
+  return next;
+}
+
+function sessionBusy(error: unknown): boolean {
+  const e = error as { status?: unknown; code?: unknown } | null;
+  return !!e && e.status === 409 && e.code === "trusted_capture_busy";
+}
+
+/** Poll the cheap status route, not the upload itself, until the run ends. */
+async function waitForIdle(frameId: string | null, attempt: number): Promise<void> {
+  await UPLOAD_TIMING.sleep(Math.min(15000, 1000 * 2 ** attempt));
+  if (!frameId) return;
+  for (;;) {
+    let status: { running?: unknown } | null = null;
+    try {
+      status = (await api(`/frames/${encodeURIComponent(frameId)}/status`)) as {
+        running?: unknown;
+      } | null;
+    } catch {
+      return;
+    }
+    if (!status || status.running !== true) return;
+    await UPLOAD_TIMING.sleep(2000);
+  }
+}
+
+async function postUpload(
+  body: string,
+  filename: string,
+  frameId: string | null,
+): Promise<{ filename?: unknown } | null> {
+  const started = UPLOAD_TIMING.now();
+  let announced = false;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return (await api("/uploads", { method: "POST", body })) as { filename?: unknown } | null;
+    } catch (error) {
+      if (!sessionBusy(error) || UPLOAD_TIMING.now() - started > UPLOAD_BUSY_WAIT_MS) throw error;
+      if (!announced) {
+        hint(uploadCopy("queued", filename));
+        announced = true;
+      }
+      await waitForIdle(frameId, attempt);
+    }
+  }
+}
+
 /** app.js:11131. */
 export function uploadFiles(
   files: ArrayLike<File> | FileList | null | undefined,
@@ -242,30 +349,67 @@ export function uploadFiles(
     return targetFrame;
   });
   const targetPromise = batch.targetPromise;
-  const tasks = selected.map((file) =>
+  const several = selected.length > 1;
+  // One "do the same for the rest" memory per selection (UP-3).
+  const conflicts: UploadConflictBatch = { remembered: null, size: selected.length };
+  const tasks = selected.map((file, index) =>
     (async (): Promise<UploadResult> => {
       let targetFrame: string | null = null;
       try {
         const prepared = await Promise.all([targetPromise, readUploadFile(file)]);
         targetFrame = prepared[0];
         const b64 = prepared[1];
-        await api("/uploads", {
-          method: "POST",
-          body: JSON.stringify({
+        const frame = targetFrame;
+        const body = (ifExists: "error" | "version" | "rename") =>
+          JSON.stringify({
             filename: file.name,
             content_base64: b64,
             project_id: projectId || undefined,
-            frame_id: targetFrame,
-          }),
+            frame_id: frame,
+            // A taken name is refused first, so replacing is a choice the
+            // person makes, never a silent overwrite (UP-3).
+            if_exists: ifExists,
+          });
+        const outcome: {
+          saved: { filename?: unknown } | null;
+          choice: "rename" | "version" | null;
+          skipped: boolean;
+        } = { saved: null, choice: null, skipped: false };
+        // One upload at a time (UP-1), each waiting out a busy session; a
+        // same-name question holds the queue, so questions come one at a time.
+        await inSeries(async () => {
+          if (several) {
+            hint(uploadCopy("progress", String(index + 1), String(selected.length), file.name));
+          }
+          try {
+            outcome.saved = await postUpload(body("error"), file.name, frame);
+          } catch (error) {
+            if (!isUploadConflict(error)) throw error;
+            const answer = await askUploadConflict(file.name, conflicts);
+            if (answer === "cancel") {
+              outcome.skipped = true;
+              return;
+            }
+            outcome.choice = answer;
+            outcome.saved = await postUpload(body(answer), file.name, frame);
+          }
         });
+        if (outcome.skipped) {
+          hint(uploadT("upload.cancelled", file.name));
+          return { ok: true, skipped: true, frameId: targetFrame, filename: file.name };
+        }
+        const saved = outcome.saved;
+        const stored = saved && typeof saved.filename === "string" && saved.filename ? saved.filename : file.name;
         // Only the open conversation's file dock should be refreshed; the bytes
         // landed in targetFrame whether or not the user is still looking at it.
         if (currentId.value === targetFrame) {
           const loadArtifacts = hostFn("loadArtifacts");
           if (isReady(loadArtifacts)) loadArtifacts(targetFrame);
         }
-        hint(t("upload.uploaded", file.name));
-        return { ok: true, frameId: targetFrame, filename: file.name };
+        if (outcome.choice === "rename" && stored !== file.name) hint(uploadT("upload.renamed", file.name, stored));
+        else if (outcome.choice === "version") hint(uploadT("upload.versioned", file.name));
+        else if (!several) hint(t("upload.uploaded", file.name));
+        return { ok: true, frameId: targetFrame, filename: stored };
       } catch (error) {
         // FileReader can fail before the shared frame request settles. Wait for
         // that target only to bind the failure to the right composer; no bytes
@@ -277,7 +421,7 @@ export function uploadFiles(
             /* the creation itself failed; the failure stays frame-less */
           }
         }
-        hint(t("upload.failed", apiErrorText(error)), true);
+        if (!several) hint(t("upload.failed", apiErrorText(error)), true);
         return { ok: false, frameId: targetFrame, filename: file.name, error };
       }
     })(),
@@ -285,6 +429,26 @@ export function uploadFiles(
   batch.promise = Promise.all(tasks)
     .then((results) => {
       const failed = results.filter((result) => !result.ok);
+      const uploaded = results.filter((result) => result.ok && !result.skipped);
+      if (several) {
+        // One summary line names every file that did not make it; per-file
+        // hints overwrote each other within milliseconds.
+        if (failed.length) {
+          hint(
+            uploadCopy(
+              "partial",
+              String(uploaded.length),
+              String(results.length),
+              failed
+                .map((result) => `${result.filename} (${apiErrorText(result.error)})`)
+                .join("; "),
+            ),
+            true,
+          );
+        } else {
+          hint(uploadCopy("allDone", String(uploaded.length)));
+        }
+      }
       if (failed.length) {
         UPLOAD_STATE.failures.add({
           frameId: results.find((result) => result.frameId)?.frameId || null,

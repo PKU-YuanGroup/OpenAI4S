@@ -8,9 +8,9 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [`index.ts`](index.ts) | `mountLab()` 只在第一次把面板渲染进 `#dock-lab`；`labTabLabel()` 给出面板标签名。 |
-| [`LabPanel.tsx`](LabPanel.tsx) | 面板本体、双语文案与 SVG 图表（经校验的参考分类色，浅色/深色各一套）。 |
+| [`index.ts`](index.ts) | `mountLab()` 只在第一次把面板渲染进 `#dock-lab`；`labTabLabel()` 给出面板标签名。 加载时应用隐藏标签的选择（`applyLabTabPreference`），并为设置页再导出 `labTabHidden` / `setLabTabHidden` / `labCopy`。 |
+| [`LabPanel.tsx`](LabPanel.tsx) | 面板本体、双语文案与 SVG 图表（经校验的参考分类色，浅色/深色各一套）。 OpenMHS 还没准备好时，用一句话说明实验室是什么、怎么准备（`openai4s lab setup`），并可以隐藏这个标签（`setLabTabHidden`，按浏览器保存；在 设置 → 通用 里可以重新显示）。 |
 | [`MarketPanel.tsx`](MarketPanel.tsx) | 设备市场：搜索 OpenMHS 市场、按类别筛选，一键以 MCP 或 MHS 方式安装设备。 |
-| [`lab.test.ts`](lab.test.ts) | 面板辅助函数的单元测试（最新读数、纯文本介绍、类别名）。 |
+| [`lab.test.ts`](lab.test.ts) | 面板辅助函数的单元测试（最新读数、纯文本介绍、类别名）。 隐藏实验室标签的选择会被记住并体现在页面上。 |
 | [`types.ts`](types.ts) | `/mhs-lab/*` 响应的数据结构。 |
-| [`lab.css`](lab.css) | 基于工作台设计变量的面板样式。 |
+| [`lab.css`](lab.css) | 基于工作台设计变量的面板样式。 `body.lab-tab-hidden` 隐藏实验室标签。 |

@@ -994,9 +994,10 @@ class _Host:
     ) -> dict:
         """Submit the task's structured result + human-facing completion bullets.
 
-        completion_bullets must be 1-4 completed-action strings. English uses
-        past-tense, verb-first wording; CJK verb phrases are accepted without
-        English tense morphology. If output_schema is given, `output` is
+        completion_bullets must be 1-4 completed-action strings, in the
+        conversation's language. English uses past-tense, verb-first wording;
+        a bullet in another language (Chinese, Japanese, accented Latin, …) is
+        accepted as written. If output_schema is given, `output` is
         validated against it. task_status optionally declares an honest
         machine-readable status (completed|partial|blocked|failed; omitted
         means completed) — a delegated parent reads it instead of parsing
@@ -1048,7 +1049,9 @@ class _Host:
     def load_skill(self, name: str) -> dict:
         """Load a skill's full SKILL.md guidance by name (fuzzy). Surfaces a
         'Loading <skill> skill guidance' step. Returns {name, description,
-        content}. Read it, then follow it while doing the analysis."""
+        content, ...}; a skill with kernel.py helpers also carries `import`,
+        the line that imports them -- they are not imported for you. Read
+        it, then follow it while doing the analysis."""
         return self._call("load_skill", [name])
 
     # --- opencode-parity harness tools -----------------------------------

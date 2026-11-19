@@ -44,10 +44,22 @@ export function liveOutputDelta(
 
 export type AppendableText = { appendData: (data: string) => void };
 
+/**
+ * The line a cell's stream puts between its code and what it printed
+ * (`NOTEBOOK_DIVIDER` in `openai4s/server/cell_run.py`).
+ */
+export const OUTPUT_DIVIDER = "----- output -----";
+const DIVIDER_LINE = "\n" + OUTPUT_DIVIDER + "\n";
+
 export type StreamingPreHandle = {
   append: (chunk: string) => void;
   readonly text: string;
   readonly newlines: number;
+  /**
+   * Lines after a cell's output divider, i.e. what the cell printed; every
+   * line when the stream has no divider (a sub-agent's, a legacy tool's).
+   */
+  readonly outputLines: number;
   readonly truncated: boolean;
 };
 
@@ -66,6 +78,18 @@ export function bindStreamingPre(
   let length = initial.length;
   let truncated = initial.includes(LIVE_OUTPUT_TRUNCATION);
   let newlines = countNewlines(initial);
+  // Newlines through the divider line, once seen. Only text not yet searched
+  // (plus a divider's length of overlap, for a divider split across chunks)
+  // is searched, and only until the divider is found.
+  let outputBase: number | null = null;
+  let searched = 0;
+  const findDivider = (): void => {
+    if (outputBase !== null) return;
+    const at = text.indexOf(DIVIDER_LINE, Math.max(0, searched - (DIVIDER_LINE.length - 1)));
+    searched = text.length;
+    if (at >= 0) outputBase = countNewlines(text.slice(0, at + DIVIDER_LINE.length));
+  };
+  findDivider();
   return {
     append(chunk: string): void {
       const step = liveOutputIncrement(length, truncated, chunk);
@@ -75,12 +99,16 @@ export function bindStreamingPre(
       text += step.added;
       length += step.added.length;
       newlines += countNewlines(step.added);
+      findDivider();
     },
     get text(): string {
       return text;
     },
     get newlines(): number {
       return newlines;
+    },
+    get outputLines(): number {
+      return outputBase === null ? newlines : newlines - outputBase;
     },
     get truncated(): boolean {
       return truncated;
@@ -90,12 +118,18 @@ export function bindStreamingPre(
 
 /** Feature-local copy: app.js hard-coded the meta line in English. */
 const META_COPY: Record<"en" | "zh", { lines: string; done: string }> = {
-  en: { lines: "{0} lines", done: "done" },
-  zh: { lines: "{0} 行", done: "完成" },
+  // NB-9: lines the cell printed (`outputLines`), not its code.
+  en: { lines: "{0} output lines", done: "done" },
+  zh: { lines: "输出 {0} 行", done: "完成" },
 };
 
-/** app.js:5495 meta line: the line count once there is more than one, else "done". */
-export function toolMetaLabel(newlines: number): string {
+/**
+ * app.js:5495 meta line: the printed-line count once there is more than one,
+ * else "done" — but nothing while the card still runs, where "done" was
+ * untrue and the code's own lines used to be counted as output.
+ */
+export function toolMetaLabel(lines: number, running = false): string {
   const copy = META_COPY[LANG === "zh" ? "zh" : "en"];
-  return newlines > 1 ? copy.lines.replace("{0}", String(newlines)) : copy.done;
+  if (lines > 1) return copy.lines.replace("{0}", String(lines));
+  return running ? "" : copy.done;
 }

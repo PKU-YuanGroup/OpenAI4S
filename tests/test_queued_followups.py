@@ -259,6 +259,18 @@ def test_the_preview_is_one_short_line_and_not_the_whole_message(client):
         finish()
 
 
+def test_a_text_form_pin_previews_without_its_version(client):
+    """ART-16: a client still writing `@name#v-<id>` keeps its pin, but the
+    hash is the version, not the user's words, and the strip shows words."""
+    _held, finish = _hold_the_head(client)
+    try:
+        client.message("@counts.csv#v-9f5c06efc35e how many rows?")
+        preview = client.queue()["queue"][0]["metadata"]["preview"]
+        assert preview == "@counts.csv how many rows?"
+    finally:
+        finish()
+
+
 # --------------------------------------------------------------------------
 # cancelling exactly one of them
 # --------------------------------------------------------------------------

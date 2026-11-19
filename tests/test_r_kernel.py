@@ -263,7 +263,9 @@ def test_interrupt_reaches_r_even_when_the_spawning_process_ignores_sigint(
 # --- interpreter resolution ---------------------------------------------------
 
 
-def test_resolver_prefers_env_then_named_r_then_path(monkeypatch, tmp_path):
+def test_resolver_prefers_env_then_named_r_then_path_then_other_envs(
+    monkeypatch, tmp_path
+):
     from openai4s.kernel import environments as envmod
     from openai4s.kernel import r_kernel as rk_mod
 
@@ -271,6 +273,9 @@ def test_resolver_prefers_env_then_named_r_then_path(monkeypatch, tmp_path):
         def __init__(self, name, rscript):
             self.name = name
             self.rscript = rscript
+
+    # These paths do not exist; treat every candidate as able to run the worker.
+    monkeypatch.setattr(rk_mod, "_can_run_worker", lambda _path: True)
 
     # 1) an explicitly selected env wins outright
     env = _E("custom", str(tmp_path / "custom-Rscript"))
@@ -284,19 +289,21 @@ def test_resolver_prefers_env_then_named_r_then_path(monkeypatch, tmp_path):
     )
     assert resolve_r_interpreter() == "/r/Rscript"
 
-    # 3) else any discovered R-carrying env
+    # 3) else Rscript on PATH -- ahead of someone's personal conda env that
+    #    happens to ship Rscript (ENV-2: every R cell ran in a personal
+    #    `r-mini` without survival/ggplot2 while PATH had both)
     monkeypatch.setattr(
         envmod,
         "discover_environments",
         lambda force=False: [_E("py", None), _E("other", "/x/Rscript")],
     )
-    assert resolve_r_interpreter() == "/x/Rscript"
-
-    # 4) else Rscript on PATH; and None when nowhere
-    monkeypatch.setattr(envmod, "discover_environments", lambda force=False: [])
     monkeypatch.setattr(rk_mod.shutil, "which", lambda name: "/usr/bin/Rscript")
     assert resolve_r_interpreter() == "/usr/bin/Rscript"
+
+    # 4) else any discovered R-carrying env; and None when nowhere
     monkeypatch.setattr(rk_mod.shutil, "which", lambda name: None)
+    assert resolve_r_interpreter() == "/x/Rscript"
+    monkeypatch.setattr(envmod, "discover_environments", lambda force=False: [])
     assert resolve_r_interpreter() is None
 
 
@@ -308,6 +315,51 @@ def test_spawn_without_any_r_raises(monkeypatch):
     monkeypatch.setattr(rk_mod.shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="no R interpreter"):
         spawn_r_kernel()
+
+
+def test_resolver_skips_an_r_that_cannot_run_the_worker(monkeypatch):
+    """A system R without jsonlite cannot start r_worker.R. Picking it because
+    PATH outranks personal envs turned every R cell into a startup error while
+    an env R that works sat next to it; it is skipped instead. When nothing
+    can run the worker, the first candidate is still returned so the spawn
+    reports the worker's own install hint rather than "no R interpreter"."""
+    from openai4s.kernel import environments as envmod
+    from openai4s.kernel import r_kernel as rk_mod
+
+    class _E:
+        def __init__(self, name, rscript):
+            self.name = name
+            self.rscript = rscript
+
+    monkeypatch.setattr(
+        envmod,
+        "discover_environments",
+        lambda force=False: [_E("r-mini", "/conda/r-mini/bin/Rscript")],
+    )
+    monkeypatch.setattr(rk_mod.shutil, "which", lambda name: "/usr/bin/Rscript")
+    ready = {"/usr/bin/Rscript": False, "/conda/r-mini/bin/Rscript": True}
+    monkeypatch.setattr(rk_mod, "_can_run_worker", lambda path: ready[path])
+    assert resolve_r_interpreter() == "/conda/r-mini/bin/Rscript"
+
+    ready["/usr/bin/Rscript"] = True
+    assert resolve_r_interpreter() == "/usr/bin/Rscript"
+
+    ready.update({"/usr/bin/Rscript": False, "/conda/r-mini/bin/Rscript": False})
+    assert resolve_r_interpreter() == "/usr/bin/Rscript"
+
+
+def test_worker_readiness_probe_runs_the_interpreter(tmp_path):
+    from openai4s.kernel import r_kernel as rk_mod
+
+    good = tmp_path / "good-Rscript"
+    good.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    bad = tmp_path / "bad-Rscript"
+    bad.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    for script in (good, bad):
+        script.chmod(0o755)
+    assert rk_mod._can_run_worker(str(good)) is True
+    assert rk_mod._can_run_worker(str(bad)) is False
+    assert rk_mod._can_run_worker(str(tmp_path / "missing")) is False
 
 
 # --- real R integration (skipped when no R is installed) ----------------------
@@ -536,6 +588,30 @@ def test_real_r_inspector_and_quit_guard_do_not_live_in_the_user_namespace(
         assert kernel.execute("q <- 3")["error"] is None
         names = [item["name"] for item in kernel.inspect_variables()["variables"]]
         assert names == ["q"]
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_plots_are_png_files_written_when_the_cell_ends(tmp_path):
+    """NB-11: `plot()` wrote one session-long Rplots.pdf the Notebook could
+    only link to; each cell's plots are now PNGs it can show inline."""
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        drawn = kernel.execute("plot(1:10)\nhist(c(1, 2, 2, 3, 3, 3))")
+        assert drawn["error"] is None, drawn
+        assert sorted(p.name for p in tmp_path.glob("Rplot_*.png")) == [
+            "Rplot_1_01.png",
+            "Rplot_1_02.png",
+        ]
+        assert not (tmp_path / "Rplots.pdf").exists()
+        # A device the cell opens itself stays the cell's own.
+        assert kernel.execute("pdf('mine.pdf'); plot(1:3)")["error"] is None
+        assert kernel.execute("invisible(dev.off())")["error"] is None
+        assert (tmp_path / "mine.pdf").stat().st_size > 0
+        assert sorted(p.name for p in tmp_path.glob("Rplot_*.png"))[-1] == (
+            "Rplot_1_02.png"
+        )
     finally:
         kernel.shutdown()
 

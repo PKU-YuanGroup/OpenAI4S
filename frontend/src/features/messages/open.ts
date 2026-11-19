@@ -36,6 +36,7 @@ import {
   msgCursor,
   msgHasEarlier,
   project,
+  projects,
   sessions,
   sessionsLoading,
   foldersLoading,
@@ -94,7 +95,7 @@ import {
 } from "../timeline/island";
 import { hint } from "../sessions/chrome";
 import { refreshComputeStatus } from "../sessions/compute";
-import { showWorkspace } from "../sessions/dashboard";
+import { showDashboard, showWorkspace } from "../sessions/dashboard";
 import {
   enableComposer,
   framePath,
@@ -105,15 +106,17 @@ import {
   showConv,
 } from "../sessions/dom";
 import { loadSessions, renderSessions } from "../sessions/load";
-import { renderProjMenu } from "../sessions/projects";
+import { openProject, renderProjMenu } from "../sessions/projects";
 import { sub, unsub } from "../ws/connect";
 import { apiGet, fetchRecentMessages, recordRows, uniqueMessages, MESSAGE_PAGE_SIZE } from "./fetch";
+import { syncPendingApproval } from "./approval";
 import { ensureMessageDom, messagesHost } from "./dom";
 import {
   cancelFramedRender,
   interleaveHistory,
   renderEmptySession,
   renderHistoryItem,
+  renderMissingSession,
   scheduleFramedRender,
   type StoredMessage,
 } from "./list";
@@ -200,6 +203,9 @@ function resetSessionScoped(): void {
   // ResizeObserver can only be released through the view object itself.
   destroyActionTimelineView();
   _timelineView.value = null;
+  // The previous session's open approval no longer titles the tab or
+  // badges its row from this view.
+  syncPendingApproval();
 }
 
 /**
@@ -235,6 +241,26 @@ async function fetchSteps(fid: string): Promise<Array<Record<string, unknown>>> 
     throw new ApiError({ error: "Invalid step record", code: "invalid_history_response" }, 200);
   }
   return rows;
+}
+/**
+ * A Notebook REPL cell's persisted step (`input.origin === "notebook"`). The
+ * live chat never showed it -- a manual cell is not an agent turn -- so the
+ * reopened transcript leaves it out too, rather than showing it alone above
+ * the empty-session welcome.
+ */
+function chatStep(row: Record<string, unknown>): boolean {
+  const input = row.input;
+  return !(input && typeof input === "object" && (input as { origin?: unknown }).origin === "notebook");
+}
+
+/**
+ * Every approval this session asked for, decided or not. Optional history: a
+ * failed read keeps the cards already confirmed rather than failing the
+ * transcript, which is complete without them.
+ */
+async function fetchApprovals(fid: string): Promise<Array<Record<string, unknown>>> {
+  const rows = recordRows(await apiGet(`/frames/${encodeURIComponent(fid)}/approvals`), "approvals");
+  return rows.filter((row) => typeof row.decision_id === "string" && !!row.decision_id);
 }
 async function fetchRunState(fid: string): Promise<{ running: boolean; status?: string }> {
   const raw = await apiGet(`/frames/${encodeURIComponent(fid)}/status`);
@@ -282,10 +308,11 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
   // first, then fetch a fresh transcript after the authoritative stopped
   // response; a parallel transcript could still precede the final write.
   const historyReady = streamAtRead ? runStateRead.then(() => {}, () => {}) : null;
-  const [page, steps, runState] = await Promise.allSettled([
+  const [page, steps, runState, approvals] = await Promise.allSettled([
     historyReady ? historyReady.then(() => fetchRecentMessages(fid, MESSAGE_PAGE_SIZE)) : fetchRecentMessages(fid, MESSAGE_PAGE_SIZE),
     historyReady ? historyReady.then(() => fetchSteps(fid)) : fetchSteps(fid),
     runStateRead,
+    historyReady ? historyReady.then(() => fetchApprovals(fid)) : fetchApprovals(fid),
   ]);
   if (!current(fid, gen)) return obsolete();
   const result = {
@@ -331,23 +358,28 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
     const earlierCursor = prefix.length ? msgCursor.value : page.value.next_before_seq ?? null;
     const hasEarlier = prefix.length ? msgHasEarlier.value : !!page.value.has_earlier;
     const stepRows = steps.status === "fulfilled" ? steps.value : cached?.steps || [];
+    const approvalRows = approvals.status === "fulfilled" ? approvals.value : cached?.approvals || [];
+    const chatSteps = stepRows.filter(chatStep);
     const stage = typeof document !== "undefined" ? document.createDocumentFragment() : null;
     const host = messagesHost();
     const stagedSteps: Record<string, unknown> = Object.create(null);
+    const stagedPerms: Record<string, unknown> = Object.create(null);
     await new Promise<void>((resolve, reject) => {
-      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], stepRows), {
+      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], chatSteps, approvalRows), {
         host: stage,
         stillCurrent: unchanged,
         onCancel: resolve,
         onDone: resolve,
         onError: reject,
         renderItem: (item, target) => {
-          // The step renderer's compatibility registry must keep pointing at
-          // live cards while an off-DOM batch is being prepared.
+          // The step and approval renderers' compatibility registries must
+          // keep pointing at live cards while an off-DOM batch is prepared.
           const liveSteps = stepEls.value;
+          const livePerms = permCards.value;
           stepEls.value = stagedSteps;
+          permCards.value = stagedPerms;
           try { renderHistoryItem(item, target); }
-          finally { stepEls.value = liveSteps; }
+          finally { stepEls.value = liveSteps; permCards.value = livePerms; }
         },
       });
     });
@@ -362,17 +394,21 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
         // repaint them, unlike a full openConversation.
         const keep = (host.children ? Array.from(host.children) : []).filter((node) =>
           !node.classList?.contains("msg") && !node.classList?.contains("step") &&
+          !node.classList?.contains("perm-card") &&
           node.id !== "msgs-earlier" && !node.classList?.contains("empty-session") &&
           node !== (streamAtRead as LiveStream | null)?.wrap);
         host.replaceChildren(stage, ...keep);
       }
       stepEls.value = stagedSteps;
-      historyContent.value = { fid, messages, steps: stepRows };
+      permCards.value = stagedPerms;
+      historyContent.value = { fid, messages, steps: stepRows, approvals: approvalRows };
       msgCursor.value = earlierCursor;
       msgHasEarlier.value = hasEarlier;
       callLane("paintEarlierControl");
-      // Failed auxiliary history is not evidence for a truly empty session.
-      if (!messages.length && result.stepsLoaded && result.runStateLoaded && stopped) renderEmptySession();
+      // Failed auxiliary history is not evidence for a truly empty session,
+      // and the welcome is only for a transcript with nothing in it at all.
+      if (!messages.length && !chatSteps.length && !approvalRows.length &&
+          result.stepsLoaded && result.runStateLoaded && stopped) renderEmptySession();
       // A transcript with nothing confirmed before it (an open, a branch
       // reset) starts at its newest message, as app.js's down(true) did.
       // Unforced, the updateJumpPill() below measured the emptied host at
@@ -380,6 +416,8 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       // loaded row. A re-read of the transcript on screen leaves a reader
       // who scrolled up where they are.
       down(!cached);
+      // A session waiting on an approval opens on that card, not below it.
+      syncPendingApproval({ reveal: true });
     }
   }
   if (deferred) {
@@ -481,6 +519,49 @@ export function recoverConversation(fid: string, gen = _openGen.value): Promise<
 }
 
 /**
+ * The session record behind an id the list does not show. `null` when there
+ * is no such session (`GET /frames/{id}` answers `{}`, or 404 for one this
+ * login may not see); `undefined` when the read itself failed, which is not
+ * evidence either way, so the open proceeds as it always did.
+ */
+async function locateSession(
+  fid: string,
+): Promise<{ id: string; name?: string; task_summary?: string; project_id?: string | null } | null | undefined> {
+  try {
+    const raw = await apiGet(`/frames/${encodeURIComponent(fid)}`);
+    if (raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string") {
+      return raw as { id: string; name?: string; task_summary?: string; project_id?: string | null };
+    }
+    return null;
+  } catch (error) {
+    return error instanceof ApiError && error.status === 404 ? null : undefined;
+  }
+}
+
+/**
+ * A link to a session that does not exist: say so, offer the way back, and
+ * leave nothing usable that would act on a session that is not there.
+ */
+function showMissingSession(pid: string | null): void {
+  const host = messagesHost();
+  if (host) host.innerHTML = "";
+  historyLoad.value = null;
+  _titleName.value = t("history.missing.title");
+  setTitle(_titleName.value);
+  hideCancel();
+  hint("");
+  const knownProject = !!pid && (projects.value as Array<{ project_id?: string; id?: string }>)
+    .some((row) => (row?.project_id || row?.id) === pid);
+  renderMissingSession(host, {
+    project: knownProject ? () => { void openProject(pid as string).catch(() => showDashboard()); } : null,
+    home: () => showDashboard(),
+  });
+  // Re-enabled by the next open (`enableComposer`): there is nothing here to send to.
+  const composer = typeof document !== "undefined" ? document.getElementById("composer") as HTMLTextAreaElement | null : null;
+  if (composer) composer.disabled = true;
+}
+
+/**
  * Open another conversation, or reload this one while preserving confirmed
  * content. `replaceUrl` is for routing: the address being resolved is
  * replaced rather than stacked under the one it resolves to.
@@ -571,7 +652,29 @@ export async function openConversation(
     try { await loadSessions(); } catch { /* history has its own independently reported reads */ }
     if (!current(fid, gen)) return obsolete();
   } else renderSessions();
-  const row = (sessions.value as Array<{ id?: string; name?: string; task_summary?: string }>).find((x) => x?.id === fid);
+  type SessionRow = { id?: string; name?: string; task_summary?: string; project_id?: string | null };
+  let row: SessionRow | undefined = (sessions.value as SessionRow[]).find((x) => x?.id === fid);
+  if (!row) {
+    // Not in this project's list: a session nobody has used yet (the list
+    // hides those), one that belongs to another project (a link with the
+    // wrong project id), or no session at all (a stale or mistyped link).
+    const located = await locateSession(fid);
+    if (!current(fid, gen)) return obsolete();
+    if (located === null) {
+      showMissingSession(pid || project.value || null);
+      return incomplete();
+    }
+    if (located?.project_id && located.project_id !== project.value) {
+      // Put the address, the project name and the sidebar on the project the
+      // session belongs to, instead of rendering it under one it is not in.
+      project.value = located.project_id; _projArtFor.value = null; resetSessionDirectory();
+      navURL(framePath(fid, located.project_id), true);
+      renderProjMenu();
+      try { await loadSessions(); } catch { /* the transcript still opens */ }
+      if (!current(fid, gen)) return obsolete();
+    }
+    row = located || undefined;
+  }
   _titleName.value = row?.name || row?.task_summary || t("conv.title.default");
   setTitle(_titleName.value);
   try {

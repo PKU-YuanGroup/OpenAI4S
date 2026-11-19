@@ -1,6 +1,35 @@
-import { describe, expect, it } from "vitest";
-import { latestRead } from "./LabPanel";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { labTabHidden, latestRead, setLabTabHidden } from "./LabPanel";
 import { categoryLabel, plainIntro } from "./MarketPanel";
+
+// NAV-6: the Lab tab sits in every session; people who never run instrument
+// experiments can hide it, and the choice survives a reload.
+describe("hiding the Lab tab", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("is remembered per browser and shown on the page", () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+    });
+    const classes = new Set<string>();
+    vi.stubGlobal("document", {
+      body: { classList: { toggle: (name: string, on: boolean) => (on ? classes.add(name) : classes.delete(name)) } },
+      querySelector: () => null,
+    });
+    expect(labTabHidden()).toBe(false);
+    setLabTabHidden(true);
+    expect(labTabHidden()).toBe(true);
+    expect(classes.has("lab-tab-hidden")).toBe(true);
+    setLabTabHidden(false);
+    expect(labTabHidden()).toBe(false);
+    expect(classes.has("lab-tab-hidden")).toBe(false);
+  });
+});
 
 describe("lab panel helpers", () => {
   it("keeps only the most recent read of the dose-response curves", () => {

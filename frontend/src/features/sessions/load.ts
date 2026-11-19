@@ -32,6 +32,7 @@ import {
   sessionsLoading,
   sessionsLoadError,
 } from "../../stores/session";
+import { approvalCopy, approvalPendingFor } from "../messages/approval";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys, hint, openMenu, reportFailure } from "./chrome";
@@ -441,14 +442,24 @@ export function syncCurrentTitle(): void {
 }
 
 export function sessionRow(f: SessionLike): HTMLElement {
+  // A turn blocked on an approval request is not just "running": the server
+  // says so for every session, and this tab knows it for the one on screen.
+  const awaiting = !!f.awaiting_approval || (!!f.id && approvalPendingFor.value === f.id);
   const d = el(
     "div",
-    "session" + (f.id === currentId.value ? " active" : "") + (f.running ? " running" : ""),
+    "session" +
+      (f.id === currentId.value ? " active" : "") +
+      (f.running || awaiting ? " running" : "") +
+      (awaiting ? " awaiting" : ""),
   );
   if (f.id) d.dataset.frameId = f.id;
   d.appendChild(el("div", "s-dot"));
   d.appendChild(el("div", "s-name", f.name || f.task_summary || t("session.untitled")));
-  if (f.running) {
+  if (awaiting) {
+    const b = el("span", "s-badge run approval", approvalCopy("badge"));
+    b.title = approvalCopy("badgeTip");
+    d.appendChild(b);
+  } else if (f.running) {
     const b = el("span", "s-badge run", t("dash.badge.running"));
     b.title = t("session.badge.runningTip");
     d.appendChild(b);

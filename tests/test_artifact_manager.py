@@ -1521,6 +1521,78 @@ def test_figure_capture_still_saves_and_closes_a_pyplot_figure(tmp_path):
     assert open_figures["stdout"].strip() == "[]"
 
 
+def test_figure_capture_skips_saved_figures_and_failed_cells(tmp_path):
+    """ART-7: a figure the Cell saved itself was saved again as
+    figure_cellN_k.png, and a Cell that failed mid-plot left its half-drawn
+    figure as a deliverable. Saved-and-unchanged figures and failed Cells'
+    figures are now closed without a second file; a figure with unsaved
+    drawing is still captured. Run against the real kernel and matplotlib
+    because `stale` and savefig are matplotlib's behaviour, not ours."""
+    _require_matplotlib_in_the_kernel()
+    harness = ArtifactHarness(tmp_path)
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    def run(kernel, index, code, *, failed=False):
+        before = harness.manager.snapshot(harness.workspace)
+        result = kernel.execute(code, cell_id=f"cell-{index}")
+        captured = harness.manager.capture(
+            harness.session,
+            index,
+            f"cell-{index}",
+            before,
+            lambda event: None,
+            language="python",
+            run_system_cell=kernel.execute,
+            cell_failed=failed,
+        )
+        return result, captured
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        # First plotting Cell: the savefig wrapper does not exist yet, so a
+        # rendered and unchanged figure counts as saved.
+        result, first = run(
+            kernel,
+            1,
+            "import matplotlib\nmatplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "plt.plot([1, 2])\nplt.savefig('fig1.png')\n",
+        )
+        assert result["error"] is None
+        assert first.figures == []
+        assert sorted(a["filename"] for a in first.artifacts) == ["fig1.png"]
+
+        # Later Cells: the wrapper marks what was saved to a file.
+        _result, saved = run(kernel, 2, "plt.plot([3, 4])\nplt.savefig('fig2.png')\n")
+        assert saved.figures == []
+        assert [a["filename"] for a in saved.artifacts] == ["fig2.png"]
+
+        # Changed after the save: the drawing on screen is not on disk.
+        _result, changed = run(
+            kernel,
+            3,
+            "plt.plot([5, 6])\nplt.savefig('fig3.png')\nplt.title('later')\n",
+        )
+        assert changed.figures == ["figure_cell3_1.png"]
+
+        # Saved only into a buffer (an inline display): still captured.
+        _result, buffered = run(
+            kernel,
+            4,
+            "import io\nplt.plot([7, 8])\nplt.savefig(io.BytesIO(), format='png')\n",
+        )
+        assert buffered.figures == ["figure_cell4_1.png"]
+
+        # A failed Cell's half-drawn figure is closed, not delivered.
+        failed, broken = run(
+            kernel, 5, "plt.plot([9, 10])\nraise TypeError('half way')\n", failed=True
+        )
+        assert failed["error"]
+        assert broken.figures == []
+        assert not (harness.workspace / "figure_cell5_1.png").exists()
+        open_figures = kernel.execute("print(plt.get_fignums())")
+    assert open_figures["stdout"].strip() == "[]"
+
+
 def test_r_capture_never_runs_python_figure_probe(tmp_path):
     harness = ArtifactHarness(tmp_path)
     before = harness.manager.snapshot(harness.workspace)
@@ -1899,3 +1971,70 @@ def test_the_content_digest_is_paid_only_where_the_ctime_can_lag(tmp_path, monke
     first = harness.manager.snapshot(harness.workspace)[str(path)]
     second = harness.manager.snapshot(harness.workspace)[str(path)]
     assert first == second
+
+
+def test_a_background_cell_s_files_are_captured_when_it_finishes(tmp_path):
+    """ART-5: an exec_background job wrote a figure and tables between Cells;
+    foreground capture only diffs the workspace around a Cell, so they never
+    became Artifacts while the completion said they were produced. The job's
+    lifetime now captures what it wrote, attributed to the job, and does not
+    re-version bytes a foreground Cell already captured."""
+    import threading
+    from contextlib import nullcontext
+
+    from openai4s.kernel.background import BackgroundExecutor
+    from openai4s.server.artifacts import BackgroundCaptureLifetime
+
+    harness = ArtifactHarness(tmp_path)
+    workspace = harness.workspace
+    (workspace / "shared.csv").write_text("a\n1\n", encoding="utf-8")
+    already = harness.manager.register_file(
+        harness.session, workspace / "shared.csv", "cell-fg", lambda event: None
+    )
+    go = threading.Event()
+
+    class _WritingKernel:
+        def execute(self, code, origin="agent", on_chunk=None):
+            go.wait(5)
+            (workspace / "ddct_barplot.png").write_bytes(b"\x89PNG\r\n\x1a\nbar")
+            (workspace / "results").mkdir(exist_ok=True)
+            (workspace / "results" / "ddct.csv").write_text("g,ddct\nA,1.2\n")
+            # Touched with identical bytes: already captured, not a new version.
+            (workspace / "shared.csv").write_text("a\n1\n", encoding="utf-8")
+            return {"stdout": "", "error": None}
+
+        def interrupt(self):
+            return None
+
+        def shutdown(self):
+            return None
+
+    events: list[dict] = []
+    executor = BackgroundExecutor(
+        lambda: _WritingKernel(),
+        dispatcher=None,
+        lifetime_factory=lambda: BackgroundCaptureLifetime(
+            harness.manager, harness.session, nullcontext(), events.append
+        ),
+    )
+    launched = executor.launch("make_figures()")
+    go.set()
+    job = executor._get(launched["exec_id"])
+    job._thread.join(5)
+    assert executor.peek(launched["exec_id"])["status"] == "done"
+
+    rows = {
+        row["filename"]: row
+        for row in harness.store.list_artifacts({"root_frame_id": harness.frame_id})
+    }
+    assert {"ddct_barplot.png", "results/ddct.csv", "shared.csv"} <= set(rows)
+    produced = {
+        event["artifact"]["filename"]: event["artifact"]["producing_cell_id"]
+        for event in events
+        if event.get("type") == "artifact_created"
+    }
+    assert produced == {
+        "ddct_barplot.png": launched["exec_id"],
+        "results/ddct.csv": launched["exec_id"],
+    }
+    assert len(harness.store.list_versions(already["artifact_id"])) == 1

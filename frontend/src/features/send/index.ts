@@ -11,8 +11,8 @@
  */
 
 import { isReady } from "../../compat/stub";
-import { setRenderStoredStepImpl } from "../messages/list";
-import { setFrameUpdateTurnHandler } from "../ws/handlers";
+import { setRenderStoredPermissionImpl, setRenderStoredStepImpl } from "../messages/list";
+import { setFrameUpdateTurnHandler, setReplayEndSideEffects } from "../ws/handlers";
 import {
   admissionSettled,
   forgetAdmission,
@@ -21,6 +21,13 @@ import {
   rememberAdmission,
 } from "./admission";
 import { handleFrameUpdateTurn, registerSendHandlers } from "./handlers";
+import { onLanguageChange } from "../../i18n/runtime";
+import {
+  reconcilePermissionCards,
+  relabelPermissionCards,
+  renderStoredPermission,
+  type StoredApproval,
+} from "./permission";
 import { send } from "./send";
 import {
   buildStepCard,
@@ -73,9 +80,13 @@ export {
   markPermCard,
   permActionLine,
   permScopeCn,
+  reconcilePermissionCards,
+  relabelPermissionCards,
   renderPermissionCard,
+  renderStoredPermission,
   resolvePermissionCard,
 } from "./permission";
+export type { StoredApproval } from "./permission";
 export {
   PLAN_SETTLED_STEP_STATUSES,
   approvePlan,
@@ -128,6 +139,9 @@ export {
 
 export type SendTarget = Record<string, unknown>;
 
+/** One language hook for the page, however often the lane installs. */
+let relabelHooked = false;
+
 const SEND_CONTRACT_NAMES = [
   "send",
   "buildStepCard",
@@ -157,6 +171,14 @@ export function installSend(
   registerSendHandlers();
   setFrameUpdateTurnHandler(handleFrameUpdateTurn);
   setRenderStoredStepImpl((step, host) => renderStoredStep(step as Step, host));
+  setRenderStoredPermissionImpl((stored, host) => renderStoredPermission(stored as StoredApproval, host));
+  setReplayEndSideEffects((fid) => {
+    void reconcilePermissionCards(fid);
+  });
+  if (!relabelHooked) {
+    relabelHooked = true;
+    onLanguageChange(() => relabelPermissionCards());
+  }
   // Explicit `target.name =` lines (not a loop) so the duplicate-name
   // scan `target.[A-Za-z_]* =` can see every assignment.
   target.send = send;

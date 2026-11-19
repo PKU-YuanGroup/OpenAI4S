@@ -1,5 +1,5 @@
 import { api } from "../sessions/api";
-import { cardsFromItems, parseAttentionPage } from "./parse";
+import { cardsFromItems, needsDecision, parseAttentionPage } from "./parse";
 import { readPollFlags, shouldFetchAttention } from "./poll";
 import {
   attentionCards,
@@ -32,9 +32,10 @@ export async function refreshAttention(): Promise<void> {
     const page = await fetchAttentionPage();
     if (mine !== attentionReq.value) return;
     if (!shouldFetchAttention(readPollFlags())) return;
+    // Decisions only: a running or queued session has its own Running card.
     attentionCards.value = cardsFromItems(page.items, {
       projects: projects.value as ProjectLike[],
-    });
+    }).filter(needsDecision);
     attentionHasMore.value = page.has_more;
     attentionNextCursor.value = page.next_cursor;
     attentionError.value = null;

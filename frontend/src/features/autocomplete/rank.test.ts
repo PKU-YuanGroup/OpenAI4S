@@ -10,9 +10,74 @@ import {
   mergeArtifactCandidates,
   rankComposerItems,
   rankEditorItems,
+  rankSkillItems,
+  skillToAcItem,
 } from "./rank";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+describe("skill picker ranking", () => {
+  const CATALOG = [
+    {
+      name: "is-qualitative-analysis",
+      description: "信息系统访谈、案例、质性编码与编码者一致性。Information Systems interview analysis.",
+    },
+    {
+      name: "literature-review",
+      description:
+        "Find, verify, and synthesize scientific literature — from the seminal paper through full multi-source reviews.",
+    },
+    { name: "druggability-screen", description: "Target druggability screening." },
+    { name: "figure-style", description: "Publication-grade figure rules." },
+    {
+      name: "bio-metabarcoding-amplicon",
+      description: "Amplicon metabarcoding pipelines.",
+      collection: "bioskills",
+    },
+    {
+      name: "bio-clinical-bayesian-trials",
+      description: "Bayesian trials with meta-analytic-predictive priors.",
+      collection: "bioskills",
+    },
+    { name: "metadata-audit", description: "Audit dataset metadata." },
+  ].map(skillToAcItem);
+
+  const names = (query: string): string[] =>
+    rankSkillItems(CATALOG, query).map((item) => item.insert);
+
+  it("puts a name match ahead of a substring inside another word", () => {
+    // `lit` is inside qua-lit-ative and druggabi-lit-y; the skill named for it comes first.
+    expect(names("lit")[0]).toBe("literature-review");
+    expect(names("lit")).toEqual(
+      expect.arrayContaining(["is-qualitative-analysis", "druggability-screen"]),
+    );
+  });
+
+  it("finds a skill by its description, Chinese keywords and spelling variants", () => {
+    expect(names("synthesize")).toEqual(["literature-review"]);
+    expect(names("文献")[0]).toBe("literature-review");
+    expect(names("综述")[0]).toBe("literature-review");
+    expect(names("文献综述")[0]).toBe("literature-review");
+    expect(names("pubmed")).toEqual(["literature-review"]);
+    expect(names("literature_review")[0]).toBe("literature-review");
+    expect(names("Literature-Review")[0]).toBe("literature-review");
+    // Chinese in a description matches directly.
+    expect(names("访谈")[0]).toBe("is-qualitative-analysis");
+  });
+
+  it("reaches description-only matches, curated skills first on a tie", () => {
+    const meta = names("meta");
+    expect(meta).toContain("bio-clinical-bayesian-trials");
+    expect(meta.indexOf("metadata-audit")).toBeLessThan(meta.indexOf("bio-metabarcoding-amplicon"));
+    expect(names("荟萃")).toEqual(["bio-clinical-bayesian-trials"]);
+  });
+
+  it("returns every skill for an empty query and nothing for a miss", () => {
+    expect(names("")).toHaveLength(CATALOG.length);
+    expect(names("")[0]).toBe("is-qualitative-analysis");
+    expect(names("zzzz-no-such-skill")).toEqual([]);
+  });
+});
 
 describe("composer candidate ranking", () => {
   it("filters by substring on label or insert and caps at 8", () => {
@@ -59,13 +124,16 @@ describe("composer candidate ranking", () => {
     );
     expect(merged).toHaveLength(1);
     expect(merged[0]?.version_id).toBe("v-project");
-    expect(artifactToAcItem(merged[0]!, null, "").insert).toBe("plot.png#v-project");
+    const item = artifactToAcItem(merged[0]!, null, "");
+    expect(item.insert).toBe("plot.png");
+    expect(item.mention?.version_id).toBe("v-project");
   });
 
-  it("pins the version on insert and marks a file from another session", () => {
+  it("pins the version beside the name and marks a file from another session", () => {
     const item = artifactToAcItem(
       {
         filename: "plot.png",
+        artifact_id: "a-plot",
         version_id: "v-abcdef",
         root_frame_id: "other",
         content_type: "image/png",
@@ -73,9 +141,22 @@ describe("composer candidate ranking", () => {
       "here",
       "from another session — copied in on send",
     );
-    expect(item.insert).toBe("plot.png#v-abcdef");
+    // ART-16: the text gets the name; the hash never enters what the user reads.
+    expect(item.insert).toBe("plot.png");
+    expect(item.mention).toEqual({
+      filename: "plot.png",
+      version_id: "v-abcdef",
+      artifact_id: "a-plot",
+      root_frame_id: "other",
+    });
     expect(item.sub).toContain("from another session");
     expect(item.sub).toContain("abcdef".slice(0, 6));
+  });
+
+  it("a row without a version inserts the bare name and pins nothing", () => {
+    const item = artifactToAcItem({ filename: "notes.md" }, "here", "");
+    expect(item.insert).toBe("notes.md");
+    expect(item.mention).toBeUndefined();
   });
 });
 

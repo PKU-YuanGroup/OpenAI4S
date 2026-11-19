@@ -247,6 +247,70 @@ class BashAuthorizationService:
         self._lock = threading.RLock()
         self._issued: dict[str, _IssuedCapability] = {}
 
+    def _static_refusal(self, command: str) -> tuple[str | None, tuple[str, ...]]:
+        """(refusal, URL domains) from the command text alone.
+
+        The static safety precheck, secret paths and the egress allowlist:
+        refusals no approval can change, shared by ``authorize`` (the
+        boundary) and ``policy_refusal`` (asked before the approval gate).
+        """
+
+        try:
+            from openai4s.security.shellcheck import precheck_command
+
+            reason = precheck_command(command)
+        except Exception as exc:  # noqa: BLE001 — authorization must fail closed
+            return (f"bash authorization: safety precheck unavailable: {exc}", ())
+        if reason:
+            return (f"bash: blocked by static safety precheck: {reason}", ())
+        if _contains_secret_path(command):
+            return (
+                "bash authorization: commands referencing secret files are blocked",
+                (),
+            )
+
+        try:
+            from openai4s import egress
+
+            domains = tuple(egress.command_domains(command))
+            if egress.egress_mode() == "allowlist":
+                blocked = next(
+                    (domain for domain in domains if not egress.domain_allowed(domain)),
+                    None,
+                )
+                if blocked is not None:
+                    return (egress.blocked_message(blocked), domains)
+        except Exception as exc:  # noqa: BLE001 — host policy lookup fails closed
+            return (f"bash authorization: egress policy unavailable: {exc}", ())
+        return (None, domains)
+
+    def policy_refusal(self, spec: Any) -> str | None:
+        """The refusal ``authorize`` would give on policy alone, or None.
+
+        Asked before the approval gate: a command a loaded Skill's network
+        manifest (or the other command policy) refuses must not first ask the
+        user, then fail after an "allow". Malformed proposals return None
+        here; ``authorize`` reports those itself, and still admits again.
+        """
+
+        command = spec.get("command") if isinstance(spec, dict) else None
+        if not isinstance(command, str) or not command.strip() or "\x00" in command:
+            return None
+        refusal, domains = self._static_refusal(command)
+        if refusal is not None:
+            return refusal
+        try:
+            from openai4s.server.skill_network_admission import admit_shell
+
+            network = admit_shell(
+                frame_id=self._frame_id(),
+                sandbox_status=self._sandbox_status(),
+                command_domains=domains,
+            )
+        except Exception as exc:  # noqa: BLE001 — admission must fail closed
+            return f"bash authorization: skill network admission failed: {exc}"
+        return None if network.allowed else network.refusal_message()
+
     def authorize(self, spec: dict[str, Any]) -> dict[str, Any]:
         """Validate a proposal and issue a short-lived random capability."""
 
@@ -329,34 +393,9 @@ class BashAuthorizationService:
 
         # Repeat the worker's cheap safety and egress checks in the trusted host;
         # never trust worker-supplied category/domain metadata.
-        try:
-            from openai4s.security.shellcheck import precheck_command
-
-            reason = precheck_command(command)
-        except Exception as exc:  # noqa: BLE001 — authorization must fail closed
-            return {"error": f"bash authorization: safety precheck unavailable: {exc}"}
-        if reason:
-            return {"error": f"bash: blocked by static safety precheck: {reason}"}
-        if _contains_secret_path(command):
-            return {
-                "error": (
-                    "bash authorization: commands referencing secret files are blocked"
-                )
-            }
-
-        try:
-            from openai4s import egress
-
-            domains = tuple(egress.command_domains(command))
-            if egress.egress_mode() == "allowlist":
-                blocked = next(
-                    (domain for domain in domains if not egress.domain_allowed(domain)),
-                    None,
-                )
-                if blocked is not None:
-                    return {"error": egress.blocked_message(blocked)}
-        except Exception as exc:  # noqa: BLE001 — host policy lookup fails closed
-            return {"error": f"bash authorization: egress policy unavailable: {exc}"}
+        refusal, domains = self._static_refusal(command)
+        if refusal is not None:
+            return {"error": refusal}
 
         try:
             from openai4s.server.skill_network_admission import admit_shell

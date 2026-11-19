@@ -188,10 +188,14 @@ credential bypass.
 #### Stage 8 live Notebook and lineage
 
 `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE=1` makes the live Notebook a first-class
-execution path on the same kernel generation and FIFO coordinator. Host-side
-file reads (Python and R) map to Artifact versions; a later write in that Cell
-creates an input→output lineage edge. Reviewer snapshots cite those version
-ids. Agent, user REPL, repair, and review scratch remain distinct owners.
+execution path on the same kernel generation and FIFO coordinator. Agent, user
+REPL, repair, and review scratch remain distinct owners.
+
+Cell lineage does not need the flag. Host-side file reads (Python and R) map to
+Artifact versions; a later write in that Cell creates an input→output lineage
+edge. Reviewer snapshots cite those version ids. Until this was ungated, the
+default configuration erased every Cell's observed reads, so provenance showed
+no inputs even for a plain `read_csv` → `to_csv`.
 
 #### Stage 9 Artifact workbench
 
@@ -939,7 +943,7 @@ An R Cell runs on a **persistent R kernel** — `kernel/r_worker.R` spawned by [
 
 ## The Notebook as a read-only execution trace
 
-The web UI's right-hand Notebook is, by default, a **read-only scientific execution trace** of the kernel: it renders analysis cells with their stdout/stderr/artifacts, but hides a direct protocol-only `host.submit_output(...)` Cell. The raw execution record remains available for auditing. Arbitrary in-Notebook entry is gated behind `OPENAI4S_NOTEBOOK_REPL` (see [Security](security.md)); when explicitly enabled, the developer input is multiline, selects Python or R, and uses Shift+Enter to append a new Cell through the same execution queue. Executed source and older revisions remain immutable. Runtime segments in the trace are labeled by `kernel_id`: `python` for the default env, `python — struct` / `python — phylo` etc. when the agent switches conda env, so a single session's trace shows which environment each cell ran under.
+The web UI's right-hand Notebook is, by default, a **read-only scientific execution trace** of the kernel: it renders analysis cells with their stdout/stderr/artifacts, but hides a direct protocol-only `host.submit_output(...)` Cell. The raw execution record remains available for auditing. Arbitrary in-Notebook entry is gated behind the manual-cells switch in Settings → General (off by default; `OPENAI4S_NOTEBOOK_REPL` forces it on; see [Security](security.md)); when explicitly enabled, the developer input is multiline, selects Python or R, and uses Shift+Enter to append a new Cell through the same execution queue. Executed source and older revisions remain immutable. Runtime segments in the trace are labeled by `kernel_id`: `python` for the default env, `python — struct` / `python — phylo` etc. when the agent switches conda env, so a single session's trace shows which environment each cell ran under.
 
 While the model is still streaming its first Python/R fence, the Notebook shows
 one transient, replace-in-place draft block. It is neither an execution attempt
