@@ -110,7 +110,10 @@ def test_failed_https_proxy_setup_does_not_mark_the_model_request_sent(
             )
 
         monkeypatch.setattr(transport, "_urlopen", through_proxy)
-        state = transport.CallState()
+        # A tunnel the proxy accepts and then closes is a dropped TLS
+        # handshake, which is retried (M-36); the tiny cap keeps those
+        # backoff waits out of the test's runtime.
+        state = transport.CallState(max_delay=0.01)
         with pytest.raises(TransportError) as caught:
             client.chat(
                 [{"role": "user", "content": "hi"}],
@@ -125,7 +128,11 @@ def test_failed_https_proxy_setup_does_not_mark_the_model_request_sent(
                 post_sse=transport.post_sse,
                 call_state=state,
             )
-        assert requests == ["model.invalid:443"]
+        # Every attempt stops at the tunnel: the refusal is final, the dropped
+        # handshake is replayed up to the call's send ceiling, and neither ever
+        # writes the model request.
+        expected_attempts = 1 if proxy_status == 502 else state.max_attempts
+        assert requests == ["model.invalid:443"] * expected_attempts
         assert not state.sent
         assert caught.value.llm_not_started is True
 

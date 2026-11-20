@@ -126,9 +126,15 @@ from openai4s.server import (
     ws_frames,
 )
 from openai4s.server.action_timeline import ActionTimelineService
-from openai4s.server.agent_run import EventCancellation
+from openai4s.server.agent_run import (
+    EventCancellation,
+)
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
-from openai4s.server.agent_run import WebActionExecutor, WebEventSink
+from openai4s.server.agent_run import (
+    WebActionExecutor,
+    WebEventSink,
+    announce_llm_retries,
+)
 from openai4s.server.artifact_workbench import (
     ArtifactWorkbenchService,
     format_located_annotations,
@@ -12558,6 +12564,10 @@ class SessionRunner:
             # runs on the detached provider thread, where the live one may
             # already be the next turn's.
             context = kwargs.pop("call_context", None) or {}
+            # M-36: a retried send shows in the turn instead of a silent wait.
+            announce_llm_retries(
+                kwargs.get("should_cancel"), emit, rid, events.language
+            )
             return self._invoke_model_with_auto_budget(
                 st,
                 messages,

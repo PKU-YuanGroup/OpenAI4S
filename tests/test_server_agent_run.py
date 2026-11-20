@@ -836,3 +836,54 @@ def test_run_finished_discards_a_draft_the_cancelled_turn_never_routed():
     before = len(sent)
     sink.emit(RunFinished(EngineResult((), None, "completed", 1, None)))
     assert len(sent) == before
+
+
+def test_a_retried_model_request_is_announced_in_the_live_turn():
+    """M-36: the wait for a second attempt says what it is.
+
+    The notice is streamed, not stored: it names the attempt, never the
+    error's text, and a call that was cancelled says nothing, because by then
+    the stream may belong to the next turn.
+    """
+    from openai4s.llm.models import StreamTimeoutError, TransportError
+    from openai4s.llm.transport import CallState
+
+    class Probe:
+        def __init__(self):
+            self.call_state = CallState()
+            self.cancelled = False
+
+        def __call__(self):
+            return self.cancelled
+
+    sent: list[dict] = []
+    probe = Probe()
+    agent_run.announce_llm_retries(probe, sent.append, "frame-1", "en")
+    probe.call_state.on_retry(
+        TransportError("LLM connection error: private provider detail"), 2
+    )
+    probe.call_state.on_retry(StreamTimeoutError("idle"), 2)
+    probe.call_state.on_retry(TransportError("503", status=503), 3)
+
+    assert [event["type"] for event in sent] == ["text_chunk"] * 3
+    assert {event["frame_id"] for event in sent} == {"frame-1"}
+    chunks = [event["chunk"] for event in sent]
+    assert "connection to the model was interrupted; retrying (attempt 2)" in chunks[0]
+    assert "sent nothing for too long; asking again (attempt 2)" in chunks[1]
+    assert "busy; retrying (attempt 3)" in chunks[2]
+    assert all("private provider detail" not in chunk for chunk in chunks)
+    # Its own paragraph, so the model's prose that follows does not run on.
+    assert all(c.startswith("\n\n") and c.endswith("\n\n") for c in chunks)
+
+    probe.cancelled = True
+    probe.call_state.on_retry(TransportError("again"), 3)
+    assert len(sent) == 3
+
+    zh: list[dict] = []
+    other = Probe()
+    agent_run.announce_llm_retries(other, zh.append, "frame-2", "zh")
+    other.call_state.on_retry(TransportError("x"), 2)
+    assert "连接中断，正在重试（第 2 次）" in zh[0]["chunk"]
+
+    # A caller without a retry state (a test double, the CLI) is left alone.
+    agent_run.announce_llm_retries(lambda: False, sent.append, "frame-1", "en")

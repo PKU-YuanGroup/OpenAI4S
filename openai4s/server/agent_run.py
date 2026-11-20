@@ -39,7 +39,11 @@ from openai4s.agent.finalize import (
 )
 from openai4s.agent.models import ExecutionOutcome, ModelReply, RunState
 from openai4s.agent.runtime import evidence_cell_id, format_observation
-from openai4s.server.completions import action_narration, outcome_narration
+from openai4s.server.completions import (
+    action_narration,
+    llm_retry_notice,
+    outcome_narration,
+)
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
     execute_tool_call,
@@ -99,6 +103,36 @@ def _env_switch_notice(exc: BaseException) -> str:
         f"pending environment switch failed ({kind}); "
         "the environment was not changed and the previous one is still active"
     )
+
+
+def announce_llm_retries(
+    probe: Any, send: Callable[[dict], None], root_frame_id: str, language: str
+) -> None:
+    """Show each transport retry of this model call in the live turn.
+
+    ``probe`` is the ``should_cancel`` the Agent runtime hands to the provider
+    call; the call's retry state rides on it. The notice is streamed only: a
+    retry that then succeeds leaves nothing in the stored conversation. A
+    cancelled call stays silent, because by then the stream may already belong
+    to the next turn.
+    """
+    call_state = getattr(probe, "call_state", None)
+    if call_state is None:
+        return
+
+    def on_retry(error: BaseException, attempt: int) -> None:
+        if probe():
+            return
+        send(
+            {
+                "type": "text_chunk",
+                "frame_id": root_frame_id,
+                "block_type": "text",
+                "chunk": "\n\n" + llm_retry_notice(error, attempt, language) + "\n\n",
+            }
+        )
+
+    call_state.on_retry = on_retry
 
 
 def _is_action_fence(fence_char: str, info: str) -> bool:
@@ -753,5 +787,6 @@ __all__ = [
     "EventCancellation",
     "ProseStreamer",
     "WebActionExecutor",
+    "announce_llm_retries",
     "WebEventSink",
 ]

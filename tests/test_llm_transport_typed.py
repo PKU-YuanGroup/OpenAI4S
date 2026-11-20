@@ -20,6 +20,7 @@ value, which is also the only way to pin the Retry-After/backoff precedence.
 
 import http.client
 import io
+import ssl
 import urllib.error
 
 import pytest
@@ -32,7 +33,7 @@ from openai4s.llm.models import (
     parse_retry_after,
     status_is_retryable,
 )
-from openai4s.llm.transport import _retry_loop, post_json, post_sse
+from openai4s.llm.transport import CallState, _retry_loop, post_json, post_sse
 
 
 class _Recorder:
@@ -346,6 +347,135 @@ def test_connection_error_is_retryable(monkeypatch):
 
     monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     assert post_json("https://x.invalid", {}, {}, 5, sleep=_Recorder()) == {"ok": 1}
+
+
+_DROPPED_HANDSHAKES = [
+    ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
+    ssl.SSLError(1, "record layer failure"),
+    ConnectionResetError("connection reset by peer"),
+    ConnectionAbortedError("software caused connection abort"),
+    BrokenPipeError("broken pipe"),
+]
+
+
+@pytest.mark.parametrize("reason", _DROPPED_HANDSHAKES, ids=lambda r: type(r).__name__)
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_handshake_the_peer_dropped_is_retried(monkeypatch, reason, stream):
+    """M-36: a TLS handshake cut short fails before the request's first byte.
+
+    urllib reports it as ``URLError`` around ``ssl.SSLEOFError`` or a reset,
+    and nothing was sent, so connecting again cannot duplicate anything. It
+    used to be a single attempt: one transient blip failed a whole turn while
+    the same endpoint answered a plain request seconds later.
+    """
+    opened = []
+
+    def urlopen(*a, **k):
+        opened.append(1)
+        if len(opened) == 1:
+            raise urllib.error.URLError(reason)
+        if stream:
+            return iter([b'data: {"delta":"hi"}\n', b"\n"])
+        return _Resp(b'{"ok":1}')
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    sleeper = _Recorder()
+    if stream:
+        seen = []
+        post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=sleeper)
+        assert seen == [{"delta": "hi"}]
+    else:
+        assert post_json("https://x.invalid", {}, {}, 5, sleep=sleeper) == {"ok": 1}
+    assert len(opened) == 2
+    assert len(sleeper.slept) == 1, "the retry waits out one backoff"
+
+
+def test_a_dropped_handshake_stays_inside_the_retry_policy(monkeypatch):
+    """The replay is the ordinary bounded one: ``max_retries`` still ends it."""
+    opened = []
+
+    def urlopen(*a, **k):
+        opened.append(1)
+        raise urllib.error.URLError(ssl.SSLEOFError(8, "EOF"))
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    state = CallState(max_attempts=2, max_retries=1)
+    with pytest.raises(TransportError) as caught:
+        post_json("https://x.invalid", {}, {}, 5, sleep=_Recorder(), call_state=state)
+    assert caught.value.retryable is True
+    assert caught.value.retries_attempted == 1
+    assert len(opened) == 2
+
+
+def test_a_certificate_that_fails_verification_is_not_retried(monkeypatch):
+    """The same certificate fails the same way; a replay only delays the answer."""
+    opened = []
+
+    def urlopen(*a, **k):
+        opened.append(1)
+        raise urllib.error.URLError(
+            ssl.SSLCertVerificationError(1, "certificate verify failed")
+        )
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    sleeper = _Recorder()
+    with pytest.raises(TransportError) as caught:
+        post_json("https://x.invalid", {}, {}, 5, sleep=sleeper)
+    assert caught.value.retryable is False
+    assert len(opened) == 1
+    assert sleeper.slept == []
+
+
+@pytest.mark.parametrize("reason", _DROPPED_HANDSHAKES, ids=lambda r: type(r).__name__)
+def test_a_reset_after_the_request_was_written_is_still_not_replayed(
+    monkeypatch, reason
+):
+    """The same reasons after the send boundary keep their veto.
+
+    ``state.sent`` latches at the request's first byte. A reset from then on
+    may follow a request the provider already accepted, so it stays a single
+    attempt whatever the socket error is called.
+    """
+    state = CallState()
+    opened = []
+
+    def urlopen(*a, **k):
+        opened.append(1)
+        state.sent = True
+        raise urllib.error.URLError(reason)
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    sleeper = _Recorder()
+    with pytest.raises(TransportError) as caught:
+        post_json("https://x.invalid", {}, {}, 5, sleep=sleeper, call_state=state)
+    assert caught.value.retryable is False
+    assert len(opened) == 1
+    assert sleeper.slept == []
+
+
+def test_the_caller_is_told_before_each_retry_wait(monkeypatch):
+    """``on_retry`` is what lets a UI say "retrying" instead of looking hung."""
+    opened = []
+
+    def urlopen(*a, **k):
+        opened.append(1)
+        if len(opened) < 3:
+            raise urllib.error.URLError(ssl.SSLEOFError(8, "EOF"))
+        return _Resp(b'{"ok":1}')
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    told = []
+    state = CallState()
+
+    def on_retry(error, attempt):
+        told.append((type(error), attempt))
+        raise RuntimeError("a broken notice must not break the retry")
+
+    state.on_retry = on_retry
+    assert post_json(
+        "https://x.invalid", {}, {}, 5, sleep=_Recorder(), call_state=state
+    ) == {"ok": 1}
+    assert told == [(TransportError, 2), (TransportError, 3)]
 
 
 @pytest.mark.parametrize(

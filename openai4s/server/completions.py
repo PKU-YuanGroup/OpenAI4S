@@ -72,6 +72,36 @@ def cancellation_marker(reason: str, language: str = "en") -> str:
     return "_已由用户停止。_" if zh else "_Stopped by user._"
 
 
+def llm_retry_notice(error: Any, attempt: int, language: str = "en") -> str:
+    """The live line shown while a failed model request is being sent again.
+
+    Without it a retry is indistinguishable from a hang: the turn just sits
+    there for the backoff and the second attempt. Built from the error's
+    class and status only, never from its text.
+    """
+    from openai4s.llm.models import llm_failure_code
+
+    zh = language == "zh"
+    count = max(2, int(attempt))
+    if llm_failure_code(error) == "llm_stream_timeout":
+        return (
+            f"_模型长时间没有返回数据，正在重新请求（第 {count} 次）…_"
+            if zh
+            else f"_The model sent nothing for too long; asking again (attempt {count})…_"
+        )
+    if getattr(error, "status", None) is not None:
+        return (
+            f"_模型服务暂时繁忙，正在重试（第 {count} 次）…_"
+            if zh
+            else f"_The model service is busy; retrying (attempt {count})…_"
+        )
+    return (
+        f"_与模型服务的连接中断，正在重试（第 {count} 次）…_"
+        if zh
+        else f"_The connection to the model was interrupted; retrying (attempt {count})…_"
+    )
+
+
 def action_narration(action: Action | None, language: str = "en") -> str:
     """Describe an action without inventing reasoning or scientific results."""
     zh = language == "zh"
@@ -621,6 +651,7 @@ __all__ = [
     "cancellation_marker",
     "completion_message",
     "is_progress_narration",
+    "llm_retry_notice",
     "outcome_narration",
     "response_language",
 ]

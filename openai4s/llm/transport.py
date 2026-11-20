@@ -26,6 +26,7 @@ import inspect
 import json
 import random
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -179,6 +180,10 @@ class CallState:
     max_retries: int | None = None
     #: Backoff waits taken so far, i.e. retries actually attempted.
     retries: int = 0
+    #: Optional ``on_retry(error, next_attempt)``, called right before a
+    #: backoff wait so the caller can show "retrying" instead of a silent
+    #: pause. It runs on the thread making the call and must not raise.
+    on_retry: Any = None
     deadline: float = field(init=False)
 
     def __post_init__(self) -> None:
@@ -454,9 +459,29 @@ def _http_error(
     )
 
 
-#: Structured reasons that can only come from the connect phase. Prose is not
-#: one of them: a `URLError("connection refused")` is a string, not evidence.
-_CONNECT_PHASE_REASONS = (ConnectionRefusedError, socket.gaierror, TimeoutError)
+#: Structured reasons that, before the request's first byte, can only come
+#: from connecting: TCP connect, DNS, the proxy tunnel or the TLS handshake.
+#: Prose is not one of them: a `URLError("connection refused")` is a string,
+#: not evidence. `ConnectionError` covers refused, reset, aborted and a broken
+#: pipe -- a peer that drops the handshake is reported as any of the last
+#: three (or as `ssl.SSLEOFError`), depending on the platform and the moment.
+_CONNECT_PHASE_REASONS = (
+    ConnectionError,
+    socket.gaierror,
+    TimeoutError,
+    ssl.SSLError,
+)
+
+
+def _connect_phase_failure(reason: Any) -> bool:
+    """Whether a pre-send failure is a transient one worth connecting again.
+
+    A certificate that fails verification fails the same way on the next
+    handshake, so replaying it only delays the real answer.
+    """
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return False
+    return isinstance(reason, _CONNECT_PHASE_REASONS)
 
 
 def _url_error(
@@ -469,10 +494,11 @@ def _url_error(
         # `URLError` wraps both "never left this machine" and "timed out or was
         # reset after the POST was written". `state.sent` is the discriminator
         # the transport already tracks (`_DeadlineSend.send` latches it at the
-        # byte boundary), so a refused connection, an unresolved host and a
-        # *connect* timeout stay replayable while anything after the write, and
-        # any reason that is only prose, does not.
-        retryable=not sent and isinstance(e.reason, _CONNECT_PHASE_REASONS),
+        # byte boundary), so a refused connection, an unresolved host, a
+        # *connect* timeout and a handshake the peer dropped stay replayable
+        # while anything after the write, and any reason that is only prose,
+        # does not.
+        retryable=not sent and _connect_phase_failure(e.reason),
     )
 
 
@@ -650,6 +676,11 @@ def _retry_loop(
                     provider=provider,
                     operation=operation,
                 ) from err
+            if state.on_retry is not None:
+                try:
+                    state.on_retry(err, state.attempts + 1)
+                except Exception:  # noqa: BLE001 - a notice never changes the retry
+                    pass
             if _wait(delay, do_sleep, state.should_cancel):
                 raise state.failure(
                     "cancelled before retry", provider, operation
