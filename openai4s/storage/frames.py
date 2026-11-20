@@ -220,11 +220,23 @@ def _project_listing_filters(
     return clauses, params
 
 
+#: SYNC-25: a session nobody has used -- no message, name, summary, Cell or
+#: file -- is hidden from the session list (`gateway._session_is_unused`), so
+#: the project card does not count it either. Every New click used to add one
+#: to "N sessions" that the project's sidebar never showed.
+_USED_SESSION = (
+    "(COALESCE(f.name,'') <> '' OR COALESCE(f.task_summary,'') <> '' "
+    "OR EXISTS (SELECT 1 FROM messages m WHERE m.root_frame_id = f.frame_id) "
+    "OR EXISTS (SELECT 1 FROM execution_log e WHERE e.root_frame_id = f.frame_id) "
+    "OR EXISTS (SELECT 1 FROM artifacts x WHERE x.root_frame_id = f.frame_id))"
+)
+
 _ACTIVITY_JOIN = (
     "FROM projects p LEFT JOIN ("
-    "SELECT project_id, COUNT(*) AS conversation_count, "
-    "MAX(updated_at) AS last_active_at FROM frames "
-    "WHERE parent_id IS NULL GROUP BY project_id"
+    f"SELECT f.project_id, SUM(CASE WHEN {_USED_SESSION} THEN 1 ELSE 0 END) "
+    "AS conversation_count, "
+    "MAX(f.updated_at) AS last_active_at FROM frames f "
+    "WHERE f.parent_id IS NULL GROUP BY f.project_id"
     ") a ON a.project_id = p.project_id"
 )
 

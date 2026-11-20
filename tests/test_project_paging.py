@@ -564,6 +564,11 @@ def test_no_args_list_projects_still_aggregates_without_n_plus_one(tmp_path):
     try:
         first = store.create_project(project_id="alpha", name="Alpha")
         store.create_project(project_id="beta", name="Beta")
+        store.new_frame(
+            project_id=first["project_id"], kind="turn", status="ready", name="Used"
+        )
+        # SYNC-25: an unused session (no message, name, Cell or file) is not
+        # listed, so it is not counted either.
         store.new_frame(project_id=first["project_id"], kind="turn", status="ready")
         statements: list[str] = []
         store._conn.set_trace_callback(statements.append)
@@ -590,3 +595,40 @@ def test_decode_rejects_a_fingerprint_mismatch_without_returning_none():
         decode_project_cursor(cursor, fingerprint=other)
     assert decode_project_cursor("", fingerprint=fingerprint) is None
     assert decode_project_cursor(None, fingerprint=fingerprint) is None
+
+
+def test_project_card_counts_the_sessions_the_sidebar_lists(tmp_path):
+    """SYNC-25: two New clicks made the card say "3 sessions" while the
+    project's sidebar listed one. Both now apply the same "used" rule."""
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    try:
+        store.create_project(project_id="growth", name="Growth assay")
+        named = store.new_frame(project_id="growth", name="Growth curves")
+        talked = store.new_frame(project_id="growth")
+        store.add_message(root_frame_id=talked, role="user", content="hello")
+        uploaded = store.new_frame(project_id="growth")
+        store.save_artifact(
+            path=str(tmp_path / "plate.csv"),
+            filename="plate.csv",
+            content_type="text/csv",
+            size_bytes=3,
+            checksum="e" * 64,
+            frame_id=uploaded,
+            root_frame_id=uploaded,
+            project_id="growth",
+            is_user_upload=True,
+        )
+        untouched = [store.new_frame(project_id="growth") for _ in range(2)]
+
+        listed = [
+            fid
+            for fid in (named, talked, uploaded, *untouched)
+            if not gateway_mod._session_is_unused(
+                store, gateway_mod._frame_json(store.get_frame(fid), store)
+            )
+        ]
+        assert listed == [named, talked, uploaded]
+        card = {p["project_id"]: p for p in store.list_projects()}["growth"]
+        assert card["conversation_count"] == len(listed) == 3
+    finally:
+        store.close()
