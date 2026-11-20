@@ -8370,15 +8370,30 @@ class SessionRunner:
     def running_frames(self) -> set:
         """Set of root_frame_ids with a live turn — compute ONCE for list views
         instead of re-scanning _jobs per row."""
-        return {
-            j.root_frame_id for j in list(self._jobs.values()) if not j.done.is_set()
-        }
+        held: dict[str, frozenset[str]] = {}
+        running: set[str] = set()
+        for j in list(self._jobs.values()):
+            if j.done.is_set():
+                continue
+            # Not a turn held after a failed one (M-31): it waits for the user.
+            if j.root_frame_id not in held:
+                held[j.root_frame_id] = self.executions.held_ids(j.root_frame_id)
+            if j.execution_id not in held[j.root_frame_id]:
+                running.add(j.root_frame_id)
+        return running
 
     def is_running(self, root_frame_id: str) -> bool:
         """True while an agent turn is executing for this frame (survives client
         disconnect — the MessageJob runs in a daemon thread)."""
+        # A turn held after a failed one waits for the user, not for the
+        # session: nothing runs until they say so (M-31).
+        held = self.executions.held_ids(root_frame_id)
         for job in list(self._jobs.values()):
-            if job.root_frame_id == root_frame_id and not job.done.is_set():
+            if (
+                job.root_frame_id == root_frame_id
+                and not job.done.is_set()
+                and job.execution_id not in held
+            ):
                 return True
         return False
 
@@ -9014,6 +9029,11 @@ class SessionRunner:
             metadata={
                 # Display text: a text-form `@name#v-<id>` previews as `@name`.
                 "preview": queue_preview(artifact_refs.display_text(text)),
+                # The sender's `X-Request-Id` (its `user_message` carries it
+                # too): the sending tab knows its own bubble by it before the
+                # 202 has named the execution, so the bubble every tab draws
+                # for a queued item is not drawn there a second time.
+                "request_id": job.request_id,
                 "model_profile_id": job.model_profile_id,
                 "model_profile_revision": job.model_profile_revision,
             },
@@ -13165,7 +13185,7 @@ class SessionRunner:
     def _record_cell_with_cursor_checkpoint(self, **record: Any) -> str:
         cell_id = self.store.log_cell(**record)
         root_frame_id = record.get("root_frame_id")
-        if root_frame_id and record.get("origin") in {"agent", "user"}:
+        if root_frame_id and record.get("origin") in {"agent", "user", "example"}:
             # Team-mode metering (M2-5): the kernel's getrusage delta for a
             # live cell, attributed to the session owner. Origin-filtered
             # here, so a session-package import replay is never billed. With
@@ -13991,8 +14011,18 @@ class SessionRunner:
         code: str,
         language: str = "python",
         execution_id: str | None = None,
+        origin: str = "user",
     ) -> dict:
-        """Execute code directly in the session kernel (notebook REPL, no LLM)."""
+        """Execute code directly in the session kernel (notebook REPL, no LLM).
+
+        ``origin="example"`` is the example session's seed (SCI-03): the same
+        direct execution, never screened as an agent cell, but its cards and
+        steps reach the conversation, and the seed ends the session's one
+        turn itself, so no per-cell terminal event is sent.
+        """
+        if origin not in {"user", "example"}:
+            raise ValueError("origin must be 'user' or 'example'")
+        example = origin == "example"
         st = self._state(root_frame_id, project_id)
         emit = self.hub.emitter(root_frame_id)
         execution_id = str(execution_id or f"repl-{uuid.uuid4().hex}")
@@ -14024,8 +14054,8 @@ class SessionRunner:
             info = self._execute_and_log(
                 st,
                 code,
-                "user",
-                emit_notebook,
+                origin,
+                emit if example else emit_notebook,
                 stream=True,
                 language=language,
             )
@@ -14051,7 +14081,10 @@ class SessionRunner:
             # An interrupted cell is not a success, whether the stop came
             # through the coordinator or as a kernel interrupt; the Notebook
             # already said "interrupted" for the same cell.
-            if execution.cancellation.is_set() or r.get("interrupted"):
+            # (An example cell sends none: the seed ends its one turn.)
+            if example:
+                pass
+            elif execution.cancellation.is_set() or r.get("interrupted"):
                 emit(
                     {
                         "type": "frame_update",
@@ -19494,6 +19527,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 self._json(runner.executions.snapshot(m.group(1)))
                 return
+            # After a failed turn the messages queued behind it wait for the
+            # user (M-31); this is their "run them".
+            m = re.fullmatch(r"/frames/([^/]+)/execution-queue/resume", sub)
+            if m and method == "POST":
+                if store.get_frame(m.group(1)) is None:
+                    raise GatewayError(404, "session not found")
+                released = runner.executions.release_held(m.group(1))
+                self._json({"ok": True, "frame_id": m.group(1), "released": released})
+                return
             m = re.fullmatch(r"/frames/([^/]+)/context", sub)
             if m and method == "GET":
                 self._json(runner.workbench.context(m.group(1)))
@@ -23433,6 +23475,17 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
         frame_id=fid,
         content=example_session.copy(language, "prompt"),
     )
+    # An open page shows the question live, as it does a turn's (SCI-03).
+    runner.hub.emitter(fid)(
+        {
+            "type": "user_message",
+            "frame_id": fid,
+            "message_id": demo_user_message.get("message_id"),
+            "role": "user",
+            "content": example_session.copy(language, "prompt"),
+            "created_at": _iso(demo_user_message.get("created_at")),
+        }
+    )
     runner._capture_cursor_checkpoint_best_effort(  # noqa: SLF001
         fid,
         source_kind="message",
@@ -23454,7 +23507,9 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
     for index, (code, _material) in enumerate(demo_plan, start=1):
         label = f"cell {index}/{len(demo_plan)}"
         try:
-            outcome = runner.run_repl(fid, "proj_example", code)
+            # Their own origin: shown in the conversation as cell cards, live
+            # and on reload, and not screened as the agent's (SCI-03).
+            outcome = runner.run_repl(fid, "proj_example", code, origin="example")
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             cell_failures.append(f"{label}: {type(exc).__name__}: {exc}")

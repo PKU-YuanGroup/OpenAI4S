@@ -141,4 +141,53 @@ describe("turn progress", () => {
     expect(usageBreakdown(actionTimeline.value, "f-other")).toBeNull();
     expect(usageBreakdown({ ...(actionTimeline.value as object), has_earlier: true }, "f-u")).toBeNull();
   });
+
+  it("the chip says what the latest turn added, not only the session's total (M-18)", async () => {
+    currentId.value = "f-t";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "f-t", input_tokens: 909_502, output_tokens: 26_578 }),
+      })),
+    );
+    const row = (turn: string, kind: string, input = 0, cached = 0, output = 0) => ({
+      turn_id: turn,
+      kind,
+      usage: input || output ? { input_tokens: input, cache_read: cached, output_tokens: output } : null,
+    });
+    actionTimeline.value = {
+      root_frame_id: "f-t",
+      has_earlier: true,
+      groups: [
+        row("turn-1", "code", 400_000, 380_000, 9_000),
+        row("turn-2", "user"),
+        row("turn-2", "code", 40_000, 30_000, 1_500),
+        row("turn-2", "finalize", 42_000, 40_000, 800),
+        row("turn-2", "terminal"),
+      ],
+    };
+    await refreshSessionUsage();
+    expect(usage.textContent).toBe("936k tokens · 本轮 +84k");
+    expect(usage.title).toContain("最近一轮：新输入 12,000 · 缓存输入 70,000 · 输出 2,300。");
+    // A turn whose start is in an earlier, unloaded page is not summed as a whole turn.
+    actionTimeline.value = { ...(actionTimeline.value as object), groups: [row("turn-2", "code", 40_000, 0, 1)] };
+    expect(usage.textContent).toBe("936k tokens · 本轮 +84k");
+    paintUsageTitle();
+    expect(usage.textContent).toBe("936k tokens");
+    await setLang("en");
+    actionTimeline.value = { root_frame_id: "f-t", has_earlier: false, groups: [row("turn-3", "code", 900, 0, 100)] };
+    paintUsageTitle();
+    expect(usage.textContent).toBe("936k tokens · +1k this turn");
+    // The frame's totals are re-read now and then; the timeline arrives live.
+    // The total is never below the turn it contains.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ id: "f-t" }) })),
+    );
+    await refreshSessionUsage();
+    expect(usage.textContent).toBe("1k tokens · +1k this turn");
+    expect(usage.classList.contains("hidden")).toBe(false);
+  });
 });

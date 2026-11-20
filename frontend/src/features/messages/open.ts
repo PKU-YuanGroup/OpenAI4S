@@ -117,6 +117,7 @@ import {
   cancelFramedRender,
   chatStep,
   interleaveHistory,
+  lastStoredTurnKey,
   renderEmptySession,
   renderMissingSession,
   scheduleFramedRender,
@@ -126,7 +127,7 @@ import { ApiError } from "../sessions/api";
 import { chatCells, type StoredCell } from "./cellCard";
 import { down, updateJumpPill } from "./scroll";
 import { flushRender, type LiveStream } from "./stream";
-import { notePassingHint } from "./turnStatus";
+import { noteResumingHint } from "./turnStatus";
 
 function callLane(name: string, ...args: unknown[]): unknown {
   const fn = (globalThis as Record<string, unknown>)[name];
@@ -399,11 +400,15 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
         // tile strips, plan cards and other transcript-hosted UI keep their
         // nodes: the GET-only paths (turn end, replay gap, Retry) never
         // repaint them, unlike a full openConversation.
-        const keep = (host.children ? Array.from(host.children) : []).filter((node) =>
+        // A message still waiting in the queue is not stored yet, so no
+        // history read can draw it again (timeline/queue.ts draws it).
+        const waiting = (node: Element): boolean =>
+          !!node.classList?.contains("queued") && !node.classList?.contains("cancelled");
+        const keep = (host.children ? Array.from(host.children) : []).filter((node) => waiting(node) || (
           !node.classList?.contains("msg") && !node.classList?.contains("step") &&
           !node.classList?.contains("perm-card") &&
           node.id !== "msgs-earlier" && !node.classList?.contains("empty-session") &&
-          node !== (streamAtRead as LiveStream | null)?.wrap);
+          node !== (streamAtRead as LiveStream | null)?.wrap));
         host.replaceChildren(stage, ...keep);
       }
       stepEls.value = stagedSteps;
@@ -444,8 +449,9 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       const btn = typeof document !== "undefined" && document.getElementById("cancel-btn");
       if (btn) btn.classList.remove("hidden");
       hint(t("conv.resuming.hint"), false, true);
-      // True for a moment only: the status row takes over (turnStatus.ts).
-      notePassingHint();
+      // True for a moment only: the stream's first event, or the status
+      // row, takes over (turnStatus.ts).
+      noteResumingHint();
       resumeWatch(fid, gen);
     } else {
       closeTurnTicket(); hideCancel();
@@ -485,6 +491,30 @@ let idleRetries: { fid: string; gen: number; left: number } | null = null;
 const IDLE_RETRIES = 2;
 
 const idle = (): boolean => !liveStream.value && historyUnconfirmed.value === 0 && !running.value;
+
+/**
+ * SYNC-13: a turn whose live prose is not what was stored is shown as a reload
+ * would show it. Text streamed but never stored (a retry notice, a sentence cut
+ * by a Stop) stayed on screen until the next reload. At the turn's end the
+ * newest page is read, and only when the stored turn's prose differs from what
+ * streamed is the transcript re-read (one atomic swap, the reader's scroll
+ * position kept, as every GET-only re-read is). A turn that started meanwhile
+ * owns the screen, and nothing is repainted.
+ */
+export async function reconcileFinishedTurn(fid: string, gen: number, liveKey: string): Promise<boolean> {
+  if (!liveKey || !current(fid, gen) || !idle()) return false;
+  let page: Awaited<ReturnType<typeof fetchRecentMessages>>;
+  try {
+    page = await fetchRecentMessages(fid, MESSAGE_PAGE_SIZE);
+  } catch {
+    return false;
+  }
+  if (!current(fid, gen) || !idle()) return false;
+  const stored = lastStoredTurnKey(uniqueMessages(page.messages) as StoredMessage[]);
+  if (stored === null || stored === liveKey) return false;
+  await recoverConversation(fid, gen);
+  return true;
+}
 
 /** One terminal event can request one fresh read after an in-flight GET settles. */
 export function alignHistoryAfterTurn(fid: string, gen = _openGen.value): void {

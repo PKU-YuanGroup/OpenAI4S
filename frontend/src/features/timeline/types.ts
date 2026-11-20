@@ -85,6 +85,8 @@ export type ActionTimeline = {
 
 export type QueueMetadata = {
   preview: string;
+  /** The sender's `X-Request-Id`: its own bubble before the 202 names the execution. */
+  request_id: string;
   model_profile_id: string;
   model_profile_revision: number | null;
 };
@@ -101,6 +103,8 @@ export type ExecutionTicket = {
   queued_at: unknown;
   started_at: unknown;
   cancel_requested: boolean;
+  /** Waiting for the user after a failed turn (M-31): `POST …/execution-queue/resume` runs it. */
+  held: boolean;
   metadata: QueueMetadata;
 };
 

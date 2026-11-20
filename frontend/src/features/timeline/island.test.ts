@@ -590,6 +590,117 @@ describe("queue strip", () => {
     expect(pressed).toHaveBeenCalledTimes(1);
   });
 
+  it("every tab shows a queued message as a queued bubble, and a drop made elsewhere (M-21, SYNC-1)", () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    const hintLine = doc.createElement("div");
+    hintLine.id = "composer-hint";
+    doc.body.appendChild(hintLine);
+    const said = vi.fn((text: string) => {
+      hintLine.textContent = text;
+    });
+    vi.stubGlobal("hint", said);
+    // This tab sent "alpha" (its 202 has not named the execution yet); another tab sent "beta".
+    const own = doc.createElement("div");
+    own.className = "msg user queued";
+    own.dataset.requestId = "web-a";
+    host.appendChild(own);
+    const alpha = { ...queued("exec-a", "alpha"), metadata: { preview: "alpha", request_id: "web-a" } };
+    const beta = { ...queued("exec-b", "beta"), metadata: { preview: "beta", request_id: "web-b" } };
+    const running = { ...queued("exec-run"), status: "running" };
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: running, queue: [alpha, beta] };
+    renderQueueStrip();
+    renderQueueStrip();
+    const rows = () => (host.querySelectorAll(".msg.user") as unknown as HTMLElement[]).map((row) => row);
+    // Its own bubble is recognised by the request id; "beta" is drawn once, from the preview.
+    expect(rows()).toHaveLength(2);
+    expect(own.dataset.executionId).toBe("exec-a");
+    const drawn = rows()[1]!;
+    expect(drawn.dataset.executionId).toBe("exec-b");
+    expect(drawn.dataset.queuePreview).toBe("1");
+    expect(drawn.classList.contains("queued")).toBe(true);
+    expect(drawn.querySelector(".bubble")!.textContent).toBe("beta");
+    expect(drawn.querySelector(".msg-queued")!.textContent).toBe("Queued · not sent yet");
+
+    // "beta" is dropped in another tab; "alpha" starts. Only "beta" reads as dropped.
+    hintLine.textContent = t("queue.accepted");
+    S.executionQueue = { owner: { ...alpha, status: "running" }, queue: [] };
+    renderQueueStrip();
+    expect(drawn.classList.contains("cancelled")).toBe(true);
+    expect(own.classList.contains("cancelled")).toBe(false);
+    expect(said.mock.calls.at(-1)?.[0]).toBe(t("queue.cancelled"));
+  });
+
+  it("after a failed turn asks before the held messages run, and runs them on request (M-31)", async () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    const calls = stubApi(() => ({ ok: true, released: 2 }));
+    S.currentId = "frame-a";
+    S.executionQueue = {
+      owner: null,
+      queue: [{ ...queued("exec-h1", "KM by EGFR"), held: true }, { ...queued("exec-h2", "and by TP53"), held: true }],
+    };
+    renderQueueStrip();
+    expect(doc.querySelector("#queue-strip .queue-head-t")!.textContent).toBe(
+      "The last turn failed. Run the 2 queued messages?",
+    );
+    // Nothing is running, so "stop and send now" has nothing to stop.
+    expect(doc.querySelector("#queue-strip .queue-send-now")).toBeNull();
+    // Each one can still be dropped, and its bubble says it is on hold.
+    expect(doc.querySelectorAll("#queue-strip .queue-cancel")).toHaveLength(2);
+    expect(host.querySelector(".msg.user .msg-queued")!.textContent).toBe("On hold · the last turn failed");
+    // Stop would hand the session to none of them.
+    expect(queuedFollowUpCount()).toBe(0);
+    const run = doc.querySelector("#queue-strip .queue-resume") as unknown as HTMLButtonElement;
+    expect(run.textContent).toBe("Run them");
+    run.click();
+    run.click();
+    await flush();
+    expect(calls.map((call) => [call.method, call.path])).toEqual([
+      ["POST", "/frames/frame-a/execution-queue/resume"],
+    ]);
+    // One held message: the question counts it as one.
+    S.executionQueue = { owner: null, queue: [{ ...queued("exec-h1", "KM by EGFR"), held: true }] };
+    renderQueueStrip();
+    expect(doc.querySelector("#queue-strip .queue-head-t")!.textContent).toBe(
+      "The last turn failed. Run the queued message?",
+    );
+    expect(doc.querySelector("#queue-strip .queue-resume")!.textContent).toBe("Run it");
+  });
+
+  it("a queued bubble whose execution started is not marked dropped by a late queue event", () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: null, queue: [queued("exec-c", "gamma")] };
+    renderQueueStrip();
+    const drawn = host.querySelector(".msg.user")!;
+    // Started, and already finished, before the queue event that drops it arrived.
+    rememberExecutionState({ execution_id: "exec-c", owner: { kind: "agent", id: "turn-exec-c" }, status: "running" });
+    S.executionQueue = { owner: null, queue: [] };
+    renderQueueStrip();
+    expect(drawn.classList.contains("cancelled")).toBe(false);
+  });
+
+  it("does not offer to edit a queued message from a cut preview it drew", () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: null, queue: [queued("exec-d", "x".repeat(159) + "…")] };
+    renderQueueStrip();
+    expect(host.querySelector(".msg.user")!.dataset.queuePreview).toBe("1");
+    expect((doc.querySelector("#queue-strip .queue-edit") as unknown as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("cancels a queued row in the session that queued it, not the one now open", async () => {
     const doc = mountDocument();
     const calls = stubApi(() => ({ ok: true }));

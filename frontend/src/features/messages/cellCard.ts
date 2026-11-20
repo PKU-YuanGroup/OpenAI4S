@@ -92,10 +92,13 @@ export type StoredCell = {
   [key: string]: unknown;
 };
 
+/** Origins whose Cells the conversation shows as cards: the agent's and the example session's (SCI-03). */
+const CHAT_ORIGINS = new Set(["agent", "example"]);
+
 /**
- * The Cells the conversation showed a card for: the agent's own (a Notebook
- * REPL cell never had one), with the time they ran (a daemon that predates
- * the field cannot place them).
+ * The Cells the conversation showed a card for: the agent's own and the
+ * example session's seed (a Notebook REPL cell never had one), with the time
+ * they ran (a daemon that predates the field cannot place them).
  */
 export function chatCells(entries: unknown): StoredCell[] {
   if (!Array.isArray(entries)) return [];
@@ -103,7 +106,7 @@ export function chatCells(entries: unknown): StoredCell[] {
     (cell) =>
       !!cell &&
       typeof cell === "object" &&
-      cell.origin === "agent" &&
+      CHAT_ORIGINS.has(String(cell.origin)) &&
       typeof cell.producing_cell_id === "string" &&
       Number(cell.started_at) > 0,
   );

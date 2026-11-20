@@ -31,6 +31,7 @@ import { notebookOnTurnDone } from "../notebook/kernel";
 import { hint } from "../sessions/chrome";
 import { enableComposer } from "../sessions/dom";
 import { finishTurnGroup } from "../messages/list";
+import { turnTextKey } from "../messages/turnGroup";
 import { callLane, setCancelHidden } from "./host";
 import { renderPlanCard, showPlanApproval } from "./plan";
 import { closeTurnTicket } from "./ticket";
@@ -139,6 +140,15 @@ export function turnDone(status: string, detail?: unknown): void {
     // Defer past the synchronous WS dispatcher so its cursor is committed.
     void Promise.resolve().then(() => {
       if (currentId.value === fid && _openGen.value === gen) callLane("alignHistoryAfterTurn", fid, gen);
+    });
+  } else if (st && currentId.value) {
+    // SYNC-13: what streamed but was not stored (a retry notice, a sentence a
+    // Stop cut off) goes, so the turn reads as a reload shows it.
+    const fid = currentId.value;
+    const gen = _openGen.value;
+    const liveKey = turnTextKey(st.full || st.text);
+    void Promise.resolve().then(() => {
+      if (currentId.value === fid && _openGen.value === gen) callLane("reconcileFinishedTurn", fid, gen, liveKey);
     });
   }
   liveCells.value = [];

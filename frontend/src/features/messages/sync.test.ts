@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLang } from "../../i18n/runtime";
 import { artifacts } from "../../stores/artifacts";
-import { currentId } from "../../stores/session";
+import { _openGen, currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { _replayGap, _seqSeen, _streamEpoch, permCards, running, stream } from "../../stores/stream";
 import { installSend } from "../send";
@@ -24,6 +24,7 @@ import { onEvent, resetWsHandlers } from "../ws/registry";
 import { registerMessageHandlers } from "./handlers";
 import {
   interleaveHistory,
+  lastStoredTurnKey,
   prependHistory,
   renderMissingSession,
   renderStored,
@@ -35,7 +36,8 @@ import { cancelFrame } from "./raf";
 import { flushScrollNow, unbindMessageScroll, updateJumpPill } from "./scroll";
 import type { LiveStream } from "./stream";
 import { turnTextKey } from "./turnGroup";
-import { bindTurnStatus, notePassingHint, resetTurnStatus } from "./turnStatus";
+import { bindTurnStatus, notePassingHint, noteResumingHint, resetTurnStatus } from "./turnStatus";
+import { reconcileFinishedTurn } from "./open";
 import { settleLiveCellCard } from "./cardState";
 import { turnDone } from "../send/turn";
 import { t } from "../../i18n/runtime";
@@ -538,6 +540,36 @@ describe("the user's message reaches every tab", () => {
   it("ignores another session's question", () => {
     onEvent({ type: "user_message", root_frame_id: "f-2", message_id: "m-9", content: "x", seq: 1 });
     expect(userBubbles()).toEqual([]);
+  });
+
+  it("puts the whole message in place of a bubble drawn from the queue's preview (M-21)", () => {
+    renderStored({ role: "user", content: "First question", message_id: "m-1" });
+    const preview = bubble("Plot the survival curve by EGFR gro…", "msg user queued");
+    preview.dataset.executionId = "exec-q";
+    preview.dataset.queuePreview = "1";
+    messages().appendChild(preview);
+    const strip = document.createElement("div");
+    strip.className = "generated";
+    messages().appendChild(strip);
+    onEvent({
+      type: "user_message",
+      root_frame_id: "f-1",
+      message_id: "m-2",
+      content: "Plot the survival curve by EGFR group, split at the median",
+      request_id: "web-other-tab",
+      execution_id: "exec-q",
+      seq: 4,
+    });
+    expect(userBubbles()).toEqual([
+      "First question",
+      "Plot the survival curve by EGFR group, split at the median",
+    ]);
+    // Where the preview was, not after the file strip; still that execution's bubble.
+    const rows = Array.from(messages().children) as HTMLElement[];
+    expect(rows[1]?.dataset.messageId).toBe("m-2");
+    expect(rows[1]?.dataset.executionId).toBe("exec-q");
+    expect(rows[1]?.classList.contains("queued")).toBe(false);
+    expect(rows[2]).toBe(strip);
   });
 });
 
@@ -1149,6 +1181,22 @@ describe("a turn's code cells, live and reopened", () => {
     expect(turnCards()).toEqual(["activity.ok :: Analysis · cell 31:05"]);
   });
 
+  it("shows the example session's cells as cards on reopen, as it streamed them (SCI-03)", async () => {
+    await paintHistory(interleaveHistory(
+      [{ role: "user", content: "Analyse the protein family", message_id: "m-1", created_at: at(0) }],
+      [],
+      [],
+      [
+        {
+          producing_cell_id: "c-e1", cell_index: 1, origin: "example", title: "Fetch the family records",
+          source: "# Fetch the family records\nprint('ok')", stdout: "ok\n", status: "ok",
+          started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 400,
+        },
+      ],
+    ));
+    expect(turnCards()).toEqual(["activity.ok :: Fetch the family records"]);
+  });
+
   it("streams a reopened running turn's replay into the cards the reload drew", async () => {
     await paintHistory(
       interleaveHistory(
@@ -1172,6 +1220,42 @@ describe("a turn's code cells, live and reopened", () => {
     expect(messages().querySelector(".activity pre")?.textContent).toBe(
       "Load the plate\n" + CODE_1 + "\n----- output -----\nrow 0\nrow 1\nrow 2\n",
     );
+  });
+
+  it("says in the UI language where to choose another R when the R kernel refused, live and reopened (M-58)", async () => {
+    await setLang("zh");
+    const NO_R =
+      "R kernel unavailable: no R interpreter available: build the prebuilt 'r' environment (openai4s setup), " +
+      "install R so Rscript is on PATH, or choose an R under Runtime environment (Python / R) in the session options";
+    const help = (): string[] =>
+      Array.from(messages().querySelectorAll(".activity .cell-help")).map((node) => node.textContent || "");
+    renderStored({ role: "user", content: "用 R 画生存曲线", message_id: "m-1" });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    streamCell("c-r", 1, "KM in R", "library(survival)", "", NO_R);
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-r", cell_index: 1, status: "error", error: NO_R });
+    const live = help();
+    expect(live).toHaveLength(1);
+    expect(live[0]).toContain("本会话没有可用的 R");
+    expect(live[0]).toContain("会话选项 → 运行环境（Python / R）");
+    // Settling again does not add a second line.
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-r", cell_index: 1, status: "error", error: NO_R });
+    expect(help()).toEqual(live);
+    turnDone("failed", { type: "frame_update", status: "failed" });
+
+    messages().replaceChildren();
+    await paintHistory(interleaveHistory(
+      [{ role: "user", content: "用 R 画生存曲线", message_id: "m-1", created_at: at(0) }],
+      [],
+      [],
+      [{
+        producing_cell_id: "c-r", cell_index: 1, origin: "agent", title: "KM in R", source: "library(survival)",
+        stdout: "", stderr: "", error: NO_R, status: "error", started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 50,
+      }],
+    ));
+    expect(help()).toEqual(live);
+    // An ordinary failure gets no such line.
+    expect(help().some((line) => line.includes("Traceback"))).toBe(false);
+    await setLang("en");
   });
 });
 
@@ -1293,6 +1377,34 @@ describe("the running turn's status row", () => {
     vi.advanceTimersByTime(20_000);
     expect(hintLine()).toBe("Stopping…");
   });
+
+  it("the resume line goes with the reconnected stream's first event (SYNC-3)", () => {
+    const say = (text: string): void => (globalThis as unknown as { hint: (t: string) => void }).hint(text);
+    running.value = true;
+    say(t("conv.resuming.hint"));
+    noteResumingHint();
+    // Another session's event says nothing about this one's stream.
+    handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-2", seq: 3 }));
+    expect(hintLine()).toBe(t("conv.resuming.hint"));
+    // The first event of this one: the stream is back, though no phase changed.
+    handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-1", seq: 4 }));
+    expect(hintLine()).toBe(t("toast.running"));
+    // Only that line: a later event leaves whatever came after it alone.
+    say("Stopping…");
+    handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-1", seq: 5 }));
+    expect(hintLine()).toBe("Stopping…");
+  });
+
+  it("a turn that starts says so in every tab, whatever the line said before (SYNC-7)", () => {
+    const say = (text: string): void => (globalThis as unknown as { hint: (t: string) => void }).hint(text);
+    // The tab that pressed Stop, after the stopped turn ended; a watching tab had "".
+    say("Stopping the current turn… then the queued message runs");
+    running.value = false;
+    onEvent({ type: "frame_update", frame_id: "f-1", root_frame_id: "f-1", status: "processing", execution_id: "exec-q" });
+    expect(running.value).toBe(true);
+    // (The real status line draws its spinner before the words.)
+    expect(hintLine().trim()).toBe(t("toast.running"));
+  });
 });
 
 // --------------------------------------------------------------------------
@@ -1366,5 +1478,70 @@ describe("a missing session", () => {
     } finally {
       teamUser.value = null;
     }
+  });
+});
+
+// --------------------------------------------------------------------------
+// SYNC-13: a turn reads at its end as a reload shows it
+// --------------------------------------------------------------------------
+
+describe("a finished turn and its stored rows", () => {
+  it("keys the newest stored turn as a reload assembles it", () => {
+    const row = (role: string, content: string, extra: Record<string, unknown> = {}) => ({ role, content, ...extra });
+    expect(lastStoredTurnKey([row("user", "Fit it"), row("assistant", "Loading."), row("assistant", "Done:  fitted.")])).toBe(
+      "Loading. Done: fitted.",
+    );
+    // A stopped marker closes its turn; it is not prose.
+    expect(
+      lastStoredTurnKey([
+        row("user", "Fit it"),
+        row("assistant", "Loading."),
+        row("assistant", "Stopped by user", { cancelled: { reason: "user" } }),
+      ]),
+    ).toBe("Loading.");
+    // The page does not reach the turn's question: unknown, not "different".
+    expect(lastStoredTurnKey([row("assistant", "Loading.")])).toBeNull();
+  });
+
+  it("re-reads the transcript only when what streamed is not what was stored", async () => {
+    const urls: string[] = [];
+    const stored = {
+      messages: [
+        { role: "user", content: "Fit it", seq: 1, message_id: "m-1" },
+        { role: "assistant", content: "Done: fitted.", seq: 2, message_id: "m-2" },
+      ],
+      has_earlier: false,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(String(url));
+        return json(String(url).includes("/messages") ? stored : String(url).includes("/status") ? { running: false } : []);
+      }),
+    );
+    const gen = _openGen.value;
+    // The same prose: one read of the newest page, no repaint.
+    expect(await reconcileFinishedTurn("f-1", gen, "Done: fitted.")).toBe(false);
+    expect(urls.filter((url) => !url.includes("/messages"))).toEqual([]);
+    // A retry notice streamed live but never stored: the transcript is re-read.
+    urls.length = 0;
+    expect(await reconcileFinishedTurn("f-1", gen, "The model service is busy; retrying (attempt 2)… Done: fitted.")).toBe(true);
+    expect(urls.some((url) => !url.includes("/messages"))).toBe(true);
+    // Another session's turn, or a turn that started meanwhile, is left alone.
+    expect(await reconcileFinishedTurn("f-2", gen, "x")).toBe(false);
+    running.value = true;
+    expect(await reconcileFinishedTurn("f-1", gen, "x")).toBe(false);
+  });
+
+  it("is asked for at a turn's end with what streamed", async () => {
+    const asked: unknown[][] = [];
+    vi.stubGlobal("reconcileFinishedTurn", (...args: unknown[]) => asked.push(args));
+    renderStored({ role: "user", content: "Fit it", message_id: "m-1" });
+    running.value = true;
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent({ type: "text_chunk", root_frame_id: "f-1", block_type: "text", chunk: "Done:\n\n fitted." });
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    await Promise.resolve();
+    expect(asked).toEqual([["f-1", _openGen.value, "Done: fitted."]]);
   });
 });

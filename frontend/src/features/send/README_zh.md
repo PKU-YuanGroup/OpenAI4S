@@ -20,7 +20,7 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`refused-send.test.ts`](refused-send.test.ts) | 服务端在准入之前拒绝的发送（409 `model_profile_needs_key` / `model_revision_unavailable` / `model_profile_needs_active`）：文字回到输入框、移除乐观气泡（若输入框里已有新内容，则保留该气泡并标为未发送，被拒绝的文字不会丢失），提示保留服务端给出的原因而不是「本轮失败」；改绑成功后的提示说明实际绑定了什么（`rebindDoneText`）；改绑确认框依据服务端的 code 与消息说明真实原因（`rebindConfirmText`：配置已改指其他提供商或端点、缺少密钥、固定配置无法读取、匹配不唯一；只有服务端明确说"已不存在"时才这样说，其余情况用中性的"已不可用"）。拒绝在用户打开另一个会话之后才到达时，不往那个会话里放任何东西：不写入它的输入框、不显示提示、不打开设置、不弹改绑确认。 模型切换尚未保存时在本地阻止发送并保留草稿，保存完成后可重试。被拒绝的草稿连同其 `@` 钉选一起回到输入框，重试时发送的仍是同一批版本。 |
 | [`environment.ts`](environment.ts) | `send()` / `turnDone` 用的 standard-profile 就绪横幅，以及 `bootEnvironmentReadiness()`：Shell 渲染出横幅后由 `main.tsx` 启动的加载期拉取。它等字典就绪后再请求，并在切换语言时重绘横幅。 |
 | [`environment.test.ts`](environment.test.ts) | 加载期拉取：字典就绪前不发请求（字典失败时仍会发一次）、两处横幅都显示并填好文案、切换语言只重绘不再请求、开关关闭或首次拉取失败时横幅保持隐藏、无论调用多少次只启动一次，以及 `main.tsx` 在 `render` 之后启动它。 |
-| [`handlers.ts`](handlers.ts) | cards / candidate / step / plan / permission 的 WS 类型；`handleFrameUpdateTurn`。 |
+| [`handlers.ts`](handlers.ts) | cards / candidate / step / plan / permission 的 WS 类型；`handleFrameUpdateTurn`（回合开始时，会话的每个标签页都给出提示：屏幕上有那条排队气泡的显示“开始处理你排队的消息”，否则显示“运行中…”，并替换掉停止时的“正在停止…”）。 |
 | [`host.ts`](host.ts) | 用 `isReady` 查 window（`callLane` / `hostFn`）；取消按钮显隐。 |
 | [`icon.ts`](icon.ts) | 步骤 / 计划 / 权限多出来的图标（globe、list-check、lock 等）。 |
 | [`index.ts`](index.ts) | `installSend` 往 window 赋值、注册 WS handler。不碰 DOM：作曲框由 `main.tsx` 在 render 之后绑定。 |
@@ -30,7 +30,7 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`plan.ts`](plan.ts) | 结构化计划卡、进度、批准 / 修订 / 丢弃 / 恢复。仍为 `in_progress` 的步骤只在计划执行中时才闪烁；`completed` 计划若仍带着这样的步骤（服务端开始拒绝这种组合之前写下的行），会用本功能自带的文案表标成「已结束、有步骤未确认完成」。 |
 | [`plan.test.ts`](plan.test.ts) | 结束态计划卡：带着进行中步骤的已完成计划不显示为完成；执行中仍保留实时图标；步骤全部有结论的计划照常显示完成。草稿计划的修改意见未能派发（已有回合在运行、请求失败）时会放回输入框。丢弃计划的请求在用户打开另一个会话之后才返回时，不动那个会话的计划卡与计划状态。旧版审批卡只在计划模式回合正常结束后出现：被停止、被 guardian 拦截或失败的回合不弹卡，也不给下一回合留下待审批状态。 |
 | [`problems.ts`](problems.ts) | 附件问题卡（客户端文案）与 @-引用问题卡（服务端文案；引用显示为 `@name`，不带版本后缀）。 |
-| [`progress.ts`](progress.ts) | 「停止」旁显示本回合已运行时间（`#turn-clock`，队列快照给出执行自己的 `started_at` 时从它算起，刷新后仍是真实时长），会话头部显示本会话累计 token 用量（`#session-usage`，切换会话、运行状态变化时以及运行中每 15 秒重新读取；点击打开用量明细）。徽标的悬停提示把总数拆成新输入、缓存输入、输出与推理（`usageBreakdown`：对会话行动时间线里每次调用的用量求和；时间线完整加载后显示，否则仍显示两个总数）。功能内文案。 |
+| [`progress.ts`](progress.ts) | 「停止」旁显示本回合已运行时间（`#turn-clock`，队列快照给出执行自己的 `started_at` 时从它算起，刷新后仍是真实时长），会话头部显示本会话累计 token 用量（`#session-usage`，切换会话、运行状态变化时以及运行中每 15 秒重新读取；点击打开用量明细）。徽标的悬停提示把总数拆成新输入、缓存输入、输出与推理（`usageBreakdown`：对会话行动时间线里每次调用的用量求和；时间线完整加载后显示，否则仍显示两个总数）。徽标还给出最近一轮的增量（"936k tokens · 本轮 +84k"，`latestTurnUsage`：对时间线最后一轮的模型调用求和，只在这一整轮都已加载时显示；M-18），悬停提示也拆开这一轮的用量。功能内文案。 |
 | [`progress.test.ts`](progress.test.ts) | 时长与 token 数的格式；计时从执行开始算起、空闲时隐藏；用量标签显示会话 token 数，为零时隐藏。 |
 | [`review-copy.ts`](review-copy.ts) | M-75：「请求审核」做什么、花多少（菜单项说明），`review_<reason>` 拒绝码的本地化提示，以及按 `reason` 解释没有得出结论的审阅。 |
 | [`send.test.ts`](send.test.ts) | 拒绝与首条消息之外的 `send()` 行为：程序化发送（权限卡的继续、批准计划）不动输入框里用户无关的草稿，而输入框自己的文字发送后会被清空；技能目录读取失败后，下一次发送的 `/skill` 仍会带上技能指令。用 `@` 选中的文件以 `@name` 加 `mentions: [{filename, version_id}]` 发出，实时气泡显示用户输入的原文和引用芯片；手动输入的 `@name#v-<id>` 按原文发出，实时气泡与重开后一样显示为 `@name`；token 已被删掉的钉选不会发出，程序化发送不带钉选；@-引用问题卡把引用显示为 `@name`。 |
@@ -41,4 +41,4 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`step.test.ts`](step.test.ts) | 步骤卡片：重开运行中的会话时，重放的回合更新已存的卡片而不是再添一张，并把它移入重放的回合；折叠的历史卡片或被更新的卡片在展开前没有正文，展开后显示最新的步骤；自动展开的卡片与 `buildStepCard` 立即构建；输出开关、审阅中状态与无标题的审阅发现随界面语言显示；查看器打不开产物时会报告，而不是留下未处理的 rejection；Skill 联网限制的提示卡与其加载卡按界面语言给出标题，并列出允许的域名；加载卡列出被拿走的连接器，「在新会话中继续」把上一条请求带过去，但不覆盖已有草稿（SCI-14）。 |
 | [`step.ts`](step.ts) | 语义活动步骤、`buildStepCard`、`searchResultHttpUrl`。从步骤里打开产物失败时用提示报告。Host 调用被拒绝的步骤（`messages/declined.ts`）显示为中性的 `.declined` 卡片——「你拒绝了 · 未执行」「已随任务停止 · 未执行」——而不是带服务端英文的红色失败。历史与实时更新中折叠的卡片在第一次展开时才构建正文；`buildStepCard` 本身（window 契约）立即构建。重开时由 REST 渲染的卡片，在其 `step` 事件重放时被移入实时回合的对应位置（`adoptIntoLiveStream`），重开运行中的会话因而保持实时顺序，而不是把所有步骤叠在回合正文上方。一轮只保留一张计划卡：同一轮后续的计划步骤原位重绘它（`mergePlanStep`，实时与重开相同）；产物步骤里图片只以缩略图标题出现一次，`files` 行只列其余文件；跟着步骤的单元卡保留自己的标题。没有得出结论的审阅会在 provider 原文上方说明原因和该怎么办（M-75）。存储时没有摘要的保存步骤按其保存的文件数显示数量（SYNC-14）。保存步骤默认折叠；展开后按文件名与大小列出文件（图片为缩略图），保存回执（不含本机存储路径）收在「技术细节」里（M-50）。委派步骤以任务命名（“子代理 · …”），子步骤的标签带上子代理名与短 id，同类的两个子代理可以区分；子代理自己失败的步骤显示为琥珀色而非红色：子代理会继续，结果见其委派卡片（SCI-22）。 |
 | [`ticket.ts`](ticket.ts) | Turn ticket 世代、`acceptTurnTicket` / `activateTurnTicket`、`resumeWatch`。 |
-| [`turn.ts`](turn.ts) | `turnDone` 收尾；调用 F-14 的 `notebookOnTurnDone()`；收尾仍显示运行中的活动卡片（`messages/cardState.ts`）；任何终态都清掉 `planPending`，只有正常结束的回合才弹旧版审批卡。 |
+| [`turn.ts`](turn.ts) | `turnDone` 收尾；调用 F-14 的 `notebookOnTurnDone()`；收尾仍显示运行中的活动卡片（`messages/cardState.ts`）；任何终态都清掉 `planPending`，只有正常结束的回合才弹旧版审批卡；把实时流出的文字交给 `reconcileFinishedTurn`（messages/open.ts），存储内容不同的回合会按刷新后的样子显示（SYNC-13）。 |

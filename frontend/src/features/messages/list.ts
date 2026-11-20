@@ -715,6 +715,29 @@ export function historyTurns(): HistoryTurns {
 }
 
 /**
+ * The prose key a reload gives the newest turn of `rows` (oldest first), as
+ * `historyTurns` assembles it: the assistant rows after the last user row, up
+ * to a stopped marker that closes it. Null when the page does not reach that
+ * turn's question (its start is on an earlier page).
+ */
+export function lastStoredTurnKey(rows: StoredMessage[]): string | null {
+  const prose: string[] = [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const m = rows[i] as StoredMessage;
+    const text = messageText(m);
+    if (!text.trim()) continue;
+    if (m.role === "user") return turnTextKey(prose.join("\n\n"));
+    // A stopped marker ends its turn: rows after it are a turn of their own.
+    if (cancelledIdentity(m.cancelled)) {
+      if (prose.length) return turnTextKey(prose.join("\n\n"));
+      continue;
+    }
+    prose.unshift(text);
+  }
+  return null;
+}
+
+/**
  * A Notebook REPL cell's persisted step (`input.origin === "notebook"`). The
  * live chat never showed it -- a manual cell is not an agent turn -- so the
  * reopened transcript leaves it out too, rather than showing it alone above
@@ -1001,7 +1024,32 @@ export function showLiveUserMessage(
     ((requestId && row.dataset.requestId === requestId) ||
       (executionId && row.dataset.executionId === executionId)));
   const fork = typeof m.fork_checkpoint_id === "string" ? m.fork_checkpoint_id : null;
+  if (own && own.dataset.queuePreview) {
+    // Drawn from the queue's 160-character preview (timeline/queue.ts): its
+    // turn started, so the whole message takes its place, as a reload shows it.
+    const full = renderStored(
+      {
+        role: "user",
+        content: m.content,
+        created_at: m.created_at,
+        message_id: id || undefined,
+        fork_checkpoint_id: fork,
+        artifact_refs: m.artifact_refs,
+        annotations: m.annotations,
+      },
+      host,
+    );
+    if (full && own.parentNode) {
+      // Still the bubble of that execution, for "now running your queued message".
+      if (executionId) full.dataset.executionId = executionId;
+      own.parentNode.insertBefore(full, own);
+      own.remove();
+    }
+    return full;
+  }
   if (own) {
+    // Its turn started, so it was not dropped either (a late queue event can say so).
+    own.classList.remove("cancelled");
     if (id) own.dataset.messageId = id;
     // Its turn is running now; it is no longer waiting in the queue.
     own.classList.remove("queued");

@@ -138,6 +138,17 @@ const UNSEQUENCED_TYPES = new Set(["replay_begin", "replay_end", "await_permissi
  * would let a handler that throws leave the client claiming an event it
  * never rendered, and the resume would then skip it for good.
  */
+let sessionEventListener: (() => void) | null = null;
+
+/**
+ * Told when an event of the open session arrives (messages/turnStatus.ts):
+ * a reconnected stream says so by delivering something, which is what retires
+ * the "still running in the background, resuming…" line (SYNC-3).
+ */
+export function onSessionEvent(listener: (() => void) | null): void {
+  sessionEventListener = listener;
+}
+
 export function handleIncomingMessage(data: unknown): void {
   let m: WsMessage;
   try {
@@ -152,6 +163,9 @@ export function handleIncomingMessage(data: unknown): void {
   const sq = typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 0;
   if (rid && sq && !UNSEQUENCED_TYPES.has(String(m.type)) && sq <= (_seqSeen.value[rid] || 0)) return;
   onEvent(m);
+  if (sessionEventListener && rid && rid === currentId.value && (sq || m.type === "replay_end")) {
+    sessionEventListener();
+  }
   // Written in place on purpose. `_seqSeen` is a resume cursor and duplicate
   // gate, not state anything renders: its readers (`sub`, the gate above, a
   // history read comparing before and after) sample it, none subscribes, and
