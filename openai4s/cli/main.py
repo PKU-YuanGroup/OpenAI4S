@@ -1043,6 +1043,18 @@ def _doctor_config():
         return Config()
 
 
+_DOCTOR_EXIT_STATUS_HELP = """\
+exit status:
+  0  every check passed
+  1  usable, with the degradations the report names (warnings)
+  2  not ready: at least one check failed
+
+With a model API key configured and networking allowed, doctor sends one small
+request to the provider to confirm the key and the model id. --offline, or
+OPENAI4S_ALLOW_NETWORK=0, skips it and the model line says "not verified".
+"""
+
+
 def cmd_doctor(args) -> int:
     """Check whether this installation can actually do the work.
 
@@ -1055,7 +1067,11 @@ def cmd_doctor(args) -> int:
     """
     from openai4s import doctor
 
-    result = doctor.report(_doctor_config())
+    # One small authenticated request confirms the key and the model id; a
+    # configured key that the provider rejects otherwise read "All checks
+    # passed" until the first `run`. `--offline` keeps the check local.
+    live = None if getattr(args, "offline", False) else doctor.send_test_request
+    result = doctor.report(_doctor_config(), live_model=live)
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
@@ -2684,8 +2700,17 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         help="check model, runtime, isolation, disk, connectors and remote "
         "compute (no daemon needed)",
+        epilog=_DOCTOR_EXIT_STATUS_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     pdoc.add_argument("--json", action="store_true", help="machine-readable report")
+    pdoc.add_argument(
+        "--offline",
+        action="store_true",
+        help="do not send the one small test request that verifies the API "
+        "key and model with the provider; the model line then says "
+        "'not verified'",
+    )
     pdoc.set_defaults(fn=cmd_doctor)
     pv = sub.add_parser(
         "verify-package",

@@ -300,7 +300,171 @@ def _model(cfg: Any) -> Check:
     return Check(
         "model",
         OK,
-        f"provider {llm.provider!r}, {named}, credential configured",
+        f"provider {llm.provider!r}, {named}, credential configured "
+        f"({_NOT_VERIFIED})",
+        facts=facts,
+    )
+
+
+#: What the model line says while nothing has asked the provider. A configured
+#: key is not a working key, and "credential configured" beside "All checks
+#: passed" read as if it were.
+_NOT_VERIFIED = "not verified: no request was sent to the provider"
+
+#: Ceilings for the one test request `report(live_model=...)` sends. A check
+#: someone runs because things are broken must not hang on a dead network.
+_LIVE_REQUEST_TIMEOUT_S = 15.0
+_LIVE_TOTAL_TIMEOUT_S = 20.0
+
+
+def send_test_request(llm: Any) -> None:
+    """Send one tiny authenticated chat request; raise what the transport raises.
+
+    The only network call this module can make, and only when a caller hands
+    it to `report(live_model=...)`: the CLI does, the web Diagnostics route
+    does not. One send, no retry budget, a short deadline.
+    """
+    import dataclasses
+
+    from openai4s import llm as llm_api
+
+    probe = dataclasses.replace(
+        llm,
+        timeout_s=min(float(llm.timeout_s), _LIVE_REQUEST_TIMEOUT_S),
+        total_timeout_s=_LIVE_TOTAL_TIMEOUT_S,
+        max_retries=0,
+        retry_budget_s=0,
+    )
+    llm_api.chat(
+        [{"role": "user", "content": "Reply with the single word: ok"}],
+        probe,
+        max_tokens=16,
+    )
+
+
+def _live_request_forbidden(cfg: Any) -> str:
+    """Why no test request may be sent, or "" when one may."""
+    from openai4s import webtools
+
+    if not webtools.network_allowed():
+        return "OPENAI4S_ALLOW_NETWORK=0"
+    store = _store_for(cfg)
+    try:
+        if store is not None and store.get_setting("network_enabled") == "0":
+            return "switched off in Customize -> Network"
+    except Exception:  # noqa: BLE001 - an unreadable toggle forbids nothing
+        pass
+    return ""
+
+
+def _verify_model(cfg: Any, check: Check, send: Callable[[Any], None]) -> Check:
+    """The model check, after asking the provider once whether it is true.
+
+    Only a check that already passed on configuration and resolved an API key
+    is tested: a failed one has said what is wrong, and a keyless local
+    endpoint has no credential to verify. Nothing from the provider's reply is
+    repeated -- only the HTTP status -- so the report stays safe to paste.
+    """
+    if check.status != OK or not check.facts.get("api_key_configured"):
+        return check
+    facts = dict(check.facts)
+    forbidden = _live_request_forbidden(cfg)
+    if forbidden:
+        facts["live_check"] = "skipped"
+        return Check(
+            "model",
+            OK,
+            check.detail.replace(
+                _NOT_VERIFIED, f"not verified: networking is disabled, {forbidden}"
+            ),
+            facts=facts,
+        )
+    from openai4s.llm.resolve import resolve_llm_config
+
+    unopened = unopened_database(cfg)
+    llm = resolve_llm_config(cfg.llm, None if unopened else _store_for(cfg))
+    provider = facts.get("provider")
+    model = facts.get("model")
+    endpoint = _sanitize_endpoint(getattr(llm, "base_url", "") or "")
+    try:
+        send(llm)
+    except Exception as e:  # noqa: BLE001 - every outcome is a finding
+        status = getattr(e, "status", None)
+        if isinstance(status, bool) or not isinstance(status, int):
+            status = None
+        facts["live_status"] = status
+        if status in (401, 403):
+            facts["live_check"] = "auth_failed"
+            return Check(
+                "model",
+                FAIL,
+                f"provider {provider!r} rejected the configured API key "
+                f"(HTTP {status} from {endpoint}), so no turn can run",
+                f"Enter a valid key with `openai4s init` or in the UI under "
+                f"Customize -> Models, or set "
+                f"OPENAI4S_{str(provider).upper()}_API_KEY (or the generic "
+                f"OPENAI4S_LLM_API_KEY).",
+                facts,
+            )
+        if status == 404:
+            facts["live_check"] = "model_not_found"
+            return Check(
+                "model",
+                FAIL,
+                f"provider {provider!r} has no model {model!r} at {endpoint} "
+                f"(HTTP 404): the model id or the base URL is wrong",
+                "Choose a model this endpoint serves with `openai4s init "
+                "--model <id>` or in the UI under Customize -> Models.",
+                facts,
+            )
+        if status is not None:
+            facts["live_check"] = "inconclusive"
+            return Check(
+                "model",
+                WARN,
+                f"provider {provider!r} answered HTTP {status} to a test "
+                f"request for model {model!r}, so the key and model are not "
+                f"verified",
+                "Rerun `openai4s doctor` in a moment; if it persists, check "
+                "the model id, base URL and account quota.",
+                facts,
+            )
+        from openai4s.llm.models import LLMDeadlineExceeded, TransportError
+
+        if isinstance(e, TransportError):
+            facts["live_check"] = "unreachable"
+            how = (
+                "the request timed out"
+                if isinstance(e, LLMDeadlineExceeded)
+                else "the connection failed"
+            )
+            return Check(
+                "model",
+                WARN,
+                f"could not reach {endpoint} to verify the key and model "
+                f"({how}); provider {provider!r}, model {model!r}",
+                "Check the network, the proxy and the base URL, then rerun; "
+                "`openai4s doctor --offline` skips this request.",
+                facts,
+            )
+        facts["live_check"] = "inconclusive"
+        return Check(
+            "model",
+            WARN,
+            f"the test request to provider {provider!r} for model {model!r} "
+            f"did not complete ({type(e).__name__}), so the key and model are "
+            f"not verified",
+            "Rerun `openai4s doctor`; `--offline` skips this request.",
+            facts,
+        )
+    facts["live_check"] = "ok"
+    return Check(
+        "model",
+        OK,
+        check.detail.replace(
+            f"credential configured ({_NOT_VERIFIED})",
+            "credential verified (the provider answered a test request)",
+        ),
         facts=facts,
     )
 
@@ -1048,13 +1212,25 @@ def run_checks(cfg: Any) -> list[Check]:
     return results
 
 
-def report(cfg: Any) -> dict[str, Any]:
+def report(
+    cfg: Any, *, live_model: Callable[[Any], None] | None = None
+) -> dict[str, Any]:
     """Full probe set, including checks that write or spawn.
 
     The CLI wants the real answer, so this still runs `SIDE_EFFECT_CHECKS`.
     The web Diagnostics GET must call `passive_status()` instead.
+
+    ``live_model`` is the one request that leaves the machine: given
+    `send_test_request` (the CLI does, unless `--offline`), the model check is
+    confirmed with the provider. Without it the check is configuration only
+    and says so.
     """
     checks = run_checks(cfg)
+    if live_model is not None:
+        checks = [
+            _verify_model(cfg, c, live_model) if c.name == "model" else c
+            for c in checks
+        ]
     worst = (
         FAIL
         if any(c.status == FAIL for c in checks)
@@ -1111,5 +1287,6 @@ __all__ = [
     "render",
     "report",
     "run_checks",
+    "send_test_request",
     "unopened_database",
 ]

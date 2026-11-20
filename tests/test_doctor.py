@@ -191,7 +191,9 @@ def test_the_exit_code_is_the_verdict(monkeypatch, capsys):
         (doctor.FAIL, 2),
     ):
         monkeypatch.setattr(
-            doctor, "report", lambda _cfg, s=status: {"status": s, "checks": []}
+            doctor,
+            "report",
+            lambda _cfg, s=status, **_kw: {"status": s, "checks": []},
         )
         assert cli.main(["doctor"]) == expected
     capsys.readouterr()
@@ -511,7 +513,7 @@ def test_the_json_form_is_machine_readable(monkeypatch, capsys):
     monkeypatch.setattr(
         doctor,
         "report",
-        lambda _cfg: {
+        lambda _cfg, **_kw: {
             "status": doctor.OK,
             "checks": [
                 {
@@ -791,6 +793,188 @@ def test_a_provider_default_model_is_reported_as_the_default(tmp_path, monkeypat
     check = _by_name(doctor.report(cfg))["model"]
     assert check["facts"]["model_source"] == "default"
     assert "(provider default)" in check["detail"]
+
+
+# --------------------------------------------------------------------------
+# CLI-1: a configured key is not a working key
+# --------------------------------------------------------------------------
+
+
+def _transport_error(status=None):
+    from openai4s.llm.models import TransportError
+
+    # The message deliberately looks like a provider echoing the credential:
+    # nothing of it may reach the report.
+    return TransportError(
+        "LLM HTTP error: invalid key test-key", provider="chatgpt", status=status
+    )
+
+
+def _refusing(status=None):
+    def send(_llm):
+        raise _transport_error(status)
+
+    return send
+
+
+def test_without_a_request_the_model_line_says_the_key_is_not_verified(cfg):
+    """The configuration-only form (the web Diagnostics route, `--offline`)."""
+    check = _by_name(doctor.report(cfg))["model"]
+    assert check["status"] == doctor.OK
+    assert "not verified" in check["detail"]
+    assert "live_check" not in check["facts"]
+
+
+def test_a_key_the_provider_accepts_is_reported_as_verified(cfg):
+    seen = []
+    result = doctor.report(cfg, live_model=seen.append)
+
+    check = _by_name(result)["model"]
+    assert check["status"] == doctor.OK
+    assert "credential verified" in check["detail"]
+    assert "not verified" not in check["detail"]
+    assert check["facts"]["live_check"] == "ok"
+    # Exactly one request, for the model the report names.
+    assert [llm.model for llm in seen] == ["test-model"]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_key_the_provider_rejects_fails_in_words(cfg, status):
+    """The finding: a wrong key printed `credential configured` and `All
+    checks passed.`, and the 401 only arrived with the first `run`."""
+    result = doctor.report(cfg, live_model=_refusing(status))
+
+    check = _by_name(result)["model"]
+    assert result["status"] == doctor.FAIL
+    assert check["status"] == doctor.FAIL
+    assert "rejected the configured API key" in check["detail"]
+    assert f"HTTP {status}" in check["detail"]
+    assert "openai4s init" in check["remedy"]
+    assert check["facts"]["live_check"] == "auth_failed"
+    assert "All checks passed" not in doctor.render(result)
+
+
+def test_a_model_the_endpoint_does_not_serve_fails_in_words(cfg):
+    result = doctor.report(cfg, live_model=_refusing(404))
+
+    check = _by_name(result)["model"]
+    assert check["status"] == doctor.FAIL
+    assert "has no model 'test-model'" in check["detail"]
+    assert "--model" in check["remedy"]
+    assert check["facts"]["live_check"] == "model_not_found"
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome"), [(429, "inconclusive"), (503, "inconclusive")]
+)
+def test_an_answer_that_settles_nothing_warns_rather_than_fails(cfg, status, outcome):
+    check = _by_name(doctor.report(cfg, live_model=_refusing(status)))["model"]
+    assert check["status"] == doctor.WARN
+    assert f"HTTP {status}" in check["detail"]
+    assert check["facts"]["live_check"] == outcome
+
+
+def test_an_unreachable_provider_warns_and_names_offline(cfg):
+    """doctor stays usable without a network: a dead connection is a warning
+    that says nothing was verified, never a traceback and never `ok`."""
+    check = _by_name(doctor.report(cfg, live_model=_refusing(None)))["model"]
+    assert check["status"] == doctor.WARN
+    assert "could not reach" in check["detail"]
+    assert "--offline" in check["remedy"]
+    assert check["facts"]["live_check"] == "unreachable"
+
+
+def test_a_failed_request_never_repeats_what_the_provider_said(cfg):
+    for status in (401, 404, 500, None):
+        result = doctor.report(cfg, live_model=_refusing(status))
+        blob = json.dumps(result) + doctor.render(result)
+        assert "test-key" not in blob
+        assert "invalid key" not in blob
+
+
+def _must_not_send(_llm):
+    raise AssertionError("no request may be sent here")
+
+
+def test_disabled_networking_skips_the_request_and_says_so(cfg, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_ALLOW_NETWORK", "0")
+    check = _by_name(doctor.report(cfg, live_model=_must_not_send))["model"]
+    assert check["status"] == doctor.OK
+    assert "not verified: networking is disabled" in check["detail"]
+    assert check["facts"]["live_check"] == "skipped"
+
+
+def test_no_request_is_sent_without_a_key_or_to_a_keyless_endpoint(cfg, monkeypatch):
+    from openai4s.store import get_store
+
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    missing = _by_name(doctor.report(cfg, live_model=_must_not_send))["model"]
+    assert missing["status"] == doctor.FAIL
+
+    get_store(cfg.db_path).set_setting("llm_base_url", "http://127.0.0.1:11434/v1")
+    local = _by_name(doctor.report(cfg, live_model=_must_not_send))["model"]
+    assert local["status"] == doctor.OK
+    assert local["facts"]["endpoint_is_local"] is True
+
+
+def test_the_test_request_is_one_small_bounded_call(cfg, monkeypatch):
+    """`send_test_request` through the real client, with the transport
+    injected: one POST, a handful of tokens, a deadline of seconds."""
+    import openai4s.llm as llm_api
+
+    calls = []
+
+    def fake_post_json(url, payload, headers, timeout, **_kw):
+        calls.append((url, payload, headers, timeout))
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 1},
+        }
+
+    def no_stream(*_a, **_kw):
+        raise AssertionError("the test request must not stream")
+
+    monkeypatch.setattr(llm_api, "_post_json", fake_post_json)
+    monkeypatch.setattr(llm_api, "_post_sse", no_stream)
+
+    doctor.send_test_request(cfg.llm)
+
+    assert len(calls) == 1
+    url, payload, headers, timeout = calls[0]
+    assert url.endswith("/chat/completions")
+    assert payload["model"] == "test-model"
+    assert 0 < int(payload.get("max_tokens") or payload["max_completion_tokens"]) <= 16
+    assert "test-key" in json.dumps(headers)
+    assert timeout <= 20
+
+
+def test_the_cli_sends_the_request_unless_offline(monkeypatch, capsys):
+    cli = importlib.import_module("openai4s.cli.main")
+    seen = []
+
+    def fake_report(_cfg, *, live_model=None):
+        seen.append(live_model)
+        return {"status": doctor.OK, "checks": []}
+
+    monkeypatch.setattr(doctor, "report", fake_report)
+
+    assert cli.main(["doctor"]) == 0
+    assert cli.main(["doctor", "--offline"]) == 0
+    capsys.readouterr()
+    assert seen == [doctor.send_test_request, None]
+
+
+def test_doctor_help_documents_its_exit_status_and_the_request(capsys):
+    cli = importlib.import_module("openai4s.cli.main")
+
+    with pytest.raises(SystemExit):
+        cli.main(["doctor", "--help"])
+    text = capsys.readouterr().out
+    assert "exit status:" in text
+    for line in ("0  every check passed", "1  usable", "2  not ready"):
+        assert line in text
+    assert "--offline" in text
 
 
 def test_r_is_resolved_the_way_the_r_kernel_resolves_it(cfg, monkeypatch):
