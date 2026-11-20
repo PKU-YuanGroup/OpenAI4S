@@ -20,6 +20,21 @@ html[data-theme="dark"] .palette-input{background-image:url("data:image/svg+xml,
 .pi-sub mark{background:var(--bg-300,#e8e0d2);color:var(--text-000,#141413);border-radius:3px;padding:0 2px}
 .palette-empty{padding:24px;text-align:center;color:var(--text-400,#6c6a64);font-size:14px}
 
+/* M-10: files the next message goes with, inside the composer card. The chip
+   is the sent message's `.msg-ref-chip` with a size and a remove button. */
+.composer-attach{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:2px 2px 8px}
+.composer-attach.hidden{display:none}
+.composer-attach-label{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text-400,#6c6a64);cursor:help}
+.msg-ref-chip.attach{gap:5px;padding-right:3px;max-width:min(320px,100%)}
+.msg-ref-chip.attach .attach-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-200)}
+.msg-ref-chip.attach .attach-meta{flex:none;color:var(--text-400,#6c6a64);font-variant-numeric:tabular-nums}
+.msg-ref-chip.attach.uploading .attach-meta{font-style:italic}
+.msg-ref-chip.attach.failed{border:1px solid var(--danger);background:transparent}
+.msg-ref-chip.attach.failed .attach-meta{color:var(--danger)}
+.attach-x{display:inline-flex;align-items:center;justify-content:center;flex:none;width:18px;height:18px;border:0;border-radius:50%;background:transparent;color:var(--text-400,#6c6a64);cursor:pointer;padding:0}
+.attach-x:hover{background:var(--bg-300,#e8e0d2);color:var(--danger)}
+.attach-x:disabled{opacity:.45;cursor:default}
+
 body.layout-compact{font-size:13px}
 body.layout-wide{--col:1080px}
 

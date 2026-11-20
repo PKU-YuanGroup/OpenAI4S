@@ -19,6 +19,7 @@ import { effProject } from "../customize/host";
 import { _openGen, currentId, project } from "../../stores/session";
 import { sub } from "../ws/connect";
 import { api, ApiError, apiErrorText } from "./api";
+import { addAttachment, bindAttachment, settleAttachment } from "./attachments";
 import { $, hint } from "./dom";
 import { hostFn, isReady } from "./host";
 import { askUploadConflict, uploadT, type UploadConflictBatch } from "./upload-conflict";
@@ -297,16 +298,14 @@ async function waitForIdle(frameId: string | null, attempt: number): Promise<voi
   }
 }
 
-async function postUpload(
-  body: string,
-  filename: string,
-  frameId: string | null,
-): Promise<{ filename?: unknown } | null> {
+type UploadResponse = { filename?: unknown; artifact_id?: unknown } | null;
+
+async function postUpload(body: string, filename: string, frameId: string | null): Promise<UploadResponse> {
   const started = UPLOAD_TIMING.now();
   let announced = false;
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return (await api("/uploads", { method: "POST", body })) as { filename?: unknown } | null;
+      return (await api("/uploads", { method: "POST", body })) as UploadResponse;
     } catch (error) {
       if (!sessionBusy(error) || UPLOAD_TIMING.now() - started > UPLOAD_BUSY_WAIT_MS) throw error;
       if (!announced) {
@@ -352,8 +351,15 @@ export function uploadFiles(
   const several = selected.length > 1;
   // One "do the same for the rest" memory per selection (UP-3).
   const conflicts: UploadConflictBatch = { remembered: null, size: selected.length };
-  const tasks = selected.map((file, index) =>
-    (async (): Promise<UploadResult> => {
+  const tasks = selected.map((file, index) => {
+    // M-10: the composer shows the file at once, and says it goes with the
+    // next message, until that message is sent or the file is taken back.
+    const attachment = addAttachment(file, frameId, projectId);
+    void targetPromise.then(
+      (targetFrame) => bindAttachment(attachment, targetFrame),
+      () => undefined,
+    );
+    return (async (): Promise<UploadResult> => {
       let targetFrame: string | null = null;
       try {
         const prepared = await Promise.all([targetPromise, readUploadFile(file)]);
@@ -371,7 +377,7 @@ export function uploadFiles(
             if_exists: ifExists,
           });
         const outcome: {
-          saved: { filename?: unknown } | null;
+          saved: UploadResponse;
           choice: "rename" | "version" | null;
           skipped: boolean;
         } = { saved: null, choice: null, skipped: false };
@@ -396,10 +402,19 @@ export function uploadFiles(
         });
         if (outcome.skipped) {
           hint(uploadT("upload.cancelled", file.name));
+          settleAttachment(attachment, { ok: true, skipped: true, frameId: targetFrame });
           return { ok: true, skipped: true, frameId: targetFrame, filename: file.name };
         }
         const saved = outcome.saved;
         const stored = saved && typeof saved.filename === "string" && saved.filename ? saved.filename : file.name;
+        settleAttachment(attachment, {
+          ok: true,
+          frameId: targetFrame,
+          filename: stored,
+          artifactId: saved && typeof saved.artifact_id === "string" ? saved.artifact_id : "",
+          // A new version of an existing file is not this upload's to delete.
+          created: outcome.choice !== "version",
+        });
         // Only the open conversation's file dock should be refreshed; the bytes
         // landed in targetFrame whether or not the user is still looking at it.
         if (currentId.value === targetFrame) {
@@ -422,10 +437,11 @@ export function uploadFiles(
           }
         }
         if (!several) hint(t("upload.failed", apiErrorText(error)), true);
+        settleAttachment(attachment, { ok: false, frameId: targetFrame });
         return { ok: false, frameId: targetFrame, filename: file.name, error };
       }
-    })(),
-  );
+    })();
+  });
   batch.promise = Promise.all(tasks)
     .then((results) => {
       const failed = results.filter((result) => !result.ok);

@@ -11,6 +11,7 @@ import { activeTab, dock } from "../../stores/ui";
 import { dockClose, dockToggle, setActiveTab } from "../artifacts/ui";
 import { bootLabTab } from "../lab";
 import { cycleTheme } from "../theme/theme";
+import { bootAttachments } from "./attachments";
 import "./chrome.css";
 import { $ } from "./dom";
 import { hostFn } from "./host";
@@ -127,6 +128,7 @@ export function bootChrome(): void {
   bootStep("column resizers", initColResizers);
   bootStep("palette", bindPaletteButton);
   bootStep("upload", bindUpload);
+  bootStep("attachments", bootAttachments);
   bootStep("mic", bindMic);
   // `#cust` is not bound here: Customize renders its own × and backdrop,
   // both through closeCust(), so its open state has one owner.

@@ -9,7 +9,9 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | 文件 | 职责 |
 | --- | --- |
 | [`api.ts`](api.ts) | 同源 JSON 助手（`/api/v1`、`ApiError`）。 |
-| [`chrome.css`](chrome.css) | 本车道样式：palette / team / resizer 类名。 |
+| [`attachments.ts`](attachments.ts) | M-10 输入框附件条（`#composer-attachments`）：每个选中的文件是一个 chip，显示文件名、大小或状态，以及撤回用的 ×（本次上传新建的文件从会话中删除；已有文件的新版本只从附件条移除），上方一行说明这些文件随下一条消息发送。发送时取走本会话已上传完的条目，消息被拒绝则放回。 |
+| [`attachments.test.ts`](attachments.test.ts) | 各状态的 chip、按输入框归属显示（首次上传的文件跟随新建的会话）、× 只删除本次上传新建的 Artifact、删除被拒时 chip 保留、上传中按 ×、发送时取走与放回。 |
+| [`chrome.css`](chrome.css) | 本车道样式：palette / team / resizer / 输入框附件类名。 |
 | [`clipboard.test.ts`](clipboard.test.ts) | 异步 API 以方法形式调用；被拒时退回选区复制；两条路都不可用时返回 false。 |
 | [`clipboard.ts`](clipboard.ts) | `copyText()`：所有复制按钮共用的剪贴板写入，只有确认写入成功才返回 `true`。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `localDateTime` / `localClock` / `hint` / `grow`。`icon` 取自共享的 `icons/paths.ts` 表。 `ago` / `agoMs` 按界面语言给出相对时间（刚刚 / 3 分钟前，just now / 3m）。 |
@@ -32,6 +34,6 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`team.test.ts`](team.test.ts) | 两处位置的用户芯片、按角色的用户菜单、退出登录不弹原生确认框、除模态外不向 `<body>` 追加任何节点、admin 面板、guest 重定向、团队模态走陷阱、审计时间按毫秒时间戳显示、晚到的目录读取不会覆盖较新的目录列表、admin 分节标题随界面语言显示。 |
 | [`team.ts`](team.ts) | `/auth/me` 探测（写入 `teamUser`）、用户菜单（`teamMenuItems`、`openUserMenu`、`signOut`），以及走焦点陷阱的 admin/files 模态；管理面板各小节在 id 旁显示名字，并跟随界面语言。只有最新一次目录读取会渲染，也只有它会改变上传目标。 |
 | [`upload.test.ts`](upload.test.ts) | 选择时刻锁定目的地、四条 batch 匹配、单飞、重试覆盖旧失败、失败集 64 上限；UP-3：每次上传先带 `if_exists: "error"`，保留两者 / 替换 / 取消分别重发或跳过，取消不算失败。 |
-| [`upload.ts`](upload.ts) | 文件选择 / 粘贴 / 拖放上传、`UPLOAD_STATE`、首个会话的单飞（带 `reuseEmpty` 时向 `POST /frames` 要项目中最新的未使用会话），以及 send 屏障用的 `waitForPendingUploads`。同名文件先被拒绝（`if_exists: "error"`），再按 `upload-conflict.ts` 的回答重发（UP-3）；被取消的文件记为 `skipped`，不算失败。多文件一次选中时逐个上传，每个文件都会等会话空闲（409 `trusted_capture_busy`）再发，期间显示逐个进度，最后给一条汇总（UP-1/UP-2）。 |
+| [`upload.ts`](upload.ts) | 文件选择 / 粘贴 / 拖放上传（每个文件从选中起就出现在附件条中）、`UPLOAD_STATE`、首个会话的单飞（带 `reuseEmpty` 时向 `POST /frames` 要项目中最新的未使用会话），以及 send 屏障用的 `waitForPendingUploads`。同名文件先被拒绝（`if_exists: "error"`），再按 `upload-conflict.ts` 的回答重发（UP-3）；被取消的文件记为 `skipped`，不算失败。多文件一次选中时逐个上传，每个文件都会等会话空闲（409 `trusted_capture_busy`）再发，期间显示逐个进度，最后给一条汇总（UP-1/UP-2）。 |
 | [`upload-conflict.ts`](upload-conflict.ts) | UP-3 同名上传提示：「保留两者」（`name-2.ext`）、「替换为新版本」或「取消」；并发上传的对话框排队逐个显示，「对本批其余同名文件执行相同操作」回答整批，Esc/点遮罩/其它关闭方式一律视为取消；功能内中英文案（`uploadT`）。 |
 | [`upload-conflict.test.ts`](upload-conflict.test.ts) | 编号规则与服务端一致、对话框按序逐个显示、按批记忆、无法显示时取消。 |

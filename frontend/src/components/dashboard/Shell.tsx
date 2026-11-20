@@ -341,6 +341,9 @@ export function Shell() {
                       not this node exists, so without it they were sent with
                       nothing on screen saying so and no way to discard them. */}
                   <div id="annot-bar" class="annot-bar hidden" />
+                  {/* Files chosen with + / paste / drop, until the message
+                      they go with is sent (chrome/attachments.ts, M-10). */}
+                  <div id="composer-attachments" class="composer-attach hidden" />
                   <textarea
                     id="composer"
                     rows={1}
