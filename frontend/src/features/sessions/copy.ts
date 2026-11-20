@@ -200,6 +200,28 @@ export function composerCopy(key: "usage" | "reviewing" | "on" | "off", ...args:
   return copy[key].replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)] ?? ""));
 }
 
+/** Group headings and distinguishing lines for the composer's session-options menu. */
+export function optionsMenuCopy(
+  key: "groupModes" | "groupReview" | "groupSession" | "groupSettings" | "runtimeDesc" | "computeDesc",
+): string {
+  const copy = LANG === "en" ? {
+    groupModes: "How the agent works",
+    groupReview: "Review",
+    groupSession: "This session",
+    groupSettings: "Open Settings",
+    runtimeDesc: "Pick the Python / R environment this session's code runs in",
+    computeDesc: "Settings → Compute: environment status, installed packages, remote GPU, background jobs",
+  } : {
+    groupModes: "工作方式",
+    groupReview: "审阅",
+    groupSession: "本会话",
+    groupSettings: "打开设置",
+    runtimeDesc: "选择这个会话的代码在哪个 Python / R 环境里运行",
+    computeDesc: "设置 → 计算：环境状态、已装的包、远程 GPU、后台任务",
+  };
+  return copy[key];
+}
+
 /** An action that failed before it could report anything itself; `detail` is the error's text. */
 export function actionFailedCopy(detail: string): string {
   return (LANG === "en" ? "Could not complete that action: " : "操作未能完成：") + detail;

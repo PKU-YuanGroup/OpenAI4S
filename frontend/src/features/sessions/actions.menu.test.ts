@@ -10,15 +10,22 @@ vi.mock("./conversation", () => ({ openConversation: vi.fn(), resumeWatch: vi.fn
 vi.mock("./compute", () => ({ openRunLocationDialog: vi.fn() }));
 const messages = vi.hoisted(() => ({ fetchRecentMessages: vi.fn(), fetchAllMessages: vi.fn() }));
 vi.mock("./messages", () => messages);
+// The read-only Auto Mode block builds its own DOM; here it is one known node.
+const autoModeNode = vi.hoisted(() => ({ autoMode: true }));
+vi.mock("../automode", () => ({
+  autoModeMenuItem: () => ({ node: autoModeNode }),
+  beginAutoModeStatusRead: vi.fn(),
+}));
 
 import { LANG, setLang, t } from "../../i18n";
 import { customizeOpen, customizeTab, nestedEditor } from "../customize/state";
 import { _titleName, currentId, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
-import { saveCurrentAsSkill, sessionMenu, showContextUsage } from "./actions";
+import { nbT } from "../notebook/copy";
+import { saveCurrentAsSkill, sessionMenu, sessionOptionsMenu, showContextUsage } from "./actions";
 import { openMenu, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
-import { shareCopy } from "./copy";
+import { optionsMenuCopy, shareCopy } from "./copy";
 import { primeShareStatus, resetShareStatus } from "./share";
 import { openProjectResearchView } from "./projects";
 import { actionTimelineCard } from "../timeline/island";
@@ -147,6 +154,36 @@ describe("Run location", () => {
     const items = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
     items.find((item) => item.label === t("compute.menu.runLocation"))!.onClick!();
     expect(openRunLocationDialog).toHaveBeenCalledExactlyOnceWith("f");
+  });
+});
+
+// UI-1: the composer's options menu ran modes, review switches, Settings
+// shortcuts and a status block together, with "Compute" next to "Runtime
+// environment (Python / R)" and nothing to tell them apart.
+describe("Session options menu", () => {
+  it("groups its entries under headings and tells Compute and Runtime environment apart", async () => {
+    vi.stubGlobal("document", { createElement: () => new FakeNode(), querySelector: () => null });
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ auto_review: false, delegation_enabled: true })));
+    try {
+      currentId.value = "f";
+      await sessionOptionsMenu({} as Element);
+      const items = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
+      const headings = items
+        .map((item) => item.node as unknown as FakeNode | undefined)
+        .filter((node) => node && node.className === "ctx-heading")
+        .map((node) => node!.textContent);
+      expect(headings).toEqual(
+        (["groupModes", "groupReview", "groupSession", "groupSettings"] as const).map(optionsMenuCopy),
+      );
+      const compute = items.find((item) => item.label === t("composer.option.compute"))!;
+      const runtime = items.find((item) => item.label === nbT("nb.env.menuItem"))!;
+      expect(compute.desc).toBe(optionsMenuCopy("computeDesc"));
+      expect(runtime.desc).toBe(optionsMenuCopy("runtimeDesc"));
+      // The status block closes the menu, after a separator; it titles itself.
+      expect(items.at(-1)!.node).toBe(autoModeNode);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

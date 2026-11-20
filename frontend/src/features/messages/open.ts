@@ -442,7 +442,12 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       closeTurnTicket(); hideCancel();
       // Mirrors turnDone: the "Stopping…"/"Resuming…" spinner belongs to the
       // turn this read just found finished, whichever path reached here.
-      const last = runState.value.status === "failed" ? lastTerminalFailure() : null;
+      // A failure this page was not watching is history: the failed turn says
+      // so in the conversation, and repeating it in red under the composer
+      // on every reopen read as an error happening now. Only a turn that was
+      // live here, whose terminal event was missed, gets the line.
+      const last =
+        liveAtRead && runState.value.status === "failed" ? lastTerminalFailure() : null;
       hint(last ? failureHint(last) : "", !!last);
       if (liveAtRead) {
         // The terminal events were missed (replay gap, watchdog): finish

@@ -13,7 +13,7 @@ import { exploreMode, pendingExecutionId, planMode, running } from "../../stores
 import { API, ApiError, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
-import { composerCopy, shareCopy } from "./copy";
+import { composerCopy, optionsMenuCopy, shareCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
 // Imported, not reached through `callLane`. Neither name is ever assigned to
 // `window` (they are in neither CONTRACT_GLOBAL_NAMES nor SEND_CONTRACT_NAMES),
@@ -26,7 +26,7 @@ import { backgroundStoppedHint, refreshBackgroundCells } from "../send/backgroun
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { queueT } from "../timeline/copy";
 import { queuedFollowUpCount } from "../timeline/queue";
-import { $, clearConversationChrome, enableComposer, setTitle } from "./dom";
+import { $, clearConversationChrome, el, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
 import { assignFolder, invalidateFolders, loadProjects, loadSessions, renderSessions } from "./load";
 import { fetchAllMessages, fetchRecentMessages } from "./messages";
@@ -201,7 +201,16 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
   // branch reopen. Its Auto Mode read belongs to the previous opening too.
   if (currentId.value !== frameId || _openGen.value !== openGen) return;
   const checked = (on: boolean) => (on ? "✓  " : "");
+  // Four groups under their own headings. The menu ran modes, review switches,
+  // Settings shortcuts and a read-only status block together as one list.
+  const heading = (key: Parameters<typeof optionsMenuCopy>[0]): MenuItem => {
+    const node = el("div", "ctx-heading", optionsMenuCopy(key));
+    node.setAttribute("role", "presentation");
+    return { node };
+  };
+  const runtime = environmentMenuItem(anchor);
   openMenu(anchor, [
+    heading("groupModes"),
     {
       label: checked(review.delegation_enabled !== false) + t("composer.option.delegation"),
       icon: "users",
@@ -234,6 +243,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
       onClick: () => $("#explore-toggle")?.click(),
     },
     { sep: true },
+    heading("groupReview"),
     {
       label: checked(!!review.auto_review) + t("composer.option.autoReview"),
       icon: "eye-context",
@@ -254,13 +264,31 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
       icon: "sliders",
       onClick: () => reviewerModelMenu(anchor, review.reviewer_model),
     },
+    { sep: true },
+    heading("groupSession"),
+    // "Compute" and "Runtime environment (Python / R)" sat side by side with
+    // nothing to tell them apart: this one picks what this session's code
+    // runs in, the one below opens Settings.
+    {
+      label: runtime.label || "",
+      desc: optionsMenuCopy("runtimeDesc"),
+      icon: "terminal",
+      onClick: runtime.onClick,
+    },
+    { sep: true },
+    heading("groupSettings"),
     { label: t("composer.option.memory"), icon: "book", onClick: () => callLane("openCust", "memory") },
     { label: t("composer.option.specialist"), icon: "users", onClick: () => callLane("openCust", "specialists") },
-    { label: t("composer.option.compute"), icon: "terminal", onClick: () => callLane("openCust", "compute") },
-    environmentMenuItem(anchor),
+    {
+      label: t("composer.option.compute"),
+      desc: optionsMenuCopy("computeDesc"),
+      icon: "sliders",
+      onClick: () => callLane("openCust", "compute"),
+    },
     // Read-only, and separate from the Auto review row above: that row is the
     // old post-completion Reviewer switch and still talks only to
     // review-settings; this block is availability, saved selection and run.
+    // (The block titles itself, so it gets no heading of its own.)
     { sep: true },
     autoModeMenuItem(),
   ]);
