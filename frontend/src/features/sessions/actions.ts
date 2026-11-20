@@ -13,6 +13,7 @@ import { exploreMode, pendingExecutionId, planMode, running } from "../../stores
 import { API, ApiError, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
 import { expectOwnDeletion, forgetOwnDeletion } from "./deleted";
+import { buildSkillBody, procedureSteps } from "./skill-draft";
 import { openRunLocationDialog } from "./compute";
 import { composerCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
@@ -149,13 +150,16 @@ export async function saveCurrentAsSkill(): Promise<void> {
     await openSkillEditor();
     return;
   }
+  const frameId = currentId.value;
   let messages: Array<{ role?: string; content?: unknown }> = [];
-  try {
-    const data = await fetchRecentMessages(currentId.value, 500);
-    messages = data.messages || [];
-  } catch {
-    messages = [];
-  }
+  // M-84: the code that actually ran, not only the question.
+  let entries: unknown[] = [];
+  const [read, log] = await Promise.allSettled([
+    fetchRecentMessages(frameId, 500),
+    api(`/frames/${encodeURIComponent(frameId)}/execution-log`),
+  ]);
+  if (read.status === "fulfilled") messages = read.value.messages || [];
+  if (log.status === "fulfilled") entries = ((log.value as { entries?: unknown[] }) || {}).entries || [];
   const latestUser = [...messages].reverse().find((m) => m.role === "user");
   const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const title =
@@ -166,10 +170,12 @@ export async function saveCurrentAsSkill(): Promise<void> {
       .slice(0, 48) || "research-workflow";
   const request = String((latestUser && latestUser.content) || "").trim();
   const result = String((latestAssistant && latestAssistant.content) || "").trim();
+  const draft = { purpose: request, outcome: result, steps: procedureSteps(entries) };
   await openSkillEditor({
     name: title,
     description: request.replace(/\s+/g, " ").slice(0, 180),
-    body: `# Purpose\n\n${request || "Describe when this workflow should be used."}\n\n# Procedure\n\n1. Reproduce the evidence-gathering and analysis workflow.\n2. Preserve data provenance, code, and generated artifacts.\n3. State uncertainty and do not overclaim beyond the evidence.\n\n# Example outcome\n\n${result.slice(0, 6000)}`,
+    body: buildSkillBody(draft, new Set(draft.steps.map((step) => step.id))),
+    draft,
   });
 }
 

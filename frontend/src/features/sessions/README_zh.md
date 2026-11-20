@@ -20,7 +20,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`conversation.ts`](conversation.ts) | `newSession`、`routeInitialView`。`openConversation`（F-10）与 `resumeWatch`（F-11）改为 re-export，不再保留本车道的副本。 |
 | [`conversation.identity.test.ts`](conversation.identity.test.ts) | 断言这些 re-export 与拥有车道装上的是同一个函数对象。 |
 | [`conversation.newsession.test.ts`](conversation.newsession.test.ts) | `newSession` 在发布新 id 之前先释放上一个对话（取消订阅、Notebook 缓存）；共享路径只在对话真正打开后才 resolve；只有 `reuseEmpty` 请求才会让服务器复用未使用的会话。 |
-| [`actions.menu.test.ts`](actions.menu.test.ts) | 菜单项都接到真实实现：「存为技能」以当前对话为种子打开设置里的技能编辑器，「运行位置」打开运行位置对话框，项目研究视图的时间线把各会话的动作组画成卡片，上下文用量卡片用当前语言标注。 |
+| [`actions.menu.test.ts`](actions.menu.test.ts) | 菜单项都接到真实实现：「存为技能」以当前对话为种子打开设置里的技能编辑器，「运行位置」打开运行位置对话框，项目研究视图的时间线把各会话的动作组画成卡片，上下文用量卡片用当前语言标注。「另存为技能」读取执行日志，用真正跑过的单元（跳过失败的尝试）生成 Procedure，并附上其中函数的 kernel.py 草稿（M-84）。 |
 | [`actions.directory.test.ts`](actions.directory.test.ts) | 会话菜单操作让侧栏目录保持真实：「新建文件夹并移入」建的文件夹会被列出，而不是被缓存的文件夹列表挡掉；删除当前会话后即使随后的列表刷新失败，也不会重新打开被删的会话。 |
 | [`actions.cancel.test.ts`](actions.cancel.test.ts) | 取消回执只有在它命名的执行仍是本客户端正在运行的那个时，才切换到「正在停止…」。 |
 | [`dashboard.ts`](dashboard.ts) | 首页列表、项目搜索 / 加载更多 / 重试、示例 CTA 轮询绑视图生命周期，以及仪表盘唯一的 4 秒轮询，其他功能经 `onDashPoll` 搭载。 每个会话只列一次：等你决定的只在「需要处理」里，运行中的只在「运行中」卡片里，其余在「最近会话」（其他会话都在上方时会说明，而不是显示「还没有会话」）；运行中卡片的副标题是项目名，任务摘要只在比标题多说了内容时才显示。示例分析会保留一条状态提示（运行中，之后是已完成或「6 个单元中有 N 个没有完成」，来自 `/example/session` 的 `result`），带打开会话的按钮；示例按钮是有样式的主按钮。 |
@@ -47,6 +47,8 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`projects.navigation.test.ts`](projects.navigation.test.ts) | 已过期的项目导航不能覆盖当前会话及会话/文件夹列表；菜单筛选会取消待处理的项目打开（包含 A→B→A 重复筛选），该次打开随即把视图交还——重新加载被它在入口处退役了读取的那个会话；若工作区已显示而没有会话，则打开菜单所选的项目；当前导航将所有权交给其会话。列表读取以所属项目为界，而不是视图代际：同一项目的刷新即使被打开会话或回到 Home 抢先，也照样生效。没有列出任何会话的项目会请求复用未使用的会话。 |
 | [`share.test.ts`](share.test.ts) | 只有剪贴板确认写入后，复制才提示“已复制”；写入被拒绝时如实报告失败，并选中链接以便手动复制。 |
 | [`share.ts`](share.ts) | 分享对话框：创建、复制、更新或撤销会话的只读链接。app.js:7560-7697。 |
+| [`skill-draft.ts`](skill-draft.ts) | M-84：用会话执行过的单元「另存为技能」。每个单元最新一次成功的尝试成为 Procedure 的一步（一句说明取自第一行注释，否则取它写出的文件，再附上代码）；保留步骤中的顶层 Python 函数放进 SKILL.md 的「kernel.py (draft)」一节——网页编辑器只保存 SKILL.md，不写任何可执行文件。`buildSkillBody` 按用户保留的步骤重建正文。 |
+| [`skill-draft.test.ts`](skill-draft.test.ts) | 步骤说明、哪些尝试算数、函数提取（含装饰器，后定义的覆盖先定义的）、按保留步骤生成的正文、一步不留时的通用回退，以及代码里含有围栏的情形。 |
 | [`rejections.test.ts`](rejections.test.ts) | 「发起即不管」的操作失败时会提示，而不是留下未处理的 rejection：会话行菜单、项目菜单的导入与下载项，以及会话刷新触发的仪表盘重载。 |
 | [`projects.ts`](projects.ts) | 项目菜单/模态/研究视图（其时间线卡片：`projectTimelineCard`）、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。打开没有列出任何会话的项目时进入其最新的未使用会话（`reuseEmpty`），而不是每次进入都再建一个空会话。 |
 | [`project-files.ts`](project-files.ts) | 本地源文件夹选择器与只读项目文件浏览器：子文件夹浏览、“显示隐藏文件夹”开关、限长文本预览、重试，以及避免过期读取覆盖界面的请求序号。`projectFolderErrorText` 按错误码把被拒绝的文件夹（保存或选择器）以界面语言说明。项目文件弹窗有自己的带内边距的面板，可直接在某个文件夹或文件处打开（UP-5）。 |

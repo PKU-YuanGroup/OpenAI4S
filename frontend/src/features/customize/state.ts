@@ -1,6 +1,7 @@
 import { signal } from "@preact/signals";
 import type { CustTab } from "./tabs";
 import type { DiagnosticsChecks } from "./api";
+import type { SkillDraftParts } from "../sessions/skill-draft";
 
 /** Whether the Customize modal is visible (`#cust` without `.hidden`). */
 export const customizeOpen = signal(false);
@@ -37,7 +38,8 @@ export const customizeLoad = signal<{
 }>({ generation: 0, state: "ready", error: null });
 
 /** What "Save as skill" fills a new-skill editor with. */
-export type SkillSeed = { name: string; description: string; body: string };
+/** `draft`: the session's executed steps "Save as Skill" was built from (M-84). */
+export type SkillSeed = { name: string; description: string; body: string; draft?: SkillDraftParts };
 
 export type NestedEditor =
   | { kind: "skill"; name: string | null; seed?: SkillSeed }
