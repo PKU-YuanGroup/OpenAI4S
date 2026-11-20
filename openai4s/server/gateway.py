@@ -13235,7 +13235,9 @@ class SessionRunner:
                 input=step_input,
                 status="done",
             )
-            self.store.update_step(sid, output=step_output)
+            # SYNC-14: the summary the live card shows ("2 artifacts") is
+            # stored too, or a reload drew the same card without it.
+            self.store.update_step(sid, output=step_output, summary=summary)
         except Exception:  # noqa: BLE001 — telemetry must never break a turn
             pass
         # Emit begin+end back-to-back: the step is already complete, but sending

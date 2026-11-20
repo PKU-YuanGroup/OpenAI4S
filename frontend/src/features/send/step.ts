@@ -703,6 +703,17 @@ function paintStepBody(handle: StepHandle): void {
   handle.bodyStale = false;
 }
 
+/**
+ * The step's one-line summary. A Saving step stored before its summary was
+ * (SYNC-14) gets the count the live card showed, from the files it saved.
+ */
+function stepSummary(step: Step): string {
+  if (step.summary != null) return String(step.summary);
+  const saved = rec(step.output).artifacts;
+  if (step.kind !== "artifact" || !Array.isArray(saved) || !saved.length) return "";
+  return saved.length + (saved.length === 1 ? " artifact" : " artifacts");
+}
+
 export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
   const { card, meta, ic, step } = handle;
   const status = step.status || "running";
@@ -733,10 +744,11 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
               : stepIcon(step.kind),
       14,
     );
+    const summary = stepSummary(step);
     meta.textContent =
       stepNetworkMeta(step) ||
       (declined ? declinedMeta(declined) : "") ||
-      (step.summary != null ? stepSummaryText(String(step.summary)) : "") ||
+      (summary ? stepSummaryText(summary) : "") ||
       (step.output && rec(step.output).error ? t("step.status.failed") : "");
   }
   // I18N-1: the host words titles in English; an update can retitle a card.

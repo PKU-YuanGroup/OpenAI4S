@@ -319,6 +319,24 @@ describe("artifact step card", () => {
     expect(figures.querySelectorAll(".s-files")).toEqual([]);
     expect(figures.querySelectorAll(".s-fig-cap")).toHaveLength(1);
   });
+
+  it("a Saving step stored without its summary still shows the count (SYNC-14)", async () => {
+    const stored = {
+      step_id: "s-5",
+      kind: "artifact",
+      title: "Load data",
+      status: "done",
+      summary: null as unknown as string,
+      output: { artifacts: [{ filename: "a.csv", artifact_id: "a-1" }, { filename: "b.md", artifact_id: "a-2" }] },
+    };
+    const meta = (step: typeof stored): string =>
+      ((buildStepCard(step).card as unknown as El).querySelector(".s-meta")?.textContent || "");
+    expect(meta(stored)).toBe("2 artifacts");
+    expect(meta({ ...stored, output: { artifacts: [stored.output.artifacts[0]!] } })).toBe("1 artifact");
+    await setLang("zh");
+    expect(meta(stored)).toBe("2 个产物");
+    await setLang("en");
+  });
 });
 
 describe("plan steps (CHAT-8)", () => {

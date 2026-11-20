@@ -664,3 +664,26 @@ def test_a_notebook_cells_saving_step_is_marked_out_of_the_chat(monkeypatch, tmp
         ]
     finally:
         runner.close()
+
+
+def test_a_saving_step_keeps_its_count_on_reload(tmp_path):
+    """SYNC-14: the live card's "2 artifacts" came from the stream only; the
+    stored row had no summary, so a reload drew the same card without it."""
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    try:
+        fid = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+        state = runner._state(fid, "default")
+        runner._emit_artifact_step(
+            state,
+            "Load data",
+            [{"filename": "a.csv"}, {"filename": "b.md"}],
+            hub.emitter(fid),
+            "python",
+        )
+        (live,) = [e for e in hub.events if e.get("type") == "step_update"]
+        (stored,) = runner.store.list_steps(fid)
+        assert live["summary"] == "2 artifacts"
+        assert stored["summary"] == live["summary"]
+    finally:
+        runner.close()
