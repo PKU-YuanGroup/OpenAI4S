@@ -31,7 +31,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`doc-title.test.ts`](doc-title.test.ts) | 各状态下的标题：首页、会话加项目、改名、运行中、待批准。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer 辅助；`FRAME_ROUTE` / `PROJECT_ROUTE` / `routesToWorkspace` 由 `routeInitialView` 与 Shell 首帧共用。`setTitle` 从静态 `data-i18n-val` 标签手中接管 `#conv-title`。 `ago` 使用共享的、随界面语言变化的相对时间（`chrome/dom.ts`）。 |
 | [`icon.ts`](icon.ts) | 本车道菜单、行和 `[data-icon]` 标记用的 `icon` / `iconEl` / `paintIcons`。图形路径取自共享的 `icons/paths.ts` 表。 |
-| [`imported.ts`](imported.ts) | M-66：当打开的会话是被隔离的导入副本（读 `/kernel` 状态，再跟随 Recovery 动作）时，在对话上方显示“只读副本”横幅，并可打开 Recovery 面板里需确认的「全新重启」；输入框被禁用并说明原因，切到其他会话时恢复。由 `boot.ts` 安装。 |
+| [`imported.ts`](imported.ts) | M-66：当打开的会话是被隔离的导入副本（读 `/kernel` 状态，再跟随 Recovery 动作）时，在对话上方显示“只读副本”横幅，并可打开 Recovery 面板里需确认的「全新重启」；输入框和发送按钮被禁用并说明原因，切到其他会话时恢复；没有消息的副本显示只读说明，而不是「开始新的分析」的示例卡片。由 `boot.ts` 安装。 |
 | [`imported.test.ts`](imported.test.ts) | 隔离的副本显示横幅并禁用输入框；普通会话不受影响；切到下一个普通会话时恢复输入框；已不在打开状态的会话的迟到结果被忽略。 |
 | [`index.ts`](index.ts) | 对外 re-export；import 时挂 window 名字。 |
 | [`lane.ts`](lane.ts) | 用 `isReady` 包一层，调用后续车道的 window 名字。 |

@@ -895,6 +895,15 @@ export function cancelFramedRender(): void {
 /** app.js:7226-7232. Starter chips use existing i18n keys (no new keys). */
 export function renderEmptySession(host: ParentNode | null = messagesHost()): void {
   if (!host) return;
+  // M-66: a read-only imported copy (its banner is up) is not a place to
+  // "Start a new analysis": the starters filled a composer that cannot send.
+  if (typeof document !== "undefined" && document.getElementById("imported-banner")) {
+    const note = el("div", "empty-session readonly-copy");
+    note.appendChild(el("div", "es-title", historyT("history.importedEmpty.title")));
+    note.appendChild(el("div", "es-sub", historyT("history.importedEmpty.sub")));
+    host.appendChild(note);
+    return;
+  }
   const wrap = el("div", "empty-session");
   wrap.appendChild(el("div", "es-title", t("empty.title")));
   wrap.appendChild(el("div", "es-sub", t("empty.sub")));
