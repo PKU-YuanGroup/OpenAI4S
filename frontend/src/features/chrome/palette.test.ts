@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { contractStub } from "../../compat/stub";
 import { skillsCatalog } from "../../stores/customize";
-import { currentId } from "../../stores/session";
+import { currentId, projects } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -356,6 +356,46 @@ describe("F-20 command palette", () => {
     ]);
     // Nothing from the snippet was ever assigned as HTML.
     expect(made.some((node) => String(node.innerHTML).includes("onclick"))).toBe(false);
+  });
+
+  it("M-47: a hit names its project, its session and how long ago, so a copy in another project differs", async () => {
+    resetStoreFields();
+    skillsCatalog.value = [];
+    projects.value = [
+      { project_id: "p-orig", name: "Survival study" },
+      { project_id: "p-copy", name: "Survival study (imported)" },
+    ];
+    const now = Date.now();
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("document", {
+      createElement: () => ({ appendChild: vi.fn(), setAttribute: vi.fn(), addEventListener: vi.fn(), style: {} }),
+      body: { appendChild: vi.fn() },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            sessions: [{ id: "f-1", name: "KM curves", project_id: "p-orig", match: "title", snippet: null, updated_at: now - 3 * 86400_000 }],
+            artifacts: [
+              { id: "a-1", filename: "KM_arm.png", content_type: "image/png", project_id: "p-orig", root_frame_id: "f-1", session_name: "KM curves", updated_at: now - 3 * 86400_000 },
+              { id: "a-2", filename: "KM_arm.png", content_type: "image/png", project_id: "p-copy", root_frame_id: "f-9", session_name: "KM curves", updated_at: now - 600_000 },
+            ],
+            datapro: [],
+          }),
+      })),
+    );
+    const { PAL, palSearch } = await import("./palette");
+    PAL.listEl = null;
+    await palSearch("KM");
+
+    expect(PAL.items.find((it) => it.label === "KM curves")!.sub).toBe("Survival study · 3d");
+    const files = PAL.items.filter((it) => it.label === "KM_arm.png").map((it) => it.sub);
+    expect(files).toEqual([
+      "Survival study · KM curves · 3d · image/png",
+      "Survival study (imported) · KM curves · 10m · image/png",
+    ]);
   });
 
   it("source gates later-lane names with isReady and never imports window-exports", () => {

@@ -1464,7 +1464,7 @@ class FrameRepository:
         def starts(column: str) -> str:
             return f"instr(lower({column}), lower(?)) > {_SNIPPET_LEAD + 1}"
 
-        frame_columns = "f.frame_id,f.project_id,f.name,f.task_summary"
+        frame_columns = "f.frame_id,f.project_id,f.name,f.task_summary,f.updated_at"
         with self._lock:
             messages = self._connection.execute(
                 f"SELECT {frame_columns},'message' AS match,"
@@ -1519,6 +1519,7 @@ class FrameRepository:
                     "task_summary": row["task_summary"],
                     "match": row["match"],
                     "snippet": ("…" if row["cut_before"] else "") + text,
+                    "updated_at": row["updated_at"],
                 }
             )
         return hits

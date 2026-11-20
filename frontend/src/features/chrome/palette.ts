@@ -11,9 +11,10 @@ import { publicText } from "../scrub/scrub";
 import { cycleTheme, themeIsDark } from "../theme/theme";
 import { LANG, t } from "../../i18n/runtime";
 import { skillsCatalog } from "../../stores/customize";
-import { currentId } from "../../stores/session";
+import { currentId, projects } from "../../stores/session";
+import { displayProjectName } from "../sessions/copy";
 import { api } from "./api";
-import { $, el, grow, icon } from "./dom";
+import { $, agoMs, el, grow, icon } from "./dom";
 import { hostFn, invokeHost, isReady } from "./host";
 import { anyModalOpen } from "./modal";
 import { loadSkillsCatalog } from "../autocomplete/catalog";
@@ -92,7 +93,26 @@ type SessionHit = {
   /** Where the query was found (`title`, `message`, `code`, `output`) and the text around it. */
   match?: string;
   snippet?: string | null;
+  /** Epoch ms the session was last active (M-47). */
+  updated_at?: number | null;
 };
+
+/**
+ * M-47: "Growth assay · KM analysis · 3d" -- the project, the session and how
+ * long ago, so a hit in a project's imported copy no longer looks exactly like
+ * the original. Each part is left out when unknown.
+ */
+export function hitPlace(projectId: string | null | undefined, sessionName?: string | null, updatedAt?: unknown): string {
+  const parts: string[] = [];
+  const rows = (projects.value as Array<{ project_id?: string; id?: string; name?: string }>) || [];
+  const row = projectId ? rows.find((p) => (p.project_id || p.id) === projectId) : undefined;
+  const project = row ? displayProjectName(row) : "";
+  if (project) parts.push(publicText(project, 60));
+  if (sessionName) parts.push(publicText(sessionName, 60));
+  const at = typeof updatedAt === "number" && updatedAt > 0 ? agoMs(updatedAt) : "";
+  if (at) parts.push(at);
+  return parts.join(" · ");
+}
 
 /** "Cell output · …B1 22.0 OVRFLW event" for a hit inside a session's content. */
 function sessionHitSub(hit: SessionHit): string | undefined {
@@ -110,6 +130,9 @@ type ArtifactHit = {
   project_id?: string | null;
   version_id?: string | null;
   latest_version_id?: string | null;
+  /** The session the file belongs to, and when it last changed (M-47). */
+  session_name?: string | null;
+  updated_at?: number | null;
 };
 type DataproHit = {
   artifact_id?: string;
@@ -421,7 +444,7 @@ async function palSearchRemote(
         items.push({
           group: t("conv.title.default"),
           label: s.name || s.task_summary || t("conv.title.default"),
-          sub: sessionHitSub(s),
+          sub: [hitPlace(s.project_id, null, s.updated_at), sessionHitSub(s)].filter(Boolean).join(" · ") || undefined,
           mark: q,
           icon: "message-square",
           run: () => {
@@ -434,7 +457,7 @@ async function palSearchRemote(
         items.push({
           group: t("palette.group.artifacts"),
           label: a.filename || "",
-          sub: a.content_type || "",
+          sub: [hitPlace(a.project_id, a.session_name, a.updated_at), a.content_type || ""].filter(Boolean).join(" · "),
           icon: "file",
           run: () => openPaletteArtifact(a),
         }),
