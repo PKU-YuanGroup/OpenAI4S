@@ -1382,4 +1382,36 @@ describe("Session options environment picker (ENV-6)", () => {
       headings({ envs: pythonOnly, current: "base", currentR: null, runtimes: { python, r: { ...r, environment: "" } } }),
     ).toContain(nbT("nb.env.group", "R", nbT("nb.env.default") + " → R installed on this computer · local · R 4.4.1"));
   });
+
+  // SCI-20: no ticked "default" row in the R group, and no way back to it
+  // once a local R was picked.
+  it("offers a default R row that goes back, and says which key package it lacks", () => {
+    const python = { available: true, environment: "base", kind: "builtin", version: "3.13.1" };
+    const r = {
+      available: true,
+      selected: false,
+      checked: true,
+      environment: "lab_env",
+      kind: "local",
+      version: "4.4.1",
+      packages: [
+        { name: "jsonlite", available: false },
+        { name: "ggplot2", available: true },
+      ],
+    };
+    const backToDefault = vi.fn();
+    const labels = (currentR: string | null) =>
+      environmentMenuItems({ envs, current: "base", currentR, runtimes: { python, r } }, () => undefined, backToDefault);
+    const inUse = labels(null).find((item) => String(item.label || "").includes(nbT("nb.env.rDefaultRow", "")));
+    expect(inUse?.label).toBe(
+      "✓  " + nbT("nb.env.rDefaultRow", "lab_env · local · R 4.4.1 · jsonlite is not available"),
+    );
+    inUse?.onClick?.();
+    expect(backToDefault).not.toHaveBeenCalled();
+
+    const picked = labels("lab_env").find((item) => String(item.label || "").startsWith(nbT("nb.env.rDefaultRow", "")));
+    expect(picked?.label).toBe(nbT("nb.env.rDefaultRow", nbT("nb.env.rDefaultAuto")));
+    picked?.onClick?.();
+    expect(backToDefault).toHaveBeenCalledTimes(1);
+  });
 });

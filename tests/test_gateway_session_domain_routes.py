@@ -1365,3 +1365,38 @@ def test_restore_runs_on_an_activated_fork_branch(tmp_path):
         assert runner._existing_state(frame_id).branch_id == branch_id
     finally:
         runner.close()
+
+
+def test_r_cells_can_go_back_to_the_default_r(tmp_path):
+    """SCI-20: once a local R environment was picked for a session's R cells,
+    the runtime menu had no entry that went back to the default."""
+
+    runner, handler, frame_id = _setup(tmp_path)
+    try:
+        state = runner._state(frame_id, "project-domain")
+        dispatcher = runner._ensure_runtime(state)
+        dispatcher.active_r_env = "lab_env"
+        state.r_env_name = "lab_env"
+        code, listing = _call(handler, "GET", f"/frames/{frame_id}/environments")
+        assert code == 200 and listing["current_r"] == "lab_env"
+
+        code, result = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/kernel/env",
+            body={"env": "", "language": "r"},
+        )
+        assert code == 200
+        assert result["ok"] is True and result["language"] == "r"
+        assert result["env"] is None
+        code, listing = _call(handler, "GET", f"/frames/{frame_id}/environments")
+        assert listing["current_r"] is None
+        assert dispatcher.active_r_env is None
+        changed = [
+            event
+            for event in runner.hub.events
+            if event.get("type") == "kernel_status" and event.get("language") == "r"
+        ]
+        assert changed and changed[-1]["env"] == {"name": None, "language": "r"}
+    finally:
+        runner.close()

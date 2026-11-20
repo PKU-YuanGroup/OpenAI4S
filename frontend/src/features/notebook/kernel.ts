@@ -577,6 +577,24 @@ export async function nbSwitchEnv(name: string): Promise<void> {
   if (dockIsNotebook()) nbRender();
 }
 
+/** SCI-20: this session's R cells go back to the default R. */
+export async function nbUseDefaultR(): Promise<void> {
+  const sid = currentId.value;
+  if (!sid) return;
+  try {
+    const r = await notebookFetch(`/frames/${sid}/kernel/env`, {
+      method: "POST",
+      body: JSON.stringify({ env: "", language: "r" }),
+    });
+    if (r && r.error) hint(t("nb.kernel.envSwitchFailed", r.error), true);
+    else hint(nbT("nb.env.rDefaultSelected"));
+  } catch (e) {
+    hint(t("nb.kernel.envSwitchFailed", apiErrorText(e)), true);
+  }
+  invalidateKernelCache();
+  if (dockIsNotebook()) nbRender();
+}
+
 /**
  * Forget the Variable Inspector's reads that describe a namespace that is
  * gone. It went on listing a restarted kernel's variables as if current.

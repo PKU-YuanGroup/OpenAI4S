@@ -8787,7 +8787,11 @@ class SessionRunner:
             }
         st = self._state(root_frame_id, project_id)
         dispatcher = self._ensure_runtime(st)
-        dispatcher.active_r_env = env.name
+        # SCI-20: `env=None` goes back to the default resolution; once a local
+        # R was picked there was no way back. The next R cell respawns.
+        dispatcher.active_r_env = env.name if env is not None else None
+        if env is None:
+            st.r_env_name = None
         status = st.kernels.status("r")
         self.hub.emitter(root_frame_id)(
             {
@@ -8795,13 +8799,13 @@ class SessionRunner:
                 "frame_id": root_frame_id,
                 "status": "env_changed",
                 "language": "r",
-                "env": {"name": env.name, "language": "r"},
+                "env": {"name": env.name if env is not None else None, "language": "r"},
             }
         )
         return {
             "ok": True,
             "state": status["state"],
-            "env": env.name,
+            "env": env.name if env is not None else None,
             "generation": status["generation"],
             "generation_id": status.get("generation_id"),
             "language": "r",
