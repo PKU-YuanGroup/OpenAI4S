@@ -154,6 +154,22 @@ def test_cli_share_create_says_when_the_relay_is_down(
     assert ("ConnectionRefusedError" in captured.err) is warned
 
 
+def test_replay_page_shows_cell_source_and_never_injects_session_text():
+    """TEAM-27: the replay page read `cell.code`, which the view does not have
+    (it is `source`), so cells showed output without code; Enter did nothing;
+    Markdown was plain text. Session text must still reach the DOM only as
+    text."""
+    webui = Path(__file__).resolve().parents[1] / "openai4s" / "server" / "webui"
+    script = (webui / "replay.js").read_text(encoding="utf-8")
+    page = (webui / "replay.html").read_text(encoding="utf-8")
+    assert "innerHTML" not in script and "insertAdjacentHTML" not in script
+    assert "c.source" in script and "c.code" not in script
+    assert 'id="open-form"' in page and "onsubmit" in script
+    assert '<script src="/static/theme-bootstrap.js"></script>' in page
+    for anchor in ('id="sid"', 'id="err"', 'id="meta"', 'id="transcript"'):
+        assert anchor in page
+
+
 def test_cli_gen_token(capsys):
     from openai4s.cli.main import cmd_relay_gen_token
 
