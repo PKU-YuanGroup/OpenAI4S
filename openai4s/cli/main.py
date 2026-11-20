@@ -2781,6 +2781,55 @@ def _share_status_text(rec: dict) -> str:
     return f"Sharing state: {state or 'unknown'}"
 
 
+def _share_session_title(item: dict) -> str:
+    """A share's or a session's name, as the Web UI would show it."""
+
+    session = item.get("session") if isinstance(item.get("session"), dict) else {}
+    return str(
+        item.get("title")
+        or session.get("name")
+        or session.get("task_summary")
+        or item.get("name")
+        or item.get("task_summary")
+        or "untitled session"
+    )
+
+
+def _share_counts_text(item: dict) -> str:
+    counts = item.get("counts") or {}
+    return ", ".join(
+        f"{int(counts.get(key) or 0)} {key}"
+        for key in ("messages", "cells", "artifacts")
+    )
+
+
+def _share_expiry_text(expires_at) -> str:
+    """`expires 2026-11-27 14:03` (local time) or `never expires`."""
+
+    try:
+        stamp = float(expires_at) / 1000.0  # the daemon stores epoch ms
+    except (TypeError, ValueError):
+        return "never expires"
+    if stamp <= 0:
+        return "never expires"
+    return "expires " + time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+
+
+def _share_published_text(rec: dict, session: dict | None) -> str:
+    """`shared "<title>" (f-…, N messages, …) → <url>, expires <when>`.
+
+    The daemon's share record names no session, so a create describes the
+    session the CLI resolved; an update names the share instead.
+    """
+
+    counts = _share_counts_text(rec)
+    tail = f"→ {rec.get('url')}, {_share_expiry_text(rec.get('expires_at'))}"
+    if session is None:
+        return f"updated share {rec.get('share_id')} ({counts}) {tail}"
+    title = rec.get("title") or _share_session_title(session)
+    return f'shared "{title}" ({session.get("id")}, {counts}) {tail}'
+
+
 def cmd_share(args) -> int:
     cfg = get_config()
     action = args.share_action
@@ -2796,6 +2845,7 @@ def cmd_share(args) -> int:
     ):
         if not _require_daemon(cfg):
             return 1
+    shared_session: dict | None = None  # what a create published, for its echo
     try:
         if action == "create":
             root = args.session
@@ -2806,12 +2856,34 @@ def cmd_share(args) -> int:
                     print("error: no sessions found", file=sys.stderr)
                     return 2
                 root = items[0].get("frame_id") or items[0].get("id")
+                shared_session = items[0]
+                # A public link to whichever session happens to be newest:
+                # say which one, and on a terminal ask first.
+                latest = (
+                    f'{root} "{_share_session_title(items[0])}" '
+                    f"({int(items[0].get('message_count') or 0)} messages)"
+                )
+                if not (args.yes or args.json) and sys.stdin.isatty():
+                    print(
+                        f"Publish the latest session, {latest}, as a read-only "
+                        "link? [y/N] ",
+                        end="",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    if sys.stdin.readline().strip().lower() not in ("y", "yes"):
+                        print("nothing was shared", file=sys.stderr)
+                        return 1
             body: dict = {}
             if args.title:
                 body["title"] = args.title
             if args.expires:
                 body["expires_in"] = _parse_duration(args.expires)
             status, rec = _daemon_request(cfg, "POST", f"/frames/{root}/shares", body)
+            if shared_session is None and status < 400 and not args.json:
+                _, frame = _daemon_request(cfg, "GET", f"/frames/{root}")
+                shared_session = frame if isinstance(frame, dict) else {}
+            shared_session = {"id": root, **(shared_session or {})}
         elif action == "update":
             ubody: dict = {}
             if getattr(args, "no_expiry", False):
@@ -2853,10 +2925,23 @@ def cmd_share(args) -> int:
         if isinstance(rec, dict) and rec.get("code") == "sharing_unconfigured":
             print(_SHARE_SETUP_STEPS, file=sys.stderr)
     elif action == "create" or action == "update":
-        print(rec.get("url") or json.dumps(rec))
+        # Publishing is an outward action: say what went out, not only where.
+        print(_share_published_text(rec, shared_session))
+        counts = rec.get("counts") or {}
+        if not any(int(counts.get(k) or 0) for k in ("messages", "cells", "artifacts")):
+            print(
+                "warning: this session has no messages, cells or artifacts to "
+                "show, so the shared page is empty",
+                file=sys.stderr,
+            )
     elif action == "list":
         for item in rec.get("shares", []):
-            print(f"{item['share_id']}\t{item['status']}\t{item.get('url', '')}")
+            # A list row names no session, only the share's own title.
+            print(
+                f"{item['share_id']}\t{item['status']}\t"
+                f"{item.get('title') or '(no title)'}\t{_share_counts_text(item)}\t"
+                f"{_share_expiry_text(item.get('expires_at'))}\t{item.get('url', '')}"
+            )
         if not rec.get("shares"):
             # Nothing at all read as "the command did not run".
             print("no shares")
@@ -3494,6 +3579,12 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("session", help="root frame id, or 'latest'")
     sc.add_argument("--title", help="optional share title")
     sc.add_argument("--expires", help="auto-revoke after this long, e.g. 30m/24h/7d")
+    sc.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="with 'latest': publish without asking which session it is",
+    )
     su = _share_sub("update", "refresh a share snapshot")
     su.add_argument("share_id")
     su.add_argument("--expires", help="reset the expiry, e.g. 30m/24h/7d")

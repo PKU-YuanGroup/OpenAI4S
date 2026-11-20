@@ -468,3 +468,140 @@ def test_share_revoke_and_disable_answer_in_words(monkeypatch, capsys):
     assert "revoked share sh-1" in out
     assert "Sharing is off." in out
     assert "{" not in out
+
+
+def _published(counts, expires_at=None):
+    # The daemon's public share record: it names no session.
+    return (
+        201,
+        {
+            "share_id": "sh-1",
+            "url": "https://sh-1.example.org/",
+            "status": "ready",
+            "title": None,
+            "counts": counts,
+            "expires_at": expires_at,
+        },
+    )
+
+
+_LATEST = {
+    ("GET", "/frames"): (
+        200,
+        {"frames": [{"id": "f-abc", "task_summary": "Fit a line", "message_count": 2}]},
+    ),
+}
+
+
+def test_share_create_says_what_it_published_and_until_when(monkeypatch, capsys):
+    """It printed the URL alone: not which session `latest` was, how much of
+    it, or when the link expires."""
+    import time
+
+    expires = int(time.mktime((2030, 1, 2, 3, 4, 0, 0, 0, -1)) * 1000)
+    replies = {
+        **_LATEST,
+        ("POST", "/frames/f-abc/shares"): _published(
+            {"messages": 2, "cells": 1, "artifacts": 1}, expires
+        ),
+    }
+
+    status = _share(monkeypatch, ["create", "latest", "--expires", "7d"], replies)
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert captured.out.strip() == (
+        'shared "Fit a line" (f-abc, 2 messages, 1 cells, '
+        "1 artifacts) → https://sh-1.example.org/, expires 2030-01-02 03:04"
+    )
+    assert "warning" not in captured.err
+
+
+def test_sharing_an_empty_session_warns_that_the_page_is_empty(monkeypatch, capsys):
+    """A CLI-run session was published as a blank page with no hint."""
+    replies = {
+        ("POST", "/frames/f-abc/shares"): _published(
+            {"messages": 0, "cells": 0, "artifacts": 0}
+        ),
+        ("GET", "/frames/f-abc"): (200, {"id": "f-abc", "name": "Empty one"}),
+    }
+
+    status = _share(monkeypatch, ["create", "f-abc"], replies)
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert captured.out.startswith('shared "Empty one" (f-abc, 0 messages')
+    assert "never expires" in captured.out
+    assert "the shared page is empty" in captured.err
+
+
+def test_share_update_echoes_the_new_expiry(monkeypatch, capsys):
+    """`share update --expires 2h` printed only the URL."""
+    replies = {
+        ("PUT", "/shares/sh-1"): _published(
+            {"messages": 2, "cells": 0, "artifacts": 0}, 1_900_000_000_000
+        )
+    }
+
+    _share(monkeypatch, ["update", "sh-1", "--expires", "2h"], replies)
+
+    out = capsys.readouterr().out
+    assert out.startswith("updated share sh-1 (2 messages, 0 cells, 0 artifacts)")
+    assert "https://sh-1.example.org/" in out and ", expires 20" in out
+
+
+@pytest.mark.parametrize(("answer", "posted"), [("n\n", False), ("y\n", True)])
+def test_share_create_latest_on_a_terminal_asks_which_session_first(
+    monkeypatch, capsys, answer, posted
+):
+    calls: list = []
+    replies = {
+        **_LATEST,
+        ("POST", "/frames/f-abc/shares"): _published(
+            {"messages": 2, "cells": 0, "artifacts": 0}
+        ),
+    }
+    monkeypatch.setattr("sys.stdin", _Stdin(tty=True, answer=answer))
+
+    status = _share(monkeypatch, ["create", "latest"], replies, calls)
+
+    err = capsys.readouterr().err
+    assert 'f-abc "Fit a line" (2 messages)' in err
+    assert (("POST", "/frames/f-abc/shares", {}) in calls) is posted
+    assert status == (0 if posted else 1)
+
+
+def test_share_create_latest_with_yes_does_not_ask(monkeypatch, capsys):
+    stdin = _Stdin(tty=True, answer="n\n")
+    monkeypatch.setattr("sys.stdin", stdin)
+    replies = {
+        **_LATEST,
+        ("POST", "/frames/f-abc/shares"): _published(
+            {"messages": 2, "cells": 0, "artifacts": 0}
+        ),
+    }
+
+    assert _share(monkeypatch, ["create", "latest", "--yes"], replies) == 0
+    assert not stdin.asked
+
+
+def test_share_list_shows_title_contents_and_expiry(monkeypatch, capsys):
+    row = {
+        "share_id": "sh-1",
+        "status": "ready",
+        "title": "Demo",
+        "url": "https://sh-1.example.org/",
+        "counts": {"messages": 2, "cells": 1, "artifacts": 0},
+        "expires_at": None,
+    }
+    _share(monkeypatch, ["list"], {("GET", "/shares"): (200, {"shares": [row]})})
+
+    out = capsys.readouterr().out
+    assert out.strip().split("\t") == [
+        "sh-1",
+        "ready",
+        "Demo",
+        "2 messages, 1 cells, 0 artifacts",
+        "never expires",
+        "https://sh-1.example.org/",
+    ]
