@@ -1634,7 +1634,16 @@ def cmd_init(args) -> int:
             known = ", ".join(sorted(service.providers))
             print("OpenAI4S first-run setup")
             print(f"Available providers: {known}")
-            provider = _prompt_value("Provider", provider).lower()
+            # Asked again until it names a provider this build has. A typo used
+            # to be carried through every later question -- each showing the
+            # *current* provider's defaults -- and refused only at the end,
+            # with every answer discarded.
+            while True:
+                typed = _prompt_value("Provider", provider).lower()
+                if typed in service.providers:
+                    break
+                print(f"  unknown provider {typed!r}; enter one of: {known}")
+            provider = typed
             defaults = service.defaults(provider)
             model = model or _prompt_value("Model", defaults["model"])
             base_url = base_url or _prompt_value("Base URL", defaults["base_url"])
@@ -1665,6 +1674,11 @@ def cmd_init(args) -> int:
             search = search_settings.apply_setup_choice(
                 store, search_choice, search_key
             )
+    except EOFError:
+        # Ctrl-D, or a pipe that ran dry, at a question that now repeats until
+        # it is answered: end the wizard instead of looping or tracing back.
+        print("\nerror: input ended before setup was finished", file=sys.stderr)
+        return 1
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
