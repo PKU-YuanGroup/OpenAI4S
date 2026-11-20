@@ -23,13 +23,19 @@ import { loadArtifacts } from "../artifacts/load";
 import { syncPendingApproval } from "../messages/approval";
 import { settleRunningCards } from "../messages/cardState";
 import { $ } from "../messages/dom";
-import { canContinueFailure, failureCodeHint, failureMeta } from "../messages/failure";
+import {
+  canContinueFailure,
+  canRetryFailure,
+  failureCodeHint,
+  failureMeta,
+  needsModelSettings,
+} from "../messages/failure";
 export { failureCodeHint, failureMeta } from "../messages/failure";
 import { finishStoppedStream } from "../messages/stopped";
 import { flushRender, type LiveStream } from "../messages/stream";
 import { notebookOnTurnDone } from "../notebook/kernel";
 import { hint } from "../sessions/chrome";
-import { enableComposer } from "../sessions/dom";
+import { enableComposer, grow } from "../sessions/dom";
 import { finishTurnGroup } from "../messages/list";
 import { turnTextKey } from "../messages/turnGroup";
 import { callLane, setCancelHidden } from "./host";
@@ -55,8 +61,17 @@ export function lastTerminalFailure(): {
     : null;
 }
 
-export function failureHint(detail: unknown): string {
+/**
+ * The line under the composer for a failed turn. `shown`: the failed turn's
+ * bubble already carries it (its sentence, its support ID and its button), so
+ * the line does not say it a second time in other words (M-37): a failure
+ * fixed in Settings, or a stop that Continue picks up (SYNC-16: "Stopped
+ * repeating actions" was said twice, worded two ways), leaves it empty; any
+ * other keeps a short pointer without the ID.
+ */
+export function failureHint(detail: unknown, shown = false): string {
   const rec = detail && typeof detail === "object" ? (detail as Record<string, unknown>) : null;
+  if (shown) return needsModelSettings(rec?.code) || canContinueFailure(rec?.code) ? "" : t("turn.failed");
   const committed = !!(rec && rec.output_committed) && !canContinueFailure(rec?.code);
   const cause = failureCodeHint(rec && rec.code);
   const base = committed
@@ -65,6 +80,25 @@ export function failureHint(detail: unknown): string {
   const raw = (rec && rec.request_id) || pendingRequestId.value || "";
   const id = raw ? String(raw).slice(0, 96) : "";
   return id ? base + " " + t("turn.supportId", id) : base;
+}
+
+/**
+ * M-37: a turn that failed on the model's setup (no key, a rejected key, no
+ * quota, no such model) before anything ran left its question only in the
+ * bubble; after fixing Settings the user had to type it again. It goes back
+ * into an empty composer. A lost connection has Retry instead, and a turn
+ * that already ran a step, a cell or an approval is not offered again as is.
+ */
+function restoreUnansweredQuestion(wrap: HTMLElement, detail: unknown): void {
+  const code = detail && typeof detail === "object" ? (detail as { code?: unknown }).code : null;
+  if (!needsModelSettings(code) || canRetryFailure(code)) return;
+  if ([".step", ".activity", ".perm-card"].some((kind) => wrap.querySelector(kind))) return;
+  const asked = [...($("#messages")?.querySelectorAll(".msg.user") || [])].pop() as HTMLElement | undefined;
+  const text = asked?.dataset.sentText || "";
+  const composer = $("#composer") as HTMLTextAreaElement | null;
+  if (!text || !composer || composer.value.trim()) return;
+  composer.value = text;
+  grow();
 }
 
 /** Terminal statuses of a turn that ran to its end (not failed, stopped or blocked). */
@@ -123,7 +157,10 @@ export function turnDone(status: string, detail?: unknown): void {
   if (status === "cancelled" && stopCarry) carried = { text: stopCarry, at: Date.now() };
   stopNote = "";
   stopCarry = "";
-  hint(status === "failed" ? failureHint(detail) : note, status === "failed");
+  const shown = status === "failed" && !!st && !!st.wrap.querySelector(".msg-failure-meta");
+  const failedLine = status === "failed" ? failureHint(detail, shown) : "";
+  hint(status === "failed" ? failedLine : note, status === "failed" && !!failedLine);
+  if (status === "failed" && st) restoreUnansweredQuestion(st.wrap, detail);
   // A turn that ended took its approval wait with it (an open card left over
   // is answered by `reconcilePermissionCards`); the title and row follow.
   syncPendingApproval();

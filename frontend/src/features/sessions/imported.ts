@@ -18,6 +18,7 @@ import { recoveryActions } from "../../stores/timeline";
 import { focusDock } from "../attention/navigate";
 import { ATTENTION_PANE } from "../attention/types";
 import { API } from "./api";
+import { renderEmptySession } from "../messages/list";
 import { $, el, enableComposer } from "./dom";
 import { iconEl } from "./icon";
 import { callLane } from "./lane";
@@ -51,11 +52,15 @@ export function renderImportedBanner(fid: string, quarantined: boolean): void {
   const composer = $("#composer") as HTMLTextAreaElement | null;
   let banner = $("#imported-banner");
   if (!quarantined || !fid || fid !== currentId.value) {
+    const wasUp = !!banner;
     banner?.remove();
     if (disabledFor !== null) {
       disabledFor = null;
       enableComposer(!running.value);
+      setSendDisabled(false);
     }
+    // A restarted copy is an ordinary empty session again.
+    if (wasUp) repaintEmptySession();
     return;
   }
   if (!banner) {
@@ -89,6 +94,23 @@ export function renderImportedBanner(fid: string, quarantined: boolean): void {
     composer.placeholder = importedT("placeholder");
     disabledFor = fid;
   }
+  // M-66: Send looked usable beside a disabled composer.
+  setSendDisabled(true);
+  repaintEmptySession();
+}
+
+function setSendDisabled(on: boolean): void {
+  const send = $("#send-btn") as HTMLButtonElement | null;
+  if (send) send.disabled = on;
+}
+
+/** The empty-session block follows the banner: starters for a session, a note for a read-only copy. */
+function repaintEmptySession(): void {
+  const empty = $("#messages .empty-session");
+  if (!empty) return;
+  const host = empty.parentNode;
+  empty.remove();
+  renderEmptySession(host as ParentNode | null);
 }
 
 /** One read of the session's kernel status, which carries the quarantine. */

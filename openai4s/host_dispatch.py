@@ -53,6 +53,7 @@ from openai4s.host.remote_science import RemoteScienceService
 from openai4s.host.session import SessionControlService
 from openai4s.host.skills import SkillService
 from openai4s.llm import chat
+from openai4s.observability import reset_delegate_step, set_delegate_step
 from openai4s.rl.host_events import HostCallLifecycle
 from openai4s.rl.models import Episode, ExecutionEvent, Segment
 from openai4s.storage.memories import MemoryLimitError
@@ -2529,6 +2530,7 @@ class HostDispatcher:
         # Python. The matching "end" is emitted in the finally with the result.
         view = None
         step_id = None
+        delegate_step_token = None
         if self.on_step is not None:
             try:
                 view = _step_begin(method, args)
@@ -2554,6 +2556,10 @@ class HostDispatcher:
                     )
                 except Exception:  # noqa: BLE001
                     step_id = None
+                if step_id is not None and view[0] == "delegate":
+                    # SCI-22: the children this call starts relay their steps
+                    # under this card (`_ChildStepForwarder`).
+                    delegate_step_token = set_delegate_step(step_id)
         ok = True
         # A structured result that declares its own failure (a failed child's
         # delegate envelope). ``ok`` keeps the soft-fail meaning the Step card
@@ -2877,6 +2883,8 @@ class HostDispatcher:
             raised_exception = exc
             raise
         finally:
+            if delegate_step_token is not None:
+                reset_delegate_step(delegate_step_token)
             self._rl_call_end(
                 rl_handle,
                 ok=ok and not declared_failed,

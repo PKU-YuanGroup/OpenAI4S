@@ -28,7 +28,7 @@ import {
 } from "../execution/branch";
 import { scheduleWorkbenchRefresh } from "../notebook/kernel";
 import { paintIcon } from "../icons/paths";
-import { renderMd } from "../md/render";
+import { CHAT_MD, renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
 import { api } from "../sessions/api";
 import { hint } from "../sessions/chrome";
@@ -463,7 +463,7 @@ export function renderStored(
     }
   } else {
     const md = el("div", "md");
-    md.innerHTML = renderMd(text);
+    md.innerHTML = renderMd(text, CHAT_MD);
     embedArtifactFigures(md);
     w.appendChild(md);
     if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
@@ -615,7 +615,7 @@ export function historyTurns(): HistoryTurns {
 
   const flush = (): void => {
     if (!group || !run.length) return;
-    group.md.innerHTML = renderMd(run.join("\n\n"));
+    group.md.innerHTML = renderMd(run.join("\n\n"), CHAT_MD);
     embedArtifactFigures(group.md);
     run = [];
   };
@@ -895,6 +895,15 @@ export function cancelFramedRender(): void {
 /** app.js:7226-7232. Starter chips use existing i18n keys (no new keys). */
 export function renderEmptySession(host: ParentNode | null = messagesHost()): void {
   if (!host) return;
+  // M-66: a read-only imported copy (its banner is up) is not a place to
+  // "Start a new analysis": the starters filled a composer that cannot send.
+  if (typeof document !== "undefined" && document.getElementById("imported-banner")) {
+    const note = el("div", "empty-session readonly-copy");
+    note.appendChild(el("div", "es-title", historyT("history.importedEmpty.title")));
+    note.appendChild(el("div", "es-sub", historyT("history.importedEmpty.sub")));
+    host.appendChild(note);
+    return;
+  }
   const wrap = el("div", "empty-session");
   wrap.appendChild(el("div", "es-title", t("empty.title")));
   wrap.appendChild(el("div", "es-sub", t("empty.sub")));

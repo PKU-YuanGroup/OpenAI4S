@@ -11,7 +11,9 @@ export type SendCopyKey =
   | "modeChipTitle"
   | "technicalDetails"
   | "hideTechnicalDetails"
-  | "subagentTask";
+  | "subagentTask"
+  | "subagentSteps"
+  | "subagentStep";
 
 /** Labels the generated F-07 dictionaries do not carry (app.js hard-coded them in English). */
 const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
@@ -28,6 +30,8 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
     technicalDetails: "Technical details",
     hideTechnicalDetails: "Hide technical details",
     subagentTask: "Sub-agent · {0}",
+    subagentSteps: "{0} steps inside",
+    subagentStep: "1 step inside",
   },
   zh: {
     send: "发送",
@@ -41,6 +45,8 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
     technicalDetails: "技术细节",
     hideTechnicalDetails: "收起技术细节",
     subagentTask: "子代理 · {0}",
+    subagentSteps: "内含 {0} 个步骤",
+    subagentStep: "内含 1 个步骤",
   },
 };
 

@@ -937,4 +937,15 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.composer.style.height).toBe("64px");
     expect(doc.composer.focused).toBe(1);
   });
+
+  it("offers no starters under a read-only imported copy's banner (M-66)", () => {
+    const banner = new RowEl("div");
+    banner.id = "imported-banner";
+    doc.body.appendChild(banner);
+    renderEmptySession();
+    expect(doc.messages.querySelector(".es-chip")).toBeNull();
+    const note = doc.messages.querySelector(".empty-session")!;
+    expect(note.textContent).toContain(historyT("history.importedEmpty.title"));
+    expect(note.textContent).toContain(historyT("history.importedEmpty.sub"));
+  });
 });

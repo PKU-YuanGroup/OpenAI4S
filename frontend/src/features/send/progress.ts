@@ -28,6 +28,8 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     turnParts: "The latest turn: {0} new input · {1} cached input · {2} output.",
     tokens: "{0} tokens",
     tokensTurn: "{0} tokens · +{1} this turn",
+    heavyTurn:
+      "This turn has used more than {0} tokens. If it keeps repeating itself without running code, press Stop (■ beside the message box).",
     minutes: "{0} min {1} s",
     seconds: "{0} s",
   },
@@ -40,6 +42,7 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     turnParts: "最近一轮：新输入 {0} · 缓存输入 {1} · 输出 {2}。",
     tokens: "{0} tokens",
     tokensTurn: "{0} tokens · 本轮 +{1}",
+    heavyTurn: "本轮已用超过 {0} tokens。如果它一直在重复、没有运行代码，可以点停止（输入框旁的 ■）。",
     minutes: "{0} 分 {1} 秒",
     seconds: "{0} 秒",
   },
@@ -168,6 +171,13 @@ export function latestTurnUsage(timeline: unknown, fid: string | null): (UsageBr
 let lastTotals: { fid: string; input: number; output: number } | null = null;
 
 /**
+ * SYNC-6: a small task spun for minutes and 690k tokens with nothing on screen
+ * changing colour. Past this many tokens in the running turn the chip turns
+ * amber and its title says Stop is there.
+ */
+export const HEAVY_TURN_TOKENS = 200_000;
+
+/**
  * The chip: the session's total and what the latest turn added (M-18); its
  * tooltip the breakdown when the timeline can give one, else input / output.
  */
@@ -187,7 +197,11 @@ export function paintUsageTitle(): void {
   const turnLine = turn
     ? " " + copy("turnParts", turn.fresh.toLocaleString(), turn.cached.toLocaleString(), turn.output.toLocaleString())
     : "";
-  node.title = (parts
+  // Only while it runs: Stop is what the warning is for.
+  const heavy = !!(running.value && turn && turn.total > HEAVY_TURN_TOKENS);
+  node.classList.toggle("heavy", heavy);
+  const heavyLine = heavy ? copy("heavyTurn", formatTokens(HEAVY_TURN_TOKENS)) + " " : "";
+  node.title = heavyLine + (parts
     ? copy(
         "usageParts",
         parts.fresh.toLocaleString(),

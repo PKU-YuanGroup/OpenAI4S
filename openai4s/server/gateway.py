@@ -21994,6 +21994,8 @@ _APPROVAL_CARD_FIELDS = (
     "suggested_patterns",
     "scopes",
     "sub_agent",
+    "sub_agent_name",
+    "sub_agent_task",
     "dangerous",
     "choices",
     "policy_review_kind",

@@ -75,6 +75,12 @@ const COPY: CopyTable = {
     "nb.stale.other": "后续单元改动了它用到的变量",
     "nb.action.needsManual": "在 设置 → 通用 中开启「Notebook 手动单元」后可用。",
     "nb.action.replBusy": "另一个手动单元正在运行，结束后可用。",
+    "nb.missing.renamed": "“{0}”由“{1}”包提供，当前环境没有安装。",
+    "nb.missing.plain": "当前环境没有安装“{0}”包。",
+    "nb.missing.python": "可以在 设置 → 计算 里安装；让智能体安装时，它会先询问你。",
+    "nb.missing.open": "打开 设置 → 计算",
+    "nb.missing.r":
+      "当前 R 环境没有“{0}”包。会话里不能安装 R 包：运行 openai4s setup 构建托管的 R 环境，或在本机 R 里装好后，在会话选项的「运行环境」里选用那个 R。",
   },
   en: {
     "nb.crash.notice":
@@ -146,6 +152,12 @@ const COPY: CopyTable = {
     "nb.stale.other": "A later cell changed variables it uses",
     "nb.action.needsManual": "Available once “Notebook manual cells” is on in Settings → General.",
     "nb.action.replBusy": "Another manual cell is running; available when it finishes.",
+    "nb.missing.renamed": "“{0}” is installed as the “{1}” package, which this environment does not have.",
+    "nb.missing.plain": "This environment does not have the “{0}” package.",
+    "nb.missing.python": "You can install it in Settings → Compute; the agent asks before it installs anything.",
+    "nb.missing.open": "Open Settings → Compute",
+    "nb.missing.r":
+      "This R environment does not have the “{0}” package. R packages cannot be installed from a session: run openai4s setup to build the managed R environment, or install it in your own R and pick that R under Runtime environment in the session options.",
   },
 };
 

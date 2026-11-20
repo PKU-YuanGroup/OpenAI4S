@@ -13,6 +13,8 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`binds.ts`](binds.ts) | 迟绑定，避免 dashboard 与 conversation 互相 import。 |
 | [`boot.ts`](boot.ts) | window 导出、`setLoadSessionsImpl`、工作台点击接线。Shell 的事件立即绑定，但首个视图要等语言分块加载完成（或加载失败、或超过 `I18N_ROUTE_WAIT_MS`）才路由：仪表盘列表、侧栏和打开的会话经 `t()` 渲染，字典到达后不会重绘。若等待超时，这些列表（仪表盘、侧栏、空会话）会在字典真正到达时重绘一次。切换语言时（app.js `rerenderI18n`）用已有数据重绘仪表盘列表、项目菜单、侧栏、未命名标题、空会话、输入框占位符（运行中的回合保留排队文案）、排队条、转录中的文件条和右侧面板，不发新请求。 |
 | [`boot.i18n-gate.test.ts`](boot.i18n-gate.test.ts) | 字典加载前事件已绑定，首次路由等待字典；语言分块加载失败或卡住时仍会路由；等待超时后才到达的字典会重绘列表（仅此情形）。只有真正切换语言时，才会用已有数据重绘列表；回合运行中切换语言时输入框保留排队占位符。 |
+| [`branches.ts`](branches.ts) | M-73：当打开的会话除主线外还有分支时，在侧栏的会话行下列出它们（数据来自工作台已读取的 `branchState`）：标出当前分支，点击其他分支会经过 Timeline 里需确认的 `activateSessionBranch` 切换。在 `renderSessions` 之后、以及分支投影或打开的会话变化时重绘（`watchSessionBranches`，由 `boot.ts` 安装）。 |
+| [`branches.test.ts`](branches.test.ts) | 列出所有分支、当前分支有标记且不可点；点其他分支走激活流程；没有检查点的分支不可选；只有主线或投影属于其他会话时不显示。 |
 | [`chrome.test.ts`](chrome.test.ts) | hint 错误前缀（`错误：` / `Error: `），不新增 i18n 键；`reportFailure` 把失败的「发起即不管」操作显示为错误提示；`watchActivateKeys` 只观察右侧标签栏、文件面板和对话里的产物卡片条，而不是整个 body。 |
 | [`chrome.ts`](chrome.ts) | `hint`、`reportFailure`（「发起即不管」操作的失败处理）、断连横幅、`openMenu` 的 Esc/`role=menu`、键盘激活（只观察会插入可激活节点的容器）。 |
 | [`compute.ts`](compute.ts) | 会话在哪里运行（M3b-6）：会话标题栏的徽标（写明尚未满足的就绪条件）、内核状态丢失横幅（INV-11），以及「运行位置」对话框。app.js:8375-8517。 |
@@ -29,7 +31,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`doc-title.test.ts`](doc-title.test.ts) | 各状态下的标题：首页、会话加项目、改名、运行中、待批准。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer 辅助；`FRAME_ROUTE` / `PROJECT_ROUTE` / `routesToWorkspace` 由 `routeInitialView` 与 Shell 首帧共用。`setTitle` 从静态 `data-i18n-val` 标签手中接管 `#conv-title`。 `ago` 使用共享的、随界面语言变化的相对时间（`chrome/dom.ts`）。 |
 | [`icon.ts`](icon.ts) | 本车道菜单、行和 `[data-icon]` 标记用的 `icon` / `iconEl` / `paintIcons`。图形路径取自共享的 `icons/paths.ts` 表。 |
-| [`imported.ts`](imported.ts) | M-66：当打开的会话是被隔离的导入副本（读 `/kernel` 状态，再跟随 Recovery 动作）时，在对话上方显示“只读副本”横幅，并可打开 Recovery 面板里需确认的「全新重启」；输入框被禁用并说明原因，切到其他会话时恢复。由 `boot.ts` 安装。 |
+| [`imported.ts`](imported.ts) | M-66：当打开的会话是被隔离的导入副本（读 `/kernel` 状态，再跟随 Recovery 动作）时，在对话上方显示“只读副本”横幅，并可打开 Recovery 面板里需确认的「全新重启」；输入框和发送按钮被禁用并说明原因，切到其他会话时恢复；没有消息的副本显示只读说明，而不是「开始新的分析」的示例卡片。由 `boot.ts` 安装。 |
 | [`imported.test.ts`](imported.test.ts) | 隔离的副本显示横幅并禁用输入框；普通会话不受影响；切到下一个普通会话时恢复输入框；已不在打开状态的会话的迟到结果被忽略。 |
 | [`index.ts`](index.ts) | 对外 re-export；import 时挂 window 名字。 |
 | [`lane.ts`](lane.ts) | 用 `isReady` 包一层，调用后续车道的 window 名字。 |

@@ -363,6 +363,26 @@ describe("what a card says before the user decides", () => {
     expect(permContext({ tool: "env_use", input: { name: "python", local: false } }).lines).toEqual([]);
   });
 
+  it("says which sub-agent asks, by its task (SCI-21)", async () => {
+    const { permContext } = await import("./permission");
+    setLang("en");
+    const card = {
+      tool: "env_use",
+      input: { name: "work", local: true },
+      sub_agent: true,
+      sub_agent_name: "general",
+      sub_agent_task: "Compute the average molecular weight of ACDEFGHIK.",
+    };
+    expect(permContext(card).lines).toEqual([
+      "Asked by the sub-agent working on: Compute the average molecular weight of ACDEFGHIK. (general)",
+      expect.stringContaining("your own conda environments"),
+    ]);
+    setLang("zh");
+    expect(permContext({ ...card, sub_agent_task: "" }).lines[0]).toBe("发起请求的子代理：general");
+    // The main agent's own request carries no such line.
+    expect(permContext({ ...card, sub_agent: false }).lines).toHaveLength(1);
+  });
+
   it("titles download, install and environment requests in the UI language (PERM-1)", async () => {
     const { permTitle } = await import("./permission");
     const download = {
@@ -404,6 +424,8 @@ describe("what a card says before the user decides", () => {
     expect(permContext(card).lines).toEqual([
       "保存到工作区：structures/demo.cif.gz",
       "下载前无法得知大小；超过 64.0 MB 会中止。",
+      // SCI-11: why a download asks when reading the same site did not.
+      "下载会把文件写进这个项目，所以要先询问；读取网页不写文件，不需要询问。",
     ]);
     expect(permContext({ ...card, input: { ...card.input, size_bytes: 2048 } }).lines[1]).toBe("大小：2.0 KB");
     // Never a local directory: an absolute or escaping path is shown by its file name.

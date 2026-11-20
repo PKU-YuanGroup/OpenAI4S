@@ -10,7 +10,7 @@
  */
 
 import { t } from "../../i18n/runtime";
-import { renderMd } from "../md/render";
+import { CHAT_MD, renderMd } from "../md/render";
 import { liveCells, _liveCell } from "../../stores/notebook";
 import { stream as liveStream, stepEls } from "../../stores/stream";
 import type { WsMessage } from "../ws/types";
@@ -124,7 +124,7 @@ export function flushRender(st: LiveStream | null, finalRender?: boolean): void 
   const text = st.text || "";
   st._lastFlush = performance.now();
   if (finalRender) {
-    st.md.innerHTML = renderMd(text);
+    st.md.innerHTML = renderMd(text, CHAT_MD);
     embedArtifactFigures(st.md);
     resetMdState(st);
     return;
@@ -135,10 +135,10 @@ export function flushRender(st: LiveStream | null, finalRender?: boolean): void 
   const cut = cutState.stable;
   const settled = st._stableAt || 0;
   if (st.sealed && shouldAdvanceSealed(cut, settled) && settledAt(text, settled, cut)) {
-    st.sealed.insertAdjacentHTML("beforeend", renderMd(text.slice(settled, cut)));
+    st.sealed.insertAdjacentHTML("beforeend", renderMd(text.slice(settled, cut), CHAT_MD));
     st._stableAt = cut;
   }
-  if (st.tail) st.tail.innerHTML = renderMd(text.slice(st._stableAt || 0));
+  if (st.tail) st.tail.innerHTML = renderMd(text.slice(st._stableAt || 0), CHAT_MD);
 }
 
 /** Past 600 chars a flush is due at most every 48ms (app.js: ~20/s). */

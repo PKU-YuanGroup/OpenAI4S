@@ -14,6 +14,7 @@ import {
   timelineOverviewTimeToX,
 } from "./model";
 import {
+  activateSessionBranch,
   commitActionTimelineOverviewSelection,
   destroyActionTimelineView,
   loadEarlierActionTimeline,
@@ -55,6 +56,7 @@ export {
   timelineOverviewTimeToX,
 } from "./model";
 export {
+  activateSessionBranch,
   commitActionTimelineOverviewSelection,
   destroyActionTimelineView,
   loadEarlierActionTimeline,
@@ -82,6 +84,8 @@ const TIMELINE_WINDOW: Record<string, unknown> = {
   actionTimelineOverviewVisualExtent,
   actionTimelineSelectionOverlaps,
   actionTimelineSpan,
+  // M-73: the sidebar's branch rows switch through the same confirmed activation.
+  activateSessionBranch,
   commitActionTimelineOverviewSelection,
   // messages/open.ts calls it on every session switch / branch reset.
   destroyActionTimelineView,

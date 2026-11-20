@@ -443,6 +443,142 @@ describe("sub-agents side by side (SCI-22)", () => {
   });
 });
 
+describe("a sub-agent's steps inside its delegation card (SCI-22)", () => {
+  const child = (id: string, kind: string, extra: Record<string, unknown> = {}) => ({
+    step_id: id,
+    kind,
+    title: kind === "read" ? "Reading placeholder" : "Loading skill",
+    input: {
+      path: "placeholder",
+      delegation: { delegation_child_id: "child-aaaa1111", child_name: "general", depth: 1, parent_step_id: "d-1" },
+    },
+    ...extra,
+  });
+  const delegation = {
+    step_id: "d-1",
+    kind: "delegate",
+    title: "Delegating to general",
+    input: { specialist: "general", request: "Compute the GC content of ATGCGC." },
+  };
+
+  /** Each card's id and the id of the card it sits in ("" = the conversation). */
+  const layout = (root: El): string[] =>
+    root.querySelectorAll(".step").map((card) => {
+      let up = card.parent;
+      while (up && !up.classes.has("step")) up = up.parent;
+      return `${card.dataset.stepId || card.querySelector(".s-lbl")!.textContent}<${up ? up.querySelector(".s-lbl")!.textContent : ""}`;
+    });
+
+  it("nests them under the card live, and a reload nests them the same way", () => {
+    addLiveStep({ ...delegation, status: "running" });
+    addLiveStep(child("c-1", "read", { status: "running" }));
+    updateLiveStep({ step_id: "c-1", status: "error", output: { error: "FileNotFoundError: placeholder" } });
+    addLiveStep(child("c-2", "skill", { status: "done" }));
+    // The parent's own step after the delegation stays in the conversation.
+    addLiveStep({ step_id: "s-x", kind: "read", title: "Reading plate.csv", status: "done" });
+    updateLiveStep({ step_id: "d-1", status: "done", summary: "completed", output: {} });
+    const live = layout(messages);
+    const card = messages.querySelectorAll(".step-delegate")[0]!;
+    expect(card.querySelector(".s-child-count")!.textContent).toBe("2 steps inside");
+    // Folded with the card: the sub-agent's probes do not fill the conversation.
+    expect(card.querySelector(".s-children")).not.toBeNull();
+    expect(card.classes.has("open")).toBe(false);
+
+    resetStoreFields();
+    const history = new El("div");
+    for (const row of [
+      { ...delegation, status: "done", summary: "completed", output: {}, created_at: 1 },
+      { ...child("c-1", "read"), status: "error", output: { error: "FileNotFoundError: placeholder" }, created_at: 2 },
+      { ...child("c-2", "skill"), status: "done", created_at: 3 },
+      { step_id: "s-x", kind: "read", title: "Reading plate.csv", status: "done", created_at: 4 },
+    ]) {
+      renderStoredStep(row, history as unknown as ParentNode);
+    }
+    expect(layout(history)).toEqual(live);
+    expect(live).toEqual([
+      "Sub-agent · Compute the GC content of ATGCGC.<",
+      "Reading placeholder<Sub-agent · Compute the GC content of ATGCGC.",
+      "Loading skill<Sub-agent · Compute the GC content of ATGCGC.",
+      "Reading plate.csv<",
+    ]);
+  });
+
+  it("leaves a step flat when its delegation card is not on screen", () => {
+    const history = new El("div");
+    renderStoredStep({ ...child("c-9", "read"), status: "done" }, history as unknown as ParentNode);
+    expect(history.children.map((node) => node.classes.has("step"))).toEqual([true]);
+  });
+});
+
+describe("one download, one row (SCI-11)", () => {
+  const url = "https://files.rcsb.org/download/1CRN.pdb";
+  const download = {
+    step_id: "dl-1",
+    kind: "fetch",
+    title: "Downloading from files.rcsb.org",
+    input: { url, path: "1crn.pdb", max_bytes: 67108864 },
+  };
+  const saving = { step_id: "sv-1", kind: "artifact", title: "Saving 1crn.pdb", input: { files: ["1crn.pdb"] } };
+  const ask = {
+    decision_id: "perm-1",
+    frame_id: "f-1",
+    tool: "web_download",
+    title: "Downloading from files.rcsb.org",
+    target: "files.rcsb.org",
+    input: { url, path: "1crn.pdb", max_bytes: 67108864 },
+  };
+
+  /** Each card (step or approval) and the step card it sits in ("" = the conversation). */
+  const rows = (root: El): string[] => {
+    const out: string[] = [];
+    const walk = (node: El, inside: string): void => {
+      for (const kid of node.children) {
+        const kind = kid.classes.has("perm-card") ? "approval" : kid.classes.has("step") ? [...kid.classes].find((c) => c.startsWith("step-"))! : "";
+        if (kind) out.push(`${kind}<${inside}`);
+        walk(kid, kid.classes.has("step") ? [...kid.classes].find((c) => c.startsWith("step-"))! : inside);
+      }
+    };
+    walk(root, "");
+    return out;
+  };
+
+  it("folds the allowed approval and the saved file into the download's card, live and after a reload", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const { markPermCard, renderPermissionCard, renderStoredPermission } = await import("./permission");
+    addLiveStep({ ...download, status: "running" });
+    renderPermissionCard(ask);
+    // Waiting on the user: the card is in the conversation.
+    expect(rows(messages)).toContain("approval<");
+    // As seen live: the download and its Saving step can stream in before
+    // this page's own decision request returns.
+    updateLiveStep({ step_id: "dl-1", status: "done", summary: "49,152 bytes", output: {} });
+    addLiveStep({ ...saving, status: "done" });
+    updateLiveStep({ step_id: "sv-1", status: "done", summary: "1 artifact", output: {} });
+    markPermCard("perm-1", true, "once", {});
+    const live = rows(messages);
+    expect(live).toEqual(["step-fetch<", "approval<step-fetch", "step-artifact<step-fetch"]);
+
+    resetStoreFields();
+    const history = messages.appendChild(new El("div"));
+    renderStoredStep({ ...download, status: "done", summary: "49,152 bytes", output: {}, created_at: 1 }, history as unknown as ParentNode);
+    renderStoredPermission({ ...ask, state: "allowed", scope: "once", created_at: "2026-11-20T00:00:02Z" }, history as unknown as ParentNode);
+    renderStoredStep({ ...saving, status: "done", summary: "1 artifact", output: {}, created_at: 3 }, history as unknown as ParentNode);
+    expect(rows(history)).toEqual(live);
+  });
+
+  it("leaves a denied download's card, and a file the download did not write, where they are", async () => {
+    const { renderStoredPermission } = await import("./permission");
+    const history = messages.appendChild(new El("div"));
+    renderStoredStep({ ...download, status: "error", output: { error: "denied" }, created_at: 1 }, history as unknown as ParentNode);
+    renderStoredPermission({ ...ask, state: "denied", created_at: "2026-11-20T00:00:02Z" }, history as unknown as ParentNode);
+    renderStoredStep(
+      { ...saving, step_id: "sv-2", title: "Saving notes.md", input: { files: ["notes.md"] }, status: "done", created_at: 3 },
+      history as unknown as ParentNode,
+    );
+    expect(rows(history)).toEqual(["step-fetch<", "approval<", "step-artifact<"]);
+  });
+});
+
 describe("plan steps (CHAT-8)", () => {
   it("a turn keeps one plan card, repainted by each plan update", () => {
     const plan = (id: string, todos: Array<{ content: string; status: string }>): Record<string, unknown> => ({

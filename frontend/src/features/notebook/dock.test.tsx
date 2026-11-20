@@ -26,7 +26,7 @@ import { markNotebookSeen, notebookDisplayEntries } from "./cells";
 import { onNotebookScroll } from "./scroll";
 import type { NotebookCell } from "./types";
 import { activeTab, dock } from "../../stores/ui";
-import { forkPending, invalidateKernelCache, kernelView, runtimeStatusText } from "./kernel";
+import { forkPending, invalidateKernelCache, kernelView, replNotice, runtimeStatusText } from "./kernel";
 import {
   CellActions,
   CellList,
@@ -36,6 +36,7 @@ import {
   NotebookDock,
   StatusStrip,
   kernelExitText,
+  missingPackage,
   kernelStatusLine,
   outputIsLong,
   outputLabel,
@@ -277,6 +278,15 @@ describe("Notebook cell state", () => {
     expect(titles).toContain(nbT("nb.action.needsManual"));
     expect(titles).not.toContain(t("nb.action.unavailable"));
   });
+
+  it("shows a refused manual run in the Notebook, for the session it belongs to (SYNC-27)", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { repl_enabled: false }, envs: null, cur: null };
+    replNotice.value = { sid: "frame-1", text: "Execution failed: notebook REPL is disabled" };
+    expect(textOf(NotebookDock({ entries: [] }))).toContain("Execution failed: notebook REPL is disabled");
+    replNotice.value = { sid: "frame-2", text: "Execution failed: another session" };
+    expect(textOf(NotebookDock({ entries: [] }))).not.toContain("another session");
+  });
 });
 
 describe("Notebook reading gate", () => {
@@ -350,6 +360,27 @@ describe("Notebook after a kernel crash", () => {
     const segv = oom.replace(/\(exit code -9[^)]*\)/, "(killed by signal 11 (SIGSEGV))");
     expect(kernelExitText(segv)).toBe(nbT("nb.crash.notice", nbT("nb.crash.signal", "11 (SIGSEGV)")));
     expect(kernelExitText("NameError: name 'x' is not defined")).toBeNull();
+  });
+
+  // SCI-32: `No module named 'Bio'` under a manual cell, and nothing said what to install.
+  it("says which package a failed cell lacks and where to install it", () => {
+    const failed = (error: string, language = "python") =>
+      textOf(
+        CellList({ entries: [{ producing_cell_id: "m", cell_index: 1, language, status: "error", source: "x", error }] }),
+      ).replace(/\s+/g, " ");
+    const bio = failed(
+      "Traceback (most recent call last):\n  File \"<kernel:1>\", line 1\nModuleNotFoundError: No module named 'Bio'",
+    );
+    expect(bio).toContain(nbT("nb.missing.renamed", "Bio", "biopython"));
+    expect(bio).toContain(nbT("nb.missing.open"));
+    expect(failed("ModuleNotFoundError: No module named 'statsmodels.api'")).toContain(
+      nbT("nb.missing.plain", "statsmodels"),
+    );
+    const seurat = failed("Error in library(Seurat) : there is no package called ‘Seurat’", "r");
+    expect(seurat).toContain(nbT("nb.missing.r", "Seurat"));
+    expect(seurat).not.toContain(nbT("nb.missing.open"));
+    expect(failed("NameError: name 'x' is not defined")).not.toContain(nbT("nb.missing.python"));
+    expect(missingPackage("ImportError: cannot import name 'foo' from 'bar'")).toBeNull();
   });
 
   it("marks where a new kernel generation starts, per language", () => {

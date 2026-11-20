@@ -156,7 +156,14 @@ class DelegationService:
                     f"You are acting as the specialist **{name}**.\n"
                     f"{system_prompt}\n\n"
                 )
-                spec = {**spec, "request": _with_persona(request, persona)}
+                spec = {
+                    **spec,
+                    "request": _with_persona(request, persona),
+                    # SCI-21: how much of each request is the persona, so the
+                    # child is named by what was asked (`_task_headline`).
+                    # Outside the request digest's keys.
+                    "_persona_chars": len(persona),
+                }
         return delegate(spec)
 
     def children(self) -> Any:

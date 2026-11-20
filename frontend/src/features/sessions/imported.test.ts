@@ -63,6 +63,8 @@ vi.mock("./dom", () => ({
 }));
 vi.mock("./icon", () => ({ iconEl: () => node("svg") }));
 vi.mock("./lane", () => ({ callLane: vi.fn() }));
+const list = vi.hoisted(() => ({ renderEmptySession: vi.fn() }));
+vi.mock("../messages/list", () => list);
 
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
@@ -131,6 +133,33 @@ describe("imported session banner", () => {
     await checkImportedSession("f-mine");
     expect(banner()).toBeUndefined();
     expect(enableComposer).toHaveBeenCalled();
+  });
+
+  // M-66: Send looked usable beside the disabled composer, and a copy with no
+  // messages showed "Start a new analysis" with its starters under the banner.
+  it("disables Send and repaints the empty session as a read-only note, and back", async () => {
+    const send = node("button");
+    const empty = node("div", "empty-session");
+    messages.appendChild(empty);
+    dom.nodes.set("#send-btn", send);
+    dom.nodes.set("#messages .empty-session", empty);
+    list.renderEmptySession.mockClear();
+    currentId.value = "f-imported";
+    kernel({ view_only: true, trust_state: "quarantined" });
+    await checkImportedSession("f-imported");
+    expect(send.disabled).toBe(true);
+    expect(messages.children).not.toContain(empty);
+    expect(list.renderEmptySession).toHaveBeenCalledWith(messages);
+
+    // Restarted fresh (or another session opened): Send and the starters come back.
+    dom.nodes.set("#imported-banner", banner());
+    const empty2 = node("div", "empty-session");
+    messages.appendChild(empty2);
+    dom.nodes.set("#messages .empty-session", empty2);
+    kernel({ view_only: false });
+    await checkImportedSession("f-imported");
+    expect(send.disabled).toBe(false);
+    expect(list.renderEmptySession).toHaveBeenCalledTimes(2);
   });
 
   it("ignores an answer for a session that is no longer open", async () => {
