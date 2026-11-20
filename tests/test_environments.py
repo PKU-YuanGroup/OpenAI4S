@@ -573,30 +573,37 @@ def test_env_list_does_not_recommend_the_users_own_environment(tmp_path, monkeyp
     model asked to switch into it: `recommend` was whichever environment had
     the most of the requested packages, the user's own included. A built-in
     environment and an install request come first; a local one is the user's
-    to name."""
+    to name.
+
+    The package names are made up on purpose: the daemon's own interpreter is a
+    built-in candidate too, and with real names the answer depended on what
+    the venv running the suite happened to have installed (it flipped the day
+    the default science extra gained openpyxl and statsmodels)."""
     conda_root = tmp_path / "miniconda3"
     _make_py_env(
-        conda_root / "envs", "lab_env", packages=("pandas", "openpyxl", "statsmodels")
+        conda_root / "envs",
+        "lab_env",
+        packages=("probe-pkg-a", "probe-pkg-b", "probe-pkg-c"),
     )
     operator_root = tmp_path / "operator-envs"
-    _make_py_env(operator_root, "curated", packages=("pandas", "openpyxl"))
+    _make_py_env(operator_root, "curated", packages=("probe-pkg-a", "probe-pkg-b"))
     monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
     monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(operator_root))
     monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "d"))
     E.discover_environments(force=True)
     disp = build_dispatcher()
-    wanted = ["pandas", "openpyxl", "statsmodels", "nonexistent-probe-pkg"]
+    wanted = ["probe-pkg-a", "probe-pkg-b", "probe-pkg-c", "nonexistent-probe-pkg"]
 
     listed = disp._m_env_list({"packages": wanted})
 
     envs = {e["name"]: e for e in listed["environments"]}
     assert envs["lab_env"]["builtin"] is False and envs["curated"]["builtin"] is True
     # The local environment covers more, and is still reported honestly...
-    assert envs["lab_env"]["has"] == ["pandas", "openpyxl", "statsmodels"]
+    assert envs["lab_env"]["has"] == ["probe-pkg-a", "probe-pkg-b", "probe-pkg-c"]
     # ...but the recommendation is the best built-in one, plus what to ask for.
     assert listed["recommend"] == "curated"
-    assert listed["install"] == ["statsmodels", "nonexistent-probe-pkg"]
-    assert listed["missing"] == ["statsmodels", "nonexistent-probe-pkg"]
+    assert listed["install"] == ["probe-pkg-c", "nonexistent-probe-pkg"]
+    assert listed["missing"] == ["probe-pkg-c", "nonexistent-probe-pkg"]
     assert "only if the user named it" in listed["note"]
     assert "env_create" in listed["note"]
     # The standing "Kernel environment" paragraph gives the same order.
