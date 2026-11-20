@@ -471,3 +471,89 @@ def test_a_component_swapped_for_a_symlink_after_the_name_check_is_refused(
     assert "archive_ref" in archive and "workspace_ref" not in archive
     assert not list(outside.iterdir()), "the blob landed outside the workspace"
     assert link.is_symlink(), "the planted link was replaced"
+
+
+_REPO = Path(__file__).resolve().parents[1]
+
+
+def _skill_load_messages(tool: str, document: str) -> list[dict]:
+    call = {"id": "call_1", "name": tool, "arguments": {"name": "figure-style"}}
+    return [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "plot the growth curves"},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": tool,
+            "content": f"[Tool: {tool}]\n{document}",
+        },
+    ]
+
+
+@pytest.mark.parametrize("tool", ["read_skill_file", "load_skill"])
+def test_a_skill_document_is_not_replaced_by_a_preview(tmp_path, tool):
+    """`figure-style/SKILL.md` is 16,632 characters, 248 over the large-output
+    threshold. The reviewed session got a 768-character preview of it and read
+    the rest back through `read_text_file` in five model calls, each a page of
+    `.openai4s/context/<sha256>.txt`."""
+    document = (_REPO / "skills" / "figure-style" / "SKILL.md").read_text("utf-8")
+    assert len(document) > comp_mod.DEFAULT_LARGE_OUTPUT_CHARS
+    messages = _skill_load_messages(tool, document)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    projected = externalize_large_outputs(
+        messages, tmp_path / "compaction", workspace=workspace
+    )
+
+    assert projected[3]["content"] == messages[3]["content"]
+    assert "content_archive" not in projected[3]
+    assert not (workspace / ".openai4s").exists(), "nothing was spilled"
+
+
+def test_the_same_text_from_any_other_tool_is_still_externalized(tmp_path):
+    """The cap is for a Skill tool's result, not a raised threshold."""
+    document = (_REPO / "skills" / "figure-style" / "SKILL.md").read_text("utf-8")
+    messages = _skill_load_messages("read_text_file", document)
+
+    projected = externalize_large_outputs(
+        messages, tmp_path / "compaction", workspace=tmp_path / "ws"
+    )
+
+    assert projected[3]["content"].startswith("[Large output archived]")
+    assert "content_archive" in projected[3]
+
+
+def test_a_skill_tool_result_past_the_skill_cap_is_externalized(tmp_path):
+    messages = _skill_load_messages(
+        "read_skill_file", "x" * (comp_mod.SKILL_DOCUMENT_MAX_CHARS + 1)
+    )
+
+    projected = externalize_large_outputs(
+        messages, tmp_path / "compaction", workspace=tmp_path / "ws"
+    )
+
+    assert "content_archive" in projected[3]
+
+
+def test_the_skill_cap_covers_every_bundled_document_and_both_tools():
+    """What keeps the cap from being overtaken: a new bundled Skill, or a
+    raised tool limit, larger than it fails here instead of quietly going
+    back to a preview."""
+    from openai4s.tools.skills import LoadSkillTool, ReadSkillFileTool
+
+    assert {LoadSkillTool.name, ReadSkillFileTool.name} == set(
+        comp_mod.SKILL_DOCUMENT_TOOLS
+    )
+    # A tool result is "[Tool: <name>]\n" + body, cut at the tool's own limit
+    # plus a one-line marker; the Engine may append a note of a few hundred
+    # characters after that.
+    headroom = 2_000
+    for tool in (LoadSkillTool, ReadSkillFileTool):
+        assert tool.output_limit + headroom <= comp_mod.SKILL_DOCUMENT_MAX_CHARS
+    documents = sorted((_REPO / "skills").rglob("SKILL.md"))
+    assert len(documents) > 600
+    largest = max(len(path.read_text("utf-8")) for path in documents)
+    assert largest > comp_mod.DEFAULT_LARGE_OUTPUT_CHARS
+    assert largest + headroom <= comp_mod.SKILL_DOCUMENT_MAX_CHARS
