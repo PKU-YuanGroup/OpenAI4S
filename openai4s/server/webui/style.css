@@ -2127,6 +2127,15 @@ html[data-theme="dark"] .toggle:disabled{background:var(--bg-300)}
 .s-badge.outcome+.s-badge.live{margin-left:6px}
 .s-badge.outcome.failed,.s-badge.outcome.blocked_by_guardian{background:var(--danger-bg);color:var(--danger)}
 .s-badge.outcome.cancelled{background:var(--bg-200);color:var(--text-200)}
+/* M-73: the open session's branches, under its row. */
+.session-branches{display:flex;flex-direction:column;gap:1px;margin:0 0 2px 22px}
+.session-branch{display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:0;border-radius:var(--radius);background:transparent;color:var(--text-300);font:inherit;font-size:13px;text-align:left;cursor:pointer;white-space:nowrap;overflow:hidden}
+.session-branch:hover:not(:disabled){background:var(--bg-200);color:var(--text-000)}
+.session-branch:disabled{cursor:default}
+.session-branch.current{color:var(--text-000);font-weight:500}
+.session-branch .sb-mark{color:var(--text-400);flex:none}
+.session-branch .sb-name{overflow:hidden;text-overflow:ellipsis;flex:1}
+.session-branch .sb-tag{flex:none;padding:0 6px;border-radius:999px;background:var(--bg-300);color:var(--text-200);font-size:11px;font-weight:500}
 .jump-pill.approval{border-color:var(--warn);background:var(--warn-bg);color:var(--warn-text)}
 .jump-pill.approval:hover{background:var(--warn-bg);color:var(--warn-text)}
 .folder-head{height:36px;padding:0 12px;border-radius:var(--radius);font-size:14px;font-weight:500;color:var(--text-000)}

@@ -18,6 +18,7 @@ import {
 } from "./actions";
 import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
 import { watchImportedSession } from "./imported";
+import { watchSessionBranches } from "./branches";
 import { newSession, routeInitialView } from "./conversation";
 import { bootDocumentTitle } from "./doc-title";
 import { setScopedExecutionRequest } from "../notebook/kernel";
@@ -199,6 +200,7 @@ export function bindWorkbench(): Promise<void> {
   watchActivateKeys(document);
   watchDisconnect();
   watchImportedSession();
+  watchSessionBranches();
   // SYNC-18: the browser tab names the open session.
   bootDocumentTitle();
   setLoadSessionsImpl(async () => { await loadSessions(); });

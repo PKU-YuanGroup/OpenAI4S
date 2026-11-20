@@ -3083,7 +3083,7 @@ async function restoreActivatedBranch(): Promise<void> {
   renderActionTimeline();
 }
 
-async function activateSessionBranch(branchId: string): Promise<void> {
+export async function activateSessionBranch(branchId: string): Promise<void> {
   branchId = publicText(branchId, 96);
   if (!S.currentId || !branchId || !branchCapability("activate") || S._branchActionLoading) return;
   const target = ((S.branchState && S.branchState.branches) || []).find(

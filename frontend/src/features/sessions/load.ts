@@ -35,6 +35,7 @@ import {
 import { approvalCopy, approvalPendingFor } from "../messages/approval";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
+import { paintSessionBranches } from "./branches";
 import { ensureActivateKeys, hint, openMenu, reportFailure } from "./chrome";
 import { $, el, setTitle } from "./dom";
 import { icon, iconEl } from "./icon";
@@ -610,6 +611,7 @@ export function renderSessions(): void {
     frag.appendChild(more);
   }
   list.appendChild(frag);
+  paintSessionBranches();
 }
 
 /**
