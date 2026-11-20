@@ -172,6 +172,50 @@ def test_init_accepts_the_name_the_readme_uses_for_a_provider(wizard, typed, pro
     assert wizard.setting("llm_provider") == provider
 
 
+def test_init_asks_the_key_question_again_on_an_answer_that_is_not_y_or_n(wizard):
+    """CLI-4. `maybe` at "Configure an API key now? [y/N]" was taken as no,
+    silently, and the run ended with no key stored."""
+    wizard.run(["", "", "", "maybe", "y", ""], secrets=["sk-test-cli4"])
+
+    assert wizard.rc == 0
+    key_prompts = [p for p in wizard.prompts if p.startswith("Configure an API key")]
+    assert len(key_prompts) == 2
+    assert "answer y or n" in wizard.out
+    assert wizard.secret_prompts == ["API key (input hidden): "]
+
+
+def _search_result(out: str) -> str:
+    """The "Web search: …" line init prints after saving, not its menu."""
+    return next(
+        (
+            line
+            for line in out.splitlines()
+            if line.startswith("Web search:") and "1)" not in line
+        ),
+        "",
+    )
+
+
+def test_init_asks_the_search_choice_again_on_a_number_off_the_menu(wizard):
+    """CLI-4. `9` at "Choose 1-5" was read as "keep the current setup"; the
+    run said "Configured ..." and the user believed an engine was chosen."""
+    wizard.run(["", "", "", "n", "9", "5"])
+
+    assert wizard.rc == 0
+    search_prompts = [p for p in wizard.prompts if p.startswith("Choose 1-5")]
+    assert len(search_prompts) == 2
+    assert "enter a number from 1 to 5" in wizard.out
+    assert _search_result(wizard.out).startswith("Web search: parallel")
+
+
+def test_init_enter_at_the_search_choice_still_keeps_the_current_setup(wizard):
+    wizard.run(["", "", "", "", ""])
+
+    assert wizard.rc == 0
+    assert len([p for p in wizard.prompts if p.startswith("Choose 1-5")]) == 1
+    assert _search_result(wizard.out) == ""
+
+
 def test_init_provider_flag_accepts_the_same_names(wizard):
     wizard.run(
         [],

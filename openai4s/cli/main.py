@@ -1707,14 +1707,24 @@ def _prompt_search() -> tuple[str | None, str]:
         "Web search: 1) Doubao (Agent Plan key)  2) Tavily (API key)  "
         "3) You.com (free; key optional)  4) built-in keyless engines only  5) Parallel (keyless)"
     )
-    answer = input("Choose 1-5, or press Enter to keep the current setup: ").strip()
-    choice = {
+    choices = {
         "1": "doubao",
         "2": "tavily",
         "3": "you",
         "4": "builtin",
         "5": "parallel",
-    }.get(answer)
+    }
+    # Asked again on anything else: `9` used to be read as "keep the current
+    # setup", and the run ended "Configured ..." with no web-search line.
+    while True:
+        answer = input("Choose 1-5, or press Enter to keep the current setup: ")
+        answer = answer.strip()
+        if not answer:
+            return None, ""
+        choice = choices.get(answer)
+        if choice is not None:
+            break
+        print("  enter a number from 1 to 5, or press Enter to keep the current setup")
     if choice == "doubao":
         return choice, getpass.getpass("Agent Plan key (input hidden): ")
     if choice == "tavily":
@@ -1729,6 +1739,20 @@ def _prompt_search() -> tuple[str | None, str]:
 def _prompt_value(label: str, default: str) -> str:
     suffix = f" [{default}]" if default else ""
     return input(f"{label}{suffix}: ").strip() or default
+
+
+def _prompt_yes_no(question: str) -> bool:
+    """y/yes, or n/no/Enter; anything else is asked again.
+
+    `maybe` used to count as no, silently, and the run went on to store no key.
+    """
+    while True:
+        answer = input(question).strip().lower()
+        if answer in {"", "n", "no"}:
+            return False
+        if answer in {"y", "yes"}:
+            return True
+        print("  answer y or n")
 
 
 #: What each built-in provider id selects, under the name the README and the
@@ -1844,8 +1868,7 @@ def cmd_init(args) -> int:
             model = model or _prompt_value("Model", defaults["model"])
             base_url = base_url or _prompt_value("Base URL", defaults["base_url"])
             if not args.clear_api_key:
-                answer = input("Configure an API key now? [y/N]: ").strip().lower()
-                if answer in {"y", "yes"}:
+                if _prompt_yes_no("Configure an API key now? [y/N]: "):
                     api_key = getpass.getpass("API key (input hidden): ")
         elif args.api_key_stdin:
             api_key = sys.stdin.readline().rstrip("\r\n")
