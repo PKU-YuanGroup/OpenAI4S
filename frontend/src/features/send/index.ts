@@ -31,6 +31,7 @@ import {
 import { send } from "./send";
 import {
   buildStepCard,
+  relabelStepCards,
   renderStoredStep,
   searchResultHttpUrl,
   type Step,
@@ -177,7 +178,10 @@ export function installSend(
   });
   if (!relabelHooked) {
     relabelHooked = true;
-    onLanguageChange(() => relabelPermissionCards());
+    onLanguageChange(() => {
+      relabelPermissionCards();
+      relabelStepCards();
+    });
   }
   // Explicit `target.name =` lines (not a loop) so the duplicate-name
   // scan `target.[A-Za-z_]* =` can see every assignment.

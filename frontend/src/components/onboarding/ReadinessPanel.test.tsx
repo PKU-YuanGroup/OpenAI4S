@@ -122,6 +122,41 @@ describe("readiness card", () => {
     const head = find(card, (node) => node.props?.class === "standard-readiness-head")!;
     expect(find(head, (node) => node.props?.["data-refresh"] === "1")).not.toBeNull();
   });
+
+  it("gives one instruction for missing environments, not the daemon's plan/apply pair (FR-3)", () => {
+    // The remediation exactly as GET /onboarding sends it.
+    const remediation = {
+      requires_explicit_action: true,
+      commands: [
+        { label: "plan", command: "openai4s env plan python r --repair" },
+        { label: "apply", command: "openai4s env apply python r --repair" },
+      ],
+    };
+    const card = (missing: string[]) =>
+      EnvironmentCard({
+        readiness: {
+          enabled: true, ready: false, state: missing.length ? "needs_setup" : "needs_repair",
+          missing_environments: missing, missing_packages: missing.length ? {} : { python: ["scanpy"] },
+          remediation,
+        } as unknown as StandardReadiness,
+      }) as Node;
+    const codes = (node: Node) => {
+      const found: string[] = [];
+      find(node, (child) => {
+        if (child.type === CopyCommand) found.push((child.props!.item as { command: string }).command);
+        return false;
+      });
+      return found;
+    };
+    const absent = card(["python", "r"]);
+    expect(text(absent)).toContain("onboarding.env.remediation");
+    expect(codes(absent)).toEqual(["openai4s setup"]);
+    // Only packages are missing: `openai4s setup` skips an existing env, and
+    // the instruction already says where single packages are installed.
+    const partial = card([]);
+    expect(text(partial)).toContain("onboarding.env.remediation");
+    expect(codes(partial)).toEqual([]);
+  });
 });
 
 // O1: first-run setup can re-read the local readiness projection in place.

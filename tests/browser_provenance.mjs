@@ -194,13 +194,13 @@ export async function provenanceChecks(page, api) {
     await page.locator(".prov-body .prov-retry").click();
     await waitUntil("confirmed missing source", async () => /No producing code|未包含生产代码/.test(await page.locator(".prov-body").textContent()));
     assert.equal(reads.filter((r) => r.url.includes("/lineage")).length, 2, "explicit retry is one read");
-    await page.locator(".prov-subtab").filter({ hasText: /^Review$/ }).click();
+    await page.locator(".prov-subtab").filter({ hasText: /^(?:Origin|来源)$/ }).click();
     await waitUntil("recorded input boundary", async () => /No inputs were recorded|未记录输入/.test(await page.locator(".prov-body").textContent()));
     const envPath = `**/api/v1/artifacts/${upload.id}/environment*`;
     const badEnv = (route) => route.fulfill({ status: 200, contentType: "application/json", body: '{"packages":"invalid"}' });
     await page.route(envPath, badEnv);
     try {
-      await page.locator(".prov-subtab").filter({ hasText: /^Environment$/ }).click();
+      await page.locator(".prov-subtab").filter({ hasText: /^(?:Environment|环境)$/ }).click();
       await page.locator(".prov-body .prov-retry").waitFor();
       await page.evaluate(() => window.renderViewer()); await paintSettled(page);
       assert.equal(reads.filter((r) => r.url.includes("/environment")).length, 1);
@@ -234,7 +234,7 @@ export async function provenanceChecks(page, api) {
     assert.equal(await page.evaluate(() => window.S.currentId), fid);
     assert.equal(await page.locator(".prov-link").count(), 0);
     assert.ok((await page.locator(".prov-body").textContent()).includes(other));
-    await page.locator(".prov-subtab").filter({ hasText: /^Execution Log$/ }).click();
+    await page.locator(".prov-subtab").filter({ hasText: /^(?:Execution Log|执行日志)$/ }).click();
     await waitUntil("other Notebook is not attributed", async () => /belongs to another session|属于其他会话/.test(await page.locator(".prov-body").textContent())).catch(async (error) => { throw new Error(error.message + "; " + JSON.stringify(await page.evaluate(() => ({ body: document.querySelector(".prov-body")?.textContent, sub: window.S.provSub, current: window.S.currentId, artifact: window.S.dockArtifact })))); });
     await page.evaluate(({ fid, pid }) => window.openConversation(fid, pid), { fid: other, pid });
     await open(page, generated, "review");

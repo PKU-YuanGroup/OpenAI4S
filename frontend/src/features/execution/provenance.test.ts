@@ -3,6 +3,7 @@ import { dockArtifact, _envSnapById } from "../../stores/artifacts";
 import { cells, lineage, _lineageFor } from "../../stores/notebook";
 import { currentId, _openGen } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
+import { setLang } from "../../i18n/runtime";
 import { provMode, provSub } from "../../stores/ui";
 import { filesT } from "../artifacts/copy";
 import type { ArtifactRow } from "../artifacts/types";
@@ -235,5 +236,22 @@ describe("recorded Cell links preserve identity", () => {
     let frame!: () => void; vi.stubGlobal("requestAnimationFrame", (callback: () => void) => { frame = callback; });
     try { links(review())[0]!.onclick!(); frame(); expect(selected.scrollIntoView).toHaveBeenCalledOnce(); expect(wrong.scrollIntoView).not.toHaveBeenCalled(); expect(details.open).toBe(true); }
     finally { vi.runOnlyPendingTimers(); vi.useRealTimers(); }
+  });
+});
+
+describe("the drawer's tabs speak the UI language (I18N-1)", () => {
+  afterEach(async () => { await setLang("en"); });
+  it("labels every tab in Chinese, and names the origin tab for what it shows", async () => {
+    const tabs = () => walk(view({ id: "a" })).filter((n) => /^prov-subtab( |$)/.test(n.className)).map((n) => n.textContent);
+    // A language switch repaints the page's static labels too.
+    vi.stubGlobal("document", {
+      createElement: () => new Node(), getElementById: () => null, querySelectorAll: () => [],
+      documentElement: { lang: "", setAttribute: () => {} },
+    });
+    open({ id: "a" }, "environment");
+    await setLang("zh");
+    expect(tabs()).toEqual(["代码", "执行日志", "消息", "环境", "来源"]);
+    await setLang("en");
+    expect(tabs()).toEqual(["Code", "Execution Log", "Messages", "Environment", "Origin"]);
   });
 });

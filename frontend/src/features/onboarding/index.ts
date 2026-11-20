@@ -11,7 +11,6 @@ export type { BadgeCap, BadgeRow } from "./badges";
 export {
   INITIAL_WIZARD,
   REQUIRED_STEPS,
-  checklistItems,
   formatWizardError,
   reduceWizard,
   requiredStepCount,

@@ -12,9 +12,7 @@ const COPY: CopyTable = {
     "onboarding.subtitle":
       "四步：选择模型、测试连接、检查环境与联网、创建或打开项目。除非你点「获取模型列表」或「测试连接」，向导不会联系模型服务。可以随时暂时跳过，之后在「设置」里修改。",
     "onboarding.skip": "暂时跳过",
-    "onboarding.checklist": "清单",
     "onboarding.checklist.title": "首次设置清单",
-    "onboarding.checklist.hint": "可以按任意顺序完成，打勾的是已完成的步骤。不必回到上一步也能创建或打开项目。",
     "onboarding.next": "继续",
     "onboarding.finish": "完成",
     "onboarding.retry": "重试",
@@ -90,7 +88,7 @@ const COPY: CopyTable = {
     "onboarding.env.name.r": "r — OpenAI4S 管理的 R 科研环境",
     "onboarding.env.missingPackages": "「{0}」环境里缺少的软件包",
     "onboarding.env.remediation":
-      "运行 `openai4s setup` 构建托管的 Python + R 环境；单个软件包可在 设置 → 计算 里安装。也可以分两步执行下面的命令",
+      "运行 `openai4s setup` 构建托管的 Python + R 环境；单个软件包可在 设置 → 计算 里安装。",
     "onboarding.env.notOnPath":
       "终端提示找不到 openai4s 时：在 OpenAI4S 源码目录里改用 uv run openai4s …，或者 .venv/bin/openai4s …。",
     "onboarding.badge.observedLabel": "最近测试观察",
@@ -111,10 +109,7 @@ const COPY: CopyTable = {
     "onboarding.subtitle":
       "Four steps: choose a model, test the connection, check the environment and network, and create or open a project. The wizard contacts the model service only when you press Fetch model list or Test connection. You can skip for now and change everything later in Settings.",
     "onboarding.skip": "Skip for now",
-    "onboarding.checklist": "Checklist",
     "onboarding.checklist.title": "First-run checklist",
-    "onboarding.checklist.hint":
-      "Complete these in any order; ticked steps are done. You can create or open a project without going back.",
     "onboarding.next": "Continue",
     "onboarding.finish": "Done",
     "onboarding.retry": "Retry",
@@ -195,7 +190,7 @@ const COPY: CopyTable = {
     "onboarding.env.name.r": "r — the R science environment managed by OpenAI4S",
     "onboarding.env.missingPackages": "Packages missing from the “{0}” environment",
     "onboarding.env.remediation":
-      "Run `openai4s setup` to build the managed Python + R environments; install single packages in Settings → Compute. Or run the two steps below yourself",
+      "Run `openai4s setup` to build the managed Python + R environments; install single packages in Settings → Compute.",
     "onboarding.env.notOnPath":
       "If the terminal cannot find openai4s: in the OpenAI4S source folder use uv run openai4s …, or .venv/bin/openai4s ….",
     "onboarding.badge.observedLabel": "Last test observation",

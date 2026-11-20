@@ -459,7 +459,7 @@ async function correctnessScenes(projectId) {
   const recordMetadata = (request) => { if (/\/(lineage|environment)(?:\?|$)/.test(request.url()) && request.url().includes(v1.artifact_id)) metadataRequests.push(request.url()); };
   page.on("request", recordMetadata);
   await page.locator('[data-f16-provenance="1"]').click();
-  await page.locator(".prov-subtab").filter({ hasText: "Environment" }).click();
+  await page.locator(".prov-subtab").filter({ hasText: /^(?:Environment|环境)$/ }).click();
   await waitUntil("exact environment read", async () => metadataRequests.some((url) => url.includes("/environment?version=")));
   assert.ok(metadataRequests.every((url) => new URL(url).searchParams.get("version") === v1.version_id));
   await page.locator('[data-f16-provenance="back"]').click();

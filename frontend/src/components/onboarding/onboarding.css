@@ -135,19 +135,6 @@
 #onboarding .onb-path > .onb-steps .onb-step + .onb-step::before {
   content: none;
 }
-/* Checklist surface: steps are rows. */
-#onboarding .onb-list > .onb-step {
-  justify-content: flex-start;
-  min-height: 44px;
-  padding: 0 16px;
-  border: 1px solid var(--border, #e6dfd8);
-  border-radius: var(--radius, 8px);
-  color: var(--text-000, #141413);
-  cursor: pointer;
-}
-#onboarding .onb-list > .onb-step:hover {
-  background: var(--bg-100, #f5f0e8);
-}
 #onboarding .onb-error {
   padding: 10px 14px;
   border-radius: var(--radius, 8px);

@@ -278,6 +278,22 @@ describe("read-only project files", () => {
     expect(nodes["#modal-body"]!.all().some((node) => node.tag === "script")).toBe(false);
   });
 
+  it("draws a project CSV as the viewer's table, without a cut last record (ART-3)", async () => {
+    vi.mocked(api).mockResolvedValueOnce(listing("", [{ name: "demo.csv", path: "demo.csv", kind: "file" }]));
+    await openProjectFiles("p", "P");
+    vi.mocked(api).mockResolvedValueOnce({
+      path: "demo.csv", name: "demo.csv", content: "well,od\nA1,0.12\nA2,0.31\nA3,0.4", size: 300000, truncated: true,
+    });
+    nodes["#modal-body"]!.click("demo.csv");
+    await vi.waitFor(() => expect(nodes["#modal-body"]!.texts()).toContain("A2"));
+    const texts = nodes["#modal-body"]!.texts();
+    expect(texts).toEqual(expect.arrayContaining(["well", "od", "A1", "0.31"]));
+    // The record the size cap cut in half is not shown as a row.
+    expect(texts).not.toContain("A3");
+    expect(nodes["#modal-body"]!.all().some((node) => node.tag === "pre")).toBe(false);
+    expect(texts).toContain(copy("previewLimited"));
+  });
+
   it("does not navigate when Enter commits an IME composition", async () => {
     vi.mocked(api).mockResolvedValueOnce(listing(""));
     await openProjectFiles("p", "P");

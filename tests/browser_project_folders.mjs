@@ -188,7 +188,7 @@ try {
   assert.deepEqual(await (await page.request.get(downloadUrl(projectId, firstRevision))).body(), originalOutput);
   await page.locator("#proj-btn").click();
   await page.locator("#proj-menu .proj-item").filter({ hasText: /Local history|本地历史/ }).click();
-  await page.locator(".project-history-session").filter({ hasText: /[1-9][0-9]* (?:cells|个代码单元)/ }).first().locator("button").click();
+  await page.locator(".project-history-session").filter({ hasText: /[1-9][0-9]* (?:cells|个单元)/ }).first().locator("button").click();
   await page.locator(".project-history-revision").waitFor();
   assert.equal(await page.locator(".project-history-continue button").count(), 0);
   assert.deepEqual(errors, []);

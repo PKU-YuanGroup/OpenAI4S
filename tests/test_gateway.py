@@ -4739,6 +4739,21 @@ def test_auto_capture_artifact_created_event_shape(tmp_path):
     assert art["root_frame_id"] == fid
 
 
+def test_live_artifact_event_carries_the_list_routes_role(tmp_path):
+    """ART-4: a scratch script written during a turn is a process file live,
+    not only after the list reloads -- the event carries the same `role` the
+    list serializer derives, from the one rule in `artifact_paths`."""
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    for name, role in (("scratch_inspect.py", "process"), ("fig.txt", "deliverable")):
+        events = []
+        f = st.workspace / name
+        f.write_text("x = 1")
+        rec = runner._register_file(st, f, "cell-1", events.append)
+        live = [e for e in events if e.get("type") == "artifact_created"][-1]
+        listed = gateway_mod._artifact_json(store.get_artifact(rec["artifact_id"]))
+        assert live["artifact"]["role"] == listed["role"] == role
+
+
 def test_edit_rename_upload_artifact_created_shapes(tmp_path):
     """The PARTIAL artifact_created forms (docs/webapp-api.md §3, shape 2):
     edit → {id,filename,version_id,root_frame_id}; rename → {id,filename,
@@ -4759,15 +4774,18 @@ def test_edit_rename_upload_artifact_created_shapes(tmp_path):
 
     res = handler._edit_artifact(aid, "v2 content")
     art = _created()[-1]["artifact"]
-    assert set(art) == {"id", "filename", "version_id", "root_frame_id"}
+    assert set(art) == {"id", "filename", "role", "version_id", "root_frame_id"}
     assert art["id"] == aid
     assert art["version_id"] == res["version_id"]
     assert art["root_frame_id"] == fid
 
     handler._rename_artifact(aid, "renamed.txt")
     art = _created()[-1]["artifact"]
-    assert set(art) == {"id", "filename", "root_frame_id"}  # NO version_id
+    assert set(art) == {"id", "filename", "role", "root_frame_id"}  # NO version_id
     assert art["filename"] == "renamed.txt"
+    # A rename can change what the file is (ART-4): the event says so.
+    handler._rename_artifact(aid, "renamed.log")
+    assert _created()[-1]["artifact"]["role"] == "process"
 
     handler._upload(
         {
@@ -4813,6 +4831,7 @@ def test_plan_restore_and_delete_artifact_created_shapes(tmp_path):
     ev = [e for e in hub.events if e.get("type") == "artifact_created"][-1]
     assert set(ev) == {"type", "root_frame_id", "artifact"}
     assert ev["root_frame_id"] == fid
+    assert ev["artifact"]["role"] == "deliverable"
     assert ev["artifact"]["id"] == ev["artifact"]["artifact_id"] == r1["artifact_id"]
     assert ev["artifact"]["version_id"] == restored["version_id"]
     assert ev["artifact"]["restored_from_version_id"] == r1["version_id"]

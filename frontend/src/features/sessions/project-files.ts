@@ -2,6 +2,8 @@
 import { t } from "../../i18n";
 import { _modalMode } from "../../stores/ui";
 import { bytes } from "../artifacts/api";
+import { renderSheet } from "../artifacts/sheet";
+import { parseTable } from "../csv/csv";
 import { API, ApiError, api, apiErrorText } from "./api";
 import { projectFilesCopy as copy } from "./copy";
 import { $, closeModalEl, el } from "./dom";
@@ -21,6 +23,18 @@ type FolderListing = {
   truncated: boolean;
 };
 type FilePreview = { path: string; name: string; content: string; size: number; truncated: boolean };
+
+/**
+ * ART-3: a project CSV/TSV is drawn as the Artifact viewer draws one -- the
+ * same parser and sheet -- rather than as raw text. A preview cut at the size
+ * cap ends mid-record, so its partial last line is left out.
+ */
+function previewRows(name: string, text: string, truncated: boolean): Record<string, unknown>[] | null {
+  if (!/\.(csv|tsv)$/i.test(name)) return null;
+  const complete = truncated ? text.slice(0, text.lastIndexOf("\n") + 1) : text;
+  const rows = parseTable(complete, { filename: name });
+  return rows && rows.length ? rows : null;
+}
 
 function button(label: string, onClick: () => void, cls = "outline-btn small"): HTMLButtonElement {
   const node = el("button", cls, label);
@@ -260,8 +274,10 @@ export async function openProjectFiles(
       content.appendChild(el("div", "project-folder-note", copy("bytes", data.size.toLocaleString())));
       content.appendChild(el("p", "project-folder-note", copy("previewHelp")));
       if (data.truncated) content.appendChild(el("p", "project-folder-note", copy("previewLimited")));
+      const rows = previewRows(data.name || data.path, data.content, data.truncated);
       // textContent only: a project HTML file is data, never executable markup.
-      content.appendChild(el("pre", "project-file-preview", data.content));
+      if (rows) renderSheet(content, rows);
+      else content.appendChild(el("pre", "project-file-preview", data.content));
     } catch (error) {
       if (!active(version)) return;
       if ((error as { code?: string } | null)?.code === "binary_preview") {
