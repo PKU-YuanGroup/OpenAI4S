@@ -65,10 +65,13 @@ import {
 import {
   bindNotebookScroll,
   followLiveOutput,
+  followingRun,
   onNotebookScroll,
   measureNotebookFollow,
   nbRender,
+  scrollNotebookToEnd,
   setNotebookRenderImpl,
+  takeJumpToLatest,
 } from "./scroll";
 import { bytes } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
@@ -1068,9 +1071,14 @@ export function renderNotebook(): void {
   const nb = document.getElementById("dock-notebook");
   if (!nb) return;
   const body = nb.parentElement as unknown as ScrollBox | null;
-  const follow = measureNotebookFollow(body);
+  const entries = notebookViewEntries();
+  // M-54/M-57: open at the latest cell, and keep following a run the reader
+  // has not scrolled away from, however far its output pushed the end.
+  const jump = takeJumpToLatest(entries.length > 0);
+  const follow = jump || measureNotebookFollow(body) || followingRun();
   bindNotebookScroll(body);
-  render(<NotebookDock entries={notebookViewEntries()} />, nb);
+  render(<NotebookDock entries={entries} />, nb);
+  if (jump) scrollNotebookToEnd(body);
   // Following, or idle: everything painted is something the reader can see.
   if (follow || !running.value) markNotebookSeen();
   followLiveOutput(body, follow);

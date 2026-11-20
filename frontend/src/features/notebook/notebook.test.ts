@@ -97,11 +97,13 @@ import {
   syncKernel,
 } from "./kernel";
 import {
+  followStreamingOutput,
   isNearBottom,
   measureNotebookFollow,
   nbRender,
   onNotebookScroll,
   setNotebookRenderImpl,
+  takeJumpToLatest,
 } from "./scroll";
 
 function flushRaf(queue: Array<(t: number) => void>): void {
@@ -751,6 +753,45 @@ describe("F-14 Notebook", () => {
       ];
       activeTab.value = "notebook";
       expect(notebookViewEntries().map(nbCellKey)).toEqual(["a", "b"]);
+    });
+
+    // M-54: the Notebook opened at cell 1 and stayed there.
+    it("opens at the latest cell, once there is a cell to show", () => {
+      takeJumpToLatest(true);
+      activeTab.value = "files";
+      activeTab.value = "notebook";
+      expect(takeJumpToLatest(false)).toBe(false);
+      expect(takeJumpToLatest(true)).toBe(true);
+      expect(takeJumpToLatest(true)).toBe(false);
+      currentId.value = "frame-2";
+      expect(takeJumpToLatest(true)).toBe(true);
+    });
+
+    // M-57: streaming output pushed the end away by itself, after which no
+    // new cell was followed and the list could be held for the whole turn.
+    it("keeps a following reader at the end while output streams, and only them", () => {
+      const body = { scrollHeight: 3000, scrollTop: 0, clientHeight: 400 };
+      vi.stubGlobal("document", { getElementById: () => ({ parentElement: body }) });
+      running.value = true;
+      _nbReading.value = false;
+      followStreamingOutput();
+      followStreamingOutput();
+      expect(rafs).toHaveLength(1);
+      flushRaf(rafs);
+      expect(body.scrollTop).toBe(3000);
+      // The scroll event of our own move, after more output landed, is not
+      // the reader scrolling away.
+      body.scrollHeight = 3600;
+      onNotebookScroll(body);
+      expect(_nbReading.value).toBe(false);
+
+      // A reader who scrolled up is left where they are.
+      body.scrollTop = 0;
+      onNotebookScroll(body);
+      expect(_nbReading.value).toBe(true);
+      followStreamingOutput();
+      flushRaf(rafs);
+      expect(body.scrollTop).toBe(0);
     });
 
     it("never holds back another session's list", () => {
