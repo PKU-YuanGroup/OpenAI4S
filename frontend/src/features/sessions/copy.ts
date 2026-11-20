@@ -169,15 +169,17 @@ export function displayProjectName(
 }
 
 /** Feature-owned copy; the frozen legacy dictionaries remain generated. */
-export function sessionCopy(key: "sessionsError" | "foldersError" | "retry"): string {
+export function sessionCopy(key: "sessionsError" | "foldersError" | "retry" | "exportWebPage"): string {
   const copy = LANG === "en" ? {
     sessionsError: "Could not load sessions. Retry reading the list.",
     foldersError: "Could not load folders.",
     retry: "Retry reading",
+    exportWebPage: "Export read-only web page",
   } : {
     sessionsError: "无法读取会话列表，可重试读取。",
     foldersError: "无法读取文件夹。",
     retry: "重试读取",
+    exportWebPage: "导出只读网页",
   };
   return copy[key];
 }

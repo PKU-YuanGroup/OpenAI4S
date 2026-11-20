@@ -356,6 +356,36 @@ def test_content_search_does_not_leak_another_users_bodies(daemon):
         assert [s["id"] for s in _body(raw)["sessions"]] == [fid_a], word
 
 
+def test_the_read_only_page_export_is_scoped_like_every_session_read(daemon):
+    """EXP-3: the exported page is the whole session in one file, so the
+    route answers a colleague exactly as it answers for a session that does
+    not exist."""
+    a = _login(daemon, "alice", "fake-pw-a")
+    b = _login(daemon, "bob", "fake-pw-b")
+    fid_a = _create_session(daemon, a)
+    _seed_searchable_bodies(daemon, fid_a)
+    path = f"/api/v1/frames/{fid_a}/session/export-html"
+
+    status, raw = _get(daemon.port, path, cookie=b)
+    assert status == 404
+    assert b"OVRFLW" not in raw and "污染".encode() not in raw
+    missing, _ = _get(
+        daemon.port, "/api/v1/frames/f-000000000000/session/export-html", cookie=b
+    )
+    assert missing == 404
+
+    status, raw = _get(daemon.port, path + "?lang=zh", cookie=a)
+    assert status == 200
+    head, _, body = raw.partition(b"\r\n\r\n")
+    # A download, never a page rendered on the daemon's own origin.
+    assert b"content-disposition: attachment" in head.lower()
+    assert b"text/html" in head.lower()
+    page = body.decode("utf-8")
+    assert page.startswith("<!doctype html>") and "只读导出" in page
+    assert "判定污染，整孔剔除" in page and "fit_gompertz_curve" in page
+    assert "<script" not in page.lower()
+
+
 def test_project_timeline_is_ownership_filtered(daemon):
     """Two layers, and both matter: a non-participant is refused the project
     outright, and a participant still sees only sessions they may see."""

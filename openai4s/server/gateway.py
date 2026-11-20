@@ -19446,6 +19446,39 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     },
                 )
                 return
+            m = re.fullmatch(r"/frames/([^/]+)/session/export-html", sub)
+            if m and method == "GET":
+                # EXP-3: the read-only share page as one self-contained file,
+                # for a session nobody has set a relay up for. Same view, same
+                # frame scope guard as every `/frames/{id}/...` read.
+                fid = m.group(1)
+                frame = store.get_frame(fid)
+                if frame is None:
+                    raise GatewayError(404, "session not found")
+                try:
+                    exported = runner.shares.export_page(
+                        fid, language=str((q.get("lang") or ["en"])[0])
+                    )
+                except SessionPackageError as error:
+                    raise GatewayError(
+                        409, str(error), "session_not_exportable"
+                    ) from error
+                title = str(
+                    frame.get("name") or frame.get("task_summary") or ""
+                ).strip()
+                self._send(
+                    200,
+                    exported["data"],
+                    exported["content_type"],
+                    {
+                        "Content-Disposition": download_content_disposition(
+                            f"{title}.html" if title else exported["filename"],
+                            exported["filename"],
+                        ),
+                        "X-Content-SHA256": exported["sha256"],
+                    },
+                )
+                return
             m = re.fullmatch(r"/frames/([^/]+)/session/export", sub)
             if m and method == "GET":
                 fid = m.group(1)

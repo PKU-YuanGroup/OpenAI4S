@@ -1,6 +1,6 @@
 /** Session title, menus, import/export, cancel. app.js:7411-7793 (share dialog: share.ts). */
 
-import { t } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { validateSessionArtifacts } from "../artifacts/validation";
 import { autoModeMenuItem, beginAutoModeStatusRead } from "../automode";
 import { environmentMenuItem } from "../notebook/envmenu";
@@ -13,7 +13,7 @@ import { exploreMode, pendingExecutionId, planMode, running } from "../../stores
 import { API, ApiError, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
-import { composerCopy } from "./copy";
+import { composerCopy, sessionCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
 // Imported, not reached through `callLane`. Neither name is ever assigned to
 // `window` (they are in neither CONTRACT_GLOBAL_NAMES nor SEND_CONTRACT_NAMES),
@@ -314,6 +314,8 @@ export function sessionMenu(anchor: Element, fid: string): void {
   items.push(
     { label: t("sessionMenu.exportMarkdown"), icon: "download", onClick: () => void exportSession(fid) },
     { label: t("share.menu"), icon: "share", onClick: () => void openShareDialog(fid, frame) },
+    // EXP-3: the same read-only view as one self-contained file, no relay.
+    { label: sessionCopy("exportWebPage"), icon: "download", onClick: () => exportSessionWebPage(fid, frame) },
     { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
     {
       label: t("sessionMenu.downloadArtifacts"),
@@ -359,6 +361,15 @@ export function exportSessionPackage(fid: string, frame: SessionLike = {}): void
   downloadArtifactBundle(
     `${API}/frames/${encodeURIComponent(fid)}/session/export`,
     label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip",
+  );
+}
+
+/** One self-contained `.html` of the session, in the UI language (EXP-3). */
+export function exportSessionWebPage(fid: string, frame: SessionLike = {}): void {
+  const label = frame.name || frame.task_summary || "session";
+  downloadArtifactBundle(
+    `${API}/frames/${encodeURIComponent(fid)}/session/export-html?lang=${LANG === "zh" ? "zh" : "en"}`,
+    label.replace(/[^\w一-龥-]+/g, "_") + ".html",
   );
 }
 

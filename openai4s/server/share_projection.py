@@ -951,6 +951,31 @@ class ShareProjectionBuilder:
             raise SessionPackageError("share view still contains secret material")
         return payload
 
+    def portable_view(
+        self, projection: ShareProjection, *, branch_id: str
+    ) -> dict[str, Any]:
+        """The view document with this machine's paths shortened (EXP-3).
+
+        For a copy that leaves the machine as a file. The rules are the
+        session package's own (`_redact_local_paths`: workspace ``.``, data
+        directory ``<data_dir>``, home ``~``), applied to every string: the
+        package redacts by document name, so the view rides under the name
+        whose entry covers all values rather than adding one to that table.
+        """
+        root = projection.source_root_frame_id
+        whole = next(
+            name
+            for name, keys in SessionPackageService._PATH_REDACTION.items()
+            if keys is None
+        )
+        redacted = self._pkg._redact_local_paths(
+            {whole: self.serialize_view(projection)},
+            root,
+            branches=(branch_id, root),
+        )
+        document = json.loads(redacted[whole])
+        return document if isinstance(document, dict) else {}
+
     # ------------------------------------------------------------------ helpers
     @staticmethod
     def _package_cell(cell: Mapping[str, Any]) -> dict[str, Any]:

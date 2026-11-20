@@ -128,6 +128,7 @@ gateway.py
 | [`session_runtime.py`](session_runtime.py) | 保存会话的控制平面对象，例如 dispatcher、委派树和动态 capability，让语言 worker 可以启动、替换或停止，而不丢掉这些状态。 |
 | [`skill_network_admission.py`](skill_network_admission.py) | 把已加载 Skill 的网络 manifest 绑到会话，并在两个执行 sink 上准入：下一格 Python/R Cell，以及 shell capability 签发。求交 manifest × 实测 sandbox posture × Host egress × 调用方绑定。manifest 永不授权。 |
 | [`skill_sidecars.py`](skill_sidecars.py) | 消费 worker 的私有 Skill 加载诊断，但不会把与不可信 Cell 共用解释器的声明当作恢复证据。它用 compare-and-swap 把对应 generation 的 sidecar 捕获标为失败，让恢复停止，而不是重放未经独立证明的 sidecar。Host 进程从不导入或执行 sidecar。 |
+| [`share_page.py`](share_page.py) | 把只读共享视图渲染成一个自包含的 `.html`，供 `GET /frames/{id}/session/export-html` 使用：不需要中转服务器的零配置共享方式。没有脚本，没有外部资源，并带一条会拒绝它们的 `Content-Security-Policy` meta；会话里的每个值都经过转义；文本和内嵌图片各有预算，被预算截掉的内容会在页面顶部写明。它只渲染 `serialize_view` 的文档，所以不会比托管共享页多显示任何东西。 |
 | [`share_projection.py`](share_projection.py) | 把一个会话构建成一份冻结、扁平化的 `ShareProjection`（单一 synthetic root、无 checkpoint、无 memories/策略），再分两路序列化：一个 `import_bytes` 兼容的 bundle 和一份脱敏的查看器文档。复用会话包的失败即拒 secret 闸门。 |
 | [`share_router.py`](share_router.py) | 单个分享的只读公网请求处理器：仅 GET/HEAD、有且仅有两个读取根（内存查看器资产 + 当前 lease 的快照）、严格 CSP、单段 Range，以及统一 404。它绝不触碰内核、dispatcher 或任何 gateway 路由。 |
 | [`share_service.py`](share_service.py) | Web 分享的两阶段发布（DB 状态机 + 不可变版本目录 + `current.json` 指针），带 SnapshotLease 引用计数 GC、崩溃恢复、有效期清扫与撤销。FIFO 准入与隧道客户端由外部注入。 |
