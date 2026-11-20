@@ -74,6 +74,13 @@
   margin: 8px 0 16px;
 }
 
+.viewer-answer-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
 .files-version-error {
   margin: 8px 0;
   padding: 10px 14px;

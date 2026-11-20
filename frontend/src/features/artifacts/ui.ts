@@ -16,7 +16,7 @@ import {
 import { labTabLabel, mountLab } from "../lab";
 import { artifactKind, browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, isProcessFile, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
-import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
+import { answerVersionNote, filesIndexError, filesIndexItems, viewerVersionState } from "./state";
 import { abortPreviewReads } from "./api";
 import { pruneThumbReads, tileThumb, tileThumbBig } from "./thumbs";
 import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
@@ -442,6 +442,7 @@ function viewerVersionFor(a: ArtifactRow): VersionResolve {
 
 export function presentViewer(a: ArtifactRow): void {
   viewerRequest += 1;
+  answerVersionNote.value = null;
   rememberViewerVersion(viewerVersionFor(a));
   dockArtifact.value = a;
   provMode.value = false;

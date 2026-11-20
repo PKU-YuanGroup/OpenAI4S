@@ -21,6 +21,7 @@ import { filesT } from "./copy";
 import {
   renderArtifactBody,
   renderArtifactDescriptor,
+  setVersionHistoryOpener,
   renderDownloadArtifact,
   renderSequenceArtifact,
   renderTextArtifact,
@@ -738,7 +739,15 @@ describe("visible truncation and frozen preview version (A3)", () => {
     const version = walk(root).find((node) => (node.className || "") === "renderer-version");
     // ART-15: human wording; the frozen version id is the tooltip.
     expect(version?.textContent).toBe(filesT("viewer.version.latest"));
-    expect((version as unknown as { title?: string })?.title).toBe("v1");
+    expect((version as unknown as { title?: string })?.title).toBe(filesT("viewer.version.history") + " · v1");
+    // ART-5: the label opens the version history (it was plain text, and
+    // history hid in the ⋮ menu).
+    const opened: unknown[] = [];
+    setVersionHistoryOpener((artifact) => opened.push(artifact.id));
+    expect((version as unknown as { tagName?: string }).tagName?.toLowerCase()).toBe("button");
+    (version as unknown as { onclick?: () => void }).onclick?.();
+    expect(opened).toEqual(["a"]);
+    setVersionHistoryOpener(null);
     // A new version published later does not move this paint's download.
     renderArtifactDescriptor(
       host(root),
