@@ -801,6 +801,7 @@ A session's kernel is on the daemon by default. Asking for it to be on a granted
 | --- | --- |
 | `POST /frames/{fid}/decision` | Answers a pending `await_permission` prompt. Body `{decision_id,allow,scope?("once"),pattern?,message?}`. A live decision returns `{ok,decision_id,allow,scope,resolution_context:"live_thread",requires_continue:false,original_action_executed:null}` and wakes the exact blocked call. After daemon restart it returns `resolution_context:"after_restart"`, `original_action_executed:false`, and `requires_continue:true` for an approval; no stored arguments are replayed. A restart `once` approval also returns its exact-grant `continuation_expires_at` and `continuation_authorization`; broader scopes persist a standing rule. Unknown, cross-frame, conflicting, or expired decisions return `ok:false` with `error`. |
 | `GET /frames/{fid}/permissions` | `{"root_frame_id","project_id","rules":[…]}` — rules effective for that conversation. |
+| `GET /permissions` | `{"rules":{"global":[…]}}` — the global tier alone, for Settings with no session open (the same rows the per-frame read carries). |
 | `POST /permissions` | Upsert a rule. Body `{scope("global"),scope_id?,frame_id?,tool("*"),pattern("*"),decision("ask")}`; when `scope_id` is omitted but `frame_id` given, the scope id is derived from the frame → `{"ok":true,"rule_id"}`. |
 | `POST /permissions/reset` | Re-seeds defaults → `{"ok":true,"rules":[…]}`. |
 | `DELETE /permissions/{rule_id}` | `{"ok":true}`. |

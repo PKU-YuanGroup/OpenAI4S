@@ -18568,6 +18568,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     }
                 )
                 return
+            if sub == "/permissions" and method == "GET":
+                # The global tier on its own, for Settings with no session
+                # open. Nothing new is disclosed: every caller already gets
+                # it inside `/frames/{id}/permissions`.
+                self._json(
+                    {
+                        "rules": {
+                            "global": store.get_permission_rules(
+                                scope="global", scope_id=""
+                            )
+                        }
+                    }
+                )
+                return
             if sub == "/permissions" and method == "POST":
                 b = self._body()
                 scope = b.get("scope") or "global"
