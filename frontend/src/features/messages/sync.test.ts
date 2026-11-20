@@ -1024,7 +1024,7 @@ describe("a turn's code cells, live and reopened", () => {
     expect(live).toEqual([
       "md :: Loading the plate.",
       "activity.has-steps.ok :: Load the plate3 output lines",
-      "open.step.step-artifact :: Load the plate2 artifacts",
+      "step.step-artifact :: Load the plate2 artifacts",
       "md :: The plate loaded.",
       "activity.failed :: Fit the modelFailed · 3 output lines",
       "md :: This cell failed.",

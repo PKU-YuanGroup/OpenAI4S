@@ -211,12 +211,12 @@ describe("a collapsed step card builds its body on first expand", () => {
 
   it("a card that opens itself builds at once, and the window contract stays eager", () => {
     const host = new El("div");
-    const artifact = renderStoredStep(
-      { step_id: "h-3", kind: "artifact", status: "done", output: { artifacts: [{ filename: "a.csv" }] } },
+    const plan = renderStoredStep(
+      { step_id: "h-3", kind: "plan", status: "done", output: { todos: [{ content: "Load", status: "completed" }] } },
       host as never,
     ) as unknown as El;
-    expect(artifact.classes.has("open")).toBe(true);
-    expect(artifact.querySelector(".s-body")!.children).toHaveLength(1);
+    expect(plan.classes.has("open")).toBe(true);
+    expect(plan.querySelector(".s-body")!.children).toHaveLength(1);
     // tests/browser_p1_controls.mjs reads a fresh buildStepCard's body unopened.
     const eager = buildStepCard({ step_id: "w-1", status: "done", ...CODE });
     expect((eager.body as unknown as El).children).toHaveLength(1);
@@ -307,7 +307,7 @@ describe("artifact step card", () => {
       },
     });
     const card = handle.card as unknown as El;
-    expect(card.querySelectorAll(".s-fn").map((node) => node.textContent)).toEqual(['"table.csv"']);
+    expect(card.querySelectorAll(".s-fn").map((node) => node.textContent)).toEqual(["table.csv"]);
     expect(card.querySelectorAll(".s-fig-cap").map((node) => node.textContent)).toEqual(["fit.png", "fit.svg"]);
     // Figures only: no empty "files [ ]" row.
     const figures = buildStepCard({
@@ -318,6 +318,36 @@ describe("artifact step card", () => {
     }).card as unknown as El;
     expect(figures.querySelectorAll(".s-files")).toEqual([]);
     expect(figures.querySelectorAll(".s-fig-cap")).toHaveLength(1);
+  });
+
+  it("a Saving step is collapsed, lists files by name and size, and never shows the local path (M-50)", () => {
+    const host = new El("div");
+    const step = {
+      step_id: "s-6",
+      kind: "artifact",
+      title: "Load data",
+      status: "done",
+      summary: "2 artifacts",
+      input: { files: ["summary.csv", "notes.md"], environment: "python" },
+      output: {
+        artifacts: [
+          { filename: "summary.csv", artifact_id: "a-1", version_id: "v-1", size_bytes: 96, storage_path: "/home/alice/work/summary.csv" },
+          { filename: "notes.md", artifact_id: "a-2", version_id: "v-2", size_bytes: 17, storage_path: "/home/alice/work/notes.md" },
+        ],
+      },
+    };
+    const card = renderStoredStep(step, host as never) as unknown as El;
+    expect(card.classes.has("open")).toBe(false);
+    open({ card: card as unknown as HTMLElement });
+    expect(card.querySelectorAll(".s-frow").map((row) => row.textContent)).toEqual(["summary.csv · 96 B", "notes.md · 17 B"]);
+    const details = card.querySelector(".s-out-tgl")!;
+    expect(details.textContent).toBe("Technical details");
+    expect(card.querySelector(".s-json")!.style.display).toBe("none");
+    expect(card.textContent).not.toContain("/home/alice");
+    expect(card.textContent).not.toContain("storage_path");
+    details.onclick!();
+    expect(details.textContent).toBe("Hide technical details");
+    expect(card.querySelector(".s-json")!.textContent).toContain('"version_id": "v-1"');
   });
 
   it("a Saving step stored without its summary still shows the count (SYNC-14)", async () => {

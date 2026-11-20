@@ -13,7 +13,7 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`background.ts`](background.ts) | 输入框上方的 `#bg-strip`：本会话仍在运行的后台单元（`GET /frames/{fid}/background`），每行显示首条语句、已运行时间、最后一行输出和单独的「停止」（`POST …/background/{exec_id}/stop`）；切换会话、运行开始/结束时读取，有任务运行时轮询。`backgroundStoppedHint` 在停止回合时一并停止了该回合的后台单元（`background_stopped`）时给出提示。功能内文案。 |
 | [`background.test.ts`](background.test.ts) | 列出运行中的单元（预览、已运行时间、最后一行；已结束的不列）；行内「停止」只针对该单元发请求；没有运行的就隐藏；停止回合的提示给出停下的数量。 |
 | [`bind.test.ts`](bind.test.ts) | `bindComposer` 只绑一次；`installSend` 不碰 DOM；Enter 和点击 `#send-btn` 都派发文本；两者合计同一时刻只有一个 dispatch 在途。 |
-| [`copy.ts`](copy.ts) | `sendCopy`：不进生成词典的文案——发送按钮的提示（以及回合运行中的「加入队列」）、排在运行中回合之后的气泡下方的「排队中 · 尚未发送」标记（仅在该行带 `.queued` 时显示）、审阅进行中（"正在审阅"）、无标题的审阅发现，以及计划模式/自主探索的说明。 |
+| [`copy.ts`](copy.ts) | `sendCopy`：不进生成词典的文案——发送按钮的提示（以及回合运行中的「加入队列」）、排在运行中回合之后的气泡下方的「排队中 · 尚未发送」标记（仅在该行带 `.queued` 时显示）、审阅进行中（"正在审阅"）、无标题的审阅发现，计划模式/自主探索的说明，以及保存步骤的「技术细节」开关。 |
 | [`candidate.ts`](candidate.ts) | Review 门控三态时序：`markCandidateReady` → `applyCandidateResolution` → `applyFinalReviewStatus`。 |
 | [`candidate.test.ts`](candidate.test.ts) | 三态顺序、禁止把 verified 降级、durable 回执规则。 |
 | [`first-send.test.ts`](first-send.test.ts) | 新会话的第一条消息只在共享创建流程打开对话之后才派发，`openConversation` 的重置不会落在回合中间；票据与运行态得以保留。 |
@@ -37,7 +37,7 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`skill-network.ts`](skill-network.ts) | 时间线上已加载 Skill 的联网限制：`host_only` 加载发出的 `network` 提示卡和该 Skill 的加载卡（`output.session_network`）按界面语言给出标题与状态（本功能自带文案表），展开后列出允许的域名。被该限制拒绝的请求（`output.blocked`）显示「被技能的联网限制拦下」，用锁形图标和警示色（而不是红色失败），说明是哪个技能、哪个目的地——网页检索则说明没有允许的搜索引擎、检索没有发出，而不是「0 条结果」——并在下方保留服务端原文。 |
 | [`step-title.ts`](step-title.ts) | I18N-1：把主机用英文写的步骤标题和单行摘要（「Reading project file x」「Saving 2 artifacts」「12 results」）按模板转成界面语言；认不出的内容（例如单元自己的标题）原样显示。 |
 | [`step-title.test.ts`](step-title.test.ts) | 中文界面下模板会被翻译；英文界面、未知标题和单元自己的标题保持原样。 |
-| [`step.ts`](step.ts) | 语义活动步骤、`buildStepCard`、`searchResultHttpUrl`。从步骤里打开产物失败时用提示报告。Host 调用被拒绝的步骤（`messages/declined.ts`）显示为中性的 `.declined` 卡片——「你拒绝了 · 未执行」「已随任务停止 · 未执行」——而不是带服务端英文的红色失败。历史与实时更新中折叠的卡片在第一次展开时才构建正文；`buildStepCard` 本身（window 契约）立即构建。重开时由 REST 渲染的卡片，在其 `step` 事件重放时被移入实时回合的对应位置（`adoptIntoLiveStream`），重开运行中的会话因而保持实时顺序，而不是把所有步骤叠在回合正文上方。一轮只保留一张计划卡：同一轮后续的计划步骤原位重绘它（`mergePlanStep`，实时与重开相同）；产物步骤里图片只以缩略图标题出现一次，`files` 行只列其余文件；跟着步骤的单元卡保留自己的标题。存储时没有摘要的保存步骤按其保存的文件数显示数量（SYNC-14）。 |
+| [`step.ts`](step.ts) | 语义活动步骤、`buildStepCard`、`searchResultHttpUrl`。从步骤里打开产物失败时用提示报告。Host 调用被拒绝的步骤（`messages/declined.ts`）显示为中性的 `.declined` 卡片——「你拒绝了 · 未执行」「已随任务停止 · 未执行」——而不是带服务端英文的红色失败。历史与实时更新中折叠的卡片在第一次展开时才构建正文；`buildStepCard` 本身（window 契约）立即构建。重开时由 REST 渲染的卡片，在其 `step` 事件重放时被移入实时回合的对应位置（`adoptIntoLiveStream`），重开运行中的会话因而保持实时顺序，而不是把所有步骤叠在回合正文上方。一轮只保留一张计划卡：同一轮后续的计划步骤原位重绘它（`mergePlanStep`，实时与重开相同）；产物步骤里图片只以缩略图标题出现一次，`files` 行只列其余文件；跟着步骤的单元卡保留自己的标题。存储时没有摘要的保存步骤按其保存的文件数显示数量（SYNC-14）。保存步骤默认折叠；展开后按文件名与大小列出文件（图片为缩略图），保存回执（不含本机存储路径）收在「技术细节」里（M-50）。 |
 | [`step.test.ts`](step.test.ts) | 步骤卡片：重开运行中的会话时，重放的回合更新已存的卡片而不是再添一张，并把它移入重放的回合；折叠的历史卡片或被更新的卡片在展开前没有正文，展开后显示最新的步骤；自动展开的卡片与 `buildStepCard` 立即构建；输出开关、审阅中状态与无标题的审阅发现随界面语言显示；查看器打不开产物时会报告，而不是留下未处理的 rejection；Skill 联网限制的提示卡与其加载卡按界面语言给出标题，并列出允许的域名。 |
 | [`ticket.ts`](ticket.ts) | Turn ticket 世代、`acceptTurnTicket` / `activateTurnTicket`、`resumeWatch`。 |
 | [`turn.ts`](turn.ts) | `turnDone` 收尾；调用 F-14 的 `notebookOnTurnDone()`；收尾仍显示运行中的活动卡片（`messages/cardState.ts`）；任何终态都清掉 `planPending`，只有正常结束的回合才弹旧版审批卡。 |

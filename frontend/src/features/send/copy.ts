@@ -8,7 +8,9 @@ export type SendCopyKey =
   | "reviewFinding"
   | "planDesc"
   | "exploreDesc"
-  | "modeChipTitle";
+  | "modeChipTitle"
+  | "technicalDetails"
+  | "hideTechnicalDetails";
 
 /** Labels the generated F-07 dictionaries do not carry (app.js hard-coded them in English). */
 const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
@@ -22,6 +24,8 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
     exploreDesc:
       "Works through the whole investigation on its own, without stopping to ask, and ends with a written report.",
     modeChipTitle: "{0} is on for your next messages: {1} Click to turn it off.",
+    technicalDetails: "Technical details",
+    hideTechnicalDetails: "Hide technical details",
   },
   zh: {
     send: "发送",
@@ -32,6 +36,8 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
     planDesc: "先写出分步计划给你审阅，你批准后才开始执行。",
     exploreDesc: "不停下来询问，自主连续完成整个研究，最后写出报告。",
     modeChipTitle: "{0}已开启，作用于接下来发送的消息：{1}点击关闭。",
+    technicalDetails: "技术细节",
+    hideTechnicalDetails: "收起技术细节",
   },
 };
 

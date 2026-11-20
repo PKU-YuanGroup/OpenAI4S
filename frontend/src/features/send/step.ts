@@ -607,53 +607,45 @@ export function stepBody(step: Step): HTMLElement {
         : arts.map((a) => a.filename)
     ).filter((fn) => !!fn && !shown.has(fn)) as unknown[];
     const env = inp.environment || "python";
-    const kvRow = (label: string, text: unknown): HTMLElement => {
-      const r = el("div", "s-kv");
-      r.appendChild(el("span", "s-k", label));
-      r.appendChild(el("div", "s-v", text == null ? "" : String(text)));
-      return r;
-    };
-    const kvNodeRow = (label: string, node: HTMLElement): HTMLElement => {
-      const r = el("div", "s-kv");
-      r.appendChild(el("span", "s-k", label));
-      const v = el("div", "s-v");
-      v.appendChild(node);
-      r.appendChild(v);
-      return r;
-    };
-    const fl = el("div", "s-files");
-    fl.appendChild(el("span", "s-brk", "["));
-    files.forEach((fn, i) => {
-      const meta = arts.find((a) => a.filename === fn);
-      const line = el("div", "s-frow");
-      const nm = el(
-        "span",
-        "s-fn" + (meta && meta.artifact_id ? " clk" : ""),
-        '"' + String(fn) + '"',
-      );
-      if (meta && meta.artifact_id) {
-        nm.title = t("step.artifact.openArtifact");
-        nm.onclick = () => openArt(meta);
-      }
-      line.appendChild(nm);
-      if (i < files.length - 1) line.appendChild(el("span", "s-comma", ","));
-      fl.appendChild(line);
-    });
-    fl.appendChild(el("span", "s-brk", "]"));
-    if (files.length) box.appendChild(kvNodeRow("files", fl));
-    box.appendChild(kvRow("environment", env));
+    // M-50: the files by name and size, each opening its viewer. The card
+    // used to read as a data dump -- `files ["a", "b"]`, `environment python`
+    // and the raw save receipt -- and the receipt named the file's absolute
+    // path on this computer.
+    const sizeOf = (meta: Record<string, unknown> | undefined): string =>
+      meta && typeof meta.size_bytes === "number" ? " · " + bytes(meta.size_bytes) : "";
+    if (files.length) {
+      const fl = el("div", "s-files");
+      files.forEach((fn) => {
+        const meta = arts.find((a) => a.filename === fn);
+        const line = el("div", "s-frow");
+        const nm = el("span", "s-fn" + (meta && meta.artifact_id ? " clk" : ""), String(fn));
+        if (meta && meta.artifact_id) {
+          nm.title = t("step.artifact.openArtifact");
+          nm.onclick = () => openArt(meta);
+        }
+        line.appendChild(nm);
+        const size = sizeOf(meta);
+        if (size) line.appendChild(el("span", "s-fsize", size));
+        fl.appendChild(line);
+      });
+      box.appendChild(fl);
+    }
     if (arts.length && (arts[0]?.artifact_id || arts[0]?.checksum)) {
+      // The receipt for whoever needs it, behind its own toggle; never the
+      // local storage path.
+      const receipt = arts.map((a) => {
+        const { storage_path: _local, ...rest } = a;
+        return rest;
+      });
       const wrap = el("div", "s-out");
-      const tgl = el("button", "s-out-tgl", t("step.artifact.showOutput"));
+      const tgl = el("button", "s-out-tgl", sendCopy("technicalDetails"));
       const json = el("div", "s-json");
-      json.textContent = JSON.stringify({ artifacts: arts }, null, 2);
+      json.textContent = JSON.stringify({ environment: env, artifacts: receipt }, null, 2);
       json.style.display = "none";
       tgl.onclick = () => {
         const show = json.style.display === "none";
         json.style.display = show ? "block" : "none";
-        tgl.textContent = show
-          ? t("step.artifact.hideOutput")
-          : t("step.artifact.showOutput");
+        tgl.textContent = sendCopy(show ? "hideTechnicalDetails" : "technicalDetails");
       };
       wrap.appendChild(tgl);
       wrap.appendChild(json);
@@ -676,6 +668,7 @@ export function stepBody(step: Step): HTMLElement {
         im.loading = "lazy";
         fig.appendChild(im);
         if (a.filename) fig.appendChild(el("figcaption", "s-fig-cap", String(a.filename)));
+        if (typeof a.size_bytes === "number") fig.title += " · " + bytes(a.size_bytes);
         fig.onclick = () => openArt(a);
         figs.appendChild(fig);
       });
@@ -763,7 +756,9 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
     if (label) label.textContent = netLabel;
   }
   card.classList.toggle("s-net-limited", marksNetworkLimit(step));
-  if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") {
+  // A Saving step stays collapsed (M-50): its title and "N artifacts" say what
+  // happened; the files, sizes and figures are one click away.
+  if (step.kind === "plan" && status !== "running") {
     card.classList.add("open");
   }
   if (step.kind === "review") {
