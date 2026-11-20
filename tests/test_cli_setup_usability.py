@@ -9,6 +9,7 @@ silently, printed something untrue, or answered with a Python traceback.
 from __future__ import annotations
 
 import importlib
+import io
 
 import pytest
 
@@ -57,7 +58,7 @@ class _Wizard:
 
         monkeypatch.setattr(self.cli, "_onboarding_service", service)
 
-    def run(self, answers, *, secrets=(), argv=(), terminal=True):
+    def run(self, answers, *, secrets=(), argv=(), terminal=True, piped=None):
         typed = iter(answers)
         hidden = iter(secrets)
 
@@ -74,7 +75,9 @@ class _Wizard:
 
         self.monkeypatch.setattr("builtins.input", fake_input)
         self.monkeypatch.setattr(self.cli.getpass, "getpass", fake_getpass)
-        if terminal:
+        if piped is not None:
+            self.monkeypatch.setattr(self.cli.sys, "stdin", io.StringIO(piped))
+        elif terminal:
             self.monkeypatch.setattr(self.cli.sys, "stdin", _Terminal())
         args = self.cli.build_parser().parse_args(["init", *argv])
         self.rc = self.cli.cmd_init(args)
@@ -179,3 +182,35 @@ def test_init_still_refuses_a_name_that_selects_nothing(wizard):
 
     assert wizard.rc == 1
     assert "unknown provider 'deepmind'" in wizard.err
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--search-key-stdin"], "--search-key-stdin needs --search doubao|tavily|you"),
+        (
+            ["--search-key-stdin", "--search", "builtin"],
+            "--search builtin takes no key",
+        ),
+    ],
+)
+def test_init_refuses_a_search_key_with_no_engine_to_store_it_for(
+    wizard, argv, expected
+):
+    """CLI-6. `echo KEY | openai4s init --search-key-stdin` read the key,
+    dropped it, printed `Configured ...` and exited 0."""
+    wizard.run([], argv=argv, piped="a-search-key-nobody-asked-for\n")
+
+    assert wizard.rc == 1
+    assert expected in wizard.err
+    assert "Configured" not in wizard.out
+    # Refused before anything was saved, not after the model settings were.
+    assert not wizard.setting("llm_provider")
+
+
+def test_init_still_stores_a_search_key_that_names_its_engine(wizard):
+    wizard.run([], argv=["--search-key-stdin", "--search", "tavily"], piped="tvly-k\n")
+
+    assert wizard.rc == 0
+    assert "Web search:" in wizard.out
+    assert "tavily" in wizard.out

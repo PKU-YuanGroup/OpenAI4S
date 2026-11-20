@@ -1633,6 +1633,10 @@ _INIT_PROVIDER_ALIASES = {
 }
 
 
+#: The `--search` choices a key can be stored for.
+_INIT_KEYED_SEARCH = ("doubao", "tavily", "you")
+
+
 def _init_provider_id(value, providers) -> str | None:
     """The provider id a typed name selects, or None when it names none."""
     text = str(value or "").strip().lower()
@@ -1674,6 +1678,16 @@ def cmd_init(args) -> int:
             raise ValueError(
                 "stdin carries one key per run: use --api-key-stdin or "
                 "--search-key-stdin, not both"
+            )
+        if args.search_key_stdin and args.search not in _INIT_KEYED_SEARCH:
+            # Refused before anything is read or saved. The piped key used to
+            # be read and dropped, and the run still ended "Configured ...",
+            # exit 0, with no web-search line to show nothing had happened.
+            raise ValueError(
+                "--search-key-stdin needs --search "
+                + "|".join(_INIT_KEYED_SEARCH)
+                + " to say which engine the key is for"
+                + (f" (--search {args.search} takes no key)" if args.search else "")
             )
         interactive = (
             not args.non_interactive
