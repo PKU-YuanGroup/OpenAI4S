@@ -15,7 +15,7 @@ import { renderMd } from "../md/render";
 import { liveCells, _liveCell } from "../../stores/notebook";
 import { stream as liveStream, stepEls } from "../../stores/stream";
 import type { WsMessage } from "../ws/types";
-import { $, el, messagesHost } from "./dom";
+import { $, el, keepStripsLast, messagesHost } from "./dom";
 import {
   _mdStableCut,
   emptyMdCutState,
@@ -189,8 +189,6 @@ export function sealText(st: LiveStream | null): void {
 
 /** app.js:5452-5460. */
 export function startStream(): LiveStream | null {
-  const generated = $(".generated");
-  if (generated) generated.remove();
   const empty = $(".empty-session");
   if (empty) empty.remove();
   const host = messagesHost();
@@ -198,6 +196,8 @@ export function startStream(): LiveStream | null {
   const { wrap, md } = openTurnGroup();
   md.classList.add("cursor");
   host.appendChild(wrap);
+  // The session's file strips stay under the turn, both of them.
+  keepStripsLast(host);
   const st: LiveStream = {
     wrap,
     md,

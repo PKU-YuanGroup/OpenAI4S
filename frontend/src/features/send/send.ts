@@ -58,7 +58,7 @@ import {
 } from "../autocomplete/mentions";
 import { effProject } from "../customize/host";
 import { composerChoiceMark, composerModelChoicePending, modelT, noteAdmittedModelBinding, noteSessionModelBinding } from "../customize/models";
-import { $, el } from "../messages/dom";
+import { $, el, keepStripsLast } from "../messages/dom";
 import { down } from "../messages/scroll";
 import { runtimeSummary } from "../notebook/kernel";
 import { api, apiErrorText } from "../sessions/api";
@@ -406,8 +406,6 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       return;
     }
   }
-  const g = $(".generated");
-  if (g) g.remove();
   const es = $(".empty-session");
   if (es) es.remove();
   const confirmHistorySubmission = beginHistorySubmission();
@@ -436,6 +434,8 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   }
   const host = $("#messages");
   if (host) host.appendChild(w);
+  // The session's file strips stay last, under the new question.
+  keepStripsLast(host);
   down(true);
   let payload = text;
   if (planNow) {

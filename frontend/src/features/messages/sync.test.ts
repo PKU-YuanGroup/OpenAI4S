@@ -29,6 +29,7 @@ import {
   scheduleFramedRender,
   type HistoryItem,
 } from "./list";
+import { keepStripsLast } from "./dom";
 import { cancelFrame } from "./raf";
 import { flushScrollNow, unbindMessageScroll, updateJumpPill } from "./scroll";
 import type { LiveStream } from "./stream";
@@ -866,6 +867,34 @@ describe("a turn is one container, live and reopened", () => {
     expect(messages().querySelectorAll(".step")).toHaveLength(1);
     // Nothing from the first loaded question down was rebuilt.
     expect(messages().children[3]).toBe(below);
+  });
+});
+
+// --------------------------------------------------------------------------
+// CHAT-6: the session's file strips follow one placement rule
+// --------------------------------------------------------------------------
+
+describe("the session's file strips", () => {
+  it("both stay last when a new turn starts", () => {
+    const strip = (cls: string): HTMLElement => {
+      const node = document.createElement("details");
+      node.className = cls;
+      messages().appendChild(node);
+      return node;
+    };
+    renderStored({ role: "user", content: "First?", message_id: "m-1" });
+    const inputs = strip("uploaded");
+    const files = strip("generated");
+    // The follow-up's bubble, as send() adds it, then its turn.
+    messages().appendChild(bubble("And the residuals?"));
+    keepStripsLast();
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Looking.\n"));
+    const order = Array.from(messages().children).map((node) => (node as HTMLElement).className);
+    // Neither strip is removed, and neither is left between the turns.
+    expect(order).toEqual(["msg user", "msg user", "msg assistant", "uploaded", "generated"]);
+    expect(messages().children[3]).toBe(inputs);
+    expect(messages().children[4]).toBe(files);
   });
 });
 

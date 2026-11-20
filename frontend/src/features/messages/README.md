@@ -23,7 +23,7 @@ F-10 message stream. Framed history paint (40 rows per rAF + one fragment), dual
 | [`cut.test.ts`](cut.test.ts) | Incremental scan matches the original from-scratch cut; fence / 120-char tail. |
 | [`delta.ts`](delta.ts) | `liveOutputDelta`, `bindStreamingPre` (`appendData`; each chunk is examined alone, via `liveOutputIncrement`), `toolMetaLabel` (feature-local copy: "N lines" / "done" in the UI language). |
 | [`delta.test.ts`](delta.test.ts) | 1MB truncation idempotent; newlines counted on the increment only; `append` neither searches nor slices the output it holds; the meta line in both languages. |
-| [`dom.ts`](dom.ts) | `$` / `el` / `#messages` / `ensureMessageDom` (a no-op once the Shell has rendered; never before `render()`). |
+| [`dom.ts`](dom.ts) | `$` / `el` / `#messages` / `ensureMessageDom` (a no-op once the Shell has rendered; never before `render()`); `keepStripsLast` keeps the session's two file strips ("This session's inputs / files") last in the transcript when a turn adds a row, so both follow one placement rule. |
 | [`fetch.ts`](fetch.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` (6926-6961). |
 | [`handlers.ts`](handlers.ts) | `text_reset` / `text_chunk` / `user_message` WS handlers. |
 | [`handlers.test.ts`](handlers.test.ts) | mine / stale-turn guards; idempotent register. |

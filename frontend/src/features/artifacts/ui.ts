@@ -273,16 +273,22 @@ export function renderConversationArtifacts(): void {
     g.appendChild(tiles);
     const host = document.getElementById("messages");
     if (!host) return;
-    let review: HTMLElement | null = host.querySelector(".step-review");
-    while (review && review.parentElement !== host) {
-      review = review.parentElement as HTMLElement | null;
-    }
-    host.insertBefore(g, review || null);
+    // One rule for both strips: last in the transcript (`messages/dom.ts`
+    // `keepStripsLast` holds them there while a turn adds rows). They list
+    // the session's files, so they belong to no single turn.
+    host.appendChild(g);
   };
   // UP-5: the person's own files -- uploads and project-folder imports -- are
-  // inputs; only what the agent produced is "generated".
-  section("uploaded", filesT("art.inputs"), arts.filter((a) => a.is_user_upload), filesT("art.inputs.title"));
-  section("generated", translate("art.generated"), arts.filter((a) => !a.is_user_upload));
+  // inputs; only what the agent produced is "generated". CHAT-6: both labels
+  // say "this session": a bare "GENERATED · 3" under a failed follow-up read
+  // as if that turn had produced three files.
+  section("uploaded", filesT("art.session.inputs"), arts.filter((a) => a.is_user_upload), filesT("art.inputs.title"));
+  section(
+    "generated",
+    filesT("art.session.files"),
+    arts.filter((a) => !a.is_user_upload),
+    filesT("art.session.files.title"),
+  );
   callWindow("down");
 }
 
