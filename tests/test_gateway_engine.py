@@ -2087,6 +2087,73 @@ def test_web_turn_offers_only_run_cell_after_two_ignored_cell_notes(
     assert kinds == ["native_tools", "native_tools", "code", "code", "terminal"]
 
 
+def test_web_session_keeps_run_cell_on_offer_once_it_has_used_it(monkeypatch, tmp_path):
+    """A model that calls run_cell whenever it is offered. After its first
+    run_cell the next call declares the catalogue with run_cell beside it and
+    the model's next cell (which completes the turn) comes straight away. The
+    next message rebuilds the circuit from the ledger and still offers it."""
+
+    class Dispatcher:
+        last_output = None
+
+        def __call__(self, method, args):
+            return {"entries": [{"name": "demo.xlsx", "type": "file"}]}
+
+    runner, _hub, frame_id = _prepare_message_runner(
+        monkeypatch, tmp_path, Dispatcher()
+    )
+    runner.cfg.max_turns = 4
+    offered: list[list[str]] = []
+    executed: list[str] = []
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg, on_delta
+        index = len(offered)
+        names = [
+            getattr(tool, "name", None) or tool["name"] for tool in kwargs["tools"]
+        ]
+        offered.append(names)
+        if names == ["run_cell"]:
+            code = "print('sheets', 2)"
+        elif "run_cell" in names:
+            code = f"host.submit_output({{'call': {index}}}, ['read'])"
+        else:
+            call = _native_call(f"call-{index}", "list_dir", {"path": f"dir{index}"})
+            return _native_reply("现在用 Python 读取 Excel。", [call])[0]
+        call = _native_call(
+            f"call-{index}", "run_cell", {"language": "python", "code": code}
+        )
+        return _native_reply("现在用 Python 读取 Excel。", [call])[0]
+
+    def fake_execute(state, code, origin, emit, stream=True, language="python"):
+        del origin, emit, stream, language
+        executed.append(code)
+        if "submit_output" in code:
+            state.dispatcher.last_output = {
+                "output": {"sheets": 2},
+                "completion_bullets": ["read"],
+            }
+        return {"result": {"stdout": "sheets 2\n", "stderr": "", "error": None}}
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+
+    first = runner.run_message(frame_id, "default", "读取 demo.xlsx")
+    second = runner.run_message(frame_id, "default", "再画一张图")
+
+    assert (first["status"], second["status"]) == ("completed", "completed")
+    assert offered[2] == ["run_cell"]
+    for names in (offered[0], offered[1]):
+        assert "list_dir" in names and "run_cell" not in names
+    for names in (offered[3], offered[4]):
+        assert "list_dir" in names and names[-1] == "run_cell"
+    assert executed == [
+        "print('sheets', 2)",
+        "host.submit_output({'call': 3}, ['read'])",
+        "host.submit_output({'call': 4}, ['read'])",
+    ]
+
+
 def test_post_cell_status_shows_the_sessions_paths_relative(monkeypatch, tmp_path):
     """CHAT-4 follow-up: a cell that printed `host.save_artifact(...)`'s result
     put the snapshot's absolute path into the conversation. The Web turn hands
