@@ -34,6 +34,8 @@ vi.mock("../sessions/transcript", async (original) => ({
 vi.mock("./list", async (original) => ({
   ...await original<typeof import("./list")>(),
   renderEmptySession: paint.empty,
+  // "Load earlier" hands its page to the turn grouping (list.test.ts covers it).
+  prependHistory: (_host: unknown, rows: unknown[]) => rows.forEach((row) => paint.pageRows(row)),
   scheduleFramedRender: (items: unknown[], opts: { onDone?: () => void }) => {
     paint.batches(items);
     opts.onDone?.();

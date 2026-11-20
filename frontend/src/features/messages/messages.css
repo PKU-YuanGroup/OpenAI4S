@@ -63,6 +63,53 @@
   flex: none;
 }
 
+/*
+ * The running turn's status row (messages/turnStatus.ts). It takes exactly
+ * the room the turn's action row takes once the turn ends (8px above, 30px
+ * high, the message's 20px below), so the transcript does not move when one
+ * replaces the other.
+ */
+.turn-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--col);
+  min-height: 30px;
+  margin: 0 auto 20px;
+  color: var(--text-400);
+  font-size: 13px;
+}
+.msg + .turn-status {
+  margin-top: -12px;
+}
+.turn-status .ts-detail {
+  font-variant-numeric: tabular-nums;
+}
+.turn-status .ts-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .turn-status .ts-dot {
+    animation: turn-status-pulse 1.4s ease-in-out infinite;
+  }
+}
+@keyframes turn-status-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
 .activity.stopped .a-head .ic {
   color: var(--text-400);
 }

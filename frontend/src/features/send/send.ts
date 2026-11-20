@@ -58,7 +58,7 @@ import {
 } from "../autocomplete/mentions";
 import { effProject } from "../customize/host";
 import { composerChoiceMark, composerModelChoicePending, modelT, noteAdmittedModelBinding, noteSessionModelBinding } from "../customize/models";
-import { $, el } from "../messages/dom";
+import { $, el, keepStripsLast } from "../messages/dom";
 import { continueMarker, isContinuePrompt } from "../messages/failure";
 import { down } from "../messages/scroll";
 import { runtimeSummary } from "../notebook/kernel";
@@ -66,6 +66,7 @@ import { api, apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { enableComposer, grow } from "../sessions/dom";
 import { loadSessions } from "../sessions/load";
+import { renderProjectRefChips, stripProjectRefSyntax } from "../messages/list";
 import { renderComposerRefChips, renderMessageRefChips } from "../sessions/transcript";
 import { sub } from "../ws/connect";
 import {
@@ -83,6 +84,7 @@ import { callLane, setCancelHidden } from "./host";
 import { iconEl } from "./icon";
 import { bindBackgroundCells } from "./background";
 import { bindTurnProgress } from "./progress";
+import { bindTurnStatus } from "../messages/turnStatus";
 import {
   acceptTurnTicket,
   openTurnTicket,
@@ -406,8 +408,6 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       return;
     }
   }
-  const g = $(".generated");
-  if (g) g.remove();
   const es = $(".empty-session");
   if (es) es.remove();
   const confirmHistorySubmission = beginHistorySubmission();
@@ -418,7 +418,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   w.dataset.requestId = requestId;
   const b = el("div", "bubble");
   // As a reload shows it: a typed `@name#v-<id>` reads as `@name`.
-  b.textContent = stripRefVersions(text) || t("send.imageAnnotationFallback");
+  b.textContent = stripProjectRefSyntax(stripRefVersions(text)) || t("send.imageAnnotationFallback");
   w.appendChild(b);
   if (isContinuePrompt(text)) {
     // Sent by the Continue button: the platform's line, not the user's words.
@@ -433,10 +433,19 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       sentMentions.map((m) => ({ display_name: m.filename, version_id: m.version_id, artifact_id: m.artifact_id })),
     );
   }
+  // A project-folder file the `@` menu named, as the reload shows it.
+  renderProjectRefChips(w, text);
   if (anns.length) w.appendChild(annotAttachment(anns));
-  if (queueing) w.classList.add("queued");
+  if (queueing) {
+    w.classList.add("queued");
+    // Says so in words: a slightly faded bubble read as delivered. Shown only
+    // while the row is `.queued`, which its turn's `user_message` removes.
+    w.appendChild(el("span", "msg-queued", sendCopy("queuedBadge")));
+  }
   const host = $("#messages");
   if (host) host.appendChild(w);
+  // The session's file strips stay last, under the new question.
+  keepStripsLast(host);
   down(true);
   let payload = text;
   if (planNow) {
@@ -843,6 +852,8 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
   }
   // The turn clock beside Stop and the session's token chip.
   bindTurnProgress();
+  // What the running turn is doing, in the conversation itself.
+  bindTurnStatus();
   // Background cells still running, above the composer, each stoppable.
   bindBackgroundCells();
   // Delegated on the document root, not on the node: a re-created #composer

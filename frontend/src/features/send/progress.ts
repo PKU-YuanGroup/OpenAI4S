@@ -14,6 +14,7 @@ import { effect, untracked } from "@preact/signals";
 import { LANG } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
+import { actionTimeline } from "../../stores/timeline";
 import { api } from "../sessions/api";
 import { S } from "../timeline/s";
 
@@ -21,6 +22,9 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
   en: {
     clockTitle: "This turn has been running for {0}",
     usageTitle: "Tokens this session has used so far: {0} in · {1} out. Click for the breakdown.",
+    usageParts:
+      "Tokens this session has used so far: {0} new input · {1} cached input · {2} output{3}. Cached input is context sent again and read from the provider's cache.",
+    usageReasoning: " (of which {0} reasoning)",
     tokens: "{0} tokens",
     minutes: "{0} min {1} s",
     seconds: "{0} s",
@@ -28,6 +32,9 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
   zh: {
     clockTitle: "本回合已运行 {0}",
     usageTitle: "本会话累计用量：输入 {0} · 输出 {1} tokens。点击查看明细。",
+    usageParts:
+      "本会话累计用量：新输入 {0} · 缓存输入 {1} · 输出 {2}{3} tokens。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
+    usageReasoning: "（其中推理 {0}）",
     tokens: "{0} tokens",
     minutes: "{0} 分 {1} 秒",
     seconds: "{0} 秒",
@@ -91,6 +98,53 @@ export function paintTurnClock(now: number = Date.now()): void {
   node.classList.remove("hidden");
 }
 
+export type UsageBreakdown = { fresh: number; cached: number; output: number; reasoning: number };
+
+/**
+ * TURN-7: what the one total is made of. "3.7M tokens" was 95% context read
+ * back from the provider's cache. The per-call usage the action timeline
+ * already carries is summed: `input_tokens` includes the cached part, so new
+ * input is the rest. Null unless the whole timeline of this session is loaded.
+ */
+export function usageBreakdown(timeline: unknown, fid: string | null): UsageBreakdown | null {
+  const view = timeline as { root_frame_id?: unknown; has_earlier?: unknown; groups?: unknown } | null;
+  if (!view || !fid || view.root_frame_id !== fid || view.has_earlier === true || !Array.isArray(view.groups)) {
+    return null;
+  }
+  const sum = { input: 0, cached: 0, output: 0, reasoning: 0 };
+  for (const group of view.groups as Array<{ usage?: Record<string, unknown> | null }>) {
+    const usage = group && group.usage;
+    if (!usage) continue;
+    sum.input += Number(usage.input_tokens) || 0;
+    sum.cached += Number(usage.cache_read) || 0;
+    sum.output += Number(usage.output_tokens) || 0;
+    sum.reasoning += Number(usage.reasoning_tokens) || 0;
+  }
+  if (!(sum.input + sum.output > 0)) return null;
+  return { fresh: Math.max(0, sum.input - sum.cached), cached: sum.cached, output: sum.output, reasoning: sum.reasoning };
+}
+
+/** The frame's own totals, kept for the tooltip's fallback wording. */
+let lastTotals: { fid: string; input: number; output: number } | null = null;
+
+/** The chip's tooltip: the breakdown when the timeline can give one, else input / output. */
+export function paintUsageTitle(): void {
+  if (typeof document === "undefined") return;
+  const node = document.getElementById("session-usage");
+  const totals = lastTotals;
+  if (!node || !totals || totals.fid !== currentId.value) return;
+  const parts = usageBreakdown(actionTimeline.value, totals.fid);
+  node.title = parts
+    ? copy(
+        "usageParts",
+        parts.fresh.toLocaleString(),
+        parts.cached.toLocaleString(),
+        parts.output.toLocaleString(),
+        parts.reasoning ? copy("usageReasoning", parts.reasoning.toLocaleString()) : "",
+      )
+    : copy("usageTitle", totals.input.toLocaleString(), totals.output.toLocaleString());
+}
+
 let usageSeq = 0;
 
 /** Re-read the open session's token totals into the header chip. */
@@ -116,7 +170,8 @@ export async function refreshSessionUsage(): Promise<void> {
   const total = input + output;
   node.classList.toggle("hidden", !(total > 0));
   node.textContent = copy("tokens", formatTokens(total));
-  node.title = copy("usageTitle", input.toLocaleString(), output.toLocaleString());
+  lastTotals = { fid, input, output };
+  paintUsageTitle();
 }
 
 let bound = false;
@@ -154,5 +209,10 @@ export function bindTurnProgress(onUsageClick?: () => void): void {
   effect(() => {
     void currentId.value;
     untracked(() => void refreshSessionUsage());
+  });
+  // The timeline is read after the session opens and again as the turn goes on.
+  effect(() => {
+    void actionTimeline.value;
+    untracked(() => paintUsageTitle());
   });
 }

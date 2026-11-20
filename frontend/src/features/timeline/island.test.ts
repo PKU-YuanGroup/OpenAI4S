@@ -565,6 +565,30 @@ describe("queue strip", () => {
     expect(strip.classList.contains("hidden")).toBe(true);
   });
 
+  it("offers to stop the running turn so the queued message starts now (TURN-5)", () => {
+    const doc = mountDocument();
+    const stop = doc.createElement("button");
+    stop.id = "cancel-btn";
+    doc.body.appendChild(stop);
+    const pressed = vi.fn();
+    stop.onclick = pressed;
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: null, queue: [queued("exec-a")] };
+    renderQueueStrip();
+    const now = doc.querySelector("#queue-strip .queue-send-now")!;
+    expect(now.textContent).toBe("Stop and send now");
+    now.click();
+    // The one Stop path, once: a second press would stop the message that just started.
+    expect(pressed).toHaveBeenCalledTimes(1);
+    now.click();
+    expect(pressed).toHaveBeenCalledTimes(1);
+    // A stop already in flight hides Stop; the strip's button then does nothing.
+    stop.classList.add("hidden");
+    renderQueueStrip();
+    doc.querySelector("#queue-strip .queue-send-now")!.click();
+    expect(pressed).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels a queued row in the session that queued it, not the one now open", async () => {
     const doc = mountDocument();
     const calls = stubApi(() => ({ ok: true }));

@@ -226,11 +226,19 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
         url = a.get("url", "")
         return ("fetch", f"Reading {_domain(url) or url}", {"url": url})
     if method == "web_download":
+        from openai4s.tools.web_download import DEFAULT_MAX_BYTES
+
         url = a.get("url", "")
+        # The size is not known before the request is made; the cap it stops
+        # at is, and the approval card says so.
         return (
             "fetch",
             f"Downloading from {_domain(url) or url}",
-            {"url": url, "path": a.get("path", "")},
+            {
+                "url": url,
+                "path": a.get("path", ""),
+                "max_bytes": a.get("max_bytes") or DEFAULT_MAX_BYTES,
+            },
         )
     if method == "science_import_dataset":
         return (
@@ -1100,6 +1108,14 @@ def _step_end(
         return (
             {"results": items, "note": note, "source": src},
             _plural(n, "result") + (f" · {src}" if src else ""),
+        )
+    if method == "web_download":
+        # A download returns no text: counted as characters it read
+        # "0 chars" for a file of any size. The result's path is the resolved
+        # local one, so the card keeps the request's workspace-relative path.
+        return (
+            {"bytes": r.get("bytes"), "url": r.get("url")},
+            f"{int(r.get('bytes') or 0):,} bytes",
         )
     if kind == "fetch":
         text = r.get("content") or r.get("text") or r.get("markdown") or ""

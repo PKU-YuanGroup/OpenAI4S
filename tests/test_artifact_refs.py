@@ -651,3 +651,22 @@ def test_a_single_ordinary_reference_is_unaffected(tmp_path):
     )
     assert problems == []
     assert "1,2" in resolved
+
+
+def test_title_text_keeps_reference_syntax_out_of_a_provisional_title():
+    # CHAT-8: a first message opening with a project-folder reference titled
+    # its session with the token.
+    assert (
+        artifact_refs.title_text("@project:plate3.xlsx  fit the growth curves")
+        == "fit the growth curves"
+    )
+    assert (
+        artifact_refs.title_text("compare @project:data/a.csv and @notes.md#v-abcdef12")
+        == "compare and @notes.md"
+    )
+    # Nothing but references: the file names, not an empty title.
+    assert (
+        artifact_refs.title_text("@project:data/a.csv @project:b.xlsx")
+        == "a.csv, b.xlsx"
+    )
+    assert artifact_refs.title_text("plain question") == "plain question"

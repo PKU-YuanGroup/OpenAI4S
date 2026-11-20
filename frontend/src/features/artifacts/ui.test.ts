@@ -284,6 +284,7 @@ it("fullscreen download keeps the selected immutable version", async () => {
 it("conversation strip tiles open the latest tab rather than pinning the head at click time", async () => {
   const { artifacts } = await import("../../stores/artifacts");
   const { renderConversationArtifacts } = await import("./ui");
+  const { filesT } = await import("./copy");
   class Node {
     children: Node[] = []; textContent = ""; className = ""; id = ""; src = ""; open = false;
     onclick?: () => unknown;
@@ -313,6 +314,10 @@ it("conversation strip tiles open the latest tab rather than pinning the head at
     // ART-9: the strip starts as one collapsed line with no tiles built.
     const strip = walk(host).find((node) => node.className === "generated");
     expect(strip?.open).toBe(false);
+    // CHAT-6: it lists the session's files, and says so (it sits under the
+    // last turn, where a bare "GENERATED · 1" read as that turn's output).
+    expect(strip?.children[0]?.textContent).toBe(filesT("art.session.files") + " · 1");
+    expect(filesT("art.session.files")).toMatch(/session|本会话/);
     expect(walk(host).find((node) => node.className === "tile")).toBeUndefined();
     strip!.open = true;
     strip!.ontoggle?.();
