@@ -79,11 +79,6 @@ export function EnvironmentCard({
         </div>
         {action}
       </div>
-      {readiness.ready ? null : (
-        <div class="standard-readiness-explicit" data-readiness-optional="">
-          {ot("onboarding.env.optional")}
-        </div>
-      )}
       {absent.length ? (
         <div class="standard-readiness-gap">
           <div class="standard-readiness-label">{ot("onboarding.env.missing")}</div>
@@ -108,18 +103,28 @@ export function EnvironmentCard({
           </div>
         ) : null,
       )}
-      {readiness.remediation &&
-      readiness.remediation.requires_explicit_action &&
-      readiness.remediation.commands.length ? (
-        <div class="standard-readiness-remediation">
-          <div class="standard-readiness-label">{ot("onboarding.env.remediation")}</div>
-          <div class="standard-readiness-explicit">{t("environment.readiness.explicitOnly")}</div>
-          {readiness.remediation.commands.map((item) => (
-            <CopyCommand key={item.command} item={item} />
-          ))}
-          <div class="standard-readiness-explicit">{ot("onboarding.env.notOnPath")}</div>
-        </div>
-      ) : null}
+      {readiness.ready ? null : (
+        // No route builds these environments from the browser (M-5), so the
+        // terminal steps stay, one click away instead of a wall of text.
+        <details class="standard-readiness-remediation" data-readiness-commands="">
+          <summary>{ot("onboarding.env.showCommand")}</summary>
+          <div class="standard-readiness-explicit" data-readiness-optional="">
+            {ot("onboarding.env.optional")}
+          </div>
+          {readiness.remediation &&
+          readiness.remediation.requires_explicit_action &&
+          readiness.remediation.commands.length ? (
+            <>
+              <div class="standard-readiness-label">{ot("onboarding.env.remediation")}</div>
+              <div class="standard-readiness-explicit">{t("environment.readiness.explicitOnly")}</div>
+              {readiness.remediation.commands.map((item) => (
+                <CopyCommand key={item.command} item={item} />
+              ))}
+              <div class="standard-readiness-explicit">{ot("onboarding.env.notOnPath")}</div>
+            </>
+          ) : null}
+        </details>
+      )}
     </section>
   );
 }
@@ -157,21 +162,24 @@ function NetworkCard({
             : ot("onboarding.readiness.appNetworkOff"),
         )}
       </div>
-      <div class="ds" data-network="egress">
-        {network.egress === "allowlist"
-          ? ot("onboarding.readiness.egressOn")
-          : ot("onboarding.readiness.egressOff")}
-      </div>
-      <div class="ds" data-network="kernel">
-        {ot("onboarding.readiness.kernelNetwork")}
-      </div>
-      {network.contacted ? null : (
-        <div class="ds">{ot("onboarding.readiness.notContacted")}</div>
-      )}
       <div class="ds">
         {ot("onboarding.readiness.platform", systemName(platform))} ·{" "}
         {nativeRuntime ? ot("onboarding.readiness.runtimeYes") : ot("onboarding.readiness.runtimeNo")}
       </div>
+      <details class="onb-more">
+        <summary>{ot("onboarding.readiness.more")}</summary>
+        <div class="ds" data-network="egress">
+          {network.egress === "allowlist"
+            ? ot("onboarding.readiness.egressOn")
+            : ot("onboarding.readiness.egressOff")}
+        </div>
+        <div class="ds" data-network="kernel">
+          {ot("onboarding.readiness.kernelNetwork")}
+        </div>
+        {network.contacted ? null : (
+          <div class="ds">{ot("onboarding.readiness.notContacted")}</div>
+        )}
+      </details>
     </section>
   );
 }

@@ -91,6 +91,19 @@ export function environmentPath(status: OnboardingStatus | null): PathChoice | n
   };
 }
 
+/**
+ * The configured model step 1 starts on: the active profile, else the only
+ * configured choice (one saved profile, or only the environment's model).
+ */
+export function defaultPath(status: OnboardingStatus): PathChoice | null {
+  const active = status.profiles.find((p) => asString(p.id) === status.active_id && status.active_id);
+  if (active) return pathFromProfile(active as Profile);
+  const env = environmentPath(status);
+  const choices = status.profiles.length + (env ? 1 : 0);
+  if (choices !== 1) return null;
+  return env || pathFromProfile(status.profiles[0] as Profile);
+}
+
 /** The env model is the path: chosen but not saved yet (its profile id is still empty). */
 function isEnvironmentPath(path: PathChoice | null, status: OnboardingStatus | null): boolean {
   const env = environmentPath(status);
@@ -598,6 +611,11 @@ export function WizardHost() {
       setStatus(next);
       // Mounted after a failed first read: a member still never gets it.
       dispatch({ type: "hydrate", complete: next.complete || !next.can_configure });
+      // One obvious choice is made for the user (M-5): the model in use, or
+      // the only configured one. Continue then shows at once; it used to stay
+      // hidden until the single radio was clicked.
+      const preset = defaultPath(next);
+      if (preset) dispatch({ type: "choosePath", path: preset });
     } catch (error) {
       if (!alive.current) return;
       const fail = wizardErrorFromUnknown(error);
@@ -940,7 +958,10 @@ export function WizardHost() {
             {ot("onboarding.lang.switch")}
           </button>
         </div>
-        <div class="onb-sub">{ot("onboarding.subtitle")}</div>
+        {/* Once, on the first step: it took a third of the box on every step (M-5). */}
+        {state.surface === "wizard" && state.step !== "path" ? null : (
+          <div class="onb-sub">{ot("onboarding.subtitle")}</div>
+        )}
         {errorText ? (
           <div class="onb-error" role="alert">
             {errorText}
@@ -998,6 +1019,11 @@ export function WizardHost() {
                 {state.providerRequests === 0 ? (
                   <div class="ds">{ot("onboarding.test.idle")}</div>
                 ) : null}
+                {state.testClicked && !testing && state.receipt?.reachable === true ? (
+                  <div class="onb-ok" role="status" data-onboarding-test-ok="">
+                    {ot("onboarding.test.ok")}
+                  </div>
+                ) : null}
                 <div class="onb-actions">
                   <button
                     type="button"
@@ -1042,6 +1068,21 @@ export function WizardHost() {
           >
             {ot("onboarding.skip")}
           </button>
+          {state.surface === "wizard" && state.step !== "path" ? (
+            <button
+              type="button"
+              class="outline-btn"
+              data-onboarding-back=""
+              disabled={busy}
+              onClick={() => {
+                if (state.step === "test") leaveTest();
+                const index = REQUIRED_STEPS.indexOf(state.step);
+                dispatch({ type: "goto", step: REQUIRED_STEPS[Math.max(0, index - 1)]! });
+              }}
+            >
+              {ot("onboarding.back")}
+            </button>
+          ) : null}
           {state.surface === "wizard" && state.step !== "path" && state.step !== "project" ? (
             <button
               type="button"
