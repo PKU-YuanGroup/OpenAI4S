@@ -12,6 +12,7 @@ import { _openGen, _titleName, currentId, folders, project, sessions } from "../
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
 import { API, ApiError, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
+import { expectOwnDeletion, forgetOwnDeletion } from "./deleted";
 import { openRunLocationDialog } from "./compute";
 import { composerCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
@@ -500,9 +501,12 @@ export async function renameFrame(fid: string): Promise<void> {
 }
 
 export async function deleteSession(fid: string): Promise<void> {
+  // This tab moves on itself; its own deletion's event is not "deleted elsewhere".
+  expectOwnDeletion(fid);
   try {
     await api("/frames/" + fid, { method: "DELETE" });
   } catch (e) {
+    forgetOwnDeletion(fid);
     hint(t("toast.deleteFailed", apiErrorText(e)), true);
     return;
   }
