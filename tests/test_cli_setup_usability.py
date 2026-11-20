@@ -309,5 +309,21 @@ def test_serve_ready_lines_reach_a_redirected_log_while_the_daemon_runs(
     assert rc == 0
     (visible,) = seen_while_serving
     assert "openai4s listening at http://127.0.0.1:8812/" in visible
-    assert "openai4s url" in visible
     assert "web UI ready" in visible
+
+
+def test_serve_names_the_way_to_sign_in_once_and_with_the_path_fallback(tmp_path):
+    """CLI-9. One start printed two sign-in lines in two wordings: the
+    gateway's notice (`run `openai4s url` on this host …`) and serve's own,
+    which alone carried the `uv run` fallback for a .venv not on PATH. Serve
+    no longer prints its own; the gateway's notice is the sentence the CLI
+    prints everywhere else (`--detached`, "already running")."""
+    from openai4s.server import local_auth
+
+    cli = _cli()
+    cfg = Config(data_dir=tmp_path, host="127.0.0.1", port=8812)
+
+    banner = local_auth.startup_auth_banner("127.0.0.1", 8812, team_mode=False)
+
+    assert banner.splitlines()[-1].strip() == cli._sign_in_hint(cfg)
+    assert "uv run openai4s url" in banner

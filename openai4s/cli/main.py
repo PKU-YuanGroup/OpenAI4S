@@ -985,12 +985,14 @@ def cmd_serve(args) -> int:
     # nohup, a redirect to a log file or `--detached` these lines -- the only
     # ones naming the address actually bound -- sat in the buffer until the
     # daemon exited, and the log of a running daemon never showed them.
+    # No sign-in line here: build_server has just printed the gateway's
+    # startup notice with the same sentence (or team mode's /login address),
+    # and printing ours too showed it twice in two wordings.
     print(
         f"openai4s listening at {_url(cfg, with_token=False)} "
         f"(model={cfg.llm.model})",
         flush=True,
     )
-    print(_sign_in_hint(cfg), flush=True)
     print("web UI ready. Ctrl-C to stop.", flush=True)
     if cfg.team_mode:
         # First boot of team mode with no accounts: print the bootstrap
