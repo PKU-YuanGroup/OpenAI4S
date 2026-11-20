@@ -290,3 +290,19 @@
 
 /* ART-8: a finished answer's key figures, under their links. */
 .md img.msg-fig{display:block;max-width:min(100%,520px);max-height:360px;margin:8px 0 4px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-000)}
+
+/* M-60: a completion's metrics, folded under one summary line. */
+.md details.md-metrics {
+  margin: 0 0 12px;
+}
+.md details.md-metrics > summary {
+  cursor: pointer;
+  color: var(--text-300);
+  font-size: 14px;
+}
+.md details.md-metrics[open] > summary {
+  margin-bottom: 6px;
+}
+.md details.md-metrics > ul {
+  font-variant-numeric: tabular-nums;
+}

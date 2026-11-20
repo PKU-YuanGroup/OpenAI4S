@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { esc } from "./esc";
-import { renderMd, mdInline } from "./render";
+import { CHAT_MD, renderMd, mdInline } from "./render";
 
 /**
  * The five hostile markdown samples from tests/browser_smoke.mjs
@@ -316,5 +316,37 @@ describe("Markdown Artifact relative images (ART-2)", () => {
   it("is off by default and in the no-resources mode", () => {
     expect(renderMd("![g](growth.png)")).toBe("<p>![g](growth.png)</p>");
     expect(renderMd("![g](growth.png)", { resources: "none", relativeImages: true })).toBe("<p>g</p>");
+  });
+});
+
+describe("a completion's metrics in the conversation (M-60)", () => {
+  const completion = [
+    "The hazard ratio for the new drug is below 1.",
+    "",
+    "Metrics:",
+    "- n raw: 181",
+    "- hr new drug ci lower: 0.505",
+    "- peptide avg MW (Da): 1019.14",
+    "",
+    "Completed work:",
+    "- Fitted the Cox model",
+  ].join("\n");
+
+  it("folds the list under a summary that counts it, values exact", () => {
+    const html = renderMd(completion, CHAT_MD);
+    expect(html).toContain(
+      '<details class="md-fold md-metrics"><summary>Metrics · 3</summary><ul><li>n raw: 181</li><li>hr new drug ci lower: 0.505</li><li>peptide avg MW (Da): 1019.14</li></ul></details>',
+    );
+    // Only that block: the rest of the answer reads as before.
+    expect(html).toContain("<p>Completed work:</p><ul><li>Fitted the Cox model</li></ul>");
+    expect(renderMd("指标：\n- 样本数: 181", CHAT_MD)).toBe(
+      '<details class="md-fold md-metrics"><summary>指标 · 1</summary><ul><li>样本数: 181</li></ul></details>',
+    );
+  });
+
+  it("is off outside the conversation and for a heading with no list", () => {
+    expect(renderMd(completion)).toContain("<p>Metrics:</p><ul>");
+    expect(renderMd("Metrics:\n\nnone recorded", CHAT_MD)).toBe("<p>Metrics:</p><p>none recorded</p>");
+    expect(renderMd("Metrics: see below\n- a: 1", CHAT_MD)).not.toContain("<details");
   });
 });

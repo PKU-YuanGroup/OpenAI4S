@@ -84,6 +84,14 @@ export type MdRenderOptions = {
    */
   math?: boolean;
   /**
+   * M-60: a completion's "Metrics:" / "指标：" list is folded under a
+   * `<details>` whose summary counts the entries. The keys are the model's own
+   * machine names ("hr new drug ci lower"); folded, they no longer lead the
+   * answer, and the exact values stay one click away. Only the conversation
+   * opts in.
+   */
+  foldMetrics?: boolean;
+  /**
    * A relative image (`![a](growth.png)`) becomes `<img data-md-src>` with no
    * `src`, for the Artifact viewer to resolve against sibling Artifacts.
    * Ignored with `resources: "none"`.
@@ -376,6 +384,12 @@ function mdList(
   return { html: mdBuildList(items, { v: 0 }, 0, options), next: i };
 }
 
+/** How the conversation renders its Markdown (stream and history alike). */
+export const CHAT_MD: MdRenderOptions = { foldMetrics: true };
+
+/** The headings `server/completions.py` puts over a completion's metrics. */
+const METRICS_HEADINGS = ["Metrics:", "指标："];
+
 export function renderMd(src: string | null | undefined, options: MdRenderOptions = {}): string {
   const lines = String(src == null ? "" : src)
     .replace(/\r\n?/g, "\n")
@@ -518,6 +532,22 @@ function renderLines(lines: string[], quoteDepth: number, options: MdRenderOptio
     ) {
       para.push(lines[i] || "");
       i++;
+    }
+    const heading = para.length === 1 ? (para[0] || "").trim() : "";
+    if (options.foldMetrics && METRICS_HEADINGS.includes(heading) && i < n && listRe.test(lines[i] || "")) {
+      const start = i;
+      const lr = mdList(lines, i, n, options);
+      const entries = lines.slice(start, lr.next).filter((row) => /^[-*+][ \t]/.test(row)).length;
+      html +=
+        '<details class="md-fold md-metrics"><summary>' +
+        esc(heading.replace(/[:：]$/, "")) +
+        " · " +
+        entries +
+        "</summary>" +
+        lr.html +
+        "</details>";
+      i = lr.next;
+      continue;
     }
     html += "<p>" + mdInline(para.join(" "), options) + "</p>";
   }
