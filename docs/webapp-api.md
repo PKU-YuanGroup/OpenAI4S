@@ -833,7 +833,7 @@ The first Agent/user Cell starts only the selected language; a native-tool or
 | `GET /frames/{fid}/kernel` | Kernel status: `{frame_id,state("none"|"running"|"stopped"|"ended"),alive,generation,generation_id,generation_ordinal,last_activity_at,ended_reason,turn_running,cell_count,manual_stop,repl_enabled,env:{name,language,python_version,pending,kernel_id}}`. `repl_enabled` is the manual-cells switch: `OPENAI4S_NOTEBOOK_REPL` forces it on, otherwise `GET /notebook/settings` decides. |
 | `GET/PUT /notebook/settings` | The Settings switch for manual Notebook cells: `{repl_enabled, env_forced, can_change}`. `PUT {"repl_enabled": true|false}` (a JSON boolean, else `400`) persists it; `env_forced` is true when `OPENAI4S_NOTEBOOK_REPL` forces it on, and then the switch cannot turn it off. Instance-wide: in team mode `PUT` is admin-only (`403 admin_only`) and `can_change` is false for members. |
 | `POST /frames/{fid}/kernel/install` | Body `{packages:[…]}` or `{package}` (+`restart`, default true) → pip-install report (`{ok,installed,…,restarted}`). In team mode this is admin only, including when the caller owns the session, because the installation changes a shared runtime environment. |
-| `GET /frames/{fid}/environments` | `{"environments":[…],"current","current_r","default","pending"}`. `current_r` is the R environment the session's R cells use (`null`: the default resolution). |
+| `GET /frames/{fid}/environments` | `{"environments":[…],"current","current_r","default","pending","runtimes"}`. `current_r` is the R environment the session's R cells use (`null`: the default resolution). `runtimes` says what each language actually runs in: `python` `{available,environment,kind,version}` and `r` `{available,selected,environment,kind,version,checked,packages:[{name,available}]}`, where `kind` is `builtin` / `managed` / `local`, `environment` is `""` for an R found on PATH, `checked` says whether the key-package probe ran, and no field carries a path. |
 | `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. An R-only env retargets the session's R cells instead (`language: "r"`; the next R cell starts there). Not gated by the manual-cells switch. In team mode this is owner/admin only. |
 
 When Stage 1 trusted delivery is enabled, `kernel/execute` also performs the
@@ -1111,7 +1111,7 @@ kept is the tail; `output` is prefixed with a notice when anything was dropped.
 | `GET /environments` | Same shape as `GET /frames/{fid}/environments`, without a session. |
 | `GET /kernel/packages` | `{"packages":[…],"preinstall":{…}}`. |
 | `GET /kernel/environment` | Full env freeze for Provenance → Environment. |
-| `POST /kernel/install` | Body `{packages}` or `{package}` → install report (no kernel restart). Admin only in team mode because it mutates the shared runtime environment. |
+| `POST /kernel/install` | Body `{packages}` or `{package}` → install report (no kernel restart). Admin only in team mode because it mutates the shared runtime environment. A successful report carries `installed_versions:[{name,version}]`, read back from the installed metadata. |
 
 ### Memory / network / web-search config
 

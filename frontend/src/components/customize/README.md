@@ -8,8 +8,8 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 
 | File | Responsibility |
 | --- | --- |
-| [`ComputeTab.tsx`](ComputeTab.tsx) | Compute, remote GPU, jobs. One job poll chain, 1500ms on the lease; a newer read supersedes an older one. The readiness card is onboarding's `EnvironmentCard`; the status comes from send's `refreshEnvironmentStatus`. |
-| [`ComputeTab.test.tsx`](ComputeTab.test.tsx) | Submit and Cancel re-read the job list without starting a second poll chain; an older read that answers late is dropped. |
+| [`ComputeTab.tsx`](ComputeTab.tsx) | Compute, remote GPU, jobs. Shows what Python and R run in for the open session (or the defaults): environment name, kind (built-in / managed / local) and version, plus whether R's key packages load, read from `runtimes` on the environment listing. The tracked-package row lists installed versions and what is missing. An install's outcome stays on screen: the version installed, the environment it went into and what a running kernel must do. One job poll chain, 1500ms on the lease; a newer read supersedes an older one. The readiness card is onboarding's `EnvironmentCard`; the status comes from send's `refreshEnvironmentStatus`. |
+| [`ComputeTab.test.tsx`](ComputeTab.test.tsx) | The Python and R rows name environment, kind and version and say which R packages load; the package row carries versions; an install's result (with version) and a failed install's reason stay on screen. Submit and Cancel re-read the job list without starting a second poll chain; an older read that answers late is dropped. |
 | [`ConnectorsTab.tsx`](ConnectorsTab.tsx) | Connector list; DataPro card is isolated in `vendors/`. |
 | [`Customize.tsx`](Customize.tsx) | `#cust` shell, tablist, Esc / backdrop close. |
 | [`Customize.test.tsx`](Customize.test.tsx) | A selection drag that ends on the Customize or nested-editor backdrop keeps the dialog open; a press on the backdrop still closes it. The modal does not re-render for a settling load or a nested editor, and the Skills and Memory tabs re-render for a change of project, not for every session-list update. |

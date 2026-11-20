@@ -8,8 +8,8 @@ F-19 Customize 模态。九个 tab 组件、嵌套编辑层，以及 `vendors/` 
 
 | 文件 | 职责 |
 | --- | --- |
-| [`ComputeTab.tsx`](ComputeTab.tsx) | Compute、远程 GPU、jobs。Job 轮询只有一条链，1500ms 绑在租约上；新的读取取代旧的。就绪卡片用 onboarding 的 `EnvironmentCard`；状态来自 send 的 `refreshEnvironmentStatus`。 |
-| [`ComputeTab.test.tsx`](ComputeTab.test.tsx) | 提交和取消任务都会重读任务列表，但不会再开第二条轮询链；晚到的旧读取结果被丢弃。 |
+| [`ComputeTab.tsx`](ComputeTab.tsx) | Compute、远程 GPU、jobs。显示当前会话（没有会话时为默认）的 Python 和 R 实际运行在哪里：环境名、来源（内置 / 托管 / 本机）和版本，以及 R 的关键包能否加载，数据来自环境列表接口的 `runtimes`。常用包一行列出已安装的版本和缺少的包。安装结果留在页面上：装上的版本、装到哪个环境、运行中的内核需要做什么。Job 轮询只有一条链，1500ms 绑在租约上；新的读取取代旧的。就绪卡片用 onboarding 的 `EnvironmentCard`；状态来自 send 的 `refreshEnvironmentStatus`。 |
+| [`ComputeTab.test.tsx`](ComputeTab.test.tsx) | Python 和 R 两行给出环境名、来源和版本，并说明哪些 R 包可用；常用包一行带版本；安装结果（含版本）和安装失败的原因留在页面上。提交和取消任务都会重读任务列表，但不会再开第二条轮询链；晚到的旧读取结果被丢弃。 |
 | [`ConnectorsTab.tsx`](ConnectorsTab.tsx) | Connector 列表；DataPro 卡隔离在 `vendors/`。 |
 | [`Customize.tsx`](Customize.tsx) | `#cust` 外壳、tablist、Esc / 背景关闭。 |
 | [`Customize.test.tsx`](Customize.test.tsx) | 在输入框里拖选文字、到 Customize 或嵌套编辑器的遮罩上才松开，弹窗保持打开；在遮罩上按下仍会关闭。加载状态变化或嵌套编辑器开关不会让模态重新渲染；Skills 与 Memory tab 只在项目变化时重新渲染，不随每次会话列表更新重新渲染。 |
