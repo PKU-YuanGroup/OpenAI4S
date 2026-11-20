@@ -43,6 +43,7 @@ import { NestedEditor } from "./NestedEditor";
 import { ExperimentsTab } from "./ExperimentsTab";
 import { DiagnosticsTab } from "./DiagnosticsTab";
 import { UpdateCheck } from "./UpdateCheck";
+import { a11yT } from "../../features/chrome/a11y-copy";
 import "./customize.css";
 
 /**
@@ -220,7 +221,7 @@ export function Customize() {
           </button>
         </div>
         <div class="cust-body">
-          <nav class="cust-tabs" role="tablist" aria-label="Settings sections">
+          <nav class="cust-tabs" role="tablist" aria-label={a11yT("a11y.settingsSections")}>
             {tabs.map((id) => (
               <button
                 key={id}

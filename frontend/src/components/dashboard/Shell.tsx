@@ -7,6 +7,7 @@ import { projectFilesCopy } from "../../features/sessions/copy";
 import { browseProjectFolder } from "../../features/sessions/project-files";
 import { callLane } from "../../features/send/host";
 import { TeamChip } from "../../features/chrome/team-chip";
+import { a11yT, skipToContent } from "../../features/chrome/a11y-copy";
 import { DashHeroText } from "./DashHero";
 import { ModelKeyNotice, ModelSelect } from "./ModelSelect";
 import "./dashboard.css";
@@ -57,8 +58,8 @@ export function Shell() {
   return (
     <>
       <div id="conn-banner" role="status" aria-live="polite" hidden />
-      <a class="skip-link" href="#messages">
-        Skip to content
+      <a class="skip-link" href="#messages" onClick={skipToContent}>
+        {a11yT("a11y.skip")}
       </a>
       <div id="dashboard" class={pendingRoute ? "dashboard hidden" : "dashboard"}>
         <header class="dash-head">

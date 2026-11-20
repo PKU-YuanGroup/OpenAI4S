@@ -2036,9 +2036,10 @@ body{line-height:1.55;color:var(--text-000)}
 #dash-project-search:focus-visible,.timeline-search-input:focus-visible{outline:none}
 
 /* ---- buttons: coral primary · hairline secondary · ghost icon ---- */
-.solid-btn{justify-content:center;height:36px;padding:0 16px;border-radius:var(--radius);background:var(--clay);color:#fff;font-size:14px;font-weight:500;line-height:1}
+/* SYNC-30: white 14px text needs 4.5:1; on --clay it was 3.28:1, on --clay-em 5.06:1. */
+.solid-btn{justify-content:center;height:36px;padding:0 16px;border-radius:var(--radius);background:var(--clay-em);color:#fff;font-size:14px;font-weight:500;line-height:1}
 .solid-btn:hover{opacity:1}
-.solid-btn:active{background:var(--clay-em)}
+.solid-btn:active{background:color-mix(in srgb,var(--clay-em) 82%,#000)}
 .solid-btn:disabled{background:var(--line);color:var(--text-400);cursor:default}
 .solid-btn.small{height:30px;padding:0 12px;font-size:13px}
 html[data-theme="dark"] .solid-btn{background:var(--clay);color:#fff}
@@ -2607,6 +2608,8 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .timeline-kind,.timeline-inspector-label,.timeline-overview-label,.timeline-search-label{font-size:12px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--text-000)}
 .timeline-status,.timeline-status.running,.timeline-status.queued,.timeline-status.finalizing{padding:2px 8px;background:var(--bg-200);color:var(--text-000);font-size:12px;text-transform:none}
 .timeline-status.failed,.timeline-status.error,.timeline-status.cancelled{background:var(--danger);color:#fff}
+/* SYNC-30: dark --danger is lighter; white on it was 3.26:1, the dark ink is 5.7:1. */
+html[data-theme="dark"] .timeline-status:is(.failed,.error,.cancelled){color:var(--dark)}
 .timeline-status.completed,.timeline-status.success{background:var(--bg-200);color:var(--text-000)}
 .timeline-card-title{font-size:14px;font-weight:500}
 .timeline-meta{font-size:12px;color:var(--text-400)}

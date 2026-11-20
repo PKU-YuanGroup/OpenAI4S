@@ -8,6 +8,8 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 
 | File | Responsibility |
 | --- | --- |
+| [`a11y-copy.ts`](a11y-copy.ts) | `a11yT`: workbench-wide labels for assistive tech (the skip link, the Settings tab list) in zh/en; `skipToContent` sends the skip link to the view on screen (`#messages`, else `#dashboard`) and focuses it (SYNC-21, SYNC-30). |
+| [`a11y-copy.test.ts`](a11y-copy.test.ts) | The skip link focuses whichever view is on screen. |
 | [`api.ts`](api.ts) | Same-origin JSON helper (`/api/v1`, `ApiError`). |
 | [`attachments.ts`](attachments.ts) | M-10 composer attachment tray (`#composer-attachments`): each chosen file as a chip with its name, size or state, and a × that takes it back (a file the upload created is deleted from the session; a new version of an existing file only leaves the tray), under a line saying the files go with the next message. Send takes the session's settled entries and a refused message puts them back. |
 | [`attachments.test.ts`](attachments.test.ts) | Chips per state, per-composer visibility (a first upload's files follow its new session), × deleting only an Artifact the upload created, a refused delete keeping the chip, × while uploading, take/restore on send. |
