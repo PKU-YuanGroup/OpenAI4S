@@ -108,7 +108,7 @@ function notebookCellState(cell: NotebookCell): {
 function cellRef(id: string): string {
   const cell = nbFindCell(id);
   if (!cell || cell.cell_index == null) return nbT("nb.stale.laterCell");
-  return (cell.language || cell.kernel_id || "python") + " [" + cell.cell_index + "]";
+  return kernelLabel(cell.language || cell.kernel_id || "python") + " [" + cell.cell_index + "]";
 }
 
 const SUPERSEDED = /^(?:depends on (\S+)(?: \(S\d+\))?: )?variable '([^']+)' was superseded by (\S+)(?: \(S\d+\))?$/;
@@ -494,7 +494,7 @@ function CellCode({ cell, live }: { cell: NotebookCell; live: boolean }) {
       cacheKey={nbCellKey(cell)}
       source={rec ? rec.source.value : cell.source || ""}
       lang={cell.language || k}
-      langLabel={(cell.language || k) + " [" + idx + "]"}
+      langLabel={kernelLabel(cell.language || k) + " [" + idx + "]"}
       status={rec ? rec.status.value || "running" : cell.status || "ok"}
       env={cell.environment || cell.env}
     />
@@ -735,7 +735,7 @@ function OwnerChips() {
           <span
             key={kind}
             class={"nb-owner-chip" + (active ? " active" : "")}
-            title={active && active.execution_id ? active.execution_id : kind}
+            title={active && active.execution_id ? active.execution_id : nbLabelT("nb.owner." + kind)}
           >
             {nbLabelT("nb.owner." + kind)}
           </span>
@@ -1158,7 +1158,7 @@ export function cellNode(e: NotebookCell): HTMLElement {
   const wrap = el("div", "os-code");
   const head = el("div", "oc-head");
   const lg = el("span", "oc-lang");
-  lg.appendChild(el("span", null, (e.language || k) + " [" + idx + "]"));
+  lg.appendChild(el("span", null, kernelLabel(e.language || k) + " [" + idx + "]"));
   head.appendChild(lg);
   const right = el("div", "oc-right");
   right.appendChild(el("span", "nbc-status " + st, cellStatusLabel(String(st))));
