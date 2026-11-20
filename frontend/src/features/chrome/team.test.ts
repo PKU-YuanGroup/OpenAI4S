@@ -7,6 +7,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 type ModalApi = typeof import("./modal");
 type TeamApi = typeof import("./team");
+type ChipNode = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
 
 class MiniClassList {
   tokens = new Set<string>();
@@ -206,6 +207,8 @@ describe("F-20 team surface", () => {
   let raf: FrameRequestCallback[];
   let team: TeamApi;
   let modal: ModalApi;
+  let identity: typeof import("./team-identity");
+  let chip: typeof import("./team-chip");
 
   beforeEach(async () => {
     vi.resetModules();
@@ -222,6 +225,8 @@ describe("F-20 team surface", () => {
     });
     modal = await import("./modal");
     team = await import("./team");
+    identity = await import("./team-identity");
+    chip = await import("./team-chip");
   });
 
   afterEach(() => {
@@ -229,17 +234,22 @@ describe("F-20 team surface", () => {
     vi.resetModules();
   });
 
-  it("ensureTeamDom is idempotent and creates contract ids", () => {
+  it("ensureTeamDom is idempotent and builds the modals only", () => {
     team.ensureTeamDom();
     team.ensureTeamDom();
-    expect(doc.getElementById("team-user")).not.toBeNull();
-    expect(doc.getElementById("team-admin")).not.toBeNull();
     expect(doc.getElementById("team-admin-modal")).not.toBeNull();
     expect(doc.getElementById("team-admin-body")).not.toBeNull();
     expect(doc.getElementById("team-admin-close")).not.toBeNull();
     expect(doc.getElementById("team-files-modal")).not.toBeNull();
-    expect(doc.getElementById("team-user")?.classList.contains("hidden")).toBe(true);
-    expect(doc.getElementById("team-admin")?.classList.contains("hidden")).toBe(true);
+    // TEAM-21: the chip and the entry buttons are the Shell's (team-chip.tsx).
+    // Appended to <body> they sat under the dashboard where nobody saw them.
+    for (const id of ["team-user", "team-admin", "team-files-dash", "team-files-btn"]) {
+      expect(doc.getElementById(id), id).toBeNull();
+    }
+    expect(doc.body.children.map((node) => node.id).sort()).toEqual([
+      "team-admin-modal",
+      "team-files-modal",
+    ]);
   });
 
   it("401 on /auth/me redirects to /login", async () => {
@@ -249,43 +259,87 @@ describe("F-20 team surface", () => {
     expect(loc.replace).toHaveBeenCalledWith("/login");
   });
 
-  it("admin identity unhides the chip and the Team admin button", async () => {
-    team.ensureTeamDom();
+  const signedIn = async (user: Record<string, unknown>): Promise<void> => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
         status: 200,
         ok: true,
-        json: async () => ({
-          team_mode: true,
-          user: { username: "erika", role: "admin" },
-        }),
+        json: async () => ({ team_mode: true, user }),
       }),
     );
     await team.probeTeamAuth();
-    const chip = doc.getElementById("team-user");
-    expect(chip?.classList.contains("hidden")).toBe(false);
-    expect(chip?.textContent).toContain("erika");
-    expect(chip?.textContent).toContain("admin");
-    expect(doc.getElementById("team-admin")?.classList.contains("hidden")).toBe(false);
+  };
+  /** Every element vnode under a `TeamChip` render, flattened. */
+  const chipNodes = (placement: "dash" | "side"): ChipNode[] => {
+    const out: ChipNode[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== "object") return;
+      const vnode = node as ChipNode;
+      if (typeof vnode.type === "string") out.push(vnode);
+      walk(vnode.props?.children);
+    };
+    walk(chip.TeamChip({ placement }));
+    return out;
+  };
+  const chipText = (node: unknown): string => {
+    if (Array.isArray(node)) return node.map(chipText).join("");
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    return node && typeof node === "object" ? chipText((node as ChipNode).props?.children) : "";
+  };
+  const menuLabels = (user: Record<string, unknown>): string[] =>
+    team.teamMenuItems(user).flatMap((item) => (item.label ? [item.label] : []));
+
+  it("single-user mode renders no chip at all", () => {
+    expect(chip.TeamChip({ placement: "dash" })).toBeNull();
+    expect(chip.TeamChip({ placement: "side" })).toBeNull();
   });
 
-  it("a member does not see the Team admin button", async () => {
-    team.ensureTeamDom();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        status: 200,
-        ok: true,
-        json: async () => ({
-          team_mode: true,
-          user: { username: "mallory", role: "member" },
-        }),
-      }),
-    );
-    await team.probeTeamAuth();
-    expect(doc.getElementById("team-user")?.classList.contains("hidden")).toBe(false);
-    expect(doc.getElementById("team-admin")?.classList.contains("hidden")).toBe(true);
+  it("an admin gets a named chip in both placements and a Team admin menu entry", async () => {
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("en");
+    await signedIn({ username: "erika", role: "admin", kind: "user" });
+    expect(identity.teamUser.value?.username).toBe("erika");
+    const dash = chipNodes("dash").find((node) => node.props?.id === "team-user");
+    expect(dash, "dashboard chip").toBeTruthy();
+    expect(String(dash?.props?.class)).not.toContain("hidden");
+    expect(chipText(dash)).toContain("erika");
+    expect(chipText(dash)).toContain("admin");
+    const side = chipNodes("side").find((node) => node.props?.id === "team-user-side");
+    expect(side, "sidebar chip").toBeTruthy();
+    expect(String(side?.props?.["aria-label"])).toContain("erika");
+    expect(menuLabels({ username: "erika", role: "admin" })).toEqual(["Team admin", "Sign out"]);
+    await runtime.setLang("system");
+  });
+
+  it("a member gets the chip and Sign out, never the Team admin entry", async () => {
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("en");
+    await signedIn({ username: "mallory", role: "member", kind: "user" });
+    expect(chipNodes("dash").some((node) => node.props?.id === "team-user")).toBe(true);
+    expect(menuLabels({ username: "mallory", role: "member" })).toEqual(["Sign out"]);
+    await runtime.setLang("system");
+  });
+
+  it("Sign out posts /auth/logout and lands on /login without a native confirm", async () => {
+    const confirmSpy = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirmSpy);
+    const fetchSpy = vi.fn().mockResolvedValue({ status: 200, ok: true, json: async () => ({ ok: true }) });
+    vi.stubGlobal("fetch", fetchSpy);
+    const signOutItem = team.teamMenuItems({ username: "mallory", role: "member" }).at(-1);
+    signOutItem?.onClick?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledWith("/api/v1/auth/logout", { method: "POST" });
+    expect(loc.replace).toHaveBeenCalledWith("/login");
+  });
+
+  it("the Team files buttons follow the roots the server lists", () => {
+    expect(chipNodes("dash")).toEqual([]);
+    identity.teamFilesAvailable.value = true;
+    expect(chipNodes("dash").some((node) => node.props?.id === "team-files-dash")).toBe(true);
+    expect(chipNodes("side").some((node) => node.props?.id === "team-files-btn")).toBe(true);
   });
 
   it("a guest landing on / is sent to /replay", async () => {

@@ -71,15 +71,23 @@ await admin.goto(BASE + "/", { waitUntil: "domcontentloaded" });
 await admin.waitForURL("**/login", { timeout: 10000 });
 check(true, "anonymous root redirects to /login");
 await login(admin, ADMIN);
-await admin.waitForSelector("#team-user:not(.hidden)", { timeout: 10000 });
+await admin.waitForSelector("#team-user", { state: "visible", timeout: 10000 });
 const chip = await admin.textContent("#team-user");
 check(chip.includes(ADMIN.u) && chip.includes("admin"), "chip names the admin");
-await admin.waitForSelector("#team-admin:not(.hidden)", { timeout: 10000 });
-check(true, "admin sees the Team admin button");
+// The chip is a real, clickable control in the dashboard header (TEAM-21):
+// an ordinary click -- no force, no scroll -- opens the user menu.
+await admin.click("#team-user");
+const adminEntry = admin.locator(".ctx-menu .ctx-item", { hasText: "Team admin" });
+await adminEntry.waitFor({ state: "visible", timeout: 5000 });
+check(true, "admin sees the Team admin entry in the user menu");
+check(
+  (await admin.locator(".ctx-menu .ctx-item", { hasText: "Sign out" }).count()) === 1,
+  "the user menu offers Sign out",
+);
 
 // -- 2. the governance panel renders live data ------------------------------
 console.log("2. governance panel");
-await admin.click("#team-admin");
+await adminEntry.click();
 await admin.waitForSelector("#team-admin-modal:not(.hidden)", { timeout: 5000 });
 await admin.waitForSelector(".team-admin-table", { timeout: 8000 });
 const panel = await admin.textContent("#team-admin-body");
@@ -128,12 +136,16 @@ const memberAdminStatus = await member.evaluate(
   async () => (await fetch("/api/v1/team/users")).status,
 );
 check(memberAdminStatus === 403, `member gets 403 on /team/users (${memberAdminStatus})`);
+await member.waitForSelector("#team-user", { state: "visible", timeout: 10000 });
+await member.click("#team-user");
+await member
+  .locator(".ctx-menu .ctx-item", { hasText: "Sign out" })
+  .waitFor({ state: "visible", timeout: 5000 });
 check(
-  await member.evaluate(() =>
-    document.getElementById("team-admin").classList.contains("hidden"),
-  ),
-  "member does not see the Team admin button",
+  (await member.locator(".ctx-menu .ctx-item", { hasText: "Team admin" }).count()) === 0,
+  "member's user menu has no Team admin entry",
 );
+await member.keyboard.press("Escape");
 
 // -- 5. admin visibility -----------------------------------------------------
 console.log("5. admin visibility");

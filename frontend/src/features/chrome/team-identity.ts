@@ -20,6 +20,9 @@ export type TeamUser = {
 
 export const teamUser = signal<TeamUser | null>(null);
 
+/** `GET /files` listed at least one data root: the Team files panel has something to show. */
+export const teamFilesAvailable = signal(false);
+
 /** An admin account, or the loopback CLI's service identity. */
 export function isTeamAdmin(): boolean {
   const user = teamUser.value;

@@ -8,11 +8,12 @@
  */
 
 import { LANG } from "../../i18n/runtime";
-import { paintIcon } from "../icons/paths";
+import type { MenuItem } from "../sessions/chrome";
 import { API } from "./api";
 import { byId, el } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
-import { teamUser, type TeamUser } from "./team-identity";
+import { teamRoleLabel, teamT } from "./team-copy";
+import { teamFilesAvailable, teamUser, type TeamUser } from "./team-identity";
 
 /**
  * Admin-panel section headings. A local table: the generated
@@ -69,36 +70,17 @@ function pageLocation(): { pathname: string; replace: (url: string) => void } {
   return { pathname: "/", replace: () => undefined };
 }
 
-/** Inject contract DOM if F-13's shell has not painted it yet. Idempotent. */
+/**
+ * The team modals. Idempotent.
+ *
+ * Only the modals: they are fixed overlays, so `<body>` is where they belong.
+ * The signed-in user, the admin entry and the Team files buttons used to be
+ * appended here too, which put them after the Shell in the page flow, under
+ * the dashboard, where nobody could see or click them. The Shell renders
+ * them now (`team-chip.tsx`).
+ */
 export function ensureTeamDom(): void {
   if (typeof document === "undefined") return;
-  if (!byId("team-user")) {
-    const chip = el("button", "outline-btn hidden");
-    chip.id = "team-user";
-    chip.title = "Signed in — click to sign out";
-    document.body.appendChild(chip);
-  }
-  if (!byId("team-admin")) {
-    const btn = el("button", "outline-btn hidden");
-    btn.id = "team-admin";
-    const ic = el("span", "ic");
-    paintIcon(ic, "users", 16);
-    btn.appendChild(ic);
-    btn.appendChild(el("span", null, "Team admin"));
-    document.body.appendChild(btn);
-  }
-  if (!byId("team-files-dash")) {
-    const btn = el("button", "outline-btn hidden");
-    btn.id = "team-files-dash";
-    btn.appendChild(el("span", null, "Team files"));
-    document.body.appendChild(btn);
-  }
-  if (!byId("team-files-btn")) {
-    const btn = el("button", "side-nav-item hidden");
-    btn.id = "team-files-btn";
-    btn.appendChild(el("span", null, "Team files"));
-    document.body.appendChild(btn);
-  }
   if (!byId("team-admin-modal")) {
     document.body.appendChild(buildAdminModal());
   }
@@ -183,34 +165,51 @@ export function fmtSize(n: number): string {
   return n + " B";
 }
 
-function applyIdentity(me: AuthMe | null): void {
-  if (!me || me.team_mode !== true || !me.user) return;
-  const chip = byId("team-user");
-  if (chip) {
-    chip.textContent =
-      (me.user.username || "") + (me.user.role === "admin" ? " (admin)" : "");
-    chip.classList.remove("hidden");
-    chip.onclick = () => {
-      if (!confirm("Sign out?")) return;
-      fetch(API + "/auth/logout", { method: "POST" })
-        .then(() => pageLocation().replace("/login"))
-        .catch(() => pageLocation().replace("/login"));
-    };
+/** What the signed-in user is called on screen: the display name when one is set. */
+export function teamUserName(user: TeamUser): string {
+  return String(user.display_name || user.username || "");
+}
+
+/** Ends the login session, then shows the login page whatever the server said. */
+export function signOut(): void {
+  const leave = () => pageLocation().replace("/login");
+  fetch(API + "/auth/logout", { method: "POST" }).then(leave, leave);
+}
+
+/**
+ * The user menu, as data. Who is signed in (never a button), then what that
+ * account may open; `Team admin` exists for an admin only.
+ */
+export function teamMenuItems(user: TeamUser): MenuItem[] {
+  const head = el("div", "team-menu-head");
+  head.appendChild(el("div", "team-menu-name", teamUserName(user)));
+  // The login name is repeated only when a display name stands in for it above.
+  const login = user.display_name && user.username ? user.username + " · " : "";
+  head.appendChild(el("div", "team-menu-sub", login + teamRoleLabel(user.role)));
+  const own: MenuItem[] = [];
+  if (user.role === "admin" || user.kind === "service") {
+    own.push({ label: teamT("team.menu.admin"), icon: "users", onClick: () => openAdmin() });
   }
+  return [
+    { node: head },
+    { sep: true },
+    ...own,
+    ...(own.length ? [{ sep: true } as MenuItem] : []),
+    { label: teamT("team.menu.signOut"), icon: "arrow-left", onClick: () => signOut() },
+  ];
+}
+
+/** Opens the user menu under `anchor` (the chip the Shell renders). */
+export function openUserMenu(anchor: HTMLElement): void {
+  const user = teamUser.value;
+  if (!user) return;
+  void import("../sessions/chrome").then(({ openMenu }) => openMenu(anchor, teamMenuItems(user)));
 }
 
 function applyGovernance(me: AuthMe | null): void {
   if (!me || me.team_mode !== true || !me.user) return;
   if (me.user.role === "guest") {
     if (pageLocation().pathname === "/") pageLocation().replace("/replay");
-    return;
-  }
-  if (me.user.role === "admin" || me.user.kind === "service") {
-    const btn = byId("team-admin");
-    if (btn) {
-      btn.classList.remove("hidden");
-      btn.onclick = () => openAdmin();
-    }
   }
 }
 
@@ -224,7 +223,6 @@ export async function probeTeamAuth(): Promise<void> {
     }
     const me = r.ok ? ((await r.json()) as AuthMe) : null;
     teamUser.value = me && me.team_mode === true && me.user ? me.user : null;
-    applyIdentity(me);
     applyGovernance(me);
   } catch {
     /* team mode off / network */
@@ -245,14 +243,7 @@ function probeTeamFiles(): void {
   fetch(API + "/files")
     .then((r) => (r.ok ? r.json() : null))
     .then((d: { roots?: TeamFilesRoot[] } | null) => {
-      if (!d || !d.roots || !d.roots.length) return;
-      (["team-files-btn", "team-files-dash"] as const).forEach((id) => {
-        const b = byId(id);
-        if (b) {
-          b.classList.remove("hidden");
-          b.onclick = () => openTeamFilesPanel();
-        }
-      });
+      teamFilesAvailable.value = !!(d && d.roots && d.roots.length);
     })
     .catch(() => undefined);
 }

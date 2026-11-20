@@ -30,6 +30,14 @@ body.layout-wide{--col:1080px}
 body.col-resizing{cursor:col-resize;user-select:none}
 body.sidebar-collapsed .col-resizer-side{display:none}
 
+/* The signed-in user and Team files, in the dashboard header and the sidebar foot. */
+.dash-actions .team-chip{height:36px;border:1px solid var(--border);border-radius:999px;font-size:13px;flex:none}
+.dash-actions .team-chip:hover{background:var(--bg-100)}
+.team-chip .ic{display:inline-flex}
+.team-user-name{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-menu-head{padding:6px 8px 4px;max-width:260px}
+.team-menu-name{font-size:14px;font-weight:600;color:var(--text-000);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-menu-sub{font-size:12px;color:var(--text-300);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .team-files-crumbs{padding:10px 18px;border-bottom:.5px solid var(--border);font-size:13px;color:var(--text-300)}
 .team-files-crumbs a{color:var(--text-100);text-decoration:none;font-weight:600}
 .team-files-list{padding:6px 0}

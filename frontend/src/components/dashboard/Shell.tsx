@@ -6,6 +6,7 @@ import { routesToWorkspace } from "../../features/sessions/dom";
 import { projectFilesCopy } from "../../features/sessions/copy";
 import { browseProjectFolder } from "../../features/sessions/project-files";
 import { callLane } from "../../features/send/host";
+import { TeamChip } from "../../features/chrome/team-chip";
 import { DashHeroText } from "./DashHero";
 import { ModelSelect } from "./ModelSelect";
 import "./dashboard.css";
@@ -96,6 +97,7 @@ export function Shell() {
               data-icon-size="20"
               type="button"
             />
+            <TeamChip placement="dash" />
           </div>
         </header>
         {/* The attention stream (features/attention/boot.ts) mounts beside the
@@ -220,6 +222,7 @@ export function Shell() {
               aria-label="Theme"
               type="button"
             />
+            <TeamChip placement="side" />
             <div class="lang-seg" role="group" aria-label="Language / 语言">
               <button class="lang-btn" data-lang="zh" type="button">
                 中文
