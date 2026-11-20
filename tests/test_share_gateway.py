@@ -148,6 +148,10 @@ def test_enable_configured_creates_tunnel(tmp_path):
 
 
 def _put_share_settings(node, body: dict):
+    return _call(node, "PUT", "/api/v1/share/settings", body)
+
+
+def _call(node, method: str, path: str, body: dict):
     import json
 
     from openai4s.server import local_auth
@@ -155,7 +159,7 @@ def _put_share_settings(node, body: dict):
 
     payload = json.dumps(body).encode("utf-8")
     head = (
-        "PUT /api/v1/share/settings HTTP/1.1\r\n"
+        f"{method} {path} HTTP/1.1\r\n"
         f"Host: 127.0.0.1:{node.port}\r\n"
         f"{local_auth.TOKEN_HEADER}: {node.token}\r\n"
         "Content-Type: application/json\r\n"
@@ -188,5 +192,24 @@ def test_enabling_without_a_relay_is_refused_and_nothing_is_kept(tmp_path):
         # Turning it off is always allowed.
         status, body = _put_share_settings(node, {"enabled": False})
         assert status == 200 and body["state"] == "disabled"
+    finally:
+        node.close()
+
+
+def test_creating_a_share_without_a_relay_names_the_missing_setup(tmp_path):
+    """It answered "sharing is disabled; enable it" -- advice that cannot work
+    while enabling is refused for want of a relay."""
+    from tests.test_team_auth_routes import _TeamDaemon
+
+    node = _TeamDaemon(tmp_path, team_mode=False)
+    try:
+        fid = node.store.new_frame(kind="turn", project_id="default", status="done")
+
+        status, body = _call(node, "POST", f"/api/v1/frames/{fid}/shares", {})
+
+        assert status == 409
+        assert body["code"] == "sharing_unconfigured"
+        assert "OPENAI4S_SHARE_RELAY_URL" in body["error"]
+        assert "docs/webshare.md" in body["error"]
     finally:
         node.close()

@@ -389,3 +389,82 @@ def test_share_enable_without_a_relay_fails_and_says_what_to_configure(
     assert "OPENAI4S_SHARE_RELAY_URL" in captured.err
     assert "openai4s relay serve" in captured.err
     assert "docs/webshare.md" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        (
+            {"state": "disabled", "configured": False},
+            ["Sharing is off.", "OPENAI4S_SHARE_AUTH_TOKEN", "docs/webshare.md"],
+        ),
+        (
+            {"state": "disabled", "configured": True},
+            ["Sharing is off. Turn it on with `openai4s share enable`."],
+        ),
+        (
+            {"state": "unconfigured", "missing": ["relay_url", "auth_token"]},
+            [
+                "missing: OPENAI4S_SHARE_RELAY_URL, OPENAI4S_SHARE_AUTH_TOKEN",
+                "openai4s relay serve",
+            ],
+        ),
+        ({"state": "connected", "configured": True}, ["connected to the relay"]),
+    ],
+)
+def test_share_status_is_a_sentence_with_the_next_step(
+    monkeypatch, capsys, reply, expected
+):
+    """`share status` printed bare JSON (`{"state": "disabled", …}`) without
+    `--json` and said nothing about what to do next."""
+    status = _share(monkeypatch, ["status"], {("GET", "/share/status"): (200, reply)})
+
+    out = capsys.readouterr().out
+    assert status == 0
+    assert not out.lstrip().startswith("{")
+    for fragment in expected:
+        assert fragment in out
+
+
+def test_share_status_json_is_unchanged(monkeypatch, capsys):
+    reply = {"state": "disabled", "configured": False}
+    _share(monkeypatch, ["status", "--json"], {("GET", "/share/status"): (200, reply)})
+    assert json.loads(capsys.readouterr().out) == reply
+
+
+def test_share_list_with_no_shares_says_so(monkeypatch, capsys):
+    """It printed nothing and exited 0."""
+    status = _share(monkeypatch, ["list"], {("GET", "/shares"): (200, {"shares": []})})
+
+    assert status == 0
+    assert capsys.readouterr().out.strip() == "no shares"
+
+
+def test_share_create_without_a_relay_prints_the_setup_steps(monkeypatch, capsys):
+    status = _share(
+        monkeypatch,
+        ["create", "f-abc"],
+        {("POST", "/frames/f-abc/shares"): _UNCONFIGURED},
+    )
+
+    err = capsys.readouterr().err
+    assert status == 2
+    assert "OPENAI4S_SHARE_RELAY_URL" in err and "openai4s share enable" in err
+
+
+def test_share_revoke_and_disable_answer_in_words(monkeypatch, capsys):
+    _share(
+        monkeypatch,
+        ["revoke", "sh-1"],
+        {("DELETE", "/shares/sh-1"): (200, {"ok": True, "already": False})},
+    )
+    _share(
+        monkeypatch,
+        ["disable"],
+        {("PUT", "/share/settings"): (200, {"state": "disabled", "configured": True})},
+    )
+
+    out = capsys.readouterr().out
+    assert "revoked share sh-1" in out
+    assert "Sharing is off." in out
+    assert "{" not in out

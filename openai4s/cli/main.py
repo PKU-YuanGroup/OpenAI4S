@@ -2745,6 +2745,41 @@ relay is configured yet. To set it up:
   3. Run `openai4s share enable`.
 Full steps: docs/webshare.md"""
 
+#: The daemon's `share/status` names missing settings by field; a person sets
+#: the variable.
+_SHARE_SETTING_VARS = {
+    "relay_url": "OPENAI4S_SHARE_RELAY_URL",
+    "auth_token": "OPENAI4S_SHARE_AUTH_TOKEN",
+}
+
+
+def _share_status_text(rec: dict) -> str:
+    """`share status` / `enable` / `disable` in words, with the next step.
+
+    They printed the daemon's JSON (`{"state": "disabled", "configured":
+    false}`) whatever the outcome; `--json` still does.
+    """
+
+    state = str(rec.get("state") or "")
+    if state == "disabled":
+        if rec.get("configured"):
+            return "Sharing is off. Turn it on with `openai4s share enable`."
+        return "Sharing is off.\n" + _SHARE_SETUP_STEPS
+    if state == "unconfigured":
+        missing = ", ".join(
+            _SHARE_SETTING_VARS.get(str(name), str(name))
+            for name in rec.get("missing") or []
+        )
+        return (
+            f"Sharing is on, but no relay is configured (missing: {missing}).\n"
+            + _SHARE_SETUP_STEPS
+        )
+    if state == "connected":
+        return "Sharing is on and connected to the relay."
+    if state == "connecting":
+        return "Sharing is on; connecting to the relay."
+    return f"Sharing state: {state or 'unknown'}"
+
 
 def cmd_share(args) -> int:
     cfg = get_config()
@@ -2822,11 +2857,22 @@ def cmd_share(args) -> int:
     elif action == "list":
         for item in rec.get("shares", []):
             print(f"{item['share_id']}\t{item['status']}\t{item.get('url', '')}")
+        if not rec.get("shares"):
+            # Nothing at all read as "the command did not run".
+            print("no shares")
     elif action == "import":
         rid = rec.get("root_frame_id")
         print(
             f"imported session {rid} (view-only). Open the web UI and use "
             "“Restart fresh” to continue."
+        )
+    elif action in ("status", "enable", "disable"):
+        print(_share_status_text(rec))
+    elif action == "revoke":
+        print(
+            f"share {args.share_id} was already revoked"
+            if rec.get("already")
+            else f"revoked share {args.share_id}; its link no longer works"
         )
     else:
         print(json.dumps(rec, ensure_ascii=False))
