@@ -418,3 +418,24 @@ def test_the_summary_separates_deliverables_and_reads_metrics_plainly():
     )
     assert "产物：" not in zh
     assert "过程文件（脚本、日志、输入副本，2 个）：" in zh
+
+
+def test_the_summary_never_links_the_platforms_own_spill_files():
+    """ART-4: a context-output-*.json spill is the platform's bookkeeping. It is
+    stored hidden, but a row that reaches the summary anyway (un-hidden, or an
+    older caller) must not be offered as a result or as a working file."""
+    text = completion_message(
+        {"output": {"summary": "Done."}},
+        [
+            {"artifact_id": "a1", "filename": "fit.csv", "version_id": "v-1"},
+            {
+                "artifact_id": "a2",
+                "filename": "context-output-0123456789abcdef.json",
+                "version_id": "v-2",
+            },
+        ],
+        language="en",
+    )
+    assert "[fit.csv](" in text
+    assert "context-output" not in text
+    assert "Working files" not in text

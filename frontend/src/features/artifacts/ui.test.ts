@@ -225,6 +225,56 @@ it("a failed session read shows Retry instead of an empty grid (AUDIT A26)", asy
 });
 
 
+it("folds process files under the results and leaves them out of the count (ART-4)", async () => {
+  const { currentId } = await import("../../stores/session");
+  const { renderFilesGrid } = await import("./ui");
+  const { loadArtifacts } = await import("./load");
+  const { visibleArtifacts } = await import("./files-index");
+  const { resetFilesIndexState } = await import("./state");
+  const { filesT } = await import("./copy");
+  class Node {
+    children: Node[] = []; className = ""; textContent = ""; title = ""; src = ""; open = false;
+    dataset: Record<string, string> = {};
+    set innerHTML(_value: string) { this.children = []; }
+    appendChild(child: Node) { this.children.push(child); return child; }
+    setAttribute() {}
+  }
+  const list = new Node();
+  const count = new Node();
+  vi.stubGlobal("document", {
+    getElementById: (id: string) => (id === "results-list" ? list : id === "results-count" ? count : null),
+    createElement: () => new Node(),
+  });
+  resetStoreFields();
+  resetFilesIndexState();
+  setArtifactsFetch(async () => jsonResponse([
+    { id: "r", filename: "report.md", role: "deliverable" },
+    { id: "s", filename: "scratch_inspect.py", role: "process" },
+    { id: "i", filename: "project-inputs/plate.xlsx", role: "process", is_user_upload: true },
+    { id: "c", filename: "context-output-0123456789abcdef.json", role: "internal" },
+  ]));
+  try {
+    currentId.value = "s1";
+    await loadArtifacts("s1");
+    renderFilesGrid();
+    const cards = (node: Node) => node.children.filter((child) => child.className === "art").map((card) => card.dataset.artifactId);
+    // A person's own input is a file of theirs, not a process file.
+    expect(cards(list).sort()).toEqual(["i", "r"]);
+    expect(count.textContent).toBe("2");
+    const group = list.children[list.children.length - 1]!;
+    expect(group.className).toBe("files-process");
+    expect(group.open).toBe(false);
+    expect(group.children[0]!.textContent).toBe(filesT("files.process", 1));
+    expect(cards(group.children[1]!)).toEqual(["s"]);
+    expect(visibleArtifacts().map((a) => a.id).sort()).toEqual(["i", "r"]);
+  } finally {
+    vi.unstubAllGlobals();
+    setArtifactsFetch(null);
+    resetStoreFields();
+  }
+});
+
+
 it("the Files grid says Loading, not empty, while the project index read is in flight (AUDIT A63)", async () => {
   const { filesScope } = await import("../../stores/artifacts");
   const { project } = await import("../../stores/session");

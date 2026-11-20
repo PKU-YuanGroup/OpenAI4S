@@ -14,7 +14,7 @@ import {
   versionResolveMessage,
 } from "./deeplink";
 import { labTabLabel, mountLab } from "../lab";
-import { artifactKind, browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
+import { artifactKind, browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, isProcessFile, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
 import { abortPreviewReads } from "./api";
@@ -312,6 +312,9 @@ export function renderFilesGrid(): void {
   paintFilesGrid();
 }
 
+/** The reader's choice to unfold the process files, kept across repaints. */
+let processFilesOpen = false;
+
 function paintFilesGrid(): void {
   const list = document.getElementById("results-list");
   const count = document.getElementById("results-count");
@@ -345,6 +348,11 @@ function paintFilesGrid(): void {
     list.appendChild(el("div", "files-empty", msg));
     return;
   }
+  // ART-4: scratch scripts and logs are how the results were made. They stay
+  // one click away, folded under the results and out of their count.
+  const working = arts.filter(isProcessFile);
+  if (count && working.length) count.textContent = String(arts.length - working.length);
+  const fold = working.length ? el("div", "files-process-grid") : null;
   arts.forEach((a) => {
     const hidden = (a.priority || 0) < 0;
     const card = el("div", hidden ? "art art-hidden" : "art");
@@ -374,8 +382,17 @@ function paintFilesGrid(): void {
       card.appendChild(el("div", "a-src", translate("files.fromSession", sessionNameFor(a.root_frame_id))));
     }
     card.onclick = () => presentViewer(a);
-    list.appendChild(card);
+    (fold && isProcessFile(a) ? fold : list).appendChild(card);
   });
+  if (!fold) return;
+  const group = el("details", "files-process") as HTMLDetailsElement;
+  group.open = processFilesOpen;
+  group.ontoggle = () => {
+    processFilesOpen = group.open;
+  };
+  group.appendChild(el("summary", "files-process-label", filesT("files.process", working.length)));
+  group.appendChild(fold);
+  list.appendChild(group);
 }
 
 /** ART-12: put a hidden file back in the list. */

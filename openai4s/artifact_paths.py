@@ -3,9 +3,42 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
+
+#: The name the gateway gives a large tool result it moved out of the model's
+#: context (`_archive_context_output`). It is stored as an Artifact version so
+#: the spill stays exact and addressable, but it is nobody's result.
+_CONTEXT_SPILL = re.compile(r"context-output-[0-9a-f]{16}\.json")
+#: Suffixes and folders of files that record how a result was made.
+_PROCESS_SUFFIXES = frozenset(
+    {".py", ".r", ".sh", ".bash", ".ipynb", ".log", ".pyc", ".tmp", ".bak", ".rds"}
+)
+_PROCESS_DIRS = ("project-inputs/", "inputs/", "__pycache__/", ".openai4s")
+
+
+def artifact_role(filename: str | None) -> str:
+    """``internal``, ``process`` or ``deliverable`` -- decided here and only here.
+
+    ``internal`` is the platform's own bookkeeping (context spill files): never
+    listed or counted, still readable by id and version for lineage. ``process``
+    is how the result was made -- scripts (a scratch script written four times
+    is four versions of one), logs, copies of inputs: kept and linked, folded
+    away from the deliverables and left out of their count. Everything else is
+    a ``deliverable``. The record itself is never changed by this answer.
+    """
+    lower = str(filename or "").lower().replace("\\", "/")
+    slash = lower.rfind("/")
+    if _CONTEXT_SPILL.fullmatch(lower[slash + 1 :]):
+        return "internal"
+    dot = lower.rfind(".")
+    if dot > slash and lower[dot:] in _PROCESS_SUFFIXES:
+        return "process"
+    if lower.startswith(_PROCESS_DIRS) or any(f"/{d}" in lower for d in _PROCESS_DIRS):
+        return "process"
+    return "deliverable"
 
 
 def ignored_artifact_path(path: Path) -> bool:

@@ -12,6 +12,7 @@ from openai4s.agent.actions import (
     NativeToolBatch,
     is_completion_only_cell,
 )
+from openai4s.artifact_paths import artifact_role
 from openai4s.server.urls import completion_artifact_url
 
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
@@ -505,24 +506,6 @@ def _summary_already_visible(output: Any, summary: str, previous: str) -> bool:
     return False
 
 
-#: Suffixes and folders of files that record how a result was made.
-_PROCESS_SUFFIXES = frozenset(
-    {".py", ".r", ".sh", ".bash", ".ipynb", ".log", ".pyc", ".tmp", ".bak", ".rds"}
-)
-_PROCESS_DIRS = ("project-inputs/", "inputs/", "__pycache__/", ".openai4s")
-
-
-def _artifact_kind(name: str) -> str:
-    lower = name.lower().replace("\\", "/")
-    dot = lower.rfind(".")
-    suffix = lower[dot:] if dot > lower.rfind("/") else ""
-    if suffix in _PROCESS_SUFFIXES:
-        return "process"
-    if lower.startswith(_PROCESS_DIRS) or any(f"/{d}" in lower for d in _PROCESS_DIRS):
-        return "process"
-    return "deliverable"
-
-
 def _artifact_lines(
     artifacts: Iterable[dict], *, trusted_delivery: bool = False
 ) -> list[tuple[str, str]]:
@@ -533,6 +516,9 @@ def _artifact_lines(
         if not isinstance(artifact, dict):
             continue
         name = str(artifact.get("filename") or "artifact")
+        role = artifact_role(name)
+        if role == "internal":
+            continue
         version_id = artifact.get("version_id") or artifact.get("latest_version_id")
         ident = str(artifact.get("artifact_id") or artifact.get("id") or "")
         target = completion_artifact_url(
@@ -550,7 +536,7 @@ def _artifact_lines(
             continue
         seen.add(key)
         label = name.replace("[", "\\[").replace("]", "\\]")
-        lines.append((_artifact_kind(name), f"[{label}]({target})"))
+        lines.append((role, f"[{label}]({target})"))
     return lines
 
 
