@@ -498,7 +498,7 @@ async function openArtifactReview(page, filename) {
       step = "ctx-item";
       await page.locator(".ctx-item").filter({ hasText: /Provenance|溯源/ }).click();
     }
-    const review = page.locator(".prov-subtab").filter({ hasText: /Review/ });
+    const review = page.locator(".prov-subtab").filter({ hasText: /^(?:Origin|来源)$/ });
     step = "prov-subtab";
     await review.waitFor({ state: "visible", timeout: 30000 });
     await review.click();

@@ -13,6 +13,8 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`load.test.ts`](load.test.ts) | `custTab()` 开始一次待定加载；标记只结算一次；超时只对仍在等待的 generation 生效。 |
 | [`dismiss.ts`](dismiss.ts) | Customize 如何关闭。打开状态只归 `customizeOpen` 一个来源：`#cust` 在最上层时，chrome 的焦点陷阱把 Esc 让给 Customize（先关嵌套编辑器，再关模态）；其他途径给 `#cust` 加上 `.hidden` 时，随后调用 `closeCust()`。只有按下不在对话框内开始的点击，遮罩才会关闭它。 |
 | [`dismiss.test.ts`](dismiss.test.ts) | 嵌套编辑器里按 Esc 只关编辑器；Customize 之上的模态自己处理 Esc；输入法组字的 Esc 不处理；`#cust` 被别的途径隐藏时 Customize 随之关闭；在对话框内按下、在遮罩上松开的点击不关闭。 |
+| [`copy.ts`](copy.ts) | I18N-1：内置专家和连接器目录的说明（守护进程给的是英文）以及专家徽标的中文；按名称或 id 对应，只在文字仍是产品自带的时候替换。 |
+| [`copy.test.ts`](copy.test.ts) | 产品自带的条目显示中文，用户自己写的保持原样，英文界面用守护进程的原文；`specialists.py` 里的每个专家和网关连接器目录里的每个 id 都有中文。 |
 | [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`（路径必须是单个前导斜杠），以及附录 B.2 更新客户端：`getUpdateStatus()`（本地读取）、`checkForUpdates({refresh})`（显式检查）、严格 `sanitizeUpdateStatus`（非 B.2 载荷降级为 `null`）、429 的 `updateRetryAfterSeconds` 与团队模式拒绝的 `isUpdateAdminOnly`。 |
 | [`environment.ts`](environment.ts) | Skill readiness 文案；`sanitizeStandardProfileReadiness`。 |
 | [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer`；直接 re-export `models.ts` 里真正的 `loadModels`（不经 window 桥）；`effProject`，以及供渲染使用的 `customizeProject`（它的 computed，只在项目变化时通知）。 |
