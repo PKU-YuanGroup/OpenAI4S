@@ -21,6 +21,7 @@ import { filesT } from "./copy";
 import {
   renderArtifactBody,
   renderArtifactDescriptor,
+  setVersionHistoryOpener,
   renderDownloadArtifact,
   renderSequenceArtifact,
   renderTextArtifact,
@@ -301,11 +302,12 @@ describe("preview read budget in the real preview paths (R1)", () => {
     expect(
       walk(card).some((node) => node.textContent === filesT("viewer.read.limit", bytes(PREVIEW_READ_MAX_BYTES))),
     ).toBe(true);
-    // The exact-version download is always offered, and retry is one click.
+    // The exact-version download is always offered. Retry is not: the file
+    // is over the limit on every attempt (ART-2).
     expect(walk(card).filter((node) => node.tagName === "a").map((node) => node.href)).toContain(
       "/api/v1/artifacts/big",
     );
-    expect(walk(card).some((node) => node.tagName === "button" && node.textContent === filesT("viewer.read.retry"))).toBe(true);
+    expect(walk(card).some((node) => node.tagName === "button" && node.textContent === filesT("viewer.read.retry"))).toBe(false);
   });
 
   it("stops a forged small Content-Length while streaming and never parses the prefix", async () => {
@@ -737,7 +739,15 @@ describe("visible truncation and frozen preview version (A3)", () => {
     const version = walk(root).find((node) => (node.className || "") === "renderer-version");
     // ART-15: human wording; the frozen version id is the tooltip.
     expect(version?.textContent).toBe(filesT("viewer.version.latest"));
-    expect((version as unknown as { title?: string })?.title).toBe("v1");
+    expect((version as unknown as { title?: string })?.title).toBe(filesT("viewer.version.history") + " · v1");
+    // ART-5: the label opens the version history (it was plain text, and
+    // history hid in the ⋮ menu).
+    const opened: unknown[] = [];
+    setVersionHistoryOpener((artifact) => opened.push(artifact.id));
+    expect((version as unknown as { tagName?: string }).tagName?.toLowerCase()).toBe("button");
+    (version as unknown as { onclick?: () => void }).onclick?.();
+    expect(opened).toEqual(["a"]);
+    setVersionHistoryOpener(null);
     // A new version published later does not move this paint's download.
     renderArtifactDescriptor(
       host(root),
@@ -1195,7 +1205,10 @@ describe("every preview entry fails visibly and retries (A1)", () => {
   });
 
   // ART-11: the table no longer stops at the read limit; see the test below.
-  it.each(cases.filter(({ id }) => id !== "table"))("$id reports the read limit with retry and the exact-version download", async ({ id, body, success }) => {
+  // ART-2: Retry stays on the timeout above. Here the file is over the limit on
+  // every attempt, so the state offers the download (and, for a structure,
+  // "load anyway") but no Retry.
+  it.each(cases.filter(({ id }) => id !== "table"))("$id reports the read limit with the exact-version download and no pointless retry", async ({ id }) => {
     setArtifactsFetch(
       async () =>
         ({
@@ -1218,12 +1231,7 @@ describe("every preview entry fails visibly and retries (A1)", () => {
       filesT("viewer.read.limit", bytes(PREVIEW_READ_MAX_BYTES)),
     );
     expect(downloadHref(root)).toBe("/api/v1/artifacts/versions/v1");
-    const retry = retryButton(root);
-    expect(retry, `${id} has no retry`).toBeTruthy();
-    setArtifactsFetch(async () => new Response(body));
-    retry!.onclick?.();
-    await flush();
-    expect(successNode(root, success), `${id} did not recover`).toBe(true);
+    expect(retryButton(root), `${id} offers a pointless retry`).toBeFalsy();
   });
 
   it("table over the read limit shows the server's bounded head, with retry and the exact-version download (ART-11)", async () => {
@@ -1263,15 +1271,8 @@ describe("every preview entry fails visibly and retries (A1)", () => {
   });
 
   it("pdf fails beside the frame, keeps sibling panels, and opens at the page chosen meanwhile", async () => {
-    setArtifactsFetch(
-      async () =>
-        ({
-          ok: true,
-          status: 200,
-          headers: new Headers({ "content-length": String(9 * 1024 * 1024) }),
-          body: { cancel: async () => {}, getReader: () => { throw new Error("unread"); } },
-        }) as unknown as Response,
-    );
+    // A failure a retry can change; an over-limit file offers none (ART-2).
+    setArtifactsFetch(async () => new Response("busy", { status: 503 }));
     const root = mount("pdf");
     const frame = walk(root).find((node) => node.tagName === "IFRAME")!;
     const content = frame.parent!;

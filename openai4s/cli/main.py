@@ -1086,9 +1086,10 @@ exit status:
   1  usable, with the degradations the report names (warnings)
   2  not ready: at least one check failed
 
-With a model API key configured and networking allowed, doctor sends one small
-request to the provider to confirm the key and the model id. --offline, or
-OPENAI4S_ALLOW_NETWORK=0, skips it and the model line says "not verified".
+Without --network nothing leaves this machine, and the model line says the API
+key is "not verified". With --network (and networking allowed), doctor also sends
+one small request to the provider to confirm the key and the model id, and one
+HEAD to each built-in science database.
 """
 
 
@@ -1104,11 +1105,17 @@ def cmd_doctor(args) -> int:
     """
     from openai4s import doctor
 
-    # One small authenticated request confirms the key and the model id; a
-    # configured key that the provider rejects otherwise read "All checks
-    # passed" until the first `run`. `--offline` keeps the check local.
-    live = None if getattr(args, "offline", False) else doctor.send_test_request
-    result = doctor.report(_doctor_config(), live_model=live)
+    # `--network` is the one switch for everything that leaves this machine:
+    # the built-in science hosts (one HEAD each) and one small authenticated
+    # request that confirms the API key and the model id with the provider.
+    # Without it the model line says the key was not verified, rather than
+    # reading "All checks passed" beside a key the provider would refuse.
+    if getattr(args, "network", False):
+        result = doctor.report(
+            _doctor_config(), network=True, live_model=doctor.send_test_request
+        )
+    else:
+        result = doctor.report(_doctor_config())
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
@@ -1368,6 +1375,15 @@ def cmd_status(args) -> int:
             "OpenAI4S folder without it on PATH: `uv run openai4s url`)"
         )
         print(f"  model    : {health.get('model')}")
+        from openai4s import doctor
+
+        if doctor.credential_missing(cfg):
+            # A model name alone reads as "ready". Local configuration, like
+            # the data directory below: nothing is asked of the daemon.
+            print(
+                "  api key  : not configured — add one in Settings → Models "
+                "(or set OPENAI4S_LLM_API_KEY in .env and restart)"
+            )
         # The loopback health response is intentionally a minimal public
         # projection.  The CLI already owns the local configuration, so it can
         # report the data directory without publishing an absolute host path
@@ -3111,11 +3127,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pdoc.add_argument("--json", action="store_true", help="machine-readable report")
     pdoc.add_argument(
-        "--offline",
+        "--network",
         action="store_true",
-        help="do not send the one small test request that verifies the API "
-        "key and model with the provider; the model line then says "
-        "'not verified'",
+        help="also contact the outside world: one small test request that "
+        "verifies the API key and model with the provider, and one HEAD to "
+        "each built-in science database; without it nothing leaves this "
+        "machine and the model line says 'not verified'",
     )
     pdoc.set_defaults(fn=cmd_doctor)
     pv = sub.add_parser(

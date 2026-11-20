@@ -116,6 +116,53 @@ def test_the_gateway_startup_path_plans_and_never_applies(monkeypatch, tmp_path)
         httpd.server_close()
 
 
+def test_missing_environments_are_explained_the_same_way_everywhere(
+    monkeypatch, tmp_path, capsys
+):
+    """FR-3: the startup banner said "`openai4s setup`, or install from
+    Customize → Compute", the wizard said `openai4s env plan` / `env apply`,
+    and Settings offered a package box. One sentence now, wherever this
+    package says it."""
+    from openai4s import doctor
+    from openai4s.config import Config
+    from openai4s.server import gateway
+
+    canonical = doctor.MISSING_ENVIRONMENTS_REMEDY
+    assert canonical == (
+        "Run `openai4s setup` to build the managed Python + R environments; "
+        "install single packages in Settings → Compute."
+    )
+
+    # The startup banner.
+    real_core_plan = preinstall.core_plan
+    monkeypatch.setattr(
+        preinstall,
+        "core_plan",
+        lambda: {"missing": ["seaborn", "statsmodels"], "satisfied": False},
+        raising=True,
+    )
+    monkeypatch.setattr(gateway, "_seed_demo_session", lambda *a, **k: None)
+    capsys.readouterr()
+    httpd = gateway.build_app_server(Config(data_dir=tmp_path, port=0))
+    httpd.server_close()
+    banner = capsys.readouterr().err
+    # CLI-11: the whole list, said to be optional, then the one remedy.
+    assert (
+        "2 optional scientific package(s) are not installed in this Python: "
+        "seaborn, statsmodels. Nothing else is affected" in banner
+    )
+    assert f"Startup does not install packages. {canonical}" in banner
+    assert "Customize → Compute" not in banner
+
+    # The status the Compute tab shows.
+    monkeypatch.setattr(preinstall, "missing_core", lambda: [("numpy", "numpy")])
+    preinstall.STATUS.update(phase="idle", missing=[])
+    real_core_plan()
+    message = preinstall.STATUS["message"]
+    # The same instruction, lower-cased into the middle of a sentence.
+    assert canonical[0].lower() + canonical[1:].rstrip(".") in message
+
+
 # --------------------------------------------------------------------------
 # the explicit path must still work
 # --------------------------------------------------------------------------

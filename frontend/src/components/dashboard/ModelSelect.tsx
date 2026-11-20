@@ -1,10 +1,33 @@
 import { t } from "../../i18n";
+import { openCustomize } from "../../features/customize";
 import {
   chooseComposerModel,
   composerSelection,
+  credentialMissing,
+  modelT,
   type ComposerModel,
 } from "../../features/customize/models";
 import { models } from "../../stores/customize";
+
+/**
+ * Beside `#model-select` while the next message would be refused for want of
+ * an API key. The selector names a default model either way, which read as
+ * "ready" on a daemon nobody had configured; this says so before the first
+ * send, on the home page and in a session alike, and opens Settings → Models.
+ */
+export function ModelKeyNotice() {
+  if (!credentialMissing.value) return null;
+  return (
+    <button
+      type="button"
+      class="nb-model-nokey"
+      title={modelT("model.nokey.title")}
+      onClick={() => void openCustomize("models")}
+    >
+      {modelT("model.nokey")}
+    </button>
+  );
+}
 
 /**
  * `#model-select` in the composer, rendered from the Customize stores that

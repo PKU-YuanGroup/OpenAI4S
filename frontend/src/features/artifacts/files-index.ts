@@ -161,11 +161,20 @@ export function sortArtifactsForFiles(rows: ArtifactRow[], sort: FilesSort = "ne
   });
 }
 
-/** app.js:8492-8495 */
+/**
+ * ART-4: a scratch script or a log the agent wrote. Kept and openable, but
+ * folded away from the results and left out of their count. A person's own
+ * input is never one, whatever folder its copy sits in.
+ */
+export function isProcessFile(a: ArtifactRow): boolean {
+  return a.role === "process" && !a.is_user_upload;
+}
+
+/** app.js:8492-8495. The conversation's inputs and results: no process files. */
 export function visibleArtifacts(): ArtifactRow[] {
   const src = (artifactsSignal.value as ArtifactRow[]) || [];
   return src
-    .filter((a) => (a.priority || 0) >= 0)
+    .filter((a) => (a.priority || 0) >= 0 && a.role !== "internal" && !isProcessFile(a))
     .slice()
     .sort((x, y) => (y.priority || 0) - (x.priority || 0));
 }
@@ -202,7 +211,9 @@ export function filesGridArtifacts(): ArtifactRow[] {
   if (!filesListingIsCurrent()) return [];
   if (filesScope.value !== "project" && (!currentId.value || artifactsFrameId.value !== currentId.value || artifactsFrameGeneration.value !== _openGen.value)) return [];
   const showHidden = filesShowHidden.value;
-  return filesIndexItems.value.filter((a) => showHidden || (a.priority || 0) >= 0);
+  return filesIndexItems.value.filter(
+    (a) => a.role !== "internal" && (showHidden || (a.priority || 0) >= 0),
+  );
 }
 
 function fetchArtifactIndex(

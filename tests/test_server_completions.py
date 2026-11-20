@@ -7,6 +7,7 @@ from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import ExecutionOutcome
 from openai4s.server.completions import (
     action_narration,
+    bookkeeping_calls,
     cancellation_marker,
     completion_message,
     is_progress_narration,
@@ -128,6 +129,51 @@ def test_completion_message_renders_scientific_public_fields_as_sections():
     assert '"findings"' not in rendered
 
 
+def test_a_direct_answer_is_one_paragraph_not_a_report():
+    """CHAT-5: "just tell me whether F and p agree" came back as five headed
+    sections. A summary with nothing structured and no files is the answer;
+    a "Completed work" list under it only restates it."""
+    answer = "交互项 F=50.29、p=0.000103，与手工计算完全一致。"
+    spec = {
+        "output": {"summary": answer},
+        "completion_bullets": ["用 statsmodels 复核了交互项"],
+    }
+    assert completion_message(spec, language="zh") == answer
+    english = {
+        "output": {"summary": "Yes: F and p agree with the manual ANOVA."},
+        "completion_bullets": ["Answered the question"],
+    }
+    assert completion_message(english) == "Yes: F and p agree with the manual ANOVA."
+
+    # A list that says more than the paragraph is not dropped.
+    terse = completion_message(
+        {
+            "output": {"summary": "Done."},
+            "completion_bullets": ["Recomputed the ANOVA with statsmodels"],
+        }
+    )
+    assert terse == "Done.\n\nCompleted work:\n- Recomputed the ANOVA with statsmodels"
+
+    # Files or structured sections make it a report again, in the same order.
+    with_file = completion_message(
+        spec, [{"artifact_id": "a-1", "filename": "fig3.png"}], language="zh"
+    )
+    assert with_file.index("完成内容：") < with_file.index("产物：")
+    with_findings = completion_message(
+        {**spec, "output": {"summary": answer, "findings": ["两种算法一致"]}},
+        language="zh",
+    )
+    assert with_findings.index("关键发现：") < with_findings.index("完成内容：")
+
+    # The model is told the same thing, and to label metrics for a reader.
+    from openai4s.agent.finalize import finalize_response_tool_spec
+
+    assert "answer it directly in `summary`" in _GATEWAY_PROMPT_EXTRA
+    assert "would only repeat that answer" in _GATEWAY_PROMPT_EXTRA
+    assert "plain-language labels" in _GATEWAY_PROMPT_EXTRA
+    assert "plain-language labels" in str(finalize_response_tool_spec())
+
+
 def test_code_outcome_narration_uses_real_error_and_redacts_secrets():
     action = CodeCell("python", "raise RuntimeError('hidden source')")
     failed = ExecutionOutcome(
@@ -143,6 +189,64 @@ def test_code_outcome_narration_uses_real_error_and_redacts_secrets():
     assert "RuntimeError" in text
     assert "very-secret-value" not in text
     assert "hidden source" not in text
+
+
+def test_the_failure_headline_is_the_exception_line_not_the_last_line():
+    """CHAT-3: the chat said "这个 Cell 执行失败：`^^^^^^^`" because a patsy
+    error ends with the formula and a caret line under its exception header."""
+    action = CodeCell("python", "smf.ols('lag_h ~ C(rpoS) * C(relA)', data=params)")
+    patsy = (
+        "Traceback (most recent call last):\n"
+        '  File "site-packages/patsy/compat.py", line 40, in call_and_wrap_exc\n'
+        "    return f(*args, **kwargs)\n"
+        '  File "<string>", line 1, in <module>\n'
+        "TypeError: 'Series' object is not callable\n"
+        "\n"
+        "The above exception was the direct cause of the following exception:\n"
+        "\n"
+        "Traceback (most recent call last):\n"
+        '  File "<kernel:47>", line 7, in <module>\n'
+        '    model = smf.ols("lag_h ~ C(rpoS) * C(relA)", data=sub).fit()\n'
+        "            ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+        '  File "site-packages/patsy/compat.py", line 43, in call_and_wrap_exc\n'
+        "    raise new_exc from e\n"
+        "patsy.PatsyError: Error evaluating factor: TypeError: 'Series' object "
+        "is not callable\n"
+        "    lag_h ~ C(rpoS) * C(relA)\n"
+        "            ^^^^^^^"
+    )
+
+    def narrate(error: str, language: str = "zh") -> str:
+        outcome = ExecutionOutcome(
+            observation=f"[Observation]\nERROR (cell line 7):\n{error}\n"
+            "[system] The cell stopped at the first exception."
+        )
+        return outcome_narration(action, outcome, language)
+
+    zh = narrate(patsy)
+    assert "^^^" not in zh and "lag_h ~" not in zh
+    assert (
+        "`patsy.PatsyError: Error evaluating factor: TypeError: 'Series' object "
+        "is not callable`" in zh
+    )
+    assert "`patsy.PatsyError: Error evaluating factor" in narrate(patsy, "en")
+
+    # No traceback header (a compile error): the last ``Name: message`` line.
+    syntax = '  File "<kernel:3>", line 1\n    x = = 1\n        ^\nSyntaxError: invalid syntax'
+    assert "`SyntaxError: invalid syntax`" in narrate(syntax)
+    # An exception with no message is still the headline.
+    bare = (
+        "Traceback (most recent call last):\n"
+        '  File "<kernel:3>", line 1, in <module>\n    assert ok\n           ^^\n'
+        "AssertionError"
+    )
+    assert "`AssertionError`" in narrate(bare)
+    # Nothing recognisable: the last line that is not a caret/underline line.
+    r_error = (
+        "Error in library(ggplot2) :\n  there is no package called 'ggplot2'\n  ^~~~"
+    )
+    assert "there is no package called" in narrate(r_error)
+    assert "^~~~" not in narrate(r_error)
 
 
 def test_a_refused_host_call_is_narrated_as_a_refusal_not_a_failure():
@@ -163,7 +267,7 @@ def test_a_refused_host_call_is_narrated_as_a_refusal_not_a_failure():
         "RuntimeError: bash: Permission denied: 不需要定义工具; command was not executed"
     )
     zh = outcome_narration(action, declined, "zh")
-    assert "执行失败" not in zh and "RuntimeError" not in zh
+    assert "运行出错" not in zh and "RuntimeError" not in zh
     assert "未获批准" in zh and "不需要定义工具" in zh
     en = outcome_narration(action, declined, "en")
     assert "failed" not in en.lower() and "Permission denied" not in en
@@ -187,7 +291,7 @@ def test_a_refused_host_call_is_narrated_as_a_refusal_not_a_failure():
 
     # An OS PermissionError is a real failure and is still narrated as one.
     os_error = outcome("PermissionError: [Errno 13] Permission denied: '/etc/shadow'")
-    assert "执行失败" in outcome_narration(action, os_error, "zh")
+    assert "运行出错" in outcome_narration(action, os_error, "zh")
 
     for line in (
         outcome_narration(action, declined, "zh"),
@@ -242,12 +346,12 @@ def test_post_cell_status_shows_output_and_never_calls_a_cell_successful():
 
     zh = outcome_narration(action, outcome, "zh")
     assert "成功" not in zh
-    assert zh.startswith("Cell 已运行结束，输出的前几行：")
+    assert zh.startswith("单元已运行结束，输出的前几行：")
     assert "（共 10 行，完整输出在 Notebook。）" in zh
     assert "另有 stderr 1 行" in zh
 
     quiet = ExecutionOutcome(observation="[Observation]\n(no output)")
-    assert outcome_narration(action, quiet, "zh") == "Cell 已运行结束，没有输出。"
+    assert outcome_narration(action, quiet, "zh") == "单元已运行结束，没有输出。"
 
     secret = ExecutionOutcome(
         observation="[Observation]\nstdout:\napi_key=sk-live-123\nok ``` fence"
@@ -347,11 +451,43 @@ def test_every_progress_line_this_module_writes_is_recognised():
             observation="[Observation]\nERROR (cell line 1):\nTraceback\nValueError: x"
         ),
     ]
+    bookkeeping = [
+        ("host.todo_write([])", "{'ok': True, 'count': 0, 'todos': []}"),
+        ("host.todo_write([])", "not a literal"),
+        ("host.plan_update('s1', 'completed')", "{'ok': True}"),
+        ("host.plan_read()", "{'plan': None}"),
+        ("host.env.list()", "{'environments': [{'name': 'base'}]}"),
+        ("host.env.list()", ""),
+        ("host.env.use('lab_env')", "{'ok': True, 'env': {'name': 'lab_env'}}"),
+        ("host.env.use('lab_env')", ""),
+        (
+            "host.env.create('work', ['statsmodels', 'nope'])",
+            "{'ok': False, 'installed': ['statsmodels'], 'failed': ['nope'], "
+            "'log': ' + statsmodels==0.15.0'}",
+        ),
+        ("host.env.create('work', ['x'])", "{'ok': False, 'installed': []}"),
+        ("host.env.create('work', [])", "{'ok': True, 'installed': []}"),
+        ("host.todo_write([])\nhost.env.list()", "{'environments': []}"),
+    ]
     for language in ("en", "zh"):
         lines = [action_narration(action, language) for action in actions]
         lines += [
+            action_narration(action, language, opening=False) for action in actions
+        ]
+        lines.append(
+            action_narration(NativeToolBatch(calls=(_call("write_todos"),)), language)
+        )
+        lines += [
             outcome_narration(CodeCell("python", "x"), outcome, language)
             for outcome in outcomes
+        ]
+        lines += [
+            outcome_narration(
+                CodeCell("python", code),
+                ExecutionOutcome(observation=f"[Observation]\nstdout:\n{echo}"),
+                language,
+            )
+            for code, echo in bookkeeping
         ]
         lines += [cancellation_marker(r, language) for r in ("user", "auto_budget")]
         for line in lines:
@@ -360,8 +496,105 @@ def test_every_progress_line_this_module_writes_is_recognised():
         "Ages are right-skewed (median 61).",
         "I am running a sensitivity analysis next because the effect is small.",
         "我先看一下缺失值的分布。",
+        "更新了计划：先做 QC，再拟合生长模型。",
+        "Installed packages are enough; the fit converged for every well.",
     ):
         assert not is_progress_narration(prose), prose
+    # Lines earlier versions wrote are still in stored sessions.
+    for stored in (
+        "Cell 已运行结束，没有输出。",
+        "这个 Cell 执行失败：`ValueError: x`。下一轮会依据真实 traceback 修复。",
+        "这个 Cell 里需要批准的操作被你拒绝了，没有执行。智能体会据此调整下一步。",
+        "我已经准备好一个 Python Cell，正在执行；真实输出会持续记录到 Notebook。",
+    ):
+        assert is_progress_narration(stored), stored
+
+
+def test_bookkeeping_cells_get_one_plain_line_not_their_raw_return_value():
+    """CHAT-4: plan updates, environment listings and installs were narrated as
+    "Cell 已运行结束，输出：" plus the call's raw return dict -- for an install,
+    the interpreter's absolute path included."""
+
+    def narrate(code: str, echo: str, language: str = "zh") -> str:
+        outcome = ExecutionOutcome(
+            observation=f"[Observation]\nstdout:\n{echo}\n[usage wall=0.1s cpu=0.1s rss=1kb]"
+        )
+        return outcome_narration(CodeCell("python", code), outcome, language)
+
+    todos = (
+        "{'ok': True, 'count': 3, 'todos': ["
+        "{'id': 't1', 'content': 'QC', 'status': 'completed', 'priority': 'high'}, "
+        "{'id': 't2', 'content': 'fit', 'status': 'completed', 'priority': 'high'}, "
+        "{'id': 't3', 'content': 'report', 'status': 'in_progress', 'priority': 'low'}]}"
+    )
+    plan = 'host.todo_write([{"content": "QC", "status": "completed"}])'
+    assert narrate(plan, todos) == "更新了计划（3 步，完成 2 步）。"
+    assert narrate(plan, todos, "en") == "Updated the plan (3 steps, 2 done)."
+
+    listing = (
+        "{'environments': [{'name': 'base', 'current': True}, {'name': 'lab_env'}, "
+        "{'name': 'struct'}, {'name': 'r'}], 'current': 'base', 'recommend': None}"
+    )
+    assert narrate('host.env.list(["openpyxl"])', listing) == "列出了 4 个环境。"
+    assert narrate("print(host.env.list())", listing, "en") == "Listed 4 environments."
+
+    install = (
+        "{'ok': True, 'installed': ['statsmodels'], 'failed': [], 'log': 'Using "
+        "Python 3.13 environment at: /home/someone/work/.venv\\nInstalled 2 "
+        "packages in 54ms\\n + patsy==1.0.3\\n + statsmodels==0.15.0\\n', "
+        "'interpreter': '/home/someone/work/.venv/bin/python', 'name': 'base'}"
+    )
+    for language, expected in (
+        ("zh", "已安装 statsmodels 0.15.0。"),
+        ("en", "Installed statsmodels 0.15.0."),
+    ):
+        text = narrate('host.env.create("base", ["statsmodels"])', install, language)
+        assert text == expected
+        assert "/home/someone" not in text and "interpreter" not in text
+
+    # An echo that cannot be read back (cut by the output budget) still gets
+    # a plain line, never the raw text.
+    cut = "{'ok': True, 'count': 6, 'todos': [{'id': 't1', 'content': '…"
+    assert narrate(plan, cut) == "更新了计划。"
+    # Assigned and echoed is the same cell; anything else is real output.
+    assert bookkeeping_calls("r = host.env.list()\nr") == ("env.list",)
+    assert bookkeeping_calls("r = host.env.list()\nprint(r)") == ("env.list",)
+    assert bookkeeping_calls("host.todo_write(todos)\nprint(df.head())") == ()
+    assert bookkeeping_calls("host.web_fetch('https://example.org')") == ()
+    assert bookkeeping_calls("not python (") == ()
+    mixed = narrate("host.todo_write(todos)\nprint(len(df))", "48")
+    assert mixed == "单元已运行结束，输出：\n```text\n48\n```"
+    # A bookkeeping call that raised is still a failure, said as one.
+    failed = ExecutionOutcome(
+        observation="[Observation]\nERROR (cell line 1):\nTraceback (most recent call "
+        "last):\nRuntimeError: host.plan_update error: no active plan for this session"
+    )
+    assert "运行出错" in outcome_narration(CodeCell("python", plan), failed, "zh")
+
+
+def test_mid_task_narration_does_not_read_like_starting_over():
+    """CHAT-4: "我先检查相关文件和数据，再…" reappeared mid-task as if the
+    analysis had started again, and a failure promised a fix "from the real
+    traceback"."""
+    read = NativeToolBatch((_call("read_text_file"),))
+    search = NativeToolBatch((_call("web_search"),))
+    for language, first in (("zh", "先"), ("en", "first")):
+        assert first in action_narration(search, language)
+        assert first not in action_narration(search, language, opening=False)
+    assert "先" in action_narration(read, "zh")
+    assert action_narration(read, "zh", opening=False) == "我正在查看相关文件和数据。"
+    assert (
+        action_narration(read, "en", opening=False)
+        == "I am looking at the relevant files and data."
+    )
+
+    failed = ExecutionOutcome(
+        observation="[Observation]\nERROR (cell line 1):\nTraceback\nValueError: x"
+    )
+    for language in ("zh", "en"):
+        text = outcome_narration(CodeCell("python", "x"), failed, language)
+        assert "traceback" not in text.lower() and "下一轮" not in text
+        assert "`ValueError: x`" in text
 
 
 def test_a_truncated_output_reports_its_real_size_not_the_preview_lines():
@@ -418,3 +651,64 @@ def test_the_summary_separates_deliverables_and_reads_metrics_plainly():
     )
     assert "产物：" not in zh
     assert "过程文件（脚本、日志、输入副本，2 个）：" in zh
+
+
+def test_the_summary_groups_deliverables_by_kind():
+    """ART-1: 26 links in one flat newest-first list; the report was item 3."""
+    artifacts = [
+        {"artifact_id": f"a{n}", "filename": name, "version_id": f"v-{n}"}
+        for n, name in enumerate(
+            (
+                "Fig2_parameters.svg",
+                "qc_log.csv",
+                "growth_report.md",
+                "Fig1_curves.png",
+                "model.pt",
+                "scratch_inspect.py",
+            )
+        )
+    ]
+    text = completion_message({"output": {"summary": "完成"}}, artifacts, language="zh")
+    block = text.split("产物：\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert [line for line in block if not line.startswith("  ")] == [
+        "- 报告",
+        "- 图",
+        "- 表与数据",
+        "- 其他",
+    ]
+    assert block[1].startswith("  - [growth_report.md](")
+    # Within a group the order the caller gave is kept.
+    assert [line.split("]")[0] for line in block[3:5]] == [
+        "  - [Fig2_parameters.svg",
+        "  - [Fig1_curves.png",
+    ]
+    assert "scratch_inspect.py" not in "\n".join(block)
+    assert "过程文件（脚本、日志、输入副本，1 个）：" in text
+
+    # One kind only: nothing to tell apart, so no group line.
+    flat = completion_message(
+        {"output": {"summary": "Done."}}, artifacts[:1] + artifacts[3:4], language="en"
+    )
+    assert "Artifacts:\n- [Fig2_parameters.svg](" in flat
+    assert "- Figures" not in flat
+
+
+def test_the_summary_never_links_the_platforms_own_spill_files():
+    """ART-4: a context-output-*.json spill is the platform's bookkeeping. It is
+    stored hidden, but a row that reaches the summary anyway (un-hidden, or an
+    older caller) must not be offered as a result or as a working file."""
+    text = completion_message(
+        {"output": {"summary": "Done."}},
+        [
+            {"artifact_id": "a1", "filename": "fit.csv", "version_id": "v-1"},
+            {
+                "artifact_id": "a2",
+                "filename": "context-output-0123456789abcdef.json",
+                "version_id": "v-2",
+            },
+        ],
+        language="en",
+    )
+    assert "[fit.csv](" in text
+    assert "context-output" not in text
+    assert "Working files" not in text

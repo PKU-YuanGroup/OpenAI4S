@@ -24,7 +24,8 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     "history.missing.title": "Session not found",
     "history.missing.sub": "This link points to a session that does not exist or has been deleted.",
     "history.missing.project": "Back to the project",
-    "history.missing.home": "Back to Home"
+    "history.missing.home": "Back to Home",
+    "history.projectRef": "A file in the project folder: {0}"
   },
   "zh": {
     "history.renderFailed": "历史暂时无法显示。",
@@ -48,7 +49,8 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     "history.missing.title": "会话不存在",
     "history.missing.sub": "这个链接指向的会话不存在或已被删除。",
     "history.missing.project": "返回项目",
-    "history.missing.home": "返回首页"
+    "history.missing.home": "返回首页",
+    "history.projectRef": "项目文件夹中的文件：{0}"
   }
 };
 

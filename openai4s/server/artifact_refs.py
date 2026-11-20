@@ -228,6 +228,21 @@ def display_text(text: str) -> str:
     return _PINNED_SUFFIX.sub(r"\1", text or "")
 
 
+def title_text(text: str) -> str:
+    """`text` for a provisional session title: the user's words, no ref syntax.
+
+    A first message that opened with `@project:plate3.xlsx` titled its session
+    with that token. The reference is dropped; a message that is nothing but
+    references is titled with the file names instead of with nothing.
+    """
+    shown = display_text(text)
+    words = " ".join(PROJECT_REF.sub(" ", shown).split())
+    if words:
+        return words
+    names = [path.rsplit("/", 1)[-1] for path in project_folder_refs(shown)]
+    return ", ".join(names) or shown
+
+
 def parse_mentions(raw: object) -> list[dict]:
     """A request's `mentions` field, validated; `ValueError` on a bad shape.
 

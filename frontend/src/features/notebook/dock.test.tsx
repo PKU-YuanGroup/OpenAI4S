@@ -22,13 +22,17 @@ import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { actionTimeline, branchState } from "../../stores/timeline";
 import { resetStoreFields } from "../../stores/signal-field";
-import { notebookDisplayEntries } from "./cells";
+import { markNotebookSeen, notebookDisplayEntries } from "./cells";
+import { onNotebookScroll } from "./scroll";
+import type { NotebookCell } from "./types";
+import { activeTab, dock } from "../../stores/ui";
 import { forkPending, invalidateKernelCache, kernelView, runtimeStatusText } from "./kernel";
 import {
   CellActions,
   CellList,
   CellOutput,
   KernelChips,
+  NewCellsPill,
   NotebookDock,
   StatusStrip,
   kernelExitText,
@@ -251,6 +255,45 @@ describe("Notebook reading gate", () => {
       liveCells.value = [{ producing_cell_id: "retry", cell_index: 3, live: true }];
       expect(paints).toBe(1);
       expect(painted.map((node) => node.key)).toEqual(["shown"]);
+    } finally {
+      dispose();
+    }
+  });
+
+  // NB-2: the conversation was at cell 12 while the Notebook still showed
+  // cell 10 and said "busy"; four cells appeared at once at the bottom.
+  it("says how many cells arrived while the reader was away from the bottom", () => {
+    const pill = () => textOf(NewCellsPill());
+    cells.value = [{ producing_cell_id: "a", cell_index: 1, status: "ok" }];
+    markNotebookSeen();
+    running.value = true;
+    expect(pill()).toBe("");
+
+    // Its own subscription: it updates while the held list does not repaint.
+    let paints = 0;
+    const dispose = effect(() => {
+      paints += 1;
+      NewCellsPill();
+    });
+    try {
+      cells.value = [...(cells.value as NotebookCell[]), { producing_cell_id: "b", cell_index: 2, status: "ok" }];
+      expect(paints).toBe(2);
+      expect(pill()).toBe(nbT("nb.newCells.one"));
+      liveCells.value = [{ producing_cell_id: "c", cell_index: 3, status: "running", live: true }];
+      expect(pill()).toBe(nbT("nb.newCells", 2));
+
+      // Back at the bottom with the Notebook on screen: nothing is new.
+      dock.value = { open: true, tab: "notebook" };
+      activeTab.value = "notebook";
+      onNotebookScroll({ scrollHeight: 500, scrollTop: 400, clientHeight: 100 });
+      expect(pill()).toBe("");
+      // Scrolled up again and another cell arrives.
+      onNotebookScroll({ scrollHeight: 5000, scrollTop: 0, clientHeight: 100 });
+      cells.value = [...(cells.value as NotebookCell[]), { producing_cell_id: "d", cell_index: 4, status: "ok" }];
+      expect(pill()).toBe(nbT("nb.newCells.one"));
+      // An idle Notebook announces nothing.
+      running.value = false;
+      expect(pill()).toBe("");
     } finally {
       dispose();
     }

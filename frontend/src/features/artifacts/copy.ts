@@ -98,6 +98,9 @@ const COPY: CopyTable = {
     "viewer.md.imageMissing": "［图片未找到：{0}］",
     "viewer.image.fit": "适应宽度",
     "viewer.version.latest": "最新版本",
+    "viewer.version.history": "查看版本历史",
+    "viewer.answer.newer": "这条回答之后，这个产物又更新了 {0} 次；现在显示的是最新版本。",
+    "viewer.answer.open": "查看当时的版本",
     "viewer.version.pinned": "固定版本",
     "viewer.kind.image": "图片",
     "viewer.kind.table": "数据表",
@@ -157,6 +160,9 @@ const COPY: CopyTable = {
     "ac.projectFolder": "项目文件夹 · 只读，智能体读取或导入",
     "art.inputs": "输入",
     "art.inputs.title": "上传或从项目文件夹导入的文件",
+    "art.session.inputs": "本会话输入",
+    "art.session.files": "本会话产物",
+    "art.session.files.title": "本会话所有回合生成的文件，不只是最近一轮",
     "files.filter.kind.all": "全部类型",
     "files.filter.kind.table": "表格",
     "files.filter.kind.image": "图片",
@@ -169,6 +175,7 @@ const COPY: CopyTable = {
     "files.sort.name": "按名称",
     "files.showHidden": "显示已隐藏",
     "files.hiddenBadge": "已隐藏",
+    "files.process": "过程文件 · {0}",
     "artifact.unhide": "在列表中显示",
     "artifact.unhidden": "已重新显示：{0}",
     "artifact.unhideFailed": "无法重新显示：{0}",
@@ -282,6 +289,9 @@ const COPY: CopyTable = {
     "viewer.md.imageMissing": "[Image not found: {0}]",
     "viewer.image.fit": "Fit width",
     "viewer.version.latest": "Latest version",
+    "viewer.version.history": "Version history",
+    "viewer.answer.newer": "This file was updated {0} more time(s) after that answer; this is the latest version.",
+    "viewer.answer.open": "Show the version from then",
     "viewer.version.pinned": "Pinned version",
     "viewer.kind.image": "Image",
     "viewer.kind.table": "Data table",
@@ -341,6 +351,9 @@ const COPY: CopyTable = {
     "ac.projectFolder": "Project folder · read-only, the agent reads or imports it",
     "art.inputs": "Inputs",
     "art.inputs.title": "Files uploaded or imported from the project folder",
+    "art.session.inputs": "This session's inputs",
+    "art.session.files": "This session's files",
+    "art.session.files.title": "Everything this session has produced, in all of its turns, not only the last one",
     "files.filter.kind.all": "All types",
     "files.filter.kind.table": "Tables",
     "files.filter.kind.image": "Images",
@@ -353,6 +366,7 @@ const COPY: CopyTable = {
     "files.sort.name": "By name",
     "files.showHidden": "Show hidden",
     "files.hiddenBadge": "Hidden",
+    "files.process": "Working files · {0}",
     "artifact.unhide": "Show in list",
     "artifact.unhidden": "Shown again: {0}",
     "artifact.unhideFailed": "Could not show it again: {0}",
@@ -384,6 +398,11 @@ export const filesT = copyLookup(COPY);
  * unprovable size, timeout, or a plain read failure. Cancellation is not an
  * error and is filtered by the caller.
  */
+/** A file over the read limit is over it on every attempt: Retry only repeats the refusal (ART-2). */
+export function readRetryHelps(error: unknown): boolean {
+  return !(error instanceof ArtifactReadError && error.kind === "too_large");
+}
+
 export function readFailureText(error: unknown): string {
   if (error instanceof ArtifactReadError) {
     if (error.kind === "too_large") return filesT("viewer.read.limit", bytes(error.maxBytes));

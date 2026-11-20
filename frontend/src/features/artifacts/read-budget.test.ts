@@ -336,3 +336,19 @@ describe("readArtifactPrefix: prefix mode (F2)", () => {
     expect(prefix).toEqual({ text: "患", truncated: true, encoding: "gb18030" });
   });
 });
+
+// ART-2: "Retry reading" sat on every over-limit state, where a second read
+// can only be refused again.
+describe("read failures that a retry cannot change", () => {
+  it("offers no retry for a file over the read limit, and carries its declared size", async () => {
+    const { readRetryHelps } = await import("./copy");
+    setArtifactsFetch(async () => new Response("x", { headers: { "content-length": "17825792" } }));
+    const error = await fetchArtifactText("/api/v1/artifacts/big").catch((caught: unknown) => caught);
+    expect((error as ArtifactReadError).kind).toBe("too_large");
+    expect((error as ArtifactReadError).declared).toBe(17825792);
+    expect(readRetryHelps(error)).toBe(false);
+    expect(readRetryHelps(new ArtifactReadError("timeout", "slow", { maxBytes: 8 }))).toBe(true);
+    expect(readRetryHelps(new ApiError(null, 503))).toBe(true);
+    setArtifactsFetch(null);
+  });
+});

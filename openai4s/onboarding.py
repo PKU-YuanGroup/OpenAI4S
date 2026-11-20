@@ -216,6 +216,18 @@ class OnboardingService:
             payload["profiles"] = list(profiles.get("profiles") or [])
             payload["active_id"] = profiles.get("active_id") or ""
             payload["protocols"] = list(profiles.get("protocols") or [])
+            # What the registry already knows about each offered protocol, so
+            # the wizard can show a provider's own endpoint and default model
+            # instead of a bare protocol name and an empty Base URL box.
+            payload["provider_presets"] = [
+                {
+                    "id": name,
+                    "base_url": str(self.providers[name].get("base_url") or ""),
+                    "model": str(self.providers[name].get("model") or ""),
+                }
+                for name in payload["protocols"]
+                if name in self.providers
+            ]
         if catalog is not None:
             payload["local_model_catalog"] = dict(catalog)
         if environment is not None:

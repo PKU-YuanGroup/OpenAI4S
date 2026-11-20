@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { isTextEditable, renderViewer, retrievalSourcePanel } from "./viewer";
+import { isTextEditable, paintAnswerNote, renderViewer, retrievalSourcePanel } from "./viewer";
+import { answerVersionNote } from "../features/artifacts/state";
 import { hint } from "../features/sessions/chrome";
 import { translate } from "../features/artifacts/api";
 import { filesT } from "../features/artifacts/copy";
@@ -9,7 +10,7 @@ import { _artBust, dockArtifact } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
 const menu = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("../features/sessions/chrome", () => ({ openMenu: (...args: unknown[]) => menu.open(...args), hint: vi.fn() }));
-vi.mock("../features/artifacts/renderers", () => ({ renderArtifactBody: vi.fn() }));
+vi.mock("../features/artifacts/renderers", () => ({ renderArtifactBody: vi.fn(), setVersionHistoryOpener: vi.fn() }));
 vi.mock("../features/execution/provenance", () => ({ renderProvenanceInto: vi.fn(), decorateViewerWithProvenance: vi.fn() }));
 vi.mock("../features/autocomplete/editor", () => ({ edacTeardown: vi.fn(), bindEditorAutocomplete: vi.fn() }));
 vi.mock("./mol", () => ({ molTeardown: vi.fn() }));
@@ -558,4 +559,43 @@ it.each(["en", "zh"] as const)("distinguishes unknown verification from unreport
     expect(valueFor(filesT("versions.datasetLicense")))
       .toBe(locale === "en" ? "Not reported" : "未提供");
   } finally { await setLang(previousLanguage); }
+});
+
+// ART-5: opened from an older answer, the Viewer showed the redrawn file
+// without a word.
+it("says the file moved on since the answer and offers the version from then", () => {
+  class Node {
+    children: Node[] = [];
+    className = ""; textContent = "";
+    onclick?: () => void;
+    constructor(readonly tag = "div") {}
+    get firstChild(): Node | null { return this.children[0] || null; }
+    appendChild(child: Node) { this.children.push(child); return child; }
+    insertBefore(child: Node, _before: Node | null) { this.children.unshift(child); return child; }
+    remove() { viewer.children = viewer.children.filter((node) => node !== this); }
+    setAttribute() {}
+  }
+  const viewer = new Node();
+  viewer.appendChild(new Node());
+  resetStoreFields();
+  vi.stubGlobal("document", {
+    getElementById: (id: string) => (id === "dock-viewer" ? viewer : null),
+    createElement: (tag: string) => new Node(tag),
+  });
+  try {
+    dockArtifact.value = { id: "a1", filename: "Fig3.png", version_id: "v3" };
+    answerVersionNote.value = { artifactId: "a1", versionId: "v2", newer: 1 };
+    const note = viewer.children[0]!;
+    expect(note.className).toContain("viewer-answer-note");
+    expect(note.children[0]!.textContent).toBe(filesT("viewer.answer.newer", 1));
+    expect(note.children[1]!.textContent).toBe(filesT("viewer.answer.open"));
+    // Another file in the Viewer, or a pinned version: the note does not apply.
+    dockArtifact.value = { id: "a1", filename: "Fig3.png", version_id: "v2", _exactVersion: true };
+    paintAnswerNote();
+    expect(viewer.children.some((node) => node.className.includes("viewer-answer-note"))).toBe(false);
+    answerVersionNote.value = null;
+  } finally {
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  }
 });

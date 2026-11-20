@@ -533,6 +533,7 @@ def test_the_legacy_array_route_is_still_a_bare_array(server):
         "priority",
         "created_at",
         "is_user_upload",
+        "role",
     }
 
     status, indexed = client.get(f"/projects/{pid}/artifact-index")
@@ -540,6 +541,38 @@ def test_the_legacy_array_route_is_still_a_bare_array(server):
     assert indexed["artifacts"][0] == body[0]
     assert indexed["has_more"] is False
     assert indexed["next_cursor"] is None
+
+
+def test_spill_files_are_not_offered_and_process_files_are_labelled(server):
+    """ART-4: 6 of the 34 Artifacts a session listed were the platform's own
+    context-output-*.json spill files, and a scratch script was indistinguishable
+    from a result. One classification answers every listing; the stored rows,
+    and reads by id, are untouched."""
+    _cfg, runner, client = server
+    pid = _project(runner.store)
+    frame = runner.create_session(pid)
+    saved = {
+        name: _save(runner.store, root_frame_id=frame, project_id=pid, filename=name)
+        for name in (
+            "context-output-0123456789abcdef.json",
+            "scratch_inspect.py",
+            "growth_report.md",
+        )
+    }
+    spill = saved["context-output-0123456789abcdef.json"]["artifact_id"]
+    # The gateway stores a spill hidden; "show hidden" must not offer it either.
+    runner.store.set_priority(spill, -1)
+    expected = {"scratch_inspect.py": "process", "growth_report.md": "deliverable"}
+
+    for path in (f"/frames/{frame}/artifacts", f"/projects/{pid}/artifacts"):
+        status, body = client.get(path)
+        assert status == 200, body
+        assert {row["filename"]: row["role"] for row in body} == expected
+    status, indexed = client.get(f"/projects/{pid}/artifact-index?hidden=1")
+    assert status == 200, indexed
+    assert {r["filename"]: r["role"] for r in indexed["artifacts"]} == expected
+
+    assert runner.store.get_artifact(spill)["filename"].startswith("context-output-")
 
 
 def test_malformed_limit_and_origin_are_refused(server):

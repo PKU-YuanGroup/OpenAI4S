@@ -66,8 +66,8 @@ openai4s --version
 openai4s serve
 ```
 
-The `science` extra adds numpy, pandas, matplotlib and scikit-learn to the
-environment the Python kernel runs in. Use `"openai4s[science,chemistry]==1.0.1"` if
+The `science` extra adds numpy, pandas, matplotlib, scikit-learn, openpyxl,
+statsmodels and seaborn to the environment the Python kernel runs in. Use `"openai4s[science,chemistry]==1.0.1"` if
 you also want RDKit. `openai4s serve` starts the local daemon and opens the
 workbench in your browser with its access token. All data (SQLite database,
 artifacts, logs) lives under `~/.openai4s`. Next time, run
@@ -268,7 +268,7 @@ openai4s --version
 openai4s serve
 ```
 
-`science` extra 会把 numpy、pandas、matplotlib 和 scikit-learn 装进 Python 内核所用的环境；如果还需要 RDKit，请用 `"openai4s[science,chemistry]==1.0.1"`。`openai4s serve` 会启动本地守护进程，并用访问令牌在浏览器里打开工作台。所有数据（SQLite 数据库、Artifact、日志）都写在 `~/.openai4s`。下次使用时，再运行一次 `source ~/.venvs/openai4s/bin/activate && openai4s serve`。
+`science` extra 会把 numpy、pandas、matplotlib、scikit-learn、openpyxl、statsmodels 和 seaborn 装进 Python 内核所用的环境；如果还需要 RDKit，请用 `"openai4s[science,chemistry]==1.0.1"`。`openai4s serve` 会启动本地守护进程，并用访问令牌在浏览器里打开工作台。所有数据（SQLite 数据库、Artifact、日志）都写在 `~/.openai4s`。下次使用时，再运行一次 `source ~/.venvs/openai4s/bin/activate && openai4s serve`。
 
 ## 2. 仅适用于 DMG —— 通过 Gatekeeper
 

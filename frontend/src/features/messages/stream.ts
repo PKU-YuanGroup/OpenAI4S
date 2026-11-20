@@ -15,7 +15,7 @@ import { renderMd } from "../md/render";
 import { liveCells, _liveCell } from "../../stores/notebook";
 import { stream as liveStream, stepEls } from "../../stores/stream";
 import type { WsMessage } from "../ws/types";
-import { $, el, messagesHost } from "./dom";
+import { $, el, keepStripsLast, messagesHost } from "./dom";
 import {
   _mdStableCut,
   emptyMdCutState,
@@ -33,6 +33,8 @@ import { cancelFrame, scheduleFrame } from "./raf";
 import { down } from "./scroll";
 import { appendLiveStoppedMarker, cancelledIdentity } from "./stopped";
 import { embedArtifactFigures } from "./figures";
+import { _messagesFollow } from "../../stores/ui";
+import { dropTurnGroupIfEmpty, openTurnGroup, placeCardInTurn } from "./turnGroup";
 
 export const TOOL_LABELS: Record<string, string> = {
   run_python: "toolLabel.runPython",
@@ -187,16 +189,15 @@ export function sealText(st: LiveStream | null): void {
 
 /** app.js:5452-5460. */
 export function startStream(): LiveStream | null {
-  const generated = $(".generated");
-  if (generated) generated.remove();
   const empty = $(".empty-session");
   if (empty) empty.remove();
   const host = messagesHost();
   if (!host) return null;
-  const wrap = el("div", "msg assistant");
-  const md = el("div", "md cursor");
-  wrap.appendChild(md);
+  const { wrap, md } = openTurnGroup();
+  md.classList.add("cursor");
   host.appendChild(wrap);
+  // The session's file strips stay under the turn, both of them.
+  keepStripsLast(host);
   const st: LiveStream = {
     wrap,
     md,
@@ -253,9 +254,7 @@ export function ensure(): LiveStream | null {
  */
 export function placeInLiveStream(card: HTMLElement, st: LiveStream): void {
   sealText(st);
-  st.wrap.appendChild(card);
-  st.md = el("div", "md");
-  st.wrap.appendChild(st.md);
+  placeCardInTurn(st, card);
   st.text = "";
 }
 
@@ -270,7 +269,16 @@ export function placeInLiveStream(card: HTMLElement, st: LiveStream): void {
 export function adoptIntoLiveStream(card: HTMLElement | null | undefined): boolean {
   const st = currentStream();
   if (!st || !st.wrap || !card || st.wrap.contains(card)) return false;
+  const from = card.parentElement;
+  const following = _messagesFollow.value !== false;
   placeInLiveStream(card, st);
+  // The stored turn the card came from is gone once its last card has moved.
+  dropTurnGroupIfEmpty(from);
+  // Moving a card from above the view to the end makes the browser lower
+  // `scrollTop` to keep what is on screen in place, which reads as the reader
+  // scrolling up: a reloaded running session then stopped following and was
+  // left at the top of its turn. A view that was following still is.
+  if (following) down(true);
   return true;
 }
 
@@ -335,7 +343,7 @@ export function feed(
       // Not a success check until the cell says so (cardState.ts).
       if (!suba) markCardRunning(card, event);
       sealText(st);
-      st.wrap.appendChild(card);
+      placeCardInTurn(st, card);
       st.toolPre = pre;
       st.toolHandle = handle;
       st.toolMeta = meta;
@@ -343,8 +351,6 @@ export function feed(
         st.toolCard = card;
         (card as HTMLElement & { _demoted?: boolean })._demoted = false;
       }
-      st.md = el("div", "md");
-      st.wrap.appendChild(st.md);
       st.text = "";
       resetMdState(st);
       st._lastFlush = 0;

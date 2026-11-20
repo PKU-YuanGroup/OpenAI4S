@@ -8,6 +8,7 @@
 
 import { LANG, t } from "../../i18n/runtime";
 import { permCards, running } from "../../stores/stream";
+import { bytes } from "../artifacts/api";
 import { syncPendingApproval } from "../messages/approval";
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
@@ -16,6 +17,7 @@ import { api, apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { callLane } from "./host";
 import { iconEl } from "./icon";
+import { stepTitleText } from "./step-title";
 
 const PERM_SCOPE_KEYS: Record<string, string> = {
   once: "perm.scope.once",
@@ -58,6 +60,8 @@ type PermHandle = {
   scope?: string | null;
   /** Re-say an open card's composed labels (the rule picker) after a language switch. */
   relabel?: () => void;
+  /** Re-say the title, which is composed from the request (`permTitle`). */
+  retitle?: () => void;
 };
 
 function rec(value: unknown): Record<string, unknown> {
@@ -76,7 +80,10 @@ export function permActionLine(m: PermEvent): { mono: boolean; text: string } {
   ) {
     return { mono: true, text: String(inp.path || inp.filename || m.target || "") };
   }
-  if (tool === "web_fetch") return { mono: true, text: String(inp.url || m.target || "") };
+  // The whole address, not only its host: the host alone does not say what is fetched.
+  if (tool === "web_fetch" || tool === "web_download") {
+    return { mono: true, text: String(inp.url || m.target || "") };
+  }
   if (tool === "web_search" || tool === SEARCH_FALLBACK) {
     return { mono: false, text: "“" + String(inp.query || m.target || "") + "”" };
   }
@@ -102,9 +109,84 @@ export function permActionLine(m: PermEvent): { mono: boolean; text: string } {
   return { mono: true, text: String(m.target || "") };
 }
 
+/**
+ * Feature-local copy for a card's title. The server words titles in English
+ * ("Downloading from files.example.org"); the request already carries its
+ * tool and input, so the kinds a user is asked about most are titled from
+ * those, in the UI language. Any other kind falls back to the server's text
+ * through the step-title templates.
+ */
+const TITLE_COPY: Record<"en" | "zh", Record<string, string>> = {
+  en: {
+    download: "Download {0} from {1}",
+    downloadFrom: "Download from {0}",
+    install: "Install {0} into {1}",
+    installOnly: "Install {0}",
+    useLocal: "Switch to your local environment {0}",
+    use: "Switch to the {0} environment",
+  },
+  zh: {
+    download: "从 {1} 下载 {0}",
+    downloadFrom: "从 {0} 下载",
+    install: "安装 {0} 到 {1}",
+    installOnly: "安装 {0}",
+    useLocal: "切换到本机环境 {0}",
+    use: "切换到 {0} 环境",
+  },
+};
+
+function titleCopy(key: string, ...args: string[]): string {
+  let text = TITLE_COPY[LANG === "zh" ? "zh" : "en"][key] || key;
+  args.forEach((value, index) => {
+    text = text.split("{" + index + "}").join(value);
+  });
+  return text;
+}
+
+function hostOf(url: string): string {
+  return url.replace(/^https?:\/\/(www\.)?/i, "").split(/[/?#]/)[0] || "";
+}
+
+function lastSegment(path: string): string {
+  return path.replace(/\\/g, "/").split(/[?#]/)[0]!.split("/").filter(Boolean).pop() || "";
+}
+
+/**
+ * Where a download lands, as a path inside the workspace. An absolute path
+ * (or one that climbs out) is shown by its file name only: a card never
+ * prints a local directory.
+ */
+export function workspaceTarget(path: unknown): string {
+  const raw = String(path || "").trim().replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+  if (!raw) return "";
+  const escapes = raw.startsWith("/") || raw.startsWith("~") || /^[A-Za-z]:/.test(raw) || raw.split("/").includes("..");
+  return escapes ? lastSegment(raw) : raw;
+}
+
+export function permTitle(m: PermEvent): string {
+  const inp = rec(m.input);
+  if (m.tool === "web_download") {
+    const url = String(inp.url || "");
+    const host = hostOf(url) || String(m.target || "");
+    const file = lastSegment(String(inp.path || "")) || (hostOf(url) ? lastSegment(url.replace(/^https?:\/\/[^/]*/i, "")) : "");
+    if (host) return file ? titleCopy("download", file, host) : titleCopy("downloadFrom", host);
+  }
+  if (m.tool === "env_setup" && Array.isArray(inp.packages) && inp.packages.length) {
+    const packages = inp.packages.map(String).join(", ");
+    return inp.environment ? titleCopy("install", packages, String(inp.environment)) : titleCopy("installOnly", packages);
+  }
+  if (m.tool === "env_use" && inp.name) {
+    return titleCopy(inp.local === true ? "useLocal" : "use", String(inp.name));
+  }
+  return m.title ? stepTitleText(String(m.title)) : t("perm.title.run", m.tool);
+}
+
 /** Feature-local copy for the context a card shows before the user decides. */
 const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
   en: {
+    downloadTo: "Saves to the workspace as: {0}",
+    downloadSize: "Size: {0}",
+    downloadLimit: "Size is not known before the download; it stops at {0}.",
     installInto: "Installs into: {0}",
     installKeep:
       "Packages already in this environment keep their versions; an install that would change one is refused.",
@@ -121,6 +203,9 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     toolInput: "Input schema",
   },
   zh: {
+    downloadTo: "保存到工作区：{0}",
+    downloadSize: "大小：{0}",
+    downloadLimit: "下载前无法得知大小；超过 {0} 会中止。",
     installInto: "安装到：{0}",
     installKeep: "这个环境里已安装的包保持原版本；需要改动它们的安装会被拒绝。",
     localEnv:
@@ -154,7 +239,15 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
   const inp = rec(m.input);
   const lines: string[] = [];
   const code: Array<{ label: string; text: string }> = [];
-  if (m.tool === "env_setup") {
+  if (m.tool === "web_download") {
+    const target = workspaceTarget(inp.path);
+    if (target) lines.push(ctx("downloadTo", target));
+    // Known only when the request states it; otherwise the cap it will stop at.
+    const size = Number(inp.size_bytes);
+    const limit = Number(inp.max_bytes);
+    if (Number.isFinite(size) && size > 0) lines.push(ctx("downloadSize", bytes(size)));
+    else if (Number.isFinite(limit) && limit > 0) lines.push(ctx("downloadLimit", bytes(limit)));
+  } else if (m.tool === "env_setup") {
     const env = String(inp.environment || "");
     if (env) {
       lines.push(ctx("installInto", inp.interpreter ? `${env} (${String(inp.interpreter)})` : env));
@@ -319,6 +412,7 @@ export function relabelPermissionCards(): void {
   const reg = registry();
   for (const id of Object.keys(reg)) {
     const h = reg[id];
+    if (h && h.card.isConnected && h.retitle) h.retitle();
     if (h && h.resolved && h.card.isConnected) markPermCard(id, !!h.allowed, h.scope ?? null, h.resolution);
     else if (h && !h.resolved && h.card.isConnected && h.relabel) h.relabel();
   }
@@ -481,13 +575,13 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   const head = el("div", "perm-head");
   head.appendChild(iconEl("lock", 15, "perm-ic"));
   const fallback = m.tool === SEARCH_FALLBACK;
-  head.appendChild(
-    el(
-      "span",
-      "perm-title",
-      fallback ? choiceCopy("title") : m.title || t("perm.title.run", m.tool),
-    ),
-  );
+  const title = el("span", "perm-title");
+  // Composed from the request, so a language switch says it again (`retitle`).
+  const paintTitle = (): void => {
+    title.textContent = fallback ? choiceCopy("title") : permTitle(m);
+  };
+  paintTitle();
+  head.appendChild(title);
   if (m.sub_agent) head.appendChild(labelEl("span", "perm-badge", "perm.badge.subAgent"));
   if (m.dangerous) head.appendChild(labelEl("span", "perm-badge danger", "perm.badge.dangerous"));
   card.appendChild(head);
@@ -658,7 +752,7 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   btns.appendChild(allow);
   btns.appendChild(deny);
   card.appendChild(btns);
-  return { card, allow, deny, resolved: false, relabel: paintRule };
+  return { card, allow, deny, resolved: false, relabel: paintRule, retitle: paintTitle };
 }
 
 export function resolvePermissionCard(m: PermEvent): void {

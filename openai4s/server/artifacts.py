@@ -4365,15 +4365,17 @@ def _capture_snippet(index: int, *, save: bool = True) -> str:
     # daemon shutdown waited it out. A process that has not imported pyplot
     # has no pyplot figures to capture.
     #
-    # ART-7: a figure the Cell already saved was saved a second time as
-    # figure_cellN_k.png, and a failed Cell's half-drawn figure became a
+    # ART-7 / ART-1: a figure the Cell already saved was saved a second time
+    # as figure_cellN_k.png, and a failed Cell's half-drawn figure became a
     # deliverable. Each open figure is still closed, but it is saved only when
-    # the Cell did not fail and the figure has unsaved drawing: it was never
-    # rendered (`stale`), or it was changed after the Cell's last savefig. The
-    # snippet wraps Figure.savefig once so later Cells mark what they save to
-    # a file (a save into a buffer, as an inline display does, is not a file);
-    # before that wrap exists (the first plotting Cell) a rendered, unchanged
-    # figure is taken as saved.
+    # the Cell did not fail, the figure has something on it (`plt.gcf()` in a
+    # Cell with no open figure makes an empty one), and what it shows is not
+    # already in a file the Cell wrote. That last fact is `_openai4s_saved`,
+    # kept by the kernel (`kernel/provenance.py`, `_mark_figure_saves`): set
+    # by a savefig to a path, cleared by any later change. It used to be read
+    # from `Figure.stale`, which matplotlib 3.11 leaves True after every
+    # `fig.savefig`, so the test never held. A figure with no mark (a kernel
+    # whose hook did not install) is saved, as an unsaved one is.
     return (
         "import json as __oj\n"
         "__osfigs=[]\n"
@@ -4381,32 +4383,18 @@ def _capture_snippet(index: int, *, save: bool = True) -> str:
         " import sys as __sys\n"
         " __plt=__sys.modules.get('matplotlib.pyplot')\n"
         " if __plt is not None:\n"
-        "  __F=__sys.modules['matplotlib.figure'].Figure\n"
-        "  __marked=getattr(__F.savefig,'__openai4s_marks__',False)\n"
         "  for __n in list(__plt.get_fignums()):\n"
         f"   __nm='figure_cell{index}_'+str(__n)+'.png'\n"
         "   try:\n"
         "    __f=__plt.figure(__n)\n"
-        "    __kept=not getattr(__f,'stale',True) and (not __marked or "
-        "getattr(__f,'_openai4s_saved',False))\n"
-        f"    if {bool(save)} and not __kept:\n"
+        "    __kept=getattr(__f,'_openai4s_saved',False) is True\n"
+        "    __drawn=any(getattr(__f,__a,None) for __a in ('axes','texts',"
+        "'lines','patches','images','legends','artists','subfigs'))\n"
+        f"    if {bool(save)} and __drawn and not __kept:\n"
         "     __f.savefig(__nm,dpi=130,bbox_inches='tight')\n"
         "     __osfigs.append(__nm)\n"
         "    __plt.close(__n)\n"
         "   except Exception: pass\n"
-        "  if not __marked:\n"
-        "   __orig=__F.savefig\n"
-        "   def __openai4s_savefig(self,*a,__o=__orig,**k):\n"
-        "    __r=__o(self,*a,**k)\n"
-        "    __t=a[0] if a else k.get('fname')\n"
-        "    if isinstance(__t,(str,bytes)) or hasattr(__t,'__fspath__'):\n"
-        "     try: self._openai4s_saved=True\n"
-        "     except Exception: pass\n"
-        "    return __r\n"
-        "   __openai4s_savefig.__openai4s_marks__=True\n"
-        "   __openai4s_savefig.__wrapped__=__orig\n"
-        "   __openai4s_savefig.__doc__=__orig.__doc__\n"
-        "   __F.savefig=__openai4s_savefig\n"
         "except Exception: pass\n"
         "print('__OSFIGS__'+__oj.dumps(__osfigs))\n"
     )

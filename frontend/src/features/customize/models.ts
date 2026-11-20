@@ -325,10 +325,19 @@ export async function loadModels(): Promise<void> {
     const chosen = list.some((entry) => entry.id === wanted) ? wanted : list[0]?.id || null;
     defaultModel.value = chosen;
     defaultModelName.value = chosen ? composerModelName(chosen) : null;
+    credentialMissing.value = payload.credential_missing === true;
   } catch {
     if (choice === choiceSeq) models.value = [];
   }
 }
+
+/**
+ * Whether a message sent now would be refused for want of an API key, as
+ * `GET /models` reports it. The selector names a default model either way, so
+ * without this a daemon nobody configured looked ready until the first send
+ * failed.
+ */
+export const credentialMissing = field(() => false);
 
 
 /**
@@ -510,6 +519,8 @@ const MODEL_COPY: CopyTable = {
     "model.session.switchFailed": "Could not switch this session's model: {0}",
     "model.session.pending": "The model change is still saving. Please send again once it finishes.",
     "model.default.adminOnly": "Only an admin can change the default model",
+    "model.nokey": "No API key",
+    "model.nokey.title": "No API key is configured for the model. Open Settings → Models to add one.",
   },
   zh: {
     "model.ollama": "Ollama（云端或本地）",
@@ -527,6 +538,8 @@ const MODEL_COPY: CopyTable = {
     "model.session.switchFailed": "未能切换该会话的模型：{0}",
     "model.session.pending": "模型切换仍在保存，请完成后再发送。",
     "model.default.adminOnly": "只有管理员可以修改默认模型",
+    "model.nokey": "未配置 API Key",
+    "model.nokey.title": "还没有配置模型的 API Key。点击打开 设置 → 模型 填写。",
   },
 };
 

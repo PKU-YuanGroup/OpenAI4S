@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from typing import Any, Iterable
@@ -12,7 +13,9 @@ from openai4s.agent.actions import (
     NativeToolBatch,
     is_completion_only_cell,
 )
+from openai4s.artifact_paths import artifact_role
 from openai4s.server.urls import completion_artifact_url
+from openai4s.storage.artifacts import ARTIFACT_KINDS
 
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _SUMMARY_KEYS = (
@@ -102,8 +105,15 @@ def llm_retry_notice(error: Any, attempt: int, language: str = "en") -> str:
     )
 
 
-def action_narration(action: Action | None, language: str = "en") -> str:
-    """Describe an action without inventing reasoning or scientific results."""
+def action_narration(
+    action: Action | None, language: str = "en", *, opening: bool = True
+) -> str:
+    """Describe an action without inventing reasoning or scientific results.
+
+    ``opening`` is whether this is the first action of the run. "I am ...
+    first, then ..." only reads right there; repeated mid-task it looked as
+    if the analysis had started over (CHAT-4).
+    """
     zh = language == "zh"
     if isinstance(action, CodeCell):
         # This is explicitly an in-progress status, never a result claim.  It
@@ -115,7 +125,7 @@ def action_narration(action: Action | None, language: str = "en") -> str:
             return ""
         label = "R" if action.language == "r" else "Python"
         return (
-            f"我已经准备好一个 {label} Cell，正在执行；真实输出会持续记录到 Notebook。"
+            f"我已经准备好一个 {label} 单元，正在执行；真实输出会持续记录到 Notebook。"
             if zh
             else f"I have prepared a {label} cell and am running it now; its actual output will be recorded in the Notebook."
         )
@@ -131,6 +141,8 @@ def action_narration(action: Action | None, language: str = "en") -> str:
         )
     name = action.calls[0].name
     if name == "web_search":
+        if not opening:
+            return "我正在检索相关来源。" if zh else "I am searching relevant sources."
         return (
             "我先检索相关来源，随后会说明检索结果如何影响下一步分析。"
             if zh
@@ -149,11 +161,19 @@ def action_narration(action: Action | None, language: str = "en") -> str:
             else "I am saving the current results; written files will be added to Artifacts."
         )
     if names & {"read_text_file", "list_dir", "glob_files", "content_search"}:
+        if not opening:
+            return (
+                "我正在查看相关文件和数据。"
+                if zh
+                else "I am looking at the relevant files and data."
+            )
         return (
             "我先检查相关文件和数据，再根据实际内容继续分析。"
             if zh
             else "I am inspecting the relevant files and data before continuing from their actual contents."
         )
+    if names & {"write_todos", "update_plan_step"}:
+        return "我正在更新计划。" if zh else "I am updating the plan."
     if names & {"env_list", "env_use", "env_create"}:
         return (
             "我正在准备适合这一步分析的运行环境。"
@@ -194,12 +214,21 @@ def outcome_narration(
         return _refusal_narration(refusal, zh)
     if error:
         return (
-            f"这个 Cell 执行失败：`{error}`。下一轮会依据真实 traceback 修复。"
+            f"这个单元运行出错：`{error}`。智能体会根据这条报错修正后重试。"
             if zh
-            else f"This cell failed: `{error}`. The next step will repair it from the actual traceback."
+            else f"This cell failed: `{error}`. The agent will correct it from this error and try again."
         )
     if getattr(outcome, "completion", None) is not None:
         return ""
+
+    # A cell that only keeps the session's books (plan, task list, runtime
+    # environment) used to be narrated as "output:" plus its raw return dict,
+    # interpreter path included. One plain line says what it did (CHAT-4).
+    bookkeeping = bookkeeping_calls(action.code) if action.language == "python" else ()
+    if bookkeeping:
+        return _bookkeeping_narration(
+            bookkeeping, _section_body(observation, "stdout:"), zh
+        )
 
     # "No exception" is not "success": a cell whose subprocess exited 1 used
     # to be narrated as "completed successfully", and the narration carried
@@ -222,9 +251,9 @@ def outcome_narration(
             shown = -1  # never "the whole output" when the model saw a cut
         if zh:
             parts.append(
-                "Cell 已运行结束，输出："
+                "单元已运行结束，输出："
                 if shown == stdout_lines
-                else "Cell 已运行结束，输出的前几行："
+                else "单元已运行结束，输出的前几行："
             )
         else:
             parts.append(
@@ -247,10 +276,10 @@ def outcome_narration(
                 else f"({stdout_lines} lines in total; the full output is in the Notebook.)"
             )
     elif stderr_lines:
-        parts.append("Cell 已运行结束。" if zh else "The cell finished.")
+        parts.append("单元已运行结束。" if zh else "The cell finished.")
     else:
         parts.append(
-            "Cell 已运行结束，没有输出。" if zh else "The cell finished with no output."
+            "单元已运行结束，没有输出。" if zh else "The cell finished with no output."
         )
     if stderr_lines:
         parts.append(
@@ -276,7 +305,7 @@ _HOST_REFUSAL = re.compile(
     r"(?P<reason>.*?)(?:;\s*command was not executed)?\s*$"
 )
 _REFUSAL_PREFIXES = (
-    "这个 Cell 里需要批准的操作",
+    "这个单元里需要批准的操作",
     "An action in this cell that needed approval",
 )
 
@@ -296,23 +325,222 @@ def _refusal_narration(reason: str, zh: bool) -> str:
         return ""
     if reason == "approval timed out":
         return (
-            "这个 Cell 里需要批准的操作等待批准超时，没有执行。"
+            "这个单元里需要批准的操作等待批准超时，没有执行。"
             if zh
             else "An action in this cell that needed approval timed out waiting for it and did not run."
         )
     if not reason or reason == "denied by user":
         return (
-            "这个 Cell 里需要批准的操作被你拒绝了，没有执行。智能体会据此调整下一步。"
+            "这个单元里需要批准的操作被你拒绝了，没有执行。智能体会据此调整下一步。"
             if zh
             else "An action in this cell that needed approval was declined by you and did not run. "
             "The agent will adjust its next step."
         )
     return (
-        f"这个 Cell 里需要批准的操作未获批准，没有执行（原因：{reason}）。智能体会据此调整下一步。"
+        f"这个单元里需要批准的操作未获批准，没有执行（原因：{reason}）。智能体会据此调整下一步。"
         if zh
         else f"An action in this cell that needed approval was not approved and did not run "
         f"(reason: {reason}). The agent will adjust its next step."
     )
+
+
+#: ``host`` calls that keep the session's books -- the task list, the plan,
+#: the runtime environment -- rather than analyse anything.
+_BOOKKEEPING_CALLS = frozenset(
+    {
+        "todo_write",
+        "todo_read",
+        "plan_update",
+        "plan_read",
+        "env.list",
+        "env.list_dependencies",
+        "env.use",
+        "env.create",
+    }
+)
+
+
+def _host_call(node: ast.AST) -> str | None:
+    """``env.list`` for ``host.env.list(...)``; None for anything else."""
+
+    if not isinstance(node, ast.Call):
+        return None
+    parts: list[str] = []
+    target = node.func
+    while isinstance(target, ast.Attribute):
+        parts.append(target.attr)
+        target = target.value
+    if isinstance(target, ast.Name) and target.id == "host" and parts:
+        return ".".join(reversed(parts))
+    return None
+
+
+def bookkeeping_calls(code: str) -> tuple[str, ...]:
+    """The bookkeeping ``host`` calls of a Python cell that does nothing else.
+
+    Empty as soon as the cell computes or prints anything of its own: a cell
+    is bookkeeping only when every statement is one of these calls, bare,
+    printed, or assigned to a name that is then echoed.
+    """
+
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return ()
+    calls: list[str] = []
+    held: set[str] = set()
+    for statement in tree.body:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and _host_call(statement.value) in _BOOKKEEPING_CALLS
+        ):
+            held.add(statement.targets[0].id)
+            calls.append(str(_host_call(statement.value)))
+            continue
+        if not isinstance(statement, ast.Expr):
+            return ()
+        value = statement.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "print"
+            and len(value.args) == 1
+            and not value.keywords
+        ):
+            value = value.args[0]
+        if isinstance(value, ast.Name) and value.id in held:
+            continue
+        name = _host_call(value)
+        if name not in _BOOKKEEPING_CALLS:
+            return ()
+        calls.append(str(name))
+    return tuple(calls)
+
+
+_PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_MAX_NAMED_PACKAGES = 6
+
+
+def _echoed_result(stdout: str) -> dict:
+    """The dict a bookkeeping call returned, when the cell echoed exactly it."""
+
+    try:
+        value = ast.literal_eval(stdout.strip())
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _package_labels(names: Any, log: str) -> str:
+    """``statsmodels 0.15.0, patsy`` -- names, with the version the log shows."""
+
+    labels: list[str] = []
+    for item in names if isinstance(names, list) else []:
+        name = str(item.get("name") if isinstance(item, dict) else item)
+        if not _PACKAGE_NAME.fullmatch(name):
+            continue
+        version = re.search(
+            rf"(?im)^\s*\+ {re.escape(name)}==([0-9][\w.+!-]*)$"
+            rf"|\b{re.escape(name)}-([0-9][\w.+!]*)",
+            log,
+        )
+        found = (version.group(1) or version.group(2)) if version else ""
+        labels.append(f"{name} {found}".strip())
+    shown = labels[:_MAX_NAMED_PACKAGES]
+    if len(labels) > len(shown):
+        shown.append(f"+{len(labels) - len(shown)}")
+    return ", ".join(shown)
+
+
+def _bookkeeping_line(name: str, result: dict, zh: bool) -> str:
+    if name == "todo_write":
+        todos = result.get("todos")
+        if isinstance(todos, list):
+            done = sum(
+                1
+                for todo in todos
+                if isinstance(todo, dict) and todo.get("status") == "completed"
+            )
+            return (
+                f"更新了计划（{len(todos)} 步，完成 {done} 步）。"
+                if zh
+                else f"Updated the plan ({len(todos)} steps, {done} done)."
+            )
+        return "更新了计划。" if zh else "Updated the plan."
+    if name == "plan_update":
+        return "更新了计划进度。" if zh else "Updated the plan's progress."
+    if name in {"todo_read", "plan_read"}:
+        return "查看了当前计划。" if zh else "Checked the current plan."
+    if name in {"env.list", "env.list_dependencies"}:
+        environments = result.get("environments")
+        if isinstance(environments, list):
+            return (
+                f"列出了 {len(environments)} 个环境。"
+                if zh
+                else f"Listed {len(environments)} environments."
+            )
+        return "列出了可用环境。" if zh else "Listed the available environments."
+    if name == "env.use":
+        env = result.get("env")
+        label = str(env.get("name") or "") if isinstance(env, dict) else ""
+        if _PACKAGE_NAME.fullmatch(label):
+            return (
+                f"已切换到 {label} 环境，下一个单元起生效。"
+                if zh
+                else f"Switched to the {label} environment, from the next cell on."
+            )
+        return "已切换运行环境。" if zh else "Switched the runtime environment."
+    # env.create: an install into the kernel's environment. Only names and
+    # versions are repeated; the result's log and interpreter path are not.
+    log = str(result.get("log") or "")
+    installed = _package_labels(result.get("installed"), log)
+    failed = _package_labels(result.get("failed"), "")
+    parts: list[str] = []
+    if installed:
+        parts.append(f"已安装 {installed}。" if zh else f"Installed {installed}.")
+    if failed:
+        parts.append(f"未能安装 {failed}。" if zh else f"Could not install {failed}.")
+    if parts:
+        return ("" if zh else " ").join(parts)
+    if result.get("ok") is False:
+        return (
+            "安装没有完成，详情见 Notebook。"
+            if zh
+            else "The install did not complete; see the Notebook for details."
+        )
+    return "安装步骤已结束。" if zh else "The install step finished."
+
+
+def _bookkeeping_narration(calls: tuple[str, ...], stdout: str, zh: bool) -> str:
+    # Only the last value is echoed, so a result is matched to a call by its
+    # own keys and every other call gets its plain line.
+    result = _echoed_result(stdout)
+    lines: list[str] = []
+    for name in calls:
+        line = _bookkeeping_line(name, result, zh)
+        if line not in lines:
+            lines.append(line)
+    return ("" if zh else " ").join(lines)
+
+
+_BOOKKEEPING_SENTENCE = (
+    r"(?:更新了计划(?:（\d+ 步，完成 \d+ 步）)?。|更新了计划进度。|查看了当前计划。"
+    r"|列出了 \d+ 个环境。|列出了可用环境。|已切换到 \S+ 环境，下一个单元起生效。"
+    r"|已切换运行环境。|已安装 [A-Za-z0-9_.+, -]+。|未能安装 [A-Za-z0-9_.+, -]+。|安装步骤已结束。"
+    r"|安装没有完成，详情见 Notebook。"
+    r"|Updated the plan(?: \(\d+ steps, \d+ done\))?\.|Updated the plan's progress\."
+    r"|Checked the current plan\.|Listed \d+ environments\."
+    r"|Listed the available environments\."
+    r"|Switched to the \S+ environment, from the next cell on\."
+    r"|Switched the runtime environment\.|Installed [A-Za-z0-9_.+, -]+\."
+    r"|Could not install [A-Za-z0-9_.+, -]+\.|The install step finished\."
+    r"|The install did not complete; see the Notebook for details\.)"
+)
+_BOOKKEEPING_NARRATION = re.compile(
+    rf"{_BOOKKEEPING_SENTENCE}(?: ?{_BOOKKEEPING_SENTENCE})*"
+)
 
 
 #: How much of a cell's stdout the chat repeats after it runs.
@@ -354,6 +582,7 @@ def completion_message(
     if summary and not _summary_already_visible(output, summary, previous):
         parts.append(summary)
 
+    structured = False
     for heading_en, heading_zh, keys in (
         ("Key findings:", "关键发现：", _FINDING_KEYS),
         ("Metrics:", "指标：", _METRIC_KEYS),
@@ -361,6 +590,7 @@ def completion_message(
     ):
         value = _first_value(output, keys)
         body = _structured_body(value)
+        structured = structured or bool(body)
         if body and _normalized(body) not in previous:
             parts.append((heading_zh if zh else heading_en) + "\n" + body)
 
@@ -374,19 +604,34 @@ def completion_message(
         for item in bullets
         if str(item).strip() and _normalized(str(item)) not in previous
     ]
-    if fresh_bullets:
-        heading = "完成内容：" if zh else "Completed work:"
-        parts.append(heading + "\n" + "\n".join(f"- {item}" for item in fresh_bullets))
+    bullets_at = len(parts)  # the list goes here, once the artifacts are known
 
     artifact_lines = _artifact_lines(artifacts, trusted_delivery=trusted_delivery)
     # ART-8: scripts, logs and copies of inputs are how the result was made,
     # not the result; listing them with the figures and tables buried the
     # deliverables. They stay linked, on one line after the deliverables.
-    deliverables = [line for kind, line in artifact_lines if kind == "deliverable"]
+    deliverables = [item for item in artifact_lines if item[0] != "process"]
     process = [line for kind, line in artifact_lines if kind == "process"]
     if deliverables:
         heading = "产物：" if zh else "Artifacts:"
-        parts.append(heading + "\n" + "\n".join(f"- {link}" for link in deliverables))
+        # ART-1: the list was flat and newest-first, so the report sat among
+        # twenty figures. Grouped once there is more than one kind to tell apart.
+        groups = [
+            (
+                zh_label if zh else en_label,
+                [ln for kind, ln in deliverables if kind == key],
+            )
+            for key, en_label, zh_label in _DELIVERABLE_GROUPS
+        ]
+        groups = [(label, links) for label, links in groups if links]
+        if len(groups) > 1:
+            body = "\n".join(
+                f"- {label}\n" + "\n".join(f"  - {link}" for link in links)
+                for label, links in groups
+            )
+        else:
+            body = "\n".join(f"- {link}" for _kind, link in deliverables)
+        parts.append(heading + "\n" + body)
     if process:
         heading = (
             f"过程文件（脚本、日志、输入副本，{len(process)} 个）："
@@ -394,6 +639,22 @@ def completion_message(
             else f"Working files (scripts, logs, input copies; {len(process)}):"
         )
         parts.append(heading + " " + ("、" if zh else ", ").join(process))
+
+    # CHAT-5: a direct answer -- one paragraph, nothing structured, no files --
+    # is not followed by a "Completed work" list that only restates it. The
+    # list stays whenever it says more than the paragraph does.
+    direct = (
+        bool(summary)
+        and not structured
+        and not artifact_lines
+        and sum(len(item) for item in fresh_bullets) <= len(summary)
+    )
+    if fresh_bullets and not direct:
+        heading = "完成内容：" if zh else "Completed work:"
+        parts.insert(
+            bullets_at,
+            heading + "\n" + "\n".join(f"- {item}" for item in fresh_bullets),
+        )
 
     if not parts and previous:
         return ""
@@ -492,14 +753,52 @@ def _error_headline(observation: str) -> str:
         "\n[system]"
     ):
         return ""
-    lines = [line.strip() for line in match.group("body").splitlines() if line.strip()]
-    if not lines:
+    headline = _exception_line(match.group("body"))
+    if not headline:
         return "execution error"
-    headline = lines[-1]
     headline = _BEARER.sub("Bearer <redacted>", headline)
     headline = _SECRET_ASSIGNMENT.sub(r"\1\2<redacted>", headline)
     headline = headline.replace("`", "'")
     return headline[:240]
+
+
+#: ``Name`` or ``Name: message`` at column 0, dotted names included
+#: (``patsy.PatsyError: ...``, ``KeyboardInterrupt``).
+_EXCEPTION_HEADER = re.compile(r"(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?::(?:\s.*)?)?")
+#: A traceback's caret/underline line, which points at code and says nothing.
+_MARKER_LINE = re.compile(r"[\s^~]+")
+_TRACEBACK_START = "Traceback (most recent call last):"
+
+
+def _exception_line(body: str) -> str:
+    """The line that names the exception, not whatever line came last.
+
+    A multi-line exception message ends with its own detail -- patsy prints
+    the formula and a caret line under ``PatsyError: ...`` -- so the last line
+    of a traceback can be ``^^^^^^^`` (CHAT-3). Python prints the exception
+    header as the first unindented line after the last traceback's frames;
+    without a traceback (a SyntaxError, an R error) it is the last unindented
+    ``Name: message`` line, and failing that the last line that is not a marker.
+    """
+    lines = [line.rstrip() for line in body.splitlines() if line.strip()]
+    start = max(
+        (index for index, line in enumerate(lines) if line == _TRACEBACK_START),
+        default=-1,
+    )
+    if start >= 0:
+        for line in lines[start + 1 :]:
+            if line[0].isspace():
+                continue
+            if _EXCEPTION_HEADER.fullmatch(line):
+                return line
+            break
+    for line in reversed(lines):
+        if not line[0].isspace() and ":" in line and _EXCEPTION_HEADER.fullmatch(line):
+            return line
+    for line in reversed(lines):
+        if not _MARKER_LINE.fullmatch(line):
+            return line.strip()
+    return ""
 
 
 def _section_body(observation: str, marker: str) -> str:
@@ -535,34 +834,37 @@ def _summary_already_visible(output: Any, summary: str, previous: str) -> bool:
     return False
 
 
-#: Suffixes and folders of files that record how a result was made.
-_PROCESS_SUFFIXES = frozenset(
-    {".py", ".r", ".sh", ".bash", ".ipynb", ".log", ".pyc", ".tmp", ".bak", ".rds"}
+#: The answer's deliverable groups, in reading order: (kind, English, Chinese).
+_DELIVERABLE_GROUPS = (
+    ("report", "Reports", "报告"),
+    ("image", "Figures", "图"),
+    ("table", "Tables and data", "表与数据"),
+    ("other", "Other", "其他"),
 )
-_PROCESS_DIRS = ("project-inputs/", "inputs/", "__pycache__/", ".openai4s")
 
 
-def _artifact_kind(name: str) -> str:
-    lower = name.lower().replace("\\", "/")
-    dot = lower.rfind(".")
-    suffix = lower[dot:] if dot > lower.rfind("/") else ""
-    if suffix in _PROCESS_SUFFIXES:
-        return "process"
-    if lower.startswith(_PROCESS_DIRS) or any(f"/{d}" in lower for d in _PROCESS_DIRS):
-        return "process"
-    return "deliverable"
+def _deliverable_group(name: str) -> str:
+    """The Files panel's own category for this filename (``ARTIFACT_KINDS``)."""
+    suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    for kind, extensions, _content_types in ARTIFACT_KINDS:
+        if suffix in extensions:
+            return kind if kind in {"report", "image", "table"} else "other"
+    return "other"
 
 
 def _artifact_lines(
     artifacts: Iterable[dict], *, trusted_delivery: bool = False
 ) -> list[tuple[str, str]]:
-    """``(kind, markdown link)`` per artifact, deliverables and process files."""
+    """``(kind, markdown link)`` per artifact: ``process`` or a deliverable group."""
     lines: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for artifact in artifacts:
         if not isinstance(artifact, dict):
             continue
         name = str(artifact.get("filename") or "artifact")
+        role = artifact_role(name)
+        if role == "internal":
+            continue
         version_id = artifact.get("version_id") or artifact.get("latest_version_id")
         ident = str(artifact.get("artifact_id") or artifact.get("id") or "")
         target = completion_artifact_url(
@@ -580,7 +882,8 @@ def _artifact_lines(
             continue
         seen.add(key)
         label = name.replace("[", "\\[").replace("]", "\\]")
-        lines.append((_artifact_kind(name), f"[{label}]({target})"))
+        kind = role if role == "process" else _deliverable_group(name)
+        lines.append((kind, f"[{label}]({target})"))
     return lines
 
 
@@ -595,13 +898,15 @@ def _normalized(value: str) -> str:
 _PROGRESS_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
-        r"我已经准备好一个 (?:R|Python) Cell，正在执行；真实输出会持续记录到 Notebook。",
+        r"我已经准备好一个 (?:R|Python) (?:单元|Cell)，正在执行；真实输出会持续记录到 Notebook。",
         r"I have prepared a (?:R|Python) cell and am running it now; its actual "
         r"output will be recorded in the Notebook\.",
         r"我正在执行 \d+ 个相关步骤，并会根据返回结果继续分析。",
         r"I am running \d+ related steps and will continue from their returned "
         r"results\.",
         r"我先检索相关来源，随后会说明检索结果如何影响下一步分析。",
+        r"我正在检索相关来源。",
+        r"I am searching relevant sources\.",
         r"I am searching relevant sources first, then I will explain how the "
         r"results affect the next analysis step\.",
         r"我正在读取并核对这个来源中的关键证据。",
@@ -610,6 +915,10 @@ _PROGRESS_PATTERNS = tuple(
         r"I am saving the current results; written files will be added to "
         r"Artifacts\.",
         r"我先检查相关文件和数据，再根据实际内容继续分析。",
+        r"我正在查看相关文件和数据。",
+        r"I am looking at the relevant files and data\.",
+        r"我正在更新计划。",
+        r"I am updating the plan\.",
         r"I am inspecting the relevant files and data before continuing from "
         r"their actual contents\.",
         r"我正在准备适合这一步分析的运行环境。",
@@ -624,13 +933,16 @@ _PROGRESS_PATTERNS = tuple(
 )
 _PROGRESS_PREFIXES = (
     "The cell finished",
-    "Cell 已运行结束",
+    "单元已运行结束",
     "This cell failed: `",
-    "这个 Cell 执行失败：`",
+    "这个单元运行出错：`",
     *_REFUSAL_PREFIXES,
     # Written by earlier versions; still in stored sessions.
     "This cell completed successfully",
     "这个 Cell 已成功完成",
+    "Cell 已运行结束",
+    "这个 Cell 执行失败：`",
+    "这个 Cell 里需要批准的操作",
 )
 
 
@@ -642,12 +954,15 @@ def is_progress_narration(text: Any) -> bool:
         return False
     if value.startswith(_PROGRESS_PREFIXES):
         return True
+    if _BOOKKEEPING_NARRATION.fullmatch(value):
+        return True
     return any(pattern.fullmatch(value) for pattern in _PROGRESS_PATTERNS)
 
 
 __all__ = [
     "CANCEL_REASONS",
     "action_narration",
+    "bookkeeping_calls",
     "cancellation_marker",
     "completion_message",
     "is_progress_narration",

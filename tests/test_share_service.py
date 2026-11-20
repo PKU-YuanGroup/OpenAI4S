@@ -222,3 +222,135 @@ def test_new_share_id_is_dns_safe():
         sid = new_share_id()
         assert len(sid) == 26
         assert all(c in "abcdefghijklmnopqrstuvwxyz234567" for c in sid)
+
+
+# --- EXP-3: the session as one self-contained read-only web page -------------
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"example-pixels"
+_HOSTILE = '<script>alert(1)</script><img src=x onerror="alert(2)">'
+
+
+def _page_session(tmp_path: Path):
+    """A session whose text carries markup, local paths and a figure."""
+    store, service, _tunnel, root = _make(tmp_path)
+    project_id = store.get_frame(root)["project_id"]
+    workspace = tmp_path / "workspaces" / root / root
+    store.add_message(
+        root_frame_id=root,
+        branch_id=root,
+        frame_id=root,
+        role="assistant",
+        content="**Lag doubles** in minimal medium.\n\n"
+        f"- hostile: {_HOSTILE}\n"
+        "- see [the paper](https://example.org/paper) and "
+        "[fig.png](/api/v1/artifacts/a-1) and [x](javascript:alert(3))\n\n"
+        "```python\nprint('<b>code</b>')\n```",
+    )
+    cell = store.log_cell(
+        frame_id=root,
+        root_frame_id=root,
+        project_id=project_id,
+        code="fig.savefig('fig.png')  # <not a tag>",
+        result={
+            "id": "c2",
+            "stdout": f"wrote {workspace}/fig.png\n"
+            f"db at {tmp_path}/openai4s.db\nhome {Path.home()}/lab/data.csv\n",
+            "stderr": "",
+            "error": None,
+        },
+        figures=["fig.png"],
+        cell_index=2,
+        state_revision=2,
+        visibility="scientific",
+    )
+    (workspace / "fig.png").write_bytes(_PNG)
+    store.save_artifact(
+        path=str(workspace / "fig.png"),
+        filename="fig.png",
+        content_type="image/png",
+        size_bytes=len(_PNG),
+        checksum=hashlib.sha256(_PNG).hexdigest(),
+        producing_cell_id=cell,
+        frame_id=root,
+        root_frame_id=root,
+        project_id=project_id,
+    )
+    return store, service, root
+
+
+def test_the_exported_page_is_self_contained_and_everything_in_it_is_text(tmp_path):
+    """EXP-3: one .html that opens from file:// with no network request, no
+    script, and the session's own text never passed through as markup."""
+    import base64
+    import re
+
+    from openai4s.server.share_page import CONTENT_SECURITY_POLICY
+
+    _store, service, root = _page_session(tmp_path)
+    exported = service.export_page(root)
+    page = exported["data"].decode("utf-8")
+
+    assert exported["content_type"] == "text/html; charset=utf-8"
+    assert exported["filename"] == f"{root}.session.html"
+    assert exported["sha256"] == hashlib.sha256(exported["data"]).hexdigest()
+    assert page.startswith("<!doctype html>")
+    assert "default-src 'none'" in CONTENT_SECURITY_POLICY
+    assert "script-src" not in CONTENT_SECURITY_POLICY
+    assert 'http-equiv="Content-Security-Policy"' in page
+
+    # Nothing executes: no script element, no handler attribute, no markup
+    # taken from the session.
+    assert "<script" not in page.lower()
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert "<img src=x" not in page and 'onerror="alert' not in page
+    assert not re.search(r"<[a-z][^>]*\son[a-z]+\s*=", page)
+    assert "&lt;b&gt;code&lt;/b&gt;" in page and "&lt;not a tag&gt;" in page
+    assert 'href="javascript' not in page
+
+    # Nothing loads: the only src is the inlined figure, the only href the
+    # link the author wrote, and a link into the daemon is left as its text.
+    assert re.findall(r'src="([^"]*)"', page) == [
+        "data:image/png;base64," + base64.b64encode(_PNG).decode("ascii")
+    ]
+    assert re.findall(r'href="([^"]*)"', page) == ["https://example.org/paper"]
+    assert "/api/v1/artifacts" not in page
+    for loader in ("<link", "<iframe", "<object", "<embed", "@import", "url("):
+        assert loader not in page
+
+    # The conversation, the cell and the artifact list are all there.
+    assert "<strong>Lag doubles</strong> in minimal medium." in page
+    assert "hello" in page and "x = 1" in page
+    assert "<details><summary>Cell 2 · python</summary>" in page
+    assert "<td>fig.png</td><td>image/png</td>" in page
+
+    zh = service.export_page(root, language="zh")["data"].decode("utf-8")
+    assert "只读导出" in zh and "<h2>产物</h2>" in zh and "单元 2" in zh
+
+
+def test_the_exported_page_carries_neither_the_data_dir_nor_the_home_dir(tmp_path):
+    """Owner decision 7 applied to EXP-3: a file made to be handed to someone
+    else does not carry this machine's paths, by the session package's rules."""
+    _store, service, root = _page_session(tmp_path)
+    page = service.export_page(root)["data"].decode("utf-8")
+
+    assert str(tmp_path) not in page
+    assert str(Path(tmp_path).resolve()) not in page
+    assert str(Path.home()) not in page
+    assert "wrote ./fig.png" in page
+    assert "db at &lt;data_dir&gt;/openai4s.db" in page
+    assert "home ~/lab/data.csv" in page
+
+
+def test_the_exported_page_says_what_its_budget_left_out(tmp_path, monkeypatch):
+    from openai4s.server import share_page
+
+    _store, service, root = _page_session(tmp_path)
+    monkeypatch.setattr(share_page, "MAX_IMAGES_BYTES", 4)
+    monkeypatch.setattr(share_page, "MAX_FIELD_CHARS", 24)
+    page = service.export_page(root)["data"].decode("utf-8")
+
+    assert "data:image" not in page
+    assert "1 figure(s) are listed by name only" in page
+    assert "Long text was cut in" in page
+    assert "(cut here to keep this file small)" in page
+    assert '<div class="label">fig.png</div>' in page

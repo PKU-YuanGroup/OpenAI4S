@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: (error: unknown) => String(error) }));
+vi.mock("./api", () => ({
+  api: vi.fn(), apiErrorText: (error: unknown) => String(error), API: "/api/v1",
+  ApiError: class extends Error {
+    code: string;
+    constructor(body: unknown, public status: number) {
+      super("HTTP " + status);
+      this.code = String((body as { code?: string } | null)?.code || "");
+    }
+  },
+}));
+vi.mock("../chrome/upload", async (original) => ({ ...(await original<object>()), uploadFiles: vi.fn() }));
+vi.mock("../artifacts/load", async (original) => ({ ...(await original<object>()), loadArtifacts: vi.fn(async () => undefined) }));
+vi.mock("../artifacts/ui", async (original) => ({ ...(await original<object>()), presentViewer: vi.fn() }));
 vi.mock("./dashboard", () => ({ showDashboard: vi.fn(), showWorkspace: vi.fn() }));
 vi.mock("./load", () => ({
   loadProjects: vi.fn(async () => undefined), loadSessions: vi.fn(),
@@ -14,7 +26,11 @@ import { LANG, setLang } from "../../i18n";
 import { api } from "./api";
 import { binds } from "./binds";
 import { projectFilesCopy as copy, projectHistoryCopy } from "./copy";
-import { browseProjectFolder, openProjectFiles, projectFolderErrorText, resetProjectFolderPicker } from "./project-files";
+import { browseProjectFolder, entryMeta, openProjectFiles, projectFolderErrorText, resetProjectFolderPicker } from "./project-files";
+import { uploadFiles } from "../chrome/upload";
+import { loadArtifacts } from "../artifacts/load";
+import { presentViewer } from "../artifacts/ui";
+import { artifacts } from "../../stores/artifacts";
 import { createProject, openProject, openProjectModal, renderProjMenu, submitProjectModal } from "./projects";
 import { loadSessions, loadSessionsForScope } from "./load";
 import { _openGen, currentId, folders, project, projects, sessions } from "../../stores/session";
@@ -312,6 +328,44 @@ describe("read-only project files", () => {
     nodes["#modal-body"]!.click(copy("back"));
     await vi.waitFor(() => expect(nodes["#modal-body"]!.texts()).toContain(copy("empty")));
   });
+
+  // ART-3: an xlsx showed a red "cannot read this path: binary files can be
+  // imported for analysis but cannot be previewed" with Retry, and the list
+  // had neither sizes nor dates.
+  it("offers Import and view, not an error with Retry, for a type with no text preview", async () => {
+    const modified = Date.UTC(2026, 10, 12, 8, 30);
+    vi.mocked(api).mockResolvedValueOnce(listing("", [
+      { name: "plate.xlsx", path: "plate.xlsx", kind: "file", size: 19735, modified_ms: modified },
+    ] as never));
+    await openProjectFiles("p", "P");
+    const texts = nodes["#modal-body"]!.texts();
+    expect(texts).toContain(entryMeta({ size: 19735, modified_ms: modified }));
+    expect(entryMeta({ size: 19735 })).toBe("19.3 KB");
+    vi.mocked(api).mockRejectedValueOnce(Object.assign(new Error("binary files cannot be previewed"), { code: "binary_preview" }));
+    nodes["#modal-body"]!.click("plate.xlsx");
+    await vi.waitFor(() => expect(nodes["#modal-body"]!.texts()).toContain(copy("noInlinePreview")));
+    const shown = nodes["#modal-body"]!.texts();
+    expect(shown).toContain(copy("importView"));
+    expect(shown).not.toContain(copy("retry"));
+    expect(shown.join(" ")).not.toContain("binary files cannot be previewed");
+    expect(nodes["#modal-body"]!.all().some((node) => node.attrs.role === "alert")).toBe(false);
+
+    const row = { id: "a1", filename: "plate.xlsx" };
+    artifacts.value = [row];
+    const fetched = vi.fn(async () => ({ ok: true, blob: async () => new Blob(["bytes"]) }));
+    vi.stubGlobal("fetch", fetched);
+    vi.mocked(uploadFiles).mockResolvedValueOnce([{ ok: true, frameId: "f1", filename: "plate.xlsx" }]);
+    try {
+      nodes["#modal-body"]!.click(copy("importView"));
+      await vi.waitFor(() => expect(presentViewer).toHaveBeenCalledWith(row));
+      expect(fetched).toHaveBeenCalledWith("/api/v1/projects/p/file?path=plate.xlsx&raw=1");
+      expect(vi.mocked(uploadFiles).mock.calls[0]![0]![0]!.name).toBe("plate.xlsx");
+      expect(loadArtifacts).toHaveBeenCalledWith("f1");
+      await vi.waitFor(() => expect(nodes["#modal"]!.classList.contains("hidden")).toBe(true));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("project folder persistence", () => {
@@ -442,6 +496,26 @@ describe("project folder persistence", () => {
     expect(url).toBe("/projects/p");
     expect(request!.method).toBe("PATCH");
     expect(JSON.parse(String(request!.body)).folder_path).toBe(folderPath);
+  });
+
+  it("submits on Enter in the name field, but not while an IME is composing (UI-1)", async () => {
+    openProjectModal({ project_id: "p", name: "Research", folder_path: "" });
+    const press = (event: { key: string; isComposing?: boolean; keyCode?: number }) => {
+      const preventDefault = vi.fn();
+      nodes["#pm-name"]!.onkeydown!({ ...event, preventDefault });
+      return preventDefault;
+    };
+    vi.mocked(api).mockResolvedValue({ project_id: "p" });
+
+    // Confirming an IME candidate is not a submit (Safari reports it as 229).
+    expect(press({ key: "Enter", isComposing: true })).not.toHaveBeenCalled();
+    expect(press({ key: "Enter", keyCode: 229 })).not.toHaveBeenCalled();
+    expect(press({ key: "a" })).not.toHaveBeenCalled();
+    expect(api).not.toHaveBeenCalled();
+
+    expect(press({ key: "Enter" })).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(api).toHaveBeenCalled());
+    expect(vi.mocked(api).mock.calls[0]![0]).toBe("/projects/p");
   });
 
   it("shows a refused save inside the dialog instead of the composer hint", async () => {

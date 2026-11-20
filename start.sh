@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # OpenAI4S · start the daemon + web UI from an already-configured environment.
-# Run ./setup.sh first. The daemon prints the address it actually listens on
-# (OPENAI4S_HOST / OPENAI4S_PORT, or --host / --port passed here); set your
-# model in the UI.
+# Run ./setup.sh first. The daemon prints the address it bound and opens a
+# signed-in browser tab (set your model in Settings → Models).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -15,8 +14,8 @@ else
   exit 1
 fi
 
-# No address here: this script cannot know it. The port may come from --port,
-# OPENAI4S_PORT or .env, and a fixed "http://127.0.0.1:8760/" printed above the
-# daemon's own "listening at" line was simply wrong whenever it was changed.
-echo "· starting OpenAI4S — its address is printed below once it is listening (set your model in Customize → Models)"
+# No address here: OPENAI4S_HOST / OPENAI4S_PORT, .env and `--port` all change
+# it, and this script cannot see all three. The daemon prints the one it bound.
+# The bare address answers 401 without the sign-in link, so name the command.
+echo "· starting OpenAI4S — the address is printed below. Sign-in link: ${RUN[*]} url"
 exec "${RUN[@]}" serve "$@"

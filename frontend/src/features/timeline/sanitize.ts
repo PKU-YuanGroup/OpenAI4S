@@ -122,6 +122,9 @@ export function sanitizeActionTimeline(payload: unknown): ActionTimeline {
       input_tokens: number("input_tokens"),
       output_tokens: number("output_tokens"),
       total_tokens: number("total_tokens"),
+      // What the input was made of, for the session token chip's breakdown.
+      cache_read: number("cache_read"),
+      reasoning_tokens: number("reasoning_tokens"),
     };
   };
   const permission = (value: unknown) =>

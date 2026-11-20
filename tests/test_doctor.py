@@ -632,7 +632,7 @@ def test_a_fresh_install_with_only_the_base_env_recommends_setup(cfg, monkeypatc
 
     check = _by_name(doctor.report(cfg))["runtime"]
     assert check["status"] == doctor.WARN
-    assert "no prebuilt environment" in check["detail"]
+    assert "no managed environment built" in check["detail"]
     assert check["remedy"], "a fresh install must be told to run setup"
     assert check["facts"]["prebuilt_environments"] == 0
 
@@ -818,10 +818,12 @@ def _refusing(status=None):
 
 
 def test_without_a_request_the_model_line_says_the_key_is_not_verified(cfg):
-    """The configuration-only form (the web Diagnostics route, `--offline`)."""
+    """The configuration-only form (the web Diagnostics route, and the CLI
+    without `--network`)."""
     check = _by_name(doctor.report(cfg))["model"]
     assert check["status"] == doctor.OK
     assert "not verified" in check["detail"]
+    assert "doctor --network" in check["detail"]
     assert "live_check" not in check["facts"]
 
 
@@ -874,13 +876,13 @@ def test_an_answer_that_settles_nothing_warns_rather_than_fails(cfg, status, out
     assert check["facts"]["live_check"] == outcome
 
 
-def test_an_unreachable_provider_warns_and_names_offline(cfg):
+def test_an_unreachable_provider_warns_and_says_how_to_skip_it(cfg):
     """doctor stays usable without a network: a dead connection is a warning
     that says nothing was verified, never a traceback and never `ok`."""
     check = _by_name(doctor.report(cfg, live_model=_refusing(None)))["model"]
     assert check["status"] == doctor.WARN
     assert "could not reach" in check["detail"]
-    assert "--offline" in check["remedy"]
+    assert "without `--network`" in check["remedy"]
     assert check["facts"]["live_check"] == "unreachable"
 
 
@@ -949,20 +951,23 @@ def test_the_test_request_is_one_small_bounded_call(cfg, monkeypatch):
     assert timeout <= 20
 
 
-def test_the_cli_sends_the_request_unless_offline(monkeypatch, capsys):
+def test_the_cli_sends_the_request_only_with_network(monkeypatch, capsys):
+    """`--network` is the one switch for everything that leaves the machine:
+    the provider test request rides on it together with the science-host
+    probes, and a plain `doctor` sends nothing."""
     cli = importlib.import_module("openai4s.cli.main")
     seen = []
 
-    def fake_report(_cfg, *, live_model=None):
-        seen.append(live_model)
+    def fake_report(_cfg, *, network=False, live_model=None):
+        seen.append((network, live_model))
         return {"status": doctor.OK, "checks": []}
 
     monkeypatch.setattr(doctor, "report", fake_report)
 
     assert cli.main(["doctor"]) == 0
-    assert cli.main(["doctor", "--offline"]) == 0
+    assert cli.main(["doctor", "--network"]) == 0
     capsys.readouterr()
-    assert seen == [doctor.send_test_request, None]
+    assert seen == [(False, None), (True, doctor.send_test_request)]
 
 
 def test_doctor_help_documents_its_exit_status_and_the_request(capsys):
@@ -974,7 +979,8 @@ def test_doctor_help_documents_its_exit_status_and_the_request(capsys):
     assert "exit status:" in text
     for line in ("0  every check passed", "1  usable", "2  not ready"):
         assert line in text
-    assert "--offline" in text
+    assert "--network" in text
+    assert "--offline" not in text
 
 
 def test_r_is_resolved_the_way_the_r_kernel_resolves_it(cfg, monkeypatch):
@@ -1200,3 +1206,191 @@ def test_allowlist_keeps_a_proven_sandbox_and_fails_raw_network(cfg, monkeypatch
     check = _by_name(doctor.report(cfg))["isolation"]
     assert check["status"] == doctor.FAIL
     assert "egress_boundary_unavailable" in check["detail"]
+
+
+# --------------------------------------------------------------------------
+# "all checks passed" beside an unreachable database (usability review SET-2)
+# --------------------------------------------------------------------------
+
+
+def _env(name, *, builtin=True, rscript=None):
+    return types.SimpleNamespace(name=name, builtin=builtin, rscript=rscript)
+
+
+def test_a_users_own_conda_environments_are_not_counted_as_managed(cfg, monkeypatch):
+    """Discovery lists personal conda environments so a person can pick one.
+    Counting them reported "3 prebuilt environment(s) available" on a machine
+    where the wizard said, correctly, that the managed ones did not exist."""
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *a, **k: [
+            _env("base"),
+            _env("lab_env", builtin=False),
+            _env("work", builtin=False),
+            _env("stats", builtin=False, rscript="/opt/envs/stats/bin/Rscript"),
+        ],
+    )
+    monkeypatch.setattr(
+        "openai4s.kernel.r_kernel.resolve_r_interpreter",
+        lambda *a, **k: "/opt/envs/stats/bin/Rscript",
+    )
+
+    check = _by_name(doctor.report(cfg))["runtime"]
+
+    assert check["status"] == doctor.WARN
+    assert "no managed environment built" in check["detail"]
+    assert "3 local conda environment(s)" in check["detail"]
+    assert "prebuilt environment(s) available" not in check["detail"]
+    assert check["facts"]["prebuilt_environments"] == 0
+    assert check["facts"]["local_environments"] == 3
+    assert check["remedy"] == doctor.MISSING_ENVIRONMENTS_REMEDY
+    assert "`openai4s setup`" in check["remedy"]
+
+
+def test_built_in_managed_and_local_environments_are_told_apart(cfg, monkeypatch):
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *a, **k: [
+            _env("base"),
+            _env("python"),
+            _env("r", rscript="/opt/envs/r/bin/Rscript"),
+            _env("lab_env", builtin=False),
+        ],
+    )
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: None)
+
+    check = _by_name(doctor.report(cfg))["runtime"]
+
+    assert check["status"] == doctor.OK
+    assert "built-in interpreter + 2 managed environment(s)" in check["detail"]
+    assert "1 local conda environment(s)" in check["detail"]
+    assert check["facts"]["prebuilt_environments"] == 2
+    assert check["facts"]["local_environments"] == 1
+
+
+def test_the_default_run_probes_nothing_and_says_so(cfg, monkeypatch):
+    """Ten databases being built in is not ten databases being reachable, and
+    an offline run cannot know. It must not let `ok` be read as connected."""
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("the default doctor run contacted the network")
+
+    monkeypatch.setattr(doctor, "probe_science_hosts", forbidden)
+    monkeypatch.setattr("openai4s.webtools.web_probe", forbidden)
+
+    result = doctor.report(cfg)
+    check = _by_name(result)["connectors"]
+
+    assert check["status"] == doctor.OK
+    assert "reachability not probed" in check["detail"]
+    assert "openai4s doctor --network" in check["detail"]
+    assert check["facts"]["reachability_probed"] is False
+    assert "reachability" not in check["facts"]
+
+
+@pytest.mark.stubbed_backend
+def test_the_network_probe_reports_an_unreachable_database_per_host(cfg, monkeypatch):
+    """The reviewed machine: RCSB failed its TLS handshake while doctor printed
+    "All checks passed"."""
+    asked = []
+    tls_error = "TLS certificate for search.rcsb.org could not be verified"
+
+    def web_probe(url, *, timeout=15.0, user_agent=None):
+        asked.append(url)
+        if "rcsb" in url:
+            return {"url": url, "status": 0, "exists": False, "error": tls_error}
+        return {"url": url, "status": 200, "location": "", "exists": True}
+
+    monkeypatch.setenv("OPENAI4S_ALLOW_NETWORK", "1")
+    monkeypatch.setattr("openai4s.webtools.web_probe", web_probe)
+
+    result = doctor.report(cfg, network=True)
+    check = _by_name(result)["connectors"]
+
+    assert sorted(asked) == sorted(
+        f"https://{host}/" for host in doctor.SCIENCE_HOSTS.values()
+    )
+    assert check["status"] == doctor.WARN
+    assert "9 of 10 reachable (unreachable: pdb)" in check["detail"]
+    assert check["facts"]["reachability_probed"] is True
+    assert check["facts"]["reachability"]["pdb"] == {
+        "host": "search.rcsb.org",
+        "reachable": False,
+        "error": tls_error,
+    }
+    assert check["facts"]["reachability"]["uniprot"] == {
+        "host": "rest.uniprot.org",
+        "reachable": True,
+        "http_status": 200,
+    }
+    assert result["status"] != doctor.OK
+
+    text = doctor.render(result)
+    assert "All checks passed." not in text
+    [pdb_line] = [line for line in text.splitlines() if "search.rcsb.org" in line]
+    assert "FAIL" in pdb_line and tls_error in pdb_line
+    [uniprot_line] = [line for line in text.splitlines() if "rest.uniprot.org" in line]
+    assert "HTTP 200" in uniprot_line
+
+
+def test_any_http_answer_is_reachable_and_a_refusal_is_not():
+    """A 404 for `/` still proves DNS, TCP and TLS. A guard that refuses the
+    request (egress allowlist, SSRF) is an answer too, not a crash."""
+
+    def probe(url, *, timeout):
+        if "zenodo" in url:
+            raise RuntimeError("egress allowlist: zenodo.org is not granted")
+        return {"url": url, "status": 404, "exists": False}
+
+    answers = doctor.probe_science_hosts(probe)
+
+    assert set(answers) == set(doctor.SCIENCE_HOSTS)
+    assert answers["zenodo"]["reachable"] is False
+    assert "not granted" in answers["zenodo"]["error"]
+    assert answers["pubchem"] == {
+        "host": "pubchem.ncbi.nlm.nih.gov",
+        "reachable": True,
+        "http_status": 404,
+    }
+
+
+def test_the_probed_hosts_are_the_ones_the_connectors_query():
+    """The table is a second copy of ten URLs; hold it to the first."""
+    import inspect
+
+    from openai4s.host import science, zenodo
+
+    assert set(doctor.SCIENCE_HOSTS) == {db.id for db in science.DATABASES}
+    source = inspect.getsource(science) + inspect.getsource(zenodo)
+    for database, host in doctor.SCIENCE_HOSTS.items():
+        assert f"https://{host}/" in source, (database, host)
+
+
+def test_the_cli_flag_is_what_turns_the_probe_on(monkeypatch, capsys):
+    cli = importlib.import_module("openai4s.cli.main")
+
+    seen = []
+
+    def report(_cfg, *, network=False, live_model=None):
+        seen.append(network)
+        return {"status": doctor.OK, "checks": []}
+
+    monkeypatch.setattr(doctor, "report", report)
+
+    assert cli.main(["doctor"]) == 0
+    assert cli.main(["doctor", "--network"]) == 0
+    assert seen == [False, True]
+    capsys.readouterr()
+
+
+def test_credential_missing_is_the_model_checks_own_answer(cfg, monkeypatch):
+    """`openai4s status` printed a model name as if it were ready (FR-1)."""
+    assert doctor.credential_missing(cfg) is False
+
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    assert _by_name(doctor.report(cfg))["model"]["status"] == doctor.FAIL
+    assert doctor.credential_missing(cfg) is True
+
+    # Nothing can be told from a config the check cannot read: no claim.
+    assert doctor.credential_missing(types.SimpleNamespace()) is False

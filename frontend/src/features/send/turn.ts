@@ -30,7 +30,7 @@ import { flushRender, type LiveStream } from "../messages/stream";
 import { notebookOnTurnDone } from "../notebook/kernel";
 import { hint } from "../sessions/chrome";
 import { enableComposer } from "../sessions/dom";
-import { addMsgActions } from "../messages/list";
+import { finishTurnGroup } from "../messages/list";
 import { callLane, setCancelHidden } from "./host";
 import { renderPlanCard, showPlanApproval } from "./plan";
 import { closeTurnTicket } from "./ticket";
@@ -110,7 +110,8 @@ export function turnDone(status: string, detail?: unknown): void {
   if (st) {
     flushRender(st, true);
     st.md.classList.remove("cursor");
-    addMsgActions(st.wrap, st.full || st.text);
+    // The same ending a stored turn gets on reopen: one action row for the turn.
+    finishTurnGroup(st.wrap, st.full || st.text);
     if (status === "failed" && detail && typeof detail === "object" && !st.wrap.querySelector(".msg-failure-meta")) {
       st.wrap.appendChild(failureMeta(detail));
     }

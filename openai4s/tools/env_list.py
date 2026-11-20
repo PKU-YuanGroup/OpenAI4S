@@ -70,12 +70,22 @@ class EnvListTool(Tool):
         environments: list[dict] = []
         best: str | None = None
         best_score = -1
+        # Where the agent may go on its own: a built-in environment, or the
+        # one the session already runs in (a local one there was the user's
+        # pick). Every environment is still listed with its real coverage, but
+        # the user's own conda environments are theirs to name. Ranked with
+        # the rest, the one with the most packages was recommended, the step
+        # card read "use <their environment>", and the model asked to switch.
+        candidates: dict[str, list[str]] = {}
+        local = False
         for environment in envmod.discover_environments():
             has = [package for package in packages if environment.has_package(package)]
             missing = [
                 package for package in packages if not environment.has_package(package)
             ]
             runnable = self.is_runnable(environment)
+            builtin = bool(environment.builtin)
+            local = local or not builtin
             environments.append(
                 {
                     "name": environment.name,
@@ -83,30 +93,47 @@ class EnvListTool(Tool):
                     "python_version": environment.python_version(),
                     "runnable": runnable,
                     "current": environment.name == current,
+                    "builtin": builtin,
                     "description": environment.description(),
                     "notable": environment.notable(),
                     "has": has,
                     "missing": missing,
                 }
             )
-            if runnable and packages:
+            if runnable and (builtin or environment.name == current):
+                candidates[environment.name] = has
                 score = len(has)
-                if score > best_score or (
-                    score == best_score and environment.name == current
+                if packages and (
+                    score > best_score
+                    or (score == best_score and environment.name == current)
                 ):
                     best_score, best = score, environment.name
-        truly_missing = [
+        missing_everywhere = [
             package
             for package in packages
-            if not any(package in environment["has"] for environment in environments)
+            if not any(package in has for has in candidates.values())
         ]
-        return {
+        target = best if (packages and best_score > 0) else current
+        covered = candidates.get(target or "", [])
+        result = {
             "environments": environments,
             "requested": packages,
-            "missing": truly_missing,
+            # In no environment the agent may switch to by itself.
+            "missing": missing_everywhere,
             "current": current,
-            "recommend": best if (packages and best_score > 0) else None,
+            # A switch worth making; staying put is not a recommendation.
+            "recommend": target if target != current else None,
+            # What to request with env_create once in that environment.
+            "install": [package for package in packages if package not in covered],
         }
+        if local:
+            result["note"] = (
+                "Environments with builtin=false are the user's own conda "
+                "environments: switch into one only if the user named it. "
+                "Otherwise stay in a built-in environment and request the "
+                "packages under `install` with env_create (host.env.create)."
+            )
+        return result
 
 
 __all__ = ["EnvListTool"]

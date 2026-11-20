@@ -363,6 +363,55 @@ describe("what a card says before the user decides", () => {
     expect(permContext({ tool: "env_use", input: { name: "python", local: false } }).lines).toEqual([]);
   });
 
+  it("titles download, install and environment requests in the UI language (PERM-1)", async () => {
+    const { permTitle } = await import("./permission");
+    const download = {
+      tool: "web_download",
+      title: "Downloading from files.example.org",
+      target: "files.example.org",
+      input: { url: "https://files.example.org/download/demo.cif.gz", path: "structures/demo.cif.gz" },
+    };
+    const install = {
+      tool: "env_setup",
+      title: "Installing statsmodels into base",
+      input: { packages: ["statsmodels", "seaborn"], environment: "base" },
+    };
+    const local = { tool: "env_use", title: "Switching to the local work environment", input: { name: "work", local: true } };
+    await setLang("zh");
+    expect(permTitle(download)).toBe("从 files.example.org 下载 demo.cif.gz");
+    expect(permTitle(install)).toBe("安装 statsmodels, seaborn 到 base");
+    expect(permTitle(local)).toBe("切换到本机环境 work");
+    expect(permTitle({ tool: "env_use", input: { name: "r", local: false } })).toBe("切换到 r 环境");
+    // Any other kind: the server's title through the step templates, else as it came.
+    expect(permTitle({ tool: "bash", title: "Running python3" })).toBe("运行 python3");
+    expect(permTitle({ tool: "mcp_call", title: "Calling calc via example" })).toBe("Calling calc via example");
+    await setLang("en");
+    expect(permTitle(download)).toBe("Download demo.cif.gz from files.example.org");
+    expect(permTitle(install)).toBe("Install statsmodels, seaborn into base");
+    expect(permTitle(local)).toBe("Switch to your local environment work");
+  });
+
+  it("shows a download's whole address, where it is saved and the size limit (PERM-1)", async () => {
+    const { permContext, permActionLine, workspaceTarget } = await import("./permission");
+    await setLang("zh");
+    const card = {
+      tool: "web_download",
+      target: "files.example.org",
+      input: { url: "https://files.example.org/download/demo.cif.gz", path: "structures/demo.cif.gz", max_bytes: 67108864 },
+    };
+    expect(permActionLine(card).text).toBe("https://files.example.org/download/demo.cif.gz");
+    expect(permContext(card).lines).toEqual([
+      "保存到工作区：structures/demo.cif.gz",
+      "下载前无法得知大小；超过 64.0 MB 会中止。",
+    ]);
+    expect(permContext({ ...card, input: { ...card.input, size_bytes: 2048 } }).lines[1]).toBe("大小：2.0 KB");
+    // Never a local directory: an absolute or escaping path is shown by its file name.
+    expect(workspaceTarget("/home/someone/work/demo.cif.gz")).toBe("demo.cif.gz");
+    expect(workspaceTarget("C:\\data\\demo.cif.gz")).toBe("demo.cif.gz");
+    expect(workspaceTarget("../outside/demo.cif.gz")).toBe("demo.cif.gz");
+    expect(workspaceTarget("./structures/demo.cif.gz")).toBe("structures/demo.cif.gz");
+  });
+
   it("says where a shell command runs and whether the sandbox holds", async () => {
     const { permContext } = await import("./permission");
     setLang("en");

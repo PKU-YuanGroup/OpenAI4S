@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLang } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
-import { _replayGap, _seqSeen, _streamEpoch, permCards, stream } from "../../stores/stream";
+import { _replayGap, _seqSeen, _streamEpoch, permCards, running, stream } from "../../stores/stream";
 import { installSend } from "../send";
 import { resetSendHandlers } from "../send/handlers";
 import { newRequestId } from "../send/send";
@@ -21,9 +21,24 @@ import { handleIncomingMessage } from "../ws/connect";
 import { registerBuiltinHandlers } from "../ws/handlers";
 import { onEvent, resetWsHandlers } from "../ws/registry";
 import { registerMessageHandlers } from "./handlers";
-import { interleaveHistory, renderMissingSession, renderStored } from "./list";
+import {
+  interleaveHistory,
+  prependHistory,
+  renderMissingSession,
+  renderStored,
+  scheduleFramedRender,
+  type HistoryItem,
+} from "./list";
+import { keepStripsLast } from "./dom";
 import { cancelFrame } from "./raf";
+import { flushScrollNow, unbindMessageScroll, updateJumpPill } from "./scroll";
 import type { LiveStream } from "./stream";
+import { turnTextKey } from "./turnGroup";
+import { bindTurnStatus, notePassingHint, resetTurnStatus } from "./turnStatus";
+import { turnDone } from "../send/turn";
+import { t } from "../../i18n/runtime";
+import { _liveCell } from "../../stores/notebook";
+import { _messagesFollow } from "../../stores/ui";
 
 // --------------------------------------------------------------------------
 // Just enough DOM for the transcript (Vitest runs in node, with no jsdom).
@@ -126,6 +141,10 @@ class FakeEl {
   get lastElementChild(): FakeEl | null {
     const kids = this.children;
     return kids[kids.length - 1] || null;
+  }
+  get nextSibling(): FakeNode | null {
+    const all = this.parentNode ? this.parentNode.childNodes : [];
+    return all[all.indexOf(this) + 1] || null;
   }
   get textContent(): string {
     return this.childNodes.length ? this.childNodes.map((node) => node.textContent).join("") : this.text;
@@ -666,6 +685,384 @@ describe("reopening a running session", () => {
     const cards = messages().querySelectorAll(".perm-card");
     expect(cards).toHaveLength(1);
     expect((cards[0] as HTMLElement).classList.contains("allowed")).toBe(true);
+  });
+});
+
+// --------------------------------------------------------------------------
+// CHAT-2: one turn is one container, live and reopened
+// --------------------------------------------------------------------------
+
+/** Every top-level transcript node: a user row, or a turn with its children's kinds. */
+function transcriptShape(): string[] {
+  return Array.from(messages().children).map((node) => {
+    const row = node as HTMLElement;
+    if (!row.classList.contains("assistant")) return row.className;
+    const kinds = Array.from(row.children).map((kid) => {
+      const el = kid as HTMLElement;
+      for (const [name, kind] of [["md", "md"], ["step", "step"], ["perm-card", "perm"], ["msg-actions", "actions"], ["msg-stopped", "stopped"]] as const) {
+        if (el.classList.contains(name)) return kind;
+      }
+      return el.className;
+    });
+    return "turn:" + kinds.join(",");
+  });
+}
+
+function turnTexts(): string[] {
+  return (Array.from(messages().querySelectorAll(":scope > .msg.assistant")) as Array<HTMLElement & { _messageText?: string }>)
+    .map((wrap) => turnTextKey(wrap._messageText || ""));
+}
+
+function at(seconds: number): string {
+  return new Date(Date.UTC(2026, 10, 18, 0, 0, seconds)).toISOString();
+}
+
+function paintHistory(items: HistoryItem[], openTail = false): Promise<void> {
+  return new Promise((resolve) => scheduleFramedRender(items, { host: messages(), openTail, onDone: resolve }));
+}
+
+describe("a turn is one container, live and reopened", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({}, 404)));
+  });
+
+  it("gives the same structure and the same copied text for the same turn", async () => {
+    // Live: narration, a step, two narration rows in a row, an approval, a
+    // second step, the answer.
+    renderStored({ role: "user", content: "Fold change?", message_id: "m-1" });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Reading the plate first.\n"));
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "read", title: "Reading plate.csv", status: "running" });
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-1", status: "done" });
+    onEvent(chunk("Now the fit.\n"));
+    onEvent(chunk("It needs a package.\n"));
+    onEvent({ type: "await_permission", root_frame_id: "f-1", frame_id: "f-1", decision_id: "perm-a", tool: "env_setup", title: "Install" });
+    onEvent({ type: "permission_resolved", root_frame_id: "f-1", decision_id: "perm-a", allow: true, scope: "once" });
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-2", kind: "code", title: "Fitting", status: "running" });
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-2", status: "done" });
+    onEvent(chunk("The slope is 2.1.\n"));
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    const live = transcriptShape();
+    const liveText = turnTexts();
+    expect(live).toEqual(["msg user", "turn:md,step,md,perm,step,md,actions"]);
+    expect(liveText).toEqual(["Reading the plate first. Now the fit. It needs a package. The slope is 2.1."]);
+
+    // Reopened: the rows that turn stored, through the history paint.
+    messages().replaceChildren();
+    permCards.value = Object.create(null);
+    await paintHistory(interleaveHistory(
+      [
+        { role: "user", content: "Fold change?", message_id: "m-1", created_at: at(0) },
+        { role: "assistant", content: "Reading the plate first.", message_id: "m-2", created_at: at(1) },
+        { role: "assistant", content: "Now the fit.", message_id: "m-3", created_at: at(3) },
+        { role: "assistant", content: "It needs a package.", message_id: "m-4", created_at: at(4) },
+        { role: "assistant", content: "The slope is 2.1.", message_id: "m-5", created_at: at(8) },
+      ],
+      [
+        { step_id: "s-1", kind: "read", title: "Reading plate.csv", status: "done", created_at: Date.parse(at(2)), seq: 1 },
+        { step_id: "s-2", kind: "code", title: "Fitting", status: "done", created_at: Date.parse(at(6)), seq: 2 },
+      ],
+      [{ decision_id: "perm-a", frame_id: "f-1", tool: "env_setup", title: "Install", state: "allowed", scope: "once", created_at: at(5) }],
+    ));
+    expect(transcriptShape()).toEqual(live);
+    expect(turnTexts()).toEqual(liveText);
+    // One action row for the turn, not one per stored paragraph.
+    expect(messages().querySelectorAll(".msg-actions")).toHaveLength(1);
+  });
+
+  it("closes a turn at the next question, and ends a stopped one with its marker", async () => {
+    await paintHistory(interleaveHistory(
+      [
+        { role: "user", content: "First?", created_at: at(0) },
+        { role: "assistant", content: "Looking.", created_at: at(1) },
+        { role: "assistant", content: "_Stopped by user._", created_at: at(3), cancelled: { reason: "user", request_id: "web-1" } },
+        { role: "user", content: "Second?", created_at: at(4) },
+        { role: "assistant", content: "Answer.", created_at: at(5), failure: { request_id: "web-2", code: "max_turns" } },
+      ],
+      [{ step_id: "s-1", kind: "read", title: "Reading", status: "done", created_at: Date.parse(at(2)), seq: 1 }],
+    ));
+    expect(transcriptShape()).toEqual([
+      "msg user",
+      "turn:md,step,stopped,actions",
+      "msg user",
+      "turn:md,msg-failure-meta,actions",
+    ]);
+    const stopped = messages().querySelectorAll(":scope > .msg.assistant")[0] as HTMLElement;
+    expect(stopped.classList.contains("turn-stopped")).toBe(true);
+    // The marker row is not part of what Copy copies.
+    expect(turnTexts()).toEqual(["Looking.", "Answer."]);
+  });
+
+  it("leaves a running turn's stored cards unfinished, and its replay takes them over", async () => {
+    await paintHistory(
+      interleaveHistory(
+        [{ role: "user", content: "Fold change?", message_id: "m-1", created_at: at(0) }],
+        [
+          { step_id: "s-1", kind: "read", title: "Reading plate.csv", status: "done", created_at: Date.parse(at(1)), seq: 1 },
+          { step_id: "s-2", kind: "write", title: "Writing fit.py", status: "running", created_at: Date.parse(at(2)), seq: 2 },
+        ],
+      ),
+      true,
+    );
+    // No action row on a turn that has not ended.
+    expect(transcriptShape()).toEqual(["msg user", "turn:step,step"]);
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Reading the plate first.\n\n"));
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "read", title: "Reading plate.csv", status: "running" });
+    onEvent(chunk("Now the fit.\n\n"));
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-2", kind: "write", title: "Writing fit.py", status: "running" });
+    // The stored turn is gone with its last card: one container for the turn.
+    expect(transcriptShape()).toEqual(["msg user", "turn:md,step,md,step,md"]);
+    expect(messages().querySelectorAll(".step")).toHaveLength(2);
+  });
+
+  it("keeps following when a replay moves stored cards from above the view", async () => {
+    const host = messages() as HTMLElement;
+    await paintHistory(
+      interleaveHistory(
+        [{ role: "user", content: "Go", message_id: "m-1", created_at: at(0) }],
+        [{ step_id: "s-1", kind: "read", title: "Reading", status: "done", created_at: Date.parse(at(1)), seq: 1 }],
+      ),
+      true,
+    );
+    Object.assign(host, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 });
+    _messagesFollow.value = true;
+    flushScrollNow();
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "read", title: "Reading", status: "running" });
+    // What the browser does when a card above the view moves to the end: it
+    // lowers scrollTop to hold the view, and the scroll event is measured.
+    host.scrollTop = 450;
+    updateJumpPill();
+    flushScrollNow();
+    expect(host.scrollTop).toBe(1000);
+    expect(_messagesFollow.value).toBe(true);
+    unbindMessageScroll();
+  });
+
+  it("puts an older page into the turns it belongs to", async () => {
+    const held = {
+      messages: [
+        { role: "assistant", content: "Found it.", message_id: "m-3", created_at: at(4) },
+        { role: "user", content: "Next?", message_id: "m-4", created_at: at(5) },
+        { role: "assistant", content: "Answer.", message_id: "m-5", created_at: at(6) },
+      ],
+      steps: [{ step_id: "s-1", kind: "read", title: "Reading", status: "done", created_at: Date.parse(at(3)), seq: 1 }],
+      approvals: [],
+    };
+    await paintHistory(interleaveHistory(held.messages, held.steps));
+    // The first page starts inside a turn whose beginning was not loaded.
+    expect(transcriptShape()).toEqual(["turn:step,md,actions", "msg user", "turn:md,actions"]);
+    const below = messages().children[2];
+    prependHistory(
+      messages(),
+      [
+        { role: "user", content: "First?", message_id: "m-1", created_at: at(1) },
+        { role: "assistant", content: "Looking.", message_id: "m-2", created_at: at(2) },
+      ],
+      held,
+    );
+    expect(transcriptShape()).toEqual(["msg user", "turn:md,step,md,actions", "msg user", "turn:md,actions"]);
+    expect(turnTexts()).toEqual(["Looking. Found it.", "Answer."]);
+    expect(messages().querySelectorAll(".step")).toHaveLength(1);
+    // Nothing from the first loaded question down was rebuilt.
+    expect(messages().children[3]).toBe(below);
+  });
+});
+
+// --------------------------------------------------------------------------
+// CHAT-8: small things in the transcript
+// --------------------------------------------------------------------------
+
+describe("transcript details", () => {
+  it("shows a project-folder reference as a file chip, not as reference syntax", () => {
+    const row = renderStored({
+      role: "user",
+      content: "@project:data/plate3.xlsx  fit the growth curves, then @project:notes.md.",
+      message_id: "m-1",
+    }) as HTMLElement;
+    expect(row.querySelector(".bubble")?.textContent).toBe("@data/plate3.xlsx  fit the growth curves, then @notes.md.");
+    const chips = Array.from(row.querySelectorAll(".msg-ref-chip")) as HTMLElement[];
+    expect(chips.map((chip) => chip.textContent)).toEqual(["plate3.xlsx", "notes.md"]);
+    expect(chips[0]?.title).toContain("data/plate3.xlsx");
+    // An ordinary message gets no chip row.
+    const plain = renderStored({ role: "user", content: "no files here", message_id: "m-2" }) as HTMLElement;
+    expect(plain.querySelector(".msg-refs")).toBeNull();
+  });
+
+  it("a reopened turn shows one plan card for all of its plan updates", async () => {
+    const plan = (id: string, second: number, steps: number): Record<string, unknown> => ({
+      step_id: id,
+      kind: "plan",
+      title: "Planning",
+      summary: steps === 1 ? "1 step" : steps + " steps",
+      status: "done",
+      created_at: Date.parse(at(second)),
+      seq: second,
+      output: { todos: Array.from({ length: steps }, (_, n) => ({ content: "todo " + (n + 1), status: "pending" })) },
+    });
+    await paintHistory(interleaveHistory(
+      [
+        { role: "user", content: "First?", created_at: at(0) },
+        { role: "assistant", content: "Planning.", created_at: at(1) },
+        { role: "assistant", content: "Done.", created_at: at(5) },
+        { role: "user", content: "Second?", created_at: at(6) },
+        { role: "assistant", content: "Again.", created_at: at(9) },
+      ],
+      [plan("p-1", 2, 2), plan("p-2", 3, 3), plan("p-3", 4, 3), plan("p-4", 7, 1)],
+    ));
+    const turns = Array.from(messages().querySelectorAll(":scope > .msg.assistant")) as HTMLElement[];
+    expect(turns.map((turn) => turn.querySelectorAll(".step-plan").length)).toEqual([1, 1]);
+    // The first turn's card is the latest of its three updates; the next turn has its own.
+    expect(turns[0]?.querySelector(".step-plan .s-meta")?.textContent).toBe("3 steps");
+    expect(turns[1]?.querySelector(".step-plan .s-meta")?.textContent).toBe("1 step");
+    expect(transcriptShape()).toEqual(["msg user", "turn:md,step,md,actions", "msg user", "turn:step,md,actions"]);
+  });
+});
+
+// --------------------------------------------------------------------------
+// CHAT-6: the session's file strips follow one placement rule
+// --------------------------------------------------------------------------
+
+describe("the session's file strips", () => {
+  it("both stay last when a new turn starts", () => {
+    const strip = (cls: string): HTMLElement => {
+      const node = document.createElement("details");
+      node.className = cls;
+      messages().appendChild(node);
+      return node;
+    };
+    renderStored({ role: "user", content: "First?", message_id: "m-1" });
+    const inputs = strip("uploaded");
+    const files = strip("generated");
+    // The follow-up's bubble, as send() adds it, then its turn.
+    messages().appendChild(bubble("And the residuals?"));
+    keepStripsLast();
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Looking.\n"));
+    const order = Array.from(messages().children).map((node) => (node as HTMLElement).className);
+    // Neither strip is removed, and neither is left between the turns.
+    expect(order).toEqual(["msg user", "msg user", "msg assistant", "uploaded", "generated"]);
+    expect(messages().children[3]).toBe(inputs);
+    expect(messages().children[4]).toBe(files);
+  });
+});
+
+// --------------------------------------------------------------------------
+// TURN-4: the conversation says what the running turn is doing
+// --------------------------------------------------------------------------
+
+describe("the running turn's status row", () => {
+  const row = (): HTMLElement | null => messages().querySelector(".turn-status");
+  const label = (): string => row()?.querySelector(".ts-label")?.textContent || "";
+  const detail = (): string => row()?.querySelector(".ts-detail")?.textContent || "";
+  const hintLine = (): string => document.getElementById("composer-hint")?.textContent || "";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(async () => json({}, 404)));
+    vi.stubGlobal("hint", (text: string) => {
+      (document.getElementById("composer-hint") as HTMLElement).textContent = text || "";
+    });
+    bindTurnStatus();
+  });
+
+  afterEach(() => {
+    resetTurnStatus();
+    vi.useRealTimers();
+  });
+
+  it("follows the turn through its phases and is gone when the turn ends", () => {
+    const started: unknown[] = [];
+    const cleared: unknown[] = [];
+    const realSet = globalThis.setInterval;
+    const realClear = globalThis.clearInterval;
+    vi.stubGlobal("setInterval", (...args: Parameters<typeof setInterval>) => {
+      const id = realSet(...args);
+      started.push(id);
+      return id;
+    });
+    vi.stubGlobal("clearInterval", (id: Parameters<typeof clearInterval>[0]) => {
+      cleared.push(id);
+      realClear(id);
+    });
+    expect(row()).toBeNull();
+    renderStored({ role: "user", content: "Fold change?", message_id: "m-1" });
+    running.value = true;
+    // Before the turn's first event: under the question.
+    expect(label()).toBe("Thinking");
+    expect(messages().lastElementChild).toBe(row());
+    expect(row()?.getAttribute("aria-live")).toBe("polite");
+
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    const wrap = messages().querySelector(":scope > .msg.assistant") as HTMLElement;
+    expect(wrap.nextSibling).toBe(row());
+
+    _liveCell.value = { draft: true, status: "drafting", source: "import numpy as np\nx = 1\nprint(x)" };
+    expect(label()).toBe("Writing a cell");
+    expect(detail()).toContain("3 lines so far");
+    _liveCell.value = { status: "running", source: "print(1)" };
+    expect(label()).toBe("Running the cell");
+    _liveCell.value = null;
+    expect(label()).toBe("Thinking");
+
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "fetch", title: "Fetching", status: "running" });
+    expect(label()).toBe("Waiting for the tool");
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-1", status: "done" });
+    expect(label()).toBe("Thinking");
+
+    onEvent({ type: "await_permission", root_frame_id: "f-1", frame_id: "f-1", decision_id: "perm-s", tool: "bash", title: "Run" });
+    expect(label()).toBe("Waiting for your approval");
+    onEvent({ type: "permission_resolved", root_frame_id: "f-1", decision_id: "perm-s", allow: true, scope: "once" });
+    expect(label()).toBe("Thinking");
+    // Still the row after the live turn, whatever the turn appended.
+    expect(wrap.nextSibling).toBe(row());
+
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    expect(row()).toBeNull();
+    // Every ticker it started is stopped (a leaked one has failed CI before).
+    expect(started.length).toBeGreaterThan(0);
+    expect(started.every((id) => cleared.includes(id))).toBe(true);
+  });
+
+  it("counts the phase's time where a screen reader is not told every second", () => {
+    running.value = true;
+    vi.advanceTimersByTime(45_000);
+    expect(detail()).toBe("45 s");
+    expect(row()?.querySelector(".ts-detail")?.getAttribute("aria-hidden")).toBe("true");
+    expect(label()).toBe("Thinking");
+    // A new phase starts its own count.
+    _liveCell.value = { status: "running", source: "x" };
+    vi.advanceTimersByTime(3_000);
+    expect(detail()).toBe("3 s");
+    vi.advanceTimersByTime(62_000);
+    expect(detail()).toBe("1 min 5 s");
+  });
+
+  it("replaces a status line that described one moment once the turn moves on", () => {
+    const say = (text: string): void => (globalThis as unknown as { hint: (t: string) => void }).hint(text);
+    running.value = true;
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    say("Now running your queued message: “fit again”");
+    notePassingHint();
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-9", kind: "fetch", title: "Fetching", status: "running" });
+    expect(hintLine()).toBe(t("toast.running"));
+
+    // With no new phase it is stale after a few seconds anyway.
+    say("This session is still running in the background; resuming…");
+    notePassingHint();
+    vi.advanceTimersByTime(7_000);
+    expect(hintLine()).toContain("resuming");
+    vi.advanceTimersByTime(2_000);
+    expect(hintLine()).toBe(t("toast.running"));
+
+    // A line something else put there since is not its to replace.
+    say("Now running your queued message: “x”");
+    notePassingHint();
+    say("Stopping…");
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-9", status: "done" });
+    vi.advanceTimersByTime(20_000);
+    expect(hintLine()).toBe("Stopping…");
   });
 });
 

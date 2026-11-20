@@ -60,6 +60,31 @@ def _sanitize_endpoint(url: str) -> str:
 #: than refusing up front, because it fails after the expensive part.
 _LOW_DISK_GB = 2.0
 
+#: The one instruction for "the managed environments are missing". The startup
+#: banner, the wizard and Settings each used to give a different one.
+MISSING_ENVIRONMENTS_REMEDY = (
+    "Run `openai4s setup` to build the managed Python + R environments; "
+    "install single packages in Settings → Compute."
+)
+
+#: The API host each built-in science database is queried at, for
+#: `openai4s doctor --network`. `tests/test_doctor.py` holds this to the
+#: connector sources, so a connector that moves host cannot leave the probe
+#: checking the old one.
+SCIENCE_HOSTS: dict[str, str] = {
+    "zenodo": "zenodo.org",
+    "uniprot": "rest.uniprot.org",
+    "pdb": "search.rcsb.org",
+    "ensembl": "rest.ensembl.org",
+    "chembl": "www.ebi.ac.uk",
+    "pubchem": "pubchem.ncbi.nlm.nih.gov",
+    "arxiv": "export.arxiv.org",
+    "openalex": "api.openalex.org",
+    "string": "string-db.org",
+    "bindingdb": "www.bindingdb.org",
+}
+_PROBE_TIMEOUT_S = 10.0
+
 
 @dataclass
 class Check:
@@ -309,7 +334,10 @@ def _model(cfg: Any) -> Check:
 #: What the model line says while nothing has asked the provider. A configured
 #: key is not a working key, and "credential configured" beside "All checks
 #: passed" read as if it were.
-_NOT_VERIFIED = "not verified: no request was sent to the provider"
+_NOT_VERIFIED = (
+    "not verified: no request was sent to the provider; "
+    "`openai4s doctor --network` sends one"
+)
 
 #: Ceilings for the one test request `report(live_model=...)` sends. A check
 #: someone runs because things are broken must not hang on a dead network.
@@ -444,7 +472,7 @@ def _verify_model(cfg: Any, check: Check, send: Callable[[Any], None]) -> Check:
                 f"could not reach {endpoint} to verify the key and model "
                 f"({how}); provider {provider!r}, model {model!r}",
                 "Check the network, the proxy and the base URL, then rerun; "
-                "`openai4s doctor --offline` skips this request.",
+                "`openai4s doctor` without `--network` skips this request.",
                 facts,
             )
         facts["live_check"] = "inconclusive"
@@ -454,7 +482,7 @@ def _verify_model(cfg: Any, check: Check, send: Callable[[Any], None]) -> Check:
             f"the test request to provider {provider!r} for model {model!r} "
             f"did not complete ({type(e).__name__}), so the key and model are "
             f"not verified",
-            "Rerun `openai4s doctor`; `--offline` skips this request.",
+            "Rerun `openai4s doctor --network`; without `--network` nothing is sent.",
             facts,
         )
     facts["live_check"] = "ok"
@@ -466,6 +494,24 @@ def _verify_model(cfg: Any, check: Check, send: Callable[[Any], None]) -> Check:
             "credential verified (the provider answered a test request)",
         ),
         facts=facts,
+    )
+
+
+def credential_missing(cfg: Any) -> bool:
+    """Whether the configured model needs an API key and none is configured.
+
+    The model check's own answer, for `openai4s status`: a model name alone
+    read as "ready". ``False`` whenever that cannot be told (the settings
+    database was not opened, or the check itself failed) -- no claim.
+    """
+    try:
+        facts = _model(cfg).facts
+    except Exception:  # noqa: BLE001 - status must not fail on a diagnosis
+        return False
+    return (
+        facts.get("api_key_configured") is False
+        and not facts.get("endpoint_is_local")
+        and facts.get("database_settings_read", True)
     )
 
 
@@ -511,8 +557,23 @@ def _runtime(cfg: Any) -> Check:
     # interpreter), so `envs` is never empty. "Is a prebuilt environment present?"
     # must exclude it — otherwise a fresh install with a system Rscript reported
     # OK with "1 environment" and never recommended `openai4s setup`.
-    prebuilt = [e for e in envs if getattr(e, "name", "") != "base"]
+    #
+    # It must also exclude the user's own conda environments. Discovery lists
+    # them (marked `builtin=False`) so a person can pick one, but they are not
+    # something OpenAI4S built: counting them reported "3 prebuilt
+    # environment(s) available" on a machine where the setup wizard, correctly,
+    # said the managed environments did not exist yet.
+    others = [e for e in envs if getattr(e, "name", "") != "base"]
+    prebuilt = [e for e in others if getattr(e, "builtin", True)]
+    local = len(others) - len(prebuilt)
     facts["prebuilt_environments"] = len(prebuilt)
+    facts["local_environments"] = local
+    local_clause = (
+        f"; {local} local conda environment(s) of your own are selectable but "
+        "not managed by OpenAI4S"
+        if local
+        else ""
+    )
 
     # The resolver the R kernel itself uses: the selected env's own Rscript, an
     # env literally named `r`, any env carrying one, then PATH. `which` alone
@@ -542,17 +603,14 @@ def _runtime(cfg: Any) -> Check:
         return Check(
             "runtime",
             WARN,
-            "no prebuilt environment found; Python cells will run in the "
-            f"daemon's own interpreter and {r_clause}",
-            "Run `openai4s setup` (or `./setup.sh --with-kernel-envs`) to build "
-            "the Python and R environments.",
+            "no managed environment built; Python cells will run in the "
+            f"built-in interpreter (the daemon's own) and {r_clause}{local_clause}",
+            MISSING_ENVIRONMENTS_REMEDY,
             facts,
         )
-    # Not "prebuilt": these are every conda env found, the user's own local
-    # environments among them, not only what `openai4s setup` built.
     detail = (
-        f"{len(prebuilt)} environment(s) found besides the built-in one "
-        "(local conda envs and any OpenAI4S built)"
+        f"built-in interpreter + {len(prebuilt)} managed environment(s)"
+        f"{local_clause}"
     )
     if not r_path:
         return Check(
@@ -901,7 +959,42 @@ def _disk(cfg: Any) -> Check:
     return Check("disk", OK, f"{free_gb} GB free at {target}", facts=facts)
 
 
-def _connectors(cfg: Any) -> Check:
+def probe_science_hosts(
+    probe: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Ask each built-in science host for one HEAD, concurrently.
+
+    Through `webtools.web_probe`, so the answer is the one the agent would
+    get: the same network switch, egress allowlist, SSRF guard and trust
+    store. Any HTTP status counts as reachable -- a 404 for `/` still proves
+    DNS, TCP and the TLS handshake -- and only "no status at all" does not.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    if probe is None:
+        from openai4s import webtools
+
+        probe = webtools.web_probe
+
+    def one(host: str) -> dict[str, Any]:
+        try:
+            answer = probe(f"https://{host}/", timeout=_PROBE_TIMEOUT_S)
+        except Exception as e:  # noqa: BLE001 - a refusal is the finding
+            return {"host": host, "reachable": False, "error": str(e)}
+        status = int(answer.get("status") or 0)
+        result: dict[str, Any] = {"host": host, "reachable": status > 0}
+        if status > 0:
+            result["http_status"] = status
+        else:
+            result["error"] = str(answer.get("error") or "no response")
+        return result
+
+    with ThreadPoolExecutor(max_workers=len(SCIENCE_HOSTS)) as pool:
+        answers = list(pool.map(one, SCIENCE_HOSTS.values()))
+    return dict(zip(SCIENCE_HOSTS, answers))
+
+
+def _connectors(cfg: Any, *, probe_hosts: bool = False) -> Check:
     """Are the scientific data sources and MCP servers wired up?"""
     facts: dict[str, Any] = {}
     try:
@@ -974,6 +1067,25 @@ def _connectors(cfg: Any) -> Check:
         granted = sorted(egress.granted_domains())
         facts["egress_allowlist_size"] = len(granted)
         detail += f"; egress allowlist enforced ({len(granted)} domain(s))"
+    facts["reachability_probed"] = probe_hosts
+    if not probe_hosts:
+        # Being built in says nothing about being reachable, and this run did
+        # not look. Say so, rather than let "ok" be read as "connected".
+        detail += "; reachability not probed (run `openai4s doctor --network`)"
+        return Check("connectors", OK, detail, facts=facts)
+    reachability = probe_science_hosts()
+    facts["reachability"] = reachability
+    down = [db for db, answer in reachability.items() if not answer["reachable"]]
+    detail += f"; {len(reachability) - len(down)} of {len(reachability)} reachable"
+    if down:
+        return Check(
+            "connectors",
+            WARN,
+            detail + f" (unreachable: {', '.join(down)})",
+            "See the per-host lines for the reason; a TLS failure names the "
+            "host and what to set.",
+            facts,
+        )
     return Check("connectors", OK, detail, facts=facts)
 
 
@@ -1202,15 +1314,21 @@ _CHECKS: tuple[tuple[str, Callable[[Any], Check]], ...] = (
 SIDE_EFFECT_CHECKS = frozenset({"data", "isolation", "remote", "runtime"})
 
 
-def run_checks(cfg: Any) -> list[Check]:
+def run_checks(cfg: Any, *, network: bool = False) -> list[Check]:
     """Every probe, in order. A probe that raises becomes a failed check.
 
     A crash here would deny the report to the person who most needs it, so an
     unexpected exception is itself a finding rather than a traceback.
+
+    ``network`` is the one opt-in: it lets the connectors check contact the
+    built-in science hosts. Everything else stays offline either way.
     """
     results: list[Check] = []
     for name, probe in _CHECKS:
         try:
+            if network and probe is _connectors:
+                results.append(_connectors(cfg, probe_hosts=True))
+                continue
             results.append(probe(cfg))
         except Exception as e:  # noqa: BLE001
             results.append(Check(name, FAIL, f"the {name} check itself failed: {e!r}"))
@@ -1218,7 +1336,10 @@ def run_checks(cfg: Any) -> list[Check]:
 
 
 def report(
-    cfg: Any, *, live_model: Callable[[Any], None] | None = None
+    cfg: Any,
+    *,
+    network: bool = False,
+    live_model: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """Full probe set, including checks that write or spawn.
 
@@ -1226,11 +1347,11 @@ def report(
     The web Diagnostics GET must call `passive_status()` instead.
 
     ``live_model`` is the one request that leaves the machine: given
-    `send_test_request` (the CLI does, unless `--offline`), the model check is
+    `send_test_request` (the CLI does with `--network`), the model check is
     confirmed with the provider. Without it the check is configuration only
     and says so.
     """
-    checks = run_checks(cfg)
+    checks = run_checks(cfg, network=network)
     if live_model is not None:
         checks = [
             _verify_model(cfg, c, live_model) if c.name == "model" else c
@@ -1272,6 +1393,13 @@ def render(result: dict[str, Any]) -> str:
         )
         if check["remedy"] and check["status"] != OK:
             lines.append(f"              -> {check['remedy']}")
+        for database, answer in (check["facts"].get("reachability") or {}).items():
+            outcome = (
+                f"ok    HTTP {answer['http_status']}"
+                if answer["reachable"]
+                else f"FAIL  {answer['error']}"
+            )
+            lines.append(f"              {database:<10} {answer['host']:<26} {outcome}")
     lines.append("")
     if result["status"] == OK:
         lines.append("All checks passed.")
@@ -1285,10 +1413,13 @@ def render(result: dict[str, Any]) -> str:
 __all__ = [
     "Check",
     "FAIL",
+    "MISSING_ENVIRONMENTS_REMEDY",
     "OK",
+    "SCIENCE_HOSTS",
     "SIDE_EFFECT_CHECKS",
     "WARN",
     "passive_status",
+    "probe_science_hosts",
     "render",
     "report",
     "run_checks",

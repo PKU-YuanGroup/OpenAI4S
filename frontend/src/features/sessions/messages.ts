@@ -14,6 +14,7 @@ import { apiErrorText } from "./api";
 import { hint } from "./chrome";
 import { $, el } from "./dom";
 import { fetchOlderMessages, messageIdentity, uniqueMessages, MESSAGE_PAGE_SIZE } from "../messages/fetch";
+import { prependHistory } from "../messages/list";
 import { insertMessageByTime, renderStored } from "./transcript";
 
 export type ChatMessage = {
@@ -84,7 +85,10 @@ export async function loadEarlierMessages(): Promise<void> {
       const key = messageIdentity(row);
       return !key || !known.has(key);
     });
-    incoming.forEach((mm) => insertMessageByTime(renderStored(mm, holder)));
+    // Older rows join the turns they belong to (messages/list.ts), instead of
+    // each becoming a message of its own above the page already on screen.
+    if (held) prependHistory(host, incoming, held);
+    else incoming.forEach((mm) => insertMessageByTime(renderStored(mm, holder)));
     if (held) historyContent.value = { ...held, messages: [...incoming, ...held.messages] };
     noteHistoryMutation();
     host.scrollTop = beforeTop + (host.scrollHeight - beforeHeight);

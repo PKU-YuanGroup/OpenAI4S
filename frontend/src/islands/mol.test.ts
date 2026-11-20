@@ -7,7 +7,8 @@ import { resetStoreFields } from "../stores/signal-field";
 import { filesT, readFailureText } from "../features/artifacts/copy";
 import { abortPreviewReads, beginPreviewRead } from "../features/artifacts/api";
 import { LANG, setLang } from "../i18n/runtime";
-import { MOL_VENDOR_SRC, molRetheme, molTeardown, molecule } from "./mol";
+import { translate } from "./host";
+import { MOL_FORCE_MAX_BYTES, MOL_VENDOR_SRC, molRetheme, molTeardown, molecule } from "./mol";
 import { molT } from "./mol-copy";
 import { B_HIGH, B_LOW, chainColor, hexColor, type MolAtom } from "./mol-facts";
 
@@ -283,6 +284,52 @@ describe("3Dmol viewer lifetimes (AUDIT A37)", () => {
     missing = false;
     retry!.onclick?.();
     await vi.waitFor(() => expect(createViewer).toHaveBeenCalledTimes(1));
+  });
+
+  // ART-2: a 17 MB mmCIF got "over the 8.0 MB preview limit" with Retry and
+  // Download. Retry cannot change a size; the reader may load it as lines.
+  it("offers Load anyway, not Retry, for a structure over the preview limit", async () => {
+    const { page, runtime, host } = setup();
+    const createViewer = vi.fn(runtime.createViewer);
+    vi.stubGlobal("$3Dmol", { ...runtime, createViewer });
+    const seventeenMb = 17 * 1024 * 1024;
+    const answer = (length: number) =>
+      new Response("ATOM      1  CA  ALA A   1       1.000   2.000   3.000\n", {
+        headers: { "content-length": String(length) },
+      });
+    let declared = seventeenMb;
+    vi.stubGlobal("fetch", vi.fn(async () => answer(declared)));
+    const first = page.appendChild(new FakeEl());
+    molecule(host(first), "/5l3p.cif", "5l3p.cif");
+    await vi.waitFor(() =>
+      expect(walk(first).some((node) => node.className === "renderer-fallback")).toBe(true),
+    );
+    const buttons = () =>
+      walk(first).filter((node) => node.tagName === "button").map((node) => node.textContent);
+    expect(createViewer).not.toHaveBeenCalled();
+    expect(buttons()).not.toContain(filesT("viewer.read.retry"));
+    expect(buttons()).toContain(molT("mol.large.loadSize", "17.0 MB"));
+    walk(first)
+      .find((node) => node.textContent === molT("mol.large.loadSize", "17.0 MB"))!
+      .onclick?.();
+    await vi.waitFor(() => expect(createViewer).toHaveBeenCalledTimes(1));
+    // Loaded as lines, and the surface style is off for a structure this size.
+    const pill = (label: string) =>
+      walk(first).find((node) => node.tagName === "button" && node.textContent === label)!;
+    expect(pill(translate("mol.style.line")).className).toBe("mol-style on");
+    expect(pill(translate("mol.style.cartoon")).className).toBe("mol-style");
+    expect((pill(translate("mol.style.surface")) as unknown as { disabled?: boolean }).disabled).toBe(true);
+
+    // Past the hard ceiling there is nothing to offer but the download.
+    declared = MOL_FORCE_MAX_BYTES + 1;
+    const second = page.appendChild(new FakeEl());
+    molecule(host(second), "/huge.cif", "huge.cif");
+    await vi.waitFor(() =>
+      expect(walk(second).some((node) => node.className === "renderer-fallback")).toBe(true),
+    );
+    const offered = walk(second).filter((node) => node.tagName === "button").map((node) => node.textContent);
+    expect(offered.some((text) => String(text).startsWith(molT("mol.large.load")))).toBe(false);
+    expect(offered).not.toContain(filesT("viewer.read.retry"));
   });
 
   it("aborts the previous structure's read when its container opens a new structure", async () => {

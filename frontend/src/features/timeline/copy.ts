@@ -56,6 +56,8 @@ const QUEUE_COPY: CopyTable = {
     "queueRow.editBusy": "The composer already holds a draft: send or clear it first, then edit the queued message",
     "queueRow.editing": "Taken out of the queue: edit it and send it again (it rejoins at the end of the queue)",
     "queueRow.started": "Now running your queued message: “{0}”",
+    "queueRow.sendNow": "Stop and send now",
+    "queueRow.sendNowTitle": "Stop the running turn; the first queued message starts right away",
     "queueRow.stopping": "Stopping the current turn… {0} queued message(s) will run next",
   },
   zh: {
@@ -66,6 +68,8 @@ const QUEUE_COPY: CopyTable = {
     "queueRow.editBusy": "输入框里还有未发送的内容：先发送或清空它，再编辑排队的消息",
     "queueRow.editing": "已撤出队列：修改后重新发送即可（会重新排到队尾）",
     "queueRow.started": "开始处理你排队的消息：“{0}”",
+    "queueRow.sendNow": "停止并立即发送",
+    "queueRow.sendNowTitle": "停止当前回合，排队的第一条消息随即开始",
     "queueRow.stopping": "正在停止当前任务… 排队的 {0} 条消息会接着运行",
   },
 };
@@ -98,6 +102,7 @@ const WORKBENCH: CopyTable = {
     "wb.security.kernel": "内核",
     "wb.security.kernelEnded": "{0} 内核已结束：{1}",
     "wb.details": "技术细节",
+    "wb.technical.hint": "运行状态 · 内核恢复 · 分支与检查点 · 子代理 · 远程计算 · 诊断 · 沙盒",
     "wb.diagnostics": "诊断：模型上下文",
     "wb.diagnosticsHint": "这一轮发给模型的内容由哪些部分组成、各占多少 token。排查问题时才需要看。",
   },
@@ -121,6 +126,7 @@ const WORKBENCH: CopyTable = {
     "wb.security.kernel": "Kernel",
     "wb.security.kernelEnded": "{0} kernel ended: {1}",
     "wb.details": "Technical details",
+    "wb.technical.hint": "runtime · kernel recovery · branches and checkpoints · sub-agents · remote compute · diagnostics · sandbox",
     "wb.diagnostics": "Diagnostics: model context",
     "wb.diagnosticsHint": "What this turn sent to the model, part by part, with token counts. Only needed when troubleshooting.",
   },

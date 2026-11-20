@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import stat
+import tempfile
 import threading
 import time
 import unicodedata
@@ -1331,23 +1332,43 @@ class SessionPackageService:
     #: environment prefixes, worker argv, tracebacks), and which keys to
     #: rewrite in each; ``None`` means every string value. Message text, cell
     #: code and anything a digest covers are deliberately not listed.
+    #:
+    #: ``snapshots.json`` used to be a list of eight keys. A checkpoint copies
+    #: whole kernel-generation records, so every key a generation gained that
+    #: the list did not (``working_directory``, ``sandbox.workspace``,
+    #: ``sandbox.temp_dir``) shipped the data directory: 176 paths in one
+    #: reviewed export. It is the platform's own metadata, so all of it is
+    #: rewritten and the exception is what gets named.
     _PATH_REDACTION: dict[str, frozenset[str] | None] = {
         "environment.json": None,
-        "snapshots.json": frozenset(
-            {
-                "base_prefix",
-                "environment_root",
-                "init_hooks",
-                "interpreter",
-                "interpreter_prefix",
-                "key",
-                "r_home",
-                "worker_argv",
-            }
-        ),
+        "snapshots.json": None,
         "notebook.json": frozenset({"stdout", "stderr", "error", "traceback"}),
         "ledger.json": frozenset({"observation"}),
     }
+    #: Subtrees kept byte-exact inside a document that is otherwise rewritten
+    #: whole. ``checkpoint_states[].state`` is covered by ``state_sha256`` and
+    #: holds what the user wrote (plans, annotations, memory), like a message.
+    _PATH_REDACTION_KEEP: dict[str, frozenset[str]] = {
+        "snapshots.json": frozenset({"checkpoint_states"}),
+    }
+
+    def _machine_path_prefixes(self) -> list[tuple[str, str]]:
+        """This machine's own directories and the label each one exports as."""
+
+        prefixes = [(str(self.data_dir), "<data_dir>")]
+        home = Path.home()
+        for spelling in {str(home), str(home.resolve())}:
+            prefixes.append((spelling, "~"))
+        # A kernel's private temp directory. On macOS it sits under a
+        # per-account `/var/folders/<xx>/<hash>/T`, which names the account as
+        # surely as the home directory does. A shared root such as `/tmp` is
+        # left alone: it identifies nobody, and rewriting it would edit every
+        # `/tmp/...` a cell ever printed.
+        temp = Path(tempfile.gettempdir())
+        for spelling in {str(temp), str(temp.resolve())}:
+            if len(Path(spelling).parts) > 3:
+                prefixes.append((spelling, "<tmp>"))
+        return prefixes
 
     def _redact_local_paths(
         self,
@@ -1374,10 +1395,7 @@ class SessionPackageService:
                 continue
             for spelling in {str(path), str(path.resolve())}:
                 prefixes.append((spelling, "."))
-        prefixes.append((str(self.data_dir), "<data_dir>"))
-        home = Path.home()
-        for spelling in {str(home), str(home.resolve())}:
-            prefixes.append((spelling, "~"))
+        prefixes.extend(self._machine_path_prefixes())
         patterns = [
             (re.compile(re.escape(prefix) + r"(?=[/\\\s\"'),;:]|$)"), label)
             for prefix, label in sorted(
@@ -1391,14 +1409,25 @@ class SessionPackageService:
                 value = pattern.sub(label, value)
             return value
 
-        def walk(value: Any, keys: frozenset[str] | None, active: bool) -> Any:
+        def walk(
+            value: Any,
+            keys: frozenset[str] | None,
+            active: bool,
+            keep: frozenset[str],
+        ) -> Any:
             if isinstance(value, Mapping):
                 return {
-                    key: walk(item, keys, active or keys is None or key in keys)
+                    key: (
+                        item
+                        if key in keep
+                        else walk(
+                            item, keys, active or keys is None or key in keys, keep
+                        )
+                    )
                     for key, item in value.items()
                 }
             if isinstance(value, list):
-                return [walk(item, keys, active) for item in value]
+                return [walk(item, keys, active, keep) for item in value]
             if isinstance(value, str) and (active or keys is None):
                 return text(value)
             return value
@@ -1409,7 +1438,8 @@ class SessionPackageService:
             if payload is None:
                 continue
             document = json.loads(payload)
-            output[name] = _canonical_json(walk(document, keys, False))
+            keep = self._PATH_REDACTION_KEEP.get(name, frozenset())
+            output[name] = _canonical_json(walk(document, keys, False, keep))
         return output
 
     def _runtime_scrubber(self) -> Callable[[Any], Any]:
@@ -1430,8 +1460,9 @@ class SessionPackageService:
             if value.decode("utf-8", "ignore")
         ]
         replacements: list[tuple[re.Pattern[str], str]] = []
-        home = str(Path.home())
-        for prefix, label in ((str(self.data_dir), "<data_dir>"), (home, "~")):
+        for prefix, label in sorted(
+            self._machine_path_prefixes(), key=lambda item: len(item[0]), reverse=True
+        ):
             if len(prefix) > 1 and prefix != "/":
                 replacements.append(
                     (re.compile(re.escape(prefix) + r"(?=[/\\\s\"'),;:]|$)"), label)

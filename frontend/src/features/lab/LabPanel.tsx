@@ -29,7 +29,7 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     hideTabHint: "以后可以在 设置 → 通用 里重新显示。",
     tabSetting: "实验室标签（OpenMHS 模拟仪器）",
     tabShown: "已显示：右侧面板里有「实验室」标签。",
-    tabHidden: "已隐藏：不做仪器实验时可以一直隐藏。",
+    tabHidden: "已隐藏：实验室准备好之前默认不显示；不做仪器实验时可以一直隐藏。",
     start: "启动实验室",
     stop: "停止",
     starting: "启动中…",
@@ -105,7 +105,7 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     hideTabHint: "You can show it again under Settings → General.",
     tabSetting: "Lab tab (OpenMHS simulated instruments)",
     tabShown: "Shown: the right panel has a Lab tab.",
-    tabHidden: "Hidden: keep it hidden if you do not run instrument experiments.",
+    tabHidden: "Hidden: it stays hidden until the lab is set up; keep it hidden if you do not run instrument experiments.",
     start: "Start lab",
     stop: "Stop",
     starting: "Starting…",
@@ -182,17 +182,37 @@ export function labCopy(key: "tabSetting" | "tabShown" | "tabHidden"): string {
 
 const LAB_TAB_KEY = "os-lab-tab";
 
+/** Whether the lab is set up (`/mhs-lab/status` → `available`); unknown counts as not. */
+let labPrepared = false;
+
 /**
  * The person hid the Lab tab (NAV-6). It sits in every session's dock and
  * most people never run instrument experiments; the choice is per browser,
  * like the language and theme, and Settings -> General brings the tab back.
  */
 export function labTabHidden(): boolean {
+  const choice = labTabChoice();
+  if (choice) return choice === "hidden";
+  // No choice made: the tab stays out of the way until the lab has been set
+  // up on this install, and appears on its own once it has.
+  return !labPrepared;
+}
+
+/** What the person chose in this browser, or null when they never chose. */
+export function labTabChoice(): "hidden" | "shown" | null {
   try {
-    return localStorage.getItem(LAB_TAB_KEY) === "hidden";
+    const stored = localStorage.getItem(LAB_TAB_KEY);
+    return stored === "hidden" || stored === "shown" ? stored : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** The lab's status became known. An explicit choice still wins over it. */
+export function noteLabPrepared(prepared: boolean): void {
+  if (labPrepared === prepared) return;
+  labPrepared = prepared;
+  applyLabTabPreference();
 }
 
 /** Show the choice on the page: `body.lab-tab-hidden` hides the tab (lab.css). */
@@ -207,8 +227,9 @@ export function applyLabTabPreference(hidden = labTabHidden()): void {
 
 export function setLabTabHidden(hidden: boolean): void {
   try {
-    if (hidden) localStorage.setItem(LAB_TAB_KEY, "hidden");
-    else localStorage.removeItem(LAB_TAB_KEY);
+    // Both answers are stored: "shown" has to outlive a lab that is not set
+    // up, which an absent key no longer means.
+    localStorage.setItem(LAB_TAB_KEY, hidden ? "hidden" : "shown");
   } catch {
     /* blocked storage: the choice lasts for this page */
   }
@@ -607,6 +628,7 @@ export function LabPanel() {
     try {
       const st = (await api("/mhs-lab/status")) as LabStatus;
       setStatus(st);
+      noteLabPrepared(st.available === true);
       if (!st.available) return;
       const [act, res] = await Promise.all([api("/mhs-lab/activity?limit=200"), api("/mhs-lab/results")]);
       const a = act as { items: ActivityItem[]; counts: Record<string, Record<string, number>> };

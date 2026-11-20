@@ -22,6 +22,11 @@ export const projectFilesCopy = copyLookup({
     limited: "Only the first 500 entries are shown. Enter a nested folder path to browse it directly.",
     previewLimited: "This preview is truncated. The agent can import the complete file for analysis.",
     previewHelp: "Text preview only. Ask the agent to read or import this project-relative path for analysis.",
+    noInlinePreview: "This file type has no preview here. Import it into the session to open it in the viewer; the original stays untouched.",
+    importView: "Import and view",
+    importing: "Importing…",
+    importFailed: "Could not import this file: {0}",
+    importTooLarge: "This file is too large to import from here. Ask the agent to import it instead.",
     back: "Back to folder",
     readOnly: "Source data stays read-only. OpenAI4S keeps conversation history and saved file versions in the dedicated .openai4s/ folder.",
     historyHelp: "History is saved automatically in <project folder>/.openai4s/: conversations, file versions, and project name, description and agent context. API credentials and global model configuration are not copied. Original data files stay unchanged.",
@@ -58,6 +63,11 @@ export const projectFilesCopy = copyLookup({
     limited: "仅显示前 500 个条目；可输入子文件夹路径直接浏览。",
     previewLimited: "预览已截断，智能体可导入完整文件进行分析。",
     previewHelp: "此处仅提供文本预览。可让智能体读取或导入这个项目相对路径进行分析。",
+    noInlinePreview: "这种文件不能在这里直接预览。导入到会话后可在查看器中打开；原文件保持不变。",
+    importView: "导入并查看",
+    importing: "正在导入…",
+    importFailed: "无法导入这个文件：{0}",
+    importTooLarge: "文件太大，无法从这里导入。可以让智能体导入它。",
     back: "返回文件夹",
     readOnly: "源数据文件保持只读；OpenAI4S 在专用的 .openai4s/ 目录中保留对话历史和已保存的文件版本。",
     historyHelp: "自动保存到 <项目文件夹>/.openai4s/：对话、文件版本，以及项目名称、描述和智能体上下文。API 凭据及全局模型配置不会复制，也不修改原始数据文件。",
@@ -128,10 +138,13 @@ export const dashCopy = copyLookup({
     "dash.example.runningNote": "The example analysis is running; it takes a minute or two. Open the session to watch it.",
     "dash.example.done": "The example analysis finished: all {0} cells ran without an error.",
     "dash.example.doneFailed": "The example analysis ended: {0} of {1} cells did not complete. The session says why.",
+    "dash.example.doneStepFailed": "The example analysis finished: all {0} cells ran, but {1} step(s) failed along the way (a data source may be unreachable). The session says which.",
     "dash.example.ended": "The example analysis ended. Open the session to see the results.",
     "dash.example.open": "Open the example session",
     "dash.example.dismiss": "Dismiss",
     "dash.sessions.allAbove": "Running sessions and the ones waiting for you are listed above.",
+    "dash.status.done": "Finished",
+    "dash.status.failed": "Failed",
     "dash.example.project": "Example project",
     "dash.example.tag": "Example",
   },
@@ -139,10 +152,13 @@ export const dashCopy = copyLookup({
     "dash.example.runningNote": "示例分析正在运行，大约需要一两分钟。可以打开会话看它运行。",
     "dash.example.done": "示例分析已完成：{0} 个单元都运行完毕，没有出错。",
     "dash.example.doneFailed": "示例分析已结束：{1} 个单元中有 {0} 个没有完成，会话里写明了原因。",
+    "dash.example.doneStepFailed": "示例分析已完成：{0} 个单元都运行完毕，但有 {1} 个步骤失败（可能是某个数据源连不上），会话里写明了是哪一步。",
     "dash.example.ended": "示例分析已结束，打开会话查看结果。",
     "dash.example.open": "打开示例会话",
     "dash.example.dismiss": "知道了",
     "dash.sessions.allAbove": "正在运行和等你处理的会话显示在上方。",
+    "dash.status.done": "已完成",
+    "dash.status.failed": "失败",
     "dash.example.project": "示例项目",
     "dash.example.tag": "示例",
   },
@@ -167,15 +183,17 @@ export function displayProjectName(
 }
 
 /** Feature-owned copy; the frozen legacy dictionaries remain generated. */
-export function sessionCopy(key: "sessionsError" | "foldersError" | "retry"): string {
+export function sessionCopy(key: "sessionsError" | "foldersError" | "retry" | "exportWebPage"): string {
   const copy = LANG === "en" ? {
     sessionsError: "Could not load sessions. Retry reading the list.",
     foldersError: "Could not load folders.",
     retry: "Retry reading",
+    exportWebPage: "Export read-only web page",
   } : {
     sessionsError: "无法读取会话列表，可重试读取。",
     foldersError: "无法读取文件夹。",
     retry: "重试读取",
+    exportWebPage: "导出只读网页",
   };
   return copy[key];
 }
@@ -196,6 +214,28 @@ export function composerCopy(key: "usage" | "reviewing" | "on" | "off", ...args:
   return copy[key].replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)] ?? ""));
 }
 
+/** Group headings and distinguishing lines for the composer's session-options menu. */
+export function optionsMenuCopy(
+  key: "groupModes" | "groupReview" | "groupSession" | "groupSettings" | "runtimeDesc" | "computeDesc",
+): string {
+  const copy = LANG === "en" ? {
+    groupModes: "How the agent works",
+    groupReview: "Review",
+    groupSession: "This session",
+    groupSettings: "Open Settings",
+    runtimeDesc: "Pick the Python / R environment this session's code runs in",
+    computeDesc: "Settings → Compute: environment status, installed packages, remote GPU, background jobs",
+  } : {
+    groupModes: "工作方式",
+    groupReview: "审阅",
+    groupSession: "本会话",
+    groupSettings: "打开设置",
+    runtimeDesc: "选择这个会话的代码在哪个 Python / R 环境里运行",
+    computeDesc: "设置 → 计算：环境状态、已装的包、远程 GPU、后台任务",
+  };
+  return copy[key];
+}
+
 /** An action that failed before it could report anything itself; `detail` is the error's text. */
 export function actionFailedCopy(detail: string): string {
   return (LANG === "en" ? "Could not complete that action: " : "操作未能完成：") + detail;
@@ -207,6 +247,8 @@ export function shareCopy(
     | "linkLabel"
     | "updateDesc"
     | "revokeDesc"
+    | "menuNeedsSetup"
+    | "setupLead"
     | "setupIntro"
     | "setupEnv"
     | "setupRestart"
@@ -217,7 +259,9 @@ export function shareCopy(
     linkLabel: "Read-only link",
     updateDesc: "The link stays the same; its content becomes this session's latest state.",
     revokeDesc: "The link stops working immediately.",
-    setupIntro: "Sharing publishes a read-only snapshot through a relay server you run. No relay is configured yet, so this session cannot be shared. To set it up:",
+    menuNeedsSetup: "Needs setup: a relay server you host",
+    setupLead: "Sharing needs a relay server that you host on a public machine. None is configured, so this session cannot be shared yet.",
+    setupIntro: "A share link serves a read-only snapshot through that relay. To set it up:",
     setupEnv: "Set OPENAI4S_SHARE_RELAY_URL and OPENAI4S_SHARE_AUTH_TOKEN (and OPENAI4S_SHARE_BASE_DOMAIN) in the .env file in the OpenAI4S folder. The relay itself runs on a public host with “openai4s relay”.",
     setupRestart: "Restart OpenAI4S.",
     setupEnable: "Open this dialog again and click Enable sharing, or run “openai4s share enable”.",
@@ -226,7 +270,9 @@ export function shareCopy(
     linkLabel: "只读链接",
     updateDesc: "链接不变，内容换成当前会话的最新状态。",
     revokeDesc: "撤销后立即失效。",
-    setupIntro: "分享会通过你自己运行的中转服务器（relay）发布一份只读快照。目前还没有配置中转服务器，所以这个会话还不能分享。配置步骤：",
+    menuNeedsSetup: "需配置：要先部署自己的中转服务器",
+    setupLead: "分享需要一台由你自己部署在公网主机上的中转服务器（relay）。现在还没有配置，所以这个会话暂时不能分享。",
+    setupIntro: "分享链接通过这台中转服务器提供一份只读快照。配置步骤：",
     setupEnv: "在 OpenAI4S 文件夹的 .env 文件里设置 OPENAI4S_SHARE_RELAY_URL 和 OPENAI4S_SHARE_AUTH_TOKEN（以及 OPENAI4S_SHARE_BASE_DOMAIN）。中转服务器本身用「openai4s relay」部署在一台公网主机上。",
     setupRestart: "重启 OpenAI4S。",
     setupEnable: "再次打开这个对话框，点「启用分享」；或在终端运行「openai4s share enable」。",

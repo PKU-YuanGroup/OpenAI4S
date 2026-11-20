@@ -326,13 +326,16 @@ class _PythonDependencies(ast.NodeVisitor):
         values: Sequence[ast.AST],
     ) -> None:
         bound: set[str] = set()
-        # The first iterable is evaluated in the enclosing scope.  Comprehension
-        # targets are then local to the implicit scope in Python 3.
+        # Only the first iterable is evaluated in the enclosing scope.  Every
+        # target is local to the implicit scope in Python 3, so a later
+        # ``for b in rows[i + 1:]`` reads the comprehension's own ``i``.
+        self.visit(generators[0].iter)
         for generator in generators:
-            self.visit(generator.iter)
             bound.update(_target_names(generator.target))
         self._scopes.append(_Scope(frozenset(bound)))
         try:
+            for generator in generators[1:]:
+                self.visit(generator.iter)
             for generator in generators:
                 for condition in generator.ifs:
                     self.visit(condition)
@@ -676,18 +679,49 @@ def _namespace(cell: Mapping[str, Any]) -> str:
     return "r" if language == "r" or language.startswith("r ") else "python"
 
 
-class _ImportBindings(ast.NodeVisitor):
-    """Module-level names a cell leaves bound to an import, and to what.
+class _CellBindings(ast.NodeVisitor):
+    """How a cell binds its module-level names: by import, as a target, or else.
 
     Re-running ``import numpy as np`` binds the same module object again, so
     it must not supersede the previous binding and stale every cell that used
     ``np`` -- the agent re-imports its libraries in almost every cell. A name
     the cell also binds some other way is not an idempotent import.
+
+    ``for i in ...`` and ``with open(p) as f`` leave ``i`` and ``f`` behind,
+    but the next loop rebinds them without meaning the earlier value by it. A
+    name a cell binds *only* as such a target is scratch, not a result.
     """
 
     def __init__(self) -> None:
         self.imports: dict[str, str] = {}
+        self.targets: set[str] = set()
         self.other: set[str] = set()
+
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:  # noqa: N802
+        self.targets.update(_target_names(node.target))
+        self.visit(node.iter)
+        for statement in (*node.body, *node.orelse):
+            self.visit(statement)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:  # noqa: N802
+        self.visit_For(node)
+
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:  # noqa: N802
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self.targets.update(_target_names(item.optional_vars))
+        for statement in node.body:
+            self.visit(statement)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:  # noqa: N802
+        self.visit_With(node)
+
+    def visit_comprehension(self, node: ast.comprehension) -> None:
+        # The target lives in the comprehension's own scope and never leaks.
+        self.visit(node.iter)
+        for condition in node.ifs:
+            self.visit(condition)
 
     def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
         for alias in node.names:
@@ -722,19 +756,26 @@ class _ImportBindings(ast.NodeVisitor):
         del node
 
 
-def _idempotent_imports(cell: Mapping[str, Any]) -> dict[str, str]:
+def _cell_bindings(cell: Mapping[str, Any]) -> tuple[dict[str, str], set[str]]:
+    """``(idempotent imports, scratch targets)`` of one Python cell."""
     if _namespace(cell) != "python":
-        return {}
-    visitor = _ImportBindings()
+        return {}, set()
+    visitor = _CellBindings()
     try:
         visitor.visit(ast.parse(str(cell.get("code") or ""), mode="exec"))
     except (SyntaxError, ValueError, TypeError, MemoryError, RecursionError):
-        return {}
-    return {
+        return {}, set()
+    imports = {
         name: target
         for name, target in visitor.imports.items()
-        if name not in visitor.other
+        if name not in visitor.other and name not in visitor.targets
     }
+    return imports, visitor.targets - visitor.other - set(visitor.imports)
+
+
+#: Origins whose cells the agent appended in the order it ran them. A manual
+#: REPL cell, a recovery replay and a row of unknown origin are not among them.
+_AGENT_ORDERED = frozenset({"agent", "delegate"})
 
 
 def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -743,8 +784,16 @@ def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, An
     A later named write/delete supersedes the prior value version.  Only Cells
     that consumed that old version (and their transitive consumers) become
     stale; the old producer and independent Cells remain valid historical
-    results.  A later unknown namespace mutation invalidates all earlier Cells
-    because independence cannot be proven.
+    results.  Staleness travels along the variable a consumer actually read:
+    a producer that also wrote ``tmp`` does not stale the reader of its
+    ``data`` when ``tmp`` is overwritten.  Loop and ``with`` targets and
+    underscore temporaries are scratch: they neither supersede nor depend.
+
+    A later unknown namespace mutation invalidates all earlier Cells because
+    independence cannot be proven -- except when the agent ran that Cell in
+    the course of its own ordered record, where every earlier result was
+    already final and flagging all of them says nothing.  A manual or replayed
+    Cell (and a row of unknown origin) keeps the conservative answer.
 
     Python and R are projected separately: an R ``wt <- ...`` cannot change a
     Python ``wt``. A cell none of whose code ran (`_cell_never_ran`) neither
@@ -782,6 +831,8 @@ def _stale_in_one_namespace(
     invalidations: list[tuple[set[int], str, int, bool]] = []
     uncertain_at: list[int] = []
     never_ran = {index for index, cell in enumerate(cells) if _cell_never_ran(cell)}
+    #: Names whose latest binding was a loop/context target: nothing to read.
+    leftover: set[str] = set()
 
     for index, cell in enumerate(cells):
         if index in never_ran:
@@ -789,14 +840,22 @@ def _stale_in_one_namespace(
         reads = normalize_string_list(cell.get("variable_reads"))
         writes = normalize_string_list(cell.get("variable_writes"))
         deletes = normalize_string_list(cell.get("variable_deletes"))
-        imports = _idempotent_imports(cell)
+        imports, scratch = _cell_bindings(cell)
         for name in reads:
+            if name.startswith("_") or name in leftover:
+                continue
             source = producer.get(name)
             if source is None:
                 external_consumers.setdefault(name, set()).add(index)
             elif source != index:
                 edges[source].setdefault(index, set()).add(name)
         for name in sorted(set(writes) | set(deletes)):
+            if name.startswith("_"):
+                continue
+            if name in scratch and name not in deletes:
+                leftover.add(name)
+                continue
+            leftover.discard(name)
             target = None if name in deletes else imports.get(name)
             if target is not None and bound_import.get(name) == target:
                 continue
@@ -814,41 +873,56 @@ def _stale_in_one_namespace(
             # downstream of this delete, and a subsequent write supersedes it.
             producer[name] = index
             bound_import[name] = target
-        if bool(cell.get("mutation_uncertain")):
+        if (
+            bool(cell.get("mutation_uncertain"))
+            and str(cell.get("origin") or "") not in _AGENT_ORDERED
+        ):
             uncertain_at.append(index)
+
+    def label(index: int) -> str:
+        revision = cells[index].get("state_revision")
+        suffix = f" (S{revision})" if revision is not None else ""
+        return _cell_id(cells[index], positions[index]) + suffix
 
     reasons: list[list[str]] = [[] for _ in range(count)]
     for roots, variable, invalidator, roots_are_consumers in invalidations:
         queue: list[int] = []
         seen: set[int] = set()
+        #: A transitive consumer never read ``variable`` itself: name the stale
+        #: cell it read from, so the reason is true of the cell it is shown on.
+        via: dict[int, int] = {}
         if roots_are_consumers:
             queue.extend(root for root in roots if root < invalidator)
         else:
             for root in roots:
-                queue.extend(target for target in edges[root] if target < invalidator)
+                queue.extend(
+                    target
+                    for target, names in edges[root].items()
+                    if target < invalidator and variable in names
+                )
         while queue:
             current = queue.pop(0)
             if current in seen or current >= invalidator:
                 continue
             seen.add(current)
-            queue.extend(target for target in edges[current] if target < invalidator)
+            for target in edges[current]:
+                if target < invalidator and target not in seen and target not in queue:
+                    via[target] = current
+                    queue.append(target)
         if not seen:
             continue
-        by = _cell_id(cells[invalidator], positions[invalidator])
-        revision = cells[invalidator].get("state_revision")
-        suffix = f" (S{revision})" if revision is not None else ""
-        reason = f"variable '{variable}' was superseded by {by}{suffix}"
+        superseded = f"variable '{variable}' was superseded by {label(invalidator)}"
         for current in sorted(seen):
+            reason = superseded
+            if current in via:
+                reason = f"depends on {label(via[current])}: {superseded}"
             if reason not in reasons[current]:
                 reasons[current].append(reason)
 
     for invalidator in uncertain_at:
         if invalidator <= 0:
             continue
-        by = _cell_id(cells[invalidator], positions[invalidator])
-        revision = cells[invalidator].get("state_revision")
-        suffix = f" (S{revision})" if revision is not None else ""
-        reason = f"{by}{suffix} may have mutated unknown namespace state"
+        reason = f"{label(invalidator)} may have mutated unknown namespace state"
         for current in range(invalidator):
             # A cell that never ran holds no state for anything to make stale.
             if current not in never_ran and reason not in reasons[current]:

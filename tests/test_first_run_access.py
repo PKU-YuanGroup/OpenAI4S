@@ -154,6 +154,21 @@ def test_the_page_follows_a_chinese_browser(unauthenticated):
     assert "Access token required" in body and "需要" not in body
 
 
+def test_each_page_ends_with_the_instruction_in_the_other_language(unauthenticated):
+    """FR-3: `Accept-Language` says which language a browser lists first, not
+    which one the person reads. A Chinese speaker on an English-first browser
+    got a page with no Chinese on it at all, and the only way forward is the
+    one command the page names."""
+    for accept_language in ("en-US,en;q=0.9", None, ""):
+        body = unauthenticated("/", "text/html", accept_language)["body"].decode()
+        assert "Access token required" in body
+        assert "<p lang=zh-CN>中文：在终端运行 <code>openai4s url</code>" in body
+
+    body = unauthenticated("/", "text/html", "zh-CN,zh;q=0.9")["body"].decode()
+    assert "需要访问令牌" in body
+    assert "<p lang=en>English: run <code>openai4s url</code>" in body
+
+
 def test_a_script_still_gets_json(unauthenticated):
     """Turning every 401 into HTML would break every client that parses the
     error, which is the opposite failure."""

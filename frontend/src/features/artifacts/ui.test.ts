@@ -164,10 +164,12 @@ describe("version-specific tabs", () => {
       addOpenTab({ id: "a", filename: "a.txt" });
       addOpenTab({ id: "b", filename: "b.txt" });
       setActiveTab("a");
-      expect(names()).toEqual(["a.txt", "b.txt", "Notebook", expect.any(String), expect.any(String)]);
+      // UI-1: the fixed tabs keep their place; file tabs follow them. Opened
+      // files used to go in front and push Timeline and Files out of view.
+      expect(names()).toEqual(["Notebook", expect.any(String), expect.any(String), "a.txt", "b.txt"]);
       closeTab("b");
       expect(activeTab.value).toBe("a");
-      expect(names()).toEqual(["a.txt", "Notebook", expect.any(String), expect.any(String)]);
+      expect(names()).toEqual(["Notebook", expect.any(String), expect.any(String), "a.txt"]);
     } finally { vi.unstubAllGlobals(); }
   });
 });
@@ -217,6 +219,56 @@ it("a failed session read shows Retry instead of an empty grid (AUDIT A26)", asy
     renderFilesGrid();
     expect(walk(list).some((node) => node.className === "art")).toBe(true);
     expect(walk(list).some((node) => node.className.includes("files-read-error"))).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+    setArtifactsFetch(null);
+    resetStoreFields();
+  }
+});
+
+
+it("folds process files under the results and leaves them out of the count (ART-4)", async () => {
+  const { currentId } = await import("../../stores/session");
+  const { renderFilesGrid } = await import("./ui");
+  const { loadArtifacts } = await import("./load");
+  const { visibleArtifacts } = await import("./files-index");
+  const { resetFilesIndexState } = await import("./state");
+  const { filesT } = await import("./copy");
+  class Node {
+    children: Node[] = []; className = ""; textContent = ""; title = ""; src = ""; open = false;
+    dataset: Record<string, string> = {};
+    set innerHTML(_value: string) { this.children = []; }
+    appendChild(child: Node) { this.children.push(child); return child; }
+    setAttribute() {}
+  }
+  const list = new Node();
+  const count = new Node();
+  vi.stubGlobal("document", {
+    getElementById: (id: string) => (id === "results-list" ? list : id === "results-count" ? count : null),
+    createElement: () => new Node(),
+  });
+  resetStoreFields();
+  resetFilesIndexState();
+  setArtifactsFetch(async () => jsonResponse([
+    { id: "r", filename: "report.md", role: "deliverable" },
+    { id: "s", filename: "scratch_inspect.py", role: "process" },
+    { id: "i", filename: "project-inputs/plate.xlsx", role: "process", is_user_upload: true },
+    { id: "c", filename: "context-output-0123456789abcdef.json", role: "internal" },
+  ]));
+  try {
+    currentId.value = "s1";
+    await loadArtifacts("s1");
+    renderFilesGrid();
+    const cards = (node: Node) => node.children.filter((child) => child.className === "art").map((card) => card.dataset.artifactId);
+    // A person's own input is a file of theirs, not a process file.
+    expect(cards(list).sort()).toEqual(["i", "r"]);
+    expect(count.textContent).toBe("2");
+    const group = list.children[list.children.length - 1]!;
+    expect(group.className).toBe("files-process");
+    expect(group.open).toBe(false);
+    expect(group.children[0]!.textContent).toBe(filesT("files.process", 1));
+    expect(cards(group.children[1]!)).toEqual(["s"]);
+    expect(visibleArtifacts().map((a) => a.id).sort()).toEqual(["i", "r"]);
   } finally {
     vi.unstubAllGlobals();
     setArtifactsFetch(null);
@@ -284,6 +336,7 @@ it("fullscreen download keeps the selected immutable version", async () => {
 it("conversation strip tiles open the latest tab rather than pinning the head at click time", async () => {
   const { artifacts } = await import("../../stores/artifacts");
   const { renderConversationArtifacts } = await import("./ui");
+  const { filesT } = await import("./copy");
   class Node {
     children: Node[] = []; textContent = ""; className = ""; id = ""; src = ""; open = false;
     onclick?: () => unknown;
@@ -313,6 +366,10 @@ it("conversation strip tiles open the latest tab rather than pinning the head at
     // ART-9: the strip starts as one collapsed line with no tiles built.
     const strip = walk(host).find((node) => node.className === "generated");
     expect(strip?.open).toBe(false);
+    // CHAT-6: it lists the session's files, and says so (it sits under the
+    // last turn, where a bare "GENERATED · 1" read as that turn's output).
+    expect(strip?.children[0]?.textContent).toBe(filesT("art.session.files") + " · 1");
+    expect(filesT("art.session.files")).toMatch(/session|本会话/);
     expect(walk(host).find((node) => node.className === "tile")).toBeUndefined();
     strip!.open = true;
     strip!.ontoggle?.();

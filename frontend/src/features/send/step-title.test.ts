@@ -22,6 +22,24 @@ describe("step titles and summaries in the UI language (I18N-1)", () => {
     expect(stepSummaryText("failed: timeout")).toBe("失败：timeout");
   });
 
+  it("says which lines a paged read returned, and names a spill file plainly (TURN-3)", async () => {
+    await setLang("zh");
+    expect(stepTitleText("Reading an earlier step's full output")).toBe("读取先前步骤的完整输出");
+    expect(stepSummaryText("lines 121–270 of 336")).toBe("第 121–270 行，共 336 行");
+    expect(stepSummaryText("past the end (336 lines)")).toBe("已超出文件末尾（共 336 行）");
+    expect(stepSummaryText("336 lines")).toBe("336 行");
+  });
+
+  it("reads a cell's banner comment as its words, not its rule characters (CHAT-8)", async () => {
+    expect(stepTitleText("---------- QC decisions ----------")).toBe("QC decisions");
+    expect(stepTitleText("=== Fit the curves ===")).toBe("Fit the curves");
+    expect(stepTitleText("step 2 -- fit")).toBe("step 2 -- fit");
+    // Only rule characters: nothing better to show than what came.
+    expect(stepTitleText("----------")).toBe("----------");
+    await setLang("zh");
+    expect(stepTitleText("---------- QC 决策 ----------")).toBe("QC 决策");
+  });
+
   it("leaves English, unknown titles and a cell's own title alone", async () => {
     expect(stepTitleText("Reading project file cohort.csv")).toBe("Reading project file cohort.csv");
     await setLang("zh");

@@ -228,7 +228,7 @@ def test_endpoint_helpers_keep_fingerprint_and_http_readiness_contract(monkeypat
         def getcode(self):
             return self.status
 
-    def open_ok(url, timeout):
+    def open_ok(url, timeout, context=None):
         seen.append((url, timeout))
         return Response()
 
@@ -243,7 +243,7 @@ def test_endpoint_helpers_keep_fingerprint_and_http_readiness_contract(monkeypat
     )
     assert seen == [("http://localhost:8000/ready", 0.25)]
 
-    def open_failed(_url, timeout):
+    def open_failed(_url, timeout, context=None):
         raise urllib.error.URLError(f"timeout={timeout}")
 
     monkeypatch.setattr("urllib.request.urlopen", open_failed)

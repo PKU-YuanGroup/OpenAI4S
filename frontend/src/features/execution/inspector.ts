@@ -9,7 +9,7 @@ import { variableInspector } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 // The Notebook's label lookup: the dictionary, except the Variable Inspector
 // words its zh extract has in English (I18N-1).
-import { nbLabelT as t } from "../notebook/copy";
+import { nbLabelT as t, nbT } from "../notebook/copy";
 import { runtimeSummary, shortRuntime } from "../notebook/kernel";
 import { publicText } from "../scrub/scrub";
 import { sanitizeVariableInspection } from "../timeline/sanitize";
@@ -105,6 +105,24 @@ type Inspection = {
   truncated?: boolean;
 };
 
+/**
+ * NB-3: names bound to code, not data. A session that imported numpy and
+ * defined three helpers listed more of these than results, so they are
+ * shown only on request. Python and R type names.
+ */
+const CODE_TYPES = new Set([
+  "module", "function", "builtin_function_or_method", "method", "type", "ABCMeta", "EnumMeta",
+  "ufunc", "partial", "_lru_cache_wrapper", "method_descriptor", "wrapper_descriptor", "_ArrayFunctionDispatcher",
+  "closure", "builtin", "special", "environment",
+]);
+
+export function isCodeVariable(variable: { type?: string }): boolean {
+  return CODE_TYPES.has(String(variable.type || ""));
+}
+
+/** The reader's choice to list code names too, kept across repaints. */
+let showCodeVariables = false;
+
 export function renderVariableInspector(): HTMLElement {
   const inspector = inspectorState() || {
     language: "python",
@@ -187,9 +205,14 @@ export function renderVariableInspector(): HTMLElement {
     panel.appendChild(el("div", "nb-variables-empty", t("nb.variables.empty")));
     return panel;
   }
+  const hiddenCode = (data.variables || []).filter(isCodeVariable).length;
+  const shown = showCodeVariables ? data.variables || [] : (data.variables || []).filter((v) => !isCodeVariable(v));
+  if (!shown.length) panel.appendChild(el("div", "nb-variables-empty", nbT("nb.variables.onlyCode")));
   const list = el("div", "nb-variable-list");
-  (data.variables || []).forEach((variable) => {
+  shown.forEach((variable) => {
     const row = el("div", "nb-variable-row");
+    // The fingerprint tells two values apart; it is not something to read.
+    if (variable.fingerprint) row.title = t("nb.variables.fingerprint", shortRuntime(variable.fingerprint));
     const identity = el("div", "nb-variable-identity");
     identity.appendChild(el("span", "nb-variable-name", variable.name || ""));
     identity.appendChild(el("span", "nb-variable-type", variable.type || ""));
@@ -199,14 +222,23 @@ export function renderVariableInspector(): HTMLElement {
     if (preview) details.appendChild(el("span", "nb-variable-preview", preview));
     if (variable.length != null)
       details.appendChild(el("span", "timeline-pill", t("nb.variables.length", variable.length)));
-    if (variable.fingerprint)
-      details.appendChild(
-        el("span", "timeline-pill", t("nb.variables.fingerprint", shortRuntime(variable.fingerprint))),
-      );
     row.appendChild(details);
     list.appendChild(row);
   });
   panel.appendChild(list);
+  if (hiddenCode) {
+    const toggle = el(
+      "button",
+      "outline-btn small nb-variables-code",
+      showCodeVariables ? nbT("nb.variables.hideCode") : nbT("nb.variables.showCode", hiddenCode),
+    );
+    toggle.setAttribute("type", "button");
+    toggle.onclick = () => {
+      showCodeVariables = !showCodeVariables;
+      paint();
+    };
+    panel.appendChild(toggle);
+  }
   if (data.truncated)
     panel.appendChild(
       el("div", "nb-variables-truncated", t("nb.variables.truncated", (data.variables || []).length)),
