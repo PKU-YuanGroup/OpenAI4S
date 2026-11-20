@@ -170,21 +170,6 @@ export function notebookLanguages(kernelIds: readonly string[]): string {
   return [...out].sort().join(" ");
 }
 
-/** The server names the clean notebook after the session (Content-Disposition). */
-function attachmentName(response: Response): string {
-  const header = response.headers.get("Content-Disposition") || "";
-  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
-  if (star && star[1]) {
-    try {
-      return decodeURIComponent(star[1]);
-    } catch {
-      /* fall through to the plain name */
-    }
-  }
-  const plain = /filename="?([^";]+)"?/i.exec(header);
-  return plain && plain[1] ? plain[1] : "";
-}
-
 /**
  * E / TEAM-13: a click on a download said nothing, and a refused export
  * opened its JSON error as a page. The bytes are fetched like the session
@@ -192,10 +177,11 @@ function attachmentName(response: Response): string {
  * says what arrived (or why nothing did).
  */
 async function downloadNotebookExport(href: string, name: string): Promise<void> {
-  const { byteSize, flash, saveExport } = await import("../sessions/package");
+  const { attachmentName, byteSize, flash, saveExport } = await import("../sessions/package");
   let saved = name;
+  // The clean notebook is named by the server after the session.
   const size = await saveExport(href, name, (response) => {
-    saved = name || attachmentName(response) || "notebook.ipynb";
+    saved = name || attachmentName(response) || "download";
   });
   if (size !== null) flash(exportCopy("saved").replace("{0}", saved).replace("{1}", byteSize(size)));
 }
