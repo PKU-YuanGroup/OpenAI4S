@@ -2,7 +2,7 @@ import {
   dockArtifact,
   filesScope,
 } from "../../stores/artifacts";
-import { currentId, sessions } from "../../stores/session";
+import { currentId, projects, sessions } from "../../stores/session";
 import { activeTab, dock, openTabs, provMode } from "../../stores/ui";
 import { api, apiErrorText, bytes, callWindow, el, icon, translate } from "./api";
 import { artifactTabKey } from "./cache";
@@ -217,6 +217,23 @@ export function sessionNameFor(frameId: string | null | undefined): string {
 /** ART-9: strips the reader opened, by `session:kind`; collapsed is the default. */
 const stripOpen = new Map<string, boolean>();
 
+/**
+ * G2 / SCI-02: the example session exists to show what a run delivers, and
+ * its deliverables sat in a collapsed one-line strip. Its files strip opens
+ * by default; the reader's own choice still wins, and every other session
+ * keeps ART-9's collapsed default.
+ */
+function isExampleSession(frameId: string | null): boolean {
+  if (!frameId) return false;
+  const frame = ((sessions.value as Array<{ id?: string; project_id?: string | null }>) || []).find(
+    (s) => s.id === frameId,
+  );
+  const pid = frame && frame.project_id;
+  if (!pid) return false;
+  const list = (projects.value as Array<{ id?: string; project_id?: string; is_example?: boolean }>) || [];
+  return list.some((p) => (p.id === pid || p.project_id === pid) && p.is_example === true);
+}
+
 export function renderConversationArtifacts(): void {
   if (typeof document === "undefined") return;
   document.querySelectorAll(".generated, .uploaded").forEach((n) => n.remove());
@@ -271,7 +288,7 @@ export function renderConversationArtifacts(): void {
       stripOpen.set(key, !!g.open);
       if (g.open) build();
     };
-    if (stripOpen.get(key) === true) {
+    if (stripOpen.get(key) ?? (cls === "generated" && isExampleSession(currentId.value))) {
       g.open = true;
       build();
     }
