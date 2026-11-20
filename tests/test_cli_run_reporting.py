@@ -761,3 +761,34 @@ def test_the_spill_cleanup_keeps_what_was_there_before(tmp_path, monkeypatch, ca
     assert status == 0
     assert sorted(path.name for path in observations.iterdir()) == [older.name]
     assert (tmp_path / ".openai4s" / "settings.json").exists()
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-35: `run --help` in the terms of the person running it
+# --------------------------------------------------------------------------- #
+
+
+def test_run_help_says_where_things_go_without_internal_jargon(capsys):
+    """`--mode`/`--allow-test-command`/`--auto` were ~25 lines of `Host-
+    authorized host.bash receipt`, `Guardian`, `verified action digest` and
+    `conversation-scoped exact-command allow rule`, while the help never said
+    whether a daemon is needed, where files land or where the code is."""
+    module = _cli_module()
+    with pytest.raises(SystemExit):
+        module.main(["run", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    options = text[: text.index("exit status:")]
+
+    for jargon in (
+        "host.bash",
+        "Host-authorized",
+        "Guardian",
+        "digest",
+        "conversation-scoped",
+        "Code-as-Action",
+        "terminal.",
+    ):
+        assert jargon not in options, jargon
+    assert "No daemon is needed" in options
+    assert "current directory" in options and "Notebook" in options
+    assert "analysis_run (the default" in options

@@ -1379,6 +1379,17 @@ RUN_NOT_COMPLETED_EXIT = 3
 #: migration that failed and was rolled back, or one refused before it began.
 MIGRATION_FAILED_CODE = "migration_failed"
 
+_RUN_DESCRIPTION = """\
+Run one task in this process and print the result. No daemon is needed, and
+the model comes from the environment or a .env file (OPENAI4S_LLM_PROVIDER,
+OPENAI4S_LLM_MODEL and the provider's API key variable).
+
+The agent works in the current directory: the files it writes land here and
+are listed when it finishes. The run is also stored as a session: start the
+web UI (`openai4s serve`) to open it, read its answer and see the code that
+ran in its Notebook.
+"""
+
 _RUN_EXIT_STATUS_HELP = """\
 exit status:
   0  the run completed (stop_reason "submitted")
@@ -3356,12 +3367,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     pr = sub.add_parser(
         "run",
-        help="run one Code-as-Action task in-process",
+        help="run one task here, without the daemon or the web UI",
+        description=_RUN_DESCRIPTION,
         epilog=_RUN_EXIT_STATUS_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    pr.add_argument("task", help="the task description")
-    pr.add_argument("--json", action="store_true", help="emit full JSON result")
+    pr.add_argument("task", help="what you want done, in plain words")
+    pr.add_argument(
+        "--json",
+        action="store_true",
+        help="print the whole result as JSON on stdout (progress stays on stderr)",
+    )
     pr.add_argument(
         "-v",
         "--verbose",
@@ -3390,13 +3406,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[mode.value for mode in TaskMode],
         default=None,
         help=(
-            "task mode. Omitted, it is detected conservatively from the task "
-            "text (guidance only — detection never gates completion) and "
-            "defaults to analysis_run. Selecting reusable_pipeline or "
-            "codebase_change explicitly requires the run to save source "
-            "files, keep a thin entry point, and back its completion with "
-            "verified source/entry-point/test evidence, including a "
-            "Host-authorized host.bash receipt for each test command"
+            "what the task should leave behind: analysis_run (the default: "
+            "an answer backed by an analysis), reusable_pipeline (scripts "
+            "you can run again) or codebase_change (a change to the code in "
+            "this directory). The last two finish only when their saved code "
+            "and its tests really ran; a run with nobody to approve the test "
+            "commands needs --allow-test-command"
         ),
     )
     pr.add_argument(
@@ -3405,25 +3420,23 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CMD",
         default=None,
         help=(
-            "pre-authorize host.bash for this exact command string in this run "
-            "(repeatable; requires --mode reusable_pipeline or codebase_change). "
-            "A headless run has nobody to approve the shell command its test "
-            "evidence must come from; this installs a conversation-scoped "
-            "exact-command allow rule and nothing broader. The receipt that "
-            "backs test_evidence is the kernel worker's report of that string's "
-            "exit status, run with the Cell's environment (PATH, cwd): it catches "
-            "a test that was not run, only printed, or failed, and is not proof "
-            "against a Cell that fakes the runner"
+            "with --mode reusable_pipeline or codebase_change: let this run "
+            "execute this exact command string as a test without asking anyone "
+            "(repeat the flag for more commands; nothing else is allowed by "
+            "it). The run must still execute it: the kernel worker reports its "
+            "real exit status, which catches a test that never ran, was only "
+            "printed or failed -- it is not proof against code written to fake "
+            "a test runner"
         ),
     )
     pr.add_argument(
         "--auto",
         action="store_true",
         help=(
-            "autonomous Auto Mode: boundary actions go to the Guardian instead "
-            "of failing closed, and the result is reviewed before the run "
-            "reports a terminal. NOT full access -- the Guardian's active "
-            "surface is a read-only allowlist bound to a verified action digest"
+            "run without stopping for approvals: an action that would ask you "
+            "is decided by an automatic safety reviewer instead (it approves "
+            "read-only actions only, so this is not full access), and the "
+            "result is checked before the run reports it (auto_mode in --json)"
         ),
     )
     pr.set_defaults(fn=cmd_run)
