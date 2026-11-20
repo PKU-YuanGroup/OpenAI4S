@@ -721,3 +721,23 @@ def test_status_json_when_not_running_is_still_json(tmp_path, monkeypatch, capsy
         "running": False,
         "data_dir": str(tmp_path),
     }
+
+
+# --------------------------------------------------------------------------
+# `jupyter`
+# --------------------------------------------------------------------------
+
+
+def test_jupyter_export_over_an_existing_spec_names_the_cli_flag(tmp_path, capsys):
+    """CLI-21. A second `openai4s jupyter export <dir>` said `use
+    replace=True`, the Python keyword, where the CLI flag is `--replace`."""
+    cli = _cli()
+    kernels = tmp_path / "kspecs"
+    assert cli.main(["jupyter", "export", str(kernels)]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["jupyter", "export", str(kernels)]) == 1
+
+    err = capsys.readouterr().err
+    assert "pass --replace to rewrite its kernel.json" in err
+    assert cli.main(["jupyter", "export", str(kernels), "--replace"]) == 0
