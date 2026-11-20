@@ -744,15 +744,61 @@ def test_invite_is_single_use_and_username_collision_does_not_burn_it(daemon):
     status, _ = _post(
         daemon.port,
         "/api/v1/auth/redeem-invite",
-        {"token": token, "username": "fresh", "password": "fake-pw"},
+        {"token": token, "username": "fresh", "password": "fake-pw-1"},
     )
     assert status == 201
     status, _ = _post(
         daemon.port,
         "/api/v1/auth/redeem-invite",
-        {"token": token, "username": "fresh2", "password": "fake-pw"},
+        {"token": token, "username": "fresh2", "password": "fake-pw-1"},
     )
     assert status == 403
+
+
+def test_every_door_that_takes_a_chosen_password_holds_it_to_the_minimum(daemon):
+    """CLI-16: a one-character password was accepted. The admin routes and
+    the invite redemption take a chosen password too, so they get the same
+    rule as `openai4s user add --password-stdin`."""
+    r = _login(daemon, "root", "fake-pw-r")
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/team/users",
+        {"username": "erin", "password": "1"},
+        cookie=r,
+    )
+    assert status == 400, raw[:200]
+    assert "at least 8 characters" in _body(raw)["error"]
+    assert daemon.store.team.get_user_by_username("erin") is None
+
+    bob_id = _uid(daemon, "bob")
+    status, raw = _post(
+        daemon.port,
+        f"/api/v1/team/users/{bob_id}/reset-password",
+        {"password": "short"},
+        cookie=r,
+    )
+    assert status == 400, raw[:200]
+    assert _body(raw)["code"] == "weak_password"
+    _login(daemon, "bob", "fake-pw-b")  # unchanged
+
+    status, raw = _post(
+        daemon.port, "/api/v1/team/invites", {"project_id": _pid(daemon)}, cookie=r
+    )
+    token = _body(raw)["token"]
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/auth/redeem-invite",
+        {"token": token, "username": "fresh", "password": "1234567"},
+    )
+    assert status == 400, raw[:200]
+    assert _body(raw)["code"] == "weak_password"
+    # the refusal did not burn the single-use invite
+    status, _ = _post(
+        daemon.port,
+        "/api/v1/auth/redeem-invite",
+        {"token": token, "username": "fresh", "password": "12345678"},
+    )
+    assert status == 201
 
 
 def test_member_replay_and_isolation(daemon):

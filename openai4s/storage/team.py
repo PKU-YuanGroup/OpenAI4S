@@ -146,6 +146,25 @@ _USERNAME_MAX = 64
 _USERNAME_ALLOWED = "-_."
 
 
+#: The shortest password a person may choose (CLI-16). Eight is NIST
+#: SP 800-63B's floor for a memorized secret; a generated one is 16.
+MIN_PASSWORD_LENGTH = 8
+
+
+def check_new_password(password: str) -> str:
+    """``password`` if a person may choose it, else ValueError saying why.
+
+    Applied wherever a person *chooses* a password: `openai4s user add` and
+    `reset-password` with `--password-stdin`, the admin routes that take
+    one, invite redemption, and the self-service change. Not inside
+    `create_user` / `set_password`, whose generated passwords already pass
+    and whose callers include test fixtures with deliberately short ones.
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+    return password
+
+
 def validate_username(username: str) -> str:
     """The stripped name, or ValueError naming what is wrong with it."""
     name = username.strip()
@@ -712,9 +731,11 @@ class TeamRepository:
 
 __all__ = [
     "LastAdminError",
+    "MIN_PASSWORD_LENGTH",
     "PBKDF2_ITERATIONS",
     "SESSION_TTL_S",
     "TeamRepository",
+    "check_new_password",
     "create_team_schema",
     "hash_password",
     "token_digest",

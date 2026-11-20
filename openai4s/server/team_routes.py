@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from openai4s.storage.team import check_new_password
+
 from . import contract
 from .team_auth import TEAM_COOKIE, AccountDisabled, RateLimited, public_user
 
@@ -225,6 +227,13 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
             return True
         if store.team.get_user_by_username(username) is not None:
             self._json({"error": f"username {username!r} already exists"}, 409)
+            return True
+        # Before the invite is consumed, like the username: a password that
+        # is too short must not burn a single-use token either.
+        try:
+            check_new_password(password)
+        except ValueError as e:
+            self._json({"error": str(e), "code": "weak_password"}, 400)
             return True
         invite = store.governance.redeem_invite(token)
         if invite is None:

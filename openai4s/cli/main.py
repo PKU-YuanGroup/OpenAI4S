@@ -2554,9 +2554,32 @@ def _read_new_password(args) -> tuple[str, str | None]:
         pw = sys.stdin.readline().rstrip("\r\n")
         if not pw:
             raise ValueError("empty password on stdin")
-        return pw, None
+        from openai4s.storage.team import check_new_password
+
+        # A lab server's account: `echo 1 | ... --password-stdin` was
+        # accepted (CLI-16).
+        return check_new_password(pw), None
     generated = _secrets.token_urlsafe(12)
     return generated, generated
+
+
+def _team_mode_next_step(cfg) -> tuple[bool, str]:
+    """(team mode is on, the line that says what happens next).
+
+    Accounts do nothing until the daemon runs in team mode, and `user add`
+    used to end on "created ..." with no word about that: the operator made
+    an account, opened the browser, and still met the token page (CLI-16).
+    The live daemon's own record decides when one is running; otherwise
+    this shell's OPENAI4S_TEAM_MODE.
+    """
+    url = _sign_in_url(cfg, team_mode=True)
+    if _live_team_mode(cfg):
+        return True, f"sign in at {url}"
+    return False, (
+        "note: team mode is off, so accounts cannot sign in yet. Start the "
+        "daemon with OPENAI4S_TEAM_MODE=1 (restart `openai4s serve` if it is "
+        f"running), then sign in at {url}"
+    )
 
 
 def cmd_user(args) -> int:
@@ -2582,6 +2605,8 @@ def cmd_user(args) -> int:
             if generated is not None:
                 # printed exactly once, never stored or logged
                 print(f"initial password: {generated}")
+            team_on, next_step = _team_mode_next_step(get_config())
+            print(next_step, file=sys.stdout if team_on else sys.stderr)
         elif action == "list":
             users = store.team.list_users()
             if getattr(args, "json", False):
@@ -3038,6 +3063,9 @@ def build_parser() -> argparse.ArgumentParser:
     puser = sub.add_parser(
         "user",
         help="manage team-mode accounts (direct database access, no daemon needed)",
+        description="Manage team-mode accounts. Direct database access: no "
+        "daemon needed. Accounts are used only while the daemon runs with "
+        "OPENAI4S_TEAM_MODE=1; people then sign in at /login.",
     )
     usub = puser.add_subparsers(dest="user_action", required=True)
     ua = usub.add_parser("add", help="create an account")
@@ -3048,8 +3076,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--password-stdin",
         dest="password_stdin",
         action="store_true",
-        help="read the password from stdin; otherwise one is generated and "
-        "printed once (a password never goes on the command line)",
+        help="read the password from stdin (at least 8 characters); otherwise "
+        "one is generated and printed once (a password never goes on the "
+        "command line)",
     )
     ua.set_defaults(fn=cmd_user)
     ul = usub.add_parser("list", help="list accounts")
@@ -3079,8 +3108,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--password-stdin",
         dest="password_stdin",
         action="store_true",
-        help="read the new password from stdin; otherwise one is generated "
-        "and printed once",
+        help="read the new password from stdin (at least 8 characters); "
+        "otherwise one is generated and printed once",
     )
     ur.set_defaults(fn=cmd_user)
 

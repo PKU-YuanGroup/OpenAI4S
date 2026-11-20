@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from openai4s.storage.team import LastAdminError
+from openai4s.storage.team import LastAdminError, check_new_password
 
 from . import contract
 from .team_auth import public_user
@@ -193,6 +193,11 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
 
             generated = _secrets.token_urlsafe(12)
             password = generated
+        try:
+            check_new_password(password)
+        except ValueError as e:
+            self._json({"error": str(e), "code": "weak_password"}, 400)
+            return True
         store.team.set_password(user["id"], password)
         store.team.audit(
             actor=_actor(self),
@@ -214,7 +219,7 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
         try:
             user = store.team.create_user(
                 username=str(body.get("username") or ""),
-                password=str(body.get("password") or ""),
+                password=check_new_password(str(body.get("password") or "")),
                 role=str(body.get("role") or "member"),
                 display_name=body.get("display_name"),
             )

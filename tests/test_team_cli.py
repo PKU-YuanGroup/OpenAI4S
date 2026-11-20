@@ -75,6 +75,51 @@ def test_add_empty_stdin_password_fails(capsys, monkeypatch):
     assert main(["user", "add", "bob", "--password-stdin"]) == 2
 
 
+@pytest.mark.parametrize("action", ["add", "reset-password"])
+def test_a_chosen_password_needs_eight_characters(capsys, monkeypatch, action):
+    """CLI-16: `echo 1 | openai4s user add carol --password-stdin` made an
+    account with a one-character password."""
+    if action == "reset-password":
+        main(["user", "add", "carol"])
+        before = capsys.readouterr().out.split("initial password: ")[1].split()[0]
+    monkeypatch.setattr("sys.stdin", io.StringIO("1\n"))
+    assert main(["user", action, "carol", "--password-stdin"]) == 2
+    assert "at least 8 characters" in capsys.readouterr().err
+    if action == "add":
+        assert _store().team.get_user_by_username("carol") is None
+    else:
+        assert _store().team.verify_password("carol", before) is not None
+    monkeypatch.setattr("sys.stdin", io.StringIO("12345678\n"))
+    assert main(["user", action, "carol", "--password-stdin"]) == 0
+    assert _store().team.verify_password("carol", "12345678") is not None
+
+
+def test_add_says_what_happens_next_in_either_mode(capsys, monkeypatch):
+    """CLI-16: with team mode off a new account cannot sign in, and nothing
+    said so; with it on, nothing said where to sign in."""
+    import importlib
+
+    cli = importlib.import_module("openai4s.cli.main")
+
+    monkeypatch.setattr(cli, "_live_team_mode", lambda cfg: False)
+    assert main(["user", "add", "alice", "--role", "admin"]) == 0
+    captured = capsys.readouterr()
+    assert "OPENAI4S_TEAM_MODE=1" in captured.err and "/login" in captured.err
+    assert "team mode is off" not in captured.out
+
+    monkeypatch.setattr(cli, "_live_team_mode", lambda cfg: True)
+    assert main(["user", "add", "bob"]) == 0
+    captured = capsys.readouterr()
+    assert "sign in at http" in captured.out and "/login" in captured.out
+    assert "team mode is off" not in captured.err
+
+
+def test_user_help_names_the_team_mode_switch(capsys):
+    with pytest.raises(SystemExit):
+        main(["user", "--help"])
+    assert "OPENAI4S_TEAM_MODE=1" in capsys.readouterr().out
+
+
 def test_duplicate_username_exit_code(capsys):
     assert main(["user", "add", "alice"]) == 0
     assert main(["user", "add", "alice"]) == 2

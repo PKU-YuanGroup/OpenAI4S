@@ -26,6 +26,12 @@ itself:
 openai4s user add alice --role admin
 ```
 
+It prints a generated 16-character password once. A password you choose
+(`--password-stdin`, the admin routes, an invite) must be at least 8
+characters. Accounts exist whether or not team mode is on, but nobody can
+sign in with one until the daemon runs with `OPENAI4S_TEAM_MODE=1`; `user
+add` says which of the two it found.
+
 The loopback CLI is admin-equivalent by decision D2 — whoever can read
 the access-token file on the host owns the box anyway — and its actions
 are audited as `cli` rather than impersonating a human account.
