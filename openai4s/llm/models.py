@@ -221,13 +221,22 @@ _SETUP_MESSAGES: dict[str, tuple[str, str]] = {
         "model name and the base URL in Settings → Models.",
     ),
     "llm_network": (
-        "**无法连接到模型服务（或请求中断）。** 请检查网络、代理，以及 设置 → 模型 "
-        "里的服务地址。",
+        "**无法连接到模型服务（或请求中途断开）。**",
         "**The model service could not be reached, or the request was "
-        "interrupted.** Check the network, any proxy, and the base URL in "
-        "Settings → Models.",
+        "interrupted.**",
     ),
 }
+# M-37: a dropped connection is most often passing, and the old sentence sent
+# the user to the base URL (and, before FR-1, to an environment variable and
+# a Network switch that had nothing to do with it). Trying again comes first;
+# the settings are for a failure that keeps happening.
+_NETWORK_NOTE = (
+    " 这通常是暂时的网络问题：稍后重新发送即可。如果一直失败，再检查网络、代理，"
+    "以及 设置 → 模型 里的服务地址。",
+    " This is usually a passing network problem: send the message again in a "
+    "moment. If it keeps failing, check the network, any proxy, and the base "
+    "URL in Settings → Models.",
+)
 _TLS_NOTE = (
     " TLS 证书校验失败（{detail}）：若经过公司代理，请把 `SSL_CERT_FILE` 指向"
     "包含其根证书的 PEM 文件后重启。",
@@ -253,6 +262,8 @@ def llm_setup_message(exc: BaseException, *, zh: bool) -> str | None:
             # the request or anything a provider sent.
             detail = str(getattr(failure, "verify_message", "") or "verify failed")
             text += _TLS_NOTE[0 if zh else 1].format(detail=detail)
+        else:
+            text += _NETWORK_NOTE[0 if zh else 1]
     return text
 
 
