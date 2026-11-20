@@ -2612,13 +2612,29 @@ def cmd_user(args) -> int:
             if getattr(args, "json", False):
                 print(json.dumps(users, indent=2))
             else:
+                # A header, and the display name: it was set with
+                # --display-name and then visible only under --json (TEAM-7).
+                # Last, because it is free text and may be wide.
+                width = max([len("USERNAME")] + [len(u["username"]) for u in users])
+                if users:
+                    print(
+                        f"{'USERNAME':<{width}}  {'ROLE':<6}  {'STATE':<8}  "
+                        f"{'ID':<17}  DISPLAY NAME"
+                    )
                 for u in users:
-                    flag = " [disabled]" if u["disabled"] else ""
-                    print(f"{u['username']:<20} {u['role']:<7} {u['id']}{flag}")
+                    state = "disabled" if u["disabled"] else "active"
+                    row = (
+                        f"{u['username']:<{width}}  {u['role']:<6}  {state:<8}  "
+                        f"{u['id']:<17}  {u['display_name'] or ''}"
+                    )
+                    print(row.rstrip())
                 if not users:
                     print(
                         "no users; create one with: openai4s user add <name> --role admin"
                     )
+                team_on, next_step = _team_mode_next_step(get_config())
+                if not team_on:
+                    print(next_step, file=sys.stderr)
         elif action == "disable":
             user = store.team.get_user_by_username(args.username)
             if user is None:

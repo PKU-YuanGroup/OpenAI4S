@@ -8,6 +8,7 @@ test_team_repository.py).
 from __future__ import annotations
 
 import io
+import json
 
 import pytest
 
@@ -132,7 +133,40 @@ def test_list_shows_users_and_disabled_flag(capsys):
     capsys.readouterr()
     assert main(["user", "list"]) == 0
     out = capsys.readouterr().out
-    assert "alice" in out and "[disabled]" in out
+    assert "alice" in out and "disabled" in out
+
+
+def test_list_has_a_header_and_the_display_name(capsys, monkeypatch):
+    """TEAM-7: three unlabelled columns, and a --display-name visible only
+    under --json; on a daemon without team mode, no word that the accounts
+    do nothing yet."""
+    import importlib
+
+    cli = importlib.import_module("openai4s.cli.main")
+    monkeypatch.setattr(cli, "_live_team_mode", lambda cfg: False)
+    main(["user", "add", "alice", "--role", "admin", "--display-name", "Alice A"])
+    main(["user", "add", "bob"])
+    main(["user", "disable", "bob"])
+    capsys.readouterr()
+    assert main(["user", "list"]) == 0
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
+    assert lines[0].split() == ["USERNAME", "ROLE", "STATE", "ID", "DISPLAY", "NAME"]
+    alice = next(line for line in lines if line.startswith("alice"))
+    assert alice.split()[:3] == ["alice", "admin", "active"]
+    assert alice.endswith("Alice A")
+    bob = next(line for line in lines if line.startswith("bob"))
+    assert bob.split()[:3] == ["bob", "member", "disabled"]
+    assert "OPENAI4S_TEAM_MODE=1" in captured.err
+
+    # --json stays pure JSON on stdout, with nothing added
+    assert main(["user", "list", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert [u["display_name"] for u in json.loads(captured.out)] == ["Alice A", None]
+
+    monkeypatch.setattr(cli, "_live_team_mode", lambda cfg: True)
+    assert main(["user", "list"]) == 0
+    assert "OPENAI4S_TEAM_MODE" not in capsys.readouterr().err
 
 
 def test_disable_unknown_user(capsys):
