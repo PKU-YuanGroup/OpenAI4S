@@ -9,6 +9,7 @@
 import { isReady } from "../../compat/stub";
 import { activeTab, dock } from "../../stores/ui";
 import { dockClose, dockToggle, setActiveTab } from "../artifacts/ui";
+import { bootLabTab } from "../lab";
 import { cycleTheme } from "../theme/theme";
 import "./chrome.css";
 import { $ } from "./dom";
@@ -133,6 +134,8 @@ export function bootChrome(): void {
   bootStep("keys", installWorkbenchKeys);
   bootStep("dock", bindDockChrome);
   bootStep("team", bootTeam);
+  // The Lab tab is hidden until the lab is set up, unless the person chose.
+  bootStep("lab tab", bootLabTab);
 }
 
 function bindDockChrome(): void {

@@ -164,10 +164,12 @@ describe("version-specific tabs", () => {
       addOpenTab({ id: "a", filename: "a.txt" });
       addOpenTab({ id: "b", filename: "b.txt" });
       setActiveTab("a");
-      expect(names()).toEqual(["a.txt", "b.txt", "Notebook", expect.any(String), expect.any(String)]);
+      // UI-1: the fixed tabs keep their place; file tabs follow them. Opened
+      // files used to go in front and push Timeline and Files out of view.
+      expect(names()).toEqual(["Notebook", expect.any(String), expect.any(String), "a.txt", "b.txt"]);
       closeTab("b");
       expect(activeTab.value).toBe("a");
-      expect(names()).toEqual(["a.txt", "Notebook", expect.any(String), expect.any(String)]);
+      expect(names()).toEqual(["Notebook", expect.any(String), expect.any(String), "a.txt"]);
     } finally { vi.unstubAllGlobals(); }
   });
 });

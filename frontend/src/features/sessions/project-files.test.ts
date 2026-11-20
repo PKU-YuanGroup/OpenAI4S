@@ -444,6 +444,26 @@ describe("project folder persistence", () => {
     expect(JSON.parse(String(request!.body)).folder_path).toBe(folderPath);
   });
 
+  it("submits on Enter in the name field, but not while an IME is composing (UI-1)", async () => {
+    openProjectModal({ project_id: "p", name: "Research", folder_path: "" });
+    const press = (event: { key: string; isComposing?: boolean; keyCode?: number }) => {
+      const preventDefault = vi.fn();
+      nodes["#pm-name"]!.onkeydown!({ ...event, preventDefault });
+      return preventDefault;
+    };
+    vi.mocked(api).mockResolvedValue({ project_id: "p" });
+
+    // Confirming an IME candidate is not a submit (Safari reports it as 229).
+    expect(press({ key: "Enter", isComposing: true })).not.toHaveBeenCalled();
+    expect(press({ key: "Enter", keyCode: 229 })).not.toHaveBeenCalled();
+    expect(press({ key: "a" })).not.toHaveBeenCalled();
+    expect(api).not.toHaveBeenCalled();
+
+    expect(press({ key: "Enter" })).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(api).toHaveBeenCalled());
+    expect(vi.mocked(api).mock.calls[0]![0]).toBe("/projects/p");
+  });
+
   it("shows a refused save inside the dialog instead of the composer hint", async () => {
     // The dashboard has no laid-out composer: the hint there is a 0x0 box, so
     // a folder outside the allowed roots made Create look like it did nothing.

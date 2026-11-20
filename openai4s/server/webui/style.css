@@ -125,6 +125,11 @@ button{font:inherit;cursor:pointer}
 .dash-col.sessions .d-row{border:.5px solid var(--border-card);border-radius:var(--radius-card);background:var(--card);box-shadow:var(--shadow-card)}
 .dash-col.sessions .d-main{flex-direction:column;align-items:stretch;gap:2px}
 .d-dot{width:7px;height:7px;border-radius:50%;border:1.5px solid var(--text-400);flex:none}
+/* recent sessions: how the last turn ended */
+.d-dot.done{border-color:var(--success);background:var(--success)}
+.d-dot.failed{border-color:var(--danger);background:var(--danger)}
+.d-row .d-status{font-size:11px;font-weight:600;border-radius:10px;padding:2px 8px;white-space:nowrap}
+.d-row .d-status.failed{color:var(--danger);background:var(--danger-bg)}
 .d-dot.live{border-color:var(--success);background:var(--success);box-shadow:0 0 0 3px var(--success-bg);animation:os-pulse 1.4s ease-in-out infinite}
 .d-run{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:var(--success-text);background:var(--success-bg);border-radius:10px;padding:1px 8px;white-space:nowrap;flex:none}
 .d-run .d-run-dot{width:6px;height:6px;border-radius:50%;background:var(--success);animation:os-pulse 1.4s ease-in-out infinite}
@@ -1398,7 +1403,8 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 
 /* ---- immutable Cell metadata + append-only actions ---- */
 .nbc-cell-meta{display:flex;align-items:center;gap:6px;padding:7px 11px;background:var(--bg-100);border-bottom:var(--hair);font:11px/1.2 var(--mono);color:var(--text-400)}
-.nbc-state{border-radius:999px;padding:3px 7px;background:var(--bg-200)}
+/* one line, never shrunk: in a narrow panel "当前" / "已过期" used to wrap into a column of single characters */
+.nbc-state{border-radius:999px;padding:3px 7px;background:var(--bg-200);white-space:nowrap;flex:none}
 .nbc-state.current{background:var(--success-bg);color:var(--success-text)}
 .nbc-state.drafting{background:color-mix(in srgb,var(--accent-fill) 70%,var(--bg-200));color:var(--accent)}
 .nbc-state.stale{background:#fbf0d4;color:#8a5b08}
@@ -1945,6 +1951,9 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 .compute-lost .cl-dismiss { flex:none; align-self:center; height:28px; padding:0 12px;
   border-radius:8px; border:1px solid var(--line); background:var(--panel); cursor:pointer; }
 
+/* The run-location dialog borrows the artifact viewer's modal, which is sized
+   for a document: fit the box to its few options instead. */
+#modal .modal-box:has(.run-location) { width:min(520px,94vw); height:auto; max-height:min(640px,88vh); }
 .run-location { display:flex; flex-direction:column; gap:8px; padding:4px 2px; }
 .run-location .rl-option { text-align:left; padding:11px 13px; border-radius:10px;
   border:1px solid var(--line); background:var(--panel); cursor:pointer; }

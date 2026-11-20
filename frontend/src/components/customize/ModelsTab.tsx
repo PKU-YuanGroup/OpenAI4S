@@ -179,9 +179,35 @@ export function ModelsTab() {
     );
   }
 
+  // The model in use first: this list used to close the page, under the
+  // provider panel, the local scan and the add form, and listed the active
+  // profile wherever it happened to be saved.
+  const ordered = [
+    ...data.profiles.filter((p) => asString(p.id) === data.active_id),
+    ...data.profiles.filter((p) => asString(p.id) !== data.active_id),
+  ];
+
   return (
     <div>
       <Hdr title={t("cust.tab.models")} sub={t("cust.models.subtitle2")} />
+      <Subhead>{t("cust.models.configuredHeading")}</Subhead>
+      {live && !data.active_id ? liveModelRow(live, protocols) : null}
+      {!data.profiles.length ? (
+        <Empty>{live && !data.active_id ? copy("liveNoProfiles") : t("cust.models.empty2")}</Empty>
+      ) : (
+        ordered.map((p) => (
+          <ProfileRow
+            key={asString(p.id)}
+            p={p}
+            activeId={data.active_id}
+            protocols={protocols}
+            onEdit={() => startEdit(p)}
+            onDeleted={() => {
+              if (editing && editing.id === p.id) resetForm();
+            }}
+          />
+        ))
+      )}
       <Subhead>{t("cust.volc.title")}</Subhead>
       <VolcenginePanel />
       <Subhead>{t("cust.models.local.title")}</Subhead>
@@ -333,24 +359,6 @@ export function ModelsTab() {
           ) : null}
         </div>
       </div>
-      <Subhead>{t("cust.models.configuredHeading")}</Subhead>
-      {live && !data.active_id ? liveModelRow(live, protocols) : null}
-      {!data.profiles.length ? (
-        <Empty>{live && !data.active_id ? copy("liveNoProfiles") : t("cust.models.empty2")}</Empty>
-      ) : (
-        data.profiles.map((p) => (
-          <ProfileRow
-            key={asString(p.id)}
-            p={p}
-            activeId={data.active_id}
-            protocols={protocols}
-            onEdit={() => startEdit(p)}
-            onDeleted={() => {
-              if (editing && editing.id === p.id) resetForm();
-            }}
-          />
-        ))
-      )}
     </div>
   );
 }

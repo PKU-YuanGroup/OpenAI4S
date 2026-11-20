@@ -468,7 +468,11 @@ export function renderDashRecent(frames: SessionLike[]): void {
   }
   recent.forEach((f) => {
     const row = el("div", "d-row");
-    row.appendChild(el("div", f.running ? "d-dot live" : "d-dot"));
+    // A finished session and one whose last turn failed looked the same here.
+    const ended = !f.running && (f.status === "failed" || f.status === "done") ? f.status : "";
+    const dot = el("div", f.running ? "d-dot live" : ended ? "d-dot " + ended : "d-dot");
+    if (ended) dot.title = dashCopy("dash.status." + ended);
+    row.appendChild(dot);
     const main = el("div", "d-main");
     main.appendChild(el("div", "d-name", f.name || f.task_summary || t("session.untitled")));
     const pj = (projects.value as ProjectLike[]).find(
@@ -481,7 +485,12 @@ export function renderDashRecent(frames: SessionLike[]): void {
       b.appendChild(el("span", "d-run-dot"));
       b.appendChild(el("span", null, t("dash.badge.running")));
       row.appendChild(b);
-    } else row.appendChild(el("div", "d-meta", ago(f.updated_at)));
+    } else {
+      if (ended === "failed") {
+        row.appendChild(el("span", "d-status failed", dashCopy("dash.status.failed")));
+      }
+      row.appendChild(el("div", "d-meta", ago(f.updated_at)));
+    }
     const open = () => {
       if (f.id) void binds.openConversation(f.id, f.project_id);
     };
