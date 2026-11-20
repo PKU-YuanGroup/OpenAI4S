@@ -13,9 +13,9 @@ unknown id before the handler ran, and INV-13 is that a missing session and
 somebody else's read identically, so the scope test holds both modes and both
 cases to one body.
 
-`GET /frames/{id}` keeps its documented `{}` for an unknown id. A read that
-returns no fields claims nothing, and its readers (the context-usage panel, the
-frozen legacy `app.js`) render it as empty rather than handling a failure.
+`GET /frames/{id}` answers an unknown id with the same 404 (SYNC-17): a `{}`
+with a 200 read as a session that exists, so a tab still showing a session
+deleted elsewhere could not learn that it was gone.
 
 The ordinary requests use the real handler on a real socket, unmarked, so the
 response schema capture observes the 404 and a PATCH of a real session. The
@@ -139,9 +139,10 @@ def test_patch_of_an_unknown_session_is_a_404_and_changes_nothing(tmp_path):
         assert [fid for fid, _event in hub.broadcasts] == [frame_id, frame_id]
         assert runner.store.get_frame(MISSING) is None
 
-        # The read keeps its documented compatibility shape, deliberately.
+        # The read refuses it the same way (SYNC-17).
         status, read = call("GET", f"/frames/{MISSING}")
-        assert (status, read) == (200, {})
+        assert status == 404, read
+        assert _refusal(read) == _refusal(refused)
     finally:
         httpd.shutdown()
         httpd.server_close()

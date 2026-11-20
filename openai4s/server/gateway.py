@@ -17867,8 +17867,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m:
                 fid = m.group(1)
                 if method == "GET":
+                    # A 404, like the rename below. `{}` with a 200 read as a
+                    # session that exists and has no fields, so a tab still
+                    # showing a session deleted elsewhere had nothing to tell
+                    # it the session was gone.
                     f = store.get_frame(fid)
-                    self._json(_frame_json(f, store) if f else {})
+                    if f is None:
+                        raise GatewayError(404, "session not found")
+                    self._json(_frame_json(f, store))
                     return
                 if method == "PATCH":
                     # An UPDATE naming no row succeeds, and `_frame_json(None)`
@@ -18113,7 +18119,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     mentions = artifact_refs.parse_mentions(b.get("mentions"))
                 except ValueError as error:
                     raise GatewayError(400, str(error), "invalid_mentions") from error
-                f = store.get_frame(fid) or {}
+                # A session that does not exist -- deleted in another tab, or
+                # a stale link -- takes no message. `submit_message` builds an
+                # ephemeral state for an unknown id (in-process callers rely on
+                # that), so without this the turn really ran and wrote its
+                # messages and action groups under a root no `frames` row has.
+                f = store.get_frame(fid)
+                if f is None:
+                    raise GatewayError(404, "session not found")
                 pid = f.get("project_id") or "default"
                 # Fold pinned image annotations into the message so the remote
                 # agent receives the exact figure + pin location + comment and
