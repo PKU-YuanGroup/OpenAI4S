@@ -65,6 +65,11 @@ export async function commitTitle(): Promise<void> {
   }
 }
 
+/**
+ * "+ Add to message": only what adds to the message. Request review, Save as
+ * skill and Context usage act on the session, not on the message being
+ * written, and live in the session menu (M-9).
+ */
 export function addToMessageMenu(anchor: Element): void {
   openMenu(anchor, [
     { label: t("composer.menu.attachFiles"), icon: "plus", onClick: () => $("#file-input")?.click() },
@@ -75,10 +80,6 @@ export function addToMessageMenu(anchor: Element): void {
         callLane("setActiveTab", "files");
       },
     },
-    { label: t("composer.menu.requestReview"), icon: "eye-context", onClick: () => void requestReview() },
-    { label: t("composer.menu.saveAsSkill"), icon: "book", onClick: () => void saveCurrentAsSkill() },
-    { sep: true },
-    { label: t("composer.menu.contextUsage"), icon: "circle-dot", onClick: () => void showContextUsage() },
   ]);
 }
 
@@ -392,6 +393,15 @@ export function sessionMenu(anchor: Element, fid: string): void {
         callLane("setActiveTab", "notebook");
       },
     },
+    // M-9: these act on the open conversation (they read `currentId`), so a
+    // sidebar row of another session does not offer them.
+    ...(fid === currentId.value
+      ? [
+          { label: t("composer.menu.requestReview"), icon: "eye-context", onClick: () => void requestReview() },
+          { label: t("composer.menu.saveAsSkill"), icon: "book", onClick: () => void saveCurrentAsSkill() },
+          { label: t("composer.menu.contextUsage"), icon: "circle-dot", onClick: () => void showContextUsage() },
+        ]
+      : []),
     {
       label: t("compute.menu.runLocation"),
       icon: "server",

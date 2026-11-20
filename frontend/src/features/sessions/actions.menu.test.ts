@@ -22,7 +22,7 @@ import { customizeOpen, customizeTab, nestedEditor } from "../customize/state";
 import { _titleName, currentId, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { nbT } from "../notebook/copy";
-import { saveCurrentAsSkill, sessionMenu, sessionOptionsMenu, showContextUsage } from "./actions";
+import { addToMessageMenu, saveCurrentAsSkill, sessionMenu, sessionOptionsMenu, showContextUsage } from "./actions";
 import { openMenu, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
 import { optionsMenuCopy, shareCopy } from "./copy";
@@ -220,6 +220,28 @@ describe("the project research Timeline", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("M-9: the + menu only adds to the message", () => {
+  it("offers attaching and picking files, nothing that acts on the session", () => {
+    vi.mocked(openMenu).mockClear();
+    addToMessageMenu({} as Element);
+    const items = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
+    expect(items.map((item) => item.label)).toEqual([t("composer.menu.attachFiles"), t("composer.menu.yourFiles")]);
+  });
+
+  it("puts review, save-as-skill and context usage in the open session's menu only", () => {
+    sessions.value = [{ id: "f", project_id: "P" }, { id: "g", project_id: "P" }];
+    currentId.value = "f";
+    const labels = (fid: string) => {
+      vi.mocked(openMenu).mockClear();
+      sessionMenu({} as Element, fid);
+      return (vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[]).map((item) => item.label);
+    };
+    const moved = [t("composer.menu.requestReview"), t("composer.menu.saveAsSkill"), t("composer.menu.contextUsage")];
+    expect(labels("f")).toEqual(expect.arrayContaining(moved));
+    expect(labels("g").filter((label) => moved.includes(String(label)))).toEqual([]);
   });
 });
 

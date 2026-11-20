@@ -20,7 +20,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`conversation.ts`](conversation.ts) | `newSession`、`routeInitialView`。`openConversation`（F-10）与 `resumeWatch`（F-11）改为 re-export，不再保留本车道的副本。 |
 | [`conversation.identity.test.ts`](conversation.identity.test.ts) | 断言这些 re-export 与拥有车道装上的是同一个函数对象。 |
 | [`conversation.newsession.test.ts`](conversation.newsession.test.ts) | `newSession` 在发布新 id 之前先释放上一个对话（取消订阅、Notebook 缓存）；共享路径只在对话真正打开后才 resolve；只有 `reuseEmpty` 请求才会让服务器复用未使用的会话。 |
-| [`actions.menu.test.ts`](actions.menu.test.ts) | 菜单项都接到真实实现：「存为技能」以当前对话为种子打开设置里的技能编辑器，「运行位置」打开运行位置对话框，项目研究视图的时间线把各会话的动作组画成卡片，上下文用量卡片用当前语言标注。 |
+| [`actions.menu.test.ts`](actions.menu.test.ts) | M-9：「+」菜单只负责附加或选择文件；请求审核、另存为技能、上下文用量在当前会话的会话菜单里。 菜单项都接到真实实现：「存为技能」以当前对话为种子打开设置里的技能编辑器，「运行位置」打开运行位置对话框，项目研究视图的时间线把各会话的动作组画成卡片，上下文用量卡片用当前语言标注。 |
 | [`actions.directory.test.ts`](actions.directory.test.ts) | 会话菜单操作让侧栏目录保持真实：「新建文件夹并移入」建的文件夹会被列出，而不是被缓存的文件夹列表挡掉；删除当前会话后即使随后的列表刷新失败，也不会重新打开被删的会话。 |
 | [`actions.cancel.test.ts`](actions.cancel.test.ts) | 取消回执只有在它命名的执行仍是本客户端正在运行的那个时，才切换到「正在停止…」。 |
 | [`dashboard.ts`](dashboard.ts) | 首页列表、项目搜索 / 加载更多 / 重试、示例 CTA 轮询绑视图生命周期，以及仪表盘唯一的 4 秒轮询，其他功能经 `onDashPoll` 搭载。 每个会话只列一次：等你决定的只在「需要处理」里，运行中的只在「运行中」卡片里，其余在「最近会话」（其他会话都在上方时会说明，而不是显示「还没有会话」）；运行中卡片的副标题是项目名，任务摘要只在比标题多说了内容时才显示。示例分析会保留一条状态提示（运行中，之后是已完成或「6 个单元中有 N 个没有完成」，来自 `/example/session` 的 `result`），带打开会话的按钮；示例按钮是有样式的主按钮。 |
