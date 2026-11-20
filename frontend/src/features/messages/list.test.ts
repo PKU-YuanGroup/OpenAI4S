@@ -455,14 +455,17 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.hint.textContent).toContain(copyFailedText());
   });
 
-  it.each(ROW_RENDERERS)("%s: Edit fills the composer and grows it to fit", (_name, render) => {
-    const row = render({ role: "assistant", content: "Edit me." }) as unknown as RowEl;
-    const edit = row.querySelector(".msg-actions")!.children[3]!;
-    edit.onclick!();
-    expect(doc.composer.value).toBe("Edit me.");
-    expect(doc.composer.style.height).toBe("64px");
-    expect(doc.composer.focused).toBe(1);
+  it.each(ROW_RENDERERS)("%s: an answer offers Copy and a rating, not Edit (M-71, SYNC-26)", (_name, render) => {
+    doc.composer.value = "my draft";
+    const row = render({ role: "assistant", content: "An answer." }) as unknown as RowEl;
+    const buttons = row.querySelector(".msg-actions")!.children;
+    expect(buttons.map((b) => b.attrs["data-icon"])).toEqual(["copy", "thumbs-up", "thumbs-down"]);
+    expect(buttons.map((b) => b.attrs["aria-label"])).toEqual(buttons.map((b) => b.title));
+    expect(buttons.slice(1).map((b) => b.attrs["aria-pressed"])).toEqual(["false", "false"]);
+    // Nothing on the row writes into the composer.
+    expect(doc.composer.value).toBe("my draft");
   });
+
 
   it("the first page, load-earlier and the live turn share one row implementation", () => {
     expect(transcript.renderStored).toBe(renderFirstPage);

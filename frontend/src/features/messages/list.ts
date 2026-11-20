@@ -189,33 +189,34 @@ export function addMsgActions(wrap: HTMLElement, text: string): void {
   (tdn as HTMLButtonElement).type = "button";
   tdn.title = t("msgAction.thumbsDown");
   paintIcon(tdn, "thumbs-down");
+  // SYNC-26: an icon button is named, and a rating says whether it is on.
+  copy.setAttribute("aria-label", copy.title);
+  tup.setAttribute("aria-label", tup.title);
+  tdn.setAttribute("aria-label", tdn.title);
+  const pressed = (): void => {
+    tup.setAttribute("aria-pressed", String(tup.classList.contains("on")));
+    tdn.setAttribute("aria-pressed", String(tdn.classList.contains("on")));
+  };
+  pressed();
   tup.onclick = () => {
     const on = !tup.classList.contains("on");
     tup.classList.toggle("on", on);
     tdn.classList.remove("on");
+    pressed();
     sendFeedback(key, on ? "up" : null);
   };
   tdn.onclick = () => {
     const on = !tdn.classList.contains("on");
     tdn.classList.toggle("on", on);
     tup.classList.remove("on");
+    pressed();
     sendFeedback(key, on ? "down" : null);
   };
-  const edit = el("button");
-  (edit as HTMLButtonElement).type = "button";
-  edit.title = t("common.edit");
-  paintIcon(edit, "pencil");
-  edit.onclick = () => {
-    const c = document.getElementById("composer") as HTMLTextAreaElement | null;
-    if (!c) return;
-    c.value = text || "";
-    grow();
-    c.focus();
-  };
+  // M-71 / SYNC-26: no "Edit" on an answer. It poured the turn's raw Markdown
+  // into the composer, overwriting the draft, with nothing to say why.
   row.appendChild(copy);
   row.appendChild(tup);
   row.appendChild(tdn);
-  row.appendChild(edit);
   wrap.appendChild(row);
 }
 
