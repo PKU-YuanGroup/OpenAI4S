@@ -12,15 +12,18 @@ import { isReady } from "../../compat/stub";
 import { copyLookup, type CopyTable } from "../../i18n/copy";
 import { artifacts } from "../../stores/artifacts";
 import { publicText } from "../scrub/scrub";
+import { hint } from "../sessions/chrome";
 import { iconEl } from "../sessions/icon";
 import { el } from "./dom";
 
 const COPY: CopyTable = {
   zh: {
     "sent.chip": "随这条消息发送：{0}",
+    "sent.gone": "{0} 已不在本会话中",
   },
   en: {
     "sent.chip": "Sent with this message: {0}",
+    "sent.gone": "{0} is no longer in this session",
   },
 };
 
@@ -48,8 +51,8 @@ function openViewer(artifact: unknown): void {
 
 /**
  * Chips for the files under a user row, in the row's `.msg-refs` line (the
- * one its `@` references use), opening the file when it is still in the
- * session's file list.
+ * one its `@` references use). A click opens the file while it is still in
+ * the session's file list, and says so when it is not.
  */
 export function renderSentAttachments(host: HTMLElement, raw: unknown): void {
   const files = sentAttachments(raw);
@@ -60,18 +63,20 @@ export function renderSentAttachments(host: HTMLElement, raw: unknown): void {
     // Where a reload puts it: before the pins box and the queued badge.
     host.insertBefore(row, host.querySelector(":scope > .annot-attach, :scope > .msg-queued"));
   }
-  const pool = (artifacts.value || []) as Array<Record<string, unknown>>;
   for (const file of files) {
-    const chip = el("span", "msg-ref-chip sent");
+    const chip = el("span", "msg-ref-chip sent clickable");
     chip.dataset.artifactId = file.artifact_id;
     chip.appendChild(iconEl("cloud-upload", 11));
     chip.appendChild(el("span", null, publicText(file.name, 60)));
     chip.title = sentT("sent.chip", file.name);
-    const full = pool.find((x) => (x.artifact_id || x.id) === file.artifact_id);
-    if (full) {
-      chip.classList.add("clickable");
-      chip.onclick = () => openViewer(full);
-    }
+    // Looked up on click: a reopened session draws its messages before its
+    // file list has loaded.
+    chip.onclick = () => {
+      const pool = (artifacts.value || []) as Array<Record<string, unknown>>;
+      const full = pool.find((x) => (x.artifact_id || x.id) === file.artifact_id);
+      if (full) openViewer(full);
+      else hint(sentT("sent.gone", file.name));
+    };
     row.appendChild(chip);
   }
 }

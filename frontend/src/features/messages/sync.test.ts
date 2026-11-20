@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLang } from "../../i18n/runtime";
+import { artifacts } from "../../stores/artifacts";
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { _replayGap, _seqSeen, _streamEpoch, permCards, running, stream } from "../../stores/stream";
@@ -472,6 +473,13 @@ describe("the user's message reaches every tab", () => {
     expect(chips(live)).toEqual([["a-1", "cohort.csv"]]);
     const stored = renderStored({ role: "user", content: "Summarise it", message_id: "m-8", attachments: files }) as HTMLElement;
     expect(chips(stored)).toEqual(chips(live));
+    // Drawn before the file list loads, a chip still opens the file it names.
+    const openViewer = vi.fn();
+    vi.stubGlobal("openViewer", openViewer);
+    const cohort = { artifact_id: "a-1", filename: "cohort.csv" };
+    artifacts.value = [cohort];
+    (stored.querySelector(".msg-ref-chip.sent") as HTMLElement).onclick!(new Event("click") as MouseEvent);
+    expect(openViewer).toHaveBeenCalledWith(cohort);
     // A question sent without files has none.
     const plain = renderStored({ role: "user", content: "no files", message_id: "m-9" }) as HTMLElement;
     expect(plain.querySelector(".msg-ref-chip.sent")).toBeNull();
