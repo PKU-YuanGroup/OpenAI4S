@@ -14026,16 +14026,22 @@ class SessionRunner:
             # through the coordinator or as a kernel interrupt; the Notebook
             # already said "interrupted" for the same cell.
             # (An example cell sends none: the seed ends its one turn.)
-            if not example:
+            if example:
+                pass
+            elif execution.cancellation.is_set() or r.get("interrupted"):
                 emit(
                     {
                         "type": "frame_update",
                         "frame_id": root_frame_id,
-                        "status": (
-                            "cancelled"
-                            if execution.cancellation.is_set() or r.get("interrupted")
-                            else "success"
-                        ),
+                        "status": "cancelled",
+                    }
+                )
+            else:
+                emit(
+                    {
+                        "type": "frame_update",
+                        "frame_id": root_frame_id,
+                        "status": "success",
                     }
                 )
             return {
