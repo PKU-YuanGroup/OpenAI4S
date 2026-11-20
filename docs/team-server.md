@@ -39,7 +39,9 @@ are audited as `cli` rather than impersonating a human account.
 `openai4s user disable <name>` signs the account out everywhere (a
 terminal is asked to confirm; `--yes` skips that) and `openai4s user
 enable <name>` undoes it (`POST /api/v1/team/users/{id}/disable` and
-`/enable` over HTTP). The last enabled admin cannot be disabled.
+`/enable` over HTTP); an admin can also add, disable, enable and reset
+accounts from the Team admin panel in the user menu. The last enabled
+admin cannot be disabled.
 Disabling also deletes the account's personal LLM keys — a credential
 must not outlive the account that watches it — so after `enable` their
 owner enters them again.

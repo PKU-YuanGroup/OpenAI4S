@@ -216,12 +216,23 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
         return True
     if _USER_ADD.match(method, sub):
         body = self._body()
+        password = str(body.get("password") or "")
+        generated = None
+        if not password:
+            # As `openai4s user add` and the reset route do: no password
+            # given means one is generated and answered exactly once, so the
+            # admin panel can add a person without inventing a password.
+            import secrets as _secrets
+
+            generated = _secrets.token_urlsafe(12)
+            password = generated
+        display_name = str(body.get("display_name") or "").strip() or None
         try:
             user = store.team.create_user(
                 username=str(body.get("username") or ""),
-                password=check_new_password(str(body.get("password") or "")),
+                password=check_new_password(password),
                 role=str(body.get("role") or "member"),
-                display_name=body.get("display_name"),
+                display_name=display_name,
             )
         except ValueError as e:
             self._json({"error": str(e)}, 400)
@@ -232,7 +243,10 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
             user_id=user["id"],
             target=user["username"],
         )
-        self._json({"user": public_user(user)}, 201)
+        created: dict = {"user": public_user(user)}
+        if generated is not None:
+            created["password"] = generated  # its only appearance
+        self._json(created, 201)
         return True
 
     m = _MEMBER_PUT.match(method, sub)

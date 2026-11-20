@@ -515,6 +515,126 @@ describe("F-20 team surface", () => {
     await runtime.setLang("system");
   });
 
+  const adminDaemon = () => {
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const json = (body: unknown, status = 200) => ({ status, ok: status < 300, json: async () => body });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string, init?: { method?: string; body?: string }) => {
+        const u = String(url);
+        calls.push({ url: u, method: init?.method || "GET", body: init?.body });
+        if (init?.method === "POST" && u.endsWith("/reset-password")) return json({ ok: true, password: "fresh-generated-pw" });
+        if (init?.method === "POST" && u.endsWith("/team/users")) return json({ user: {}, password: "initial-generated-pw" }, 201);
+        if (init?.method === "POST" && u.includes("/u1/disable")) return json({ code: "last_admin", error: "x" }, 409);
+        if (init?.method === "POST") return json({ ok: true });
+        if (u.includes("/team/users")) {
+          return json({
+            users: [
+              { id: "u1", username: "erika", display_name: "Erika E", role: "admin", disabled: false },
+              { id: "u2", username: "mallory", role: "member", disabled: false },
+              { id: "u3", username: "carol", role: "member", disabled: true },
+            ],
+          });
+        }
+        if (u.includes("/team/usage")) return json({ usage: [{ user_id: "u2", project_id: "proj_1", kind: "llm_output_tokens", total: 12, events: 1 }] });
+        if (u.includes("/team/audit")) {
+          return json({ audit: [{ ts: 1, actor: "erika", action: "user_disable", target: "u3" }, { ts: 2, actor: "x", action: "something_new", user_id: "u2" }] });
+        }
+        if (u.includes("/projects")) return json({ projects: [{ project_id: "proj_1", name: "Lab notebook" }] });
+        return json({});
+      }),
+    );
+    return calls;
+  };
+  const buttonsIn = (row: MiniEl | undefined) => (row?.querySelectorAll("button") || []).map((b) => b.textContent);
+  const rowOf = (login: string) =>
+    doc.getElementById("team-admin-body")?.querySelectorAll("tr").find((tr) => tr.children[0]?.textContent?.startsWith(login));
+
+  it("the admin panel has a visible close icon and speaks the interface language (TEAM-25)", async () => {
+    team.bootTeam();
+    for (const id of ["team-admin-close", "team-files-close"]) {
+      const close = doc.getElementById(id);
+      expect(close?.children.length, id).toBe(1);
+      expect(close?.getAttribute("aria-label")).toBeTruthy();
+    }
+    adminDaemon();
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("zh");
+    team.openAdmin();
+    await team.loadAdmin();
+    expect(doc.getElementById("team-admin-title")?.textContent).toBe("团队管理");
+    expect(doc.getElementById("team-admin-refresh")?.textContent).toBe("刷新");
+    const text = doc.getElementById("team-admin-body")?.textContent || "";
+    for (const word of ["显示名", "状态", "操作", "已停用", "正常", "停用用户", "停用", "启用", "重置密码"]) {
+      expect(text, word).toContain(word);
+    }
+    await runtime.setLang("system");
+  });
+
+  it("the admin panel puts names beside ids (TEAM-25)", async () => {
+    team.bootTeam();
+    adminDaemon();
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("en");
+    await team.loadAdmin();
+    const text = doc.getElementById("team-admin-body")?.textContent || "";
+    expect(text).toContain("Lab notebook"); // usage: the project's name
+    expect(text).not.toContain("proj_1");
+    expect(text).toContain("Erika E"); // the display name is shown
+    expect(text).toContain("user disabled"); // a known action, in words
+    expect(text).toContain("something_new"); // an unknown one, as stored
+    const audit = doc.getElementById("team-admin-body")?.querySelectorAll("tr").filter((tr) => tr.children[3]?.textContent === "carol");
+    expect(audit?.length).toBe(1); // target u3 -> carol
+    await runtime.setLang("system");
+  });
+
+  it("the users section disables, enables, resets and adds without the CLI (TEAM-25)", async () => {
+    team.bootTeam();
+    identity.teamUser.value = { id: "u1", username: "erika", role: "admin" };
+    const calls = adminDaemon();
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("en");
+    team.openAdmin();
+    await team.loadAdmin();
+    // one's own row offers nothing that would sign oneself out
+    expect(buttonsIn(rowOf("erika"))).toEqual([]);
+    expect(buttonsIn(rowOf("mallory"))).toEqual(["Disable", "Reset password"]);
+    expect(buttonsIn(rowOf("carol"))).toEqual(["Enable", "Reset password"]);
+
+    // a destructive action asks once more, in place, then posts
+    const disable = rowOf("mallory")?.querySelectorAll("button").find((b) => b.textContent === "Disable");
+    disable?.onclick?.();
+    expect(disable?.textContent).toBe("Confirm disable");
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+    disable?.onclick?.();
+    await settle();
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.url)).toEqual(["/api/v1/team/users/u2/disable"]);
+    const status = () => doc.getElementById("team-admin-body")?.querySelector(".team-form-status")?.textContent || "";
+    expect(status()).toContain("Disabled mallory");
+
+    rowOf("carol")?.querySelectorAll("button").find((b) => b.textContent === "Enable")?.onclick?.();
+    await settle();
+    expect(calls.some((c) => c.method === "POST" && c.url === "/api/v1/team/users/u3/enable")).toBe(true);
+    expect(status()).toContain("Enabled carol");
+
+    const reset = rowOf("mallory")?.querySelectorAll("button").find((b) => b.textContent === "Reset password");
+    reset?.onclick?.();
+    reset?.onclick?.();
+    await settle();
+    expect(status()).toBe("New password for mallory (shown once): fresh-generated-pw");
+
+    (doc.getElementById("team-add-username") as MiniEl).value = " erin ";
+    (doc.getElementById("team-add-display") as MiniEl).value = "Erin E";
+    (doc.getElementById("team-add-role") as MiniEl).value = "guest";
+    submit(doc.getElementById("team-admin-body")?.querySelector("form"));
+    await settle();
+    const add = calls.find((c) => c.method === "POST" && c.url === "/api/v1/team/users");
+    expect(JSON.parse(add?.body || "{}")).toEqual({ username: "erin", display_name: "Erin E", role: "guest" });
+    expect(status()).toBe("Created erin. Initial password (shown once): initial-generated-pw");
+    identity.teamUser.value = null;
+    await runtime.setLang("system");
+  });
+
   it("loadAdmin renders the five governance sections and .team-admin-table", async () => {
     team.bootTeam();
     // These strings come from the active dictionary: on a non-English dev

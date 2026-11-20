@@ -10,9 +10,10 @@
 import { LANG } from "../../i18n/runtime";
 import type { MenuItem } from "../sessions/chrome";
 import { API } from "./api";
-import { byId, el } from "./dom";
+import { byId, el, iconEl } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
 import { openChangePassword, openMyKeys } from "./team-account";
+import { auditActionLabel, renderUsersSection, userLabel } from "./team-admin";
 import { teamRoleLabel, teamT } from "./team-copy";
 import { teamFilesAvailable, teamUser, type TeamUser } from "./team-identity";
 
@@ -101,6 +102,31 @@ export function ensureTeamDom(): void {
   }
 }
 
+/**
+ * A modal's close control with its icon drawn here: these modals are built
+ * after `paintIcons()` ran, so a bare `icon-ghost` button stayed an empty,
+ * invisible square (TEAM-25).
+ */
+function closeButton(id: string): HTMLElement {
+  const close = el("button", "icon-ghost");
+  close.id = id;
+  close.setAttribute("type", "button");
+  close.setAttribute("aria-label", teamT("team.close"));
+  close.setAttribute("title", teamT("team.close"));
+  close.appendChild(iconEl("x", 16));
+  return close;
+}
+
+/** The admin modal's own words, again on each open: the language may have changed. */
+function labelAdminModal(): void {
+  const title = byId("team-admin-title");
+  if (title) title.textContent = teamT("team.admin.title");
+  const refresh = byId("team-admin-refresh");
+  if (refresh) refresh.textContent = teamT("team.admin.refresh");
+  const close = byId("team-admin-close");
+  if (close) close.setAttribute("aria-label", teamT("team.close"));
+}
+
 function buildAdminModal(): HTMLElement {
   const modal = el("div", "modal hidden");
   modal.id = "team-admin-modal";
@@ -109,14 +135,12 @@ function buildAdminModal(): HTMLElement {
   modal.setAttribute("aria-labelledby", "team-admin-title");
   const box = el("div", "modal-box");
   const head = el("div", "modal-head");
-  const title = el("span", null, "Team admin");
+  const title = el("span", null, teamT("team.admin.title"));
   title.id = "team-admin-title";
   const actions = el("div", "modal-actions");
-  const refresh = el("button", "outline-btn small", "Refresh");
+  const refresh = el("button", "outline-btn small", teamT("team.admin.refresh"));
   refresh.id = "team-admin-refresh";
-  const close = el("button", "icon-ghost");
-  close.id = "team-admin-close";
-  close.setAttribute("aria-label", "Close");
+  const close = closeButton("team-admin-close");
   actions.appendChild(refresh);
   actions.appendChild(close);
   head.appendChild(title);
@@ -148,9 +172,7 @@ function buildFilesModal(): HTMLElement {
   input.id = "team-files-input";
   input.type = "file";
   input.style.display = "none";
-  const close = el("button", "icon-ghost");
-  close.id = "team-files-close";
-  close.setAttribute("aria-label", "Close");
+  const close = closeButton("team-files-close");
   actions.appendChild(upload);
   actions.appendChild(input);
   actions.appendChild(close);
@@ -253,6 +275,10 @@ export function openTeamFilesPanel(): void {
 }
 
 export function openAdmin(): void {
+  labelAdminModal();
+  // A generated password from an earlier visit is not shown again.
+  adminStatus.text = "";
+  adminStatus.kind = "";
   openModalEl(byId("team-admin-modal"));
   void loadAdmin();
 }
@@ -384,10 +410,13 @@ function table(box: HTMLElement, headers: string[], rows: unknown[][]): void {
   });
   box.appendChild(t);
   if (!rows.length) {
-    const d = el("div", "team-admin-empty", "(none)");
+    const d = el("div", "team-admin-empty", teamT("team.admin.none"));
     box.appendChild(d);
   }
 }
+
+/** The users section's status line, kept across the repaint an action triggers. */
+const adminStatus: { text: string; kind: "ok" | "err" | "" } = { text: "", kind: "" };
 
 /**
  * Audit `ts` is epoch milliseconds (storage/team.py `_clock_ms`). As a string
@@ -406,7 +435,7 @@ function jget(path: string): Promise<unknown> {
 export async function loadAdmin(): Promise<void> {
   const body = byId("team-admin-body");
   if (!body) return;
-  body.textContent = "loading…";
+  body.textContent = teamT("team.loading");
   try {
     const res = await Promise.all([
       jget("/team/users"),
@@ -414,46 +443,64 @@ export async function loadAdmin(): Promise<void> {
       jget("/team/audit?limit=50"),
       jget("/team/invites"),
       jget("/team/quotas"),
+      // Only to put names beside project ids; the panel works without it.
+      jget("/projects").catch(() => null),
     ]);
     const users = ((res[0] as { users?: TeamUser[] } | null) || {}).users || [];
     const usage = ((res[1] as { usage?: Record<string, unknown>[] } | null) || {}).usage || [];
     const audit = ((res[2] as { audit?: Record<string, unknown>[] } | null) || {}).audit || [];
     const invites = ((res[3] as { invites?: Record<string, unknown>[] } | null) || {}).invites || [];
     const quotas = ((res[4] as { quotas?: Record<string, unknown>[] } | null) || {}).quotas || [];
+    const projects = ((res[5] as { projects?: Array<{ project_id?: string; name?: string }> } | null) || {}).projects || [];
     body.textContent = "";
-    const idName: Record<string, string> = {};
+    // TEAM-25: names, not internal ids, wherever a row points at a person or
+    // a project; the id stays when nothing better is known.
+    const byUserId: Record<string, TeamUser> = {};
     users.forEach((u) => {
-      if (u.id && u.username) idName[u.id] = u.username;
+      if (u.id) byUserId[u.id] = u;
     });
-    table(section(body, teamSectionTitle("users")), ["user", "role", "state", "id"],
-      users.map((u) => [u.username, u.role, u.disabled ? "disabled" : "active", u.id]));
-    table(section(body, teamSectionTitle("usage")), ["user", "project", "kind", "total", "events"],
+    const projectName: Record<string, string> = {};
+    projects.forEach((p) => {
+      if (p.project_id) projectName[p.project_id] = String(p.name || p.project_id);
+    });
+    const person = (id: unknown): string => userLabel(byUserId[String(id)], id);
+    const place = (id: unknown): string => (id == null || id === "" ? "" : projectName[String(id)] || String(id));
+    const col = (...keys: string[]): string[] => keys.map((key) => teamT("team.col." + key));
+    renderUsersSection(section(body, teamSectionTitle("users")), users, () => void loadAdmin(), adminStatus);
+    table(section(body, teamSectionTitle("usage")), col("user", "project", "kind", "total", "events"),
       usage.map((r) => [
-        idName[String(r.user_id)] || r.user_id,
-        r.project_id,
+        person(r.user_id),
+        place(r.project_id),
         r.kind,
         Math.round(Number(r.total) * 100) / 100,
         r.events,
       ]));
-    table(section(body, teamSectionTitle("quotas")), ["scope", "scope id", "kind", "limit", "window"],
-      quotas.map((r) => [r.scope, r.scope_id, r.kind, r.limit_amount, r.window]));
-    table(section(body, teamSectionTitle("invites")), ["prefix", "project", "by", "state"],
+    table(section(body, teamSectionTitle("quotas")), col("scope", "scopeId", "kind", "limit", "window"),
+      quotas.map((r) => [
+        r.scope,
+        r.scope === "user" ? person(r.scope_id) : r.scope === "project" ? place(r.scope_id) : r.scope_id,
+        r.kind,
+        r.limit_amount,
+        r.window,
+      ]));
+    table(section(body, teamSectionTitle("invites")), col("prefix", "project", "by", "state"),
       invites.map((r) => [
         r.token_prefix,
-        r.project_id,
+        place(r.project_id),
         r.created_by,
-        r.live ? "live" : (r.used_at ? "used/revoked" : "expired"),
+        teamT(r.live ? "team.invite.live" : (r.used_at ? "team.invite.used" : "team.invite.expired")),
       ]));
-    table(section(body, teamSectionTitle("audit")), ["when", "actor", "action", "target"],
+    table(section(body, teamSectionTitle("audit")), col("when", "actor", "action", "target"),
       audit.map((r) => [
         auditWhen(r.ts),
         r.actor,
-        r.action,
-        r.target || r.user_id || "",
+        auditActionLabel(r.action),
+        r.target ? (byUserId[String(r.target)] ? person(r.target) : r.target)
+          : r.user_id ? person(r.user_id) : place(r.project_id),
       ]));
   } catch {
     const failed = byId("team-admin-body");
-    if (failed) failed.textContent = "failed to load";
+    if (failed) failed.textContent = teamT("team.admin.failed");
   }
 }
 

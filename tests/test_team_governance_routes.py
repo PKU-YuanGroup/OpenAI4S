@@ -755,6 +755,28 @@ def test_invite_is_single_use_and_username_collision_does_not_burn_it(daemon):
     assert status == 403
 
 
+def test_adding_a_user_without_a_password_generates_one_shown_once(daemon):
+    """TEAM-25: the admin panel adds a person the way `openai4s user add`
+    does -- a generated password answered once -- and only an admin may."""
+    payload = {"username": "erin", "role": "member", "display_name": " Erin E "}
+    a = _login(daemon, "alice", "fake-pw-a")
+    status, raw = _post(daemon.port, "/api/v1/team/users", payload, cookie=a)
+    assert status == 403 and _body(raw)["code"] == "admin_only", raw[:200]
+    assert _post(daemon.port, "/api/v1/team/users", payload)[0] == 401
+    assert daemon.store.team.get_user_by_username("erin") is None
+
+    r = _login(daemon, "root", "fake-pw-r")
+    status, raw = _post(daemon.port, "/api/v1/team/users", payload, cookie=r)
+    assert status == 201, raw[:200]
+    body = _body(raw)
+    assert body["user"]["display_name"] == "Erin E"
+    assert len(body["password"]) >= 16
+    assert daemon.store.team.verify_password("erin", body["password"]) is not None
+    # it is never listed again
+    status, raw = _get(daemon.port, "/api/v1/team/users", cookie=r)
+    assert body["password"].encode() not in raw
+
+
 def test_every_door_that_takes_a_chosen_password_holds_it_to_the_minimum(daemon):
     """CLI-16: a one-character password was accepted. The admin routes and
     the invite redemption take a chosen password too, so they get the same

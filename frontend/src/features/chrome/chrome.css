@@ -50,6 +50,13 @@ body.sidebar-collapsed .col-resizer-side{display:none}
 .team-admin-table th{font-weight:600;text-align:left;border-bottom:.5px solid var(--border);padding:5px 8px}
 .team-admin-table td{border-bottom:.5px solid var(--border);padding:5px 8px;font-family:var(--mono);font-size:12px}
 .team-admin-empty{color:var(--text-300);font-size:12px;padding:4px 8px}
+/* Account management in the Users section (team-admin.ts). */
+.team-admin-add{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:4px 0 6px}
+.team-admin-add .cust-input{flex:1 1 140px;min-width:120px;min-height:32px;font-size:13px}
+.team-admin-add select.cust-input{flex:0 0 auto;min-width:96px}
+.team-admin-sec .team-form-status{margin:0 0 6px;font-family:var(--sans);overflow-wrap:anywhere;user-select:text}
+.team-admin-table td.team-admin-actions-cell{font-family:var(--sans)}
+.team-admin-actions{display:flex;flex-wrap:wrap;gap:6px}
 /* The account dialogs from the user menu (team-account.ts). */
 .team-form{padding:14px 18px 18px}
 .team-field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;font-size:12.5px;font-weight:500;color:var(--text-200)}
