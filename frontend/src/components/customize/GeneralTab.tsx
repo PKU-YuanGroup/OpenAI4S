@@ -1,16 +1,10 @@
 import { useEffect, useState } from "preact/hooks";
 import { t, LANG, langPreference, setLang, type LangPreference } from "../../i18n";
 import { getTheme, setTheme, type ThemeMode } from "../../features/theme/theme";
-import { api } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
 import { getLayout, setLayout, type LayoutName } from "../../features/customize/layout";
-import { useAlive } from "./use-timer-lease";
 import { markCustomizeLoaded } from "../../features/customize/load";
-import { DiagnosticsTab } from "./DiagnosticsTab";
-import { ExperimentsTab } from "./ExperimentsTab";
 import { NotebookReplSetting } from "./NotebookReplSetting";
-import { UpdateCheck } from "./UpdateCheck";
-import { CustRow, Hdr, Seg, Toggle } from "./ui";
+import { CustRow, Hdr, Seg, Subhead, Toggle } from "./ui";
 import { labCopy, labTabHidden, setLabTabHidden } from "../../features/lab";
 
 /**
@@ -37,13 +31,24 @@ export function LabTabSetting() {
  * the legacy dictionary and are byte-checked.
  */
 const COPY = {
-  en: { langSystem: "System" },
-  zh: { langSystem: "跟随系统" },
+  en: {
+    langSystem: "System",
+    serverHead: "This server",
+    serverDesc: "Applies to every window and every user of this server, not only this browser.",
+  },
+  zh: {
+    langSystem: "跟随系统",
+    serverHead: "这台服务器",
+    serverDesc: "对这台服务器上的所有窗口和所有用户生效，不只是这个浏览器。",
+  },
 } as const;
 
+/**
+ * Appearance and language (M-22). The model-key line, the update check, the
+ * experimental judgment layer and the diagnostics used to follow here; the
+ * model is on Models, the rest on Experimental and Diagnostics.
+ */
 export function GeneralTab() {
-  const alive = useAlive();
-  const [keyLine, setKeyLine] = useState(t("cust.models.key.missing"));
   // Shown from local state: a pick used to remount the whole tab (custTab),
   // refetching the key line, the judgment settings and diagnostics, just to
   // move the highlighted segment.
@@ -54,24 +59,10 @@ export function GeneralTab() {
   // repaints this tab at once after a pick here.
   const [, setLangTick] = useState(0);
 
+  // Nothing to read: every row here is this browser's own setting.
   useEffect(() => {
-    void (async () => {
-      let conf: Record<string, unknown> = {};
-      try {
-        conf = await api("/config/llm");
-      } catch {
-        conf = {};
-      }
-      if (!alive()) return;
-      markCustomizeLoaded();
-      setKeyLine(
-        conf.has_api_key
-          ? t("cust.general.apiKeyConfigured") +
-              (conf.model ? "（" + String(conf.model) + "）" : "")
-          : t("cust.models.key.missing"),
-      );
-    })();
-  }, [alive]);
+    markCustomizeLoaded();
+  }, []);
 
   return (
     <div>
@@ -118,20 +109,14 @@ export function GeneralTab() {
           }}
         />
       </CustRow>
-      <CustRow name={t("cust.general.modelKeyName")} desc={keyLine}>
-        <button
-          type="button"
-          class="outline-btn small"
-          onClick={() => custTab("models")}
-        >
-          {t("cust.general.configureBtn")}
-        </button>
-      </CustRow>
-      <NotebookReplSetting />
       <LabTabSetting />
-      <UpdateCheck />
-      <ExperimentsTab />
-      <DiagnosticsTab />
+      {/* SYNC-27: the switch below is the daemon's, under a page that says
+          "saved in this browser". */}
+      <div data-server-settings="">
+        <Subhead>{(LANG === "zh" ? COPY.zh : COPY.en).serverHead}</Subhead>
+        <div class="cust-sub">{(LANG === "zh" ? COPY.zh : COPY.en).serverDesc}</div>
+        <NotebookReplSetting />
+      </div>
     </div>
   );
 }

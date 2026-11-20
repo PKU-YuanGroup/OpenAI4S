@@ -470,3 +470,44 @@ describe("Independent Ollama web key on Network", () => {
     expect(writes()).toEqual([]);
   });
 });
+
+
+// M-6: an Ark model whose key came from the environment ran fine while both
+// cards asked for the same key again. One confirmed click shares it.
+describe.each([
+  ["Doubao card", NetworkTab, DoubaoSearchCard, "/doubao-search/config"],
+  ["DataPro card", ConnectorsTab, DataProCard, "/datapro/config"],
+] as const)("%s: use the current model's key", (_name, tab, card, path) => {
+  const config = { key_configured: false, ark_key_reused: false, model_key_available: true };
+  const shareButton = (tree: Node) =>
+    find(find(tree, (node) => node.props?.["data-vendor-model-key"] !== undefined)!, (node) => node.type === "button");
+
+  async function open(available: boolean): Promise<Node> {
+    routes({
+      "GET /connectors": () => Promise.resolve(response({ connectors: [] })),
+      [`GET ${path}`]: () => Promise.resolve(response({ ...config, model_key_available: available })),
+      [`POST ${path}`]: () => Promise.resolve(response({ ok: true, key_configured: true })),
+    });
+    renderCard(tab, card as (props: never) => unknown);
+    await settle();
+    return renderCard(tab, card as (props: never) => unknown);
+  }
+
+  it("is offered only while no key is configured and the model's key can be shared", async () => {
+    expect(find(await open(false), (node) => node.props?.["data-vendor-model-key"] !== undefined)).toBeNull();
+    hooks.reset();
+    expect(shareButton(await open(true))).toBeTruthy();
+  });
+
+  it("asks once, then has the server save the model's key; the key never passes through", async () => {
+    const tree = await open(true);
+    vi.stubGlobal("window", { confirm: () => false });
+    shareButton(tree)!.props!.onClick!();
+    await settle();
+    expect(writes()).toEqual([]);
+    vi.stubGlobal("window", { confirm: () => true });
+    shareButton(tree)!.props!.onClick!();
+    await settle();
+    expect(writes()).toEqual([["/api/v1" + path, JSON.stringify({ use_model_key: true })]]);
+  });
+});

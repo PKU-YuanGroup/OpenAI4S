@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 import { startOnboarding } from "./boot";
 import type { OnboardingStatus } from "./status";
 
-const status = (complete: boolean) => ({ complete }) as OnboardingStatus;
+const status = (complete: boolean, canConfigure = true) =>
+  ({ complete, can_configure: canConfigure }) as OnboardingStatus;
 
 describe("startOnboarding", () => {
   it("does not load the wizard for a completed setup", async () => {
@@ -20,6 +21,12 @@ describe("startOnboarding", () => {
     const mount = vi.fn(async () => {});
     await startOnboarding(async () => status(false), mount);
     expect(mount).toHaveBeenCalledOnce();
+  });
+
+  it("never loads the admin's wizard for a team member (TEAM-10)", async () => {
+    const mount = vi.fn(async () => {});
+    await startOnboarding(async () => status(false, false), mount);
+    expect(mount).not.toHaveBeenCalled();
   });
 
   it("loads the wizard when the status cannot be read, so it can say so", async () => {

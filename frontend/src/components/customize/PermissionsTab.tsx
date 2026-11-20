@@ -9,6 +9,7 @@ import {
   toolDescription,
   type PermRule,
 } from "../../features/customize/permissions";
+import { roleT, settingsReadOnly } from "../../features/customize/roles";
 import { currentId } from "../../stores/session";
 import { useOptimistic, useTabRead } from "./hooks";
 import { Hdr, IconGhost, Note } from "./ui";
@@ -40,17 +41,24 @@ function DecSelect({
   );
 }
 
-function ResetRow() {
+/** `locked`: a team member, who may not reset the global tier (TEAM-23). */
+function ResetRow({ locked }: { locked: boolean }) {
   return (
     <div class="cust-row">
       <div class="info">
         <div class="nm">{t("cust.perm.resetName")}</div>
-        <div class="ds">{t("cust.perm.resetDesc")}</div>
+        <div class="ds">
+          {t("cust.perm.resetDesc")}
+          {locked ? " " + roleT("role.perm.resetMember") : ""}
+        </div>
       </div>
       <button
         type="button"
         class="outline-btn small"
+        disabled={locked}
+        title={locked ? roleT("role.perm.resetMember") : undefined}
         onClick={async () => {
+          if (locked) return;
           if (!confirmAction(t("cust.perm.resetConfirm"))) return;
           try {
             await api("/permissions/reset", { method: "POST" });
@@ -73,7 +81,7 @@ function ResetRow() {
  * re-rendered, so Preact never reset the select -- while the rule kept its
  * old decision.
  */
-function RuleRow({ g, r }: { g: ScopeMeta; r: Rule }) {
+function RuleRow({ g, r, locked }: { g: ScopeMeta; r: Rule; locked: boolean }) {
   const decision = useOptimistic<string>(
     r.decision,
     (next) =>
@@ -102,9 +110,10 @@ function RuleRow({ g, r }: { g: ScopeMeta; r: Rule }) {
       </span>
       <DecSelect
         value={decision.value ?? r.decision}
-        disabled={decision.busy}
+        disabled={decision.busy || locked}
         onChange={decision.set}
       />
+      {locked ? null : (
       <IconGhost
         name="trash-2"
         title={t("common.delete")}
@@ -117,6 +126,7 @@ function RuleRow({ g, r }: { g: ScopeMeta; r: Rule }) {
           }
         }}
       />
+      )}
     </div>
   );
 }
@@ -211,6 +221,9 @@ export function PermissionsTab() {
     : null;
 
   const byScope = (data && (data.rules as Record<string, Rule[]> | undefined)) || {};
+  // Team member: the global tier is the admin's (403 `admin_only`); their own
+  // conversation and project rules stay editable.
+  const readOnly = settingsReadOnly();
 
   return (
     <div>
@@ -221,19 +234,25 @@ export function PermissionsTab() {
         ? scopes.map((k) => {
             const g = meta[k]!;
             const rules = byScope[k] || [];
+            const locked = readOnly && k === "global";
             return (
               <div class="perm-sec" key={k}>
                 <div class="perm-sec-h">{g.label}</div>
+                {locked ? (
+                  <div data-admin-only="">
+                    <Note>{roleT("role.perm.globalMember")}</Note>
+                  </div>
+                ) : null}
                 {!rules.length ? <Note>{t("cust.perm.noRules")}</Note> : null}
                 {rules.map((r) => (
-                  <RuleRow key={r.rule_id} g={g} r={r} />
+                  <RuleRow key={r.rule_id} g={g} r={r} locked={locked} />
                 ))}
-                <AddRow g={g} />
+                {locked ? null : <AddRow g={g} />}
               </div>
             );
           })
         : null}
-      <ResetRow />
+      <ResetRow locked={readOnly} />
     </div>
   );
 }

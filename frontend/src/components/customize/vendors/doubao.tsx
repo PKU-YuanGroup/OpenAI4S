@@ -7,7 +7,7 @@ import {
   doubaoSearchResultText,
 } from "../../../features/customize/vendors";
 import { hint } from "../../../features/customize/host";
-import { useVendorKey } from "./use-vendor-key";
+import { useVendorKey, vendorKeyT } from "./use-vendor-key";
 
 const dt = copyLookup({
   en: {
@@ -114,6 +114,19 @@ export function DoubaoSearchCard({
           {vendorKey.missing ? dt("doubao.web.keyMissing") : vendorKey.keyState}
         </div>
       </div>
+      {vendorKey.missing && vendorKey.modelKeyAvailable ? (
+        <div class="datapro-field" data-vendor-model-key="">
+          <div class="ds">{vendorKeyT("vendor.modelKeyHint")}</div>
+          <button
+            type="button"
+            class="outline-btn small"
+            disabled={vendorKey.savingKey}
+            onClick={() => vendorKey.useModelKey()}
+          >
+            {vendorKeyT("vendor.useModelKey")}
+          </button>
+        </div>
+      ) : null}
       <div class="datapro-field">
         <label class="skill-lbl">{t("cust.doubao.queryLabel")}</label>
         <textarea

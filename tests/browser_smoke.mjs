@@ -655,7 +655,7 @@ async function correctnessScenes(projectId) {
     await route.fulfill({ status: checkMode === "403" ? 403 : 200, contentType: "application/json", body: JSON.stringify(checkMode === "403" ? { error: "operator only", code: "forbidden" } : checkFixture) });
   });
   try {
-    await page.evaluate(() => window.openCust("general"));
+    await page.evaluate(() => window.openCust("diagnostics"));
     await page.locator("[data-diagnostics-run]").waitFor();
     assert.equal(checks, 0, "opening diagnostics must be passive");
     await page.locator("[data-diagnostics-run]").press("Enter");
@@ -672,14 +672,14 @@ async function correctnessScenes(projectId) {
     const received = await page.locator("[data-diagnostics-results] time").getAttribute("datetime");
     await model.locator('[data-diagnostic-setting="models"]').click();
     await page.locator('.cust-tab[data-tab="models"].active').waitFor();
-    await page.locator('.cust-tab[data-tab="general"]').click();
+    await page.locator('.cust-tab[data-tab="diagnostics"]').click();
     assert.equal(await page.locator("[data-diagnostics-results] time").getAttribute("datetime"), received);
     await page.locator('[data-diagnostic-setting="network"]').click();
     await page.locator('.cust-tab[data-tab="network"].active').waitFor();
     const configSaved = page.waitForResponse((response) => response.url().endsWith("/api/v1/network/status") && response.request().method() === "PUT");
     await page.locator("#cust .toggle").first().click();
     assert.ok((await configSaved).ok());
-    await page.locator('.cust-tab[data-tab="general"]').click();
+    await page.locator('.cust-tab[data-tab="diagnostics"]').click();
     await page.locator("[data-diagnostics-stale]").waitFor();
     assert.equal(checks, 1, "configuration changes do not run checks automatically");
     checkMode = "403";
@@ -694,7 +694,7 @@ async function correctnessScenes(projectId) {
     try {
       await page.evaluate(() => localStorage.setItem("os-lang", "zh"));
       await page.reload({ waitUntil: "networkidle" });
-      await page.evaluate(() => window.openCust("general"));
+      await page.evaluate(() => window.openCust("diagnostics"));
       await page.locator("[data-diagnostics-run]").waitFor();
       assert.equal(await page.locator("[data-diagnostics-run]").innerText(), "运行检查");
       assert.equal(checks, 2, "Chinese settings opening is also passive");

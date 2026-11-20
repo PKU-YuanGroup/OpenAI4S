@@ -11,6 +11,8 @@ import {
 import {
   CUST_TABS,
   CUST_TAB_ALIASES,
+  OPERATOR_TABS,
+  custTabLabel,
   isCustTab,
   normalizeTab,
 } from "./tabs";
@@ -21,7 +23,7 @@ describe("F-19 tab state machine", () => {
     resetStoreFields();
   });
 
-  it("names exactly the nine visible tabs", () => {
+  it("names exactly the eleven tabs, the operator's pages last (M-22)", () => {
     expect([...CUST_TABS]).toEqual([
       "general",
       "skills",
@@ -32,7 +34,12 @@ describe("F-19 tab state machine", () => {
       "network",
       "memory",
       "models",
+      "experiments",
+      "diagnostics",
     ]);
+    expect([...OPERATOR_TABS]).toEqual(["experiments", "diagnostics"]);
+    expect(custTabLabel("experiments")).not.toBe("cust.tab.experiments");
+    expect(custTabLabel("diagnostics")).not.toBe("cust.tab.diagnostics");
   });
 
   it("openCust() with no argument lands on general", () => {

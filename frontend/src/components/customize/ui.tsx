@@ -82,6 +82,9 @@ export function Toggle({
   return (
     <button
       type="button"
+      // On/off for assistive tech, not only by colour and knob (SYNC-22).
+      role="switch"
+      aria-checked={on ? "true" : "false"}
       class={"toggle" + (on ? " on" : "") + (disabled ? " off" : "")}
       disabled={disabled}
       title={title}

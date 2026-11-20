@@ -37,6 +37,14 @@ export const customizeLoad = signal<{
   error: string | null;
 }>({ generation: 0, state: "ready", error: null });
 
+/**
+ * The last thing an action in Settings reported through `hint()`, shown in the
+ * modal's own status line. `hint()` writes under the composer, which the
+ * modal covers, so a refused or failed save in Settings showed nothing
+ * (TEAM-23). Cleared when the tab changes or the modal closes.
+ */
+export const customizeNotice = signal<{ text: string; error: boolean } | null>(null);
+
 /** What "Save as skill" fills a new-skill editor with. */
 /** `draft`: the session's executed steps "Save as Skill" was built from (M-84). */
 export type SkillSeed = { name: string; description: string; body: string; draft?: SkillDraftParts };

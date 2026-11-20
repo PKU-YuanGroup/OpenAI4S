@@ -14756,10 +14756,45 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             project_id=project_id,
         )
 
+    def _current_model_plan_key() -> str:
+        """M-6: the key the live model runs on, when DataPro/Doubao may share it.
+
+        An Ark model whose key came only from the environment ran fine while
+        both managed products asked for the same key to be typed again. Only an
+        `ark` model dispatched to Volcengine itself qualifies -- the same
+        account boundary `datapro.ark_key_for_datapro` keeps -- and the key is
+        never returned to the browser: the routes save it and answer the usual
+        redacted configuration.
+        """
+        try:
+            live = runner._llm_cfg(None, apply_user_key=False)
+        except Exception:  # noqa: BLE001 - an unresolvable config shares nothing
+            return ""
+        if str(getattr(live, "provider", "") or "").strip().lower() != "ark":
+            return ""
+        if not datapro.is_volcengine_endpoint(str(getattr(live, "base_url", "") or "")):
+            return ""
+        key = str(getattr(live, "api_key", "") or "").strip()
+        return key if datapro._has_valid_agent_plan_key(key) else ""
+
+    def _agent_plan_key_from_body(body: Mapping[str, Any]) -> Any:
+        """`{"use_model_key": true}` saves the live model's key (M-6)."""
+        if body.get("use_model_key") is not True:
+            return body.get("agent_plan_key")
+        key = _current_model_plan_key()
+        if not key:
+            raise GatewayError(
+                400,
+                "the model in use is not a Volcengine Ark model with a key to share",
+                "model_key_unavailable",
+            )
+        return key
+
     def _datapro_config_payload() -> dict[str, Any]:
         connector = store.get_connector(datapro.CONNECTOR_ID)
         return {
             **datapro.credential_state(store),
+            "model_key_available": bool(_current_model_plan_key()),
             "connector_id": datapro.CONNECTOR_ID,
             "connector_enabled": bool(connector and connector.get("enabled")),
             "skill_name": datapro.SKILL_NAME,
@@ -14774,6 +14809,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         service = DoubaoSearchService(store)
         return {
             **datapro.credential_state(store),
+            "model_key_available": bool(_current_model_plan_key()),
             "key_configured": service.configured(),
             "provider": "doubao-search",
             "primary": True,
@@ -20291,7 +20327,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if method == "POST":
                     body = self._body()
                     try:
-                        _save_shared_agent_plan_key(body.get("agent_plan_key"))
+                        _save_shared_agent_plan_key(_agent_plan_key_from_body(body))
                     except ValueError as error:
                         raise GatewayError(400, str(error)) from error
                     self._json({"ok": True, **_doubao_search_config_payload()})
@@ -20421,7 +20457,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if method in ("POST", "PUT", "PATCH"):
                     body = self._body()
-                    key = body.get("agent_plan_key")
+                    key = _agent_plan_key_from_body(body)
                     try:
                         _save_shared_agent_plan_key(key)
                     except ValueError as error:

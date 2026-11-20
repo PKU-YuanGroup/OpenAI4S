@@ -948,3 +948,52 @@ def test_no_agent_plan_means_no_broker_touch_and_no_warning(
         runner.close()
 
     assert "Agent Plan key not saved" not in capsys.readouterr().err
+
+
+# --- M-6: "use the current model's key" ----------------------------------------
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("path", ["/doubao-search/config", "/datapro/config"])
+def test_the_current_ark_models_key_can_be_shared_once_asked(
+    gateway, monkeypatch, path
+):
+    """M-6: an Ark model whose key came only from the environment ran fine
+    while Doubao Search and DataPro asked for the same key to be typed again.
+    `{"use_model_key": true}` saves that key; the browser never sees it."""
+    _cfg_unused, store, call = gateway
+    env_key = "env-ark-model-key-canary"
+    for variable in ("OPENAI4S_ARK_BASE_URL", "OPENAI4S_LLM_BASE_URL"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("OPENAI4S_ARK_API_KEY", env_key)
+    store.set_setting("llm_provider", "ark")
+    store.set_setting("llm_base_url", "")
+
+    status, before = call("GET", path)
+    assert status == 200
+    assert before["model_key_available"] is True
+    assert before["key_configured"] is False
+    assert env_key not in json.dumps(before)
+
+    status, saved = call("POST", path, {"use_model_key": True})
+    assert status == 200, saved
+    assert saved["key_configured"] is True
+    assert env_key not in json.dumps(saved)
+    assert datapro.explicit_agent_plan_key(store) == env_key
+
+
+@pytest.mark.stubbed_backend
+def test_a_model_that_is_not_volcengines_has_no_key_to_share(gateway, monkeypatch):
+    _cfg_unused, store, call = gateway
+    monkeypatch.setenv("OPENAI4S_ARK_BASE_URL", "https://gateway.example.invalid/v1")
+    monkeypatch.setenv("OPENAI4S_ARK_API_KEY", "foreign-gateway-key-canary")
+    store.set_setting("llm_provider", "ark")
+    store.set_setting("llm_base_url", "")
+
+    status, payload = call("GET", "/doubao-search/config")
+    assert payload["model_key_available"] is False
+    with pytest.raises(gateway_mod.GatewayError) as refused:
+        call("POST", "/doubao-search/config", {"use_model_key": True})
+    assert refused.value.code == 400
+    assert refused.value.error_code == "model_key_unavailable"
+    assert datapro.explicit_agent_plan_key(store) == ""

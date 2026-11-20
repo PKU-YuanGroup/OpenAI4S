@@ -2,6 +2,7 @@ import { closeCustomizeDom, openCustomizeDom } from "./host";
 import { beginCustomizeLoad } from "./load";
 import {
   customizeGeneration,
+  customizeNotice,
   customizeOpen,
   customizeRefresh,
   customizeTab,
@@ -24,6 +25,7 @@ export function custTab(tab?: string): void {
   customizeGeneration.value += 1;
   beginCustomizeLoad(customizeGeneration.value);
   nestedEditor.value = null;
+  customizeNotice.value = null;
   paintTabChrome(next);
 }
 
@@ -50,5 +52,6 @@ export function openCust(tab?: string): void {
 export function closeCust(): void {
   customizeOpen.value = false;
   nestedEditor.value = null;
+  customizeNotice.value = null;
   closeCustomizeDom();
 }

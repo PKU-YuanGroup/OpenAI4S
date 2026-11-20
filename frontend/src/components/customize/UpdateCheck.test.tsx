@@ -192,7 +192,8 @@ describe("update card: local status", () => {
     expect(text).toContain(updateT("update.upToDate"));
     expect(text).toContain(updateT("update.trust.two_witnesses"));
     expect(text).toContain(updateT("update.authorship"));
-    expect(text).toContain(updateT("update.only"));
+    // Said once, in the description (M-22: the same sentence was repeated below).
+    expect(text.split("only provides checking and guidance").length - 1).toBe(1);
   });
 
   it("shows the single-witness trust line and never implies authorship", async () => {
