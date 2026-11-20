@@ -1393,7 +1393,8 @@ exit status:
      --json prints the error and its code on stdout, and the two database
      refusals still print their error line on stderr
   3  the run ended without completing: stop_reason max_turns, no_progress,
-     cancelled, or any other value
+     cancelled (also Ctrl-C: one "interrupted:" line on stderr), or any
+     other value
   4  the model call failed: no API key (llm_not_configured), a key the
      provider rejected (llm_auth_failed), a model or endpoint it does not
      have (llm_model_not_found), a rate limit (llm_rate_limited), an
@@ -1550,6 +1551,31 @@ def _run_llm_failed(args, error, cfg, agent) -> int:
     return RUN_LLM_FAILED_EXIT
 
 
+def _run_interrupted(args, agent) -> int:
+    """Report a run that Ctrl-C ended: one line (or the --json result), exit 3.
+
+    It was a 39-line KeyboardInterrupt traceback and exit 130, while `--help`
+    promised exit 3 and a `--json` result for a cancelled run.
+    """
+
+    result = agent.interrupted_result()
+    frame_id = getattr(agent, "frame_id", None)
+    if frame_id:
+        result["frame_id"] = str(frame_id)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        turns = result.get("turns") or 0
+        session = f"session {frame_id}" if frame_id else "the session"
+        print(
+            f"interrupted: the run was cancelled after {turns} "
+            f"turn{'' if turns == 1 else 's'}; {session} is recorded as "
+            "cancelled.",
+            file=sys.stderr,
+        )
+    return RUN_NOT_COMPLETED_EXIT
+
+
 def cmd_run(args) -> int:
     from openai4s.agent import Agent
     from openai4s.agent.loop import (
@@ -1653,6 +1679,8 @@ def cmd_run(args) -> int:
         finally:
             if progress is not None:
                 progress.close()
+    except KeyboardInterrupt:
+        return _run_interrupted(args, agent)
     except EnvironmentReadinessError as error:
         # A standard-profile refusal is raised only at the first Code Cell.
         # Keeping this adapter typed lets native tools and structured

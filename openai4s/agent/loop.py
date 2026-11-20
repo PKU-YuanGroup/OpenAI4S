@@ -418,6 +418,9 @@ class Agent:
     # closes that row: a delegated child's frame belongs to the DelegationRunner
     # and an embedder's frame to the embedder, so neither is ever written here.
     _owns_frame: bool = field(default=False, init=False, repr=False)
+    # The transcript of the run in flight, so a run that Ctrl-C ends can
+    # still report what it did (`interrupted_result`).
+    _run_transcript: list = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.max_turns is None:
@@ -848,6 +851,18 @@ class Agent:
         )
         return result
 
+    def interrupted_result(self) -> dict:
+        """The result of a run that Ctrl-C ended: what it did before it stopped.
+
+        ``run`` re-raises the KeyboardInterrupt (and records the frame as
+        ``cancelled``); this is the same result shape a finished run returns,
+        with ``stop_reason`` ``cancelled`` and the turns completed so far.
+        """
+
+        transcript = list(self._run_transcript)
+        turns = sum(1 for turn in transcript if turn.role == "assistant")
+        return self._finish(transcript, None, "cancelled", turns=turns)
+
     def close_unrun_frame(self, status: str = "failed") -> None:
         """Close the turn frame this Agent opened for a run that never starts.
 
@@ -1007,6 +1022,7 @@ class Agent:
             },
         ]
         transcript: list[Turn] = []
+        self._run_transcript = transcript
         run_cwd = str(self.workspace) if self.workspace else os.getcwd()
         self.dispatcher.set_workspace(run_cwd)
         python_read_isolation = self._python_read_isolation()

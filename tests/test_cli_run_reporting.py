@@ -455,3 +455,89 @@ def test_a_progress_line_that_cannot_be_written_does_not_end_the_run():
             raise OSError("stderr is closed")
 
     TranscriptEventSink([], progress=Broken()).emit(TurnStarted(0))
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-29: Ctrl-C is one line and the documented exit 3, not a traceback
+# --------------------------------------------------------------------------- #
+
+
+def _interrupted_chat(replies):
+    """Answer ``replies`` in turn, then behave as if Ctrl-C arrived mid-call."""
+    scripted = _scripted_chat(replies)
+    calls = {"n": 0}
+
+    def chat(messages, cfg, **kwargs):
+        calls["n"] += 1
+        if calls["n"] > len(replies):
+            raise KeyboardInterrupt
+        return scripted(messages, cfg, **kwargs)
+
+    return chat
+
+
+def _main_survives_ctrl_c(module, argv):
+    # An escaped KeyboardInterrupt would end the whole pytest session.
+    try:
+        return module.main(argv)
+    except KeyboardInterrupt:
+        pytest.fail("Ctrl-C escaped `openai4s run` as a KeyboardInterrupt")
+
+
+def test_ctrl_c_is_one_line_and_exit_3(tmp_path, monkeypatch, capsys):
+    """It was a 39-line KeyboardInterrupt traceback and exit 130, while
+    `run --help` promised 3 for a cancelled run."""
+
+    module, cfg = _real_run(
+        tmp_path,
+        monkeypatch,
+        _interrupted_chat(["```python\nprint('cell ran')\n```"]),
+    )
+
+    status = _main_survives_ctrl_c(
+        module, ["run", "--quiet", "Compute 1+1 and submit it."]
+    )
+
+    captured = capsys.readouterr()
+    assert status == 3 == module.RUN_NOT_COMPLETED_EXIT
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    frame_id, frame_status = _frame_rows(cfg)[0]
+    assert frame_status == "cancelled"
+    assert captured.err.strip().splitlines() == [
+        f"interrupted: the run was cancelled after 1 turn; session {frame_id} "
+        "is recorded as cancelled."
+    ]
+
+
+def test_ctrl_c_under_json_prints_the_cancelled_result(tmp_path, monkeypatch, capsys):
+    """`--json` promised the full result for exit 3 and printed nothing."""
+
+    module, cfg = _real_run(
+        tmp_path,
+        monkeypatch,
+        _interrupted_chat(["```python\nprint('cell ran')\n```"]),
+    )
+
+    status = _main_survives_ctrl_c(
+        module, ["run", "--json", "Compute 1+1 and submit it."]
+    )
+
+    captured = capsys.readouterr()
+    assert status == 3
+    assert "Traceback" not in captured.err
+    result = json.loads(captured.out)
+    assert result["stop_reason"] == "cancelled"
+    assert result["turns"] == 1
+    assert result["frame_id"] == _frame_rows(cfg)[0][0]
+    # What the run did before it was stopped is in the result.
+    assert any("cell ran" in turn["content"] for turn in result["transcript"])
+
+
+def test_run_help_says_ctrl_c_exits_3(capsys):
+    module = _cli_module()
+    with pytest.raises(SystemExit):
+        module.main(["run", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    row = text[text.index("3 the run ended without completing") :]
+    assert "Ctrl-C" in row[: row.index(" 4 ")]
