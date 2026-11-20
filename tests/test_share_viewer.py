@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from openai4s.cli.main import build_parser
 from openai4s.server.gateway import _load_share_assets
 from openai4s.server.session_domain import SessionDomainService
@@ -117,6 +119,39 @@ def test_cli_share_parser_dispatch():
     assert p.parse_args(["share", "import", "http://h/"]).url == "http://h/"
     assert p.parse_args(["share", "enable"]).share_action == "enable"
     assert p.parse_args(["relay", "gen-token"]).fn.__name__ == "cmd_relay_gen_token"
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    ("tunnel", "warned"),
+    [
+        ({"state": "connecting", "last_error": "ConnectionRefusedError"}, True),
+        ({"state": "connected", "connected": True}, False),
+    ],
+)
+def test_cli_share_create_says_when_the_relay_is_down(
+    monkeypatch, capsys, tunnel, warned
+):
+    """TEAM-16: `share create` printed a link the relay could not serve."""
+
+    import importlib
+
+    # `openai4s.cli.main` the attribute is the entry function, not the module.
+    cli = importlib.import_module("openai4s.cli.main")
+
+    def daemon(_cfg, method, path, body=None):
+        if path == "/share/status":
+            return 200, tunnel
+        return 201, {"share_id": "s1", "url": "https://s1.share.example/"}
+
+    monkeypatch.setattr(cli, "_require_daemon", lambda cfg: True)
+    monkeypatch.setattr(cli, "_daemon_request", daemon)
+    args = build_parser().parse_args(["share", "create", "f-1"])
+    assert cli.cmd_share(args) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "https://s1.share.example/"
+    assert ("relay tunnel is not connected" in captured.err) is warned
+    assert ("ConnectionRefusedError" in captured.err) is warned
 
 
 def test_cli_gen_token(capsys):

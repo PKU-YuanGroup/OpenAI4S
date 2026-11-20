@@ -2385,9 +2385,12 @@ def cmd_share(args) -> int:
         print(f"error: {rec.get('error') or rec}", file=sys.stderr)
     elif action == "create" or action == "update":
         print(rec.get("url") or json.dumps(rec))
+        _warn_share_tunnel_down(cfg)
     elif action == "list":
         for item in rec.get("shares", []):
             print(f"{item['share_id']}\t{item['status']}\t{item.get('url', '')}")
+        if rec.get("shares"):
+            _warn_share_tunnel_down(cfg)
     elif action == "import":
         rid = rec.get("root_frame_id")
         print(
@@ -2397,6 +2400,23 @@ def cmd_share(args) -> int:
     else:
         print(json.dumps(rec, ensure_ascii=False))
     return 0 if status < 400 else 2
+
+
+def _warn_share_tunnel_down(cfg) -> None:
+    """TEAM-16: a `ready` share whose relay tunnel is down does not open."""
+
+    try:
+        _status, tunnel = _daemon_request(cfg, "GET", "/share/status")
+    except (urllib.error.URLError, OSError, ValueError):
+        return
+    if not isinstance(tunnel, dict) or tunnel.get("state") != "connecting":
+        return
+    detail = str(tunnel.get("last_error") or "").strip()
+    print(
+        "warning: the relay tunnel is not connected, so share links do not open "
+        "until it connects" + (f" (last error: {detail})" if detail else ""),
+        file=sys.stderr,
+    )
 
 
 def cmd_relay_serve(args) -> int:
