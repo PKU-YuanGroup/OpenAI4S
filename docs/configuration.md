@@ -505,7 +505,12 @@ verdict is `auto_mode.terminal`.
 OpenAI4S settings database. Interactive API-key input is hidden; automation may
 pipe one line to `openai4s init --api-key-stdin --non-interactive`. An API key
 is never accepted as a command-line value or returned by `--json`, keeping it
-out of shell history and structured command output.
+out of shell history and structured command output. In the `--json` result
+`complete` only says the first-run setup was saved; `needs_api_key` is true
+while no key is stored for a provider that needs one (a keyless local endpoint
+does not). With stdin not a terminal and no `--non-interactive`, `init` asks
+nothing and says so on stderr before it saves the options given and the
+provider defaults.
 
 The same command makes one web-search choice. Interactively it asks after the
 model; `--search doubao|tavily|you|builtin|parallel` makes it non-interactively, with

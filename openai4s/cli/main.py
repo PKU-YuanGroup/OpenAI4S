@@ -1853,6 +1853,21 @@ def cmd_init(args) -> int:
             and not args.search_key_stdin
             and sys.stdin.isatty()
         )
+        if (
+            not interactive
+            and not args.non_interactive
+            and not args.api_key_stdin
+            and not args.search_key_stdin
+        ):
+            # `echo | openai4s init`, `docker exec` without -t, ssh without a
+            # tty: the guided command asked nothing and saved the defaults as
+            # if they had been chosen, without a word.
+            print(
+                "note: stdin is not a terminal, so no questions are asked; "
+                "saving the options given and the provider defaults, as "
+                "--non-interactive does",
+                file=sys.stderr,
+            )
         provider = args.provider or defaults["provider"]
         model = args.model
         base_url = args.base_url
@@ -1917,7 +1932,16 @@ def cmd_init(args) -> int:
     finally:
         store.close()
 
+    from openai4s.llm.resolve import keyless_endpoint
+
+    # `complete` says the first-run setup was saved (the Web wizard's flag),
+    # not that a model can be called: `"has_api_key": false, "complete": true`
+    # read as ready to a script. A keyless local endpoint needs no key.
+    needs_api_key = not result.has_api_key and not keyless_endpoint(
+        result.provider, result.model, result.base_url
+    )
     payload = result.as_dict()
+    payload["needs_api_key"] = needs_api_key
     if search is not None:
         payload["search"] = search
     if args.json:
@@ -1928,7 +1952,7 @@ def cmd_init(args) -> int:
     else:
         print(f"Configured {result.provider} / {result.model}")
         print(f"Settings stored in {result.data_dir}")
-        if not result.has_api_key:
+        if needs_api_key:
             print("No API key stored; add one in Customize → Models after launch.")
         if search is not None:
             backups = [e["id"] for e in search["engines"] if e["usable"]]

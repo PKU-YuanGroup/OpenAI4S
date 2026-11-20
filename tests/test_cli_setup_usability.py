@@ -225,6 +225,44 @@ def test_init_search_menu_says_doubao_is_tried_before_any_backup_choice(wizard):
     )
 
 
+def test_init_without_a_terminal_says_it_asked_nothing(wizard):
+    """CLI-7. `echo | openai4s init` (or `docker exec` without -t) asked no
+    question and saved the default provider and model as if chosen, with
+    no word that the guided command had not been guided."""
+    wizard.run([], piped="\n", terminal=False)
+
+    assert wizard.rc == 0
+    assert wizard.prompts == []
+    assert wizard.err.startswith("note: stdin is not a terminal, so no questions")
+    assert "Configured ark /" in wizard.out
+
+
+def test_init_non_interactive_is_not_told_what_it_asked_for(wizard):
+    wizard.run([], argv=["--non-interactive"], piped="", terminal=False)
+
+    assert wizard.rc == 0
+    assert "stdin is not a terminal" not in wizard.err
+
+
+def test_init_json_says_a_key_is_still_needed_beside_complete(wizard, monkeypatch):
+    """CLI-7. `init --non-interactive --json` with no key reported
+    `"has_api_key": false, "complete": true`; a script reading `complete`
+    took the install for usable. `complete` keeps its meaning (the first-run
+    setup was saved) and `needs_api_key` says what is missing."""
+    import json
+
+    monkeypatch.delenv("OPENAI4S_ARK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI4S_LLM_API_KEY", raising=False)
+    wizard.cfg.llm.api_key = ""  # the suite's fake key is in the env, not stored
+    wizard.run([], argv=["--non-interactive", "--json"], piped="", terminal=False)
+
+    payload = json.loads(wizard.out)
+    assert wizard.rc == 0
+    assert payload["has_api_key"] is False
+    assert payload["complete"] is True
+    assert payload["needs_api_key"] is True
+
+
 def test_init_enter_at_the_search_choice_still_keeps_the_current_setup(wizard):
     wizard.run(["", "", "", "", ""])
 
