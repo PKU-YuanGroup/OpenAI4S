@@ -145,3 +145,48 @@ def test_enable_configured_creates_tunnel(tmp_path):
         assert runner.share_status()["state"] == "disabled"
     finally:
         runner.close()
+
+
+def _put_share_settings(node, body: dict):
+    import json
+
+    from openai4s.server import local_auth
+    from tests.test_team_auth_routes import _speak
+
+    payload = json.dumps(body).encode("utf-8")
+    head = (
+        "PUT /api/v1/share/settings HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{node.port}\r\n"
+        f"{local_auth.TOKEN_HEADER}: {node.token}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(payload)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode("ascii")
+    status, raw = _speak(node.port, head + payload)
+    return status, json.loads(raw.split(b"\r\n\r\n", 1)[1])
+
+
+def test_enabling_without_a_relay_is_refused_and_nothing_is_kept(tmp_path):
+    """`share enable` with no relay answered `unconfigured` (exit 0) and stored
+    "enabled", so the next relay configuration connected by itself and the
+    Share dialog skipped its Enable step."""
+    from tests.test_team_auth_routes import _TeamDaemon
+
+    node = _TeamDaemon(tmp_path, team_mode=False)
+    try:
+        status, body = _put_share_settings(node, {"enabled": True})
+
+        assert status == 409
+        assert body["code"] == "sharing_unconfigured"
+        assert body["missing"] == [
+            "OPENAI4S_SHARE_RELAY_URL",
+            "OPENAI4S_SHARE_AUTH_TOKEN",
+        ]
+        assert "docs/webshare.md" in body["error"]
+        assert node.runner._share_enabled() is False
+        assert node.store.get_setting("sharing_enabled") is None
+        # Turning it off is always allowed.
+        status, body = _put_share_settings(node, {"enabled": False})
+        assert status == 200 and body["state"] == "disabled"
+    finally:
+        node.close()

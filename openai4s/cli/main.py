@@ -2733,6 +2733,19 @@ def _parse_duration(text: str) -> int:
         raise SystemExit(2) from None
 
 
+#: From "no relay" to a share link: the Share dialog's three steps, for the
+#: terminal.
+_SHARE_SETUP_STEPS = """\
+Sharing publishes a read-only snapshot through a relay server you run, and no
+relay is configured yet. To set it up:
+  1. Set OPENAI4S_SHARE_RELAY_URL and OPENAI4S_SHARE_AUTH_TOKEN (and
+     OPENAI4S_SHARE_BASE_DOMAIN) in the daemon's environment or its .env file.
+     The relay itself runs on a public host with `openai4s relay serve`.
+  2. Restart the daemon (`openai4s stop`, then `openai4s serve`).
+  3. Run `openai4s share enable`.
+Full steps: docs/webshare.md"""
+
+
 def cmd_share(args) -> int:
     cfg = get_config()
     action = args.share_action
@@ -2802,6 +2815,8 @@ def cmd_share(args) -> int:
         print(json.dumps(rec, ensure_ascii=False, indent=2))
     elif status >= 400:
         print(f"error: {rec.get('error') or rec}", file=sys.stderr)
+        if isinstance(rec, dict) and rec.get("code") == "sharing_unconfigured":
+            print(_SHARE_SETUP_STEPS, file=sys.stderr)
     elif action == "create" or action == "update":
         print(rec.get("url") or json.dumps(rec))
     elif action == "list":

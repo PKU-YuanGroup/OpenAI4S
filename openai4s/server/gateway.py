@@ -16888,7 +16888,32 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if method in ("PUT", "POST", "PATCH"):
                     body = self._body()
-                    self._json(runner.set_sharing_enabled(bool(body.get("enabled"))))
+                    enabled = bool(body.get("enabled"))
+                    if enabled and not cfg.share.configured:
+                        # Persisted, "on" made the next relay configuration
+                        # connect by itself with no Enable step, after an
+                        # answer that read as a failure. Refused, nothing kept.
+                        missing = [
+                            name
+                            for name, value in (
+                                ("OPENAI4S_SHARE_RELAY_URL", cfg.share.relay_url),
+                                ("OPENAI4S_SHARE_AUTH_TOKEN", cfg.share.auth_token),
+                            )
+                            if not value
+                        ]
+                        self._json(
+                            {
+                                "error": "sharing is not configured: set "
+                                + " and ".join(missing)
+                                + ", restart OpenAI4S, then enable sharing "
+                                "(docs/webshare.md)",
+                                "code": "sharing_unconfigured",
+                                "missing": missing,
+                            },
+                            409,
+                        )
+                        return
+                    self._json(runner.set_sharing_enabled(enabled))
                     return
             if sub == "/share/status" and method == "GET":
                 self._json(runner.share_status())

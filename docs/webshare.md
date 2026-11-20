@@ -109,7 +109,10 @@ written to the database.
 
 Then restart the daemon and enable sharing (once): session menu → *Share* →
 *Enable sharing*, or `openai4s share enable`. Until a relay is configured, the
-Share dialog lists these same steps.
+Share dialog lists these same steps, and enabling is refused (`409
+sharing_unconfigured`, naming the missing variables; `share enable` exits 2)
+with nothing stored, so configuring a relay later never turns sharing on by
+itself.
 
 ## Use it
 

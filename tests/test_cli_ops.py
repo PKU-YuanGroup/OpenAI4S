@@ -340,3 +340,52 @@ def test_lab_reset_json_without_yes_is_a_refusal_object(
     assert payload["reset"] is False
     assert payload["code"] == "confirmation_required"
     assert reset_calls == []
+
+
+# --------------------------------------------------------------------------- #
+#  share: TEAM-18 / TEAM-14 / CLI-36
+# --------------------------------------------------------------------------- #
+
+
+def _share(monkeypatch, argv, replies, calls=None):
+    """Run `openai4s share …` against scripted daemon replies, by path."""
+    module = _cli_module()
+    monkeypatch.setattr(module, "get_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(module, "_require_daemon", lambda cfg: True)
+
+    def request(cfg, method, path, body=None):
+        if calls is not None:
+            calls.append((method, path, body))
+        reply = replies[(method, path)]
+        return reply() if callable(reply) else reply
+
+    monkeypatch.setattr(module, "_daemon_request", request)
+    return module.main(["share", *argv])
+
+
+_UNCONFIGURED = (
+    409,
+    {
+        "error": "sharing is not configured: set OPENAI4S_SHARE_RELAY_URL and "
+        "OPENAI4S_SHARE_AUTH_TOKEN, restart OpenAI4S, then enable sharing "
+        "(docs/webshare.md)",
+        "code": "sharing_unconfigured",
+        "missing": ["OPENAI4S_SHARE_RELAY_URL", "OPENAI4S_SHARE_AUTH_TOKEN"],
+    },
+)
+
+
+def test_share_enable_without_a_relay_fails_and_says_what_to_configure(
+    monkeypatch, capsys
+):
+    """It printed `{"state": "unconfigured", …}` and exited 0."""
+    status = _share(
+        monkeypatch, ["enable"], {("PUT", "/share/settings"): _UNCONFIGURED}
+    )
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert captured.out == ""
+    assert "OPENAI4S_SHARE_RELAY_URL" in captured.err
+    assert "openai4s relay serve" in captured.err
+    assert "docs/webshare.md" in captured.err
