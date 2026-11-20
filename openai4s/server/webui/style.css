@@ -585,6 +585,9 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .viewer-head{display:flex;align-items:center;gap:8px;padding:12px 14px 8px}
 .viewer-head .vh-name{font-weight:500;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;color:var(--text-000)}
 .viewer-head .vh-acts{display:flex;gap:1px;flex:none}
+/* SYNC-23: in a narrow side panel the actions move under the file name rather
+   than squeezing the name to one letter or pushing the x past the edge. */
+.viewer-head{flex-wrap:wrap;row-gap:4px}.viewer-head .vh-name{flex:1 1 120px}.viewer-head .vh-acts{margin-left:auto;max-width:100%;flex-wrap:wrap}
 .viewer-body{flex:1;overflow:auto;min-height:0}
 .viewer-body>img{max-width:100%;display:block;margin:auto}
 .viewer-body iframe{width:100%;height:100%;min-height:420px;border:0}
@@ -1501,9 +1504,10 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .timeline-history-state{display:flex;flex-direction:column;gap:10px}
 .timeline-ledger-scroll{max-height:clamp(280px,62vh,720px);min-width:0;overflow:auto;overscroll-behavior-x:contain;overflow-anchor:none;border:var(--hair);border-radius:12px;background:var(--card);box-shadow:var(--shadow-soft)}
 .timeline-ledger-scroll:focus-visible{outline:2px solid var(--accent-fill);outline-offset:2px}
-.timeline-ledger{display:block;width:100%;min-width:410px;border-collapse:separate;border-spacing:0;color:var(--text-200)}
+.timeline-ledger{display:block;width:100%;min-width:436px;border-collapse:separate;border-spacing:0;color:var(--text-200)}
 .timeline-ledger thead{position:sticky;top:0;z-index:3;display:block;background:var(--bg-100)}
-.timeline-ledger thead tr,.timeline-ledger-row{display:grid;grid-template-columns:62px 44px minmax(0,1fr) 68px 62px;width:100%}
+/* SYNC-23: the Tokens column fits its header ("Token 用量") and a 7-digit count. */
+.timeline-ledger thead tr,.timeline-ledger-row{display:grid;grid-template-columns:62px 44px minmax(0,1fr) 68px 88px;width:100%}
 .timeline-ledger th{box-sizing:border-box;min-width:0;overflow:hidden;padding:7px 8px;border-bottom:var(--hair);background:var(--bg-100);color:var(--text-200);font-size:10px;font-weight:700;letter-spacing:.045em;text-align:left;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}
 .timeline-ledger th.timeline-ledger-duration,.timeline-ledger th.timeline-ledger-tokens{text-align:right}
 .timeline-ledger-body{position:relative;display:block;width:100%}
