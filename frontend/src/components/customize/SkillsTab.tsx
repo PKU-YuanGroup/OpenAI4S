@@ -27,6 +27,8 @@ const st = copyLookup({
     "skills.search": "搜索技能：名称、说明里的词或中文关键词",
     "skills.searchCount": "{0} 个匹配",
     "skills.searchNone": "没有匹配「{0}」的技能",
+    "skills.searchInCollection": "其中 {0} 个在 {1} 合集里",
+    "skills.collectionHit": "{0} 合集匹配：共 {1} 个技能，展开即可查看。",
     "skills.net": "限定联网 · {0} 个域名",
     "skills.netOff": "加载后关闭联网",
     "skills.netTip":
@@ -46,8 +48,10 @@ const st = copyLookup({
   },
   en: {
     "skills.search": "Search skills: name, a word from the description, or a Chinese keyword",
-    "skills.searchCount": "{0} matches",
+    "skills.searchCount": "{0}",
     "skills.searchNone": "No skill matches “{0}”",
+    "skills.searchInCollection": "{0} of them in the {1} collection",
+    "skills.collectionHit": "The {0} collection matches: {1}, listed when you show it.",
     "skills.net": "Limits network · {0}",
     "skills.netOff": "Turns network off",
     "skills.netTip":
@@ -191,6 +195,98 @@ export function searchSkills(skills: Skill[], query: string): Skill[] {
     return item;
   });
   return rankSkillItems(items, query).map((item) => byItem.get(item) as Skill);
+}
+
+/** Lowercase, with spaces, hyphens and underscores dropped: "bio skills" is "bioskills". */
+function collectionKey(text: string): string {
+  return text.toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+export type SkillSearch = {
+  hits: Skill[];
+  /** Collections the query names by id (SCI-09), with every member. */
+  named: Array<{ id: string; members: Skill[] }>;
+  /** How many of `hits` sit inside each collection. */
+  inCollections: Array<{ id: string; count: number }>;
+};
+
+/**
+ * SCI-09: a search reaches a collection by its own name as well as its
+ * members. "bioskills" used to answer "No skill matches" over a list whose
+ * last row was "bioskills collection (561 skills)": the members are named
+ * `bio-...` and none of their descriptions says "bioskills".
+ */
+export function searchSkillCatalog(skills: Skill[], query: string): SkillSearch {
+  const hits = searchSkills(skills, query);
+  const key = collectionKey(query.trim());
+  const members = new Map<string, Skill[]>();
+  skills.forEach((s) => {
+    const cid = asString(s.collection);
+    if (cid) members.set(cid, [...(members.get(cid) || []), s]);
+  });
+  const named =
+    key.length >= 3
+      ? [...members.keys()]
+          .filter((cid) => collectionKey(cid).includes(key))
+          .sort()
+          .map((id) => ({ id, members: members.get(id) || [] }))
+      : [];
+  const counts = new Map<string, number>();
+  hits.forEach((s) => {
+    const cid = asString(s.collection);
+    if (cid) counts.set(cid, (counts.get(cid) || 0) + 1);
+  });
+  const inCollections = [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, count]) => ({ id, count }));
+  return { hits, named, inCollections };
+}
+
+/** The line above the results: how many, how many inside a collection, which collection matched. */
+export function skillSearchCountText(found: SkillSearch, query: string): string {
+  const parts: string[] = [];
+  if (found.hits.length) {
+    const n = found.hits.length;
+    const count = st("skills.searchCount", LANG === "en" ? (n === 1 ? "1 match" : `${n} matches`) : n);
+    const inside = found.inCollections.map(({ id, count: c }) => st("skills.searchInCollection", c, id));
+    const [sep, end] = LANG === "en" ? [", ", "."] : ["，", "。"];
+    parts.push(inside.length ? count + sep + inside.join(sep) + end : count);
+  }
+  found.named.forEach(({ id, members }) => {
+    const n = members.length;
+    parts.push(st("skills.collectionHit", id, LANG === "en" ? (n === 1 ? "1 skill" : `${n} skills`) : n));
+  });
+  return parts.length ? parts.join(" ") : st("skills.searchNone", query.trim());
+}
+
+/** A collection folded to one row, with its members listed when shown. */
+function CollectionRows({
+  cid,
+  members,
+  open,
+  onToggle,
+  pid,
+}: {
+  cid: string;
+  members: Skill[];
+  open: boolean;
+  onToggle: () => void;
+  pid: string | null;
+}) {
+  return (
+    <div data-skill-collection={cid}>
+      <div class="cust-row">
+        <div class="info">
+          <div class="nm">{t("cust.skills.collection", cid, members.length)}</div>
+          <div class="ds">{t("cust.skills.collectionDesc")}</div>
+        </div>
+        <button type="button" class="outline-btn small" onClick={onToggle}>
+          {t(open ? "cust.skills.collectionHide" : "cust.skills.collectionShow")}
+        </button>
+      </div>
+      {open ? members.map((s) => <SkillRow key={asString(s.name) + cid} s={s} pid={pid} />) : null}
+    </div>
+  );
 }
 
 export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
@@ -353,17 +449,30 @@ export function SkillsTab() {
     />
   );
   const trimmed = query.trim();
+  const toggleCollection = (cid: string) =>
+    setOpenCollections((prev) => ({ ...prev, [cid]: !prev[cid] }));
   if (trimmed) {
-    // A search reaches collection members too: 561 of the 612 skills are inside one.
-    const hits = searchSkills(skills, trimmed);
+    // A search reaches collection members too: 561 of the 612 skills are inside
+    // one; and the collection itself by its name (SCI-09).
+    const found = searchSkillCatalog(skills, trimmed);
     return (
       <div>
         <Hdr title={t("palette.group.skills")} sub={t("cust.skills.desc", skills.length)} />
         {search}
         <div class="cust-note skill-search-count" role="status">
-          {hits.length ? st("skills.searchCount", hits.length) : st("skills.searchNone", trimmed)}
+          {skillSearchCountText(found, trimmed)}
         </div>
-        {hits.map((s) => (
+        {found.named.map(({ id, members }) => (
+          <CollectionRows
+            key={id}
+            cid={id}
+            members={members}
+            open={!!openCollections[id]}
+            onToggle={() => toggleCollection(id)}
+            pid={pid}
+          />
+        ))}
+        {found.hits.map((s) => (
           <SkillRow key={asString(s.name) + asString(s.scope)} s={s} pid={pid} />
         ))}
       </div>
@@ -415,34 +524,16 @@ export function SkillsTab() {
       {singles.map((s) => (
         <SkillRow key={asString(s.name) + asString(s.scope)} s={s} pid={pid} />
       ))}
-      {[...collections.keys()].sort().map((cid) => {
-        const members = collections.get(cid) || [];
-        const open = !!openCollections[cid];
-        return (
-          <div key={cid}>
-            <div class="cust-row">
-              <div class="info">
-                <div class="nm">{t("cust.skills.collection", cid, members.length)}</div>
-                <div class="ds">{t("cust.skills.collectionDesc")}</div>
-              </div>
-              <button
-                type="button"
-                class="outline-btn small"
-                onClick={() =>
-                  setOpenCollections((prev) => ({ ...prev, [cid]: !prev[cid] }))
-                }
-              >
-                {t(open ? "cust.skills.collectionHide" : "cust.skills.collectionShow")}
-              </button>
-            </div>
-            {open
-              ? members.map((s) => (
-                  <SkillRow key={asString(s.name) + cid} s={s} pid={pid} />
-                ))
-              : null}
-          </div>
-        );
-      })}
+      {[...collections.keys()].sort().map((cid) => (
+        <CollectionRows
+          key={cid}
+          cid={cid}
+          members={collections.get(cid) || []}
+          open={!!openCollections[cid]}
+          onToggle={() => toggleCollection(cid)}
+          pid={pid}
+        />
+      ))}
       {!skills.length ? <Empty>{t("cust.skills.desc", 0)}</Empty> : null}
     </div>
   );

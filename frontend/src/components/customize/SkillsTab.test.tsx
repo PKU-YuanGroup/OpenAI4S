@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { setLang } from "../../i18n/runtime";
-import { searchSkills, skillDetailFacts, skillNetworkCopy, skillNetworkDomains } from "./SkillsTab";
+import {
+  searchSkillCatalog,
+  searchSkills,
+  skillDetailFacts,
+  skillNetworkCopy,
+  skillNetworkDomains,
+  skillSearchCountText,
+} from "./SkillsTab";
 
 // Customize → Skills lists 612 skills; 561 of them sit inside one collection.
 
@@ -40,6 +47,36 @@ describe("searching the skills tab", () => {
 
   it("finds nothing for a miss", () => {
     expect(names("zzzz-no-such-skill")).toEqual([]);
+  });
+
+  // SCI-09: "bioskills" answered "No skill matches" over a list whose last row
+  // was the bioskills collection.
+  it("reaches a collection by its own name, and says what it holds", async () => {
+    await setLang("en");
+    for (const query of ["bioskills", "BioSkills", "bio skills"]) {
+      const found = searchSkillCatalog(CATALOG, query);
+      expect(found.named.map((c) => c.id)).toEqual(["bioskills"]);
+      expect(found.named[0]!.members.map((s) => s.name)).toEqual(["bio-clinical-bayesian-trials"]);
+      expect(skillSearchCountText(found, query)).toBe(
+        "The bioskills collection matches: 1 skill, listed when you show it.",
+      );
+    }
+    // Too short to name a collection: "bi" is a word start, not a collection.
+    expect(searchSkillCatalog(CATALOG, "bi").named).toEqual([]);
+    expect(skillSearchCountText(searchSkillCatalog(CATALOG, "zzzz"), "zzzz")).toBe("No skill matches “zzzz”");
+  });
+
+  it("counts how many hits sit inside a collection", async () => {
+    await setLang("en");
+    const both = [...CATALOG, { ...MEMBER, name: "bio-bayesian-networks", description: "Bayesian networks." }];
+    const found = searchSkillCatalog(both, "bayesian");
+    expect(found.inCollections).toEqual([{ id: "bioskills", count: 2 }]);
+    expect(skillSearchCountText(found, "bayesian")).toBe("2 matches, 2 of them in the bioskills collection.");
+    expect(skillSearchCountText(searchSkillCatalog(CATALOG, "literature"), "literature")).toBe("1 match");
+
+    await setLang("zh");
+    expect(skillSearchCountText(found, "bayesian")).toBe("2 个匹配，其中 2 个在 bioskills 合集里。");
+    await setLang("en");
   });
 });
 
