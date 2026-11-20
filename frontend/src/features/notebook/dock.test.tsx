@@ -36,6 +36,7 @@ import {
   NotebookDock,
   StatusStrip,
   kernelExitText,
+  missingPackage,
   kernelStatusLine,
   outputIsLong,
   outputLabel,
@@ -359,6 +360,27 @@ describe("Notebook after a kernel crash", () => {
     const segv = oom.replace(/\(exit code -9[^)]*\)/, "(killed by signal 11 (SIGSEGV))");
     expect(kernelExitText(segv)).toBe(nbT("nb.crash.notice", nbT("nb.crash.signal", "11 (SIGSEGV)")));
     expect(kernelExitText("NameError: name 'x' is not defined")).toBeNull();
+  });
+
+  // SCI-32: `No module named 'Bio'` under a manual cell, and nothing said what to install.
+  it("says which package a failed cell lacks and where to install it", () => {
+    const failed = (error: string, language = "python") =>
+      textOf(
+        CellList({ entries: [{ producing_cell_id: "m", cell_index: 1, language, status: "error", source: "x", error }] }),
+      ).replace(/\s+/g, " ");
+    const bio = failed(
+      "Traceback (most recent call last):\n  File \"<kernel:1>\", line 1\nModuleNotFoundError: No module named 'Bio'",
+    );
+    expect(bio).toContain(nbT("nb.missing.renamed", "Bio", "biopython"));
+    expect(bio).toContain(nbT("nb.missing.open"));
+    expect(failed("ModuleNotFoundError: No module named 'statsmodels.api'")).toContain(
+      nbT("nb.missing.plain", "statsmodels"),
+    );
+    const seurat = failed("Error in library(Seurat) : there is no package called ‘Seurat’", "r");
+    expect(seurat).toContain(nbT("nb.missing.r", "Seurat"));
+    expect(seurat).not.toContain(nbT("nb.missing.open"));
+    expect(failed("NameError: name 'x' is not defined")).not.toContain(nbT("nb.missing.python"));
+    expect(missingPackage("ImportError: cannot import name 'foo' from 'bar'")).toBeNull();
   });
 
   it("marks where a new kernel generation starts, per language", () => {

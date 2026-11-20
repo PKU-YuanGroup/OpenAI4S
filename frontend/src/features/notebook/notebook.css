@@ -100,3 +100,16 @@
   font-size: 12px;
   line-height: 1.5;
 }
+
+/* SCI-32: under a cell that failed on a missing package, what to install and where. */
+.nbc-missing {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: var(--hair);
+  color: var(--text-200);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.nbc-missing .nbc-action {
+  margin-inline-start: 4px;
+}

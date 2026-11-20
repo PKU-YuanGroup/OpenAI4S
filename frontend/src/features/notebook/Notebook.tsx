@@ -297,6 +297,54 @@ function KernelExitNotice({ error }: { error: string }) {
   ) : null;
 }
 
+const MISSING_MODULE = /No module named '([A-Za-z_][\w.]*)'/;
+const MISSING_R_PACKAGE = /there is no package called [‘'`"]([A-Za-z][\w.]*)[’'`"]/;
+/** Import names whose package is called something else (server/completions.py keeps the same table). */
+const PACKAGE_OF_MODULE: Record<string, string> = {
+  Bio: "biopython",
+  sklearn: "scikit-learn",
+  skimage: "scikit-image",
+  PIL: "pillow",
+  cv2: "opencv-python",
+  yaml: "pyyaml",
+  bs4: "beautifulsoup4",
+  dateutil: "python-dateutil",
+  Crypto: "pycryptodome",
+  docx: "python-docx",
+  pptx: "python-pptx",
+};
+
+/**
+ * SCI-32: a cell that failed on a package it does not have, and the package
+ * to install ("Bio" is "biopython"). Null for any other failure.
+ */
+export function missingPackage(error: string): { language: "python" | "r"; module: string; pkg: string } | null {
+  const text = stripAnsi(String(error || ""));
+  const python = MISSING_MODULE.exec(text);
+  if (python) {
+    const module = (python[1] || "").split(".")[0] || "";
+    return { language: "python", module, pkg: PACKAGE_OF_MODULE[module] || module };
+  }
+  const r = MISSING_R_PACKAGE.exec(text);
+  return r ? { language: "r", module: r[1] || "", pkg: r[1] || "" } : null;
+}
+
+/** The next step under that failure: where to install a Python package; why R has none here. */
+function MissingPackageHint({ error }: { error: string }) {
+  const miss = missingPackage(error);
+  if (!miss) return null;
+  if (miss.language === "r") return <div class="nbc-missing">{nbT("nb.missing.r", miss.pkg)}</div>;
+  return (
+    <div class="nbc-missing">
+      {miss.pkg !== miss.module ? nbT("nb.missing.renamed", miss.module, miss.pkg) : nbT("nb.missing.plain", miss.pkg)}{" "}
+      {nbT("nb.missing.python")}{" "}
+      <button type="button" class="nbc-action" onClick={() => void openCustomize("compute")}>
+        {nbT("nb.missing.open")}
+      </button>
+    </div>
+  );
+}
+
 function ErrorBlock({ raw }: { raw: string }) {
   const txt = stripAnsi(raw).replace(/\s+$/, "");
   const nonEmpty = txt.split("\n").filter((l) => l.trim());
@@ -539,6 +587,7 @@ function CellView({ cell }: { cell: NotebookCell }) {
       <CellStream cell={cell} stream="stderr" live={live} />
       {cell.error ? <KernelExitNotice error={cell.error} /> : null}
       {cell.error ? <ErrorBlock raw={cell.error} /> : null}
+      {cell.error ? <MissingPackageHint error={cell.error} /> : null}
       <CellFiguresSlot cell={cell} live={live} />
       {images.length ? <CellFigures cell={cell} names={images} /> : null}
       {csvs.map((f) => (
