@@ -875,6 +875,17 @@ def test_a_note_free_batch_between_two_notes_resets_the_count():
     assert kinds == ["tools", "tools", "tools", "tools", "cell"]
 
 
+def test_a_run_cell_call_without_a_language_runs_as_python():
+    # Seen live: the model sent run_cell with only `code`, and the reply ran
+    # nothing. The language is the one field a cell can do without.
+    model = PromisingModel(fallback={"code": _CODE})
+
+    _, executor, kinds = _promising_run(model, max_turns=3)
+
+    assert kinds == ["tools", "tools", "cell"]
+    assert executor.calls[2]["action"] == CodeCell("python", _CODE)
+
+
 def test_a_fenced_cell_answering_the_run_cell_call_runs_as_a_fenced_cell():
     model = PromisingModel(fallback=_CELL)
 

@@ -226,7 +226,7 @@ def route_action(
             if problem is None:
                 arguments = calls[0].arguments or {}
                 return CodeCell(
-                    str(arguments["language"]).strip().lower(),
+                    str(arguments.get("language") or "python").strip().lower(),
                     str(arguments["code"]),
                     tool_call=calls[0],
                 )
@@ -246,7 +246,9 @@ def _run_cell_problem(call: NativeToolCall) -> str | None:
 
     Keys beyond ``language`` and ``code`` are ignored rather than refused: the
     code is what runs, and a model that struggled to send a cell at all should
-    not lose the reply to a stray field.
+    not lose the reply to a stray field. For the same reason a missing
+    ``language`` means Python: a live model sent ``run_cell`` with only
+    ``code`` and the reply ran nothing.
     """
     if call.parse_error is not None:
         return call.parse_error
@@ -254,6 +256,8 @@ def _run_cell_problem(call: NativeToolCall) -> str | None:
     if not isinstance(arguments, Mapping):
         return "arguments are not a JSON object"
     language = arguments.get("language")
+    if language is None:
+        language = "python"
     if not isinstance(language, str) or language.strip().lower() not in (
         "python",
         "r",
@@ -288,7 +292,7 @@ def run_cell_tool_spec() -> ToolSpec:
                 "language": {
                     "type": "string",
                     "enum": ["python", "r"],
-                    "description": "The kernel to run the code in.",
+                    "description": "The kernel to run the code in; python if omitted.",
                 },
                 "code": {
                     "type": "string",
@@ -296,7 +300,7 @@ def run_cell_tool_spec() -> ToolSpec:
                     "description": "The complete code of the cell.",
                 },
             },
-            "required": ["language", "code"],
+            "required": ["code"],
             "additionalProperties": False,
         },
         strict=False,
