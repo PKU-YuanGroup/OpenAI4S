@@ -125,6 +125,11 @@ button{font:inherit;cursor:pointer}
 .dash-col.sessions .d-row{border:.5px solid var(--border-card);border-radius:var(--radius-card);background:var(--card);box-shadow:var(--shadow-card)}
 .dash-col.sessions .d-main{flex-direction:column;align-items:stretch;gap:2px}
 .d-dot{width:7px;height:7px;border-radius:50%;border:1.5px solid var(--text-400);flex:none}
+/* recent sessions: how the last turn ended */
+.d-dot.done{border-color:var(--success);background:var(--success)}
+.d-dot.failed{border-color:var(--danger);background:var(--danger)}
+.d-row .d-status{font-size:11px;font-weight:600;border-radius:10px;padding:2px 8px;white-space:nowrap}
+.d-row .d-status.failed{color:var(--danger);background:var(--danger-bg)}
 .d-dot.live{border-color:var(--success);background:var(--success);box-shadow:0 0 0 3px var(--success-bg);animation:os-pulse 1.4s ease-in-out infinite}
 .d-run{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:var(--success-text);background:var(--success-bg);border-radius:10px;padding:1px 8px;white-space:nowrap;flex:none}
 .d-run .d-run-dot{width:6px;height:6px;border-radius:50%;background:var(--success);animation:os-pulse 1.4s ease-in-out infinite}
@@ -782,6 +787,10 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .cust-input{flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--line,#8883);border-radius:8px;background:var(--bg,transparent);color:var(--ink,inherit);font:inherit}
 .cust-row .ds{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}
 .cust-row .ds .cust-checks{flex-basis:100%;margin:0;white-space:pre-wrap;font-family:var(--mono);font-size:11px;line-height:1.5}
+/* Settings → Compute: a runtime row's lines and an install's outcome each take a full line */
+.cust-row .ds .rt-line{flex-basis:100%}
+.cust-row .ds .rt-install.ok{color:var(--text-200)}
+.cust-row .ds .rt-install.err{color:var(--danger)}
 .cust-row .prof-warn{color:var(--danger)}
 .cust-row .prof-probe.ok{color:var(--success-text)}
 .cust-row .prof-probe.bad{color:var(--danger)}
@@ -1142,6 +1151,9 @@ body.has-key-banner #sidebar,body.has-key-banner #main,body.has-key-banner #righ
 .perm-rule{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border)}
 .perm-rtool{font-weight:500;font-size:12.5px;color:var(--text-000);min-width:104px}
 .perm-rpat{flex:1;min-width:0;font-size:12px;color:var(--text-400);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* a rule's tool gets one line saying what it does, above its pattern */
+.perm-rwhat{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.perm-rdesc{font-size:12.5px;color:var(--text-200);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .perm-dec{border:.5px solid var(--border-btn);border-radius:var(--radius);height:26px;font-size:12px;padding:0 6px;background:var(--bg-000);color:var(--text-000)}
 .perm-add{border-top:1px dashed var(--border)}
 .perm-add .perm-in{flex:1;font-family:var(--sans)}
@@ -1392,7 +1404,8 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 
 /* ---- immutable Cell metadata + append-only actions ---- */
 .nbc-cell-meta{display:flex;align-items:center;gap:6px;padding:7px 11px;background:var(--bg-100);border-bottom:var(--hair);font:11px/1.2 var(--mono);color:var(--text-400)}
-.nbc-state{border-radius:999px;padding:3px 7px;background:var(--bg-200)}
+/* one line, never shrunk: in a narrow panel "当前" / "已过期" used to wrap into a column of single characters */
+.nbc-state{border-radius:999px;padding:3px 7px;background:var(--bg-200);white-space:nowrap;flex:none}
 .nbc-state.current{background:var(--success-bg);color:var(--success-text)}
 .nbc-state.drafting{background:color-mix(in srgb,var(--accent-fill) 70%,var(--bg-200));color:var(--accent)}
 .nbc-state.stale{background:#fbf0d4;color:#8a5b08}
@@ -1419,8 +1432,12 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .timeline-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
 .timeline-title{font:600 18px/1.25 var(--serif);color:var(--text-000)}
 .timeline-subtitle{max-width:620px;margin-top:3px;color:var(--text-400);font-size:11.5px;line-height:1.45}
-.workbench-layout{display:grid;grid-template-columns:minmax(210px,.72fr) minmax(290px,1.28fr);gap:12px;margin-top:12px;align-items:start}
-.workbench-side,.timeline-actions{display:flex;flex-direction:column;gap:10px;min-width:0}
+/* The action ledger comes first; runtime, recovery, branch, sub-agent, remote
+   compute, diagnostics and sandbox panels sit under one disclosure below it. */
+.timeline-actions,.timeline-technical{margin-top:12px}
+.timeline-technical-summary{padding:8px 2px;cursor:pointer;color:var(--text-200);font-size:13px;font-weight:600}
+.timeline-technical-hint{margin-left:8px;color:var(--text-400);font-size:11.5px;font-weight:400}
+.workbench-side,.timeline-actions,.timeline-technical-body{display:flex;flex-direction:column;gap:10px;min-width:0}
 .workbench-panel,.timeline-card{border:var(--hair);border-radius:12px;background:var(--card);box-shadow:var(--shadow-soft);overflow:hidden}
 .workbench-panel{padding:10px}
 .workbench-panel-title{font-size:11px;font-weight:650;letter-spacing:.03em;color:var(--text-300);margin-bottom:8px}
@@ -1609,7 +1626,6 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .delegation-evidence-reasons{color:var(--text-400);font-size:10.5px;line-height:1.35;word-break:break-word}
 
 @media (max-width:760px){
-  .workbench-layout{grid-template-columns:1fr}
   .timeline-toolbar{align-items:stretch;flex-direction:column}.timeline-search-meta{align-items:flex-start;text-align:left}
   .timeline-ledger-scroll{max-height:clamp(240px,52vh,560px)}
   .timeline-inspector{position:relative;top:auto}
@@ -1946,6 +1962,9 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 .compute-lost .cl-dismiss { flex:none; align-self:center; height:28px; padding:0 12px;
   border-radius:8px; border:1px solid var(--line); background:var(--panel); cursor:pointer; }
 
+/* The run-location dialog borrows the artifact viewer's modal, which is sized
+   for a document: fit the box to its few options instead. */
+#modal .modal-box:has(.run-location) { width:min(520px,94vw); height:auto; max-height:min(640px,88vh); }
 .run-location { display:flex; flex-direction:column; gap:8px; padding:4px 2px; }
 .run-location .rl-option { text-align:left; padding:11px 13px; border-radius:10px;
   border:1px solid var(--line); background:var(--panel); cursor:pointer; }
@@ -2538,8 +2557,7 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .timeline-top{margin-bottom:14px}
 .timeline-title{font:400 36px/1.15 var(--serif);letter-spacing:-.02em;color:var(--text-000);font-variant-numeric:lining-nums}
 .timeline-subtitle{margin-top:6px;font-size:14px;line-height:1.5;color:var(--text-400)}
-.workbench-layout{gap:16px}
-.workbench-side,.timeline-actions,.timeline-ledger-region{gap:12px}
+.workbench-side,.timeline-actions,.timeline-technical-body,.timeline-ledger-region{gap:12px}
 .workbench-panel,.timeline-card,.timeline-empty,.timeline-toolbar,.timeline-ledger-scroll,.timeline-inspector,.timeline-filter-empty{border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg);box-shadow:none}
 .workbench-panel{padding:14px 16px}
 .workbench-panel-title{margin-bottom:10px;font-size:13px;font-weight:500;letter-spacing:0;color:var(--text-000)}
@@ -2751,6 +2769,8 @@ html[data-theme="dark"] #dash-project-search{background-image:url("data:image/sv
 .share-setup li{margin:.35em 0}
 .share-label{font-size:14px;font-weight:500;color:var(--text-000)}
 .share-box>.share-label{margin-bottom:-12px}
+/* no relay configured: what is missing, said first and on its own line */
+.share-text.share-lead{font-weight:600;color:var(--text-000)}
 .share-url-row{display:flex;gap:8px}
 .share-url{flex:1;min-width:0;height:42px;box-sizing:border-box;padding:0 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-100);color:var(--text-000);font:13px var(--mono)}
 .share-url:focus{outline:none;border-color:var(--accent-fill);box-shadow:var(--focus-ring)}

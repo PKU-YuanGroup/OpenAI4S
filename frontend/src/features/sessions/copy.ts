@@ -133,6 +133,8 @@ export const dashCopy = copyLookup({
     "dash.example.open": "Open the example session",
     "dash.example.dismiss": "Dismiss",
     "dash.sessions.allAbove": "Running sessions and the ones waiting for you are listed above.",
+    "dash.status.done": "Finished",
+    "dash.status.failed": "Failed",
     "dash.example.project": "Example project",
     "dash.example.tag": "Example",
   },
@@ -145,6 +147,8 @@ export const dashCopy = copyLookup({
     "dash.example.open": "打开示例会话",
     "dash.example.dismiss": "知道了",
     "dash.sessions.allAbove": "正在运行和等你处理的会话显示在上方。",
+    "dash.status.done": "已完成",
+    "dash.status.failed": "失败",
     "dash.example.project": "示例项目",
     "dash.example.tag": "示例",
   },
@@ -200,6 +204,28 @@ export function composerCopy(key: "usage" | "reviewing" | "on" | "off", ...args:
   return copy[key].replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)] ?? ""));
 }
 
+/** Group headings and distinguishing lines for the composer's session-options menu. */
+export function optionsMenuCopy(
+  key: "groupModes" | "groupReview" | "groupSession" | "groupSettings" | "runtimeDesc" | "computeDesc",
+): string {
+  const copy = LANG === "en" ? {
+    groupModes: "How the agent works",
+    groupReview: "Review",
+    groupSession: "This session",
+    groupSettings: "Open Settings",
+    runtimeDesc: "Pick the Python / R environment this session's code runs in",
+    computeDesc: "Settings → Compute: environment status, installed packages, remote GPU, background jobs",
+  } : {
+    groupModes: "工作方式",
+    groupReview: "审阅",
+    groupSession: "本会话",
+    groupSettings: "打开设置",
+    runtimeDesc: "选择这个会话的代码在哪个 Python / R 环境里运行",
+    computeDesc: "设置 → 计算：环境状态、已装的包、远程 GPU、后台任务",
+  };
+  return copy[key];
+}
+
 /** An action that failed before it could report anything itself; `detail` is the error's text. */
 export function actionFailedCopy(detail: string): string {
   return (LANG === "en" ? "Could not complete that action: " : "操作未能完成：") + detail;
@@ -211,6 +237,8 @@ export function shareCopy(
     | "linkLabel"
     | "updateDesc"
     | "revokeDesc"
+    | "menuNeedsSetup"
+    | "setupLead"
     | "setupIntro"
     | "setupEnv"
     | "setupRestart"
@@ -221,7 +249,9 @@ export function shareCopy(
     linkLabel: "Read-only link",
     updateDesc: "The link stays the same; its content becomes this session's latest state.",
     revokeDesc: "The link stops working immediately.",
-    setupIntro: "Sharing publishes a read-only snapshot through a relay server you run. No relay is configured yet, so this session cannot be shared. To set it up:",
+    menuNeedsSetup: "Needs setup: a relay server you host",
+    setupLead: "Sharing needs a relay server that you host on a public machine. None is configured, so this session cannot be shared yet.",
+    setupIntro: "A share link serves a read-only snapshot through that relay. To set it up:",
     setupEnv: "Set OPENAI4S_SHARE_RELAY_URL and OPENAI4S_SHARE_AUTH_TOKEN (and OPENAI4S_SHARE_BASE_DOMAIN) in the .env file in the OpenAI4S folder. The relay itself runs on a public host with “openai4s relay”.",
     setupRestart: "Restart OpenAI4S.",
     setupEnable: "Open this dialog again and click Enable sharing, or run “openai4s share enable”.",
@@ -230,7 +260,9 @@ export function shareCopy(
     linkLabel: "只读链接",
     updateDesc: "链接不变，内容换成当前会话的最新状态。",
     revokeDesc: "撤销后立即失效。",
-    setupIntro: "分享会通过你自己运行的中转服务器（relay）发布一份只读快照。目前还没有配置中转服务器，所以这个会话还不能分享。配置步骤：",
+    menuNeedsSetup: "需配置：要先部署自己的中转服务器",
+    setupLead: "分享需要一台由你自己部署在公网主机上的中转服务器（relay）。现在还没有配置，所以这个会话暂时不能分享。",
+    setupIntro: "分享链接通过这台中转服务器提供一份只读快照。配置步骤：",
     setupEnv: "在 OpenAI4S 文件夹的 .env 文件里设置 OPENAI4S_SHARE_RELAY_URL 和 OPENAI4S_SHARE_AUTH_TOKEN（以及 OPENAI4S_SHARE_BASE_DOMAIN）。中转服务器本身用「openai4s relay」部署在一台公网主机上。",
     setupRestart: "重启 OpenAI4S。",
     setupEnable: "再次打开这个对话框，点「启用分享」；或在终端运行「openai4s share enable」。",

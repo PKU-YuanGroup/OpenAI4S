@@ -221,8 +221,8 @@ describe("first-run wizard: skipping while a connection test is waiting", () => 
 
 
   // Characterization, not a regression test for the choosePath change: every
-  // exit from the test step already retired the running probe (Checklist, Next,
-  // Skip and Finish all call leaveTest), and onTest takes a fresh run id, so
+  // exit from the test step already retired the running probe (the step rail,
+  // Next, Skip and Finish all call leaveTest), and onTest takes a fresh run id, so
   // this passed before choosePath called leaveTest too and passes without it.
   // It pins the guarantee across a model switch; what is new is pinned in
   // machine.test.ts -- the reducer drops a result measured for another profile.
@@ -230,14 +230,12 @@ describe("first-run wizard: skipping while a connection test is waiting", () => 
     const old = deferred<Record<string, unknown>>();
     api.probeModelProfile.mockReturnValueOnce(old.promise);
     button(t("cust.models.test")).onClick();
-    button(ot("onboarding.checklist")).onClick();
     render().find((b) => b.text.endsWith(ot("onboarding.step.path")))!.onClick();
     hooks.slots[1] = { profiles: [], protocols: [], local_model_catalog: { endpoints: [] } };
     hooks.begin();
     const choose = pathChoice(WizardHost());
     expect(choose).toBeTypeOf("function");
     choose!({ ...wizard().path!, kind: "existing", profileId: "mp-new", model: "new-model" });
-    button(ot("onboarding.checklist")).onClick();
     render().find((b) => b.text.endsWith(ot("onboarding.step.test")))!.onClick();
     api.probeModelProfile.mockResolvedValueOnce({
       reachable: true,
@@ -305,7 +303,6 @@ describe("first-run wizard: skipping while a connection test is waiting", () => 
     (modelBox!.props!.onInput as (event: unknown) => void)({ currentTarget: { value: "qwen3" } });
 
     expect(wizard().path).toMatchObject({ kind: "local", model: "qwen3", profileId: "" });
-    render().find((b) => b.text === ot("onboarding.checklist"))!.onClick();
     render().find((b) => b.text.endsWith(ot("onboarding.step.test")))!.onClick();
     button(t("cust.models.test")).onClick();
     await Promise.resolve();

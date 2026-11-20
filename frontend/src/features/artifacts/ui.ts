@@ -69,6 +69,10 @@ export function renderDockTabs(): void {
   const bar = document.getElementById("dock-tabs");
   if (!bar) return;
   bar.innerHTML = "";
+  // The fixed tabs (Notebook, Timeline, Files) keep their place at the left;
+  // file tabs follow them. Every opened file used to be put in front, so two
+  // of them pushed Timeline and Files out of view.
+  const fileTabs: HTMLElement[] = [];
   ((openTabs.value as ArtifactRow[]) || []).forEach((a) => {
     const tab = tabBtn("div", artIcon(a), (a.filename || "artifact") + (a._exactVersion ? " · " + a.version_id : ""));
     if (activeTab.value === artifactTabKey(a)) tab.classList.add("active");
@@ -85,7 +89,7 @@ export function renderDockTabs(): void {
       provMode.value = false;
       setActiveTab(artifactTabKey(a));
     };
-    bar.appendChild(tab);
+    fileTabs.push(tab);
   });
   const notebook = tabBtn("button", "notebook", "Notebook");
   if (activeTab.value === "notebook") notebook.classList.add("active");
@@ -110,6 +114,7 @@ export function renderDockTabs(): void {
     files.onclick = () => setActiveTab("files");
     bar.appendChild(files);
   }
+  fileTabs.forEach((tab) => bar.appendChild(tab));
   // Many open files overflow the strip; the active tab is scrolled into view
   // instead of being pushed off the right edge (ART-15).
   const active = typeof bar.querySelector === "function" ? bar.querySelector(".dock-tab.active") : null;

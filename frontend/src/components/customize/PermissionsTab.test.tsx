@@ -121,6 +121,18 @@ async function settle(): Promise<void> {
 function serve(write: () => Promise<Response>) {
   mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
     if (init?.method === "POST") return write();
+    if (url === "/api/v1/permissions") {
+      return Promise.resolve(
+        response({
+          rules: {
+            global: [
+              { rule_id: "g-1", tool: "write_file", pattern: "*", decision: "allow" },
+              { rule_id: "g-2", tool: "env_setup", pattern: "*", decision: "ask" },
+            ],
+          },
+        }),
+      );
+    }
     if (url === "/api/v1/frames/f-1/permissions") {
       return Promise.resolve(
         response({
@@ -175,5 +187,72 @@ describe("PermissionsTab rule decision", () => {
     expect(decision().props!.value).toBe("ask");
     expect(decision().props!.disabled).toBe(false);
     expect(mocks.hint).toHaveBeenCalledWith("toast.perm.updateFailed locked", true);
+  });
+});
+
+function findAll(node: unknown, match: (node: Node) => boolean, out: Node[] = []): Node[] {
+  if (Array.isArray(node)) {
+    for (const child of node) findAll(child, match, out);
+    return out;
+  }
+  if (!node || typeof node !== "object") return out;
+  const current = node as Node;
+  if (match(current)) out.push(current);
+  return findAll(current.props?.children, match, out);
+}
+
+function text(node: unknown): string {
+  if (Array.isArray(node)) return node.map(text).join("");
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node !== "object") return String(node);
+  return text((node as Node).props?.children);
+}
+
+const withClass = (tree: unknown, cls: string) => findAll(tree, (node) => node.props?.class === cls);
+
+// PERM-2: with no session open the tab said "only global defaults are shown
+// below" and returned before reading anything, so nothing was below.
+describe("PermissionsTab without a session", () => {
+  beforeEach(() => {
+    currentId.value = null;
+    serve(() => Promise.resolve(response({ ok: true })));
+  });
+
+  it("reads and lists the global rules", async () => {
+    render();
+    await settle();
+    const tree = render();
+
+    expect(mocks.fetch.mock.calls.map((call) => call[0])).toContain("/api/v1/permissions");
+    expect(withClass(tree, "perm-sec-h").map(text)).toEqual(["cust.perm.scope.global"]);
+    expect(withClass(tree, "perm-rtool").map(text)).toEqual(["write_file", "env_setup"]);
+    expect(text(tree)).toContain("cust.perm.noSessionNote");
+  });
+
+  it("says what each tool does and what the rules amount to", async () => {
+    render();
+    await settle();
+    const tree = render();
+
+    expect(withClass(tree, "perm-rdesc").map(text)).toEqual([
+      "Write a file in the session workspace",
+      "Install packages into the kernel environment",
+    ]);
+    // Read from the rules, not a fixed sentence: here a write is allowed and
+    // installs ask, which the old description had the other way round.
+    const summary = withClass(tree, "cust-note").map(text)[0]!;
+    expect(summary).toContain("writing files partly need approval");
+    expect(summary).toMatch(/package installs[^;]* need your approval/);
+  });
+
+  it("offers the conversation and project scopes once a session is open", async () => {
+    currentId.value = "f-1";
+    render();
+    await settle();
+    expect(withClass(render(), "perm-sec-h").map(text)).toEqual([
+      "cust.perm.scope.conversation",
+      "cust.perm.scope.project",
+      "cust.perm.scope.global",
+    ]);
   });
 });

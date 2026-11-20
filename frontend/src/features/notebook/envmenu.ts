@@ -7,6 +7,7 @@
  * or one found on this machine ("Local env", `builtin: false`).
  */
 import { currentId } from "../../stores/session";
+import { rDefaultLabel, readRuntimes, type Runtimes } from "../customize/runtimes";
 import { hint, openMenu, type MenuItem } from "../sessions/chrome";
 import { el } from "../sessions/dom";
 import { notebookFetch } from "./cells";
@@ -14,7 +15,13 @@ import { nbT } from "./copy";
 import { nbSwitchEnv } from "./kernel";
 import type { KernelEnvRow } from "./types";
 
-export type EnvChoice = { envs: KernelEnvRow[]; current: string | null; currentR: string | null };
+export type EnvChoice = {
+  envs: KernelEnvRow[];
+  current: string | null;
+  currentR: string | null;
+  /** What each language resolves to: says what the R "default" stands for. */
+  runtimes?: Runtimes | null;
+};
 
 export function envLanguage(row: KernelEnvRow): "python" | "r" {
   return String(row.language || "").toLowerCase() === "r" ? "r" : "python";
@@ -43,6 +50,7 @@ export async function readSessionEnvironments(frameId: string): Promise<EnvChoic
     envs: data.environments as KernelEnvRow[],
     current: data.current == null ? null : String(data.current),
     currentR: data.current_r == null ? null : String(data.current_r),
+    runtimes: readRuntimes(data),
   };
 }
 
@@ -60,9 +68,12 @@ export function environmentMenuItems(choice: EnvChoice, pick: (name: string) => 
   ];
   for (const [language, title, current] of groups) {
     const rows = choice.envs.filter((row) => envLanguage(row) === language);
-    if (!rows.length) continue;
+    // "R · current: default" said nothing about which R that is. With no R
+    // environment to choose from the group still says which R runs.
+    const rDefault = language === "r" && !current && choice.runtimes ? choice.runtimes.r : null;
+    if (!rows.length && !rDefault) continue;
     if (items.length) items.push({ sep: true });
-    const inUse = current || nbT("nb.env.default");
+    const inUse = current || (rDefault ? rDefaultLabel(rDefault) : nbT("nb.env.default"));
     items.push(heading(nbT("nb.env.group", title, inUse)));
     for (const row of rows) {
       items.push({

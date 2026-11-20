@@ -19,6 +19,10 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` 与对外 re-export。`window.openCust` / `custTab` 先加载并挂载设置 UI（`ensureCustomizeMounted` / `openCustomize`）；加载失败会提示，下次打开时重试。 |
 | [`layout.ts`](layout.ts) | `os-layout` 密度。`setLayout` / `applyLayout`。 |
 | [`memory.ts`](memory.ts) | Memory 作用域 id 与名称。绝不发送字面 `"default"`。 |
+| [`permissions.ts`](permissions.ts) | 设置 → 权限 的文案（`permT`）：每个工具名一句说明（`toolDescription`），以及 `globalRulesSummary`——从规则本身读出全局规则的实际效果（读取 / 写入 / 联网 / 装包 / 后台命令 / 连接器 / 技能）。 |
+| [`permissions.test.ts`](permissions.test.ts) | 摘要与种子规则一致、随规则变化而变化；没有通配规则的工具按“询问”计；未知工具名没有说明。 |
+| [`runtimes.ts`](runtimes.ts) | 设置 → 计算 的文案（`runtimeT`），以及把环境列表里的 `runtimes` 说成人话：`runtimeSummary`（环境名 · 内置 / 托管 / 本机 · 版本，绝不显示路径）、`rPackagesNote`（R 的关键包能否加载，以及托管 R 环境自带它们）、`rDefaultLabel`（运行环境菜单里 R 的“默认”指的是什么）、`installOutcome`（一次安装做了什么：版本、装到哪个环境、运行中的内核需要做什么）。 |
+| [`runtimes.test.ts`](runtimes.test.ts) | Python、某个环境里的 R、PATH 上的 R 和找不到 R 时的摘要；关键包说明；默认标签；安装结果在带版本、内核已重启、会话运行在别的环境、失败、没有版本这几种情况下的说法。 |
 | [`update.ts`](update.ts) | U2 更新行的中英双语文案表（`updateT`）：标题、版本/缓存/信任措辞、渠道标签与人工指引、原因码文案、管理员/频率/超时错误。车道本地：生成的 `i18n` 词典来自冻结的 `app.js`。 |
 | [`models.ts`](models.ts) | 本机端点清洗、协议目录、capability-receipt 读取；`loadModels` 用 `GET /models` 填充 composer `#model-select` 的 store（由 `bootCustomize` 调用），并保留每个条目的 `revision`。`sessionModelPin` 保存当前打开会话的固定：由 `watchSessionModelPin`（`bootCustomize` 只启动一次）从 `GET /frames/{id}` 读取；由 `noteSessionModelBinding` 根据任一 `model-binding` 响应更新，由 `noteAdmittedModelBinding` 根据发送消息 202 里的 `model_binding` 更新（发送开始后用户又选过模型时不采用，依据 `composerChoiceMark`）；版本计数器会丢弃被更新的读或写超越的读取，列表里找不到的固定会让列表重新加载一次。`composerSelection` 决定选择框显示什么——固定本身；固定找不到对应条目（profile 已删除、修订号较早）时显示占位项；否则显示默认。`chooseComposerModel` 先改绑当前会话（`POST /frames/{id}/model-binding {model_id}`，改绑和默认模型更新共用一个顺序写入队列），再设置服务端默认（`PUT /models/default`）并重新加载列表；重叠的多次选择只有最后一次会完成；没有打开的会话时只设置默认。`composerModelChoicePending` 防止发送越过尚未完成的选择，保留草稿并提示稍后重试；较早开始的列表读取不会覆盖更新的选择。文案在本模块的 `modelT` 表里；`resetSessionModelState` 供测试使用。 |
 | [`mount.ts`](mount.ts) | `mountCustomize()`：把设置弹窗渲染到 `#cust-root`。它是唯一导入 Customize 组件树的模块，首次打开设置时才加载（`ensureCustomizeMounted`），构建时因此被拆出首屏包。 |

@@ -11,7 +11,8 @@ vi.mock("./chrome", () => ({ hint: vi.fn() }));
 import { i18nReady, t } from "../../i18n";
 import { copyFailedText } from "../chrome/clipboard";
 import { hint } from "./chrome";
-import { openShareDialog } from "./share";
+import { shareCopy } from "./copy";
+import { openShareDialog, primeShareStatus, resetShareStatus, shareNeedsSetup } from "./share";
 
 class FakeNode {
   tagName: string;
@@ -145,6 +146,37 @@ describe("share dialog without a relay (EXP-2)", () => {
     expect(text).toContain("docs/webshare.md");
     const steps = body.find((node) => node.tagName === "OL");
     expect(steps?.children).toHaveLength(3);
+  });
+
+  // EXP-3: say what is missing first, then the steps; and tag the menu item.
+  it("leads with the relay the viewer has to host, before any step", async () => {
+    statusReply({ state: "disabled", configured: false });
+    await openShareDialog("f");
+    const lead = body.find((node) => String(node.className).includes("share-lead"))!;
+    expect(lead.textContent).toBe(shareCopy("setupLead"));
+    const order = allText(body);
+    expect(order.indexOf(shareCopy("setupLead"))).toBeLessThan(order.indexOf(shareCopy("setupEnv")));
+  });
+
+  it("knows the menu item needs setup once the status says no relay, and not before", async () => {
+    resetShareStatus();
+    expect(shareNeedsSetup()).toBe(false);
+    statusReply({ state: "disabled", configured: false });
+    await primeShareStatus();
+    expect(shareNeedsSetup()).toBe(true);
+
+    resetShareStatus();
+    statusReply({ state: "ready", configured: true });
+    await primeShareStatus();
+    expect(shareNeedsSetup()).toBe(false);
+
+    // An unreadable status leaves the item untagged.
+    resetShareStatus();
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("offline");
+    });
+    await primeShareStatus();
+    expect(shareNeedsSetup()).toBe(false);
   });
 
   it("keeps the Enable button when a relay is configured but sharing is off", async () => {

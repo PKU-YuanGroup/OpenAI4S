@@ -18,6 +18,14 @@ import { loadExecutionLog } from "../notebook/cells";
 const paint = vi.hoisted(() => ({ empty: vi.fn(), batches: vi.fn(), pageRows: vi.fn() }));
 const chrome = vi.hoisted(() => ({ hint: vi.fn() }));
 const timeline = vi.hoisted(() => ({ render: vi.fn() }));
+// The last message's failure, which the real reader takes from the DOM.
+const turn = vi.hoisted(() => ({
+  failure: null as null | { request_id: string; code: string; output_committed: boolean },
+}));
+vi.mock("../send/turn", async (original) => ({
+  ...await original<typeof import("../send/turn")>(),
+  lastTerminalFailure: () => turn.failure,
+}));
 vi.mock("../timeline/island", async (original) => ({
   ...await original<typeof import("../timeline/island")>(),
   renderActionTimeline: () => timeline.render(),
@@ -673,6 +681,35 @@ describe("a stopped read finishes the work of the terminal events it missed", ()
     expect(await recoverConversation("f")).toMatchObject({ runStateLoaded: true });
     expect(running.value).toBe(false);
     expect(chrome.hint).toHaveBeenCalledWith("", false);
+  });
+});
+
+// UI-1: reopening a session that failed earlier showed that old error in red
+// under the composer, as if it were happening now.
+describe("a session whose last turn failed", () => {
+  const failed = (path: string) =>
+    path.endsWith("/status") ? response({ running: false, status: "failed" }) : undefined;
+  beforeEach(() => {
+    turn.failure = { request_id: "req-old", code: "", output_committed: false };
+  });
+  afterEach(() => {
+    turn.failure = null;
+  });
+
+  it("is not announced as a current error when nothing was live in this page", async () => {
+    server(failed); await openConversation("f");
+    chrome.hint.mockClear();
+    expect(await recoverConversation("f")).toMatchObject({ runStateLoaded: true });
+    expect(chrome.hint).toHaveBeenCalledWith("", false);
+    expect(chrome.hint).not.toHaveBeenCalledWith(expect.any(String), true);
+  });
+
+  it("is still announced when this page was watching the turn and missed its end", async () => {
+    server(failed); await openConversation("f");
+    stream.value = { text: "unfinished" }; running.value = true;
+    chrome.hint.mockClear();
+    expect(await recoverConversation("f")).toMatchObject({ runStateLoaded: true });
+    expect(chrome.hint).toHaveBeenCalledWith(expect.stringContaining("req-old"), true);
   });
 });
 

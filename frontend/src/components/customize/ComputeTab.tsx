@@ -14,13 +14,21 @@ import { currentId } from "../../stores/session";
 import { standardProfileReadiness } from "../../stores/customize";
 import { _jobPoll } from "../../stores/ui";
 import type { StandardReadiness } from "../../features/customize/environment";
+import {
+  installOutcome,
+  readRuntimes,
+  rPackagesNote,
+  runtimeSummary,
+  runtimeT,
+  type InstallOutcome,
+} from "../../features/customize/runtimes";
 import { refreshEnvironmentStatus } from "../../features/send/environment";
 import { clearLeaseTimeout, scheduleTimeout } from "../../features/customize/timers";
 import { useAlive, useTimerLease } from "./use-timer-lease";
 import { useTabRead } from "./hooks";
 import { markCustomizeLoaded } from "../../features/customize/load";
 import { EnvironmentCard } from "../onboarding/ReadinessPanel";
-import { Hdr, InfoRow } from "./ui";
+import { CustRow, Hdr, InfoRow } from "./ui";
 
 export function ComputeTab() {
   const alive = useAlive();
@@ -33,6 +41,11 @@ export function ComputeTab() {
   const [jobs, setJobs] = useState<Record<string, unknown>[]>([]);
   const [pkg, setPkg] = useState("");
   const [installing, setInstalling] = useState(false);
+  // The environment listing (`runtimes`: what Python and R resolve to) for the
+  // open session, or the defaults when none is open.
+  const [listing, setListing] = useState<Record<string, unknown> | null>(null);
+  const [listedFor, setListedFor] = useState<string | null>(null);
+  const [installed, setInstalled] = useState<InstallOutcome | null>(null);
   const [jobKind, setJobKind] = useState("bash");
   const [jobCmd, setJobCmd] = useState("");
   const [jobBusy, setJobBusy] = useState(false);
@@ -78,17 +91,21 @@ export function ComputeTab() {
   useTabRead(
     "compute",
     async (current) => {
-      const [g, env, h] = await Promise.all([
+      const session = currentId.value;
+      const [g, env, h, list] = await Promise.all([
         api("/compute/gpu").catch(() => ({ available: false })),
         refreshEnvironmentStatus().then(
           (status) => (status as Record<string, unknown> | null) || { environments: [] },
         ),
         api("/compute/local/hostinfo").catch(() => ({})),
+        api(session ? `/frames/${session}/environments` : "/environments").catch(() => null),
       ]);
       if (!current()) return;
       setGpu(g);
       setHost(h);
       setEnvs(asList(env && env.environments) as Record<string, unknown>[]);
+      setListing(list);
+      setListedFor(session);
       markCustomizeLoaded();
       try {
         const info = await api("/compute/remote");
@@ -115,6 +132,15 @@ export function ComputeTab() {
   const avail = (remote ? asList(remote.available_aliases) : []).filter(
     (a) => !taken.has(a),
   );
+  const runtimes = readRuntimes(listing);
+  // The daemon's own interpreter is what this tab installs into; discovery
+  // lists it as the one built-in environment that is not a conda env.
+  const builtinEnv =
+    asString(
+      (asList(listing && listing.environments) as Record<string, unknown>[]).find(
+        (e) => e.builtin === true && e.is_conda === false,
+      )?.name,
+    ) || "base";
 
   return (
     <div>
@@ -267,28 +293,63 @@ export function ComputeTab() {
           </div>
         </>
       ) : null}
-      {envs.map((e) => {
-        const inst = asList(e.packages).filter(
-          (p) => (p as Record<string, unknown>).installed,
-        ) as Record<string, unknown>[];
-        return (
+      {runtimes ? (
+        <>
           <InfoRow
+            name={runtimeT("rt.title")}
+            detail={runtimeT(listedFor ? "rt.desc.session" : "rt.desc.default")}
+          />
+          <InfoRow name="Python" detail={runtimeSummary("python", runtimes.python)} />
+          <CustRow
+            name={
+              "R" +
+              (runtimes.r.available
+                ? " · " + runtimeT(runtimes.r.selected ? "rt.r.chosen" : "rt.r.default")
+                : "")
+            }
+            desc={
+              <>
+                <span class="rt-line">{runtimeSummary("r", runtimes.r)}</span>
+                {rPackagesNote(runtimes.r) ? (
+                  <span class="rt-line">{rPackagesNote(runtimes.r)}</span>
+                ) : null}
+              </>
+            }
+          />
+        </>
+      ) : null}
+      {envs.map((e) => {
+        // The packages the daemon tracks in its own interpreter, with the
+        // versions actually installed. This row used to be the whole of the
+        // tab's environment view, labelled "scientific/networking packages"
+        // whether or not a networking package was among them.
+        const tracked = asList(e.packages) as Record<string, unknown>[];
+        const inst = tracked.filter((p) => p.installed);
+        const absent = tracked.filter((p) => !p.installed);
+        const names = (rows: Record<string, unknown>[], versions: boolean) =>
+          rows
+            .slice(0, 18)
+            .map((p) => asString(p.name) + (versions && p.version ? " " + asString(p.version) : ""))
+            .join(", ") + (rows.length > 18 ? " …" : "");
+        return (
+          <CustRow
             key={asString(e.language)}
-            name={t(
-              "cust.compute.kernelLabel",
-              e.language,
-              e.status === "installing"
-                ? t("cust.compute.kernelInstalling")
-                : t("cust.compute.kernelReady"),
-            )}
-            detail={t(
-              "cust.compute.preinstalledDetail",
-              e.package_count,
-              inst
-                .slice(0, 18)
-                .map((p) => p.name)
-                .join("、") + (inst.length > 18 ? " …" : ""),
-            )}
+            name={
+              runtimeT("rt.packages.name") +
+              (e.status === "installing" ? " · " + runtimeT("rt.packages.installing") : "")
+            }
+            desc={
+              <>
+                <span class="rt-line">
+                  {runtimeT("rt.packages.detail", inst.length, tracked.length, names(inst, true))}
+                </span>
+                {absent.length ? (
+                  <span class="rt-line">
+                    {runtimeT("rt.packages.missing", names(absent, false))}
+                  </span>
+                ) : null}
+              </>
+            }
           />
         );
       })}
@@ -310,9 +371,11 @@ export function ComputeTab() {
                 const pkgs = pkg.trim().split(/\s+/).filter(Boolean);
                 if (!pkgs.length) return;
                 setInstalling(true);
+                setInstalled(null);
+                const session = currentId.value;
                 try {
-                  const r = currentId.value
-                    ? await api(`/frames/${currentId.value}/kernel/install`, {
+                  const r = session
+                    ? await api(`/frames/${session}/kernel/install`, {
                         method: "POST",
                         body: JSON.stringify({ packages: pkgs, restart: true }),
                       })
@@ -320,32 +383,37 @@ export function ComputeTab() {
                         method: "POST",
                         body: JSON.stringify({ packages: pkgs }),
                       });
-                  hint(
-                    r.ok
-                      ? t(
-                          "step.env.installed",
-                          asList(r.installed).join("、") +
-                            (r.restarted ? t("cust.compute.kernelRestarted") : ""),
-                        )
-                      : t(
-                          "toast.compute.installFailed",
-                          (asList(r.failed)[0] as { error?: string } | undefined)?.error ||
-                            t("toast.compute.installSeeLogs"),
-                        ),
-                  );
+                  // Said in the tab and kept there: the toast alone was gone
+                  // before the package count below had moved.
+                  const outcome = installOutcome(r, {
+                    builtinEnv,
+                    sessionOpen: !!session,
+                    sessionEnv: session === listedFor && runtimes ? runtimes.python.environment : "",
+                    fallbackError: t("toast.compute.installSeeLogs"),
+                  });
+                  if (alive()) setInstalled(outcome);
+                  hint(outcome.lines[0]!, !outcome.ok);
                   if (r.ok) {
                     dropEnvSnapshots();
                     setPkg("");
                   }
                   refreshCustTab("compute");
                 } catch (e) {
-                  hint(t("toast.compute.installFailed", apiErrorText(e)), true);
+                  const message = runtimeT("rt.install.failed", apiErrorText(e));
+                  if (alive()) setInstalled({ ok: false, lines: [message] });
+                  hint(message, true);
                 }
                 setInstalling(false);
               }}
             >
               {installing ? t("cust.compute.installingBtn") : t("cust.compute.installBtn")}
             </button>
+            <span class="rt-line">{runtimeT("rt.install.hint", builtinEnv)}</span>
+            {installed ? (
+              <span class={"rt-line rt-install " + (installed.ok ? "ok" : "err")} role="status">
+                {installed.lines.join(" ")}
+              </span>
+            ) : null}
           </div>
         </div>
       </div>

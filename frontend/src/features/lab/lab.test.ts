@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { labTabHidden, latestRead, setLabTabHidden } from "./LabPanel";
+import { labTabChoice, labTabHidden, latestRead, noteLabPrepared, setLabTabHidden } from "./LabPanel";
 import { categoryLabel, plainIntro } from "./MarketPanel";
 
 // NAV-6: the Lab tab sits in every session; people who never run instrument
@@ -21,13 +21,44 @@ describe("hiding the Lab tab", () => {
       body: { classList: { toggle: (name: string, on: boolean) => (on ? classes.add(name) : classes.delete(name)) } },
       querySelector: () => null,
     });
-    expect(labTabHidden()).toBe(false);
+    // UI-1: with no choice made the tab is hidden until the lab is set up.
+    noteLabPrepared(false);
+    expect(labTabHidden()).toBe(true);
     setLabTabHidden(true);
     expect(labTabHidden()).toBe(true);
     expect(classes.has("lab-tab-hidden")).toBe(true);
     setLabTabHidden(false);
     expect(labTabHidden()).toBe(false);
     expect(classes.has("lab-tab-hidden")).toBe(false);
+  });
+
+  it("appears on its own once the lab is set up, unless the person chose", () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+    });
+    const classes = new Set<string>();
+    vi.stubGlobal("document", {
+      body: { classList: { toggle: (name: string, on: boolean) => (on ? classes.add(name) : classes.delete(name)) } },
+      querySelector: () => null,
+    });
+    noteLabPrepared(false);
+    expect(labTabChoice()).toBeNull();
+    expect(labTabHidden()).toBe(true);
+
+    noteLabPrepared(true);
+    expect(labTabHidden()).toBe(false);
+    expect(classes.has("lab-tab-hidden")).toBe(false);
+
+    // An explicit "hidden" outlives a prepared lab ...
+    store.set("os-lab-tab", "hidden");
+    expect(labTabHidden()).toBe(true);
+    // ... and an explicit "shown" outlives one that is not set up.
+    noteLabPrepared(false);
+    setLabTabHidden(false);
+    expect(store.get("os-lab-tab")).toBe("shown");
+    expect(labTabHidden()).toBe(false);
   });
 });
 

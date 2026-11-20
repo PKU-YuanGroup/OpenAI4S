@@ -8657,6 +8657,7 @@ class SessionRunner:
         picks an env that already has the needed packages instead of installing
         into one kernel every task."""
         from openai4s.kernel import environments as envmod
+        from openai4s.kernel import runtime_status
 
         st = self._sessions.get(root_frame_id) if root_frame_id else None
         current = self._selected_env_name(st) if st else envmod.default_env_name()
@@ -8672,6 +8673,9 @@ class SessionRunner:
             "current_r": current_r,
             "default": envmod.default_env_name(),
             "pending": (st.pending_env if st else None),
+            # What each language actually runs in, for Settings → Compute and
+            # the runtime menu: `current_r: null` alone only says "default".
+            "runtimes": runtime_status.describe_runtimes(current, current_r),
         }
 
     def set_env(
@@ -18619,6 +18623,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         "rules": store.list_permission_rules_for_frame(
                             root_frame_id=root, project_id=proj
                         ),
+                    }
+                )
+                return
+            if sub == "/permissions" and method == "GET":
+                # The global tier on its own, for Settings with no session
+                # open. Nothing new is disclosed: every caller already gets
+                # it inside `/frames/{id}/permissions`.
+                self._json(
+                    {
+                        "rules": {
+                            "global": store.get_permission_rules(
+                                scope="global", scope_id=""
+                            )
+                        }
                     }
                 )
                 return

@@ -438,7 +438,17 @@ export function openProjectModal(proj?: ProjectLike | null): void {
   const name = $("#pm-name") as HTMLInputElement | null;
   const desc = $("#pm-desc") as HTMLTextAreaElement | null;
   const ctx = $("#pm-ctx") as HTMLTextAreaElement | null;
-  if (name) name.value = p ? p.name || "" : "";
+  if (name) {
+    name.value = p ? p.name || "" : "";
+    // Enter in the name field submits the dialog, as a one-line form does.
+    // Not while an IME is composing: that Enter confirms a candidate (229 is
+    // what Safari reports for it, with isComposing already false).
+    name.onkeydown = (event) => {
+      if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      void submitProjectModal();
+    };
+  }
   if (desc) desc.value = p ? p.description || "" : "";
   if (ctx) ctx.value = p ? p.context || p.agent_context || "" : "";
   resetProjectFolderPicker(p?.folder_path || "");

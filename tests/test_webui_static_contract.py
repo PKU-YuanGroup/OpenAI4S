@@ -3319,3 +3319,26 @@ def test_replay_dedupe_does_not_claim_an_unrelated_or_final_chunk() -> None:
     assert state["replay"] is True
     assert state["calls"]["badges"] == 0, "replay must not demote a final REST row"
     assert state["row"]["dataset"]["reviewStatus"] == "verified"
+
+
+def _css_rule(selector: str) -> str:
+    """The declarations of the first rule whose selector is exactly `selector`."""
+    match = re.search(
+        r"(?:^|[}\n])\s*" + re.escape(selector) + r"\s*\{([^}]*)\}", STYLE_CSS
+    )
+    assert match, f"no CSS rule for {selector}"
+    return re.sub(r"\s+", "", match.group(1))
+
+
+def test_narrow_and_borrowed_surfaces_keep_their_shape() -> None:
+    """Two layout rules a unit test cannot see (usability review, UI-1).
+
+    In a narrow Notebook panel the cell badges "当前" / "已过期" wrapped into a
+    column of single characters; and the run-location dialog, which borrows
+    the artifact viewer's modal, opened as a document-sized box around three
+    options.
+    """
+    badge = _css_rule(".nbc-state")
+    assert "white-space:nowrap" in badge and "flex:none" in badge
+    compact = _css_rule("#modal .modal-box:has(.run-location)")
+    assert "height:auto" in compact and "width:min(520px,94vw)" in compact

@@ -253,6 +253,26 @@ describe("one place per session on the home page", () => {
     expect(api).not.toHaveBeenCalled();
   });
 
+  it("marks how a recent session ended: failed is said in words (UI-1)", () => {
+    attentionCards.value = [];
+    renderDashRecent([
+      { id: "f-ok", name: "Finished fit", status: "done", message_count: 2, updated_at: "2026-11-18T07:00:00Z" },
+      { id: "f-bad", name: "Broken fit", status: "failed", message_count: 2, updated_at: "2026-11-18T06:00:00Z" },
+      { id: "f-new", name: "Paused fit", status: "paused", message_count: 2, updated_at: "2026-11-18T05:00:00Z" },
+    ]);
+    const rows = dom["#dash-sessions"]!.children as unknown as Array<{
+      children: Array<{ cls: string; title?: string; textContent: string }>;
+    }>;
+    const dot = (index: number) => rows[index]!.children[0]!;
+    expect(dot(0).cls).toBe("d-dot done");
+    expect(dot(0).title).toBe(dashCopy("dash.status.done"));
+    expect(dot(1).cls).toBe("d-dot failed");
+    expect(dot(2).cls).toBe("d-dot");
+    const labels = (index: number) => rows[index]!.children.map((node) => node.textContent);
+    expect(labels(1)).toContain(dashCopy("dash.status.failed"));
+    expect(labels(0)).not.toContain(dashCopy("dash.status.failed"));
+  });
+
   it("does not repeat the session's name under a Running card's title", () => {
     const project = { project_id: "p1", name: "qPCR project" };
     expect(runCardSubtitle({ name: "ΔΔCt analysis", task_summary: "ΔΔCt analysis of the plate" }, project)).toBe(

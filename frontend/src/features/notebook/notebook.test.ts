@@ -1248,4 +1248,26 @@ describe("Session options environment picker (ENV-6)", () => {
     click("broken")!.onClick!(); // cannot run: explained, not sent
     expect(picked).toEqual(["work", "r-mini"]);
   });
+
+  it("says what the R default resolves to (ENV-3)", () => {
+    const python = { available: true, environment: "base", kind: "builtin", version: "3.13.1" };
+    const r = { available: true, selected: false, environment: "lab_env", kind: "local", version: "4.4.1" };
+    const headings = (choice: Parameters<typeof environmentMenuItems>[0]) =>
+      environmentMenuItems(choice, () => undefined)
+        .map((item) => (item.node ? item.node.textContent : ""))
+        .filter(Boolean);
+
+    expect(headings({ envs, current: "base", currentR: null, runtimes: { python, r } })).toContain(
+      nbT("nb.env.group", "R", nbT("nb.env.default") + " → lab_env · local · R 4.4.1"),
+    );
+    // A chosen R environment is named as before.
+    expect(headings({ envs, current: "base", currentR: "lab_env", runtimes: { python, r } })).toContain(
+      nbT("nb.env.group", "R", "lab_env"),
+    );
+    // No R environment to pick from: the group still says which R runs.
+    const pythonOnly = envs.filter((row) => row.language === "python");
+    expect(
+      headings({ envs: pythonOnly, current: "base", currentR: null, runtimes: { python, r: { ...r, environment: "" } } }),
+    ).toContain(nbT("nb.env.group", "R", nbT("nb.env.default") + " → R installed on this computer · local · R 4.4.1"));
+  });
 });

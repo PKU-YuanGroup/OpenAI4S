@@ -481,8 +481,41 @@ def install(
         "failed": ([] if ok else [{"name": ", ".join(pip_names), "error": error}]),
         "log": log,
         "interpreter": target,
+        "installed_versions": _installed_versions(pip_names, target) if ok else [],
     }
     return result
+
+
+_PROJECT_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+
+
+def _installed_versions(requirements: list[str], target: str) -> list[dict]:
+    """``[{"name", "version"}]`` for what an install just put in this interpreter.
+
+    The requirement strings alone (``openpyxl``, ``numpy>=2``) do not say which
+    version resolved, and Settings showed nothing but a package count moving.
+    Read back from the installed metadata rather than parsed out of pip's log.
+    Only for this process's own interpreter, where the read needs no
+    subprocess; a path, URL or other source names no project and is skipped.
+    """
+    if not _is_this_interpreter(target):
+        return []
+    from importlib import invalidate_caches
+    from importlib.metadata import PackageNotFoundError, version
+
+    invalidate_caches()
+    found: list[dict] = []
+    for requirement in requirements:
+        if _not_a_registry_requirement(requirement):
+            continue
+        match = _PROJECT_NAME.match(requirement)
+        if match is None:
+            continue
+        try:
+            found.append({"name": match.group(0), "version": version(match.group(0))})
+        except PackageNotFoundError:
+            continue
+    return found
 
 
 def core_plan() -> dict:

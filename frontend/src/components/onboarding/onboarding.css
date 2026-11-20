@@ -279,6 +279,28 @@
   font-size: 12px;
 }
 
+/* A note or a validation message sits directly under the field it is about. */
+#onboarding .onb-field-note {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+#onboarding .onb-field-error {
+  color: var(--danger, #b42318);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+/* Title row: the language switch stays reachable while the wizard is modal. */
+#onboarding .onb-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+#onboarding .onb-lang {
+  flex: none;
+}
+
 #onboarding .onb-warn {
   border: 0;
   border-radius: var(--radius, 8px);

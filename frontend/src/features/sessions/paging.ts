@@ -22,6 +22,8 @@ export type SessionLike = {
   updated_at?: string;
   message_count?: number;
   running?: boolean;
+  /** How the session's last turn ended (`done`, `failed`, …), from `GET /frames`. */
+  status?: string;
   /** A running turn blocked on an approval request (`GET /frames`). */
   awaiting_approval?: boolean;
   kernel_alive?: boolean;
