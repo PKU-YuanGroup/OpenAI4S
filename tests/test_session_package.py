@@ -4379,6 +4379,92 @@ def test_a_moved_data_directory_does_not_ship_its_old_location(tmp_path, monkeyp
         store.close()
 
 
+def test_a_run_started_outside_home_and_data_dir_does_not_ship_its_directory(
+    tmp_path, monkeypatch
+):
+    """CLI-28: `openai4s run` works in the directory it was started from (an
+    HPC scratch, an external disk), not in the session workspace, and outside
+    the home and data directories nothing anchored it: the export carried it
+    in environment.json, snapshots.json and every cell printout."""
+    import tempfile
+
+    from openai4s.evidence import verify_package
+
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    # Not under this machine's temp root either, so only the new rule applies.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "other-tmp"))
+    scratch = tmp_path.parent / f"{tmp_path.name}-scratch" / "alice" / "run1"
+    scratch.mkdir(parents=True)
+    store, domain, project, root, _artifact, _checkpoint, _workspace = _source(tmp_path)
+    try:
+        environment = {
+            "runtime": "python",
+            "working_directory": str(scratch),
+            "sandbox": {"backend": "seatbelt", "workspace": str(scratch)},
+        }
+        generation = store.create_kernel_generation(
+            root_frame_id=root,
+            branch_id=root,
+            language="python",
+            environment=environment,
+            bootstrap={"working_directory": str(scratch), "status": "ready"},
+            state="active",
+        )
+        store.log_cell(
+            frame_id=root,
+            root_frame_id=root,
+            project_id=project["project_id"],
+            code="import os\nprint(os.getcwd())",
+            result={"id": "cell-cwd", "stdout": f"{scratch}/out.csv\n", "stderr": ""},
+            cell_index=2,
+            state_revision=2,
+            generation_id=generation["generation_id"],
+        )
+        group = store.append_action_group(
+            root_frame_id=root,
+            branch_id=root,
+            turn_id="turn-scratch-run",
+            kind="code",
+        )
+        printed = f"[Observation] stdout: {scratch}/out.csv"
+        store.append_action_event(
+            group_id=group["group_id"],
+            type="observation",
+            action_id=f"{group['group_id']}:action",
+            result={
+                "observation": printed,
+                "messages": [{"role": "user", "content": printed}],
+            },
+        )
+        store.log_host_call(
+            method="read_file",
+            args=[{"path": f"{scratch}/helper.py"}],
+            ok=True,
+            frame_id=root,
+        )
+        domain.create_checkpoint(root, metadata={"label": "after the run"})
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+
+        leaks = sorted(
+            name
+            for name, payload in files.items()
+            if str(scratch.parent).encode() in payload
+        )
+        assert leaks == []
+        generations = json.loads(files["environment.json"])["generations"]
+        assert {g["environment"]["working_directory"] for g in generations} == {"."}
+        notebook = files["notebook.json"].decode()
+        assert "./out.csv" in notebook
+        package = tmp_path / "scratch-run.openai4s-session.zip"
+        package.write_bytes(exported["data"])
+        assert verify_package(str(package))["ok"]
+    finally:
+        store.close()
+
+
 def test_a_redacted_package_still_verifies_inspects_and_imports(tmp_path, monkeypatch):
     from openai4s.evidence import verify_package
     from openai4s.package_diagnosis import diagnose, read_package
