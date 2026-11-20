@@ -181,7 +181,7 @@ git clone --recursive --branch v1.0.1 https://github.com/PKU-YuanGroup/OpenAI4S 
 ./start.sh     # launch the web UI at http://127.0.0.1:8760/
 ```
 
-`setup.sh` creates the lightweight control `.venv` with **uv**. For the comprehensive Python + R scientific kernels, install a Conda-family manager (`micromamba`, `mamba`, or `conda`) and run `./setup.sh --with-kernel-envs` instead. Existing kernel environments can be synchronized with `./setup.sh --update-kernel-envs`; updates do not prune user-installed packages. `start.sh` launches the daemon + web UI. No API key is needed to boot — **set your model in the UI** (Customize → Models). One-shot without the UI: `uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`.
+`setup.sh` creates the lightweight control `.venv` with **uv**. For the comprehensive Python + R scientific kernels, install a Conda-family manager (`micromamba`, `mamba`, or `conda`) and run `./setup.sh --with-kernel-envs` instead. Existing kernel environments can be synchronized with `./setup.sh --update-kernel-envs`; updates do not prune user-installed packages. `start.sh` launches the daemon + web UI and prints the address it listens on. `setup.sh` puts the `openai4s` command in `.venv`, not on your `PATH`: from this folder run it as `uv run openai4s <command>` (for example `uv run openai4s url` for the sign-in link), or `source .venv/bin/activate` first. No API key is needed to boot — **set your model in the UI** (Customize → Models). One-shot without the UI: `uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`.
 
 ### macOS
 

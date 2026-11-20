@@ -1323,7 +1323,10 @@ def cmd_status(args) -> int:
             f"daemon: running (pid {pid}) at "
             f"{_url(cfg, with_token=False, endpoint=endpoint)}"
         )
-        print("  open     : run `openai4s url` for the sign-in URL")
+        print(
+            "  open     : run `openai4s url` for the sign-in URL (in the "
+            "OpenAI4S folder without it on PATH: `uv run openai4s url`)"
+        )
         print(f"  model    : {health.get('model')}")
         # The loopback health response is intentionally a minimal public
         # projection.  The CLI already owns the local configuration, so it can
@@ -1886,7 +1889,9 @@ def cmd_init(args) -> int:
             print(f"Web search: {lead}{' → '.join(backups)}")
         if not result.native_runtime_supported:
             print("Native Windows kernels are unsupported; run OpenAI4S under WSL2.")
-        print("Next: openai4s serve")
+        # ./setup.sh leaves `openai4s` in .venv/bin, which is not on PATH in a
+        # new terminal; ./start.sh is the launcher that works from a checkout.
+        print("Next: openai4s serve (or ./start.sh in the OpenAI4S folder)")
     return 0
 
 

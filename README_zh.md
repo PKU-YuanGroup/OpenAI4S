@@ -169,7 +169,7 @@ git clone --recursive --branch v1.0.1 https://github.com/PKU-YuanGroup/OpenAI4S 
 ./start.sh     # 启动 Web UI(http://127.0.0.1:8760/)
 ```
 
-`setup.sh` 用 **uv** 创建轻量控制面 `.venv`。如需完整的 Python + R 科学计算内核，请先安装 `micromamba`、`mamba` 或 `conda`，然后改用 `./setup.sh --with-kernel-envs`；已有环境可用 `./setup.sh --update-kernel-envs` 同步，且不会删除用户自行安装的包。`start.sh` 从环境中启动守护进程 + Web UI。启动无需 API Key —— **在 UI 里设置你的模型**(Customize → Models)。不启动 UI 跑单个任务:`uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`。
+`setup.sh` 用 **uv** 创建轻量控制面 `.venv`。如需完整的 Python + R 科学计算内核，请先安装 `micromamba`、`mamba` 或 `conda`，然后改用 `./setup.sh --with-kernel-envs`；已有环境可用 `./setup.sh --update-kernel-envs` 同步，且不会删除用户自行安装的包。`start.sh` 从环境中启动守护进程 + Web UI，并打印实际监听的地址。`setup.sh` 把 `openai4s` 命令装在 `.venv` 里，不在 `PATH` 上：在本目录下用 `uv run openai4s <命令>` 运行（例如用 `uv run openai4s url` 获取登录链接），或先 `source .venv/bin/activate`。启动无需 API Key —— **在 UI 里设置你的模型**(Customize → Models)。不启动 UI 跑单个任务:`uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`。
 
 ### macOS
 
