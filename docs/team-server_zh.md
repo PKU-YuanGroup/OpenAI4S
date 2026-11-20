@@ -101,6 +101,8 @@ Seatbelt/bubblewrap 无法建立并通过自测，Cell 即使在
 启用历史能证明由 Web 创作、且仅含配方的版本；重新启用含 `kernel.py` 的版本或
 来源无法确认的旧 Host 历史需要管理员。
 
+访客（邀请得来的账号，或 `openai4s user add --role guest`）没有工作台：打开任何页面都会进入只读回放页（`/replay`；会话链接直接打开那个会话），页面列出访客受邀项目里所有项目可见的会话。
+
 成员保留 UI 需要的每一项读取。完整清单在 `openai4s/server/team_policy.py`；不在其上的路由就是成员的。
 
 ## 3. 集群会话（可选）

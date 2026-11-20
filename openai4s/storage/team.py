@@ -670,6 +670,29 @@ class TeamRepository:
             ).fetchone()
         return row is not None
 
+    def replay_candidates(self, user: dict | None, *, limit: int = 500) -> list[str]:
+        """Session ids worth offering this user in the replay viewer (TEAM-28).
+
+        Their own sessions, and the project-visible sessions of projects they
+        belong to -- which is where a guest's invitation puts them. A list to
+        choose from, not an authorization: the caller still asks
+        :meth:`session_replayable_by` for every id, so this can only ever
+        narrow what replay already allows.
+        """
+        if not user or not user.get("id"):
+            return []
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT s.session_id FROM session_owners s"
+                " WHERE s.user_id=?"
+                " OR (s.visibility='project' AND s.project_id IS NOT NULL"
+                " AND s.project_id IN"
+                " (SELECT project_id FROM project_members WHERE user_id=?))"
+                " LIMIT ?",
+                (user.get("id"), user.get("id"), max(1, int(limit))),
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
     # --- audit (INV-12) --------------------------------------------------
 
     def audit(

@@ -64,6 +64,13 @@ _MY_PASSWORD = contract.RouteSpec(
     "auth.me.password", "POST", r"/auth/me/password", mutates=True
 )
 
+#: The sessions this login may open in the replay viewer (TEAM-28): what a
+#: guest lands on, instead of an empty box asking for a session id they have
+#: no way to know. A guest path (the gateway's guest gate names it).
+_MY_REPLAYS = contract.RouteSpec(
+    "auth.me.replays", "GET", r"/auth/me/replays", mutates=False
+)
+
 ROUTES = contract.validate_routes(
     (
         _CLEAR_MY_KEY,
@@ -72,6 +79,7 @@ ROUTES = contract.validate_routes(
         _ME,
         _MY_KEY,
         _MY_PASSWORD,
+        _MY_REPLAYS,
         _REDEEM,
         _SET_MY_KEY,
     )
@@ -203,6 +211,43 @@ def _handle_my_password(self, team_auth: Any) -> bool:
     return True
 
 
+def _handle_my_replays(self, team_auth: Any, store: Any) -> bool:
+    """The sessions this login may replay, newest first (TEAM-28).
+
+    Every id is checked with `session_replayable_by`, the same predicate the
+    replay route itself applies, and the title goes through the sanitizer the
+    replay projection uses for it -- so the list shows nothing the viewer
+    would not.
+    """
+    from .session_package import _sanitize
+
+    identity = getattr(self, "_team_identity", None)
+    if team_auth is None:
+        self._json({"error": "team mode is disabled", "code": "team_off"}, 403)
+        return True
+    if identity is None:
+        self._json({"error": "login required", "code": "login_required"}, 401)
+        return True
+    user = {"id": identity.user_id, "role": identity.role, "kind": identity.kind}
+    rows: list[dict] = []
+    for session_id in store.team.replay_candidates(user):
+        if not store.team.session_replayable_by(session_id, user):
+            continue
+        frame = store.get_frame(session_id)
+        if frame is None or (frame.get("root_frame_id") or session_id) != session_id:
+            continue
+        rows.append(
+            {
+                "session_id": session_id,
+                "name": _sanitize(frame.get("name") or frame.get("task_summary")),
+                "updated_at": frame.get("updated_at"),
+            }
+        )
+    rows.sort(key=lambda row: -int(row.get("updated_at") or 0))
+    self._json({"sessions": rows[:200]})
+    return True
+
+
 def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
     """Answer an auth route, or report that this group does not own it."""
     if not sub.startswith(_PATH_PREFIX):
@@ -252,6 +297,8 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
         return True
     if _MY_PASSWORD.match(method, sub):
         return _handle_my_password(self, team_auth)
+    if _MY_REPLAYS.match(method, sub):
+        return _handle_my_replays(self, team_auth, store)
     if _LOGOUT.match(method, sub):
         if team_auth is None:
             self._json({"error": "team mode is disabled", "code": "team_off"}, 403)

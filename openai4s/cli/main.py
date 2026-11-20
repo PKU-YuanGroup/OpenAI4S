@@ -3086,7 +3086,16 @@ def build_parser() -> argparse.ArgumentParser:
     usub = puser.add_subparsers(dest="user_action", required=True)
     ua = usub.add_parser("add", help="create an account")
     ua.add_argument("username")
-    ua.add_argument("--role", choices=("admin", "member", "guest"), default="member")
+    ua.add_argument(
+        "--role",
+        choices=("admin", "member", "guest"),
+        default="member",
+        help="admin: everything a member can, plus accounts, instance settings "
+        "(models, compute, installs) and every session; member (default): runs "
+        "their own sessions and reads project-visible ones of their projects; "
+        "guest: read-only replay of project-visible sessions in projects they "
+        "were invited to",
+    )
     ua.add_argument("--display-name", dest="display_name")
     ua.add_argument(
         "--password-stdin",

@@ -22,6 +22,7 @@ rate-limited refusals alike.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -285,6 +286,22 @@ def login_location(target: str | None) -> str:
     return "/login" if nxt is None else "/login?next=" + quote(nxt, safe="")
 
 
+#: A workbench session link: `/projects/<project>/frames/<session id>`. The
+#: id class is narrow on purpose -- it is written into a Location header.
+_SESSION_LINK = re.compile(r"/projects/[^/]+/frames/([A-Za-z0-9_-]{1,128})")
+
+
+def guest_landing(path: str) -> str:
+    """Where a guest's browser goes instead of the workbench (TEAM-28).
+
+    A guest's whole surface is the replay viewer, so loading the workbench
+    only produced a run of 403s before the client sent them on. A session
+    link opens that session in the viewer.
+    """
+    match = _SESSION_LINK.fullmatch(path or "")
+    return "/replay#" + match.group(1) if match else "/replay"
+
+
 def public_user(user: dict) -> dict:
     """The wire shape of a user row: no hash material, ever."""
     return {
@@ -304,6 +321,7 @@ __all__ = [
     "TeamAuthService",
     "TeamIdentity",
     "WrongPassword",
+    "guest_landing",
     "login_location",
     "public_user",
     "safe_next_path",

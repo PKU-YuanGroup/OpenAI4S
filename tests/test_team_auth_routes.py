@@ -863,5 +863,9 @@ def test_the_password_route_answers_team_off_in_single_user_mode(tmp_path):
         status, raw = _token_post(node.port, node.token, _CHANGE, {})
         assert status == 403, raw[:300]
         assert _body_json(raw).get("code") == "team_off"
+        # TEAM-28's list, likewise
+        status, raw = _get(node.port, "/api/v1/auth/me/replays", token=node.token)
+        assert status == 403, raw[:300]
+        assert _body_json(raw).get("code") == "team_off"
     finally:
         node.close()

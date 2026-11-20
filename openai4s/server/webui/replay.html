@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenAI4S — session replay</title>
+<!-- Only for the document language (saved pick, else the browser's). -->
+<script src="/static/theme-bootstrap.js"></script>
 <style>
   :root { color-scheme: light dark; }
   body { font: 15px/1.6 -apple-system, system-ui, sans-serif; max-width: 46rem;
@@ -23,11 +25,25 @@
   .cell-out { color: #52525b; }
   #err { color: #dc2626; }
   .meta { font-size: .8rem; color: #71717a; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  #who { font-size: .85rem; color: #71717a; display: flex; align-items: center; gap: 10px; }
+  #who button { padding: .25em .7em; font-size: .8rem; background: transparent; color: inherit;
+                border: 1px solid #d4d4d8; }
+  #list { margin: .4em 0 1.2em; }
+  #list h2 { font-size: .95rem; margin: 0 0 .4em; }
+  #list a { display: block; padding: .45em .7em; margin: .2em 0; border-radius: 6px;
+            color: inherit; text-decoration: none; background: rgba(127,127,127,.08); }
+  #list a:hover { background: rgba(127,127,127,.16); }
+  #list .when { float: right; font-size: .75rem; color: #71717a; }
   @media (prefers-color-scheme: dark) { body { background: #18181b; color: #e4e4e7; } }
 </style>
 </head>
 <body>
-<h1>OpenAI4S · Read-only session replay</h1>
+<div class="head">
+  <h1>OpenAI4S · Read-only session replay</h1>
+  <div id="who"></div>
+</div>
+<div id="list"></div>
 <div class="bar">
   <input id="sid" placeholder="session id (f-…)" spellcheck="false">
   <button id="go">Open</button>

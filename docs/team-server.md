@@ -217,6 +217,11 @@ project-membership guard remains the human authoring boundary. Member rollback
 is limited to recipe-only versions with Web-authoring provenance; reactivating
 a `kernel.py` version or un-attributed legacy Host history requires an admin.
 
+A guest — an invite's account, or `openai4s user add --role guest` — has
+no workbench: a page load goes to the read-only replay viewer (`/replay`, a
+session link opening that session), which lists the project-visible
+sessions of the projects the guest was invited into.
+
 Members keep every read the UI needs. The full list is
 `openai4s/server/team_policy.py`, and a route not on it is a member's.
 

@@ -216,9 +216,31 @@ const redeem = await guest.evaluate(async (t) => {
   return r.status;
 }, token);
 check(redeem === 201, `invite redeemed into a guest account (${redeem})`);
+// TEAM-28: the server sends a guest's page load to the viewer -- the
+// workbench (and its run of 403s) never loads -- and the viewer lists what
+// the guest may read, with who is signed in and a way out.
+const guestApi = [];
+guest.on("request", (req) => {
+  if (req.url().includes("/api/v1/")) guestApi.push(new URL(req.url()).pathname);
+});
 await guest.goto(BASE + "/", { waitUntil: "domcontentloaded" });
 await guest.waitForURL("**/replay", { timeout: 10000 });
 check(true, "a guest landing on / is sent to /replay");
+await guest
+  .locator(`#list a[data-session="${created.fid}"]`)
+  .waitFor({ state: "visible", timeout: 10000 });
+check(true, "the guest's replay page lists the project's session");
+check(
+  (await guest.locator("#who button").count()) === 1,
+  "the guest's replay page names the guest and offers Sign out",
+);
+check(
+  guestApi.every((path) => path.startsWith("/api/v1/auth/")),
+  `a guest's landing reads only its own auth routes (${[...new Set(guestApi)].join(", ")})`,
+);
+await guest.goto(BASE + deepLink, { waitUntil: "domcontentloaded" });
+await guest.waitForURL(`**/replay#${created.fid}`, { timeout: 10000 });
+check(true, "a session link opens that session in the guest's viewer");
 const guestBlocked = await guest.evaluate(async () => ({
   frames: (await fetch("/api/v1/frames")).status,
   files: (await fetch("/api/v1/files")).status,

@@ -121,6 +121,16 @@ def test_user_help_names_the_team_mode_switch(capsys):
     assert "OPENAI4S_TEAM_MODE=1" in capsys.readouterr().out
 
 
+def test_user_add_help_says_what_each_role_may_do(capsys):
+    """TEAM-28: `--role guest` was offered with no word that a guest only
+    reads replays."""
+    with pytest.raises(SystemExit):
+        main(["user", "add", "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "guest: read-only replay" in out
+    assert "member (default)" in out and "admin:" in out
+
+
 def test_duplicate_username_exit_code(capsys):
     assert main(["user", "add", "alice"]) == 0
     assert main(["user", "add", "alice"]) == 2

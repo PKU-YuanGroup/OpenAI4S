@@ -60,6 +60,14 @@ def _create_session(daemon, cookie: str) -> str:
     return str(_body(raw).get("frame_id") or _body(raw).get("id"))
 
 
+def _create_session_in(daemon, cookie: str, project_id: str) -> str:
+    status, raw = _post(
+        daemon.port, "/api/v1/frames", {"project_id": project_id}, cookie=cookie
+    )
+    assert status == 200, raw[:300]
+    return str(_body(raw).get("frame_id") or _body(raw).get("id"))
+
+
 def _delete(daemon, path: str, cookie: str, body: dict | None = None):
     payload = json.dumps(body or {}).encode()
     lines = [
@@ -726,6 +734,68 @@ def test_invite_redeem_creates_replay_only_guest(daemon):
 
     # /auth/me still works so the guest UI can know who it is
     assert _get(daemon.port, "/api/v1/auth/me", cookie=guest_cookie)[0] == 200
+
+
+def test_a_guest_lands_on_the_replay_list_not_the_workbench(daemon):
+    """TEAM-28: a guest was sent to the full workbench, which fired a run of
+    403s, then on to /replay: one input asking for a session id the guest
+    had no way to know. The server now sends a guest's page loads straight
+    to the viewer, and the viewer lists what this login may replay."""
+    r = _login(daemon, "root", "fake-pw-r")
+    a = _login(daemon, "alice", "fake-pw-a")
+    shared = _create_session(daemon, a)
+    private = _create_session(daemon, a)
+    _post(
+        daemon.port,
+        f"/api/v1/frames/{private}/visibility",
+        {"visibility": "private"},
+        cookie=a,
+    )
+    guest = _invite_guest(daemon, r, "visitor")
+    # a project-visible session of a project the guest was not invited into
+    other_project = daemon.store.create_project(
+        name="other", description="", context=""
+    )
+    elsewhere = _create_session_in(daemon, a, other_project["project_id"])
+
+    status, raw = _get(daemon.port, "/", cookie=guest, accept="text/html")
+    assert status == 303 and b"location: /replay\r\n" in raw.lower(), raw[:300]
+    link = f"/projects/{_pid(daemon)}/frames/{shared}"
+    status, raw = _get(daemon.port, link, cookie=guest, accept="text/html")
+    assert status == 303, raw[:300]
+    assert f"location: /replay#{shared}".encode() in raw.lower()
+    # a member still gets the workbench
+    assert _get(daemon.port, "/", cookie=a, accept="text/html")[0] == 200
+
+    status, raw = _get(daemon.port, "/api/v1/auth/me/replays", cookie=guest)
+    assert status == 200, raw[:300]
+    listed = [row["session_id"] for row in _body(raw)["sessions"]]
+    assert listed == [shared]  # not the private one, not another project's
+    assert elsewhere not in listed
+    # every listed id really opens
+    assert (
+        _get(daemon.port, f"/api/v1/sessions/{shared}/replay", cookie=guest)[0] == 200
+    )
+
+    # a member sees their own sessions, private ones included
+    status, raw = _get(daemon.port, "/api/v1/auth/me/replays", cookie=a)
+    assert status == 200
+    assert {shared, private} <= {row["session_id"] for row in _body(raw)["sessions"]}
+    # another member sees neither of alice's private ones
+    b = _login(daemon, "bob", "fake-pw-b")
+    status, raw = _get(daemon.port, "/api/v1/auth/me/replays", cookie=b)
+    assert private not in {row["session_id"] for row in _body(raw)["sessions"]}
+    # and nobody at all gets nothing
+    assert _get(daemon.port, "/api/v1/auth/me/replays")[0] == 401
+
+
+def test_the_guest_landing_never_writes_more_than_a_session_id():
+    from openai4s.server.team_auth import guest_landing
+
+    assert guest_landing("/") == "/replay"
+    assert guest_landing("/projects/p/frames/f-abc_1") == "/replay#f-abc_1"
+    assert guest_landing("/projects/p/frames/f-a%0d%0aX") == "/replay"
+    assert guest_landing("/projects/p/frames/f-a/extra") == "/replay"
 
 
 def test_invite_is_single_use_and_username_collision_does_not_burn_it(daemon):
