@@ -209,7 +209,7 @@ def _model_source(
         except Exception:  # noqa: BLE001 - an unreadable setting names no source
             saved = ""
     if saved and saved == model:
-        note = "saved by Customize -> Models or `openai4s init`"
+        note = "saved by Settings -> Models or `openai4s init`"
         if env_value and env_value != saved:
             return (
                 "settings",
@@ -248,7 +248,7 @@ def _model(cfg: Any) -> Check:
             FAIL,
             f"provider {llm.provider!r} is not one this build knows: {e}",
             "Set OPENAI4S_LLM_PROVIDER to a supported provider, or configure "
-            "one in the UI under Customize -> Models.",
+            "one in the UI under Settings -> Models.",
         )
     model = llm.model or spec.get("model")
     base_url = getattr(llm, "base_url", "") or ""
@@ -293,7 +293,7 @@ def _model(cfg: Any) -> Check:
             WARN,
             f"provider {llm.provider!r} resolves to model {model!r} with no API "
             f"key in the process configuration, and doctor did not open the "
-            f"database that holds the Customize -> Models settings (see the "
+            f"database that holds the Settings -> Models settings (see the "
             f"data check)",
             f"Resolve the data check and rerun `openai4s doctor`, or set "
             f"OPENAI4S_{llm.provider.upper()}_API_KEY (or the generic "
@@ -308,7 +308,7 @@ def _model(cfg: Any) -> Check:
             f"key is configured",
             f"Set OPENAI4S_{llm.provider.upper()}_API_KEY (or the generic "
             f"OPENAI4S_LLM_API_KEY), or add it in the UI under "
-            f"Customize -> Models.",
+            f"Settings -> Models.",
             facts,
         )
     if keyless and not llm.api_key:
@@ -379,7 +379,7 @@ def _live_request_forbidden(cfg: Any) -> str:
     store = _store_for(cfg)
     try:
         if store is not None and store.get_setting("network_enabled") == "0":
-            return "switched off in Customize -> Network"
+            return "switched off in Settings -> Network"
     except Exception:  # noqa: BLE001 - an unreadable toggle forbids nothing
         pass
     return ""
@@ -429,7 +429,7 @@ def _verify_model(cfg: Any, check: Check, send: Callable[[Any], None]) -> Check:
                 f"provider {provider!r} rejected the configured API key "
                 f"(HTTP {status} from {endpoint}), so no turn can run",
                 f"Enter a valid key with `openai4s init` or in the UI under "
-                f"Customize -> Models, or set "
+                f"Settings -> Models, or set "
                 f"OPENAI4S_{str(provider).upper()}_API_KEY (or the generic "
                 f"OPENAI4S_LLM_API_KEY).",
                 facts,
@@ -442,7 +442,7 @@ def _verify_model(cfg: Any, check: Check, send: Callable[[Any], None]) -> Check:
                 f"provider {provider!r} has no model {model!r} at {endpoint} "
                 f"(HTTP 404): the model id or the base URL is wrong",
                 "Choose a model this endpoint serves with `openai4s init "
-                "--model <id>` or in the UI under Customize -> Models.",
+                "--model <id>` or in the UI under Settings -> Models.",
                 facts,
             )
         if status is not None:
@@ -1079,7 +1079,7 @@ def _connectors(cfg: Any, *, probe_hosts: bool = False) -> Check:
             f"{len(facts['science_databases'])} science databases are built in, "
             f"but networking is disabled (OPENAI4S_ALLOW_NETWORK=0), so none "
             f"can be reached",
-            "Enable it in Customize -> Network, or set " "OPENAI4S_ALLOW_NETWORK=1.",
+            "Enable it in Settings -> Network, or set " "OPENAI4S_ALLOW_NETWORK=1.",
             facts,
         )
     detail = f"{len(facts['science_databases'])} science databases built in"
@@ -1177,14 +1177,14 @@ def _judgment(cfg: Any) -> Check:
                 "judgment",
                 WARN,
                 "enabled, but no main model credential is configured",
-                "Configure the main model in Customize -> Models.",
+                "Configure the main model in Settings -> Models.",
                 facts,
             )
         return Check(
             "judgment",
             WARN,
             "enabled, but no TypeSafe API key is configured",
-            "Set the key in Customize -> Experimental, or set "
+            "Set the key in Settings -> Experimental, or set "
             "OPENAI4S_TYPESAFE_API_KEY.",
             facts,
         )

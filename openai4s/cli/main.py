@@ -2556,7 +2556,7 @@ def cmd_init(args) -> int:
         print(f"Configured {result.provider} / {result.model}")
         print(f"Settings stored in {result.data_dir}")
         if needs_api_key:
-            print("No API key stored; add one in Customize → Models after launch.")
+            print("No API key stored; add one in Settings → Models after launch.")
         if search is not None:
             backups = [e["id"] for e in search["engines"] if e["usable"]]
             lead = "Doubao, then " if search["doubao_configured"] else ""
