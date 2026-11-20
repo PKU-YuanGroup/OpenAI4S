@@ -684,11 +684,9 @@ def test_the_budget_rewrap_keeps_the_error_class():
     ``TransportError``: the recovery path keys on the failure code, and a
     rewrap that dropped the class silently disabled it.
 
-    Driven through ``_retry_loop`` rather than ``post_sse`` because this branch
-    vetoes the replay of an uncommitted stream read failure outright (see
-    ``test_sse_timeout_keeps_its_code_when_the_call_gives_up``), so no stream
-    error reaches the budget branch from the public entry point. The rewrap
-    still has to preserve the class of whatever error does reach it.
+    Driven through ``_retry_loop`` so the wait is a long ``Retry-After``; the
+    public entry point reaches the same branch with a silent stream (see
+    ``test_sse_timeout_keeps_its_code_when_the_call_gives_up``).
     """
 
     def attempt():
@@ -718,11 +716,10 @@ def test_the_budget_rewrap_keeps_the_error_class():
 def test_sse_timeout_keeps_its_code_when_the_call_gives_up(monkeypatch):
     """A stream timeout must keep its classification however the call ends.
 
-    Upstream asserted this against the retry-budget rewrap. Here the call gives
-    up one step earlier -- an uncommitted read failure cannot prove the POST
-    never reached the provider, so it is not replayed at all -- and the caller
-    must still see ``llm_stream_timeout``, which is what the recovery path
-    keys on to offer a continuation.
+    A stream that stayed silent would be asked again once (M-30), but a zero
+    retry budget leaves no room for the wait before that replay. The call
+    gives up there, and the caller must still see ``llm_stream_timeout``,
+    which is what the recovery path keys on to offer a continuation.
     """
 
     class _Stream:
@@ -751,8 +748,99 @@ def test_sse_timeout_keeps_its_code_when_the_call_gives_up(monkeypatch):
             sleep=_Recorder(),
         )
     assert llm_failure_code(e.value) == "llm_stream_timeout"
+    assert "retry budget" in str(e.value)
+    assert calls == [1], "no budget, so the silent stream was not asked again"
+
+
+class _SilentStream:
+    """A response that opened and then delivered nothing until the timeout."""
+
+    def __iter__(self):
+        raise TimeoutError("no first byte")
+        yield  # pragma: no cover
+
+    def close(self):
+        pass
+
+
+def test_a_stream_that_opens_and_stays_silent_is_asked_again(monkeypatch):
+    """M-30: one stall with zero events used to end the whole turn.
+
+    Nothing reached the caller, so there is no output a replay could
+    duplicate; the second attempt's events are the only ones delivered.
+    """
+    calls = []
+
+    def urlopen(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            return _SilentStream()
+        return iter([b'data: {"delta":"ok"}\n', b"\n"])
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    seen = []
+    told = []
+    state = CallState()
+    state.on_retry = lambda error, attempt: told.append(
+        (llm_failure_code(error), attempt)
+    )
+    post_sse(
+        "https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder(), call_state=state
+    )
+    assert seen == [{"delta": "ok"}]
+    assert len(calls) == 2
+    assert told == [("llm_stream_timeout", 2)]
+
+
+def test_a_silent_stream_is_asked_again_only_once(monkeypatch):
+    """Each replay costs a full idle timeout and may be a second generation,
+    so a provider that stays silent fails after two attempts however many
+    retries the policy would allow."""
+    calls = []
+
+    def urlopen(*a, **k):
+        calls.append(1)
+        return _SilentStream()
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    state = CallState(max_attempts=6, max_retries=5)
+    with pytest.raises(StreamTimeoutError) as e:
+        post_sse(
+            "https://x.invalid",
+            {},
+            {},
+            5,
+            lambda event: None,
+            sleep=_Recorder(),
+            call_state=state,
+        )
+    assert len(calls) == 2
     assert e.value.retryable is False
-    assert calls == [1], "an uncommitted stream read failure is not replayed"
+    assert e.value.output_committed is False
+    assert e.value.retries_attempted == 1
+    assert llm_failure_code(e.value) == "llm_stream_timeout"
+
+
+def test_a_silent_stream_is_not_asked_again_when_retries_are_off(monkeypatch):
+    calls = []
+
+    def urlopen(*a, **k):
+        calls.append(1)
+        return _SilentStream()
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    state = CallState(max_attempts=2, max_retries=0)
+    with pytest.raises(StreamTimeoutError):
+        post_sse(
+            "https://x.invalid",
+            {},
+            {},
+            5,
+            lambda event: None,
+            sleep=_Recorder(),
+            call_state=state,
+        )
+    assert calls == [1]
 
 
 def test_sse_read_failure_before_any_event_is_not_replayed(monkeypatch):

@@ -9860,9 +9860,20 @@ class SessionRunner:
         if failure_code in {"llm_stream_timeout", "llm_stream_interrupted"}:
             cause = (
                 (
-                    "上游长时间未发送数据，流式响应已超时"
-                    if zh
-                    else "The upstream stream timed out while waiting for more data"
+                    # M-30: a silent stream is asked again once. Only the
+                    # second silence is raised non-retryable after a retry.
+                    (
+                        "上游长时间未发送数据，自动重试一次后仍然超时"
+                        if zh
+                        else "The upstream stream sent no data, and one automatic retry timed out as well"
+                    )
+                    if retry_outcome == "retried"
+                    and not getattr(exc, "retryable", False)
+                    else (
+                        "上游长时间未发送数据，流式响应已超时"
+                        if zh
+                        else "The upstream stream timed out while waiting for more data"
+                    )
                 )
                 if failure_code == "llm_stream_timeout"
                 else (

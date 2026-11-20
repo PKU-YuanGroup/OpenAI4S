@@ -88,6 +88,48 @@ def test_idle_slow_headers_are_typed_and_never_replayed(stream):
         assert len(requests) == 1
 
 
+def test_a_stream_that_opens_and_goes_silent_is_asked_again_over_a_real_socket():
+    """M-30 against a real peer: 200 + SSE headers, then nothing at all.
+
+    The first request stalls for longer than the idle timeout; the transport
+    asks once more and the caller receives only the second attempt's events.
+    """
+
+    def respond(handler, stopped):
+        headers(handler, content_type="text/event-stream")
+        if len(seen_requests) == 1:
+            handler.wfile.flush()
+            stopped.wait(1)
+            return
+        handler.wfile.write(b'data: {"delta": "ok"}\n\ndata: [DONE]\n\n')
+        handler.wfile.flush()
+
+    with peer(respond) as (url, seen_requests):
+        events = []
+        state = transport.CallState(max_delay=0.01)
+        started = time.monotonic()
+        transport.post_sse(url, {}, {}, 0.1, events.append, call_state=state)
+        assert time.monotonic() - started < 0.9
+        assert events == [{"delta": "ok"}]
+        assert len(seen_requests) == 2
+        assert state.silent_stream_replayed is True
+
+
+def test_a_stream_that_stays_silent_fails_after_one_more_request():
+    def respond(handler, stopped):
+        headers(handler, content_type="text/event-stream")
+        handler.wfile.flush()
+        stopped.wait(1)
+
+    with peer(respond) as (url, seen_requests):
+        state = transport.CallState(max_delay=0.01)
+        with pytest.raises(TransportError) as caught:
+            transport.post_sse(url, {}, {}, 0.1, lambda _: None, call_state=state)
+        assert llm_failure_code(caught.value) == "llm_stream_timeout"
+        assert not caught.value.retryable
+        assert len(seen_requests) == 2
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("proxy_status", [200, 502])
 def test_failed_https_proxy_setup_does_not_mark_the_model_request_sent(

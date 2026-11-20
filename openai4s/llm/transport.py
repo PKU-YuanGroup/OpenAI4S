@@ -180,6 +180,10 @@ class CallState:
     max_retries: int | None = None
     #: Backoff waits taken so far, i.e. retries actually attempted.
     retries: int = 0
+    #: Whether this call already replayed a stream that opened and then stayed
+    #: silent (``_consume``). That replay happens once, whatever ``max_retries``
+    #: is: each one costs a whole idle timeout and may be a second generation.
+    silent_stream_replayed: bool = False
     #: Optional ``on_retry(error, next_attempt)``, called right before a
     #: backoff wait so the caller can show "retrying" instead of a silent
     #: pause. It runs on the thread making the call and must not raise.
@@ -811,10 +815,11 @@ def post_sse(
     rows. Tool calls are control-plane actions, so a malformed non-empty event
     is surfaced instead of being silently discarded.
 
-    Only the *connect* is retried. The moment an event reaches ``on_event`` the
-    caller has observed output, and replaying the request would re-emit it —
-    so any failure from that point carries ``output_committed=True`` and is
-    raised as-is.
+    The connect is retried, and so, once, is a stream that opened and then
+    delivered no event for the whole idle timeout. The moment an event reaches
+    ``on_event`` the caller has observed output, and replaying the request
+    would re-emit it — so any failure from that point carries
+    ``output_committed=True`` and is raised as-is.
     """
     data = json.dumps(payload).encode("utf-8")
     state = call_state or CallState(
@@ -1098,18 +1103,30 @@ def _consume(
             raise
         except Exception as e:  # noqa: BLE001 - normalize transport read failures
             # A read failure cannot prove the provider did not receive the
-            # POST, even when no event has arrived. Never transparently replay.
-            # The class is still the typed one: the recovery path keys on the
-            # failure code to offer the user a continuation, which is a
-            # deliberate re-ask, not a transparent replay.
-            error_type = (
-                StreamTimeoutError if isinstance(e, TimeoutError) else StreamReadError
+            # POST, even when no event has arrived, so it is not transparently
+            # replayed. The class is still the typed one: the recovery path
+            # keys on the failure code to offer the user a continuation, which
+            # is a deliberate re-ask, not a transparent replay.
+            #
+            # One exception: the stream opened and then sent no event at all
+            # for the whole idle timeout. Nothing reached the caller, so asking
+            # again cannot duplicate output, and failing instead ended an
+            # unattended turn on a single stall. It is replayed once per
+            # logical call -- a provider that was in fact still generating may
+            # bill the abandoned attempt, and every replay costs a full idle
+            # timeout. A reset says nothing about idleness and keeps its veto.
+            timed_out = isinstance(e, TimeoutError)
+            replay = (
+                timed_out and not committed and not call_state.silent_stream_replayed
             )
+            if replay:
+                call_state.silent_stream_replayed = True
+            error_type = StreamTimeoutError if timed_out else StreamReadError
             raise error_type(
                 f"LLM event stream read error: {e}",
                 provider=provider,
                 operation="post_sse",
-                retryable=False,
+                retryable=replay,
                 output_committed=committed,
             ) from e
     finally:
