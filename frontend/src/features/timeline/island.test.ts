@@ -42,7 +42,7 @@ import {
   sanitizeContext,
   sanitizeSecurity,
 } from "./sanitize";
-import { provenanceT } from "../execution/copy";
+import { branchT, provenanceT } from "../execution/copy";
 import { LANG, setLang, t } from "../../i18n/runtime";
 
 type Listener = (event: FakeEvent) => void;
@@ -1537,5 +1537,88 @@ describe("the timeline comes first; the technical panels share one disclosure", 
     expect(details.open).toBe(false);
     details.querySelector("summary")!.click();
     expect(() => details.dispatchEvent({ type: "toggle" })).not.toThrow();
+  });
+});
+
+// M-73: "Activate" dropped the kernel without asking, then said in red
+// "error: … inspect Recovery" when its variables could not all be rebuilt.
+describe("switching to another branch", () => {
+  const projection = (current: string) => ({
+    root_frame_id: "frame-b",
+    branch_id: current,
+    current_branch_id: current,
+    capabilities: { activate: { enabled: true }, checkpoint: { enabled: true } },
+    branches: [
+      { branch_id: "frame-b", head_checkpoint_id: "cp-root", activatable: true, checkpoints: [] },
+      {
+        branch_id: "br-fork1234567890",
+        name: "Fit the Cox model",
+        head_checkpoint_id: "cp-q2",
+        activatable: true,
+        checkpoints: [],
+      },
+    ],
+  });
+  const partial = {
+    ok: false,
+    status: "partial",
+    current_branch_id: "br-fork1234567890",
+    dimensions: {
+      namespace: { applied: false, status: "partial", issues: [{ type: "missing_symbols", names: ["df", "model"] }] },
+    },
+  };
+  const button = (label: string) =>
+    Array.from(renderBranchPanel().querySelectorAll("button")).find((node) => node.textContent === label) ||
+    null;
+
+  function onRootBranch(answer: boolean): { hints: Array<[string, unknown]>; asked: string[] } {
+    mountDocument();
+    S.currentId = "frame-b";
+    S.branchState = sanitizeBranches(projection("frame-b"));
+    const hints: Array<[string, unknown]> = [];
+    const asked: string[] = [];
+    vi.stubGlobal("hint", (message: string, error?: boolean) => hints.push([message, error]));
+    vi.stubGlobal("confirm", (message: string) => {
+      asked.push(message);
+      return answer;
+    });
+    return { hints, asked };
+  }
+
+  it("asks first, saying the kernel's variables will be lost", async () => {
+    const { asked } = onRootBranch(false);
+    const calls = stubApi();
+    button(t("branch.activate"))!.click();
+    await flush();
+    expect(asked).toEqual([branchT("branch.activateConfirm", "Fit the Cox model")]);
+    expect(calls.filter((call) => call.method === "POST")).toEqual([]);
+  });
+
+  it("says which variables did not come back, as news rather than an error, and offers to restore", async () => {
+    const { hints } = onRootBranch(true);
+    const calls = stubApi((path, method) => {
+      if (method === "POST" && path.endsWith("/activate")) return partial;
+      if (method === "POST" && path.endsWith("/recovery/actions/restore")) return { ok: true, status: "active", results: [] };
+      return undefined;
+    });
+    button(t("branch.activate"))!.click();
+    await flush();
+    await flush();
+    expect(hints.at(-1)).toEqual([branchT("branch.switchedGap", "Fit the Cox model", "df, model"), undefined]);
+
+    // The conversation reload brings the new branch's projection.
+    S.branchState = sanitizeBranches(projection("br-fork1234567890"));
+    const notice = renderBranchPanel().querySelector(".branch-kernel-gap")!;
+    expect(notice.textContent).toContain(branchT("branch.kernelGap", "df, model"));
+
+    button(branchT("branch.restoreKernel"))!.click();
+    await flush();
+    await flush();
+    expect(calls.find((call) => call.path.endsWith("/recovery/actions/restore"))?.body).toEqual({
+      branch_id: "br-fork1234567890",
+      confirm: false,
+    });
+    expect(renderBranchPanel().querySelector(".branch-kernel-gap")!.textContent).toBe(branchT("branch.restored"));
+    expect(button(branchT("branch.restoreKernel"))).toBeNull();
   });
 });

@@ -4,7 +4,18 @@ import { currentId } from "../../stores/session";
 import { workbenchErrors } from "../../stores/timeline";
 import { historyT } from "../messages/copy";
 import { setExecutionFetch } from "./api";
-import { applyForkPresentation, forkFromMessage, setMessageForkRefresh } from "./branch";
+import {
+  applyForkPresentation,
+  branchDisplayName,
+  forkFromMessage,
+  kernelGapText,
+  kernelOutcome,
+  missingNames,
+  restoreBranchKernel,
+  setMessageForkRefresh,
+  switchedText,
+} from "./branch";
+import { branchT } from "./copy";
 import {
   FORK_NO_CHECKPOINT_MESSAGE,
   forkErrorDisplay,
@@ -295,5 +306,50 @@ describe("applyForkPresentation", () => {
     stop();
     expect(seen).toHaveLength(2);
     expect(seen[1]).toEqual({ recoveryAction: "earlier", branchAction: FORK_NO_CHECKPOINT_MESSAGE });
+  });
+});
+
+// M-73: what a branch switch or a Restore left the kernel with, read from the
+// server's report rather than shown as "error: … inspect Recovery".
+describe("kernel outcome after a branch switch", () => {
+  afterEach(() => {
+    setExecutionFetch(null);
+  });
+
+  it("names the variables an activation did not bring back", () => {
+    const outcome = kernelOutcome({
+      status: "partial",
+      dimensions: { namespace: { issues: [{ type: "non_replayable" }, { type: "missing_symbols", names: ["df", "fit"] }] } },
+      recovery: { results: [{ issues: [{ type: "missing_symbols", names: ["fit", "cox"] }] }] },
+    });
+    expect(outcome).toEqual({ status: "partial", missing: ["df", "fit", "cox"], message: "" });
+    expect(switchedText("Q2", outcome)).toBe(branchT("branch.switchedGap", "Q2", missingNames(outcome)));
+    expect(switchedText("Q2", kernelOutcome({ status: "active" }))).toBe(branchT("branch.switched", "Q2"));
+    expect(branchDisplayName({ branch_id: "br-0123456789abcdef" })).toBe("br-01234…");
+    expect(branchDisplayName({ branch_id: "br-1", name: "Q2" })).toBe("Q2");
+  });
+
+  it("reads a partial Restore answered with 409 as an outcome, and a refusal as a failure", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    let reply: Response = new Response("{}");
+    setExecutionFetch(async (url, init) => {
+      posts.push({ url: String(url), body: JSON.parse(String(init?.body || "{}")) });
+      return reply;
+    });
+    reply = new Response(
+      JSON.stringify({ ok: false, status: "partial", results: [{ issues: [{ type: "missing_symbols", names: ["x1"] }] }] }),
+      { status: 409 },
+    );
+    const partial = await restoreBranchKernel("frame-1", "br-1");
+    expect(posts).toEqual([
+      { url: "/api/v1/frames/frame-1/recovery/actions/restore", body: { branch_id: "br-1", confirm: false } },
+    ]);
+    expect(partial).toEqual({ status: "partial", missing: ["x1"], message: "" });
+    expect(kernelGapText(partial)).toBe(branchT("branch.kernelGap", "x1"));
+
+    reply = new Response(JSON.stringify({ error: "recovery already running" }), { status: 409 });
+    const refused = await restoreBranchKernel("frame-1", "br-1");
+    expect(refused).toEqual({ status: "failed", missing: [], message: "recovery already running" });
+    expect(kernelGapText(refused)).toBe(branchT("branch.restoreFailed", "recovery already running"));
   });
 });

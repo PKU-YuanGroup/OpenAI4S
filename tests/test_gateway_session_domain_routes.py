@@ -1285,6 +1285,8 @@ def test_activated_branch_lists_only_its_own_steps_and_files(tmp_path):
             body={"from_message_id": second["message_id"]},
         )
         assert code == 200
+        # Named after the question it was forked from, not a bare br-… id.
+        assert fork["name"] == "message two"
         code, _activated = _call(
             handler,
             "POST",

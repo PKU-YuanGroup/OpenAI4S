@@ -1,3 +1,4 @@
+import { copyLookup, type CopyTable } from "../../i18n/copy";
 import { LANG } from "../../i18n/runtime";
 
 const COPY = {
@@ -86,3 +87,43 @@ const COPY = {
 export function provenanceT(key: keyof typeof COPY.en, ...args: unknown[]): string {
   return COPY[LANG === "zh" ? "zh" : "en"][key].replace(/\{(\d+)\}/g, (_, n: string) => String(args[Number(n)] ?? ""));
 }
+
+/**
+ * M-73: switching branches. Activation stopped the kernel without a word, then
+ * said "error: … inspect Recovery" when the branch's variables could not all
+ * be rebuilt; these say what happens and what did not come back.
+ */
+const BRANCH: CopyTable = {
+  zh: {
+    "branch.activateConfirm":
+      "切换到分支「{0}」？\n\n内核会重启，内存中的变量（数据表、模型等）会丢失；对话、Notebook、工作区文件和产物都换成这个分支的。当前分支会保留，可以随时切回来。",
+    "branch.switched": "已切换到分支「{0}」。",
+    "branch.switchedGap": "已切换到分支「{0}」。这些变量没有恢复：{1}。",
+    "branch.switchedGapAll": "已切换到分支「{0}」。内存中的变量没有全部恢复。",
+    "branch.kernelGap": "这些变量没有恢复：{0}。只有可以安全重新运行的单元会被自动重放。",
+    "branch.kernelGapAll": "内存中的变量没有全部恢复。只有可以安全重新运行的单元会被自动重放。",
+    "branch.restoreKernel": "重启内核并恢复",
+    "branch.restoreKernelTitle": "从这个分支的检查点重新启动内核，并重新运行可以安全重放的单元。",
+    "branch.restoring": "正在恢复…",
+    "branch.restored": "内核已恢复，变量与这个分支的检查点一致。",
+    "branch.restoreFailed": "恢复没有完成：{0}",
+    "branch.main": "主线",
+  },
+  en: {
+    "branch.activateConfirm":
+      "Switch to branch “{0}”?\n\nThe kernel restarts and its in-memory variables (data frames, models, …) are lost; the conversation, Notebook, workspace files and artifacts become that branch's. The current branch is kept and you can switch back at any time.",
+    "branch.switched": "Switched to branch “{0}”.",
+    "branch.switchedGap": "Switched to branch “{0}”. These variables were not restored: {1}.",
+    "branch.switchedGapAll": "Switched to branch “{0}”. Not all in-memory variables were restored.",
+    "branch.kernelGap": "These variables were not restored: {0}. Only cells that are safe to run again are replayed automatically.",
+    "branch.kernelGapAll": "Not all in-memory variables were restored. Only cells that are safe to run again are replayed automatically.",
+    "branch.restoreKernel": "Restart kernel and restore",
+    "branch.restoreKernelTitle": "Starts the kernel again from this branch's checkpoint and re-runs the cells that are safe to replay.",
+    "branch.restoring": "Restoring…",
+    "branch.restored": "The kernel was restored; its variables match this branch's checkpoint.",
+    "branch.restoreFailed": "The restore did not finish: {0}",
+    "branch.main": "Main line",
+  },
+};
+
+export const branchT = copyLookup(BRANCH);

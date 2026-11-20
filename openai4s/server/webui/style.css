@@ -1563,6 +1563,7 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .branch-current-summary{margin:1px 0 7px;color:var(--text-400);font:10.5px/1.4 var(--mono)}
 .branch-row{border-top:var(--hair);padding-top:8px;margin-top:8px}.branch-row.current{border-left:2px solid var(--accent);padding-left:7px}
 .branch-head{display:flex;align-items:center;gap:5px;min-width:0}.branch-name{font-size:11.5px;font-weight:600;color:var(--text-200);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.branch-head-id{margin-left:auto;color:var(--text-400);font:10px var(--mono)}
+.branch-kernel-gap{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:6px 0 2px;color:var(--text-300);font-size:11px;line-height:1.4}
 .checkpoint-list{display:flex;flex-direction:column;gap:4px;margin-top:6px}.checkpoint-row{display:grid;grid-template-columns:minmax(46px,.6fr) minmax(60px,1fr) auto;align-items:center;gap:5px;font-size:10.5px}.checkpoint-id{font-family:var(--mono);color:var(--text-400)}.checkpoint-reason{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-300)}
 .checkpoint-actions{display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap}.checkpoint-row .outline-btn{font-size:10px;padding:3px 6px;height:auto}.checkpoint-row .outline-btn:disabled{opacity:.35}
 .revert-preview{margin-top:9px;padding:8px;border:var(--hair);border-radius:8px;background:var(--bg-100)}.revert-preview-title{font-size:11px;font-weight:650;color:var(--text-200)}.revert-diff{margin:5px 0;color:var(--text-400);font-size:10.5px;line-height:1.45}
