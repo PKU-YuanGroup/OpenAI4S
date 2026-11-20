@@ -37,7 +37,7 @@ describe("M-01 capability badges", () => {
     const [native, streaming] = pills(mixed);
     expect(native!.props["data-cap"]).toBe("native_tool_call");
     expect(native!.props["data-state"]).toBe("true");
-    expect(native!.props.children).toContain(" · stale");
+    expect(native!.props.children).toContain(" · test result out of date");
     expect(streaming!.props["data-cap"]).toBe("streaming");
     expect(streaming!.props["data-state"]).toBe("false");
     expect(streaming!.props["data-stale"]).toBe("true");
@@ -49,14 +49,14 @@ describe("M-01 capability badges", () => {
     expect(rows[0]!.state).toBe("unknown");
     expect(rows[1]!.state).toBe("unknown");
     const native = capabilityBadgeText(rows[0]!);
-    expect(native).toBe("native tool call · unknown — timed out contacting the endpoint");
+    expect(native).toBe("Tool calling: not determined — timed out contacting the endpoint");
     expect(native.toLowerCase()).not.toMatch(/does not support|unsupported|cannot stream/);
     expect(pills(UNKNOWN, reason)[0]!.props["data-state"]).toBe("unknown");
   });
 
   it("does not invent a reason when the probe left unknown without detail", () => {
     const rows = capabilityBadgeRows(UNKNOWN, "");
-    expect(capabilityBadgeText(rows[0]!)).toBe("native tool call · unknown");
+    expect(capabilityBadgeText(rows[0]!)).toBe("Tool calling: not determined");
     expect(rows[0]!.unknownReason).toBe("");
   });
 
@@ -135,12 +135,12 @@ describe("M2 observation and next-request rows", () => {
     ]);
     const observed = rows[0]!;
     expect(observed.observed).toBe(true);
-    expect(capabilityBadgeText(observed)).toContain("native tool call · unknown");
-    expect(capabilityBadgeText(observed)).toContain("observed ");
+    expect(capabilityBadgeText(observed)).toContain("Tool calling: not determined");
+    expect(capabilityBadgeText(observed)).toContain("tested ");
     const effective = rows[1]!;
     expect(effective.observed).toBe(false);
     expect(effective.effective).toEqual({ value: true, source: "catalog" });
-    expect(capabilityBadgeText(effective)).toBe("on (catalogue default)");
+    expect(capabilityBadgeText(effective)).toBe("Tool calling: on (model catalogue default, not tested)");
   });
 
   it("labels explicit-override and probe provenance, and never calls a catalogue default measured", () => {
@@ -150,8 +150,8 @@ describe("M2 observation and next-request rows", () => {
     });
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => row.kind === "effective")).toBe(true);
-    expect(capabilityBadgeText(rows[0]!)).toBe("on (measured)");
-    expect(capabilityBadgeText(rows[1]!)).toBe("off (explicit config)");
+    expect(capabilityBadgeText(rows[0]!)).toBe("Tool calling: on (from the last test)");
+    expect(capabilityBadgeText(rows[1]!)).toBe("Streaming output: off (set in the configuration)");
   });
 
   it("keeps the unknown reason on its observation row and never reports 'unsupported'", () => {
@@ -174,10 +174,10 @@ describe("M2 observation and next-request rows", () => {
   it("renders two labelled lines when the projection is present", () => {
     const tree = CapabilityBadges({ receipt: RECEIPT, effective: FULL }) as unknown;
     const text = textOf(tree);
-    expect(text).toContain("Last test observation");
-    expect(text).toContain("Next request uses");
-    expect(text).toContain("on (catalogue default)");
-    expect(text).toContain("off (measured)");
+    expect(text).toContain("Last test");
+    expect(text).toContain("In use");
+    expect(text).toContain("on (model catalogue default, not tested)");
+    expect(text).toContain("off (from the last test)");
     const effectivePills = descendants(
       tree,
       (node) =>
@@ -205,7 +205,7 @@ describe("M2 observation and next-request rows", () => {
     expect(rows.map((row) => row.kind)).toEqual(["observed", "observed"]);
     expect(rows.every((row) => row.effective == null)).toBe(true);
     const tree = CapabilityBadges({ receipt: RECEIPT }) as unknown;
-    expect(textOf(tree)).not.toContain("Next request uses");
+    expect(textOf(tree)).not.toContain("In use");
     expect(descendants(tree, (node) => "data-source" in (node.props || {}))).toHaveLength(0);
   });
 });

@@ -11,7 +11,7 @@ M-01 首次运行向导内核。四个必需决策步骤、skip/清单，以及 
 | [`api.test.ts`](api.test.ts) | 现有配置档激活先于引导状态刷新的回归覆盖；端点模型获取返回端点确实提供的协议默认模型（否则取第一个 id），失败时以抛出的 `ApiError` 呈现。 |
 | [`api.ts`](api.ts) | `GET /onboarding`、`POST /onboarding/complete`、配置档保存/更新/激活/probe。 |
 | [`badges.test.ts`](badges.test.ts) | 三态 badge 行，以及 `CapabilityBadges` 据此渲染的标签；unknown 原因原样保留。 |
-| [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` 行 + stale。 三态文字跟随界面语言（支持 / 不支持 / 未确定）。 |
+| [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` 行 + stale。 每行是界面语言的一句话（「支持工具调用 ✓」「不支持工具调用 ✗」「工具调用：未确定」）；`unknown` 永远不会写成不支持。 |
 | [`boot.ts`](boot.ts) | `bootOnboarding()` 只在首次设置未完成且当前用户可以保存它（`can_configure`；团队成员永远不会看到向导）、或读不到其状态时，才加载并挂载向导（`#onboarding-root`，见 `startOnboarding`、`wizardWanted`）。 |
 | [`boot.test.ts`](boot.test.ts) | 首次设置已完成时不加载向导代码块；未完成、或状态读取失败时才加载。 |
 | [`copy.ts`](copy.ts) | 车道本地 zh/en 文案（`ot`）。不改生成的 i18n。`copyLookup(table)` 是 `ot` 与 `judgmentT` 共用的查表函数。 |

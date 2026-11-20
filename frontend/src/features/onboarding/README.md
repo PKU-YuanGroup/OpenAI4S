@@ -11,7 +11,7 @@ M-01 first-run wizard kernel. Four required decision steps, skip/checklist, and 
 | [`api.test.ts`](api.test.ts) | Existing-profile activation occurs before onboarding status refresh; endpoint model discovery returns the served protocol default (else the first id) and surfaces a failure as the thrown `ApiError`. |
 | [`api.ts`](api.ts) | `GET /onboarding`, `POST /onboarding/complete`, profile save/update/activate/probe. |
 | [`badges.test.ts`](badges.test.ts) | Tri-state badge rows and the pills `CapabilityBadges` renders from them; unknown reason is not rewritten. |
-| [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` rows + stale. The tri-state word follows the UI language (支持 / 不支持 / 未确定). |
+| [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` rows + stale. Each row is a plain sentence in the UI language ("Tool calling ✓", "不支持工具调用 ✗", "Tool calling: not determined"); `unknown` is never worded as unsupported. |
 | [`boot.ts`](boot.ts) | `bootOnboarding()` loads and mounts the wizard (`#onboarding-root`) only when setup is not complete and this reader may save it (`can_configure`; never for a team member), or when its status cannot be read (`startOnboarding`, `wizardWanted`). |
 | [`boot.test.ts`](boot.test.ts) | The wizard chunk is not loaded for a completed setup; it is for one still to do, and for an unreadable status. |
 | [`copy.ts`](copy.ts) | Lane-local zh/en strings (`ot`). Does not rewrite generated i18n. `copyLookup(table)` is the lookup `ot` and `judgmentT` share. |

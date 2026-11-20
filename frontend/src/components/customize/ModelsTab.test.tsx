@@ -462,13 +462,13 @@ describe("M2 model capability provenance", () => {
       }),
     );
     const text = badgeText(tree);
-    expect(text).toContain("Last test observation");
-    expect(text).toContain("Next request uses");
+    expect(text).toContain("Last test");
+    expect(text).toContain("In use");
     // A catalogue default is labelled as such; it is not a measured pass.
-    expect(text).toContain("on (catalogue default)");
-    expect(text).toContain("on (measured)");
-    expect(text).toContain("native tool call · unknown");
-    expect(text).toContain("observed ");
+    expect(text).toContain("on (model catalogue default, not tested)");
+    expect(text).toContain("on (from the last test)");
+    expect(text).toContain("Tool calling: not determined");
+    expect(text).toContain("tested ");
 
     const effective = tagged(badgeTree(tree), "data-effective-field");
     expect(effective.map((pill) => pill.props!["data-effective-field"])).toEqual([
@@ -498,7 +498,7 @@ describe("M2 model capability provenance", () => {
       },
     });
     let tree = renderProfile(p);
-    expect(badgeText(tree)).not.toContain("Next request uses");
+    expect(badgeText(tree)).not.toContain("In use");
 
     mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === "/api/v1/model-profiles/mp-1/probe" && init?.method === "POST") {
@@ -527,13 +527,13 @@ describe("M2 model capability provenance", () => {
     expect(test).toBeTruthy();
     await (test.props!.onClick as () => Promise<void>)();
     await vi.waitFor(() =>
-      expect(badgeText(renderProfile(p))).toContain("Next request uses"),
+      expect(badgeText(renderProfile(p))).toContain("In use"),
     );
 
     tree = renderProfile(p);
     const text = badgeText(tree);
-    expect(text).toContain("on (measured)");
-    expect(text).toContain("off (catalogue default)");
+    expect(text).toContain("on (from the last test)");
+    expect(text).toContain("off (model catalogue default, not tested)");
   });
 
   it("ignores a projection that is not the two-field B.3 shape", () => {
@@ -557,8 +557,8 @@ describe("M2 model capability provenance", () => {
       }),
     );
     const text = badgeText(tree);
-    expect(text).toContain("native tool call · true");
-    expect(text).not.toContain("Next request uses");
+    expect(text).toContain("Tool calling ✓");
+    expect(text).not.toContain("In use");
     expect(tagged(badgeTree(tree), "data-effective-field")).toHaveLength(0);
   });
 
@@ -582,7 +582,7 @@ describe("M2 model capability provenance", () => {
     });
     let tree = renderProfile(p);
     const before = badgeText(tree);
-    expect(before).toContain("on (explicit config)");
+    expect(before).toContain("on (set in the configuration)");
 
     mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === "/api/v1/model-profiles/mp-1/probe" && init?.method === "POST") {
@@ -595,9 +595,9 @@ describe("M2 model capability provenance", () => {
     const after = badgeText(tree);
     // The observation and the next-request decision are the old ones; only the
     // unknown observation row gains the reason the failed attempt reported.
-    expect(after).toContain("native tool call · true");
-    expect(after).toContain("on (explicit config)");
-    expect(after).toContain("off (catalogue default)");
+    expect(after).toContain("Tool calling ✓");
+    expect(after).toContain("on (set in the configuration)");
+    expect(after).toContain("off (model catalogue default, not tested)");
     expect(after).toContain("receipt could not be persisted");
     const effective = tagged(badgeTree(tree), "data-effective-field");
     expect(effective.map((pill) => pill.props!["data-source"])).toEqual([
@@ -625,9 +625,39 @@ describe("M2 model capability provenance", () => {
       }),
     );
     const text = badgeText(tree);
-    expect(text).toContain("native tool call · true");
-    expect(text).toContain("streaming · false");
-    expect(text).not.toContain("Next request uses");
+    expect(text).toContain("Tool calling ✓");
+    expect(text).toContain("Streaming output ✗ (not supported)");
+    expect(text).not.toContain("In use");
     expect(tagged(badgeTree(tree), "data-effective-field")).toHaveLength(0);
+  });
+});
+
+// M-24: the add form's model was a bare text box; the wizard offered the
+// endpoint's (or Ark Agent Plan's) model list.
+describe("ModelsTab add form model list", () => {
+  it("fetches the endpoint's models into suggestions and fills an empty model", async () => {
+    const posts: Array<[string, unknown]> = [];
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push([url, JSON.parse(String(init.body))]);
+        return Promise.resolve(response({ models: ["doubao-a", "doubao-b"], default_model: "doubao-b" }));
+      }
+      if (url === "/api/v1/model-profiles") return Promise.resolve(response({ profiles: [], active_id: "", protocols: ["ark"] }));
+      return Promise.resolve(response({}));
+    });
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    const find = (tree: unknown, key: string): Node => tagged(tree, key)[0]!;
+    const fetchRow = find(render(), "data-model-fetch");
+    const button = (fetchRow.props!.children as Node[]).find((node) => node?.type === "button")!;
+    await (button.props!.onClick as () => Promise<void>)();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(posts).toEqual([["/api/v1/model-profiles/discover", { provider: "chatgpt", base_url: "" }]]);
+    const tree = render();
+    const list = tagged(tree, "id").find((node) => node.props!.id === "cust-model-options")!;
+    expect((list.props!.children as Node[]).map((node) => node.props!.value)).toEqual(["doubao-a", "doubao-b"]);
+    const input = tagged(tree, "list")[0]!;
+    expect(input.props!.value).toBe("doubao-b");
   });
 });

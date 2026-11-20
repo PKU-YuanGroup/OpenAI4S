@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import { LANG, t } from "../../i18n";
+import { copyLookup } from "../../i18n/copy";
 import { publicModelId, publicText } from "../../features/scrub/scrub";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
@@ -25,6 +26,8 @@ import {
   type ProtocolOption,
 } from "../../features/customize/models";
 import { roleT, settingsReadOnly } from "../../features/customize/roles";
+import { discoverModelProfile } from "../../features/onboarding/api";
+import { ot } from "../../features/onboarding/copy";
 import { CapabilityBadges } from "../onboarding/CapabilityBadges";
 import { useAlive } from "./use-timer-lease";
 import { useTabRead } from "./hooks";
@@ -37,6 +40,12 @@ type Profile = Record<string, unknown>;
  * UI-LIVE-06 copy. Feature-local on purpose: `i18n/en.ts` / `zh.ts` are
  * generated extracts of the legacy dictionary and are byte-checked.
  */
+/** Feature-local: the generated `i18n/en.ts` / `zh.ts` are byte-checked extracts. */
+const modelsT = copyLookup({
+  zh: { "models.fetched": "找到 {0} 个模型：点「模型」输入框可以从中选择，也可以自己填写。" },
+  en: { "models.fetched": "{0} models found: pick one in the Model field, or type your own." },
+});
+
 const COPY = {
   en: {
     liveSource: "In use now · from the daemon's environment or saved settings, not a saved profile",
@@ -109,6 +118,12 @@ export function ModelsTab() {
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
+  // The ids the endpoint (or, for Ark's Agent Plan, the plan catalogue)
+  // offers, as suggestions under a free-text field: the same list the wizard
+  // fetches, which this form never offered (M-24).
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [fetching, setFetching] = useState(false);
+  const [fetchNote, setFetchNote] = useState("");
 
   useTabRead(
     "models",
@@ -142,6 +157,27 @@ export function ModelsTab() {
     setBaseUrl("");
     setModel("");
     setApiKey("");
+    setModelOptions([]);
+    setFetchNote("");
+  };
+
+  const fetchModels = async () => {
+    if (fetching) return;
+    setFetching(true);
+    setFetchNote("");
+    try {
+      const body: Record<string, unknown> = { provider, base_url: baseUrl.trim() };
+      if (apiKey) body.api_key = apiKey;
+      const found = await discoverModelProfile(body);
+      if (!alive()) return;
+      setModelOptions(found.models);
+      if (!found.models.length) setFetchNote(ot("onboarding.path.noModels"));
+      else if (!model.trim() && found.defaultModel) setModel(found.defaultModel);
+    } catch (error) {
+      if (alive()) setFetchNote(apiErrorText(error));
+    } finally {
+      if (alive()) setFetching(false);
+    }
   };
 
   const startEdit = (p: Profile) => {
@@ -272,7 +308,11 @@ export function ModelsTab() {
         <select
           class="cust-input"
           value={provider}
-          onChange={(e) => setProvider((e.target as HTMLSelectElement).value)}
+          onChange={(e) => {
+            setProvider((e.target as HTMLSelectElement).value);
+            setModelOptions([]);
+            setFetchNote("");
+          }}
         >
           {protocols.map((p) => (
             <option value={p.value} key={p.value}>
@@ -295,10 +335,32 @@ export function ModelsTab() {
         <label class="skill-lbl">{t("label.model")}</label>
         <input
           class="cust-input"
+          list="cust-model-options"
           placeholder={t("cust.models.modelPlaceholder2")}
           value={model}
           onInput={(e) => setModel((e.target as HTMLInputElement).value)}
         />
+        {modelOptions.length ? (
+          <datalist id="cust-model-options">
+            {modelOptions.map((item) => (
+              <option value={item} key={item} />
+            ))}
+          </datalist>
+        ) : null}
+        <div class="form-actions cust-model-fetch" data-model-fetch="">
+          <button
+            type="button"
+            class="outline-btn small"
+            disabled={fetching}
+            onClick={() => void fetchModels()}
+          >
+            {fetching ? ot("onboarding.path.fetchingModels") : ot("onboarding.path.fetchModels")}
+          </button>
+          {fetchNote ? <span class="ds">{fetchNote}</span> : null}
+          {modelOptions.length && !fetchNote ? (
+            <span class="ds">{modelsT("models.fetched", modelOptions.length)}</span>
+          ) : null}
+        </div>
         <label class="skill-lbl">API Key</label>
         <input
           class="cust-input"
