@@ -24,7 +24,7 @@
 | --- | --- |
 | [`app.js`](app.js) | 冻结的逃生舱（`OPENAI4S_WEBUI=legacy`）。不要在这里加功能；新的工作台 UI 在 [`../../../frontend/`](../../../frontend/)。 |
 | [`favicon.js`](favicon.js) | 浏览器支持时用 WebCodecs 逐帧播放 GIF favicon，标签页隐藏时暂停，钳制到 10 fps，不支持时回退到静态 GIF。 |
-| [`ketcher-page.js`](ketcher-page.js) | `/ketcher` 宿主页面的脚本：把选中的 Artifact 载入自带编辑器，并把新的结构版本 POST 回去。外链的理由和 `login.js` 相同——共享 CSP 只放行同源脚本，它替换掉的那段内联 `<script>` 会被直接拒绝，编辑器根本初始化不了。Artifact id 通过 `data-artifact-id` 属性传入，而不是插进可执行源码里。状态栏显示载入的文件名（取自响应的 `Content-Disposition`），而不是内部 id。 |
+| [`ketcher-page.js`](ketcher-page.js) | `/ketcher` 宿主页面的脚本：把选中的 Artifact 载入自带编辑器，并把新的结构版本 POST 回去。外链的理由和 `login.js` 相同——共享 CSP 只放行同源脚本，它替换掉的那段内联 `<script>` 会被直接拒绝，编辑器根本初始化不了。Artifact id 通过 `data-artifact-id` 属性传入，而不是插进可执行源码里。状态栏显示载入的文件名（取自响应的 `Content-Disposition`），而不是内部 id。`.smi`/`.smiles` 文件（每行一条「SMILES 名称」记录）交给编辑器时只取 SMILES，并用「.」连成一个多片段 SMILES，编辑器就能画出来；原始文件什么也画不出。 |
 | [`login.html`](login.html) | 团队模式登录页（`OPENAI4S_TEAM_MODE`）。只用内联样式，可执行代码在共享 CSP 下保持外链。两种模式下都在 `/login` 提供；守卫把未登录的浏览器 303 到这里。 |
 | [`login.js`](login.js) | 登录页脚本：POST `/api/v1/auth/login`，把失败原因一句话展示出来；已登录或团队模式关闭时直接跳回首页。 |
 | [`replay.html`](replay.html) | 只读回放查看页（M2-3）——guest 的全部界面，也是成员的快速一瞥。在登录守卫之后的 `/replay` 提供；只用内联样式，脚本外链以过 CSP。 |
