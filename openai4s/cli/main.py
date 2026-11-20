@@ -1552,6 +1552,116 @@ def _run_llm_failed(args, error, cfg, agent) -> int:
     return RUN_LLM_FAILED_EXIT
 
 
+#: How many directory entries `run` walks to list the files it wrote. Past
+#: this the working directory is too large to diff cheaply (a home directory)
+#: and the list is left out rather than paid for twice.
+_RUN_FILES_SCAN_LIMIT = 50_000
+
+
+def _run_files_snapshot(root: Path, skip: Path | None = None) -> dict | None:
+    """Identity of each visible file under ``root``; None when it is too large.
+
+    Hidden entries (``.git``, the run's own ``.openai4s/``) and the data
+    directory are not the run's deliverables and are not walked.
+    """
+
+    out: dict = {}
+    seen = 0
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            if seen > _RUN_FILES_SCAN_LIMIT:
+                return None
+            if entry.name.startswith(".") or entry.name == "__pycache__":
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if skip is None or Path(entry.path).resolve() != skip:
+                        pending.append(entry.path)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            out[entry.path] = (st.st_ino, st.st_size, st.st_mtime_ns)
+    return out
+
+
+def _run_files_written(root: Path, before, skip: Path | None = None):
+    """Absolute paths the run created or changed under ``root``, or None."""
+
+    if before is None:
+        return None
+    after = _run_files_snapshot(root, skip)
+    if after is None:
+        return None
+    return sorted(path for path, state in after.items() if before.get(path) != state)
+
+
+#: The run-scoped copies the runtime spills into the kernel's working
+#: directory, by subdirectory of ``.openai4s/``: oversized tool results
+#: (`agent/compaction.py`) and oversized cell output (`agent/runtime.py`).
+_RUN_SPILL_NAMES = {
+    "context": re.compile(r"[0-9a-f]{64}\.(json|txt)"),
+    "observations": re.compile(r"obs-(stdout|stderr)-[0-9a-f]{16}\.txt"),
+}
+
+
+def _run_context_spill_cleanup(root: Path):
+    """Return a callable that removes the run's spilled copies from ``root``.
+
+    An oversized tool result or cell output is copied under ``.openai4s/`` in
+    the kernel's working directory so a later cell of the same run can read
+    it back (the data directory's archive and the recorded cell keep the
+    bytes). For a CLI run that directory is wherever the user stood, and the
+    copies stayed behind as an untracked hidden directory after the run. Only
+    files this run added are removed, and a directory only when this run
+    created it and it is empty: a project folder keeps its own ``.openai4s/``.
+    """
+
+    base = root / ".openai4s"
+    existed = {base: base.exists()}
+    before: dict[str, set[str]] = {}
+    for sub in _RUN_SPILL_NAMES:
+        existed[base / sub] = (base / sub).exists()
+        try:
+            before[sub] = set(os.listdir(base / sub)) if existed[base / sub] else set()
+        except OSError:
+            before[sub] = set()
+
+    def cleanup() -> None:
+        for sub, spilled in _RUN_SPILL_NAMES.items():
+            directory = base / sub
+            try:
+                if directory.is_symlink() or not directory.is_dir():
+                    continue
+                names = os.listdir(directory)
+            except OSError:
+                continue
+            for name in names:
+                if name not in before[sub] and spilled.fullmatch(name):
+                    try:
+                        os.unlink(directory / name)
+                    except OSError:
+                        pass
+        # Children first, then `.openai4s/` itself.
+        for directory, was_there in reversed(list(existed.items())):
+            if not was_there:
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+
+    return cleanup
+
+
 def _run_session(agent) -> tuple:
     """The Store and root frame a CLI run records its conversation in."""
 
@@ -1752,6 +1862,12 @@ def cmd_run(args) -> int:
                 {"error": refusal, "code": "code_mode_test_runner_unauthorized"},
             )
     _record_run_task(agent, args.task)
+    # The Agent runs its kernel in the current directory; what the run writes
+    # there is listed at the end, and its context spill is not left behind.
+    workdir = Path.cwd()
+    data_dir = Path(cfg.data_dir).expanduser().resolve()
+    files_before = _run_files_snapshot(workdir, data_dir)
+    remove_context_spill = _run_context_spill_cleanup(workdir)
     try:
         try:
             with _foreground_cell_interrupt(agent):
@@ -1759,6 +1875,7 @@ def cmd_run(args) -> int:
         finally:
             if progress is not None:
                 progress.close()
+            remove_context_spill()
     except KeyboardInterrupt:
         return _run_interrupted(args, agent)
     except EnvironmentReadinessError as error:
@@ -1787,6 +1904,11 @@ def cmd_run(args) -> int:
     if getattr(agent, "frame_id", None):
         # The session the run is stored as (`openai4s share create <id>`).
         result = {**result, "frame_id": str(agent.frame_id)}
+    files_written = _run_files_written(workdir, files_before, data_dir)
+    if files_written is not None:
+        # Absolute paths: the run's internal artifact ids name nothing a
+        # person can open, and no CLI command resolves them.
+        result = {**result, "files_written": files_written}
     if getattr(args, "auto", False):
         # A machine-readable terminal is the point of --auto: CI needs to tell
         # "ran and was verified" from "ran and nobody checked".
@@ -1824,6 +1946,12 @@ def cmd_run(args) -> int:
         # again under another label only made the answer look like two.
         if final and str(final).strip() not in summaries:
             print("final:", final)
+        if result.get("files_written"):
+            print("files written:")
+            for path in result["files_written"]:
+                print(f"  {path}")
+        if result.get("frame_id"):
+            print(f"session: {result['frame_id']} (open it in the Web UI)")
         auto = result.get("auto_mode")
         if auto:
             print(f"=== review: {auto['terminal']} — {auto['user_truth']} ===")

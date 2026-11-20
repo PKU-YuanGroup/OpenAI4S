@@ -619,3 +619,145 @@ def test_a_cancelled_run_stores_the_stop_marker(tmp_path, monkeypatch, capsys):
         ("user", "Compute 1+1 and submit it."),
         ("assistant", "_Stopped by user._"),
     ]
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-26: the run says where its files are and leaves no hidden cache behind
+# --------------------------------------------------------------------------- #
+
+_WRITE_FILE_CELL = (
+    "```python\nopen('result.txt', 'w').write('2')\nprint('wrote it')\n```"
+)
+
+
+def test_the_run_lists_the_files_it_wrote_as_absolute_paths(
+    tmp_path, monkeypatch, capsys
+):
+    """The files were in the working directory and the output named only
+    internal artifact ids that no CLI command resolves."""
+
+    (tmp_path / "input.csv").write_text("a,b\n")
+    module, _cfg = _real_run(
+        tmp_path, monkeypatch, _scripted_chat([_WRITE_FILE_CELL, _SUBMIT_REPLY])
+    )
+
+    status = module.main(["run", "--quiet", "Write the result and submit it."])
+
+    out = capsys.readouterr().out
+    assert status == 0
+    written = str(tmp_path / "result.txt")
+    # An untouched input and the data directory's own files are not listed.
+    assert f"files written:\n  {written}\n" in out
+    assert "input.csv" not in out and "openai4s.db" not in out
+
+
+def test_the_json_result_lists_the_files_it_wrote(tmp_path, monkeypatch, capsys):
+    module, _cfg = _real_run(
+        tmp_path, monkeypatch, _scripted_chat([_WRITE_FILE_CELL, _SUBMIT_REPLY])
+    )
+
+    status = module.main(["run", "--json", "Write the result and submit it."])
+
+    assert status == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["files_written"] == [str(tmp_path / "result.txt")]
+
+
+_LARGE_OUTPUT_CELL = "```python\nprint('x' * 40000)\n```"
+
+
+def _tool_reply(name, arguments):
+    call = {
+        "id": f"call-{name}",
+        "wire_id": f"wire-{name}",
+        "name": name,
+        "ordinal": 0,
+        "raw_arguments": json.dumps(arguments),
+        "arguments": arguments,
+        "parse_error": None,
+        "provider_meta": {"provider": "test"},
+    }
+    return {
+        "content": "",
+        "tool_calls": [call],
+        "assistant_message": {"role": "assistant", "content": "", "tool_calls": [call]},
+        "usage": {},
+    }
+
+
+def _replies_chat(replies):
+    """Like `_scripted_chat`, but a dict reply (a tool call) is sent as is."""
+    pending = list(replies)
+    text = _scripted_chat([])
+
+    def chat(messages, cfg, **kwargs):
+        reply = pending.pop(0) if pending else "Still thinking."
+        if isinstance(reply, dict):
+            return reply
+        return {**text(messages, cfg, **kwargs), "content": reply}
+
+    return chat
+
+
+def test_a_spilled_tool_result_is_not_left_in_the_working_directory(
+    tmp_path, monkeypatch, capsys
+):
+    """`.openai4s/context/<sha256>.{json,txt}` (100 KB) stayed in the
+    directory the run was started from -- an untracked hidden directory in
+    any git checkout."""
+
+    (tmp_path / "big.txt").write_text(
+        "\n".join(f"line {n:05d} " + "y" * 60 for n in range(800))
+    )
+    module, cfg = _real_run(
+        tmp_path,
+        monkeypatch,
+        _replies_chat(
+            [_tool_reply("read_text_file", {"path": "big.txt"}), _SUBMIT_REPLY]
+        ),
+    )
+
+    status = module.main(["run", "--json", "--quiet", "Read big.txt and submit."])
+
+    result = json.loads(capsys.readouterr().out)
+    assert status == 0, result
+    # The tool result was spilled (the data directory's archive keeps it) ...
+    assert list(cfg.compaction_dir.rglob("*.json"))
+    # ... and the working-directory copy went with the run.
+    assert not (tmp_path / ".openai4s").exists()
+
+
+def test_a_spilled_cell_output_is_not_left_in_the_working_directory(
+    tmp_path, monkeypatch, capsys
+):
+    module, _cfg = _real_run(
+        tmp_path, monkeypatch, _scripted_chat([_LARGE_OUTPUT_CELL, _SUBMIT_REPLY])
+    )
+
+    status = module.main(["run", "--json", "--quiet", "Print a lot and submit it."])
+
+    result = json.loads(capsys.readouterr().out)
+    assert status == 0
+    # The observation pointed the model at a copy in the working directory ...
+    assert "content ref=.openai4s/observations/obs-stdout-" in json.dumps(result)
+    # ... which is gone once the run is over.
+    assert not (tmp_path / ".openai4s").exists()
+
+
+def test_the_spill_cleanup_keeps_what_was_there_before(tmp_path, monkeypatch, capsys):
+    """A project folder has its own `.openai4s/`; only this run's copies go."""
+
+    observations = tmp_path / ".openai4s" / "observations"
+    observations.mkdir(parents=True)
+    older = observations / ("obs-stdout-" + "a" * 16 + ".txt")
+    older.write_text("from an earlier run")
+    (tmp_path / ".openai4s" / "settings.json").write_text("{}")
+    module, _cfg = _real_run(
+        tmp_path, monkeypatch, _scripted_chat([_LARGE_OUTPUT_CELL, _SUBMIT_REPLY])
+    )
+
+    status = module.main(["run", "--quiet", "Print a lot and submit it."])
+
+    assert status == 0
+    assert sorted(path.name for path in observations.iterdir()) == [older.name]
+    assert (tmp_path / ".openai4s" / "settings.json").exists()
