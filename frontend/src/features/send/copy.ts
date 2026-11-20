@@ -10,7 +10,8 @@ export type SendCopyKey =
   | "exploreDesc"
   | "modeChipTitle"
   | "technicalDetails"
-  | "hideTechnicalDetails";
+  | "hideTechnicalDetails"
+  | "subagentTask";
 
 /** Labels the generated F-07 dictionaries do not carry (app.js hard-coded them in English). */
 const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
@@ -26,6 +27,7 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
     modeChipTitle: "{0} is on for your next messages: {1} Click to turn it off.",
     technicalDetails: "Technical details",
     hideTechnicalDetails: "Hide technical details",
+    subagentTask: "Sub-agent · {0}",
   },
   zh: {
     send: "发送",
@@ -38,6 +40,7 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
     modeChipTitle: "{0}已开启，作用于接下来发送的消息：{1}点击关闭。",
     technicalDetails: "技术细节",
     hideTechnicalDetails: "收起技术细节",
+    subagentTask: "子代理 · {0}",
   },
 };
 

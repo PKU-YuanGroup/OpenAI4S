@@ -369,6 +369,56 @@ describe("artifact step card", () => {
   });
 });
 
+describe("sub-agents side by side (SCI-22)", () => {
+  it("a delegation is titled by its task, a child step names its sub-agent, and a child's slip is amber", async () => {
+    const delegate = (id: string, request: string) =>
+      buildStepCard({
+        step_id: id,
+        kind: "delegate",
+        title: "Delegating to general",
+        input: { specialist: "general", request },
+        status: "running",
+      }).card as unknown as El;
+    const gc = delegate("d-1", "Compute the GC content of ATGCGC. Report it as a percentage.");
+    const mw = delegate("d-2", "Estimate the peptide MW of MKTAYIAK");
+    expect(gc.querySelector(".s-lbl")!.textContent).toBe("Sub-agent · Compute the GC content of ATGCGC.");
+    expect(mw.querySelector(".s-lbl")!.textContent).toBe("Sub-agent · Estimate the peptide MW of MKTAYIAK");
+
+    const child = (childId: string, status: string) =>
+      buildStepCard({
+        step_id: "c-" + childId + status,
+        kind: "read",
+        title: "Reading placeholder",
+        input: { path: "placeholder", delegation: { delegation_child_id: childId, child_name: "general", depth: 1 } },
+        status,
+        output: status === "error" ? { error: "FileNotFoundError: placeholder" } : {},
+      }).card as unknown as El;
+    const a = child("child-aaaa1111", "error");
+    const b = child("child-bbbb2222", "done");
+    const tagA = a.querySelector(".s-child-tag")!.textContent;
+    const tagB = b.querySelector(".s-child-tag")!.textContent;
+    expect(tagA).toContain("general");
+    expect(tagA).not.toBe(tagB);
+    // The sub-agent's probe failed and it carried on: amber, not a red failure.
+    expect(a.classes.has("err")).toBe(false);
+    expect(a.classes.has("warn")).toBe(true);
+    // A failure of the delegation itself stays red.
+    const failed = buildStepCard({
+      step_id: "d-3",
+      kind: "delegate",
+      title: "Delegating to general",
+      input: { specialist: "general", request: "x" },
+      status: "error",
+      output: { error: "RuntimeError: kernel died" },
+    }).card as unknown as El;
+    expect(failed.classes.has("err")).toBe(true);
+
+    await setLang("zh");
+    expect(delegate("d-4", "计算 ATGC 的 GC 含量。").querySelector(".s-lbl")!.textContent).toBe("子代理 · 计算 ATGC 的 GC 含量。");
+    await setLang("en");
+  });
+});
+
 describe("plan steps (CHAT-8)", () => {
   it("a turn keeps one plan card, repainted by each plan update", () => {
     const plan = (id: string, todos: Array<{ content: string; status: string }>): Record<string, unknown> => ({
