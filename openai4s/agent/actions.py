@@ -429,3 +429,76 @@ def tool_only_streak_note(action: Action | None, streak: int) -> str:
     if not isinstance(action, NativeToolBatch) or streak != TOOL_ONLY_STREAK_TURNS:
         return ""
     return TOOL_ONLY_STREAK_NOTE.format(count=streak)
+
+
+# Appended to the native results of the first reply to a user message that
+# carries a labelled ```python or ```r cell. A user asked "Immediately run
+# exactly this one Python cell" and the model answered "a loop that only prints
+# produces no deliverable, so I won't spend the compute on it", then read the
+# same CSV until the circuit stopped the turn. The note is conditional because
+# a cell in a message is also how code is shown for review or debugging.
+USER_CELL_NOTE = (
+    "\n[system] NOTE: the user's message contains a ```{language} cell. If they "
+    "asked you to run it, send that code exactly as they wrote it as the ONLY "
+    "action of your next reply, with no tool calls: tool calls cannot run it, "
+    "and whether its output is worth keeping is the user's call. If it cannot "
+    "run here, say why instead of doing something else."
+)
+
+
+def user_cell_note(action: Action | None, messages: Iterable[Mapping[str, Any]]) -> str:
+    """The note for a first reply that answered a user's cell with tool calls.
+
+    ``messages`` is the history with this reply last. Only the first reply to
+    the latest user message draws it, so it is sent once per message.
+    """
+    if not isinstance(action, NativeToolBatch):
+        return ""
+    if any(call.name in CODE_RUNNING_TOOLS for call in action.calls):
+        return ""
+    replies = 0
+    for message in reversed(list(messages)):
+        role = message.get("role")
+        if role == "assistant":
+            replies += 1
+            if replies > 1:
+                return ""
+            continue
+        if role != "user":
+            continue
+        text = _message_text(message.get("content"))
+        if text.lstrip().startswith("[system]"):
+            # An Engine nudge: the user's message is further back, and the
+            # model has already answered it once.
+            return ""
+        language = _labelled_cell_language(text)
+        return USER_CELL_NOTE.format(language=language) if language else ""
+    return ""
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+        )
+    return ""
+
+
+def _labelled_cell_language(text: str) -> str:
+    """``python`` or ``r`` for the first closed, labelled cell; else ``""``.
+
+    A bare fence is left out: in a user's message it is as often a log or a
+    traceback pasted for reading as it is code.
+    """
+    for block in scan_fenced_blocks(text):
+        if not (block.closed and block.fence_char == "`"):
+            continue
+        if block.info in ("python", "py"):
+            return "python"
+        if block.info in R_INFOS:
+            return "r"
+    return ""

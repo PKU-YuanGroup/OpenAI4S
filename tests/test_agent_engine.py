@@ -1019,3 +1019,78 @@ def test_a_finalize_the_model_repairs_is_submitted_not_stopped():
         "completion_bullets": ["Answered it"],
     }
     assert len(model.calls) == 3
+
+
+_USER_CELL = (
+    "Do not search skills or read files. Immediately run exactly this one Python "
+    "cell:\n```python\nimport time\nx = 42\nfor i in range(240):\n"
+    "    print('tick', i); time.sleep(1)\n```"
+)
+_REFUSAL = (
+    'A 4-minute loop that only prints "tick" produces no data or deliverable, so '
+    "I won't spend the compute on it - I'll continue the actual analysis instead."
+)
+_READ_CSV = _call(name="read_text_file", arguments={"path": "growth_assay.csv"})
+
+
+def _answer_user(request, replies):
+    """What the model read after each reply to ``request``."""
+    model = FakeModel([copy.deepcopy(reply) for reply in replies])
+    engine = AgentEngine(model, FakeExecutor(handler=_answer), max_turns=len(replies))
+    engine.run([{"role": "user", "content": request}])
+    return [call[-1]["content"] for call in model.calls[1:]]
+
+
+def test_a_users_cell_answered_with_tool_calls_is_named_once():
+    # SYNC-15: the user pasted a cell and asked for it to run as is; the model
+    # refused and read a file. The first reply's result now says what the
+    # user asked for; a later reply does not hear it again.
+    seen = _answer_user(
+        _USER_CELL,
+        [
+            _reply(_REFUSAL, tool_calls=[_READ_CSV]),
+            _reply("Reading again.", tool_calls=[_READ_CSV]),
+            _reply("Done."),
+        ],
+    )
+
+    assert "the user's message contains a ```python cell" in seen[0]
+    assert "send that code exactly as they wrote it" in seen[0]
+    assert "the user's message contains" not in seen[1]
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Read growth_assay.csv and summarise it.",
+        # A bare fence is as often a pasted log or traceback.
+        "Why does this fail?\n```\nTraceback (most recent call last):\n  ...\n```",
+        # An unclosed fence is not a cell.
+        "Run this:\n```python\nprint(1)\n",
+    ],
+)
+def test_a_message_without_a_labelled_cell_draws_no_user_cell_note(request_text):
+    seen = _answer_user(
+        request_text, [_reply("Reading.", tool_calls=[_READ_CSV]), _reply("Done.")]
+    )
+
+    assert "the user's message contains" not in seen[0]
+
+
+def test_a_users_cell_that_the_reply_runs_draws_no_note():
+    seen = _answer_user(
+        _USER_CELL,
+        [_reply("Running it as written.\n\n```python\nx = 42\n```"), _reply("Done.")],
+    )
+
+    assert "the user's message contains" not in seen[0]
+
+
+def test_a_users_r_cell_is_named_as_r():
+    listing = _call(name="list_dir", arguments={"path": "."})
+    seen = _answer_user(
+        "请原样运行：\n```r\nsummary(cars)\n```",
+        [_reply("先看看目录。", tool_calls=[listing]), _reply("Done.")],
+    )
+
+    assert "contains a ```r cell" in seen[0]

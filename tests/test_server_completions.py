@@ -174,6 +174,17 @@ def test_a_direct_answer_is_one_paragraph_not_a_report():
     assert "plain-language labels" in str(finalize_response_tool_spec())
 
 
+def test_the_web_prompt_says_to_run_a_users_cell_as_written():
+    # SYNC-15: "Immediately run exactly this one Python cell" was refused as
+    # "no deliverable" and the model went back to reading a CSV.
+    assert "THE USER'S OWN CODE" in _GATEWAY_PROMPT_EXTRA
+    assert "runs exactly that code, unchanged, as its only action" in (
+        _GATEWAY_PROMPT_EXTRA
+    )
+    assert "a deliverable (they may be testing the workbench)" in _GATEWAY_PROMPT_EXTRA
+    assert "say why instead of doing something else" in _GATEWAY_PROMPT_EXTRA
+
+
 def test_code_outcome_narration_uses_real_error_and_redacts_secrets():
     action = CodeCell("python", "raise RuntimeError('hidden source')")
     failed = ExecutionOutcome(
