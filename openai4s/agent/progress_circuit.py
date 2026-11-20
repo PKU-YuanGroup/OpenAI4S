@@ -14,7 +14,14 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Mapping, Protocol, Sequence
 
-from .actions import Action, CodeCell, FinalizeAction, NativeToolBatch
+from .actions import (
+    CODE_RUNNING_TOOLS,
+    ENGINE_NOTE_PREFIX,
+    Action,
+    CodeCell,
+    FinalizeAction,
+    NativeToolBatch,
+)
 from .models import ExecutionOutcome, ModelReply, RunState
 
 #: An Engine ``stop_reason`` (and the ``frame_update.code`` a failed turn
@@ -140,13 +147,20 @@ def fingerprint_native_results(results: Sequence[Mapping[str, Any]]) -> str:
     Call ids are excluded, as in `fingerprint_native_calls`. Numbers are
     deliberately *not* collapsed the way `normalize_tool_error` collapses
     them: "10%" then "55%" is the delta a poll exists to observe.
+
+    A note the Engine appended is not part of the tool's answer. The recorded
+    result carries it, so hashing it made the answer look as if it had moved
+    on exactly the turn a reminder was sent, and an identical call that drew
+    a note every other turn never built a streak.
     """
 
     payload = [
         {
             "name": str(message.get("name") or ""),
             "is_error": bool(message.get("is_error")),
-            "content": _normalize_whitespace(_result_text(message.get("content"))),
+            "content": _normalize_whitespace(
+                _result_text(message.get("content")).split(ENGINE_NOTE_PREFIX, 1)[0]
+            ),
         }
         for message in results
         if isinstance(message, Mapping)
@@ -215,6 +229,10 @@ class ProgressCircuit:
     long_text_normalized: str | None = None
     long_text_streak: int = 0
     empty_reply_streak: int = 0
+    #: Consecutive native batches since the last executed cell. It never
+    #: trips the circuit: the Engine reads it to send its tool-only reminder
+    #: once, and a restart rebuilds it so the reminder is not sent twice.
+    tool_only_streak: int = 0
     trip_reason: str | None = None
 
     @property
@@ -241,6 +259,7 @@ class ProgressCircuit:
     ) -> None:
         if isinstance(action, NativeToolBatch):
             self.observe_native_batch(action.calls, outcome.history_messages)
+            self._count_tool_only_turn(action.calls)
             return
         if isinstance(action, FinalizeAction):
             self.observe_finalize(action.call, outcome.history_messages)
@@ -333,11 +352,14 @@ class ProgressCircuit:
         self._reset_error()
         self.long_text_normalized = None
         self.long_text_streak = 0
+        self.tool_only_streak = 0
 
     def observe_group(self, group: Mapping[str, Any]) -> None:
         kind = str(group.get("kind") or "")
         if kind == _NATIVE_KIND:
-            self.observe_native_batch(*_group_calls_and_results(group))
+            calls, results = _group_calls_and_results(group)
+            self.observe_native_batch(calls, results)
+            self._count_tool_only_turn(calls)
             return
         if kind == _FINALIZE_KIND:
             # The ledger writes a finalize group exactly like a one-call
@@ -386,6 +408,20 @@ class ProgressCircuit:
         else:
             self.error_fingerprint = fingerprint
             self.error_streak = 1
+
+    def _count_tool_only_turn(self, calls: Sequence[_CallLike]) -> None:
+        """One more reply that was tool calls only, unless one of them ran code.
+
+        A refused ``finalize_response`` is not counted: it reaches
+        ``observe_native_batch`` to be weighed as a failing call, but it is a
+        completion attempt, not a reply that put off running code.
+        """
+        if not calls:
+            return
+        if any(call.name in CODE_RUNNING_TOOLS for call in calls):
+            self.tool_only_streak = 0
+        else:
+            self.tool_only_streak += 1
 
     def _reset_same_action(self) -> None:
         self.same_action_fingerprint = None

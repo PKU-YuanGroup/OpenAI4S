@@ -526,6 +526,23 @@ def _run_native_reply(content, *, name="web_search", arguments=None):
         "Now I'll move into the Python runtime to download and parse the papers.",
         "ACS blocks direct fetch. I'll switch to the Python runtime and retry.",
         "Enough searching - entering the runtime now.",
+        # What Doubao Seed wrote across twenty-one tool-only replies of one
+        # Chinese session. The noun list matched the last of these and none of
+        # the others.
+        "绘图规范已加载。现在用 Python 检查 Excel 的工作表和 Layout 布局。",
+        "规范已掌握，停止重复阅读。现在直接用 Python 读取 Excel，检查工作表与 Layout。",
+        "规范已足够，现在正式运行 Python 读取 Excel 结构。",
+        "规范阅读完毕。现在正式运行 Python 检查 Excel 工作表与 Layout。",
+        "规范已充分掌握，现在正式运行代码检查 Excel 结构。",
+        "明白，直接运行检查脚本。",
+        "现在运行脚本检查 Excel 结构。",
+        "运行解析脚本，得到链统计表和独立的结构文件。",
+        "现在直接在代码单元中运行检查。",
+        # The same promise in the other shapes the verbs take.
+        "接下来执行 R 脚本画图。",
+        "下面用 R 绘制年份分布图。",
+        "我来写一段代码检查数据形状。",
+        "把脚本跑一下看看输出。",
     ],
 )
 def test_native_call_that_promises_a_cell_says_no_code_ran(content):
@@ -549,6 +566,17 @@ def test_native_call_that_promises_a_cell_says_no_code_ran(content):
         "Let me read the 2024 paper and search for paclitaxel tables.",
         "Checking what the search results say about solvent polarity.",
         "",
+        # A report of code that did run is not a promise to run it.
+        "脚本已运行完毕，结果见上。现在检索相关文献。",
+        "上一步已经运行了脚本，现在检索文献。",
+        "代码运行结果显示共有 3 个工作表，接下来检索文献。",
+        "已用 Python 完成解析，现在把报告写入文件。",
+        "运行完成后我会汇总结果。",
+        "本次运行时间约 3 秒，接下来检索文献。",
+        # Neither is a step that names no code at all.
+        "文件已导入。现在检查 Excel 的工作表结构和原始数据格式。",
+        "检索 RNA 聚合酶相关文献，并用 RCSB 接口核实条目。",
+        "执行计划已更新：下一步检索数据库。",
     ],
 )
 def test_native_call_that_does_not_promise_a_cell_is_left_alone(content):
@@ -574,6 +602,97 @@ def test_a_displaced_cell_gets_only_its_own_note():
 
     assert "It was NOT executed" in seen
     assert "carried no ```python cell" not in seen
+
+
+def _tool_only_run(contents, *, cell_after=None):
+    """One ``web_search`` reply per entry of ``contents``, each a new query.
+
+    Returns what the model read back from each tool result. ``cell_after``
+    turns the reply at that index into a code cell instead.
+    """
+    replies = []
+    for index, content in enumerate(contents):
+        if index == cell_after:
+            replies.append(_reply("```python\nprint(1)\n```"))
+            continue
+        call = _call(f"call_{index}", "web_search", {"query": f"term {index}"})
+        replies.append(_reply(content, tool_calls=[call]))
+
+    def executed(action, reply, state):
+        if not isinstance(action, NativeToolBatch):
+            return ExecutionOutcome(
+                history_messages=({"role": "user", "content": "[Observation] 1"},)
+            )
+        return ExecutionOutcome(
+            history_messages=(
+                {
+                    "role": "tool",
+                    "tool_call_id": action.calls[0].id,
+                    "content": _SEARCHED,
+                },
+            )
+        )
+
+    engine, _, _, _, events, _, _ = _engine(
+        replies, executor=FakeExecutor(handler=executed), max_turns=len(replies)
+    )
+    engine.run([{"role": "user", "content": "analyse the plate"}])
+    return [
+        event.outcome.history_messages[-1]["content"]
+        for event in events.events
+        if isinstance(event, OutcomeProduced)
+    ]
+
+
+def test_a_tool_only_streak_is_told_once_that_tool_calls_run_no_code():
+    # The replies no wording rule can read: "现在读取 Excel，检查工作表与
+    # Layout" names neither Python nor code, was sent with a tool call eleven
+    # times in the reviewed session, and drew no reminder at all.
+    seen = _tool_only_run(["现在读取 Excel，检查工作表与 Layout。"] * 14)
+
+    noted = [index for index, text in enumerate(seen) if text != _SEARCHED]
+    assert noted == [5], "one note, on the sixth tool-only reply"
+    note = seen[5][len(_SEARCHED) :]
+    assert "your last 6 replies were tool calls only" in note
+    assert "Tool calls never execute Python or R" in note
+    assert "If this task needs no code, carry on." in note
+
+
+def test_a_cell_ends_the_streak_and_the_next_one_is_counted_from_zero():
+    seen = _tool_only_run([""] * 16, cell_after=3)
+
+    # Three tool-only replies, a cell, then twelve more: the first streak is
+    # too short for a note and the second earns exactly one, on its sixth.
+    noted = [
+        index
+        for index, text in enumerate(seen)
+        if _SEARCHED in text and text != _SEARCHED
+    ]
+    assert noted == [9]
+
+
+def test_a_reply_that_named_the_cell_gets_that_note_not_the_generic_one():
+    seen = _tool_only_run(
+        [""] * 5 + ["现在正式运行 Python 读取 Excel 结构。"] + [""] * 3
+    )
+
+    assert "carried no ```python cell" in seen[5]
+    assert "tool calls only" not in "".join(seen)
+
+
+def test_a_tool_only_note_does_not_hide_an_identical_call_from_the_circuit():
+    # The note rides on the recorded result. Read as part of the answer, it
+    # made the sixth identical call look like a new result and restarted the
+    # same-action count on the very turn the reminder was sent.
+    from openai4s.agent.actions import tool_only_streak_note
+    from openai4s.agent.progress_circuit import fingerprint_native_results
+
+    plain = [{"role": "tool", "name": "query", "content": _SEARCHED}]
+    note = tool_only_streak_note(NativeToolBatch(()), 6)
+    noted = [{"role": "tool", "name": "query", "content": _SEARCHED + note}]
+
+    assert note
+    assert fingerprint_native_results(noted) == fingerprint_native_results(plain)
 
 
 def test_a_model_that_ignores_the_note_is_still_stopped_by_the_circuit():

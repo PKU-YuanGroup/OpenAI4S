@@ -293,19 +293,61 @@ ANNOUNCED_CELL_NOTE = (
 # like "single-cell" or "T cell" does not match: the cell has to be code. A
 # false alarm costs one sentence in a tool result; a miss left a model
 # announcing the same step for thirty turns.
+#
+# The Chinese half names the verb, not the noun. Doubao Seed wrote "现在正式
+# 运行 Python 读取 Excel", "现在用 Python 检查…", "运行代码", "运行脚本" for
+# twenty-one tool-only replies, and a list of nouns (代码单元, 内核) matched one
+# of them. A verb of running, using or writing next to Python, R, code, a
+# script or a cell is the promise; the same verb marked as finished (已运行,
+# 运行完毕, 运行结果) is a report of work that did run, and is left alone.
+_ZH_NOT_DONE = r"(?<!已)(?<!已经)(?<!曾)(?<!刚才)(?<!之前)(?<!上次)"
+_ZH_CLAUSE = r"[^。；;，,\n]"
 _ANNOUNCED_CELL = re.compile(
     r"\b(?:python|code|foreground|r)\s+cell\b"
     r"|\b(?:in|into|inside|via|using|through|within|to)\s+(?:the\s+|a\s+)?"
     r"(?:python\s+|r\s+)?(?:kernel|runtime)\b"
     r"|\b(?:enter|entering|execute|executing|run|running|switch|switching|"
     r"move|moving|go|going)\b[^.\n]{0,60}\b(?:python|kernel|runtime)\b"
-    r"|代码单元|python\s*单元|在内核|内核中|运行时",
+    r"|代码单元|python\s*单元|在内核|内核中|运行时(?!间)"
+    # 运行 Python / 运行代码 / 运行检查脚本 / 执行 R 脚本
+    rf"|{_ZH_NOT_DONE}(?:运行|执行|跑)"
+    r"(?![完了过毕后时]|结束|成功|失败|结果|出错|报错|环境)"
+    rf"{_ZH_CLAUSE}{{0,12}}?(?:python|代码|脚本|程序|单元|r(?![a-z0-9_²-]))"
+    # 把脚本跑一下
+    rf"|{_ZH_NOT_DONE}把{_ZH_CLAUSE}{{0,10}}?(?:代码|脚本|程序|单元)"
+    rf"{_ZH_CLAUSE}{{0,6}}?(?:运行|执行|跑)"
+    # 用 Python 读取… / 在 R 中…
+    rf"|{_ZH_NOT_DONE}(?:用|使用|在)\s*(?:python|r(?![a-z0-9_²-]))"
+    # 写一段代码检查…
+    rf"|{_ZH_NOT_DONE}(?:写|编写){_ZH_CLAUSE}{{0,8}}?(?:代码|单元)",
     re.IGNORECASE,
 )
 
 # Native tools that do run code: a reply that names a cell next to one of them
 # is not a promise it broke.
-_CODE_RUNNING_TOOLS = frozenset({"exec_background"})
+CODE_RUNNING_TOOLS = frozenset({"exec_background"})
+
+# Every note the Engine appends to a tool result starts with this, so the
+# no-progress circuit can tell a tool's own answer from a note riding on it.
+ENGINE_NOTE_PREFIX = "\n[system] NOTE:"
+
+# How many consecutive tool-only replies, with no cell run in between, earn
+# the wording-independent reminder below.
+TOOL_ONLY_STREAK_TURNS = 6
+
+# The backstop for a reply `_ANNOUNCED_CELL` cannot read. "现在读取 Excel，
+# 检查工作表与 Layout" promises a cell without naming Python, code or a
+# kernel, and no pattern will keep up with how a model rephrases it. What does
+# not vary is the shape: reply after reply of tool calls and no cell. It is
+# sent once per streak, because a literature task that needs no code is the
+# same shape and should pay one sentence for it, not one per turn.
+TOOL_ONLY_STREAK_NOTE = (
+    "\n[system] NOTE: your last {count} replies were tool calls only, and no "
+    "code cell has run in that time. Tool calls never execute Python or R: "
+    "only a complete fenced ```python (or ```r) cell does, sent as the ONLY "
+    "action of a reply with no tool calls. If the next step needs code, send "
+    "that cell now. If this task needs no code, carry on."
+)
 
 
 def unexecuted_cell_note(content: str, action: Action | None) -> str:
@@ -331,9 +373,21 @@ def announced_cell_note(content: str, action: Action | None) -> str:
     """
     if not isinstance(action, NativeToolBatch):
         return ""
-    if any(call.name in _CODE_RUNNING_TOOLS for call in action.calls):
+    if any(call.name in CODE_RUNNING_TOOLS for call in action.calls):
         return ""
     text = content if isinstance(content, str) else ""
     if extract_action(text) is not None or not _ANNOUNCED_CELL.search(text):
         return ""
     return ANNOUNCED_CELL_NOTE
+
+
+def tool_only_streak_note(action: Action | None, streak: int) -> str:
+    """The note for the reply that makes a tool-only streak long enough.
+
+    ``streak`` is the circuit's count of consecutive native batches since the
+    last executed cell. It passes ``TOOL_ONLY_STREAK_TURNS`` once, so the note
+    is sent once per streak however long the streak runs.
+    """
+    if not isinstance(action, NativeToolBatch) or streak != TOOL_ONLY_STREAK_TURNS:
+        return ""
+    return TOOL_ONLY_STREAK_NOTE.format(count=streak)

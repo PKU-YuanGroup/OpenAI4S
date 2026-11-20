@@ -428,6 +428,63 @@ def test_empty_replies_rebuild_the_live_circuit(tmp_path):
     store.close()
 
 
+def _distinct_listings(count: int, *, start: int = 0):
+    return [
+        _reply(tool_calls=[_call(f"call_{index}", arguments={"path": f"dir{index}"})])
+        for index in range(start, start + count)
+    ]
+
+
+def test_the_tool_only_streak_survives_a_restart_and_its_note_is_sent_once(tmp_path):
+    """The streak is rebuilt from the ledger like every other count, so a
+    daemon restart neither forgets five tool-only replies nor repeats the
+    reminder for a streak that already had it."""
+    store = Store(tmp_path / "tool-only.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-tools")
+    user = {"role": "user", "content": "look around"}
+    ledger.append_user(user)
+    state = RunState([user], max_turns=5)
+    AgentEngine(
+        FakeModel(_distinct_listings(5)), CountingExecutor(), event_sink=ledger
+    ).run(state)
+
+    restored = restore_progress_circuit(store, root)
+    assert restored == circuit_from_state(state)
+    assert restored.tool_only_streak == 5
+    assert not restored.tripped
+
+    resumed = RunState([user], max_turns=3)
+    attach_progress_circuit(resumed, restored)
+    result = AgentEngine(
+        FakeModel(_distinct_listings(3, start=5)),
+        CountingExecutor(),
+        event_sink=ledger,
+    ).run(resumed)
+    results = [m["content"] for m in result.messages if m["role"] == "tool"]
+    assert ["tool calls only" in text for text in results] == [True, False, False]
+    assert restore_progress_circuit(store, root) == circuit_from_state(resumed)
+    store.close()
+
+
+def test_a_cell_or_a_code_running_tool_ends_the_tool_only_streak():
+    circuit = ProgressCircuit()
+    listing = NativeToolBatch(
+        (NativeToolCall("c", "c", "list_dir", 0, "{}", arguments={"path": "."}),)
+    )
+    background = NativeToolBatch(
+        (NativeToolCall("b", "b", "exec_background", 0, "{}", arguments={"code": "1"}),)
+    )
+    for _ in range(2):
+        circuit.observe_execution(listing, ExecutionOutcome())
+    assert circuit.tool_only_streak == 2
+    circuit.observe_execution(background, ExecutionOutcome())
+    assert circuit.tool_only_streak == 0
+    circuit.observe_execution(listing, ExecutionOutcome())
+    circuit.observe_code_progress()
+    assert circuit.tool_only_streak == 0
+
+
 def test_different_arguments_do_not_trip():
     replies = [
         _reply(tool_calls=[_call(f"call_{index}", arguments={"path": path})])

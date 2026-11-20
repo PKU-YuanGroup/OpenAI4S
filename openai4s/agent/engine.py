@@ -6,7 +6,12 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import Any, Callable, Iterable, Mapping, Sequence, cast
 
-from .actions import announced_cell_note, route_action, unexecuted_cell_note
+from .actions import (
+    announced_cell_note,
+    route_action,
+    tool_only_streak_note,
+    unexecuted_cell_note,
+)
 from .events import (
     ActionRouted,
     OutcomeProduced,
@@ -264,12 +269,17 @@ class AgentEngine:
         outcome = self.executor.execute(action, reply, state)
         if not isinstance(outcome, ExecutionOutcome):
             raise TypeError("executor must return ExecutionOutcome")
+        # Observed before any note is attached: the circuit weighs the
+        # tool's own answer, and its streak decides one of the notes.
+        circuit.observe_execution(action, outcome)
         outcome = self._note_unexecuted_cell(
             outcome,
             unexecuted_cell_note(reply.content, action)
-            or announced_cell_note(reply.content, action),
+            or announced_cell_note(reply.content, action)
+            # The specific notes say the same thing with a reason attached,
+            # so the streak's turn is spent on whichever of them applies.
+            or tool_only_streak_note(action, circuit.tool_only_streak),
         )
-        circuit.observe_execution(action, outcome)
         state.messages.extend(dict(message) for message in outcome.history_messages)
         state.turn += 1
         self.event_sink.emit(OutcomeProduced(outcome, turn))
