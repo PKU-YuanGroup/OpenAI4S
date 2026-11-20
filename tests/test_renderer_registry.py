@@ -112,3 +112,26 @@ def test_notebook_renderer_is_read_only_and_declares_view_copy_only():
     assert notebook.interactive is False
     assert ".ipynb" in notebook.extensions
     assert "application/x-ipynb+json" in notebook.content_types
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type"),
+    [
+        ("aspirin.smi", "chemical/x-daylight-smiles"),
+        ("library.smiles", "chemical/x-daylight-smiles"),
+        ("ethanol.mol", "chemical/x-mdl-molfile"),
+        ("aspirin_2d.sdf", "chemical/x-mdl-sdfile"),
+        ("ligand.mol2", "chemical/x-mol2"),
+    ],
+)
+def test_chemistry_files_are_typed_as_the_format_they_are(name, content_type):
+    """SCI-26: `.smi` was registered as `application/smil+xml` (SMIL
+    multimedia) and `.mol` as an SD file. Each still opens in the 2D
+    chemistry viewer under its own type."""
+    from openai4s.server.gateway import _guess_ctype
+
+    assert _guess_ctype(name) == content_type
+    selected = RendererRegistry().select(
+        {"filename": name, "content_type": content_type}
+    )
+    assert selected["renderer"]["renderer_id"] == "chemistry-2d"

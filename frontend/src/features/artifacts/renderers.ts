@@ -534,8 +534,10 @@ function molecule2dSvg(model: MolfileModel | null | undefined): SVGElement | nul
 
 export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: string): void {
   // SCI-31: whether or not the Notebook has read the flag yet, and first in
-  // the container even when the answer arrives after the drawing.
-  withWorkbenchFlag(container, () => {
+  // the container even when the answer arrives after the drawing. A SMILES
+  // file has no drawing to edit; its note below offers "Open in Ketcher".
+  const smilesFile = /\.(smi|smiles)$/i.test(String(a.filename || ""));
+  if (!smilesFile) withWorkbenchFlag(container, () => {
     const bar = el("div", "wb-ketcher-bar");
     const open = el("button", "solid-btn small", translate("wb.ketcher.edit"));
     open.onclick = () => {
@@ -560,9 +562,28 @@ export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: s
         wrap.appendChild(head);
         wrap.appendChild(drawing);
       } else {
-        wrap.appendChild(el("div", "renderer-note", translate("viewer.chem.fallback")));
+        // SCI-26: say what is missing in the chemist's terms ("No safe 2D
+        // coordinates were found" read as an error), and where SMILES can be
+        // seen as a structure: Ketcher lays it out, when the editor is on.
         const smiles = runtime ? runtime.smilesLines(text) : [];
-        if (/\.(smi|smiles)$/i.test(String(a.filename || "")) && smiles.length) {
+        const isSmiles = smilesFile && smiles.length > 0;
+        const note = el(
+          "div",
+          "renderer-note",
+          filesT(isSmiles ? "viewer.chem.smilesNoDrawing" : "viewer.chem.noCoordinates"),
+        );
+        wrap.appendChild(note);
+        if (isSmiles) {
+          withWorkbenchFlag(note, () => {
+            const open = el("button", "outline-btn small chem-open-ketcher", filesT("viewer.chem.openKetcher"));
+            open.onclick = () => {
+              callWindow("openKetcher", a);
+            };
+            note.appendChild(document.createTextNode(" "));
+            note.appendChild(open);
+          });
+        }
+        if (isSmiles) {
           const list = el("div", "smiles-list");
           smiles.forEach((item) => {
             const row = el("div", "smiles-row");

@@ -1373,6 +1373,44 @@ describe("every preview entry fails visibly and retries (A1)", () => {
     expect(reads.filter((url) => url.endsWith("/kernel"))).toHaveLength(1);
   });
 
+  it("says why SMILES is not drawn and offers Ketcher instead (SCI-26)", async () => {
+    const runtime = (globalThis as Record<string, unknown>).OpenAI4SScientificRenderers as Record<string, unknown>;
+    vi.stubGlobal("OpenAI4SScientificRenderers", {
+      ...runtime,
+      smilesLines: () => [{ name: "aspirin", smiles: "CC(=O)OC1=CC=CC=C1C(=O)O" }],
+    });
+    const smi: ArtifactRow = { ...row, filename: "aspirin.smi" };
+    const open = async (workbench: boolean, frame: string): Promise<PreviewNode> => {
+      currentId.value = frame;
+      setArtifactsFetch(async (url) =>
+        String(url).endsWith("/kernel")
+          ? new Response(JSON.stringify({ artifact_workbench: workbench }))
+          : new Response("CC(=O)OC1=CC=CC=C1C(=O)O aspirin\n"),
+      );
+      const root = new PreviewNode("div");
+      root.page = true;
+      renderArtifactDescriptor(host(root), smi, descriptor("chemistry-2d"));
+      await flush();
+      return root;
+    };
+    const notes = (root: PreviewNode) => walk(root).filter((node) => node.className === "renderer-note");
+    const openButton = (root: PreviewNode) =>
+      walk(root).find((node) => node.tagName === "BUTTON" && node.textContent === filesT("viewer.chem.openKetcher"));
+
+    const on = await open(true, "f-3");
+    expect(notes(on).map((node) => node.textContent)).toEqual([filesT("viewer.chem.smilesNoDrawing")]);
+    expect(openButton(on)).toBeTruthy();
+    // One way in, not two: the "Edit" bar is for a drawing, and there is none.
+    expect(walk(on).some((node) => node.className === "wb-ketcher-bar")).toBe(false);
+    expect(walk(on).some((node) => node.className === "smiles-code")).toBe(true);
+
+    // A daemon with the editor off (the flag is deployment-wide, so start clean).
+    artifactWorkbench.value = false;
+    const off = await open(false, "f-4");
+    expect(notes(off).map((node) => node.textContent)).toEqual([filesT("viewer.chem.smilesNoDrawing")]);
+    expect(openButton(off)).toBeUndefined();
+  });
+
   it("offers no editor when the server has it switched off", async () => {
     currentId.value = "f-2";
     setArtifactsFetch(async (url) =>

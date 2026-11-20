@@ -701,8 +701,16 @@ def _guess_ctype(name: str) -> str:
     # structure / science formats first (mimetypes mis-maps some, e.g. .pdb)
     if low.endswith((".pdb", ".cif", ".mmcif", ".ent")):
         return "chemical/x-pdb"
-    if low.endswith((".mol", ".mol2", ".sdf")):
+    # SCI-26: one type per format. `.mol` was typed as an SD file, and `.smi`
+    # fell through to mimetypes, which calls it SMIL multimedia.
+    if low.endswith(".sdf"):
         return "chemical/x-mdl-sdfile"
+    if low.endswith(".mol"):
+        return "chemical/x-mdl-molfile"
+    if low.endswith(".mol2"):
+        return "chemical/x-mol2"
+    if low.endswith((".smi", ".smiles")):
+        return "chemical/x-daylight-smiles"
     if low.endswith(".xyz"):
         return "chemical/x-xyz"
     if low.endswith((".fasta", ".fa", ".nwk", ".treefile", ".log")):

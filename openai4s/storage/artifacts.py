@@ -94,6 +94,36 @@ ARTIFACT_KINDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         ),
         ("text/x-python", "text/x-r", "application/x-sh"),
     ),
+    # SCI-26: molecules, structures, sequences and alignments were all "other".
+    (
+        "structure",
+        (
+            "pdb",
+            "cif",
+            "mmcif",
+            "ent",
+            "xyz",
+            "mol",
+            "mol2",
+            "sdf",
+            "smi",
+            "smiles",
+            "fasta",
+            "fa",
+            "faa",
+            "fna",
+            "fastq",
+            "fq",
+            "aln",
+            "a2m",
+            "a3m",
+            "sto",
+            "stockholm",
+            "gb",
+            "gbk",
+        ),
+        ("chemical/",),
+    ),
 )
 ARTIFACT_KIND_NAMES = tuple(name for name, _ext, _ct in ARTIFACT_KINDS) + ("other",)
 

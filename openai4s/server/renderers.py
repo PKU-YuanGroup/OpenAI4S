@@ -48,7 +48,11 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         "chemistry-2d",
         "2D chemistry",
         kinds=("molecule_2d", "chemical_structure"),
-        content_types=("chemical/x-mdl-sdfile", "chemical/x-mdl-molfile"),
+        content_types=(
+            "chemical/x-mdl-sdfile",
+            "chemical/x-mdl-molfile",
+            "chemical/x-daylight-smiles",
+        ),
         extensions=(".mol", ".mol2", ".sdf", ".smi", ".smiles"),
         interactive=True,
         capabilities=("view", "annotate"),

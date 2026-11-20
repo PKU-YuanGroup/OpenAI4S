@@ -389,7 +389,7 @@ back that same set together; no schema or migration change is involved.
 ### Files filtering and pages / 文件筛选与分页
 
 Files combines filename, a human type (Tables, Images, Reports & documents,
-Code, Other — the same table on the client and in `GET .../artifact-index?kind=`)
+Code, Structures & sequences, Other — the same table on the client and in `GET .../artifact-index?kind=`)
 and Uploaded/Generated filters. The cards,
 displayed count, empty message and Load more all describe the same result. A
 session starts at 50 files and adds 50 per click; changing any filter or the
@@ -407,7 +407,7 @@ refuses a name already in use (`409 artifact_exists`). The Viewer's single **Cop
 link** copies the full URL. Late responses and
 artifact events from a previous session cannot replace the current cards.
 
-Files 可组合文件名、按人能读懂的类型（表格、图片、报告与文档、代码、其他；前端与
+Files 可组合文件名、按人能读懂的类型（表格、图片、报告与文档、代码、结构与序列、其他；前端与
 `GET .../artifact-index?kind=` 用同一张表）及上传/生成来源筛选。卡片、显示数量、空状态和
 「加载更多」基于同一结果。会话首次显示 50 项，每次再加载 50 项；改变筛选、
 会话或范围会重置第一页。刷新保留已请求的容量，包括尚未填满的最后一页。

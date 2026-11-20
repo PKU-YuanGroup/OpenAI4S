@@ -693,6 +693,10 @@ def test_human_kinds_and_shown_hidden_rows(server):
         "analysis.py": "text/x-python",
         "model.pt": "application/octet-stream",
         "values.json": "application/json",
+        # SCI-26: these were all "other".
+        "1crn.pdb": "chemical/x-pdb",
+        "aspirin.smi": "chemical/x-daylight-smiles",
+        "1crn.fasta": "text/plain; charset=utf-8",
     }
     ids = {}
     for name, ctype in files.items():
@@ -713,6 +717,7 @@ def test_human_kinds_and_shown_hidden_rows(server):
     assert names(kind="image") == ["growth.png", "plot.svg"]
     assert names(kind="report") == ["paper.pdf", "report.md"]
     assert names(kind="code") == ["analysis.py"]
+    assert names(kind="structure") == ["1crn.fasta", "1crn.pdb", "aspirin.smi"]
     assert names(kind="other") == ["model.pt", "values.json"]
     assert len(names()) == len(files)
 
