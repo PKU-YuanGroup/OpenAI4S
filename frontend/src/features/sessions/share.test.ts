@@ -11,7 +11,7 @@ vi.mock("./chrome", () => ({ hint: vi.fn() }));
 import { i18nReady, t } from "../../i18n";
 import { copyFailedText } from "../chrome/clipboard";
 import { hint } from "./chrome";
-import { openShareDialog, shareExpiry, snapshotText, tunnelDownText } from "./share";
+import { countsText, openShareDialog, shareExpiry, snapshotText, tunnelDownText } from "./share";
 
 class FakeNode {
   tagName: string;
@@ -179,7 +179,13 @@ describe("share dialog state (TEAM-15, TEAM-16, TEAM-17)", () => {
     vi.stubGlobal("fetch", async (input: unknown, init?: { method?: string }) => {
       const path = String(input);
       calls.push({ method: init?.method || "GET", path });
-      const reply = path.endsWith("/share/status") ? status : path.includes("/shares/") ? {} : { shares };
+      const reply = path.endsWith("/share/status")
+        ? status
+        : path.endsWith("/replay")
+          ? { counts: { messages: 4, cells: 3, artifacts: 2 }, excluded: { secret_file: 1 } }
+          : path.includes("/shares/")
+            ? {}
+            : { shares };
       return new Response(JSON.stringify(reply));
     });
   }
@@ -214,6 +220,15 @@ describe("share dialog state (TEAM-15, TEAM-16, TEAM-17)", () => {
     serve({ state: "connecting", configured: true, connected: false }, []);
     await openShareDialog("f");
     expect(tunnel()?.hidden).toBe(false);
+  });
+
+  it("says what a link would publish before it is created", async () => {
+    serve({ state: "connected", connected: true }, []);
+    await openShareDialog("f");
+    const expected = countsText({ messages: 4, cells: 3, artifacts: 2, excluded: { secret_file: 1 } });
+    await vi.waitFor(() => expect(allText(body).join("\n")).toContain(expected));
+    expect(calls.some((call) => call.path.endsWith("/sessions/f/replay"))).toBe(true);
+    expect(calls.some((call) => call.method === "POST")).toBe(false);
   });
 
   it("shows what the snapshot publishes", async () => {

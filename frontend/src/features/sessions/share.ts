@@ -15,14 +15,20 @@ const shareStateCopy = copyLookup({
     tunnelDown:
       "The relay is not connected, so this link does not open yet. It starts working once OpenAI4S reaches the relay.",
     lastError: "Last error: {0}",
-    snapshot: "Snapshot {0} · {1} messages · {2} cells · {3} artifacts",
+    snapshot: "Snapshot {0} · {1}",
+    counts: "{0} messages · {1} cells · {2} artifacts",
     excluded: "{0} file(s) left out",
+    counting: "Counting what this link would publish…",
+    willPublish: "This link would publish {0}.",
   },
   zh: {
     tunnelDown: "中转服务器（relay）未连接，这条链接暂时打不开；OpenAI4S 连上中转服务器后自动生效。",
     lastError: "最近的错误：{0}",
-    snapshot: "快照 {0} · {1} 条消息 · {2} 个单元 · {3} 个产物",
+    snapshot: "快照 {0} · {1}",
+    counts: "{0} 条消息 · {1} 个单元 · {2} 个产物",
     excluded: "排除了 {0} 个文件",
+    counting: "正在统计这条链接会公开的内容…",
+    willPublish: "这条链接将公开：{0}。",
   },
 });
 
@@ -39,14 +45,11 @@ export function tunnelDownText(lastError: unknown): string {
   return shareStateCopy("tunnelDown") + (detail ? " " + shareStateCopy("lastError", detail) : "");
 }
 
-/** "Snapshot <time> · N messages · N cells · N artifacts · N file(s) left out". */
-export function snapshotText(share: Record<string, unknown>): string {
-  const counts = (share.counts || {}) as Record<string, unknown>;
+/** "N messages · N cells · N artifacts · N file(s) left out", or "" without counts. */
+export function countsText(counts: Record<string, unknown>): string {
   if (!["messages", "cells", "artifacts"].some((key) => typeof counts[key] === "number")) return "";
-  const at = shareExpiry(share.updated_at);
   let text = shareStateCopy(
-    "snapshot",
-    at ? at.toLocaleString() : "",
+    "counts",
     Number(counts.messages || 0),
     Number(counts.cells || 0),
     Number(counts.artifacts || 0),
@@ -58,6 +61,14 @@ export function snapshotText(share: Record<string, unknown>): string {
       : 0;
   if (left) text += " · " + shareStateCopy("excluded", left);
   return text;
+}
+
+/** "Snapshot <time> · N messages · N cells · N artifacts · N file(s) left out". */
+export function snapshotText(share: Record<string, unknown>): string {
+  const counts = countsText((share.counts || {}) as Record<string, unknown>);
+  if (!counts) return "";
+  const at = shareExpiry(share.updated_at);
+  return shareStateCopy("snapshot", at ? at.toLocaleString() : "", counts);
 }
 
 export async function openShareDialog(fid: string, frame: SessionLike = {}): Promise<void> {
@@ -285,6 +296,19 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
   } else {
     box.appendChild(tunnelNote);
     box.appendChild(scopeNote());
+    // TEAM-17: what a link would publish, before it exists. The replay view
+    // is the same projection a share publishes, built without publishing.
+    const preview = para(shareStateCopy("counting"));
+    preview.classList.add("share-snapshot");
+    box.appendChild(preview);
+    fetch(`${API}/sessions/${encodeURIComponent(fid)}/replay`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((view) => {
+        const text = view ? countsText({ ...(view.counts || {}), excluded: view.excluded }) : "";
+        if (text) preview.textContent = shareStateCopy("willPublish", text);
+        else preview.remove();
+      })
+      .catch(() => preview.remove());
     const expRow = document.createElement("div");
     expRow.className = "share-expiry";
     const expLabel = document.createElement("span");
