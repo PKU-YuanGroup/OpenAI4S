@@ -364,6 +364,8 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
       <button
         type="button"
         class="outline-btn small skill-use"
+        aria-label={t("skill.useInChat")}
+        title={t("skill.useInChat")}
         onClick={() => {
           closeCust();
           insertSkillMention(asString(s.name));

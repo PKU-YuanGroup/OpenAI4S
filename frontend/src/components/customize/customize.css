@@ -299,6 +299,13 @@
   flex-shrink: 0;
   white-space: nowrap;
 }
+/* At phone width the label would squeeze the description into a sliver; the
+   button keeps its name through aria-label. */
+@media (max-width: 560px) {
+  #cust .skill-use span {
+    display: none;
+  }
+}
 #cust .cust-input {
   min-height: 40px;
   padding: 8px 14px;
