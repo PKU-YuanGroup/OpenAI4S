@@ -594,6 +594,7 @@ def test_share_list_shows_title_contents_and_expiry(monkeypatch, capsys):
     row = {
         "share_id": "sh-1",
         "status": "ready",
+        "root_frame_id": "f-1",
         "title": "Demo",
         "url": "https://sh-1.example.org/",
         "counts": {"messages": 2, "cells": 1, "artifacts": 0},
@@ -605,6 +606,7 @@ def test_share_list_shows_title_contents_and_expiry(monkeypatch, capsys):
     assert out.strip().split("\t") == [
         "sh-1",
         "ready",
+        "f-1",
         "Demo",
         "2 messages, 1 cells, 0 artifacts",
         "never expires",

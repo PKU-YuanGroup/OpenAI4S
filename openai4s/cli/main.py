@@ -3496,9 +3496,10 @@ def cmd_share(args) -> int:
         _warn_share_tunnel_down(cfg)
     elif action == "list":
         for item in rec.get("shares", []):
-            # A list row names no session, only the share's own title.
+            # Which session went out, next to the share's own title.
             print(
                 f"{item['share_id']}\t{item['status']}\t"
+                f"{item.get('root_frame_id') or '(unknown session)'}\t"
                 f"{item.get('title') or '(no title)'}\t{_share_counts_text(item)}\t"
                 f"{_share_expiry_text(item.get('expires_at'))}\t{item.get('url', '')}"
             )
