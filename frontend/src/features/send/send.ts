@@ -428,6 +428,9 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     w.classList.add("continue-seed");
     b.remove();
     w.appendChild(continueMarker());
+  } else if (text) {
+    // What a turn that fails before it runs anything gives back (turn.ts).
+    w.dataset.sentText = text;
   }
   // The same chips a reload draws from the stored `artifact_refs`.
   if (sentMentions.length) {
