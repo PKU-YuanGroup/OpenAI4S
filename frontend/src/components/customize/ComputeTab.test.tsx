@@ -396,6 +396,37 @@ describe("adding a remote GPU host", () => {
   });
 });
 
+// SCI-05: Add, Install and Run with nothing filled in changed nothing on screen.
+describe("empty Compute forms", () => {
+  it("cannot be submitted until there is something to submit", async () => {
+    mocks.fetch.mockImplementation((url: string) =>
+      reply(
+        url === "/api/v1/compute/jobs"
+          ? { jobs: [] }
+          : url === "/api/v1/compute/remote"
+            ? { hosts: [], available_aliases: ["gpu-box"] }
+            : {},
+      ),
+    );
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(button("common.add").props!.disabled).toBe(true);
+    expect(button("cust.compute.installBtn").props!.disabled).toBe(true);
+    expect(button("cust.jobs.runBtn").props!.disabled).toBe(true);
+
+    find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.compute.installPlaceholder")!
+      .props!.onInput!({ target: { value: "   " } });
+    expect(button("cust.compute.installBtn").props!.disabled).toBe(true);
+    find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.compute.installPlaceholder")!
+      .props!.onInput!({ target: { value: "openpyxl" } });
+    find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.jobs.cmdPlaceholder")!
+      .props!.onInput!({ target: { value: "echo hi" } });
+    expect(button("cust.compute.installBtn").props!.disabled).toBe(false);
+    expect(button("cust.jobs.runBtn").props!.disabled).toBe(false);
+  });
+});
+
 describe("Compute tab for a team member (TEAM-24)", () => {
   const requested = () => mocks.fetch.mock.calls.map(([url]) => String(url));
   const memberNote = () => find(render(), (node) => node.props?.["data-compute-member-note"] === "");

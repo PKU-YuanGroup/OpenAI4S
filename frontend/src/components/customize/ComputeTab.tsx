@@ -483,7 +483,8 @@ export function ComputeTab() {
             <button
               type="button"
               class="outline-btn small"
-              disabled={installing}
+              // SCI-05: an empty Install or Run did nothing visible; now it cannot be pressed.
+              disabled={installing || !pkg.trim()}
               onClick={async () => {
                 const pkgs = pkg.trim().split(/\s+/).filter(Boolean);
                 if (!pkgs.length) return;
@@ -555,7 +556,7 @@ export function ComputeTab() {
             <button
               type="button"
               class="solid-btn small"
-              disabled={jobBusy}
+              disabled={jobBusy || !jobCmd.trim()}
               onClick={async () => {
                 const command = jobCmd.trim();
                 if (!command) return;
