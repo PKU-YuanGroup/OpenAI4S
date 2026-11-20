@@ -34,7 +34,7 @@ import { cancelFrame } from "./raf";
 import { flushScrollNow, unbindMessageScroll, updateJumpPill } from "./scroll";
 import type { LiveStream } from "./stream";
 import { turnTextKey } from "./turnGroup";
-import { bindTurnStatus, notePassingHint, resetTurnStatus } from "./turnStatus";
+import { bindTurnStatus, notePassingHint, noteResumingHint, resetTurnStatus } from "./turnStatus";
 import { settleLiveCellCard } from "./cardState";
 import { turnDone } from "../send/turn";
 import { t } from "../../i18n/runtime";
@@ -1221,6 +1221,23 @@ describe("the running turn's status row", () => {
     say("Stopping…");
     onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-9", status: "done" });
     vi.advanceTimersByTime(20_000);
+    expect(hintLine()).toBe("Stopping…");
+  });
+
+  it("the resume line goes with the reconnected stream's first event (SYNC-3)", () => {
+    const say = (text: string): void => (globalThis as unknown as { hint: (t: string) => void }).hint(text);
+    running.value = true;
+    say(t("conv.resuming.hint"));
+    noteResumingHint();
+    // Another session's event says nothing about this one's stream.
+    handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-2", seq: 3 }));
+    expect(hintLine()).toBe(t("conv.resuming.hint"));
+    // The first event of this one: the stream is back, though no phase changed.
+    handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-1", seq: 4 }));
+    expect(hintLine()).toBe(t("toast.running"));
+    // Only that line: a later event leaves whatever came after it alone.
+    say("Stopping…");
+    handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-1", seq: 5 }));
     expect(hintLine()).toBe("Stopping…");
   });
 });

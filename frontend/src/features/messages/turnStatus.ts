@@ -20,6 +20,7 @@ import { LANG, t } from "../../i18n/runtime";
 import { _liveCell } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { running, stepEls, stream as liveStream } from "../../stores/stream";
+import { onSessionEvent } from "../ws/connect";
 import { approvalPendingFor } from "./approval";
 import { el, messagesHost } from "./dom";
 import { down } from "./scroll";
@@ -121,6 +122,31 @@ export function notePassingHint(): void {
   passing = text ? { text, at: Date.now() } : null;
 }
 
+/**
+ * "Still running in the background, resuming…" is true until the stream is
+ * back, and that is the first event of the open session that arrives: it
+ * stayed for the whole turn while the step cards were visibly updating
+ * (SYNC-3). Without any event (a long model wait) the passing-line timer
+ * still retires it.
+ */
+let resuming = "";
+
+/** Call right after painting the resume line (messages/open.ts). */
+export function noteResumingHint(): void {
+  notePassingHint();
+  resuming = passing ? passing.text : "";
+}
+
+/** A live event of the open session arrived (ws/connect.ts): the resume line has done its job. */
+export function noteSessionEvent(): void {
+  if (!resuming) return;
+  const text = resuming;
+  resuming = "";
+  if (!running.value || hintText() !== text) return;
+  if (passing && passing.text === text) passing = null;
+  setHint(t("toast.running"));
+}
+
 /** Put "Running…" back if the moment's line is still the one on screen. */
 function retirePassingHint(): void {
   const stale = passing;
@@ -160,6 +186,7 @@ function stop(): void {
   row?.remove();
   shown = null;
   passing = null;
+  resuming = "";
 }
 
 /** Bring the row in line with the turn. Cheap; called on every relevant event. */
@@ -193,6 +220,7 @@ let bound: Array<() => void> | null = null;
 /** Bound once after the Shell has rendered (send.ts `bindComposer`). */
 export function bindTurnStatus(): void {
   if (bound) return;
+  onSessionEvent(noteSessionEvent);
   bound = [
     effect(() => {
       void running.value;
@@ -208,6 +236,7 @@ export function bindTurnStatus(): void {
 /** Test seam, and the page's teardown: no timer or effect outlives it. */
 export function resetTurnStatus(): void {
   stop();
+  onSessionEvent(null);
   bound?.forEach((dispose) => dispose());
   bound = null;
   row = null;

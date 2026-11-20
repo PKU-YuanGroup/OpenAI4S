@@ -126,7 +126,7 @@ import { ApiError } from "../sessions/api";
 import { chatCells, type StoredCell } from "./cellCard";
 import { down, updateJumpPill } from "./scroll";
 import { flushRender, type LiveStream } from "./stream";
-import { notePassingHint } from "./turnStatus";
+import { noteResumingHint } from "./turnStatus";
 
 function callLane(name: string, ...args: unknown[]): unknown {
   const fn = (globalThis as Record<string, unknown>)[name];
@@ -444,8 +444,9 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       const btn = typeof document !== "undefined" && document.getElementById("cancel-btn");
       if (btn) btn.classList.remove("hidden");
       hint(t("conv.resuming.hint"), false, true);
-      // True for a moment only: the status row takes over (turnStatus.ts).
-      notePassingHint();
+      // True for a moment only: the stream's first event, or the status
+      // row, takes over (turnStatus.ts).
+      noteResumingHint();
       resumeWatch(fid, gen);
     } else {
       closeTurnTicket(); hideCancel();
