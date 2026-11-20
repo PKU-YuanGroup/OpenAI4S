@@ -556,18 +556,30 @@ def test_a_child_frame_is_labelled_with_the_first_sentence_of_its_task(monkeypat
     monkeypatch.setattr(loop_mod.Agent, "run", lambda self, task: _submitted())
     cfg, store, root = _root_store()
     runner = DelegationRunner(cfg, parent_frame_id=root, store=store)
-    result = runner(
+    # A named specialist's persona is prepended to the request (host side,
+    # `_with_persona`); the user asked for what follows it.
+    persona = "You are acting as the specialist **general**.\nBe brief.\n\n"
+    asked = (
+        "Compute the average molecular weight of the peptide ACDEFGHIK. "
+        "Use plain Python if you can."
+    )
+    single = runner(
+        {"name": "general", "request": persona + asked, "_persona_chars": len(persona)}
+    )
+    fan_out = runner(
         {
             "name": "general",
-            # A named specialist's preamble is not what the user asked.
-            "task": "You are acting as the specialist **general**.",
-            "request": "Compute the average molecular weight of the peptide "
-            "ACDEFGHIK. Use plain Python if you can.",
+            "request": [persona + asked, persona + "Report the GC content of ATGCGC."],
+            "_persona_chars": len(persona),
         }
     )
     runner.close()
-    child = store.get_frame(result["frame_id"])
+    child = store.get_frame(single["frame_id"])
     assert child["name"] == "general"
     assert child["task_summary"] == (
         "Compute the average molecular weight of the peptide ACDEFGHIK."
     )
+    assert [store.get_frame(r["frame_id"])["task_summary"] for r in fan_out] == [
+        "Compute the average molecular weight of the peptide ACDEFGHIK.",
+        "Report the GC content of ATGCGC.",
+    ]

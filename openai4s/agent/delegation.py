@@ -2838,6 +2838,8 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
             "require_artifacts",
             "retries",
             "_rl_parent_context",
+            # SCI-21: each item carries the same specialist persona prefix.
+            "_persona_chars",
         )
         if (value := parent_spec.get(key)) is not None
     }
@@ -2880,9 +2882,12 @@ def _task_headline(spec: Mapping[str, Any], limit: int = 120) -> str:
     """The first sentence of a child's task, bounded: what the user calls it."""
     request = spec.get("request")
     if isinstance(request, dict):
-        request = request.get("task") or request.get("prompt")
-    # The request is what was asked; a named specialist's `task` is its
-    # preamble ("You are acting as the specialist ...").
+        request = request.get("request") or request.get("task") or request.get("prompt")
+    # A named specialist's persona is prepended to the request
+    # (`host.delegation._with_persona`); the user asked for what follows it.
+    persona = spec.get("_persona_chars")
+    if isinstance(request, str) and type(persona) is int and 0 < persona < len(request):
+        request = request[persona:]
     text = " ".join(str(request or spec.get("task") or "").split())
     if not text:
         return ""
