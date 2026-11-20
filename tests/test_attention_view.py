@@ -283,6 +283,28 @@ def test_completed_and_idle_sessions_yield_zero_cards(client):
     assert body["items"] == []
 
 
+def test_a_finished_import_is_not_a_needs_attention_card(client):
+    """M-66: every imported session landed under "Needs attention": a finished
+    import is view-only by design. An interrupted one still is a card."""
+    imported = client.session("imported-copy")
+    client.store.set_setting(
+        session_import_quarantine_key(imported),
+        json.dumps({"state": "quarantined", "reason": "untrusted_session_package"}),
+    )
+    interrupted = client.session("interrupted-import")
+    client.store.set_setting(
+        session_import_quarantine_key(interrupted),
+        json.dumps(
+            {"state": "quarantined", "reason": "session_package_import_in_progress"}
+        ),
+    )
+    status, body = client.get("/attention")
+    assert status == 200, body
+    frames = {item["frame_id"] for item in body["items"]}
+    assert imported not in frames
+    assert interrupted in frames
+
+
 def test_pending_approval_appears_within_one_poll_window(client):
     started = time.perf_counter()
     frame_id = _seed_approval(client, name="poll-approval")

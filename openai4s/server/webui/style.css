@@ -2666,6 +2666,7 @@ html[data-theme="dark"] .art:hover{box-shadow:none}
 .key-banner{background:var(--warn-bg);color:var(--warn-text);border-bottom:1px solid color-mix(in srgb,var(--warn) 35%,transparent)}
 .key-banner .kb-link{height:24px;padding:0 10px;border-radius:6px;background:var(--clay)}
 .compute-lost{border-color:color-mix(in srgb,var(--danger) 45%,var(--border));background:var(--danger-bg)}
+.compute-lost.imported-banner{border-color:var(--border);background:var(--bg-200)}
 .compute-badge{border-color:var(--border)}
 .ref-problems{border:1px solid var(--border);background:var(--bg-100)}
 

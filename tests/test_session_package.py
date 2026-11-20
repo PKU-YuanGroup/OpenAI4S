@@ -4329,6 +4329,25 @@ def test_a_background_task_recorded_as_a_cell_travels_with_its_files(tmp_path):
         store.close()
 
 
+def test_an_imported_session_keeps_its_generated_title(tmp_path):
+    """M-66: a session titled by its generated summary (no explicit name) was
+    imported as "Imported session"."""
+
+    store, domain, _project, root, _artifact, _checkpoint, _ws = _source(tmp_path)
+    try:
+        store.update_frame(root, name="", task_summary="Random points scatter")
+        imported = domain.session_import(domain.session_export(root)["data"])
+        frame = store.get_frame(imported["root_frame_id"])
+        assert frame["name"] == "Random points scatter"
+        assert frame["task_summary"] == "Random points scatter"
+
+        store.update_frame(root, name="Named run", task_summary="summary")
+        again = domain.session_import(domain.session_export(root)["data"])
+        assert store.get_frame(again["root_frame_id"])["name"] == "Named run"
+    finally:
+        store.close()
+
+
 def test_a_package_written_before_the_fix_still_imports(tmp_path):
     """Built the way the old exporter wrote it: the task id kept as producer."""
 

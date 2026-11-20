@@ -2290,16 +2290,21 @@ class SessionPackageService:
                     title="Agent Context from the package (not applied)",
                     content=original_context[:20000],
                 )
+            # M-66: a session's visible title is its name, else its generated
+            # title (`task_summary`). The fixed "Imported session" fallback
+            # for an unnamed source replaced that title on every import.
+            source_summary = _safe_text(
+                session.get("frame", {}).get("task_summary") or ""
+            )
             self.store.update_frame(
                 new_root,
                 name=_safe_text(
-                    session.get("frame", {}).get("name") or "Imported session"
+                    session.get("frame", {}).get("name")
+                    or source_summary
+                    or "Imported session"
                 ),
                 model=session.get("frame", {}).get("model"),
-                task_summary=_safe_text(
-                    session.get("frame", {}).get("task_summary")
-                    or "Imported scientific Session"
-                ),
+                task_summary=source_summary or "Imported scientific Session",
                 runtime_env=session.get("frame", {}).get("runtime_env"),
                 status="done",
             )

@@ -17,6 +17,7 @@ import {
   showContextUsage,
 } from "./actions";
 import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
+import { watchImportedSession } from "./imported";
 import { newSession, routeInitialView } from "./conversation";
 import { setScopedExecutionRequest } from "../notebook/kernel";
 import { scopedExecutionRequest } from "../timeline/execution-request";
@@ -195,6 +196,7 @@ export function bindWorkbench(): Promise<void> {
   applyStaticI18n(document);
   watchActivateKeys(document);
   watchDisconnect();
+  watchImportedSession();
   setLoadSessionsImpl(async () => { await loadSessions(); });
 
   document.querySelectorAll(".lang-btn").forEach((b) => {
