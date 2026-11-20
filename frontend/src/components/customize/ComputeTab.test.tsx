@@ -338,6 +338,15 @@ describe("what the Compute tab says about remote compute", () => {
     expect(guide.props!.rel).toBe("noopener noreferrer");
   });
 
+  // M-27: the Jobs section did not say that a job belongs to no project.
+  it("says where a daemon job runs and that its output is not a project file", async () => {
+    const shown = text(await load());
+    expect(shown).toContain("in the compute-jobs folder of the OpenAI4S data directory");
+    expect(shown).toContain("A job belongs to no project or session");
+    expect(shown).toContain("is not saved as a project file");
+    expect(shown).not.toContain("cust.jobs.desc");
+  });
+
   it("keeps a team member's tab quiet about setting it up", async () => {
     teamUser.value = { username: "bob", role: "member", kind: "user" };
     const shown = text(await load());

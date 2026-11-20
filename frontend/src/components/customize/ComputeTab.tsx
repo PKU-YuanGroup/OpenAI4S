@@ -64,6 +64,9 @@ const computeCopy = copyLookup({
     "remote.addedUnreachable":
       "已添加 {0}，但检查没有拿到 GPU 列表（没有应答、需要输入密码，或没有 nvidia-smi）。它会标为不可达；如果它不是 GPU 主机，可以移除。",
     "remote.host": "<主机>",
+    // M-27: where a job runs and where its output goes, which nothing said.
+    "jobs.desc":
+      "在本机以守护进程的用户身份、于 OpenAI4S 数据目录的 compute-jobs 文件夹中后台运行较长的 bash 命令或 Python 脚本，可查看输出、可取消。作业不属于任何项目或会话：输出（最后 200 KB）只显示在这里，不会存为项目文件，守护进程停止时也会丢失。要让结果随项目保存，请在会话里运行。",
   },
   en: {
     "compute.memberNote":
@@ -88,6 +91,9 @@ const computeCopy = copyLookup({
     "remote.addedUnreachable":
       "Added {0}, but the check got no GPU list (no answer, a password prompt, or no nvidia-smi). It is listed as unreachable; remove it if it is not a GPU host.",
     "remote.host": "<host>",
+    // M-27: where a job runs and where its output goes, which nothing said.
+    "jobs.desc":
+      "Run a long bash command or Python script in the background on this machine, as the daemon's user, in the compute-jobs folder of the OpenAI4S data directory; watch its output and cancel it. A job belongs to no project or session: its output (the last 200 KB) is shown here only, is not saved as a project file, and is lost if the daemon stops. To keep results with a project, run the work from a session.",
   },
 });
 
@@ -533,7 +539,7 @@ export function ComputeTab() {
           </div>
         </div>
       </div>
-      <Hdr title={t("cust.jobs.title")} sub={t("cust.jobs.desc")} />
+      <Hdr title={t("cust.jobs.title")} sub={computeCopy("jobs.desc")} />
       <div class="cust-row">
         <div class="info">
           <div class="nm">{t("cust.jobs.submitName")}</div>
