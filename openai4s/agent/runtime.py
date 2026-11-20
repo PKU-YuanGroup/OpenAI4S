@@ -436,6 +436,8 @@ class ChatModel:
         self,
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
+        *,
+        offer_tools: bool = True,
     ) -> Mapping[str, Any]:
         """One provider call, with its telemetry riding along.
 
@@ -446,7 +448,7 @@ class ChatModel:
         """
         probe = _CallProbe(stream=self.stream)
         try:
-            reply = self._complete(messages, on_delta, probe)
+            reply = self._complete(messages, on_delta, probe, offer_tools)
         except BaseException as error:
             try:
                 error.call_telemetry = probe.record("error")  # type: ignore[attr-defined]
@@ -466,6 +468,7 @@ class ChatModel:
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
         probe: _CallProbe,
+        offer_tools: bool = True,
     ) -> Mapping[str, Any]:
         if self.quota_gate is not None:
             self.quota_gate()
@@ -480,6 +483,12 @@ class ChatModel:
         else:
             source = self.tools
         kwargs: dict[str, Any] = {"tools": tuple(source)}
+        if not offer_tools:
+            # The facade's "no tool calls on this request". The declarations
+            # stay: Anthropic rejects a history of tool_use/tool_result blocks
+            # sent with no tools defined. The OpenAI-compatible wire drops them
+            # itself, since not every server there takes ``tool_choice``.
+            kwargs["tool_choice"] = "none"
         if self.call_context is not None:
             # Here, on the owning thread: this is the last point at which the
             # session state still describes the turn making this call.

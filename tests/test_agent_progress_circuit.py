@@ -652,6 +652,61 @@ def test_the_tool_only_streak_survives_a_restart_and_its_note_is_sent_once(tmp_p
     store.close()
 
 
+class _PromisingModel:
+    """Promises a cell with a new listing while tools are on offer; with none
+    on offer, answers ``untooled``. Records whether each call offered tools."""
+
+    def __init__(self, untooled: str, *, start: int = 0):
+        self.untooled = untooled
+        self.index = start
+        self.offered: list[bool] = []
+
+    def complete(self, messages, on_delta, *, offer_tools=True):
+        del messages, on_delta
+        self.offered.append(offer_tools)
+        self.index += 1
+        if not offer_tools:
+            return _reply(self.untooled)
+        call = _call(f"call_{self.index}", arguments={"path": f"dir{self.index}"})
+        return _reply("现在用 Python 读取 Excel。", tool_calls=[call])
+
+
+def test_the_tool_less_call_survives_a_restart_and_is_not_made_twice(tmp_path):
+    """Two noted replies, then the turn ends before the next call. The count
+    is rebuilt from the recorded results, so the resumed run's first call is
+    the tool-less one; once its reply is recorded, a second restart offers
+    tools again."""
+    store = Store(tmp_path / "withheld.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-withheld")
+    user = {"role": "user", "content": "分析 demo.xlsx"}
+    ledger.append_user(user)
+    state = RunState([user], max_turns=2)
+    first = _PromisingModel("```python\nprint(1)\n```")
+    AgentEngine(first, CountingExecutor(), event_sink=ledger).run(state)
+    assert first.offered == [True, True]
+
+    restored = restore_progress_circuit(store, root)
+    assert restored == circuit_from_state(state)
+    assert restored.announced_cell_streak == 2
+
+    resumed = RunState([user], max_turns=1)
+    attach_progress_circuit(resumed, restored)
+    prose = _PromisingModel("好的，我现在就运行 Python。", start=2)
+    AgentEngine(prose, CountingExecutor(), event_sink=ledger).run(resumed)
+    assert prose.offered == [False]
+
+    again = restore_progress_circuit(store, root)
+    assert again == circuit_from_state(resumed)
+    assert again.announced_cell_streak == 0
+    last = RunState([user], max_turns=1)
+    attach_progress_circuit(last, again)
+    model = _PromisingModel("```python\nprint(1)\n```", start=3)
+    AgentEngine(model, CountingExecutor(), event_sink=ledger).run(last)
+    assert model.offered == [True]
+    store.close()
+
+
 def test_a_cell_or_a_code_running_tool_ends_the_tool_only_streak():
     circuit = ProgressCircuit()
     listing = NativeToolBatch(

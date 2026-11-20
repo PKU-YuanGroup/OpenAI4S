@@ -113,6 +113,25 @@ def test_chat_model_passes_native_schemas_and_is_blocking_by_default():
     assert "on_delta" not in calls[0][2]
 
 
+def test_a_call_without_tools_keeps_the_declarations_and_forbids_every_call():
+    # The Engine's withheld call. The declarations stay listed because the
+    # Anthropic wire rejects a tool history sent with none; the facade drops
+    # them itself on the OpenAI-compatible wire.
+    spec = ToolSpec("lookup", "Look up a fact.", {"type": "object"})
+    calls = []
+
+    def fake_chat(messages, received_cfg, **kwargs):
+        calls.append(kwargs)
+        return {"content": "```python\nprint(1)\n```"}
+
+    model = ChatModel(object(), fake_chat, tools=[spec])
+    model.complete([], lambda _delta: None, offer_tools=False)
+    model.complete([], lambda _delta: None)
+
+    assert (calls[0]["tools"], calls[0]["tool_choice"]) == ((spec,), "none")
+    assert calls[1]["tools"] == (spec,) and "tool_choice" not in calls[1]
+
+
 def test_chat_model_call_state_carries_the_configured_retry_policy():
     """The turn's CallState is built here, and ``client.chat`` prefers it over
     its own, so this is the one place the retry policy reaches an Agent turn."""

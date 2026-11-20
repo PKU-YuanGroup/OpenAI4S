@@ -247,6 +247,94 @@ def test_a_delta_callback_does_not_refuse_a_blocking_wire(cap):
     assert deltas == []
 
 
+_LOOKUP = {
+    "name": "lookup",
+    "description": "Look up a fact.",
+    "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+}
+# One earlier call and its answer: the history a tool-less call is sent with.
+_TOOL_HISTORY = [
+    {"role": "user", "content": "find it"},
+    {
+        "role": "assistant",
+        "content": "现在用 Python 读取 Excel。",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "wire_id": "call_1",
+                "name": "lookup",
+                "ordinal": 0,
+                "raw_arguments": '{"q":"x"}',
+                "arguments": {"q": "x"},
+                "parse_error": None,
+                "provider_meta": {},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_1", "name": "lookup", "content": "found"},
+]
+
+
+@pytest.mark.parametrize("provider", ["ark", "chatgpt", "claude", "gemini"])
+def test_a_call_that_may_use_no_tool_still_carries_a_valid_tool_history(cap, provider):
+    """``tool_choice="none"`` is how the Agent withholds tools for one call.
+
+    The OpenAI-compatible wire sends no declarations: servers there differ on
+    ``tool_choice``. Anthropic keeps them, because it rejects tool_use and
+    tool_result blocks in a request that defines no tools, and its ``none``
+    choice takes no other field. Gemini keeps them with its NONE mode.
+    """
+    llm.chat(_TOOL_HISTORY, _cfg(provider), tools=[_LOOKUP], tool_choice="none")
+    payload = cap.payload
+
+    if provider in ("ark", "chatgpt"):
+        assert payload["messages"][1]["tool_calls"][0]["id"] == "call_1"
+        assert not {"tools", "tool_choice", "parallel_tool_calls"} & set(payload)
+    elif provider == "claude":
+        assert payload["messages"][1]["content"][-1]["type"] == "tool_use"
+        assert [tool["name"] for tool in payload["tools"]] == ["lookup"]
+        assert payload["tool_choice"] == {"type": "none"}
+    else:
+        assert "functionCall" in payload["contents"][1]["parts"][-1]
+        declarations = payload["tools"][0]["functionDeclarations"]
+        assert [tool["name"] for tool in declarations] == ["lookup"]
+        assert payload["toolConfig"] == {"functionCallingConfig": {"mode": "NONE"}}
+
+
+def test_a_responses_call_that_may_use_no_tool_keeps_its_declarations(monkeypatch):
+    sent = []
+
+    def post_sse(url, payload, headers, timeout, on_event):
+        sent.append(payload)
+        output = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "ok"}],
+            }
+        ]
+        on_event(
+            {
+                "type": "response.completed",
+                "response": {"status": "completed", "output": output, "usage": {}},
+            }
+        )
+
+    monkeypatch.setattr(llm.transport, "post_sse", post_sse)
+    llm.chat(
+        _TOOL_HISTORY,
+        _cfg("openai_responses"),
+        tools=[_LOOKUP],
+        tool_choice="none",
+    )
+
+    (payload,) = sent
+    types = [item.get("type") for item in payload["input"]]
+    assert types[-2:] == ["function_call", "function_call_output"]
+    assert [tool["name"] for tool in payload["tools"]] == ["lookup"]
+    assert payload["tool_choice"] == "none"
+
+
 def test_config_base_url_override(cap):
     c = _cfg("chatgpt", base_url="https://proxy.local/v1")
     llm.chat([{"role": "user", "content": "hi"}], c)
