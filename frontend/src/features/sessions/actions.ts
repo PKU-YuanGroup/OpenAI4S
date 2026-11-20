@@ -10,7 +10,7 @@ import { artifacts } from "../../stores/artifacts";
 import { defaultModelName, models } from "../../stores/customize";
 import { _openGen, _titleName, currentId, folders, project, sessions } from "../../stores/session";
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
-import { api, apiErrorText } from "./api";
+import { API, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
 import { composerCopy } from "./copy";
@@ -32,11 +32,19 @@ import { assignFolder, invalidateFolders, loadSessions, renderSessions } from ".
 import { fetchAllMessages, fetchRecentMessages } from "./messages";
 import { openShareDialog } from "./share";
 import {
+  byteSize,
   downloadSessionArtifacts,
   exportSessionPackage as exportPackageBytes,
   flash,
   importSessionPackage as importPackageWithDialog,
 } from "./package";
+import {
+  buildSessionMarkdown,
+  embedImages,
+  imageType,
+  type MarkdownCell,
+  type MarkdownMessage,
+} from "./markdown-export";
 import type { SessionLike } from "./paging";
 
 export async function commitTitle(): Promise<void> {
@@ -415,26 +423,32 @@ export async function exportSession(fid: string): Promise<void> {
   const frame = (sessions.value as SessionLike[]).find((x) => x.id === fid);
   const title = frame?.name || frame?.task_summary || t("conv.title.default");
   try {
-    const [d, arts] = await Promise.all([
+    const [d, arts, log] = await Promise.all([
       fetchAllMessages(fid),
       api(`/frames/${encodeURIComponent(fid)}/artifacts`).then((value) => validateSessionArtifacts(value, fid)),
+      api(`/frames/${encodeURIComponent(fid)}/execution-log`),
     ]);
-    let md = "# " + title + "\n\n";
-    if (d.complete === false) md += "> " + t("conv.exportTruncated") + "\n\n";
-    (d.messages || []).forEach((m) => {
-      const who = m.role === "user" ? "🧑 User" : "🤖 Assistant";
-      const txt = Array.isArray(m.content)
-        ? (m.content as Array<{ text?: string }>).map((b) => b.text || "").join("")
-        : (m.content as string) || "";
-      md += `## ${who}\n\n${txt}\n\n`;
+    // TEAM-12: one section per turn, the code and output that ran, and the
+    // figures embedded -- a file that reads the same outside the app.
+    const entries = log && typeof log === "object" ? (log as { entries?: unknown }).entries : null;
+    const images = await embedImages(
+      arts,
+      async (id) => {
+        const response = await fetch(`${API}/artifacts/${encodeURIComponent(id)}`);
+        return response.ok ? response.arrayBuffer() : null;
+      },
+      byteSize,
+    );
+    const md = buildSessionMarkdown({
+      title,
+      truncatedNote: d.complete === false ? t("conv.exportTruncated") : null,
+      messages: (d.messages || []) as MarkdownMessage[],
+      cells: (Array.isArray(entries) ? entries : []) as MarkdownCell[],
+      images,
+      otherArtifacts: arts
+        .filter((a) => a.filename && !imageType(String(a.filename), a.content_type))
+        .map((a) => ({ filename: String(a.filename), content_type: a.content_type })),
     });
-    const artList = arts;
-    if (artList.length) {
-      md += "## 产物 Artifacts\n\n";
-      artList.forEach((a) => {
-        md += `- ${a.filename} (${a.content_type || ""})\n`;
-      });
-    }
     const blob = new Blob([md], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
