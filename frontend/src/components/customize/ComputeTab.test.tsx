@@ -348,6 +348,54 @@ describe("what the Compute tab says about remote compute", () => {
   });
 });
 
+// SCI-19: a bare host list and an Add that said nothing about what it does.
+describe("adding a remote GPU host", () => {
+  const REMOTE = { hosts: [], available_aliases: ["gpu-box", "work"] };
+  function serve(add: () => Promise<unknown>) {
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/compute/remote" && init?.method === "POST") return add();
+      if (url === "/api/v1/compute/remote") return reply(REMOTE);
+      return reply(url === "/api/v1/compute/jobs" ? { jobs: [] } : {});
+    });
+  }
+  async function load() {
+    await setLang("en");
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+  }
+  const select = () => find(render(), (node) => node.type === "select" && !!node.props?.onChange)!;
+  const addButton = () => button("common.add");
+  const what = () => text(find(expanded(render()), (node) => node.props?.["data-remote-add-what"] === "")!);
+
+  it("says what Add runs, what the host needs and where it is kept, and waits for a host", async () => {
+    serve(() => reply({ ok: true, reachable: true, gpus: "2× A100" }));
+    await load();
+    expect(addButton().props!.disabled).toBe(true);
+    expect(what()).toContain("Add checks the host once, read-only: ssh -o ConnectTimeout=8 -o BatchMode=yes <host> nvidia-smi");
+    expect(what()).toContain("Nothing is installed.");
+    expect(what()).toContain("without a password prompt");
+    expect(what()).toContain("remote_compute.json");
+    expect(what()).toContain("Remove forgets a host here and does not change it.");
+
+    (select().props!.onChange as (e: unknown) => void)({ target: { value: "gpu-box" } });
+    expect(addButton().props!.disabled).toBe(false);
+    expect(what()).toContain("BatchMode=yes gpu-box nvidia-smi");
+  });
+
+  it("says when the check found no GPU, beside the form", async () => {
+    serve(() => reply({ ok: true, reachable: false, gpus: null }));
+    await load();
+    (select().props!.onChange as (e: unknown) => void)({ target: { value: "work" } });
+    await addButton().props!.onClick!();
+    await flush();
+    const status = find(expanded(render()), (node) => node.props?.role === "status" && text(node) !== "")!;
+    expect(text(status)).toContain("Added work, but the check got no GPU list");
+    expect(status.props!.class).toContain("err");
+    expect(mocks.hint).not.toHaveBeenCalled();
+  });
+});
+
 describe("Compute tab for a team member (TEAM-24)", () => {
   const requested = () => mocks.fetch.mock.calls.map(([url]) => String(url));
   const memberNote = () => find(render(), (node) => node.props?.["data-compute-member-note"] === "");

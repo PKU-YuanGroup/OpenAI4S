@@ -31,6 +31,11 @@ import { markCustomizeLoaded } from "../../features/customize/load";
 import { EnvironmentCard } from "../onboarding/ReadinessPanel";
 import { ActionStatus, CustRow, Hdr, InfoRow, type ActionNote } from "./ui";
 
+/** The read-only check `POST /compute/remote` runs (gateway `_probe_remote_gpu`). */
+export function remoteProbeCommand(alias: string): string {
+  return `ssh -o ConnectTimeout=8 -o BatchMode=yes ${alias} nvidia-smi --query-gpu=name --format=csv,noheader`;
+}
+
 /** Where the compute providers that exist today are described. */
 export const COMPUTE_GUIDE_URL = "https://github.com/PKU-YuanGroup/OpenAI4S/blob/main/docs/compute.md";
 
@@ -49,6 +54,16 @@ const computeCopy = copyLookup({
       "NVIDIA NIM：代理可以把作业发到 NVIDIA 托管的 NIM 服务，或本机 GPU 上的 NIM 容器。需要 Docker，以及守护进程环境里的 NVIDIA_API_KEY（托管）或 NGC_API_KEY（容器）；此页无需设置。",
     "compute.slurm": "Slurm 集群：用 `openai4s cluster` 命令提交并跟踪批处理作业（submit、list、cancel、logs）。",
     "compute.guide": "算力文档（docs/compute.md）",
+    // SCI-19: what Add does before it is clicked.
+    "remote.desc": "把 ~/.ssh/config 里的主机用作远程 GPU 算力。在检查之前，OpenAI4S 并不知道哪台主机有 GPU。",
+    "remote.addWhat": "「添加」只对主机做一次只读检查：{0}。不会安装任何东西。",
+    "remote.addNeeds":
+      "主机需要能免密码登录（密钥或 ssh-agent），并有带 nvidia-smi 的 NVIDIA GPU。检查失败的主机仍会列出，标为不可达。",
+    "remote.addLater":
+      "模型服务要等任务需要时才部署：代理会在主机上执行可见的 ssh 步骤，每一步都和其他命令一样受你的权限规则约束。主机列表保存在 OpenAI4S 数据目录的 remote_compute.json 中；「移除」只是在这里忘掉该主机，不会改动主机本身。",
+    "remote.addedUnreachable":
+      "已添加 {0}，但检查没有拿到 GPU 列表（没有应答、需要输入密码，或没有 nvidia-smi）。它会标为不可达；如果它不是 GPU 主机，可以移除。",
+    "remote.host": "<主机>",
   },
   en: {
     "compute.memberNote":
@@ -62,6 +77,17 @@ const computeCopy = copyLookup({
     "compute.slurm":
       "Slurm clusters: submit and follow batch jobs with the `openai4s cluster` command (submit, list, cancel, logs).",
     "compute.guide": "Compute guide (docs/compute.md)",
+    // SCI-19: what Add does before it is clicked.
+    "remote.desc":
+      "Use a host from your ~/.ssh/config as remote GPU compute. OpenAI4S does not know which hosts have a GPU until it checks one.",
+    "remote.addWhat": "Add checks the host once, read-only: {0}. Nothing is installed.",
+    "remote.addNeeds":
+      "The host needs a login that works without a password prompt (a key or ssh-agent) and an NVIDIA GPU with nvidia-smi. A host that fails the check is still listed, marked unreachable.",
+    "remote.addLater":
+      "Model services are set up later, only when a task needs one: the agent runs visible ssh steps on the host, each going through your permission rules like any other command. The host list is kept in remote_compute.json in the OpenAI4S data directory; Remove forgets a host here and does not change it.",
+    "remote.addedUnreachable":
+      "Added {0}, but the check got no GPU list (no answer, a password prompt, or no nvidia-smi). It is listed as unreachable; remove it if it is not a GPU host.",
+    "remote.host": "<host>",
   },
 });
 
@@ -85,6 +111,7 @@ export function ComputeTab() {
   const [jobCmd, setJobCmd] = useState("");
   const [jobBusy, setJobBusy] = useState(false);
   const [alias, setAlias] = useState("");
+  const [adding, setAdding] = useState(false);
   // SCI-04: what adding/removing a host and submitting/cancelling a job
   // answered, beside those controls rather than on the session status line.
   const [remoteNote, setRemoteNote] = useState<ActionNote>(null);
@@ -232,7 +259,7 @@ export function ComputeTab() {
           <div class="cust-row">
             <div class="info">
               <div class="nm">{t("cust.remote.title")}</div>
-              <div class="ds">{t("cust.remote.desc")}</div>
+              <div class="ds">{computeCopy("remote.desc")}</div>
             </div>
           </div>
           {hosts.map((h) => (
@@ -317,8 +344,12 @@ export function ComputeTab() {
                 <button
                   type="button"
                   class="solid-btn small"
+                  // SCI-19 / SCI-05: nothing to add until a host is picked.
+                  disabled={!alias || adding}
                   onClick={async () => {
-                    if (!alias) return;
+                    if (!alias || adding) return;
+                    setAdding(true);
+                    setRemoteNote(null);
                     try {
                       const r = await api("/compute/remote", {
                         method: "POST",
@@ -327,7 +358,7 @@ export function ComputeTab() {
                       setRemoteNote({
                         text: r.reachable
                           ? t("cust.remote.added", alias, r.gpus || "")
-                          : t("cust.remote.addedUnreachable", alias),
+                          : computeCopy("remote.addedUnreachable", alias),
                         err: !r.reachable,
                       });
                       setAlias("");
@@ -335,10 +366,21 @@ export function ComputeTab() {
                     } catch (e) {
                       setRemoteNote({ text: apiErrorText(e), err: true });
                     }
+                    setAdding(false);
                   }}
                 >
-                  {t("common.add")}
+                  {adding ? t("cust.remote.testing") : t("common.add")}
                 </button>
+              </div>
+              <div class="ds remote-add-what" data-remote-add-what="">
+                <span class="rt-line">
+                  {computeCopy(
+                    "remote.addWhat",
+                    remoteProbeCommand(alias || computeCopy("remote.host")),
+                  )}
+                </span>
+                <span class="rt-line">{computeCopy("remote.addNeeds")}</span>
+                <span class="rt-line">{computeCopy("remote.addLater")}</span>
               </div>
               <ActionStatus note={remoteNote} />
             </div>
