@@ -327,3 +327,162 @@ def test_the_feature_off_means_not_one_character(tmp_path):
     assert "Remembered context" not in system
     assert "not included here" not in system
     assert state.context_omissions == {}
+
+
+# ---------------------------------------------------------------------------
+# M-81: a turn says which saved memories it was given
+# ---------------------------------------------------------------------------
+
+
+def test_the_kept_rows_are_the_memories_the_texts_came_from():
+    long = {"memory_id": "m-long", "content": "y" * 5_000}
+    rows = [
+        {
+            "memory_id": "m-1",
+            "block": "preference",
+            "content": "  Label   in English. ",
+        },
+        long,
+        {"memory_id": "m-2", "content": "Samples are in /data."},
+    ]
+    kept_rows, kept, dropped = memory_budget.select_with_rows(rows)
+    assert [row["memory_id"] for row in kept_rows] == ["m-1", "m-2"]
+    assert (kept, dropped) == memory_budget.select(rows)
+    assert memory_budget.applied(kept_rows) == [
+        {"memory_id": "m-1", "block": "preference", "preview": "Label in English."},
+        {"memory_id": "m-2", "block": "general", "preview": "Samples are in /data."},
+    ]
+    long_preview = memory_budget.applied([long])[0]["preview"]
+    assert len(long_preview) == memory_budget.APPLIED_PREVIEW_CHARS
+
+
+class _RecordingHub:
+    def __init__(self):
+        self.events = []
+
+    def emitter(self, root_frame_id):
+        return self.events.append
+
+    def broadcast(self, root_frame_id, event):
+        self.events.append(event)
+
+    def has_subscriber(self, root_frame_id):
+        return False
+
+    def drop_frame(self, root_frame_id):
+        return None
+
+
+def _turn_runner(monkeypatch, tmp_path):
+    """A runner whose turns run the real prompt seeding on a stubbed model."""
+    from types import SimpleNamespace
+
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server import gateway as gateway_mod
+
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=1,
+    )
+    runner = gateway_mod.SessionRunner(cfg, _RecordingHub())
+    dispatcher = SimpleNamespace(
+        last_output=None, active_env_bin=None, active_r_env=None
+    )
+    monkeypatch.setattr(gateway_mod, "build_dispatcher", lambda *a, **k: dispatcher)
+    monkeypatch.setattr(runner, "_wire_delegation", lambda state: None)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+    monkeypatch.setattr(
+        gateway_mod, "chat", lambda *a, **k: {"content": "Done.", "usage": {}}
+    )
+    runner.skills = SimpleNamespace(system_context="", bootstrap_code="")
+    return runner
+
+
+def _messages_over_http(runner, frame_id):
+    import http.client
+    import json
+    import threading
+
+    from openai4s.server import gateway as gateway_mod
+    from openai4s.server import local_auth
+    from tests._ports import bound_gateway_server
+
+    httpd, port = bound_gateway_server()
+    runner.cfg.port = port
+    httpd.RequestHandlerClass = gateway_mod.make_handler(runner.cfg, runner.hub, runner)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    token = local_auth.load_or_mint(runner.cfg.data_dir)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+        try:
+            conn.request(
+                "GET",
+                f"/api/v1/frames/{frame_id}/messages",
+                headers={local_auth.TOKEN_HEADER: token},
+            )
+            response = conn.getresponse()
+            assert response.status == 200
+            return json.loads(response.read() or b"{}")
+        finally:
+            conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_each_turn_records_the_saved_memories_its_prompt_carried(monkeypatch, tmp_path):
+    """The conversation could not say whether a saved memory had been applied.
+    The turn now records which ones its system prompt carried when it was
+    built -- an edit made afterwards does not rewrite that record -- and the
+    reopen route and the live event both carry it."""
+    runner = _turn_runner(monkeypatch, tmp_path)
+    store = runner.store
+    store.set_setting("memory_enabled", "1")
+    store.create_project(name="alpha", description="", context="")
+    alpha = {p["name"]: p["project_id"] for p in store.list_projects()}["alpha"]
+    kept = store.add_memory(
+        content="Label figures in English.", block="preference", project_id=alpha
+    )
+    frame_id = runner.create_session(alpha)
+    try:
+        runner.run_message(frame_id, alpha, "plot it")
+        runner.run_message(frame_id, alpha, "and again")
+        store.update_memory(
+            kept["memory_id"], content="Label figures in German.", project_id=alpha
+        )
+        body = _messages_over_http(runner, frame_id)
+    finally:
+        runner.close()
+
+    applied = [
+        {
+            "memory_id": kept["memory_id"],
+            "block": "preference",
+            "preview": "Label figures in English.",
+        }
+    ]
+    users = [m for m in body["messages"] if m["role"] == "user"]
+    assert [m.get("memories") for m in users] == [applied, applied]
+    live = [e for e in runner.hub.events if e.get("type") == "user_message"]
+    assert [e.get("memories") for e in live] == [applied, applied]
+
+
+def test_a_turn_without_saved_memories_records_none(monkeypatch, tmp_path):
+    runner = _turn_runner(monkeypatch, tmp_path)
+    store = runner.store
+    store.create_project(name="alpha", description="", context="")
+    alpha = {p["name"]: p["project_id"] for p in store.list_projects()}["alpha"]
+    # Saved, but the feature is off: nothing entered the prompt.
+    store.add_memory(content="OFF-CANARY", block="general", project_id=alpha)
+    frame_id = runner.create_session(alpha)
+    try:
+        runner.run_message(frame_id, alpha, "plot it")
+        body = _messages_over_http(runner, frame_id)
+    finally:
+        runner.close()
+
+    user = [m for m in body["messages"] if m["role"] == "user"][0]
+    assert "memories" not in user
+    live = [e for e in runner.hub.events if e.get("type") == "user_message"]
+    assert "memories" not in live[0]

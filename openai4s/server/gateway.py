@@ -2159,6 +2159,9 @@ class SessionState:
         # What this turn's budgets left out of the context, by kind. Read by
         # the Context projection; rebuilt with the system prompt each turn.
         self.context_omissions: dict[str, list[dict]] = {}
+        # The saved memories the current system prompt carries (M-81),
+        # recorded when it is built; each turn stamps them on its user row.
+        self.memories_applied: list[dict] = []
         self.cell_index = 0
         self.booted = False
         self.turn_lock = threading.Lock()
@@ -6262,6 +6265,7 @@ class SessionRunner:
         if sctx:
             ctx += "\n\n" + sctx
         # long-term memory: inject saved memory blocks when the feature is on
+        st.memories_applied = []
         try:
             if self.store.get_setting("memory_enabled", "0") == "1":
                 # This session's project plus the global tier it inherits, and
@@ -6277,10 +6281,14 @@ class SessionRunner:
                     # background before the user has said anything, on every
                     # turn. A count cannot bound this because length is what
                     # varies.
-                    kept, dropped = memory_budget.select(mems)
+                    kept_rows, kept, dropped = memory_budget.select_with_rows(mems)
                     block = memory_budget.render(kept, dropped)
                     if block:
                         ctx += "\n\n" + block
+                    # Which ones, as the prompt was built (M-81): the turn's
+                    # "N memories applied" mark reads this record, not the
+                    # memories as they are by the time someone looks.
+                    st.memories_applied = memory_budget.applied(kept_rows)
                     # The Context panel reports this. A budget the user cannot
                     # see is one they discover by noticing the agent has
                     # forgotten something, which is the worst way to learn it.
@@ -11109,14 +11117,21 @@ class SessionRunner:
             if not (frame.get("name") or frame.get("task_summary")):
                 title_placeholder = re.sub(r"\s+", " ", title_text).strip()[:80]
                 self.store.update_frame(root_frame_id, task_summary=title_placeholder)
+            # Written with the row, so neither can outlive it: the files it was
+            # sent with (M-10) and the saved memories this turn's system prompt
+            # carries, as it was built (M-81).
+            user_metadata: dict[str, Any] = {}
+            if attachments:
+                user_metadata["attachments"] = attachments
+            if st.memories_applied:
+                user_metadata["memories"] = list(st.memories_applied)
             stored_user_message = self.store.add_message(
                 root_frame_id=root_frame_id,
                 branch_id=st.branch_id,
                 role="user",
                 content=user_text,
                 frame_id=root_frame_id,
-                # M-10: written with the row, so the chip cannot outlive it.
-                metadata=({"attachments": attachments} if attachments else None),
+                metadata=user_metadata or None,
             )
             # This is the exact branch point for an alternative answer: the
             # user message is durable, while no later model action or Cell has
@@ -11209,6 +11224,11 @@ class SessionRunner:
                         else {}
                     ),
                     **({"attachments": attachments} if attachments else {}),
+                    **(
+                        {"memories": user_metadata["memories"]}
+                        if user_metadata.get("memories")
+                        else {}
+                    ),
                     # SYNC-5: the branch point a reload shows as "Branch from
                     # this question"; the live bubble offers it as well.
                     **(
@@ -18276,6 +18296,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             **(
                                 {"attachments": artifact_refs.message_attachments(mm)}
                                 if artifact_refs.message_attachments(mm)
+                                else {}
+                            ),
+                            # The saved memories that turn's prompt carried
+                            # (M-81), absent when there were none.
+                            **(
+                                {"memories": memory_budget.message_memories(mm)}
+                                if memory_budget.message_memories(mm)
                                 else {}
                             ),
                             **_message_candidate_identity(mm),

@@ -477,6 +477,43 @@ describe("the user's message reaches every tab", () => {
     expect(plain.querySelector(".msg-ref-chip.sent")).toBeNull();
   });
 
+  it("says which saved memories a turn was given, live and after a reload (M-81)", () => {
+    const memories = [
+      { memory_id: "mem-1", block: "preference", preview: "Label figures in English." },
+      { memory_id: "mem-2", block: "fact", preview: "Plates are in data/plates." },
+    ];
+    const requestId = newRequestId();
+    const own = bubble("Plot it");
+    own.dataset.requestId = requestId;
+    messages().appendChild(own);
+    const event = { type: "user_message", root_frame_id: "f-1", content: "Plot it", fork_checkpoint_id: "cp-1", memories };
+    onEvent({ ...event, message_id: "m-10", request_id: requestId, seq: 3 });
+    onEvent({ ...event, message_id: "m-11", request_id: "web-other-tab", seq: 4 });
+    const marks = Array.from(messages().querySelectorAll(".msg.user .msg-memories")) as HTMLElement[];
+    expect(marks.map((mark) => mark.querySelector(".msg-memories-toggle")?.textContent)).toEqual([
+      "2 saved memories applied",
+      "2 saved memories applied",
+    ]);
+    // The list opens on click and names each memory's type.
+    const toggle = marks[0]!.querySelector(".msg-memories-toggle") as HTMLButtonElement;
+    const list = marks[0]!.querySelector(".msg-memories-list") as HTMLElement;
+    expect(list.classList.contains("hidden")).toBe(true);
+    toggle.onclick!(new Event("click") as MouseEvent);
+    expect(list.classList.contains("hidden")).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(Array.from(list.querySelectorAll("li")).map((item) => item.textContent)).toEqual([
+      "PreferenceLabel figures in English.",
+      "FactPlates are in data/plates.",
+    ]);
+    // A reload draws the same row; a turn that carried none shows nothing.
+    const stored = renderStored({ role: "user", content: "Plot it", message_id: "m-10", fork_checkpoint_id: "cp-1", memories }) as HTMLElement;
+    expect(Array.from(own.children).map((node) => (node as HTMLElement).className)).toEqual(
+      Array.from(stored.children).map((node) => (node as HTMLElement).className),
+    );
+    const plain = renderStored({ role: "user", content: "no memory", message_id: "m-12" }) as HTMLElement;
+    expect(plain.querySelector(".msg-memories")).toBeNull();
+  });
+
   it("keeps the row a reload already rendered from REST", () => {
     renderStored({ role: "user", content: "Stored question", message_id: "m-3" });
     onEvent({

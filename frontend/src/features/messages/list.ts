@@ -38,6 +38,7 @@ import { teamT } from "../chrome/team-copy";
 import { teamUser } from "../chrome/team-identity";
 import { historyT } from "./copy";
 import { renderSentAttachments } from "./attachments";
+import { renderMemoriesMark } from "./memories";
 import { el, messagesHost } from "./dom";
 import { continueMarker, failureMeta, isContinuePrompt } from "./failure";
 import { embedArtifactFigures } from "./figures";
@@ -68,6 +69,8 @@ export type StoredMessage = {
   annotations?: unknown;
   /** The uploads the message was sent with (M-10): `{artifact_id, name}` each. */
   attachments?: unknown;
+  /** The saved memories that turn's prompt carried (M-81). */
+  memories?: unknown;
   failure?: { request_id?: unknown; code?: unknown; output_committed?: unknown } | null;
   cancelled?: { request_id?: unknown; execution_id?: unknown; reason?: unknown } | null;
   review_status?: unknown;
@@ -454,6 +457,7 @@ export function renderStored(
     renderProjectRefChips(w, text);
     renderSentAttachments(w, m.attachments);
     renderAnnotationChip(w, m.annotations);
+    renderMemoriesMark(w, m.memories);
     if (canForkFromMessage(m) && typeof m.message_id === "string") {
       w.appendChild(forkMessageControl(m.message_id));
     }
@@ -1001,6 +1005,8 @@ export function showLiveUserMessage(
     if (id) own.dataset.messageId = id;
     // Its turn is running now; it is no longer waiting in the queue.
     own.classList.remove("queued");
+    // M-81: which saved memories this turn's prompt carried, as a reload shows.
+    renderMemoriesMark(own, m.memories);
     // SYNC-5: the branch point a reload shows under the question, live too.
     if (canForkFromMessage({ message_id: id, fork_checkpoint_id: fork }) && !own.querySelector(".msg-fork")) {
       own.appendChild(forkMessageControl(id));
@@ -1018,6 +1024,7 @@ export function showLiveUserMessage(
       artifact_refs: m.artifact_refs,
       annotations: m.annotations,
       attachments: m.attachments,
+      memories: m.memories,
     },
     host,
   );

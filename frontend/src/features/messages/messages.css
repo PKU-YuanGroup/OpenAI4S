@@ -173,6 +173,59 @@
   flex: 0 0 100%;
 }
 
+/* M-81: "N saved memories applied" on its own line under a question; the
+   list opens on click. */
+.msg.user:has(> .msg-memories) {
+  flex-wrap: wrap;
+}
+.msg-memories {
+  flex: 0 0 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-top: 4px;
+}
+.msg-memories-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-400);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.msg-memories-toggle:hover {
+  color: var(--text-200);
+}
+.msg-memories-list {
+  margin: 4px 0 0;
+  padding: 6px 10px;
+  list-style: none;
+  max-width: min(520px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--text-200);
+  font-size: 12px;
+}
+.msg-memories-list li {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+.msg-memories-type {
+  flex: none;
+  color: var(--text-400);
+}
+.msg-memories-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* A stored user question can fork. Wrap only while the control is shown,
    so a checkpointed row does not grow an empty line when the capability is off. */
 :root[data-fork-from-message="on"] .msg.user:has(.msg-fork) {
