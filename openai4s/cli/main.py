@@ -2137,6 +2137,17 @@ def cmd_run(args) -> int:
             phases=not args.verbose,
         )
         agent_options["progress"] = progress
+    # A cell's stdout as it arrives (CLI-29): under `-v` it is written to the
+    # trace while the cell runs; either way Ctrl-C keeps what it printed.
+    from openai4s.agent.runtime import LiveCellOutput
+
+    def _live_cell_output(text: str) -> None:
+        sys.stderr.write(text)
+        sys.stderr.flush()
+
+    agent_options["live_output"] = LiveCellOutput(
+        _live_cell_output if args.verbose else None
+    )
     agent = Agent(cfg=cfg, verbose=args.verbose, task_mode=mode, **agent_options)
     if mode in EVIDENCE_REQUIRED_MODES:
         # Before the first model call: an explicit code mode that can never
@@ -4058,8 +4069,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="trace every turn on stderr: the model's reply, each tool call "
-        "with its arguments, and the head of each result (the result itself "
-        "stays on stdout)",
+        "with its arguments, a cell's output as it runs, and the head of each "
+        "result (the result itself stays on stdout)",
     )
     pr.add_argument(
         "-q",

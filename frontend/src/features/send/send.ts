@@ -69,6 +69,7 @@ import { hint } from "../sessions/chrome";
 import { enableComposer, grow } from "../sessions/dom";
 import { loadSessions } from "../sessions/load";
 import { renderProjectRefChips, stripProjectRefSyntax } from "../messages/list";
+import { renderSentAttachments } from "../messages/attachments";
 import { renderComposerRefChips, renderMessageRefChips } from "../sessions/transcript";
 import { sub } from "../ws/connect";
 import {
@@ -492,6 +493,12 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     sentAttachments = takeAttachments(dispatchFrameId);
     clearDraft(dispatchFrameId);
   }
+  // ...and stay under its bubble, as a reload shows them (the stored row's
+  // `attachments`).
+  const sentFiles = sentAttachments
+    .filter((a) => a.state === "ready" && a.artifactId)
+    .map((a) => ({ artifact_id: a.artifactId, name: a.name }));
+  renderSentAttachments(w, sentFiles);
   grow();
   renderComposerRefChips();
   if (annIds.length) {
@@ -517,6 +524,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         annotation_reservation_id: admissionId || undefined,
         // `{filename, version_id}` per `@` pin; the text carries the names only.
         mentions: sentMentions.length ? mentionsPayload(sentMentions) : undefined,
+        attachments: sentFiles.length ? sentFiles : undefined,
         wait: false,
       }),
     })) as {

@@ -58,6 +58,10 @@ function fakeEl(): FakeEl {
       node.children.push(child);
       return child;
     },
+    insertBefore(child: unknown) {
+      node.children.push(child);
+      return child;
+    },
     remove() {
       node.removed = true;
     },
@@ -222,6 +226,28 @@ describe("send(): a message the server refuses before admission", () => {
     expect(composerAttachments()).toEqual([]);
     // SYNC-24: the sent text is no longer the session's draft.
     expect(draftFor("frame_1")).toBe("");
+  });
+
+  it("M-10: the files go with the message and stay under its bubble", async () => {
+    _resetAttachments();
+    const attached = addAttachment({ name: "cohort.csv", size: 10 }, "frame_1", "proj_1");
+    settleAttachment(attached, { ok: true, frameId: "frame_1", artifactId: "a-1", created: true });
+    const failed = addAttachment({ name: "broken.csv", size: 1 }, "frame_1", "proj_1");
+    settleAttachment(failed, { ok: false, frameId: "frame_1" });
+    const posted: Array<Record<string, unknown>> = [];
+    const answer = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/message")) posted.push(JSON.parse(String(init?.body)));
+      return answer(url, init);
+    });
+    routes["/frames/frame_1/message"] = { status: 202, body: { request_id: "r2" } };
+    await send("hello");
+
+    // Only the file that is in the session, as `{artifact_id, name}`.
+    expect(posted.map((body) => body.attachments)).toEqual([[{ artifact_id: "a-1", name: "cohort.csv" }]]);
+    const row = (userBubble()!.children as FakeEl[]).find((child) => child.className === "msg-refs");
+    const chips = (row?.children || []) as FakeEl[];
+    expect(chips.map((chip) => (chip.dataset as Record<string, string>).artifactId)).toEqual(["a-1"]);
   });
 
   it("keeps the text when the rebind prompt for model_revision_unavailable is dismissed", async () => {

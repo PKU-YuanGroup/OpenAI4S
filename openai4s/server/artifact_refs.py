@@ -33,6 +33,7 @@ edge behind in the session.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -277,6 +278,79 @@ def parse_mentions(raw: object) -> list[dict]:
             raise ValueError("each mention needs a version_id of the form v-<id>")
         parsed.append({"filename": filename, "version_id": version_id})
     return parsed
+
+
+#: The files a composer showed as going with a message (M-10): how many one
+#: request may name, and the shape of an Artifact id.
+MAX_ATTACHMENTS = 64
+_ATTACHMENT_ID = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+
+
+def parse_attachments(raw: object) -> list[dict]:
+    """A request's `attachments` field, validated; `ValueError` on a bad shape.
+
+    Each entry is `{artifact_id, name}` and nothing else is kept: the list only
+    says which uploaded files the user sent this message with, so the chip
+    under the bubble survives a reload. The files are already in the session;
+    this changes nothing the model reads.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("attachments must be a list of {artifact_id, name}")
+    if len(raw) > MAX_ATTACHMENTS:
+        raise ValueError(f"at most {MAX_ATTACHMENTS} attachments may be sent")
+    parsed: list[dict] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each attachment must be an object")
+        artifact_id = item.get("artifact_id")
+        if not isinstance(artifact_id, str) or not _ATTACHMENT_ID.fullmatch(
+            artifact_id
+        ):
+            raise ValueError("each attachment needs an artifact_id")
+        name = item.get("name")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name) > MAX_MENTION_NAME
+            or any(ch < " " or ch == "\x7f" for ch in name)
+        ):
+            raise ValueError(
+                "each attachment needs a name: 1-512 characters, no control "
+                "characters"
+            )
+        if artifact_id in seen:
+            continue
+        seen.add(artifact_id)
+        parsed.append({"artifact_id": artifact_id, "name": name})
+    return parsed
+
+
+def message_attachments(message: dict) -> list[dict]:
+    """The files a stored user message was sent with, projected for its chip.
+
+    Allowlisted like the message's other metadata projections: an id and a
+    name, nothing else anyone stamped on the row.
+    """
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, dict) or not isinstance(raw.get("attachments"), list):
+        return []
+    out: list[dict] = []
+    for item in raw["attachments"][:MAX_ATTACHMENTS]:
+        if not isinstance(item, dict):
+            continue
+        artifact_id = str(item.get("artifact_id") or "")[:128]
+        name = str(item.get("name") or "")[:MAX_MENTION_NAME]
+        if artifact_id and name:
+            out.append({"artifact_id": artifact_id, "name": name})
+    return out
 
 
 def _mentioned(
@@ -846,6 +920,7 @@ __all__ = [
     "ArtifactRef",
     "BINARY_SUFFIXES",
     "LEGACY_REF",
+    "MAX_ATTACHMENTS",
     "MAX_MENTIONS",
     "MAX_REFS",
     "MAX_REF_BYTES",
@@ -853,6 +928,8 @@ __all__ = [
     "MENTION_VERSION",
     "PINNED_REF",
     "display_text",
+    "message_attachments",
+    "parse_attachments",
     "parse_mentions",
     "resolve_message_refs",
 ]

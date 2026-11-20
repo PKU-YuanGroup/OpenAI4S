@@ -869,3 +869,149 @@ def test_a_crash_is_logged_where_diagnostics_collects_it(tmp_path, monkeypatch, 
         '"unhandled_exception"' in member and '"traceback"' in member for member in logs
     )
     assert not any(secret in member for member in logs)
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-29: a cell's output as it runs, and what Ctrl-C leaves of it
+# --------------------------------------------------------------------------- #
+
+
+def test_the_verbose_trace_shows_a_cell_s_output_while_it_runs_and_once(
+    tmp_path, monkeypatch, capsys
+):
+    """`-v` printed a cell's output only in its observation, after the cell
+    ended. It is now written under the turn as it arrives, and the observation
+    does not print it a second time."""
+
+    module, _cfg = _real_run(
+        tmp_path,
+        monkeypatch,
+        _scripted_chat(["```python\nprint('cell ran')\n```", _SUBMIT_REPLY]),
+    )
+
+    status = module.main(["run", "-v", "Compute 1+1 and submit it."])
+
+    err = capsys.readouterr().err
+    assert status == 0
+    lines = err.splitlines()
+    live = lines.index("--- turn 1 (cell output) ---")
+    assert lines[live + 1] == "cell ran"
+    assert lines.count("cell ran") == 1
+    observation = err[err.index("--- turn 1 (observation) ---") :]
+    assert "stdout: (shown above as the cell ran)" in observation.splitlines()[2]
+
+
+def test_the_trace_leaves_out_only_the_stdout_it_already_showed():
+    from openai4s.agent.events import OutcomeProduced
+    from openai4s.agent.models import ExecutionOutcome
+    from openai4s.agent.runtime import (
+        OBSERVATION_SECTION_BUDGET,
+        LiveCellOutput,
+        TranscriptEventSink,
+        format_observation,
+    )
+
+    def trace(printed, result):
+        written: list[str] = []
+        live = LiveCellOutput(written.append)
+        live.begin()
+        live.chunk(printed)
+        live.end()
+        lines: list[str] = []
+        transcript: list = []
+        sink = TranscriptEventSink(transcript, log=lines.append, live_output=live)
+        observation = format_observation(result)
+        sink.emit(OutcomeProduced(ExecutionOutcome(observation=observation), 0))
+        # The model and `--json` keep every character either way.
+        assert transcript[0].content == observation
+        return "\n".join(lines)
+
+    shown = trace("a\nb\n", {"stdout": "a\nb\n", "stderr": "warn\n"})
+    assert "stdout: (shown above as the cell ran)\nstderr:\nwarn" in shown
+    assert "\na\nb" not in shown
+
+    big = "".join(f"row {n}\n" for n in range(OBSERVATION_SECTION_BUDGET // 4))
+    shown = trace(big, {"stdout": big})
+    assert "stdout: (shown above as the cell ran)" in shown
+    assert "row 0" not in shown
+
+    # Output the trace never showed is not hidden.
+    shown = trace("other\n", {"stdout": "a\nb\n"})
+    assert "stdout:\na\nb" in shown
+
+
+def _signal_main_when_printed(monkeypatch, marker):
+    """Ctrl-C, for real, once the running cell has printed ``marker``."""
+    import signal
+    import threading
+
+    from openai4s.agent import runtime as runtime_mod
+
+    seen = threading.Event()
+    received: list[str] = []
+    original = runtime_mod.LiveCellOutput.chunk
+
+    def chunk(self, text):
+        original(self, text)
+        received.append(text)
+        if marker in "".join(received):
+            seen.set()
+
+    monkeypatch.setattr(runtime_mod.LiveCellOutput, "chunk", chunk)
+    main = threading.main_thread().ident
+
+    def interrupt():
+        if seen.wait(60):
+            signal.pthread_kill(main, signal.SIGINT)
+
+    threading.Thread(target=interrupt, daemon=True).start()
+
+
+_COUNTING_CELL = (
+    "```python\nimport time\nfor i in range(600):\n"
+    "    print(i, flush=True)\n    time.sleep(0.1)\n```"
+)
+
+
+@pytest.mark.skipif(
+    not hasattr(__import__("signal"), "pthread_kill"),
+    reason="needs POSIX signals",
+)
+@pytest.mark.parametrize("json_output", [False, True], ids=["verbose", "json"])
+def test_ctrl_c_keeps_what_the_running_cell_printed(
+    tmp_path, monkeypatch, capsys, json_output
+):
+    """The cell had printed 0..9 when Ctrl-C stopped it, and that output was
+    nowhere: not in the trace, not in `--json`, not in the session."""
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("a real SIGINT is delivered to the main thread")
+    module, cfg = _real_run(tmp_path, monkeypatch, _scripted_chat([_COUNTING_CELL]))
+    _signal_main_when_printed(monkeypatch, "2\n")
+    argv = ["run", "--json"] if json_output else ["run", "-v"]
+
+    status = _main_survives_ctrl_c(module, [*argv, "Count and submit the last."])
+
+    captured = capsys.readouterr()
+    assert status == 3
+    assert "Traceback" not in captured.err
+    if json_output:
+        result = json.loads(captured.out)
+        assert result["stop_reason"] == "cancelled"
+        last = result["transcript"][-1]
+        assert last["role"] == "observation"
+        assert last["content"].startswith("[Observation]\nstdout:\n0\n1\n2")
+        assert "Ctrl-C stopped this cell" in last["content"]
+    else:
+        lines = captured.err.splitlines()
+        live = lines.index("--- turn 1 (cell output) ---")
+        assert lines[live + 1 : live + 4] == ["0", "1", "2"]
+        assert lines[-1].startswith("interrupted: the run was cancelled")
+    # The session's Notebook keeps it too, as a cell that was interrupted.
+    with sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True) as db:
+        ((stdout, interrupted),) = db.execute(
+            "SELECT stdout, interrupted FROM execution_log"
+        ).fetchall()
+    assert stdout.startswith("0\n1\n2\n")
+    assert interrupted == 1
