@@ -386,6 +386,11 @@ export const filesT = copyLookup(COPY);
  * unprovable size, timeout, or a plain read failure. Cancellation is not an
  * error and is filtered by the caller.
  */
+/** A file over the read limit is over it on every attempt: Retry only repeats the refusal (ART-2). */
+export function readRetryHelps(error: unknown): boolean {
+  return !(error instanceof ArtifactReadError && error.kind === "too_large");
+}
+
 export function readFailureText(error: unknown): string {
   if (error instanceof ArtifactReadError) {
     if (error.kind === "too_large") return filesT("viewer.read.limit", bytes(error.maxBytes));

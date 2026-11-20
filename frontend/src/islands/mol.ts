@@ -13,8 +13,8 @@
  */
 
 import { _molView, _molViewer } from "../stores/artifacts";
-import { fetchArtifactText, isArtifactReadAborted, previewReadSignal } from "../features/artifacts/api";
-import { filesT, readFailureText } from "../features/artifacts/copy";
+import { ArtifactReadError, bytes, fetchArtifactText, isArtifactReadAborted, previewReadSignal } from "../features/artifacts/api";
+import { filesT, readFailureText, readRetryHelps } from "../features/artifacts/copy";
 import { esc } from "../features/md/esc";
 import { themeIsDark } from "../features/theme/theme";
 import { el } from "./dom";
@@ -194,7 +194,14 @@ export function molTeardown(root?: Element | null): void {
  * app.js:9622-9673 — container-agnostic, style and colour selectors, reset
  * view, click-to-label residues, the PDB ID/title/chains line, atom count.
  */
-export function molecule(container: HTMLElement, url: string, nm: string): void {
+/**
+ * ART-2: the most a structure the reader asked to load anyway may weigh. The
+ * automatic preview stops at the shared 8 MB budget; a 17 MB ribosome is still
+ * a file a browser can draw as lines.
+ */
+export const MOL_FORCE_MAX_BYTES = 64 * 1024 * 1024;
+
+export function molecule(container: HTMLElement, url: string, nm: string, force = false): void {
   molTeardown(container);
   const controller = new AbortController();
   const signal = controller.signal;
@@ -208,7 +215,8 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
   wrap.appendChild(meta);
   const bar = el("div", "mol-bar");
   bar.appendChild(el("span", "mol-lbl", translate("mol.styleLabel")));
-  let cur = "cartoon";
+  // A structure loaded past the preview budget opens as lines: the cheapest style.
+  let cur = force ? "line" : "cartoon";
   let scheme: MolScheme = "default";
   const pills: Record<string, HTMLButtonElement> = {};
   ["cartoon", "stick", "sphere", "surface", "line"].forEach((val) => {
@@ -219,6 +227,11 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
       b.classList.add("on");
       applyStyle();
     };
+    // A molecular surface over this many atoms can hang the tab.
+    if (force && val === "surface") {
+      b.disabled = true;
+      b.title = molT("mol.large.noSurface");
+    }
     pills[val] = b;
     bar.appendChild(b);
   });
@@ -389,11 +402,25 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
     const text = el("div", "renderer-fallback-text", readFailureText(error));
     text.setAttribute("role", "alert");
     card.appendChild(text);
-    const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
-    again.onclick = () => {
-      molecule(container, url, nm);
-    };
-    card.appendChild(again);
+    if (readRetryHelps(error)) {
+      const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
+      again.onclick = () => {
+        molecule(container, url, nm, force);
+      };
+      card.appendChild(again);
+    } else if (!force && error instanceof ArtifactReadError && (error.declared === null || error.declared <= MOL_FORCE_MAX_BYTES)) {
+      // Over the automatic budget, under the ceiling: the reader may choose.
+      const anyway = el(
+        "button",
+        "outline-btn small",
+        error.declared === null ? molT("mol.large.load") : molT("mol.large.loadSize", bytes(error.declared)),
+      );
+      anyway.title = molT("mol.large.title");
+      anyway.onclick = () => {
+        molecule(container, url, nm, true);
+      };
+      card.appendChild(anyway);
+    }
     const download = el("a", "outline-btn small", translate("common.download"));
     download.href = url;
     download.setAttribute("download", nm || "artifact");
@@ -402,7 +429,7 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
   };
   const boot = (): Promise<void> => {
     if (stale()) return Promise.resolve();
-    return fetchArtifactText(url, { signal })
+    return fetchArtifactText(url, force ? { signal, maxBytes: MOL_FORCE_MAX_BYTES } : { signal })
       .then((data) => {
         if (stale()) return;
         try {
@@ -456,7 +483,7 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
   };
   const fb = (): Promise<void> => {
     if (stale()) return Promise.resolve();
-    return fetchArtifactText(url, { signal })
+    return fetchArtifactText(url, force ? { signal, maxBytes: MOL_FORCE_MAX_BYTES } : { signal })
       .then((text) => {
         if (stale()) return;
         preFallback(view, text);

@@ -30,7 +30,7 @@ import {
   translate,
   TEXT_SOURCE_PREVIEW_CHARACTERS,
 } from "./api";
-import { filesT, readFailureText } from "./copy";
+import { filesT, readFailureText, readRetryHelps } from "./copy";
 import { artifactMetadataTarget, artUrl, previewSlice } from "./cache";
 import {
   artifactRendererDescriptor,
@@ -77,7 +77,7 @@ export function rendererFailure(
   );
   text.setAttribute("role", "alert");
   card.appendChild(text);
-  if (retry) {
+  if (retry && readRetryHelps(error)) {
     const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
     again.onclick = () => {
       container.innerHTML = "";

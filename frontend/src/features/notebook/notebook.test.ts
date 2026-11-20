@@ -1173,11 +1173,13 @@ describe("Notebook immutable output selection", () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it("shows the read limit and retries when the table preview is over budget", async () => {
+  it("shows the read limit without a pointless retry, and retries a failed read", async () => {
     const holder = new ArtifactNode("div");
     let missing = true;
+    let busy = false;
     vi.stubGlobal("document", { createElement: (tag: string) => new ArtifactNode(tag) });
     vi.stubGlobal("fetch", async () => {
+      if (busy) return new Response("busy", { status: 503 });
       if (missing) {
         return {
           ok: true,
@@ -1200,13 +1202,21 @@ describe("Notebook immutable output selection", () => {
       expect(errorCard(holder)?.children[0]?.textContent).toBe(
         filesT("viewer.read.limit", bytes(PREVIEW_READ_MAX_BYTES)),
       );
-      expect(retryButton(holder)).toBeDefined();
+      // ART-2: over the limit on every attempt, so only the download is offered.
+      expect(retryButton(holder)).toBeUndefined();
       expect(downloadLink(holder)?.href).toBe(url);
-      missing = false;
-      retryButton(holder)!.onclick?.();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(holder.children[0]?.className).toBe("nbc-table-scroll");
       dispose();
+      busy = true;
+      const again = new ArtifactNode("div");
+      const disposeAgain = renderTableInto(again as unknown as HTMLElement, "table.csv", url);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(retryButton(again)).toBeDefined();
+      busy = false;
+      missing = false;
+      retryButton(again)!.onclick?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(again.children[0]?.className).toBe("nbc-table-scroll");
+      disposeAgain();
     } finally { vi.unstubAllGlobals(); }
   });
 });

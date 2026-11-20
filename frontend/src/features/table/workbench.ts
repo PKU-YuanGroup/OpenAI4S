@@ -12,7 +12,7 @@ import {
   previewReadSignal,
   translate,
 } from "../artifacts/api";
-import { filesT, readFailureText } from "../artifacts/copy";
+import { filesT, readFailureText, readRetryHelps } from "../artifacts/copy";
 import { noteEncodingIn } from "../artifacts/encoding-note";
 import { encodingLabel } from "../artifacts/text-encoding";
 import { previewSlice } from "../artifacts/cache";
@@ -70,12 +70,14 @@ function renderLegacyFailure(
   );
   text.setAttribute("role", "alert");
   card.appendChild(text);
-  const retry = el("button", "outline-btn small", filesT("viewer.read.retry"));
-  retry.onclick = () => {
-    container.innerHTML = "";
-    renderLegacyTable(container, a, url);
-  };
-  card.appendChild(retry);
+  if (readRetryHelps(error)) {
+    const retry = el("button", "outline-btn small", filesT("viewer.read.retry"));
+    retry.onclick = () => {
+      container.innerHTML = "";
+      renderLegacyTable(container, a, url);
+    };
+    card.appendChild(retry);
+  }
   const download = el("a", "outline-btn small", translate("common.download"));
   download.setAttribute("href", url);
   download.setAttribute("download", a.filename || "artifact");
