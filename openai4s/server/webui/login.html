@@ -34,6 +34,15 @@
   .login-submit:hover { background: var(--accent); }
   .login-submit:disabled { opacity: .6; cursor: default; }
   #err { color: var(--danger); min-height: 1.4em; margin-top: 10px; font-size: 13.5px; }
+  .login-pw { position: relative; }
+  .login-card .login-pw input { padding-right: 76px; }
+  .login-pw-toggle {
+    position: absolute; top: 4px; right: 4px; height: 32px; padding: 0 10px;
+    border: 0; border-radius: 6px; background: transparent;
+    color: var(--text-300); font-size: 12.5px; font-weight: 500;
+  }
+  .login-pw-toggle:hover { background: var(--bg-200); color: var(--text-000); }
+  .login-help { color: var(--text-400); font-size: 13px; line-height: 1.55; margin: 14px 2px 0; }
 </style>
 </head>
 <body>
@@ -51,11 +60,15 @@
     </div>
     <div class="login-field">
       <label for="p" data-i18n="password">Password</label>
-      <input id="p" name="password" type="password" autocomplete="current-password" required>
+      <div class="login-pw">
+        <input id="p" name="password" type="password" autocomplete="current-password" required>
+        <button id="login-pw-toggle" class="login-pw-toggle" type="button" aria-controls="p" aria-pressed="false">Show</button>
+      </div>
     </div>
     <button id="b" class="login-submit" type="submit" data-i18n="submit">Sign in</button>
     <div id="err" role="alert"></div>
   </form>
+  <p class="login-help" data-i18n="help">Accounts are created by an administrator. Forgot your password? Ask an administrator to reset it.</p>
 </main>
 <script src="/static/login.js"></script>
 </body>

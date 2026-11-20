@@ -16,6 +16,11 @@
       "password": "Password",
       "submit": "Sign in",
       "busy": "Signing in…",
+      "show": "Show",
+      "hide": "Hide",
+      "showLabel": "Show password",
+      "hideLabel": "Hide password",
+      "help": "Accounts are created by an administrator. Forgot your password? Ask an administrator to reset it.",
       "lang": "中文",
       "langLabel": "切换到中文",
       "themeDark": "Dark theme",
@@ -33,6 +38,11 @@
       "password": "密码",
       "submit": "登录",
       "busy": "正在登录…",
+      "show": "显示",
+      "hide": "隐藏",
+      "showLabel": "显示密码",
+      "hideLabel": "隐藏密码",
+      "help": "账号由管理员创建。忘记密码请联系管理员重置。",
       "lang": "EN",
       "langLabel": "Switch to English",
       "themeDark": "深色主题",
@@ -58,6 +68,8 @@
   var btn = document.getElementById("b");
   var langBtn = document.getElementById("login-lang");
   var themeBtn = document.getElementById("login-theme");
+  var pw = document.getElementById("p");
+  var pwToggle = document.getElementById("login-pw-toggle");
   // What the error line says, as a key, so a language switch can re-say it.
   var errKey = null;
   var errArg;
@@ -81,6 +93,11 @@
     themeBtn.textContent = isDark() ? "☀" : "☾";
     themeBtn.setAttribute("aria-label", isDark() ? t("themeLight") : t("themeDark"));
     themeBtn.title = themeBtn.getAttribute("aria-label");
+    // TEAM-2: an initial password is a long generated string; let it be read.
+    var shown = pw.type === "text";
+    pwToggle.textContent = shown ? t("hide") : t("show");
+    pwToggle.setAttribute("aria-label", shown ? t("hideLabel") : t("showLabel"));
+    pwToggle.setAttribute("aria-pressed", shown ? "true" : "false");
     err.textContent = errKey ? t(errKey, errArg) : "";
   }
 
@@ -95,6 +112,12 @@
     // The workbench reads the same key, so it opens in this language too.
     try { localStorage.setItem("os-lang", lang); } catch (e) {}
     paint();
+  });
+
+  pwToggle.addEventListener("click", function () {
+    pw.type = pw.type === "password" ? "text" : "password";
+    paint();
+    pw.focus();
   });
 
   themeBtn.addEventListener("click", function () {

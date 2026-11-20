@@ -364,6 +364,21 @@ def test_the_login_page_speaks_both_interface_languages():
     assert "body.error" not in js  # never the server's English sentence
 
 
+def test_the_login_page_says_who_to_ask_and_can_show_the_password():
+    """TEAM-2: no self-service sign-up or reset exists, and the page said
+    nothing about it; an initial password is a long generated string typed
+    into a field that could not be revealed."""
+    html = (_WEBUI / "login.html").read_text(encoding="utf-8")
+    js = (_WEBUI / "login.js").read_text(encoding="utf-8")
+    copy = _login_copy()
+    assert 'data-i18n="help"' in html
+    assert "administrator" in copy["en"]["help"] and "管理员" in copy["zh"]["help"]
+    assert 'id="login-pw-toggle"' in html and 'aria-controls="p"' in html
+    assert 'pw.type = pw.type === "password" ? "text" : "password"' in js
+    for key in ("show", "hide", "showLabel", "hideLabel"):
+        assert copy["zh"][key] and copy["en"][key]
+
+
 def test_access_token_no_longer_buys_a_browser_cookie(daemon):
     """In team mode the `?token=` bootstrap is gone: a shared machine token
     must not become a logged-in browser."""
