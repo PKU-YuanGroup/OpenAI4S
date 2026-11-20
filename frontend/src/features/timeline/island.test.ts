@@ -40,6 +40,7 @@ import {
   sanitizeActionTimeline,
   sanitizeBranches,
   sanitizeContext,
+  sanitizeRecoveryActions,
   sanitizeSecurity,
 } from "./sanitize";
 import { branchT, provenanceT } from "../execution/copy";
@@ -1620,5 +1621,39 @@ describe("switching to another branch", () => {
     });
     expect(renderBranchPanel().querySelector(".branch-kernel-gap")!.textContent).toBe(branchT("branch.restored"));
     expect(button(branchT("branch.restoreKernel"))).toBeNull();
+  });
+});
+
+// M-64: the recovery card printed "checkpoint has an invalid python bootstrap
+// manifest" beside "Restore", and "Ready" beside the one that could run.
+describe("kernel recovery card words", () => {
+  it("says why an action cannot run, and what an available one does, never the server's words", () => {
+    const doc = mountDocument();
+    stubFrames();
+    stubResizeObserver();
+    showTimeline("frame-k", [group("g-1", 1)], "frame-k");
+    S.branchState = sanitizeBranches({ root_frame_id: "frame-k", branch_id: "frame-k", branches: [] });
+    S.recoveryState = { status: "failed", log: [] };
+    S.recoveryActions = sanitizeRecoveryActions({
+      root_frame_id: "frame-k",
+      branch_id: "frame-k",
+      checkpoint_id: "cp-33f1aaaaaaaaaaaa",
+      state: "failed",
+      actions: [
+        { id: "restore", enabled: false, reason: "checkpoint has an invalid python bootstrap manifest" },
+        { id: "retry", enabled: false, reason: "checkpoint has an invalid python bootstrap manifest" },
+        { id: "restart_fresh", enabled: true, reason: null, requires_confirmation: true },
+      ],
+    });
+    renderActionTimeline();
+    const card = doc.querySelector(".kind-recovery")!;
+    const reasons = card.querySelectorAll(".recovery-action-reason").map((node) => node.textContent);
+    expect(reasons).toEqual([
+      branchT("recovery.why.checkpoint"),
+      branchT("recovery.why.checkpoint"),
+      branchT("recovery.what.restart_fresh"),
+    ]);
+    expect(card.textContent).not.toContain("bootstrap manifest");
+    expect(card.textContent).not.toContain("cp-33f1");
   });
 });

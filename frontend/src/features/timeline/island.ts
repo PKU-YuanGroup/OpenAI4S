@@ -12,8 +12,10 @@
 import { LANG, tOptional } from "../../i18n/runtime";
 import {
   branchDisplayName,
+  checkpointLabel,
   kernelGapText,
   kernelOutcome,
+  recoveryActionWords,
   restoreBranchKernel,
   switchedText,
   type KernelOutcome,
@@ -2902,14 +2904,9 @@ function recoveryTimelineCard(state: any, actionsState: any): HTMLElement {
   head.appendChild(el("span", "timeline-status", status));
   card.appendChild(head);
   if (state.message) card.appendChild(el("div", "timeline-card-title", state.message));
+  // M-64: the checkpoint's internal id is a tooltip, not a line of the card.
   if (actionsState.checkpoint_id)
-    card.appendChild(
-      el(
-        "div",
-        "recovery-checkpoint",
-        t("recovery.checkpoint", shortRuntime(actionsState.checkpoint_id)),
-      ),
-    );
+    card.title = t("recovery.checkpoint", shortRuntime(actionsState.checkpoint_id));
   if (state.progress != null) {
     const track = el("div", "recovery-progress");
     const bar = el("span");
@@ -2926,7 +2923,7 @@ function recoveryTimelineCard(state: any, actionsState: any): HTMLElement {
       ? t("recovery.action.unavailable")
       : !currentBranch
         ? t("recovery.action.currentOnly")
-        : action.reason || t("recovery.action.ready");
+        : recoveryActionWords(action);
     row.appendChild(
       disabledWorkbenchButton(
         loading ? t("recovery.action.loading") : t("recovery.action." + action.id),
@@ -3325,10 +3322,19 @@ export function renderBranchPanel(): HTMLElement {
         ),
       );
     }
-    if (branch.head_checkpoint_id)
-      head.appendChild(
-        el("span", "branch-head-id", t("branch.head", shortRuntime(branch.head_checkpoint_id))),
+    if (branch.head_checkpoint_id) {
+      // M-64: the head as "when a question was asked · 10:32:05", not "cp-967e8…".
+      const headCheckpoint = (branch.checkpoints || []).find(
+        (cp: any) => cp && cp.checkpoint_id === branch.head_checkpoint_id,
       );
+      const headId = el(
+        "span",
+        "branch-head-id",
+        t("branch.head", headCheckpoint ? checkpointLabel(headCheckpoint) : shortRuntime(branch.head_checkpoint_id)),
+      );
+      headId.title = shortRuntime(branch.head_checkpoint_id);
+      head.appendChild(headId);
+    }
     row.appendChild(head);
     if (
       branchKernel &&
@@ -3341,8 +3347,9 @@ export function renderBranchPanel(): HTMLElement {
       allCheckpoints = branch.checkpoints || [];
     const checkpointRow = (cp: any) => {
       const cpRow = el("div", "checkpoint-row");
-      cpRow.appendChild(el("span", "checkpoint-id", shortRuntime(cp.checkpoint_id)));
-      cpRow.appendChild(el("span", "checkpoint-reason", cp.reason || "checkpoint"));
+      // M-64: when and why, not "cp-33f1… cursor_cell"; the id stays in the tooltip.
+      cpRow.title = shortRuntime(cp.checkpoint_id);
+      cpRow.appendChild(el("span", "checkpoint-reason", checkpointLabel(cp)));
       const actions = el("span", "checkpoint-actions");
       actions.appendChild(
         disabledWorkbenchButton(

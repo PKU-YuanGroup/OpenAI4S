@@ -19,7 +19,7 @@ F-14 已用 `isReady` 门控 `toggleExecutedCode` / `buildExecutedCodeView`。F-
 | [`exec.ts`](exec.ts) | `execSourcesState` / `toggleExecutedCode` / `buildExecutedCodeView`（app.js:10148-10229）。 |
 | [`inspector.ts`](inspector.ts) | 变量检查器（app.js:10265-10332）。 文案通过 Notebook 的 `nbLabelT` 获取（中文显示「变量查看器」）。 |
 | [`provenance.ts`](provenance.ts) | Provenance tab（app.js:10631-10833）。未读取的包列表显示为"Packages 未知"（非 Python kernel 为"不适用"），不显示"没有可报告的包"；原因仍作为警告说明保留。 |
-| [`branch.ts`](branch.ts) | Fork / recovery REST 与 409 呈现。切换分支后内核的结果（`kernelOutcome`：哪些变量没有恢复）和「重启内核并恢复」（`restoreBranchKernel`，把 409 的部分恢复报告当作结果读取）。 |
+| [`branch.ts`](branch.ts) | Fork / recovery REST 与 409 呈现。切换分支后内核的结果（`kernelOutcome`：哪些变量没有恢复）和「重启内核并恢复」（`restoreBranchKernel`，把 409 的部分恢复报告当作结果读取）。 内核恢复卡片与分支面板的用语：`recoveryActionWords`（操作做什么，或为什么不能执行，从不显示服务端的原始原因）和 `checkpointLabel`（检查点何时、因何创建）（M-64）。 |
 | [`boot.ts`](boot.ts) | window 名 + notebook/viewer 组合。 |
 | [`index.ts`](index.ts) | 对外再导出。 |
 | [`lineage.test.ts`](lineage.test.ts) | Provenance 链数据变换；针对 0.2.x 遗留快照、确实为空的 Python 列表和 R kernel 渲染 Environment 面板。 |

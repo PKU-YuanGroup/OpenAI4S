@@ -246,6 +246,45 @@ export function kernelGapText(outcome: KernelOutcome): string {
 }
 
 /**
+ * M-64: what a recovery action does, or why it cannot run, in one sentence.
+ * The card printed the server's own words ("checkpoint has an invalid python
+ * bootstrap manifest") beside "Ready"; those are grouped here by what the
+ * reader can do about them, and never shown raw.
+ */
+export function recoveryActionWords(action: { id: string; enabled: boolean; reason?: string }): string {
+  if (action.enabled) return branchT("recovery.what." + action.id);
+  const reason = String(action.reason || "").toLowerCase();
+  const why = /already running/.test(reason)
+    ? "busy"
+    : /already active/.test(reason)
+      ? "active"
+      : /not partial or failed/.test(reason)
+        ? "notRetryable"
+        : /revert/.test(reason)
+          ? "revertFirst"
+          : /no checkpoint exists/.test(reason)
+            ? "noCheckpoint"
+            : /checkpoint/.test(reason)
+              ? "checkpoint"
+              : "other";
+  return branchT("recovery.why." + why);
+}
+
+/** M-64: a checkpoint row says when and why it was taken, not "cp-33f1… cursor_cell". */
+export function checkpointLabel(checkpoint: unknown): string {
+  const cp = record(checkpoint);
+  const at = Number(cp.created_at);
+  const when =
+    Number.isFinite(at) && at > 0
+      ? new Date(at).toLocaleTimeString(LANG === "zh" ? "zh-CN" : "en-US", { hour12: false })
+      : "";
+  const reason = publicText(cp.reason, 80);
+  if (reason === "cursor_message" || cp.source_kind === "message") return branchT("branch.cp.message", when);
+  if (reason === "cursor_cell" || cp.source_kind === "cell") return branchT("branch.cp.cell", when);
+  return when ? branchT("branch.cp.other", reason || "checkpoint", when) : reason || "checkpoint";
+}
+
+/**
  * "Restart kernel and restore" (M-73): the Restore recovery action on the
  * active branch. A partial or failed restore answers 409 with the same
  * report as a 200, so both are read as an outcome rather than an error.
