@@ -33,6 +33,8 @@ export const packageT = copyLookup({
     next: "Nothing was changed. Choose an .openai4s-session.zip exported from OpenAI4S, or ask the sender to export it again.",
     close: "Close",
     exportedPackage: "Session package saved ({0}). Local paths are redacted and no API keys are included.",
+    exportedPackageLeft:
+      "Session package saved ({0}). No API keys are included, but messages and cell output still contain {1} path(s) of this computer (they are kept exactly as written so the package verifies); check before you share it.",
     exportedArtifacts: "Artifacts saved ({0}).",
   },
   zh: {
@@ -46,6 +48,8 @@ export const packageT = copyLookup({
     next: "没有做任何改动。请选择由 OpenAI4S 导出的 .openai4s-session.zip，或请发送者重新导出。",
     close: "关闭",
     exportedPackage: "会话包已保存（{0}）。本地路径已脱敏，不含 API 密钥。",
+    exportedPackageLeft:
+      "会话包已保存（{0}），不含 API 密钥；但消息和单元输出里还留有 {1} 处本机路径（这些内容按原样保留，包才能通过校验），分享前请检查。",
     exportedArtifacts: "产物已保存（{0}）。",
   },
 });
@@ -185,13 +189,18 @@ export async function importSessionPackage(file: File | null | undefined): Promi
 }
 
 /** Fetch an export and save it under `filename`; the bytes' size, or null after reporting why not. */
-export async function saveExport(url: string, filename: string): Promise<number | null> {
+export async function saveExport(
+  url: string,
+  filename: string,
+  onResponse?: (response: Response) => void,
+): Promise<number | null> {
   try {
     const response = await fetch(url);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       throw new ApiError(body, response.status);
     }
+    onResponse?.(response);
     const blob = await response.blob();
     const href = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -209,11 +218,22 @@ export async function saveExport(url: string, filename: string): Promise<number 
 }
 
 export async function exportSessionPackage(fid: string, label: string): Promise<void> {
+  let left = 0;
   const size = await saveExport(
     `${API}/frames/${encodeURIComponent(fid)}/session/export`,
     label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip",
+    // EXP-1: message text and cell output are kept byte-exact so the package
+    // verifies; the server says how many local paths that left in.
+    (response) => {
+      left = Number(response.headers.get("X-OpenAI4S-Local-Paths-Left") || 0);
+    },
   );
-  if (size !== null) flash(packageT("exportedPackage", byteSize(size)));
+  if (size === null) return;
+  flash(
+    Number.isSafeInteger(left) && left > 0
+      ? packageT("exportedPackageLeft", byteSize(size), left)
+      : packageT("exportedPackage", byteSize(size)),
+  );
 }
 
 export async function downloadSessionArtifacts(fid: string, filename: string): Promise<void> {

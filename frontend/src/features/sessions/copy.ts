@@ -193,7 +193,14 @@ export function displayProjectName(
 }
 
 /** Feature-owned copy; the frozen legacy dictionaries remain generated. */
-export function sessionCopy(key: "sessionsError" | "foldersError" | "retry" | "exportWebPage"): string {
+export function sessionCopy(
+  key:
+    | "sessionsError"
+    | "foldersError"
+    | "retry"
+    | "exportWebPage",
+  value?: string | number,
+): string {
   const copy = LANG === "en" ? {
     sessionsError: "Could not load sessions. Retry reading the list.",
     foldersError: "Could not load folders.",
@@ -205,7 +212,7 @@ export function sessionCopy(key: "sessionsError" | "foldersError" | "retry" | "e
     retry: "重试读取",
     exportWebPage: "导出只读网页",
   };
-  return copy[key];
+  return copy[key].replace("{0}", value == null ? "" : String(value));
 }
 
 /** The composer menus' context-usage card and their review and on/off hints. */

@@ -8,8 +8,12 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, cast
 
 from .actions import (
     ANNOUNCED_CELL_WITHHOLD_AFTER,
+    RUN_CELL_NAME,
+    CodeCell,
+    NativeToolCall,
     announced_cell_note,
     route_action,
+    run_cell_tool_spec,
     tool_only_streak_note,
     unexecuted_cell_note,
     user_cell_note,
@@ -148,13 +152,15 @@ class AgentEngine:
         built-in model.  Lightweight embeddings can instead expose a
         ``policy_tools(messages)`` method on their executor.  The returned
         declarations are copied so a sampler cannot mutate a live catalog.
-        It is empty for a decision the Engine makes without tools (see
-        :meth:`_tools_withheld`), so an external policy samples it as the
+        It is ``run_cell`` alone for a decision the Engine makes with every
+        other tool withheld (see :meth:`_tools_withheld`), and the declarations
+        plus ``run_cell`` once the session has used it (see
+        :meth:`_run_cell_sticky`), so an external policy samples it as the
         built-in model does.
         """
 
         if self._tools_withheld(state):
-            return ()
+            return (_detach_tool_spec(run_cell_tool_spec()),)
         provider = self.tool_schema_provider
         if provider is not None:
             raw = provider(state)
@@ -163,7 +169,12 @@ class AgentEngine:
             if not callable(fallback):
                 return ()
             raw = fallback(tuple(dict(message) for message in state.messages))
-        return tuple(_detach_tool_spec(spec) for spec in (raw or ()))
+        tools = tuple(_detach_tool_spec(spec) for spec in (raw or ()))
+        if tools and self._run_cell_sticky(state):
+            # Beside a catalogue, never in place of none (Web plan mode), as
+            # ``ChatModel`` adds it.
+            return (*tools, _detach_tool_spec(run_cell_tool_spec()))
+        return tools
 
     def step(
         self,
@@ -246,15 +257,26 @@ class AgentEngine:
         def on_delta(text: str) -> None:
             self.event_sink.emit(TextDelta(text, turn))
 
+        # Decided once, before the call: the reply is routed against what
+        # that call offered.
+        run_cell_withheld = self._tools_withheld(state)
+        run_cell_sticky = self._run_cell_sticky(state)
+        run_cell_offered = run_cell_withheld or run_cell_sticky
         raw_reply = sampled_reply
         if raw_reply is None:
-            raw_reply = (
-                # Passed only when withheld, so a port written before the
-                # switch keeps its two-argument call everywhere else.
-                self.model.complete(state.messages, on_delta, offer_tools=False)
-                if self._tools_withheld(state)
-                else self.model.complete(state.messages, on_delta)
-            )
+            # Each passed only when set, so a port written before the switch
+            # keeps its two-argument call everywhere else.
+            run_cell = (_detach_tool_spec(run_cell_tool_spec()),)
+            if run_cell_withheld:
+                raw_reply = self.model.complete(
+                    state.messages, on_delta, only_tools=run_cell
+                )
+            elif run_cell_sticky:
+                raw_reply = self.model.complete(
+                    state.messages, on_delta, extra_tools=run_cell
+                )
+            else:
+                raw_reply = self.model.complete(state.messages, on_delta)
         reply = self._reply(raw_reply)
         if reply.finish_reason == "cancelled":
             return EngineStep(turn, prepared, None, None, None, stop_reason="cancelled")
@@ -264,7 +286,9 @@ class AgentEngine:
         state.last_reply = reply
         state.messages.append(dict(reply.assistant_message))
         self.event_sink.emit(ReplyReceived(reply, turn))
-        action = route_action(reply.content, reply.tool_calls)
+        action = route_action(
+            reply.content, reply.tool_calls, run_cell_offered=run_cell_offered
+        )
         state.last_action = action
         circuit.observe_routed_action(action, reply)
         self.event_sink.emit(ActionRouted(action, turn))
@@ -285,12 +309,17 @@ class AgentEngine:
         # Observed before any note is attached: the circuit weighs the
         # tool's own answer, and its streak decides one of the notes.
         circuit.observe_execution(action, outcome)
+        if isinstance(action, CodeCell) and action.tool_call is not None:
+            outcome = self._answer_run_cell(outcome, action.tool_call)
         outcome = self._note_unexecuted_cell(
             outcome,
             (
                 unexecuted_cell_note(reply.content, action)
                 or announced_cell_note(
-                    reply.content, action, circuit.announced_cell_streak
+                    reply.content,
+                    action,
+                    circuit.announced_cell_streak,
+                    run_cell_on_offer=circuit.run_cell_used,
                 )
                 # A cell the user wrote and the reply answered with tools.
                 or user_cell_note(action, state.messages)
@@ -382,21 +411,73 @@ class AgentEngine:
         )
 
     @staticmethod
+    def _answer_run_cell(
+        outcome: ExecutionOutcome, call: NativeToolCall
+    ) -> ExecutionOutcome:
+        """Give a ``run_cell`` cell's observation back as that call's result.
+
+        Every executor answers a cell with a user message, which is right for
+        a fenced cell. The reply that called ``run_cell`` carries a tool call
+        id instead, and every wire needs the next request to answer that id
+        with a tool result, so the observation is moved there. An outcome
+        with no observation (a cancelled or plan-mode cell) still closes the
+        call, saying the cell did not run.
+        """
+        history = [dict(message) for message in outcome.history_messages]
+        texts = [
+            str(message["content"])
+            for message in history
+            if message.get("role") == "user" and isinstance(message.get("content"), str)
+        ]
+        content = "\n\n".join(texts)
+        if not content and isinstance(outcome.observation, str):
+            content = outcome.observation
+        result: dict[str, Any] = {
+            "role": "tool",
+            "tool_call_id": call.id,
+            "wire_id": call.wire_id,
+            "name": RUN_CELL_NAME,
+            "content": content
+            or (
+                f"[Tool error] {RUN_CELL_NAME}: the cell did not run "
+                f"({outcome.stop_reason or 'no observation was recorded'})"
+            ),
+            "is_error": not content,
+        }
+        rest = [message for message in history if message.get("role") != "user"]
+        return replace(outcome, history_messages=(result, *rest))
+
+    @staticmethod
     def _reply(value: ModelReply | Mapping[str, Any]) -> ModelReply:
         return (
             value if isinstance(value, ModelReply) else ModelReply.from_mapping(value)
         )
 
     def _tools_withheld(self, state: RunState) -> bool:
-        """Whether the next model call offers no native tools.
+        """Whether the next model call offers ``run_cell`` and nothing else.
 
         True right after the announced-cell note went out on
         ``ANNOUNCED_CELL_WITHHOLD_AFTER`` replies in a row (see
-        ``TOOLS_WITHHELD_NOTE``). The reply to that call resets or moves the
-        count past the threshold, so tools come back on the call after it.
+        ``RUN_CELL_OFFERED_NOTE``). The reply to that call resets or moves the
+        count past the threshold, so the other tools come back on the call
+        after it, and ``run_cell`` goes away again unless the session has
+        used it (see :meth:`_run_cell_sticky`).
         """
         streak = self._circuit(state).announced_cell_streak
         return bool(streak == ANNOUNCED_CELL_WITHHOLD_AFTER)
+
+    def _run_cell_sticky(self, state: RunState) -> bool:
+        """Whether the next model call offers ``run_cell`` beside the tools.
+
+        True once the session has sent a cell through ``run_cell``: a model
+        that needed it once learned to send filler tools until the withheld
+        call came round, so it keeps it. The circuit's ``run_cell_used`` is
+        restored from the whole branch, so this survives a restart, a resumed
+        run and compaction. A withheld call still offers ``run_cell`` alone.
+        """
+        if self._tools_withheld(state):
+            return False
+        return bool(self._circuit(state).run_cell_used)
 
     def _circuit(self, state: RunState) -> ProgressCircuit:
         existing = circuit_from_state(state)

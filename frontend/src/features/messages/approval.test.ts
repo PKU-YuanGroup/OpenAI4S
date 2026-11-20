@@ -8,6 +8,7 @@ import { setLang, t } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { permCards, running } from "../../stores/stream";
+import { _messagesFollow } from "../../stores/ui";
 import {
   approvalCopy,
   approvalPendingFor,
@@ -171,6 +172,19 @@ describe("an open approval card", () => {
     syncPendingApproval({ reveal: true });
     // 800 - (500 - 64) = 364px further down.
     expect(host.scrollTop).toBe(1500 + 364);
+  });
+
+  it("moved up to the card, the view stops following; moved down, it still follows", () => {
+    openCard("perm-up", { top: -400, bottom: -200, height: 200 });
+    syncPendingApproval({ reveal: true });
+    expect(host.scrollTop).toBe(1500 - 200 - (500 - 64));
+    expect(_messagesFollow.value).toBe(false);
+
+    _messagesFollow.value = true;
+    (permCards.value as Record<string, { resolved: boolean }>)["perm-up"]!.resolved = true;
+    openCard("perm-down", { top: 600, bottom: 800, height: 200 });
+    syncPendingApproval({ reveal: true });
+    expect(_messagesFollow.value).toBe(true);
   });
 
   it("turns the jump pill into a pointer to the card while the card is out of view", () => {

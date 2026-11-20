@@ -485,6 +485,27 @@ describe("sanitizeVariableInspection", () => {
     expect(safe.variables[0]?.preview).toBe(1);
     expect(safe.variables[1]?.preview).toBeUndefined();
   });
+
+  it("keeps a table's shape and text column labels (NB-3)", () => {
+    branchState.value = { branch_id: "br" };
+    const safe = sanitizeVariableInspection(
+      {
+        available: true,
+        state: "active",
+        root_frame_id: "f",
+        branch_id: "br",
+        language: "python",
+        variables: [
+          { name: "df", type: "DataFrame", kind: "table", rows: 36, columns: 5, column_names: ["well", "strain"] },
+          { name: "bad", type: "DataFrame", rows: -2, columns: 1.5, column_names: "well" },
+        ],
+      },
+      "f",
+      "python",
+    );
+    expect(safe.variables[0]).toMatchObject({ rows: 36, columns: 5, column_names: ["well", "strain"] });
+    expect(safe.variables[1]).toEqual({ name: "bad", type: "DataFrame" });
+  });
 });
 
 describe("queueMetadata", () => {

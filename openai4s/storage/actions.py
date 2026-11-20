@@ -519,12 +519,13 @@ class ActionLedgerRepository:
         after_ordinal: int | None = None,
         limit: int | None = None,
         include_events: bool = True,
+        kind: str | None = None,
     ) -> list[ActionGroupDTO]:
         """Read the canonical branch sequence for a reducer.
 
         ``ordinal`` is branch-monotonic (not merely turn-local).  Omitting
         ``branch_id`` selects the canonical main branch whose id is the root
-        frame id.
+        frame id. ``kind`` keeps only the groups of that kind.
         """
         root_frame_id = _required_text("root_frame_id", root_frame_id)
         branch_id = _required_text("branch_id", branch_id or root_frame_id)
@@ -533,6 +534,9 @@ class ActionLedgerRepository:
         if turn_id is not None:
             clauses.append("turn_id=?")
             params.append(_required_text("turn_id", turn_id))
+        if kind is not None:
+            clauses.append("kind=?")
+            params.append(_required_text("kind", kind))
         if after_ordinal is not None:
             clauses.append("ordinal>?")
             params.append(_ordinal("after_ordinal", after_ordinal))

@@ -3621,6 +3621,7 @@ class Store:
         after_ordinal: int | None = None,
         limit: int | None = None,
         include_events: bool = True,
+        kind: str | None = None,
     ) -> list[dict]:
         return self._actions.list_groups(
             root_frame_id,
@@ -3629,6 +3630,7 @@ class Store:
             after_ordinal=after_ordinal,
             limit=limit,
             include_events=include_events,
+            kind=kind,
         )
 
     def list_action_events(self, group_id: str) -> list[dict]:

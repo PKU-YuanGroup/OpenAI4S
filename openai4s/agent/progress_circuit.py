@@ -18,6 +18,7 @@ from .actions import (
     ANNOUNCED_CELL_NOTE,
     CODE_RUNNING_TOOLS,
     ENGINE_NOTE_PREFIX,
+    RUN_CELL_NAME,
     Action,
     CodeCell,
     FinalizeAction,
@@ -269,6 +270,23 @@ def reconstruct_progress_circuit(
     return circuit
 
 
+def sent_through_run_cell(group: Mapping[str, Any]) -> bool:
+    """Whether a ledger group is a cell the model sent by calling ``run_cell``.
+
+    Routing makes a ``code`` group out of a reply with native calls only when
+    that reply was one valid ``run_cell`` call, so the call is the one the
+    recorded assistant message carries.
+    """
+    if str(group.get("kind") or "") != _CODE_KIND:
+        return False
+    message = _mapping(group.get("assistant_message"))
+    calls = message.get("tool_calls") if message is not None else None
+    return isinstance(calls, list) and any(
+        isinstance(call, Mapping) and call.get("name") == RUN_CELL_NAME
+        for call in calls
+    )
+
+
 @dataclass
 class ProgressCircuit:
     same_action_fingerprint: str | None = None
@@ -297,6 +315,11 @@ class ProgressCircuit:
     #: The same notes counted since the last executed cell, prose replies in
     #: between included. This one trips (``UNSENT_CELL_THRESHOLD``).
     unsent_cell_count: int = 0
+    #: Whether the session has sent a cell through ``run_cell``. Unlike the
+    #: counts it is not the epoch's and it never resets: once set, every
+    #: later call offers ``run_cell`` beside the other tools. A restore reads
+    #: it from the whole branch, not only the epoch.
+    run_cell_used: bool = False
     #: Per file target: how many differing calls reached it, and the last
     #: call's fingerprint. Cleared by an executed cell.
     target_calls: dict[str, tuple[int, str]] = field(default_factory=dict)
@@ -362,6 +385,8 @@ class ProgressCircuit:
             return
         if isinstance(action, CodeCell):
             self.observe_code_progress()
+            if action.tool_call is not None:
+                self.run_cell_used = True
 
     def observe_announced_cell(
         self, action: Action | None, results: Sequence[Mapping[str, Any]]
@@ -498,6 +523,8 @@ class ProgressCircuit:
         if kind == _CODE_KIND:
             self.observe_code_progress()
             self._count_announced_cell(())
+            if sent_through_run_cell(group):
+                self.run_cell_used = True
             return
         if kind == _NO_ACTION_KIND:
             self.observe_assistant_text(_group_assistant_text(group))

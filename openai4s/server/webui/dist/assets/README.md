@@ -8,7 +8,7 @@ Committed output of `frontend/` (`npm run build`). The gateway serves this tree 
 
 | File | Responsibility |
 | --- | --- |
-| `CapabilityBadges-B2myQyOq.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `CapabilityBadges-BZL-7R7P.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `KaTeX_AMS-Regular-BQhdFMY1.woff2` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `KaTeX_AMS-Regular-DMm9YOAa.woff` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `KaTeX_AMS-Regular-DRggAlZN.ttf` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
@@ -69,13 +69,13 @@ Committed output of `frontend/` (`npm run build`). The gateway serves this tree 
 | `KaTeX_Typewriter-Regular-C0xS9mPB.woff` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `KaTeX_Typewriter-Regular-CO6r4hn1.woff2` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `KaTeX_Typewriter-Regular-D3Ib7_Hf.ttf` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `en-BiWYNluY.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `index-BcNKZ0x-.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `index-DI3ikrN0.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `en-BRK109D2.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `index-BgFdqoiB.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `index-DvW7y2_Q.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `katex-DAR36jk3.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `katex-IejJBL89.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `mount-B-XOAdbU.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `mount-B8U_jjdy.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `mount-BV7oZSJj.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `mount-BVHQQJxx.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `mount-Cm23Rlmc.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `mount-DHALKlFQ.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `mount-XYvMWQAU.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `zh-DZtw8kA9.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `zh-CbWSriuu.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |

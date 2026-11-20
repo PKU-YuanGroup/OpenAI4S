@@ -705,6 +705,13 @@ export function sanitizeVariableInspection(
       if (preview !== undefined) safe.preview = preview;
       const fingerprint = publicText(item.fingerprint, 128).toLowerCase();
       if (/^[a-f0-9]{8,128}$/.test(fingerprint)) safe.fingerprint = fingerprint;
+      // A table's shape and first column labels (NB-3).
+      for (const key of ["rows", "columns"] as const) {
+        const count = item[key];
+        if (Number.isSafeInteger(count) && (count as number) >= 0) safe[key] = count;
+      }
+      if (Array.isArray(item.column_names))
+        safe.column_names = publicList(item.column_names, 20, 80);
       return safe;
     })
     .filter((item) => item.name && item.type);

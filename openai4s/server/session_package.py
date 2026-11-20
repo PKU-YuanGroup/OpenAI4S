@@ -1399,6 +1399,7 @@ class SessionPackageService:
                 raise SessionPackageError(
                     f"session package export still contains secret material: {name}"
                 )
+        local_paths_left = self._note_local_paths_left(files)
         manifest_body = {
             "format": PACKAGE_FORMAT,
             "schema_version": PACKAGE_SCHEMA_VERSION,
@@ -1435,7 +1436,65 @@ class SessionPackageService:
             "sha256": _sha256(data),
             "schema_version": PACKAGE_SCHEMA_VERSION,
             "immutable": True,
+            "local_paths_left": local_paths_left,
         }
+
+    def _note_local_paths_left(self, files: dict[str, bytes]) -> int:
+        """Count this machine's paths redaction left as written, and say so.
+
+        Message text, cell code and output, and the user's own files are
+        covered by digests or are the user's words, so they are not rewritten
+        (the owner's choice: tell the person instead). The count goes into
+        the package's own notes, per member and without the paths themselves,
+        and back to the caller so the page can say it before anyone shares
+        the file. Runs before the manifest, so the note is hashed like the rest.
+        """
+
+        patterns = [_DATA_DIR_PATH] + [
+            re.compile(re.escape(prefix) + r"(?=[/\\\s\"'),;:]|$)")
+            for prefix, _label in self._machine_path_prefixes()
+            if len(prefix) > 1 and prefix != "/"
+        ]
+        counts: dict[str, int] = {}
+        for name, payload in files.items():
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            spans = {
+                match.start()
+                for pattern in patterns
+                for match in pattern.finditer(text)
+            }
+            if spans:
+                counts[name] = len(spans)
+        total = sum(counts.values())
+        if total:
+            note_name = (
+                package_runtime.DIAGNOSTICS_FILE
+                if package_runtime.DIAGNOSTICS_FILE in files
+                else "REPRODUCE.md"
+            )
+            lines = [
+                "",
+                "## Local paths left as written",
+                "",
+                f"{total} absolute path(s) of the exporting machine remain in text "
+                "this package keeps byte-exact: messages, cell code and output "
+                "(covered by digests), and the session's own files. They were "
+                "not rewritten. Check them before you share this package.",
+                "",
+            ]
+            lines += [
+                f"- `{name}`: {count}"
+                for name, count in sorted(counts.items(), key=lambda item: -item[1])[
+                    :20
+                ]
+            ]
+            files[note_name] = files.get(note_name, b"").rstrip(b"\n") + (
+                "\n".join(lines) + "\n"
+            ).encode("utf-8")
+        return total
 
     #: Package documents that carry this machine's absolute paths (interpreters,
     #: environment prefixes, worker argv, tracebacks), and which keys to

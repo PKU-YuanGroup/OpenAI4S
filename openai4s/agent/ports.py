@@ -15,9 +15,17 @@ class ModelPort(Protocol):
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
         *,
-        offer_tools: bool = True,
+        only_tools: Sequence[Mapping[str, Any]] | None = None,
+        extra_tools: Sequence[Mapping[str, Any]] | None = None,
     ) -> ModelReply | Mapping[str, Any]:
-        """One model call. ``offer_tools=False``: no native tool may be called."""
+        """One model call.
+
+        ``only_tools``: offer exactly these declarations on this call instead
+        of the port's own catalogue (the Engine's ``run_cell`` fallback).
+        ``extra_tools``: offer these beside the port's own catalogue, and
+        nothing when that catalogue is empty (``run_cell`` once the session
+        has used it). The Engine passes each only when it is set.
+        """
         ...
 
 

@@ -11,6 +11,10 @@ for that decision (CoreCoder-style: one small core, two thin loop bodies):
   ``route_action`` so the control plane cannot race scientific execution;
 - the engine-owned ``finalize_response`` call is routed as a distinct terminal
   action only when it is the sole native call in a reply;
+- the engine-owned ``run_cell`` call, offered alone on the one call where the
+  Engine withholds every other tool and beside them on every call of a
+  session that has used it, is routed as the same ``CodeCell`` a fenced cell
+  produces;
 - replies without native calls keep the existing fence extractor, so a quoted
   ```` ```tool ```` inside a cell can never hijack a turn;
 - the one-cell-per-step counter and the no-action nudge text live here so the
@@ -29,10 +33,10 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, TypeAlias
 
-from openai4s.tools import scan_fenced_blocks
+from openai4s.tools import ToolSpec, scan_fenced_blocks
 
 # Fence info strings (already lowercased by parse_fence_delimiter) that mark an
 # executable cell. A bare ``` fence still means python — R must be explicit.
@@ -44,13 +48,27 @@ R_INFOS = ("r",)
 # registry/finalization implementation side effects.
 FINALIZE_RESPONSE_NAME = "finalize_response"
 
+# Another engine protocol name, and deliberately not a control ``Tool`` either:
+# a function-shaped way to send one cell, offered alone on the call where the
+# Engine withholds every other tool (see ``ANNOUNCED_CELL_WITHHOLD_AFTER``),
+# and beside the other tools on every later call once the session used it.
+RUN_CELL_NAME = "run_cell"
+
 
 @dataclass(frozen=True)
 class CodeCell:
-    """One executable cell extracted from a model reply."""
+    """One executable cell extracted from a model reply.
+
+    ``tool_call`` is the ``run_cell`` call the cell came from, or ``None`` for
+    a fenced cell. The cell runs exactly as a fenced one; the call only tells
+    the Engine to answer that call id with the observation, so the provider
+    history stays a well-formed call/result pair. It takes no part in
+    equality, so the two spellings of one cell compare equal.
+    """
 
     language: str  # "python" | "r"
     code: str
+    tool_call: NativeToolCall | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -169,6 +187,8 @@ def extract_action(text: str) -> CodeCell | None:
 def route_action(
     content: str,
     tool_calls: Iterable[NativeToolCall | Mapping[str, Any]] | None = None,
+    *,
+    run_cell_offered: bool = False,
 ) -> Action | None:
     """Choose the single action channel for an assistant reply.
 
@@ -176,17 +196,117 @@ def route_action(
     keeps control-plane calls and scientific cells from competing for one
     turn. With no native calls, behavior is exactly ``extract_action``: the
     first complete top-level Python/R cell in document order is selected.
+
+    ``run_cell_offered`` says the model call that produced the reply offered
+    ``run_cell``. Then a reply whose native calls are exactly one valid
+    ``run_cell`` becomes the ``CodeCell`` a fenced cell would, and any other
+    batch holding a ``run_cell`` call runs nothing: every call in it is
+    answered with ``RUN_CELL_MALFORMED``. A ``run_cell`` call on any other
+    reply is an unknown tool, answered with ``RUN_CELL_NOT_OFFERED``.
     """
     calls = (
         tuple(_normalize_native_tool_call(call) for call in tool_calls)
         if tool_calls is not None
         else ()
     )
+    if any(call.name == RUN_CELL_NAME for call in calls):
+        if not run_cell_offered:
+            calls = tuple(
+                (
+                    replace(call, parse_error=RUN_CELL_NOT_OFFERED)
+                    if call.name == RUN_CELL_NAME
+                    else call
+                )
+                for call in calls
+            )
+        else:
+            problem = (
+                _run_cell_problem(calls[0])
+                if len(calls) == 1
+                else "a reply may carry only one call when it calls run_cell"
+            )
+            if problem is None:
+                arguments = calls[0].arguments or {}
+                return CodeCell(
+                    str(arguments.get("language") or "python").strip().lower(),
+                    str(arguments["code"]),
+                    tool_call=calls[0],
+                )
+            calls = tuple(
+                replace(call, parse_error=RUN_CELL_MALFORMED.format(problem=problem))
+                for call in calls
+            )
     if len(calls) == 1 and calls[0].name == FINALIZE_RESPONSE_NAME:
         return FinalizeAction(calls[0])
     if calls:
         return NativeToolBatch(calls)
     return extract_action(content)
+
+
+def _run_cell_problem(call: NativeToolCall) -> str | None:
+    """Why one ``run_cell`` call cannot run as a cell, else ``None``.
+
+    Keys beyond ``language`` and ``code`` are ignored rather than refused: the
+    code is what runs, and a model that struggled to send a cell at all should
+    not lose the reply to a stray field. For the same reason a missing
+    ``language`` means Python: a live model sent ``run_cell`` with only
+    ``code`` and the reply ran nothing.
+    """
+    if call.parse_error is not None:
+        return call.parse_error
+    arguments = call.arguments
+    if not isinstance(arguments, Mapping):
+        return "arguments are not a JSON object"
+    language = arguments.get("language")
+    if language is None:
+        language = "python"
+    if not isinstance(language, str) or language.strip().lower() not in (
+        "python",
+        "r",
+    ):
+        return f'language must be "python" or "r", got {language!r}'
+    code = arguments.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return "code must be a non-empty string"
+    return None
+
+
+def run_cell_tool_spec() -> ToolSpec:
+    """The declaration offered alone on the call where every other tool is
+    withheld, and beside them once a session has called it.
+
+    Engine-owned like ``finalize_response``: it is never registered in the
+    control-tool registry, and ``route_action`` turns a valid call into a
+    ``CodeCell``, so the code runs through the same cell executor, approvals,
+    execution log, Notebook, provenance and Artifact capture as a fenced cell.
+    """
+    return ToolSpec(
+        name=RUN_CELL_NAME,
+        description=(
+            "Run code as one cell in the persistent kernel, exactly as a fenced "
+            "```python or ```r cell in your reply would run: same kernel, same "
+            "variables, same files. The cell's output comes back as this "
+            "call's result. Make it the only call in your reply."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "language": {
+                    "type": "string",
+                    "enum": ["python", "r"],
+                    "description": "The kernel to run the code in; python if omitted.",
+                },
+                "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The complete code of the cell.",
+                },
+            },
+            "required": ["code"],
+            "additionalProperties": False,
+        },
+        strict=False,
+    )
 
 
 def _normalize_native_tool_call(
@@ -292,14 +412,39 @@ ANNOUNCED_CELL_NOTE = (
 # above on twelve replies in a row, each one sentence promising Python and a
 # different filler tool (glob_files, write_todos, list_dir, list_artifacts,
 # load_skill, review_status), so no repeat rule saw a loop. On the second note
-# in a row the Engine makes the next model call with no native tools on offer:
-# its reply can only be text, and a fenced cell is the one text that runs.
-# Tools come back on the call after that, whatever the reply was.
+# in a row the Engine makes the next model call with every tool withheld but
+# ``run_cell``. Offered no tools at all, the same model answered in prose or
+# invented a ``host.bash`` call to run ``python -c``: to it, running code is
+# calling a function. The other tools come back on the call after that,
+# whatever the reply was.
 ANNOUNCED_CELL_WITHHOLD_AFTER = 2
-TOOLS_WITHHELD_NOTE = (
-    " Tools are withheld for your next reply, so it can only be text: send "
-    "the fenced ```python (or ```r) cell now as your whole reply. Tools come "
-    "back on the reply after it."
+RUN_CELL_OFFERED_NOTE = (
+    " Your next reply is the one exception: the only tool offered for it is "
+    "run_cell(language, code), and that tool does run your code as a cell. "
+    "Call run_cell with your code, or send the fenced ```python (or ```r) cell "
+    "as your whole reply. The other tools come back on the reply after it."
+)
+# A model that has called run_cell once is offered it on every later call (it
+# had learned to send filler tools until the withheld call came round), so the
+# note names it too.
+RUN_CELL_ON_OFFER_NOTE = (
+    " Or call run_cell(language, code) as the only call of your next reply: it "
+    "runs the code as a cell."
+)
+
+# The tool error for a batch holding a run_cell call that cannot run: nothing
+# in the batch ran.
+RUN_CELL_MALFORMED = (
+    "{problem}. Nothing in this reply ran. To run code, send exactly one "
+    'run_cell call with language "python" or "r" and the code, and no other '
+    "call, while run_cell is offered; or send one fenced ```python (or ```r) "
+    "cell as your whole reply."
+)
+
+# The tool error for a run_cell call on a reply it was not offered to.
+RUN_CELL_NOT_OFFERED = (
+    "unknown tool: 'run_cell'. Nothing ran. To run code, send one fenced "
+    "```python (or ```r) cell as your whole reply, with no tool calls."
 )
 
 # What such a reply says, in the two languages the Web UI is used in. The
@@ -396,7 +541,13 @@ def unexecuted_cell_note(content: str, action: Action | None) -> str:
     return UNEXECUTED_CELL_NOTE.format(language=cell.language)
 
 
-def announced_cell_note(content: str, action: Action | None, streak: int = 0) -> str:
+def announced_cell_note(
+    content: str,
+    action: Action | None,
+    streak: int = 0,
+    *,
+    run_cell_on_offer: bool = False,
+) -> str:
     """The note for a native batch whose reply promised a cell it never sent.
 
     The counterpart of :func:`unexecuted_cell_note`: that one fires when a
@@ -405,7 +556,8 @@ def announced_cell_note(content: str, action: Action | None, streak: int = 0) ->
 
     ``streak`` is how many replies in a row before this one drew the note.
     The reply that brings it to ``ANNOUNCED_CELL_WITHHOLD_AFTER`` is also told
-    that its next call offers no tools.
+    that its next call offers ``run_cell`` and nothing else; otherwise
+    ``run_cell_on_offer`` (the session has used it) adds that it may call it.
     """
     if not isinstance(action, NativeToolBatch):
         return ""
@@ -415,7 +567,9 @@ def announced_cell_note(content: str, action: Action | None, streak: int = 0) ->
     if extract_action(text) is not None or not _ANNOUNCED_CELL.search(text):
         return ""
     if streak + 1 == ANNOUNCED_CELL_WITHHOLD_AFTER:
-        return ANNOUNCED_CELL_NOTE + TOOLS_WITHHELD_NOTE
+        return ANNOUNCED_CELL_NOTE + RUN_CELL_OFFERED_NOTE
+    if run_cell_on_offer:
+        return ANNOUNCED_CELL_NOTE + RUN_CELL_ON_OFFER_NOTE
     return ANNOUNCED_CELL_NOTE
 
 

@@ -387,7 +387,7 @@ export function sessionMenu(anchor: Element, fid: string): void {
     },
     // EXP-3: the same read-only view as one self-contained file, no relay.
     { label: sessionCopy("exportWebPage"), icon: "download", onClick: () => exportSessionWebPage(fid, frame) },
-    { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
+    { label: t("sessionPackage.export"), icon: "archive", onClick: () => void exportSessionPackage(fid, frame) },
     {
       label: t("sessionMenu.downloadArtifacts"),
       icon: "files",
@@ -439,8 +439,8 @@ export function sessionMenu(anchor: Element, fid: string): void {
   openMenu(anchor, items);
 }
 
-export function exportSessionPackage(fid: string, frame: SessionLike = {}): void {
-  void exportPackageBytes(fid, frame.name || frame.task_summary || "session");
+export function exportSessionPackage(fid: string, frame: SessionLike = {}): Promise<void> {
+  return exportPackageBytes(fid, frame.name || frame.task_summary || "session");
 }
 
 /** One self-contained `.html` of the session, in the UI language (EXP-3). */

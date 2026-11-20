@@ -7,7 +7,12 @@ import json
 
 import pytest
 
-from openai4s.agent.actions import FinalizeAction, NativeToolBatch, NativeToolCall
+from openai4s.agent.actions import (
+    CodeCell,
+    FinalizeAction,
+    NativeToolBatch,
+    NativeToolCall,
+)
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import (
     ActionRouted,
@@ -16,7 +21,11 @@ from openai4s.agent.events import (
     RunFinished,
 )
 from openai4s.agent.finalize import execute_finalize_action
-from openai4s.agent.ledger import RuntimeActionLedger, restore_progress_circuit
+from openai4s.agent.ledger import (
+    RuntimeActionLedger,
+    restore_action_history,
+    restore_progress_circuit,
+)
 from openai4s.agent.models import EngineResult, ExecutionOutcome, ModelReply, RunState
 from openai4s.agent.progress_circuit import (
     LONG_TEXT_MIN_CHARS,
@@ -654,38 +663,66 @@ def test_the_tool_only_streak_survives_a_restart_and_its_note_is_sent_once(tmp_p
 
 
 class _PromisingModel:
-    """Promises a cell with a new listing while tools are on offer; with none
-    on offer, answers ``untooled``. Records whether each call offered tools."""
+    """Promises a cell with a new listing while the catalogue is on offer. On
+    the run_cell call it calls run_cell, or answers ``fallback`` as text;
+    offered run_cell beside the catalogue it calls it straight away.
+    ``offered`` records, per call, ``None``, the names offered instead, or
+    ``"+run_cell"`` for the catalogue with run_cell beside it."""
 
-    def __init__(self, untooled: str, *, start: int = 0):
-        self.untooled = untooled
+    def __init__(self, fallback: str | None = None, *, start: int = 0):
+        self.fallback = fallback
         self.index = start
-        self.offered: list[bool] = []
+        self.offered: list[list[str] | str | None] = []
 
-    def complete(self, messages, on_delta, *, offer_tools=True):
+    def complete(self, messages, on_delta, *, only_tools=None, extra_tools=None):
         del messages, on_delta
-        self.offered.append(offer_tools)
+        if extra_tools is not None:
+            names = [tool["name"] for tool in extra_tools]
+            self.offered.append("+" + ",".join(names))
+        else:
+            self.offered.append(
+                None if only_tools is None else [tool["name"] for tool in only_tools]
+            )
         self.index += 1
-        if not offer_tools:
-            return _reply(self.untooled)
+        if only_tools is not None or extra_tools is not None:
+            if self.fallback is not None:
+                return _reply(self.fallback)
+            arguments = {"language": "python", "code": "print(1)"}
+            call = _call(f"call_{self.index}", "run_cell", arguments)
+            return _reply("现在用 Python 读取 Excel。", tool_calls=[call])
         call = _call(f"call_{self.index}", arguments={"path": f"dir{self.index}"})
         return _reply("现在用 Python 读取 Excel。", tool_calls=[call])
 
 
-def test_the_tool_less_call_survives_a_restart_and_is_not_made_twice(tmp_path):
+class _CellExecutor(CountingExecutor):
+    """Answers a cell with a user observation, as the real executors do."""
+
+    def execute(self, action, reply, state):
+        if isinstance(action, CodeCell):
+            self.calls.append(action)
+            return ExecutionOutcome(
+                ({"role": "user", "content": "[Observation]\n1"},),
+                observation="[Observation]\n1",
+            )
+        return super().execute(action, reply, state)
+
+
+def test_the_run_cell_call_survives_a_restart_and_is_recorded_as_a_cell(tmp_path):
     """Two noted replies, then the turn ends before the next call. The count
-    is rebuilt from the recorded results, so the resumed run's first call is
-    the tool-less one; once its reply is recorded, a second restart offers
-    tools again."""
+    is rebuilt from the recorded results, so the resumed run's first call
+    offers run_cell alone; the cell it sends is recorded as a ``code`` group
+    that rebuilds as a cell (both streaks reset) and restores as the call and
+    its tool result, and a second restart offers the catalogue with run_cell
+    beside it, because the session has now used it."""
     store = Store(tmp_path / "withheld.db")
     root = store.new_frame(project_id="default", status="ready")
     ledger = RuntimeActionLedger(store, root, "turn-withheld")
     user = {"role": "user", "content": "分析 demo.xlsx"}
     ledger.append_user(user)
     state = RunState([user], max_turns=2)
-    first = _PromisingModel("```python\nprint(1)\n```")
-    AgentEngine(first, CountingExecutor(), event_sink=ledger).run(state)
-    assert first.offered == [True, True]
+    first = _PromisingModel()
+    AgentEngine(first, _CellExecutor(), event_sink=ledger).run(state)
+    assert first.offered == [None, None]
 
     restored = restore_progress_circuit(store, root)
     assert restored == circuit_from_state(state)
@@ -693,18 +730,169 @@ def test_the_tool_less_call_survives_a_restart_and_is_not_made_twice(tmp_path):
 
     resumed = RunState([user], max_turns=1)
     attach_progress_circuit(resumed, restored)
-    prose = _PromisingModel("好的，我现在就运行 Python。", start=2)
-    AgentEngine(prose, CountingExecutor(), event_sink=ledger).run(resumed)
-    assert prose.offered == [False]
+    model = _PromisingModel(start=2)
+    executor = _CellExecutor()
+    AgentEngine(model, executor, event_sink=ledger).run(resumed)
+    assert model.offered == [["run_cell"]]
+    assert executor.calls == [CodeCell("python", "print(1)")]
 
+    kinds = [group["kind"] for group in store.list_action_groups(root)]
+    replies = [kind for kind in kinds if kind in {"native_tools", "code"}]
+    assert replies == ["native_tools", "native_tools", "code"]
     again = restore_progress_circuit(store, root)
     assert again == circuit_from_state(resumed)
-    assert again.announced_cell_streak == 0
+    assert (again.announced_cell_streak, again.tool_only_streak) == (0, 0)
+    assert again.run_cell_used is True
+    history = restore_action_history(store, root)
+    position = next(
+        index
+        for index, message in enumerate(history)
+        if [item["id"] for item in message.get("tool_calls") or ()] == ["call_3"]
+    )
+    answer = history[position + 1]
+    assert (answer["role"], answer["tool_call_id"], answer["name"]) == (
+        "tool",
+        "call_3",
+        "run_cell",
+    )
+    # Recorded as the call's result, not rebuilt from an unanswered group.
+    assert answer["content"] == "[Observation]\n1" and answer["is_error"] is False
+
     last = RunState([user], max_turns=1)
     attach_progress_circuit(last, again)
-    model = _PromisingModel("```python\nprint(1)\n```", start=3)
-    AgentEngine(model, CountingExecutor(), event_sink=ledger).run(last)
-    assert model.offered == [True]
+    model = _PromisingModel(start=3)
+    AgentEngine(model, _CellExecutor(), event_sink=ledger).run(last)
+    assert model.offered == ["+run_cell"]
+    store.close()
+
+
+def test_a_run_cell_cell_that_never_answered_restores_as_a_tool_result(tmp_path):
+    """The daemon stopped mid-cell: the ``code`` group has the run_cell call
+    and no observation. The restored history still closes that call id with
+    a tool result, never with a user message after a tool call."""
+    store = Store(tmp_path / "interrupted.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-interrupted")
+    ledger.append_user({"role": "user", "content": "分析 demo.xlsx"})
+    arguments = {"language": "python", "code": "print(1)"}
+    reply = ModelReply.from_mapping(
+        _reply("", tool_calls=[_call("call_9", "run_cell", arguments)])
+    )
+    ledger.emit(ReplyReceived(reply, 0))
+    ledger.emit(
+        ActionRouted(CodeCell("python", "print(1)", tool_call=reply.tool_calls[0]), 0)
+    )
+
+    history = restore_action_history(store, root)
+
+    assert [message["role"] for message in history] == ["user", "assistant", "tool"]
+    assert history[-1]["tool_call_id"] == "call_9"
+    assert history[-1]["is_error"] is True
+    assert "interrupted" in history[-1]["content"]
+    store.close()
+
+
+def _session_that_used_run_cell(store, root):
+    """Two noted replies, then the run_cell-only call's cell: the ledger's
+    ``code`` group for it."""
+    ledger = RuntimeActionLedger(store, root, "turn-1")
+    user = {"role": "user", "content": "分析 demo.xlsx"}
+    ledger.append_user(user)
+    model = _PromisingModel()
+    AgentEngine(model, _CellExecutor(), event_sink=ledger).run(
+        RunState([user], max_turns=3)
+    )
+    assert model.offered == [None, None, ["run_cell"]]
+    (code,) = [g for g in store.list_action_groups(root) if g["kind"] == "code"]
+    return code
+
+
+def test_run_cell_stays_on_offer_after_a_new_message_compaction_and_restart(
+    tmp_path,
+):
+    """The session used run_cell in an earlier turn. A new user message
+    starts a new epoch and a compaction drops the call from the provider
+    history, but the ledger still holds its ``code`` group: the restored
+    circuit keeps run_cell on offer, and the next cell comes with no filler
+    call before it."""
+    store = Store(tmp_path / "sticky.db")
+    root = store.new_frame(project_id="default", status="ready")
+    code = _session_that_used_run_cell(store, root)
+    later = RuntimeActionLedger(store, root, "turn-2")
+    later.append_user({"role": "user", "content": "再画一张图"})
+    later.append_compaction("earlier work was summarised", code["group_id"])
+    history = restore_action_history(store, root)
+    assert not any(
+        call.get("name") == "run_cell"
+        for message in history
+        for call in message.get("tool_calls") or ()
+    )
+
+    restored = restore_progress_circuit(store, root)
+    assert restored.run_cell_used is True
+    assert (restored.announced_cell_streak, restored.tool_only_streak) == (0, 0)
+
+    resumed = RunState(history, max_turns=1)
+    attach_progress_circuit(resumed, restored)
+    model = _PromisingModel(start=3)
+    executor = _CellExecutor()
+    AgentEngine(model, executor, event_sink=later).run(resumed)
+    assert model.offered == ["+run_cell"]
+    assert executor.calls == [CodeCell("python", "print(1)")]
+    store.close()
+
+
+def test_a_fork_keeps_run_cell_on_offer_only_if_its_history_used_it(tmp_path):
+    """Scoped to the branch being run: a fork whose inherited prefix holds
+    the run_cell cell keeps it on offer, a fork from before it does not,
+    each after a message of its own has started a new epoch there."""
+    store = Store(tmp_path / "forks.db")
+    root = store.new_frame(project_id="default", status="ready")
+    code = _session_that_used_run_cell(store, root)
+    for name, cursor in (("before", 0), ("after", code["ordinal"])):
+        checkpoint = store.create_session_checkpoint(
+            root_frame_id=root,
+            branch_id=root,
+            reason="fork base",
+            workspace_tree_id="a" * 64,
+            action_cursor=cursor,
+        )
+        store.fork_session_branch(
+            root_frame_id=root,
+            from_checkpoint_id=checkpoint["checkpoint_id"],
+            branch_id=name,
+        )
+        RuntimeActionLedger(store, root, f"turn-{name}", branch_id=name).append_user(
+            {"role": "user", "content": f"continue on {name}"}
+        )
+
+    assert restore_progress_circuit(store, root).run_cell_used is True
+    assert restore_progress_circuit(store, root, branch_id="after").run_cell_used
+    assert not restore_progress_circuit(store, root, branch_id="before").run_cell_used
+    store.close()
+
+
+def test_a_session_whose_cells_were_all_fenced_never_gets_run_cell(tmp_path):
+    store = Store(tmp_path / "fenced.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-fenced")
+    user = {"role": "user", "content": "分析 demo.xlsx"}
+    ledger.append_user(user)
+    replies = [_reply("```python\nprint(1)\n```") for _ in range(2)]
+    # A two-argument port: a call that offered run_cell would raise here.
+    AgentEngine(FakeModel(replies), _CellExecutor(), event_sink=ledger).run(
+        RunState([user], max_turns=2)
+    )
+    kinds = [group["kind"] for group in store.list_action_groups(root)]
+    assert kinds.count("code") == 2
+
+    restored = restore_progress_circuit(store, root)
+    assert restored.run_cell_used is False
+    resumed = RunState([user], max_turns=1)
+    attach_progress_circuit(resumed, restored)
+    model = FakeModel([_reply("```python\nprint(2)\n```")])
+    AgentEngine(model, _CellExecutor(), event_sink=ledger).run(resumed)
+    assert len(model.calls) == 1
     store.close()
 
 
@@ -721,7 +909,8 @@ def test_the_unsent_cell_count_survives_a_restart_and_stops_the_fifth(tmp_path):
     state = RunState([user], max_turns=4)
     first = _PromisingModel(prose)
     AgentEngine(first, CountingExecutor(), event_sink=ledger).run(state)
-    assert first.offered == [True, True, False, True]
+    # The catalogue (None) twice, then only run_cell on the withheld call.
+    assert first.offered == [None, None, ["run_cell"], None]
 
     restored = restore_progress_circuit(store, root)
     assert restored == circuit_from_state(state)
@@ -733,7 +922,7 @@ def test_the_unsent_cell_count_survives_a_restart_and_stops_the_fifth(tmp_path):
     model = _PromisingModel(prose, start=4)
     result = AgentEngine(model, CountingExecutor(), event_sink=ledger).run(resumed)
 
-    assert model.offered == [True, False, True]
+    assert model.offered == [None, ["run_cell"], None]
     assert result.progress_reason == PROGRESS_REASON_UNSENT_CELL
     rebuilt = restore_progress_circuit(store, root)
     assert rebuilt == circuit_from_state(resumed)
@@ -886,7 +1075,9 @@ def test_an_empty_epoch_is_restored_without_reading_a_single_group(tmp_path):
     store.list_action_groups = counting  # type: ignore[method-assign]
     restored = restore_progress_circuit(store, root)
     assert restored == ProgressCircuit()
-    assert reads == []
+    # No epoch group is read. The one read asks whether the session ever used
+    # run_cell, which is not the epoch's: code groups only, without events.
+    assert reads == [{"branch_id": root, "kind": "code", "include_events": False}]
     store.close()
 
 

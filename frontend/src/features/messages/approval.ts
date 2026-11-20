@@ -24,6 +24,7 @@ import { isReady } from "../../compat/stub";
 import { LANG, t } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
 import { permCards, running } from "../../stores/stream";
+import { _messagesFollow } from "../../stores/ui";
 import { messagesHost } from "./dom";
 import { scheduleFrame } from "./raf";
 
@@ -91,7 +92,11 @@ export function revealPendingApproval(): boolean {
   if (!approvalCardInView(card, host) && typeof card.getBoundingClientRect === "function") {
     const r = card.getBoundingClientRect();
     const v = host.getBoundingClientRect();
-    host.scrollTop += r.bottom - (v.bottom - PILL_BAND);
+    const move = r.bottom - (v.bottom - PILL_BAND);
+    host.scrollTop += move;
+    // Moved up to the card on purpose: newer rows must not pull the view back
+    // under it. (scroll.ts counts only the reader's own input as a move up.)
+    if (move < 0) _messagesFollow.value = false;
   }
   return true;
 }

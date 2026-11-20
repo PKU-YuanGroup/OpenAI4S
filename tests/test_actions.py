@@ -265,6 +265,47 @@ def test_structured_native_call_wins_over_code_cell():
     assert action.calls[0] is call
 
 
+def _run_cell_call(call_id="call_1", **arguments):
+    return NativeToolCall(
+        id=call_id,
+        wire_id=call_id,
+        name="run_cell",
+        ordinal=0,
+        raw_arguments="{}",
+        arguments=arguments,
+    )
+
+
+def test_a_sole_run_cell_call_is_the_cell_only_where_it_was_offered():
+    call = _run_cell_call(language=" R ", code="a <- 1")
+
+    offered = route_action("prose", [call], run_cell_offered=True)
+    stray = route_action("prose", [call])
+
+    assert offered == CodeCell("r", "a <- 1") and offered.tool_call is call
+    assert isinstance(stray, NativeToolBatch)
+    assert stray.calls[0].parse_error.startswith("unknown tool: 'run_cell'")
+    # A fenced cell on the offered call routes exactly as on any other call.
+    reply = _cell("python", "b = 2")
+    assert route_action(reply, run_cell_offered=True) == CodeCell("python", "b = 2\n")
+    assert route_action(reply, run_cell_offered=True).tool_call is None
+
+
+def test_run_cell_beside_another_call_or_with_bad_arguments_runs_nothing():
+    finalize = NativeToolCall("f", "f", "finalize_response", 1, "{}", arguments={})
+    cases = [
+        ([_run_cell_call(language="python", code="x = 1"), finalize], "only one call"),
+        ([_run_cell_call(language="julia", code="x = 1")], "language must be"),
+        ([_run_cell_call(language="python", code="")], "code must be"),
+        ([_run_cell_call(language="python")], "code must be"),
+    ]
+    for calls, problem in cases:
+        action = route_action("", calls, run_cell_offered=True)
+        assert isinstance(action, NativeToolBatch)
+        assert all(problem in call.parse_error for call in action.calls)
+        assert all("Nothing in this reply ran" in c.parse_error for c in action.calls)
+
+
 def test_empty_native_calls_keep_existing_first_cell_rule():
     reply = _cell("r", "a <- 1") + "\n" + _cell("python", "b = 2")
 

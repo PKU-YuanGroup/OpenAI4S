@@ -175,6 +175,7 @@ from openai4s.server.completions import (
     CANCEL_REASONS,
     cancellation_marker,
     completion_message,
+    narration_paths,
     response_language,
     unfinished_turns_since,
 )
@@ -12667,6 +12668,7 @@ class SessionRunner:
             narrate_actions=not st.plan,
             cancelled=st.cancel.is_set,
             action_ledger=action_ledger,
+            local_paths=narration_paths(st.workspace, self.cfg.data_dir),
         )
 
         def apply_pending() -> None:
@@ -19914,6 +19916,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         ),
                         "X-Content-SHA256": exported["sha256"],
                         "X-OpenAI4S-Session-Schema": str(exported["schema_version"]),
+                        # How many local paths redaction left in text it keeps
+                        # byte-exact; the page says so after the download.
+                        "X-OpenAI4S-Local-Paths-Left": str(
+                            int(exported.get("local_paths_left") or 0)
+                        ),
                     },
                 )
                 return

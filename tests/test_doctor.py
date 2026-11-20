@@ -1354,6 +1354,88 @@ def test_any_http_answer_is_reachable_and_a_refusal_is_not():
     }
 
 
+@pytest.mark.stubbed_backend
+def test_a_timed_out_host_gets_one_retry_before_it_is_called_unreachable():
+    """A slow host is not a missing one: rest.ensembl.org answered in 7.6 s on
+    one try and missed the 10 s budget on others, and doctor reported a host
+    that works as unreachable."""
+    import threading
+
+    calls: dict[str, int] = {}
+    lock = threading.Lock()
+
+    def probe(url, *, timeout):
+        assert timeout == doctor._PROBE_TIMEOUT_S
+        with lock:
+            calls[url] = calls.get(url, 0) + 1
+            n = calls[url]
+        if "ensembl" in url and n == 1:
+            # The URLError shape web_probe returns for a connect timeout.
+            return {"url": url, "status": 0, "exists": False, "error": "timed out"}
+        return {"url": url, "status": 200, "exists": True}
+
+    answers = doctor.probe_science_hosts(probe)
+
+    assert answers["ensembl"] == {
+        "host": "rest.ensembl.org",
+        "reachable": True,
+        "http_status": 200,
+        "attempts": 2,
+    }
+    assert calls["https://rest.ensembl.org/"] == 2
+    assert all(n == 1 for url, n in calls.items() if "ensembl" not in url)
+    result = {"status": doctor.OK, "checks": [_reachability_check(answers)]}
+    [line] = [l for l in doctor.render(result).splitlines() if "ensembl" in l]
+    assert "HTTP 200 (after one timeout)" in line
+
+
+@pytest.mark.stubbed_backend
+def test_a_host_that_times_out_twice_says_timed_out_not_refused():
+    """Still unreachable after the retry, the per-host line says it timed out,
+    so it reads differently from a refusal or a TLS failure -- and neither of
+    those is retried."""
+    calls: dict[str, int] = {}
+
+    def probe(url, *, timeout):
+        calls[url] = calls.get(url, 0) + 1
+        if "ensembl" in url:
+            # A read timeout escapes urllib as a bare TimeoutError.
+            raise TimeoutError("The read operation timed out")
+        if "zenodo" in url:
+            raise RuntimeError("egress allowlist: zenodo.org is not granted")
+        if "rcsb" in url:
+            return {"url": url, "status": 0, "error": "TLS certificate not verified"}
+        return {"url": url, "status": 200, "exists": True}
+
+    answers = doctor.probe_science_hosts(probe)
+
+    assert calls["https://rest.ensembl.org/"] == 2
+    assert calls["https://zenodo.org/"] == 1
+    assert calls["https://search.rcsb.org/"] == 1
+    assert answers["ensembl"]["reachable"] is False
+    assert answers["ensembl"]["timed_out"] is True
+    assert "timed_out" not in answers["zenodo"]
+    assert "timed_out" not in answers["pdb"]
+    result = {"status": doctor.WARN, "checks": [_reachability_check(answers)]}
+    lines = doctor.render(result).splitlines()
+    [ensembl] = [l for l in lines if "rest.ensembl.org" in l]
+    [zenodo] = [l for l in lines if "zenodo.org" in l]
+    [pdb] = [l for l in lines if "search.rcsb.org" in l]
+    assert "timed out: no answer within 10 s, on 2 tries" in ensembl
+    assert "timed out" not in zenodo and "not granted" in zenodo
+    assert "timed out" not in pdb and "TLS certificate" in pdb
+
+
+def _reachability_check(answers):
+    return {
+        "name": "connectors",
+        "status": doctor.WARN,
+        "detail": "probed",
+        "remedy": "",
+        "facts": {"reachability": answers},
+    }
+
+
 def test_the_probed_hosts_are_the_ones_the_connectors_query():
     """The table is a second copy of ten URLs; hold it to the first."""
     import inspect

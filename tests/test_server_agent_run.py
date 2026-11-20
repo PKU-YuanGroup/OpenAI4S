@@ -366,6 +366,41 @@ def test_each_stored_row_is_its_own_paragraph_live():
     assert "cell.Now" not in live
 
 
+def test_web_event_sink_shortens_this_sessions_paths_in_the_post_cell_status():
+    """CHAT-4 follow-up: the gateway hands the sink this session's workspace
+    and data directory; the status line under a cell shows them relative."""
+    visible = []
+    sink = WebEventSink(
+        [].append,
+        "frame-1",
+        visible,
+        lambda usage: None,
+        local_paths=(
+            ("/srv/lab/data/agent-workspaces/f-1", "."),
+            ("/srv/lab/data", "<data_dir>"),
+        ),
+    )
+    action = CodeCell("python", "print(open('out.txt').name)\n")
+    sink.emit(TurnStarted(turn=0))
+    sink.emit(ReplyReceived(ModelReply(content=""), turn=0))
+    sink.emit(ActionRouted(action, turn=0))
+    sink.emit(
+        OutcomeProduced(
+            ExecutionOutcome(
+                observation="[Observation]\nstdout:\n"
+                "/srv/lab/data/agent-workspaces/f-1/out.txt\n"
+                "/srv/lab/data/artifacts/v-1__out.txt"
+            ),
+            turn=0,
+        )
+    )
+
+    assert visible[-1]["text"] == (
+        "The cell finished. Output:\n```text\n./out.txt\n"
+        "<data_dir>/artifacts/v-1__out.txt\n```"
+    )
+
+
 def test_web_event_sink_says_a_status_line_once_and_opens_only_once():
     """CHAT-4: three identical tool calls produced the same canned sentence
     back to back, and "I am inspecting ... before continuing" came back in the

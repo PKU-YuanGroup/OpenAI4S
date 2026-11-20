@@ -69,6 +69,29 @@ describe("variable inspector list", () => {
   const names = (panel: FakeNode) =>
     panel.all().filter((node) => node.className === "nb-variable-name").map((node) => node.textContent);
 
+  it("says a DataFrame's shape and what its columns are called (NB-3)", () => {
+    vi.stubGlobal("document", { createElement: (tag: string) => new FakeNode(tag) });
+    try {
+      variableInspector.value = {
+        language: "python", loading: null, error: "", request: 1,
+        results: {
+          python: {
+            available: true, state: "active", state_revision: 3,
+            variables: [
+              { name: "growth", type: "DataFrame", kind: "table", rows: 1764, columns: 9,
+                column_names: ["well", "strain"] },
+            ],
+          },
+        },
+      };
+      const texts = paintOnce().all().map((node) => node.textContent);
+      expect(texts).toContain(nbT("nb.variables.shape", 1764, 9));
+      expect(texts).toContain(nbT("nb.variables.columnNames", "well, strain, …"));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("lists data variables, keeps code names behind a toggle and the fingerprint in a tooltip", () => {
     vi.stubGlobal("document", { createElement: (tag: string) => new FakeNode(tag) });
     try {

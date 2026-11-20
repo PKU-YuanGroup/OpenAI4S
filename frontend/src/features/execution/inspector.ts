@@ -106,6 +106,9 @@ type VarRow = {
   preview?: unknown;
   length?: number;
   fingerprint?: string;
+  rows?: number;
+  columns?: number;
+  column_names?: string[];
 };
 
 type Inspection = {
@@ -235,6 +238,16 @@ export function renderVariableInspector(): HTMLElement {
     if (preview) details.appendChild(el("span", "nb-variable-preview", preview));
     if (variable.length != null)
       details.appendChild(el("span", "timeline-pill", t("nb.variables.length", variable.length)));
+    // NB-3: a DataFrame says its shape and what its columns are called.
+    if (variable.rows != null && variable.columns != null)
+      details.appendChild(el("span", "timeline-pill", nbT("nb.variables.shape", variable.rows, variable.columns)));
+    const columnNames = variable.column_names || [];
+    if (columnNames.length) {
+      const more = (variable.columns || 0) > columnNames.length ? ", …" : "";
+      details.appendChild(
+        el("span", "nb-variable-preview", nbT("nb.variables.columnNames", columnNames.join(", ") + more)),
+      );
+    }
     row.appendChild(details);
     list.appendChild(row);
   });
