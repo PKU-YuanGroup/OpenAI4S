@@ -550,6 +550,29 @@ def test_the_example_seed_message_keeps_the_full_claim_when_everything_ran(
     ):
         assert f"- [{name}]({API_ROOT}/artifacts/{ids[name]}) — " in content
     assert "**family_biochemistry.csv**" not in content
+    # SCI-02: Notebook and Files were bold, so they read as links that did
+    # nothing, and the Notebook is not a tab.
+    assert "**Notebook**" not in content and "**Files**" not in content
+    assert "Notebook tab" not in content
+
+
+def test_the_example_figure_is_saved_under_a_name_that_says_what_it_is(
+    tmp_path, monkeypatch
+):
+    """SCI-02: the summary called it the hydropathy figure; the file was the
+    auto-captured `figure_cell3_1.png`."""
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("numpy")
+    monkeypatch.chdir(tmp_path)
+    ns: dict = {"__name__": "__kernel__"}
+    # Cell 1 without a `host` falls back to the bundled real sequences.
+    exec(compile(gateway_mod._DEMO_UNIPROT, "<cell1>", "exec"), ns)
+    exec(compile(gateway_mod._DEMO_PLOT, "<cell3>", "exec"), ns)
+    assert (tmp_path / "hydropathy_profile.png").is_file()
+    import matplotlib.pyplot as plt
+
+    # Saved and closed: nothing is left for the figure auto-capture.
+    assert plt.get_fignums() == []
 
 
 def test_the_example_is_written_in_the_language_it_was_asked_for_in(

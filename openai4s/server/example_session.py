@@ -69,11 +69,13 @@ _COPY: dict[str, dict[str, str]] = {
         "table_label": "biochemistry table",
         "report_label": "summary report",
         "missing": "- _{label}_ — not produced this run (Cell {cell} did not "
-        "complete; see its error in the Notebook tab)",
+        "complete; see its error in the Notebook)",
         "structure_missing": "- _3D structure_ — skipped this run: the RCSB download "
         "was unreachable (no placeholder is ever substituted; see nif3_report.md)",
-        "closing": "Open the **Notebook** tab to replay the executed cells, or the "
-        "**Files** panel to view each material.",
+        # SCI-02: plain words, not bold that reads as a link. The Notebook is
+        # the panel above the message box, not a tab.
+        "closing": "The executed cells are in the Notebook above the message box; "
+        "every material is also in the Files panel.",
     },
     "zh": {
         "prompt": "只用真实数据分析 NIF3/DUF34 蛋白家族：从 UniProt REST API 获取家族"
@@ -106,11 +108,10 @@ _COPY: dict[str, dict[str, str]] = {
         "table_label": "理化性质表",
         "report_label": "总结报告",
         "missing": "- _{label}_：本次没有生成（单元 {cell} 没有完成，报错见 "
-        "Notebook 页签）",
+        "Notebook）",
         "structure_missing": "- _三维结构_：本次跳过，RCSB 下载不可达（不会用占位结构"
         "代替，详见 nif3_report.md）",
-        "closing": "打开 **Notebook** 页签可以回看已执行的单元，在**文件**面板可以查看"
-        "每个产物。",
+        "closing": "已执行的单元在输入框上方的 Notebook 里；每个产物也都在文件面板中。",
     },
 }
 

@@ -22889,6 +22889,10 @@ ax.set_xlabel('residue position')
 ax.set_ylabel('mean hydropathy')
 ax.legend(loc='upper right', fontsize=8)
 plt.tight_layout()
+# Saved under a name that says what it is (SCI-02: the summary called it the
+# hydropathy figure while the file was the auto-captured figure_cell3_1.png).
+fig.savefig('hydropathy_profile.png', dpi=150)
+plt.close(fig)
 print('rendered hydropathy profile for %s (%d residues) via %s'
       % (ref['accession'], len(_seq), api_source))
 """
