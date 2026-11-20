@@ -72,6 +72,15 @@ describe("skill picker ranking", () => {
     expect(names("荟萃")).toEqual(["bio-clinical-bayesian-trials"]);
   });
 
+  it("reaches a collection's members by the collection's own name, after any direct match", () => {
+    expect(names("bioskills")).toEqual(["bio-metabarcoding-amplicon", "bio-clinical-bayesian-trials"]);
+    expect(names("Bio Skills")).toEqual(["bio-metabarcoding-amplicon", "bio-clinical-bayesian-trials"]);
+    expect(names("bio_skill")).toEqual(["bio-metabarcoding-amplicon", "bio-clinical-bayesian-trials"]);
+    // A name match still comes first; two letters name no collection.
+    expect(names("bio")[0]).toBe("bio-metabarcoding-amplicon");
+    expect(names("bi")).not.toContain("literature-review");
+  });
+
   it("returns every skill for an empty query and nothing for a miss", () => {
     expect(names("")).toHaveLength(CATALOG.length);
     expect(names("")[0]).toBe("is-qualitative-analysis");
