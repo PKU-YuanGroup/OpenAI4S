@@ -284,14 +284,20 @@ export function bindTurnProgress(onUsageClick?: () => void): void {
 let lastTurnTotal = -1;
 let usageRefresh: ReturnType<typeof setTimeout> | null = null;
 
-/** A model call landed in the timeline: the session's totals moved too, so they are re-read soon. */
+/**
+ * A model call landed in the timeline: the session's totals moved too, so
+ * they are re-read soon. Only while a turn runs -- that is when model calls
+ * land. An idle timeline change (the session opened, the timeline searched,
+ * folded or paged) costs nothing: the chip is already never below the turn,
+ * and the turn's end re-reads the totals anyway.
+ */
 function followTimeline(): void {
   paintUsageTitle();
   const turn = latestTurnUsage(actionTimeline.value, currentId.value);
   const total = turn ? turn.total : 0;
   if (total === lastTurnTotal) return;
   lastTurnTotal = total;
-  if (usageRefresh) return;
+  if (usageRefresh || !running.value) return;
   usageRefresh = setTimeout(() => {
     usageRefresh = null;
     void refreshSessionUsage();

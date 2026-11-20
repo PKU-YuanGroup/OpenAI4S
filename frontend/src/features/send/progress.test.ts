@@ -10,6 +10,7 @@ import { running } from "../../stores/stream";
 import { S } from "../timeline/s";
 import { actionTimeline } from "../../stores/timeline";
 import {
+  bindTurnProgress,
   formatElapsed,
   formatTokens,
   paintTurnClock,
@@ -216,5 +217,35 @@ describe("turn progress", () => {
     running.value = false;
     paintUsageTitle();
     expect(usage.classList.contains("heavy")).toBe(false);
+  });
+
+  it("re-reads the totals for a timeline change only while a turn runs (M-18)", async () => {
+    // An idle timeline change -- the session opened, the timeline searched,
+    // folded or paged -- is not a model call: the browser gate holds those
+    // local interactions to zero requests.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: "f-r", input_tokens: 10, output_tokens: 1 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    currentId.value = "f-r";
+    bindTurnProgress();
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+    const call = (input: number) => ({ turn_id: "turn-1", kind: "code", usage: { input_tokens: input, output_tokens: 1 } });
+    const user = { turn_id: "turn-1", kind: "user" };
+    actionTimeline.value = { root_frame_id: "f-r", has_earlier: false, groups: [user, call(500)] };
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).not.toHaveBeenCalled();
+    running.value = true;
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+    actionTimeline.value = { root_frame_id: "f-r", has_earlier: false, groups: [user, call(500), call(900)] };
+    await vi.advanceTimersByTimeAsync(600);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    running.value = false;
+    vi.useRealTimers();
   });
 });
