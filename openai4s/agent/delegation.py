@@ -2881,7 +2881,9 @@ def _task_headline(spec: Mapping[str, Any], limit: int = 120) -> str:
     request = spec.get("request")
     if isinstance(request, dict):
         request = request.get("task") or request.get("prompt")
-    text = " ".join(str(spec.get("task") or request or "").split())
+    # The request is what was asked; a named specialist's `task` is its
+    # preamble ("You are acting as the specialist ...").
+    text = " ".join(str(request or spec.get("task") or "").split())
     if not text:
         return ""
     end = re.search(r"[.!?。！？](?:\s|$)", text)

@@ -559,6 +559,8 @@ def test_a_child_frame_is_labelled_with_the_first_sentence_of_its_task(monkeypat
     result = runner(
         {
             "name": "general",
+            # A named specialist's preamble is not what the user asked.
+            "task": "You are acting as the specialist **general**.",
             "request": "Compute the average molecular weight of the peptide "
             "ACDEFGHIK. Use plain Python if you can.",
         }
