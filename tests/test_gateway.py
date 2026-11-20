@@ -8224,3 +8224,93 @@ def test_a_pin_only_message_keeps_the_users_comments_as_its_text():
         [{"number": 1, "body": "标题改大一点"}, {"number": 2, "body": " "}, None]
     )
     assert text == "[1] 标题改大一点"
+
+
+# --------------------------------------------------------------------------
+# SCI-03: the example's cells are the conversation's, not hidden REPL cells
+# --------------------------------------------------------------------------
+
+
+def test_the_example_seed_runs_its_cells_as_example_cells_and_shows_its_question(
+    tmp_path, monkeypatch
+):
+    """The seed ran its cells as Notebook REPL cells (origin `user`), whose
+    chat events are filtered out and whose execution-log rows the conversation
+    skips, so the example showed a question and a summary and no cells. They
+    now carry their own origin, and the question reaches an open page live."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    origins: list[str] = []
+    hub = _Hub()
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, hub)
+
+    def _fake_run_repl(self, root_frame_id, project_id, code, *args, **kwargs):
+        origins.append(kwargs.get("origin", "user"))
+        return {"status": "completed", "cell": {"error": None}}
+
+    monkeypatch.setattr(gateway_mod.SessionRunner, "run_repl", _fake_run_repl)
+    try:
+        gateway_mod._seed_demo_session(cfg, runner)
+    finally:
+        runner.close()
+    assert origins == ["example"] * 6
+    fid = _example_frame(get_store(cfg.db_path))["frame_id"]
+    asked = [
+        event
+        for event in hub.events
+        if event.get("type") == "user_message" and event.get("frame_id") == fid
+    ]
+    assert len(asked) == 1
+    stored = get_store(cfg.db_path).list_messages(fid)[0]
+    assert stored["role"] == "user"
+    assert asked[0]["content"] == stored["content"]
+    # The stored row's id, so a page that then reads the history keeps one bubble.
+    assert str(asked[0]["message_id"]).startswith("m-")
+
+
+def test_an_example_cell_reaches_the_conversation_without_the_agent_screener(
+    tmp_path, monkeypatch
+):
+    """Through the real runner and kernel: an `example` cell streams its card
+    to the conversation, is logged with its own origin (which the
+    conversation shows on reload), and is never screened as an agent cell
+    (that would be a model call per example cell). A Notebook REPL cell
+    still stays out of the conversation."""
+    screened: list[str] = []
+    real_refusal = gateway_mod.SessionRunner._safety_refusal
+
+    def _spy(self, st, code, origin):
+        screened.append(origin)
+        return real_refusal(self, st, code, origin)
+
+    monkeypatch.setattr(gateway_mod.SessionRunner, "_safety_refusal", _spy)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub)
+    fid = runner.store.new_frame(kind="turn", project_id="default", status="done")
+    try:
+        outcome = runner.run_repl(
+            fid, "default", "print('hydropathy ready')", origin="example"
+        )
+        assert outcome["cell"]["status"] == "ok"
+        tool_chunks = [
+            e
+            for e in hub.events
+            if e.get("type") == "text_chunk" and e.get("block_type") == "tool"
+        ]
+        assert any("hydropathy ready" in str(e.get("chunk")) for e in tool_chunks)
+        # The seed ends its one turn itself; a cell does not.
+        assert not [e for e in hub.events if e.get("type") == "frame_update"]
+        assert [cell["origin"] for cell in runner.store.list_cells(fid)] == ["example"]
+        assert screened == ["example"]
+
+        hub.events.clear()
+        runner.run_repl(fid, "default", "print('typed by hand')")
+        assert not [e for e in hub.events if e.get("type") == "text_chunk"]
+        assert [cell["origin"] for cell in runner.store.list_cells(fid)] == [
+            "example",
+            "user",
+        ]
+        with pytest.raises(ValueError):
+            runner.run_repl(fid, "default", "print(1)", origin="agent")
+    finally:
+        runner.close()

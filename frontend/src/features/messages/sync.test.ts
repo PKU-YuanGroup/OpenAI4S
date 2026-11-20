@@ -1109,6 +1109,22 @@ describe("a turn's code cells, live and reopened", () => {
     expect(turnCards()).toEqual(["activity.ok :: Analysis · cell 31:05"]);
   });
 
+  it("shows the example session's cells as cards on reopen, as it streamed them (SCI-03)", async () => {
+    await paintHistory(interleaveHistory(
+      [{ role: "user", content: "Analyse the protein family", message_id: "m-1", created_at: at(0) }],
+      [],
+      [],
+      [
+        {
+          producing_cell_id: "c-e1", cell_index: 1, origin: "example", title: "Fetch the family records",
+          source: "# Fetch the family records\nprint('ok')", stdout: "ok\n", status: "ok",
+          started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 400,
+        },
+      ],
+    ));
+    expect(turnCards()).toEqual(["activity.ok :: Fetch the family records"]);
+  });
+
   it("streams a reopened running turn's replay into the cards the reload drew", async () => {
     await paintHistory(
       interleaveHistory(

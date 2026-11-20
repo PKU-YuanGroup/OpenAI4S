@@ -13129,7 +13129,7 @@ class SessionRunner:
     def _record_cell_with_cursor_checkpoint(self, **record: Any) -> str:
         cell_id = self.store.log_cell(**record)
         root_frame_id = record.get("root_frame_id")
-        if root_frame_id and record.get("origin") in {"agent", "user"}:
+        if root_frame_id and record.get("origin") in {"agent", "user", "example"}:
             # Team-mode metering (M2-5): the kernel's getrusage delta for a
             # live cell, attributed to the session owner. Origin-filtered
             # here, so a session-package import replay is never billed. With
@@ -13955,8 +13955,18 @@ class SessionRunner:
         code: str,
         language: str = "python",
         execution_id: str | None = None,
+        origin: str = "user",
     ) -> dict:
-        """Execute code directly in the session kernel (notebook REPL, no LLM)."""
+        """Execute code directly in the session kernel (notebook REPL, no LLM).
+
+        ``origin="example"`` is the example session's seed (SCI-03): the same
+        direct execution, never screened as an agent cell, but its cards and
+        steps reach the conversation, and the seed ends the session's one
+        turn itself, so no per-cell terminal event is sent.
+        """
+        if origin not in {"user", "example"}:
+            raise ValueError("origin must be 'user' or 'example'")
+        example = origin == "example"
         st = self._state(root_frame_id, project_id)
         emit = self.hub.emitter(root_frame_id)
         execution_id = str(execution_id or f"repl-{uuid.uuid4().hex}")
@@ -13988,8 +13998,8 @@ class SessionRunner:
             info = self._execute_and_log(
                 st,
                 code,
-                "user",
-                emit_notebook,
+                origin,
+                emit if example else emit_notebook,
                 stream=True,
                 language=language,
             )
@@ -14015,20 +14025,17 @@ class SessionRunner:
             # An interrupted cell is not a success, whether the stop came
             # through the coordinator or as a kernel interrupt; the Notebook
             # already said "interrupted" for the same cell.
-            if execution.cancellation.is_set() or r.get("interrupted"):
+            # (An example cell sends none: the seed ends its one turn.)
+            if not example:
                 emit(
                     {
                         "type": "frame_update",
                         "frame_id": root_frame_id,
-                        "status": "cancelled",
-                    }
-                )
-            else:
-                emit(
-                    {
-                        "type": "frame_update",
-                        "frame_id": root_frame_id,
-                        "status": "success",
+                        "status": (
+                            "cancelled"
+                            if execution.cancellation.is_set() or r.get("interrupted")
+                            else "success"
+                        ),
                     }
                 )
             return {
@@ -23341,6 +23348,17 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
         frame_id=fid,
         content=example_session.copy(language, "prompt"),
     )
+    # An open page shows the question live, as it does a turn's (SCI-03).
+    runner.hub.emitter(fid)(
+        {
+            "type": "user_message",
+            "frame_id": fid,
+            "message_id": demo_user_message.get("message_id"),
+            "role": "user",
+            "content": example_session.copy(language, "prompt"),
+            "created_at": _iso(demo_user_message.get("created_at")),
+        }
+    )
     runner._capture_cursor_checkpoint_best_effort(  # noqa: SLF001
         fid,
         source_kind="message",
@@ -23362,7 +23380,9 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
     for index, (code, _material) in enumerate(demo_plan, start=1):
         label = f"cell {index}/{len(demo_plan)}"
         try:
-            outcome = runner.run_repl(fid, "proj_example", code)
+            # Their own origin: shown in the conversation as cell cards, live
+            # and on reload, and not screened as the agent's (SCI-03).
+            outcome = runner.run_repl(fid, "proj_example", code, origin="example")
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             cell_failures.append(f"{label}: {type(exc).__name__}: {exc}")
