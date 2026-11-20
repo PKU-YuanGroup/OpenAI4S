@@ -14,6 +14,7 @@ from openai4s.agent.actions import (
 )
 from openai4s.artifact_paths import artifact_role
 from openai4s.server.urls import completion_artifact_url
+from openai4s.storage.artifacts import ARTIFACT_KINDS
 
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _SUMMARY_KEYS = (
@@ -353,11 +354,28 @@ def completion_message(
     # ART-8: scripts, logs and copies of inputs are how the result was made,
     # not the result; listing them with the figures and tables buried the
     # deliverables. They stay linked, on one line after the deliverables.
-    deliverables = [line for kind, line in artifact_lines if kind == "deliverable"]
+    deliverables = [item for item in artifact_lines if item[0] != "process"]
     process = [line for kind, line in artifact_lines if kind == "process"]
     if deliverables:
         heading = "产物：" if zh else "Artifacts:"
-        parts.append(heading + "\n" + "\n".join(f"- {link}" for link in deliverables))
+        # ART-1: the list was flat and newest-first, so the report sat among
+        # twenty figures. Grouped once there is more than one kind to tell apart.
+        groups = [
+            (
+                zh_label if zh else en_label,
+                [ln for kind, ln in deliverables if kind == key],
+            )
+            for key, en_label, zh_label in _DELIVERABLE_GROUPS
+        ]
+        groups = [(label, links) for label, links in groups if links]
+        if len(groups) > 1:
+            body = "\n".join(
+                f"- {label}\n" + "\n".join(f"  - {link}" for link in links)
+                for label, links in groups
+            )
+        else:
+            body = "\n".join(f"- {link}" for _kind, link in deliverables)
+        parts.append(heading + "\n" + body)
     if process:
         heading = (
             f"过程文件（脚本、日志、输入副本，{len(process)} 个）："
@@ -506,10 +524,28 @@ def _summary_already_visible(output: Any, summary: str, previous: str) -> bool:
     return False
 
 
+#: The answer's deliverable groups, in reading order: (kind, English, Chinese).
+_DELIVERABLE_GROUPS = (
+    ("report", "Reports", "报告"),
+    ("image", "Figures", "图"),
+    ("table", "Tables and data", "表与数据"),
+    ("other", "Other", "其他"),
+)
+
+
+def _deliverable_group(name: str) -> str:
+    """The Files panel's own category for this filename (``ARTIFACT_KINDS``)."""
+    suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    for kind, extensions, _content_types in ARTIFACT_KINDS:
+        if suffix in extensions:
+            return kind if kind in {"report", "image", "table"} else "other"
+    return "other"
+
+
 def _artifact_lines(
     artifacts: Iterable[dict], *, trusted_delivery: bool = False
 ) -> list[tuple[str, str]]:
-    """``(kind, markdown link)`` per artifact, deliverables and process files."""
+    """``(kind, markdown link)`` per artifact: ``process`` or a deliverable group."""
     lines: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for artifact in artifacts:
@@ -536,7 +572,8 @@ def _artifact_lines(
             continue
         seen.add(key)
         label = name.replace("[", "\\[").replace("]", "\\]")
-        lines.append((role, f"[{label}]({target})"))
+        kind = role if role == "process" else _deliverable_group(name)
+        lines.append((kind, f"[{label}]({target})"))
     return lines
 
 
