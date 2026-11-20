@@ -707,9 +707,9 @@ def test_a_model_that_ignores_the_note_is_still_stopped_by_the_circuit():
         )
 
     engine, model, _, _, _, _, _ = _engine(
-        [copy.deepcopy(reply) for _ in range(4)],
+        [copy.deepcopy(reply) for _ in range(8)],
         executor=FakeExecutor(handler=written),
-        max_turns=4,
+        max_turns=8,
     )
 
     result = engine.run([{"role": "user", "content": "probe the environment"}])
@@ -718,7 +718,11 @@ def test_a_model_that_ignores_the_note_is_still_stopped_by_the_circuit():
         "no_progress",
         "same_action",
     )
-    assert len(model.calls) == 3
+    # Three identical calls earn the circuit's reminder, two more its stop.
+    assert len(model.calls) == 5
+    third = model.calls[3][-1]["content"]
+    assert "It was NOT executed" in third
+    assert "identical call number 3 in a row to `write_file`" in third
 
 
 # The 2026-09-24 Web repro: `output` where the schema wants `summary`.

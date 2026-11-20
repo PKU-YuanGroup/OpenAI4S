@@ -22,6 +22,10 @@ def recovery_message(
     if reason == "no_progress":
         cause = {
             "same_action": "identical tool calls returned unchanged results",
+            "same_target": (
+                "the same file was read or rewritten repeatedly, changing only "
+                "the window or the contents"
+            ),
             "similar_tool_error": "tool calls repeatedly produced the same error",
             "consecutive_malformed": "consecutive tool calls had invalid arguments",
             "long_text_repeat": "the same analysis was repeated without an action",

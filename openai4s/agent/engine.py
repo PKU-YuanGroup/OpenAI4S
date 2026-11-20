@@ -274,8 +274,13 @@ class AgentEngine:
         circuit.observe_execution(action, outcome)
         outcome = self._note_unexecuted_cell(
             outcome,
-            unexecuted_cell_note(reply.content, action)
-            or announced_cell_note(reply.content, action)
+            (
+                unexecuted_cell_note(reply.content, action)
+                or announced_cell_note(reply.content, action)
+            )
+            # The circuit's first stage: what repeated, before it stops the
+            # turn for it.
+            + circuit.reminder_note()
             # The specific notes say the same thing with a reason attached,
             # so the streak's turn is spent on whichever of them applies.
             or tool_only_streak_note(action, circuit.tool_only_streak),
