@@ -280,3 +280,35 @@ export function shareCopy(
   };
   return copy[key];
 }
+
+/**
+ * M-48: the project's activity record. It was called a "research map" and
+ * opened on raw tabs named Timeline / Lineage in every language, while it is
+ * a list, not a graph.
+ */
+export const projectActivityCopy = copyLookup({
+  en: {
+    menu: "Project activity",
+    title: "{0} · Project activity",
+    activity: "Activity",
+    files: "Files",
+    activitySummary: "{0} sessions · {1} actions",
+    filesSummary: "{0} files · {1} versions · {2} links",
+    versions: "{0} versions",
+    latest: "latest",
+    noFiles: "No files in this project yet.",
+    links: "Where each file came from ({0})",
+  },
+  zh: {
+    menu: "项目活动记录",
+    title: "{0} · 项目活动记录",
+    activity: "活动",
+    files: "文件",
+    activitySummary: "{0} 个会话 · {1} 个操作",
+    filesSummary: "{0} 个文件 · {1} 个版本 · {2} 条关联",
+    versions: "{0} 个版本",
+    latest: "最新",
+    noFiles: "这个项目还没有文件。",
+    links: "文件的来源（{0}）",
+  },
+});

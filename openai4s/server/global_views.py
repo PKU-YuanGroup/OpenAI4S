@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from openai4s.artifact_paths import artifact_role
 from openai4s.server.action_timeline import ActionTimelineService
 
 
@@ -92,7 +93,13 @@ class GlobalResearchViewService:
     ) -> dict[str, Any]:
         project_id = self._project(project_id)
         limit = self._limit(limit, maximum=5000)
-        artifacts = self.store.list_artifacts({"project_id": project_id})
+        # M-48: the platform's own bookkeeping (context spill files) is never
+        # listed or counted -- `artifact_role` decides that in one place.
+        artifacts = [
+            a
+            for a in self.store.list_artifacts({"project_id": project_id})
+            if artifact_role(a.get("filename")) != "internal"
+        ]
         if visible_to_user_id is not None:
             # An artifact is as visible as the session that produced it; an
             # artifact with no session (or a session with no ownership row)

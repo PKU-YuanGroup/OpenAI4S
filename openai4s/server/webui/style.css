@@ -1580,9 +1580,9 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .context-history>summary{cursor:pointer;color:var(--text-300);font-size:11px}
 .context-history-row{display:flex;align-items:center;gap:5px;padding:5px 0;border-top:var(--hair);font-size:10px}
 .context-history-id{flex:1;min-width:0;color:var(--text-200);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.project-research-tabs{display:flex;gap:4px;margin-bottom:10px}
+.project-research-tabs{display:flex;gap:4px;margin-bottom:10px;padding:14px 20px 0}
 .project-research-tabs .seg-btn.active{background:var(--text-100);color:var(--surface-0)}
-.project-research-content{display:flex;flex-direction:column;gap:8px}
+.project-research-content{display:flex;flex-direction:column;gap:8px;padding:0 20px 20px}
 .project-research-summary{color:var(--text-300);font-size:12px}
 .project-timeline-entry{display:flex;flex-direction:column;gap:3px}
 .project-session-label{color:var(--text-400);font:10px var(--mono)}
