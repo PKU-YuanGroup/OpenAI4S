@@ -149,8 +149,28 @@ def cmd_down(args: argparse.Namespace) -> int:
 
 
 def cmd_reset(args: argparse.Namespace) -> int:
-    from openai4s.mhs_lab import supervisor
+    from openai4s.mhs_lab import lab_dir, supervisor
 
+    if not getattr(args, "yes", False):
+        # Evidence is the lab's record of what was done; erasing it cannot be
+        # undone, and this used to happen without a question.
+        erased = (
+            f"stops the lab and erases its evidence, E-stop latches, LIMS and "
+            f"command ledgers in {lab_dir()} (installed devices are kept). This "
+            "cannot be undone."
+        )
+        if args.json or not _confirm(f"Reset the lab? This {erased}"):
+            refusal = (
+                f"nothing was reset. `openai4s lab reset` {erased} "
+                "Pass --yes to reset."
+            )
+            if args.json:
+                _emit(
+                    {"reset": False, "code": "confirmation_required", "error": refusal}
+                )
+            else:
+                print(f"openai4s lab reset: {refusal}", file=sys.stderr)
+            return 1
     result = supervisor.reset()
     (
         _emit(result)
@@ -393,10 +413,17 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     command("down", cmd_down, "stop the lab's endpoints", ("stop",))
-    command(
+    p = command(
         "reset",
         cmd_reset,
         "stop and erase evidence, latches and LIMS (keeps installed devices)",
+    )
+    p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="erase without asking (otherwise a terminal is asked first and a "
+        "script is refused)",
     )
     command(
         "setup",

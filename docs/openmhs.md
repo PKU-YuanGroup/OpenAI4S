@@ -199,7 +199,8 @@ results. Installing or starting the lab does not add global allow rules. Previou
 preview-generated grants are removed on start, and commands use the normal host
 permission policy. Child processes receive runtime paths and the lab directory,
 not inherited provider keys. `openai4s lab reset` erases the lab's evidence,
-latches and LIMS; `openai4s lab down` stops its endpoints. After a reboot, an
+latches and LIMS, which cannot be undone, so it asks first on a terminal and a
+script must pass `--yes`; `openai4s lab down` stops its endpoints. After a reboot, an
 operator opening the panel can restore a lab that was left running; a team
 member's status poll cannot restart it.
 

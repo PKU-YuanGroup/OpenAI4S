@@ -275,3 +275,68 @@ def test_a_json_query_never_prompts(no_openmhs, monkeypatch, capsys):
 
     assert status == 2
     assert not stdin.asked and no_openmhs == []
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-32: `lab reset` asks before it erases the lab's evidence
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def reset_calls(tmp_path, monkeypatch):
+    from openai4s.mhs_lab import supervisor
+
+    monkeypatch.setenv("OPENAI4S_MHS_LAB_DIR", str(tmp_path / "lab"))
+    calls: list = []
+    monkeypatch.setattr(
+        supervisor, "reset", lambda: calls.append(True) or {"reset": True}
+    )
+    return calls
+
+
+def test_lab_reset_in_a_script_erases_nothing_without_yes(
+    reset_calls, tmp_path, monkeypatch, capsys
+):
+    """`lab reset </dev/null` erased evidence, latches and LIMS at once."""
+    monkeypatch.setattr("sys.stdin", _Stdin(tty=False))
+
+    status = _lab(["reset"])
+
+    err = " ".join(capsys.readouterr().err.split())
+    assert status == 1 and reset_calls == []
+    assert "nothing was reset" in err
+    assert "evidence, E-stop latches, LIMS" in err
+    assert str(tmp_path / "lab") in err and "--yes" in err
+
+
+def test_lab_reset_on_a_terminal_asks_and_respects_no(reset_calls, monkeypatch, capsys):
+    stdin = _Stdin(tty=True, answer="\n")
+    monkeypatch.setattr("sys.stdin", stdin)
+
+    assert _lab(["reset"]) == 1
+    assert stdin.asked and reset_calls == []
+    assert "Reset the lab?" in capsys.readouterr().err
+
+    monkeypatch.setattr("sys.stdin", _Stdin(tty=True, answer="yes\n"))
+    assert _lab(["reset"]) == 0
+    assert reset_calls == [True]
+
+
+def test_lab_reset_with_yes_does_not_ask(reset_calls, monkeypatch):
+    stdin = _Stdin(tty=True, answer="n\n")
+    monkeypatch.setattr("sys.stdin", stdin)
+
+    assert _lab(["reset", "--yes"]) == 0
+    assert reset_calls == [True] and not stdin.asked
+
+
+def test_lab_reset_json_without_yes_is_a_refusal_object(
+    reset_calls, monkeypatch, capsys
+):
+    monkeypatch.setattr("sys.stdin", _Stdin(tty=True, answer="y\n"))
+
+    assert _lab(["reset", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reset"] is False
+    assert payload["code"] == "confirmation_required"
+    assert reset_calls == []
