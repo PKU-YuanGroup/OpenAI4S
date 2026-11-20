@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { t } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
@@ -201,7 +201,7 @@ export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catal
             const tools = asList(r.tools) as Array<{ name?: string }>;
             setNote(
               r.ok
-                ? { text: t("toast.connectors.probeOk", tools.map((x) => x.name).join("、")) }
+                ? { text: t("toast.connectors.probeOk", tools.map((x) => x.name).join(LANG === "en" ? ", " : "、")) }
                 : { text: t("toast.failed", asString(r.error)), err: true },
             );
           } catch (e) {
