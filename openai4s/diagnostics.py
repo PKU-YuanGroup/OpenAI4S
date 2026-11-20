@@ -110,6 +110,8 @@ _ARCHIVE_SURFACES = frozenset(
         "kernel:restart_after_install",
         "web",
         "web:turn",
+        # `openai4s run`'s crash record (CLI-33).
+        "cli:run",
         "unknown",
     }
 )

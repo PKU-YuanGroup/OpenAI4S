@@ -1275,3 +1275,13 @@ def test_the_turn_section_still_carries_real_codes(cfg, tmp_path, monkeypatch):
         "reason": "no_progress",
         "progress_reason": "same_action",
     }
+
+
+def test_a_cli_run_crash_record_keeps_its_surface_in_the_archive():
+    """CLI-33: `openai4s run` logs its crash with surface `cli:run`; the
+    bundle showed it as `<omitted:…>`, so the record could not be told from
+    any other."""
+    from openai4s import diagnostics
+
+    out = diagnostics._archive_structured({"surface": "cli:run", "level": "error"})
+    assert out["surface"] == "cli:run"
