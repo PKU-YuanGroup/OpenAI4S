@@ -75,6 +75,7 @@ describe("follow-scroll", () => {
     expect(pill.hidden).toBe(true);
 
     // Scrolled up past the pad: not following, and the pill appears.
+    host.listeners.wheel!();
     host.scrollTop = 100;
     host.listeners.scroll!();
     flushScrollNow();
@@ -88,6 +89,7 @@ describe("follow-scroll", () => {
   });
 
   it("down() follows only while following; down(true) and the pill always jump", () => {
+    host.listeners.wheel!();
     host.scrollTop = 100;
     host.listeners.scroll!();
     flushScrollNow();
@@ -107,6 +109,7 @@ describe("follow-scroll", () => {
   });
 
   it("a measure and a down() in one frame: the reader's position wins", () => {
+    host.listeners.wheel!();
     host.scrollTop = 100;
     host.listeners.scroll!();
     down();
@@ -134,6 +137,7 @@ describe("following through content that grows by itself", () => {
     expect(host.scrollTop).toBe(1400);
 
     // The reader moves up: following stops, and new content does not pull.
+    host.listeners.wheel!();
     host.scrollTop = 300;
     host.listeners.scroll!();
     flushScrollNow();
@@ -173,6 +177,7 @@ describe("following through content that grows by itself", () => {
     expect(grown.scrollTop).toBe(1600);
 
     // Scrolled up to read: growth no longer moves the view.
+    grown.listeners.touchmove!();
     grown.scrollTop = 300;
     grown.listeners.scroll!();
     flushScrollNow();
@@ -180,6 +185,72 @@ describe("following through content that grows by itself", () => {
     onResize!();
     flushScrollNow();
     expect(grown.scrollTop).toBe(300);
+  });
+});
+
+describe("only the reader's own input is a move up (CHAT-2)", () => {
+  it("the browser lowering scrollTop while the turn grows below keeps following", () => {
+    // A reopened running session has jumped to its end.
+    down(true);
+    flushScrollNow();
+    expect(host.scrollTop).toBe(1000);
+    // Next frame: a card above the view shrank, so scroll anchoring lowered
+    // scrollTop by 56px; the turn grew 1200px below; the row's resize asked
+    // to follow. Measured in the browser: this dropped follow for good.
+    host.scrollTop = 944;
+    host.scrollHeight = 2200;
+    host.listeners.scroll!();
+    down();
+    flushScrollNow();
+    expect(_messagesFollow.value).toBe(true);
+    expect(host.scrollTop).toBe(2200);
+    expect(pill.hidden).toBe(true);
+  });
+
+  it("a wheel, a touch, a scrolling key or a held scrollbar is the reader; a second later it is not", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const keydown: Array<(event: { key: string }) => void> = [];
+    const pointerup: Array<() => void> = [];
+    unbindMessageScroll();
+    vi.stubGlobal("document", {
+      querySelector: (sel: string) => (sel === "#messages" ? host : sel === "#jump-pill" ? pill : null),
+      addEventListener: (type: string, fn: never) => {
+        if (type === "keydown") keydown.push(fn);
+        if (type === "pointerup") pointerup.push(fn);
+      },
+      removeEventListener: () => undefined,
+    });
+    bindMessageScroll(host as unknown as HTMLElement);
+    const movedUpBy = (by: number): boolean => {
+      // At the bottom of 2000px in a 500px view, then `by` higher.
+      host.scrollHeight = 2000;
+      host.scrollTop = 1500;
+      _messagesFollow.value = true;
+      updateJumpPill();
+      flushScrollNow();
+      host.scrollTop = 1500 - by;
+      host.listeners.scroll!();
+      flushScrollNow();
+      return (_messagesFollow.value as boolean) === false;
+    };
+
+    keydown.forEach((fn) => fn({ key: "PageUp" }));
+    expect(movedUpBy(300)).toBe(true);
+    // Typing is not scrolling.
+    now.mockReturnValue(20_000);
+    keydown.forEach((fn) => fn({ key: "a" }));
+    expect(movedUpBy(300)).toBe(false);
+
+    // Dragging the scrollbar: held for longer than the input window.
+    host.listeners.pointerdown!();
+    now.mockReturnValue(30_000);
+    expect(movedUpBy(300)).toBe(true);
+    pointerup.forEach((fn) => fn());
+    now.mockReturnValue(30_500);
+    expect(movedUpBy(300)).toBe(true);
+    now.mockReturnValue(31_500);
+    expect(movedUpBy(300)).toBe(false);
+    now.mockRestore();
   });
 });
 
