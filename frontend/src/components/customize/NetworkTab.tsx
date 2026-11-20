@@ -10,7 +10,8 @@ import {
 import { useAlive } from "./use-timer-lease";
 import { useOptimisticToggle, useTabRead } from "./hooks";
 import { markCustomizeLoaded } from "../../features/customize/load";
-import { Hdr, Pill, Toggle } from "./ui";
+import { roleT, settingsReadOnly } from "../../features/customize/roles";
+import { Hdr, Note, Pill, Toggle } from "./ui";
 import { DoubaoSearchCard } from "./vendors/doubao";
 import { OllamaWebCard } from "./vendors/ollama";
 import { SearchEngines } from "./SearchEngines";
@@ -138,6 +139,9 @@ export function NetworkTab() {
   );
 
   if (err) return <div>{err}</div>;
+  // Team member (TEAM-23): every write here is the admin's (403 `admin_only`);
+  // the page shows the state, without the key forms.
+  const readOnly = settingsReadOnly();
 
   return (
     <div>
@@ -145,8 +149,16 @@ export function NetworkTab() {
           put code in cells under a switch that never reached it: the switch
           governs the app's own requests, the kernel sandbox governs code. */}
       <Hdr title={t("cust.network.title")} sub={nt("network.desc")} />
-      <OllamaWebCard config={ollama.config} configError={ollama.error} />
-      <DoubaoSearchCard config={doubao.config} configError={doubao.error} />
+      {readOnly ? (
+        <div data-admin-only="">
+          <Note>{roleT("role.network.member")}</Note>
+        </div>
+      ) : (
+        <>
+          <OllamaWebCard config={ollama.config} configError={ollama.error} />
+          <DoubaoSearchCard config={doubao.config} configError={doubao.error} />
+        </>
+      )}
       <div class="cust-row">
         <div class="info">
           <div class="nm">{nt("network.allowName")}</div>
@@ -154,9 +166,16 @@ export function NetworkTab() {
             {network.on ? nt("network.enabledDesc") : nt("network.disabledDesc")}
           </div>
         </div>
-        <Toggle on={network.on} disabled={!network.ready} onClick={network.toggle} />
+        <Toggle
+          on={network.on}
+          disabled={!network.ready || readOnly}
+          title={readOnly ? roleT("role.adminOnly") : undefined}
+          onClick={() => {
+            if (!readOnly) network.toggle();
+          }}
+        />
       </div>
-      <SearchEngines raw={search} onSaved={setSearch} />
+      <SearchEngines raw={search} onSaved={setSearch} readOnly={readOnly} />
       {allow.groups.length ? (
         <div class="search-engines-head allowlist-head" data-egress-mode={allow.mode}>
           <div class="nm">{nt("allowlist.title")}</div>
@@ -188,12 +207,12 @@ export function NetworkTab() {
           </div>
         );
       })}
-      <TelemetryToggle alive={alive} />
+      <TelemetryToggle alive={alive} readOnly={readOnly} />
     </div>
   );
 }
 
-function TelemetryToggle({ alive }: { alive: () => boolean }) {
+function TelemetryToggle({ alive, readOnly }: { alive: () => boolean; readOnly: boolean }) {
   const [consent, setConsent] = useState<{
     enabled: boolean;
     env_locked: boolean;
@@ -216,14 +235,15 @@ function TelemetryToggle({ alive }: { alive: () => boolean }) {
 
   if (!consent) return null;
 
-  if (consent.env_locked) {
+  if (consent.env_locked || readOnly) {
+    const why = consent.env_locked ? t("cust.telemetry.envlock") : roleT("role.adminOnly");
     return (
       <div class="cust-row">
         <div class="info">
           <div class="nm">{t("cust.telemetry.name")}</div>
-          <div class="ds">{t("cust.telemetry.envlock")}</div>
+          <div class="ds">{why}</div>
         </div>
-        <Toggle on={consent.enabled} disabled title={t("cust.telemetry.envlock")} onClick={() => {}} />
+        <Toggle on={consent.enabled} disabled title={why} onClick={() => {}} />
       </div>
     );
   }

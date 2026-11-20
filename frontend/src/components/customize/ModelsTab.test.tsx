@@ -40,6 +40,7 @@ vi.mock("../../features/customize/actions", async (importOriginal) => ({
   custTab: () => undefined,
 }));
 
+import { teamUser } from "../../features/chrome/team-identity";
 import { CapabilityBadges } from "../onboarding/CapabilityBadges";
 import { LocalEndpointRow, ModelsTab, ProfileRow, profileKeyLabel } from "./ModelsTab";
 
@@ -216,6 +217,73 @@ describe("ModelsTab active configuration", () => {
     walk(tree);
     expect(components.indexOf("ProfileRow")).toBeGreaterThan(-1);
     expect(components.indexOf("ProfileRow")).toBeLessThan(components.indexOf("VolcenginePanel"));
+  });
+});
+
+// TEAM-23: a member saw the admin's whole "Add model / API" form, key field
+// included, and Add answered 403 with nothing on screen.
+describe("ModelsTab for a team member", () => {
+  afterEach(() => {
+    teamUser.value = null;
+  });
+
+  const routes = {
+    "/model-profiles": () =>
+      response({
+        profiles: [{ id: "mp-1", name: "Lab model", provider: "ark", model: "m-1", base_url: "https://admin.example/v1", has_api_key: true }],
+        active_id: "mp-1",
+        protocols: ["ark"],
+      }),
+    "/config/llm": () => response(LIVE),
+  };
+  const classes = (tree: unknown): string[] => {
+    const out: string[] = [];
+    const walk = (current: unknown): void => {
+      if (Array.isArray(current)) return current.forEach(walk);
+      if (!current || typeof current !== "object") return;
+      const node = current as Node;
+      if (typeof node.props?.class === "string") out.push(node.props.class);
+      if (node.type === "input") out.push("input:" + String(node.props?.type || "text"));
+      walk(node.props?.children);
+    };
+    walk(tree);
+    return out;
+  };
+
+  it("lists the models read-only and says where a member's own key goes", async () => {
+    teamUser.value = { username: "bob", role: "member" };
+    const tree = await open(routes);
+    expect(tagged(tree, "data-admin-only")).toHaveLength(1);
+    expect(content(tree)).toMatch(/administrator/);
+    expect(content(tree)).toContain("My model keys");
+    expect(classes(tree)).not.toContain("skill-form");
+    expect(classes(tree)).not.toContain("input:password");
+    const rows = tagged(tree, "activeId");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.props!.readOnly).toBe(true);
+  });
+
+  it("keeps the form for an admin and in single-user mode", async () => {
+    teamUser.value = { username: "alice", role: "admin" };
+    let tree = await open(routes);
+    expect(tagged(tree, "data-admin-only")).toHaveLength(0);
+    expect(classes(tree)).toContain("skill-form");
+    teamUser.value = null;
+    hookState.length = 0;
+    tree = await open(routes);
+    expect(classes(tree)).toContain("input:password");
+  });
+
+  it("a read-only row offers no write and no endpoint", () => {
+    hookCursor = 0;
+    const p = { id: "mp-1", name: "Lab model", provider: "ark", model: "m-1", base_url: "https://admin.example/v1" };
+    const row = ProfileRow({ p, activeId: "", protocols: [], readOnly: true, onEdit: () => undefined }) as Node;
+    expect(tagged(row, "onClick")).toEqual([]);
+    expect(content(row)).not.toContain("admin.example");
+    hookCursor = 0;
+    const editable = ProfileRow({ p, activeId: "", protocols: [], onEdit: () => undefined }) as Node;
+    expect(tagged(editable, "onClick").length).toBeGreaterThanOrEqual(4);
+    expect(content(editable)).toContain("admin.example");
   });
 });
 

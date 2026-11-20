@@ -16,6 +16,7 @@ import {
 import {
   customizeGeneration,
   customizeLoad,
+  customizeNotice,
   customizeOpen,
   customizeTab,
 } from "../../features/customize/state";
@@ -106,6 +107,36 @@ function LoadStatus({ tab, generation }: { tab: CustTab; generation: number }) {
   );
 }
 
+/**
+ * What the last action in Settings reported (`hint()` → `customizeNotice`).
+ * `hint()` alone writes under the composer, behind this modal, so a refused
+ * save looked like nothing happened (TEAM-23).
+ */
+function Notice() {
+  const notice = customizeNotice.value;
+  if (!notice) return null;
+  return (
+    <div
+      class={"cust-notice" + (notice.error ? " err" : "")}
+      role={notice.error ? "alert" : "status"}
+      data-cust-notice=""
+    >
+      <span>{notice.text}</span>
+      <button
+        type="button"
+        class="icon-ghost"
+        aria-label={t("common.close")}
+        title={t("common.close")}
+        onClick={() => {
+          customizeNotice.value = null;
+        }}
+      >
+        <Icon name="x" size={14} />
+      </button>
+    </div>
+  );
+}
+
 export function Customize() {
   const open = customizeOpen.value;
   const tab = customizeTab.value;
@@ -171,6 +202,7 @@ export function Customize() {
             {open ? <ActiveTab key={gen} /> : null}
           </Content>
         </div>
+        {open ? <Notice /> : null}
         <NestedEditor />
       </div>
     </div>

@@ -60,6 +60,7 @@ vi.mock("../../features/customize/host", async (importOriginal) => ({
 
 vi.mock("../../features/notebook", () => ({ notebookOnTurnDone: mocks.notebookReread }));
 
+import { teamUser } from "../../features/chrome/team-identity";
 import { ConnectorRow } from "./ConnectorsTab";
 import { MemoryTab } from "./MemoryTab";
 import { NetworkTab } from "./NetworkTab";
@@ -221,7 +222,23 @@ describe("Memory switch", () => {
     write.resolve(response({ error: "store is read-only" }, 500));
     await settle();
     expect(firstSwitch(render(MemoryTab)).props!.on).toBe(false);
-    expect(mocks.hint).not.toHaveBeenCalled();
+    // Said, not only flipped back (TEAM-23).
+    expect(mocks.hint).toHaveBeenCalledWith("toast.failed store is read-only", true);
+  });
+
+  it("says who may change it when a team member is refused (TEAM-23)", async () => {
+    routes({
+      "GET /memory/enabled": ok({ enabled: false }),
+      "PUT /memory/enabled": () => Promise.resolve(response({ error: "admin only", code: "admin_only" }, 403)),
+    });
+    render(MemoryTab);
+    await settle();
+    firstSwitch(render(MemoryTab)).props!.onClick!();
+    await settle();
+    expect(firstSwitch(render(MemoryTab)).props!.on).toBe(false);
+    const [message, error] = mocks.hint.mock.calls.at(-1)!;
+    expect(error).toBe(true);
+    expect(message).toMatch(/Only an administrator/);
   });
 });
 
@@ -245,5 +262,36 @@ describe.each([
     await settle();
     // The last read (off) is older than the write it did not see.
     expect(firstSwitch(render(() => row(false))).props!.on).toBe(true);
+  });
+});
+
+// TEAM-23: a member's server-wide switches answered 403 with nothing on screen.
+describe("server-wide switches for a team member", () => {
+  afterEach(() => {
+    teamUser.value = null;
+  });
+
+  it.each([
+    ["App networking", NetworkTab, { "GET /preferences/builtin-allowlist": ok({ enabled: true, groups: [] }) }],
+    ["Memory", MemoryTab, { "GET /memory/enabled": ok({ enabled: true }) }],
+  ] as const)("%s is shown, locked, and never written", async (_name, tab, table) => {
+    teamUser.value = { username: "bob", role: "member" };
+    routes(table);
+    render(tab);
+    await settle();
+    const toggle = firstSwitch(render(tab));
+    expect(toggle.props!.on).toBe(true);
+    expect(toggle.props!.disabled).toBe(true);
+    toggle.props!.onClick!();
+    await settle();
+    expect(writes()).toEqual([]);
+  });
+
+  it("stays usable for an admin", async () => {
+    teamUser.value = { username: "alice", role: "admin" };
+    routes({ "GET /memory/enabled": ok({ enabled: true }) });
+    render(MemoryTab);
+    await settle();
+    expect(firstSwitch(render(MemoryTab)).props!.disabled).toBe(false);
   });
 });

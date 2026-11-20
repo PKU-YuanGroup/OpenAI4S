@@ -4,6 +4,7 @@ import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { asList, asString, customizeProject, hint } from "../../features/customize/host";
 import { MEMORY_BLOCKS, memScopeIds, memScopeLabel } from "../../features/customize/memory";
+import { roleT, settingsReadOnly } from "../../features/customize/roles";
 import { useAlive } from "./use-timer-lease";
 import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Empty, Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
@@ -27,7 +28,10 @@ export function MemoryTab() {
   const [memories, setMemories] = useState<Record<string, unknown>[]>([]);
   const [cats, setCats] = useState<Record<string, unknown>[]>([]);
   const [ctx, setCtx] = useState<Record<string, unknown> | null>(null);
-  const scopes = memScopeIds(customizeProject.value);
+  // Team member (TEAM-23): the switch and the all-projects tier are the
+  // admin's (403 `admin_only`); a member saves memory for a project.
+  const readOnly = settingsReadOnly();
+  const scopes = memScopeIds(customizeProject.value).filter((id) => !readOnly || id !== "global");
   const active = scopes[scopes.length - 1] || "global";
   const [block, setBlock] = useState("user");
   const [scope, setScope] = useState(active);
@@ -79,13 +83,25 @@ export function MemoryTab() {
           <div class="nm">{t("cust.memory.enableName")}</div>
           <div class="ds">
             {memory.on ? t("cust.memory.enabledDesc") : t("cust.memory.disabledDesc")}
+            {readOnly ? " " + roleT("role.memory.toggleMember") : ""}
           </div>
         </div>
-        <Toggle on={memory.on} disabled={!memory.ready} onClick={memory.toggle} />
+        <Toggle
+          on={memory.on}
+          disabled={!memory.ready || readOnly}
+          onClick={() => {
+            if (!readOnly) memory.toggle();
+          }}
+        />
       </div>
       <div class="cust-row">
         <div class="info">
           <div class="nm">{t("cust.memory.addName")}</div>
+          {!scopes.length ? (
+            <div class="ds" data-admin-only="">
+              {roleT("role.memory.scopeMember")}
+            </div>
+          ) : (
           <div class="job-submit">
             <select
               class="cust-input"
@@ -147,6 +163,7 @@ export function MemoryTab() {
               {t("common.save")}
             </button>
           </div>
+          )}
         </div>
       </div>
       {ctx ? (

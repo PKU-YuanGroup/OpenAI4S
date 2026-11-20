@@ -24,10 +24,11 @@ import {
   type LocalDiscovery,
   type ProtocolOption,
 } from "../../features/customize/models";
+import { roleT, settingsReadOnly } from "../../features/customize/roles";
 import { CapabilityBadges } from "../onboarding/CapabilityBadges";
 import { useAlive } from "./use-timer-lease";
 import { useTabRead } from "./hooks";
-import { Empty, Hdr, IconGhost, Pill, Subhead } from "./ui";
+import { Empty, Hdr, IconGhost, Note, Pill, Subhead } from "./ui";
 import { VolcenginePanel } from "./vendors/volcengine";
 
 type Profile = Record<string, unknown>;
@@ -186,12 +187,21 @@ export function ModelsTab() {
     ...data.profiles.filter((p) => asString(p.id) === data.active_id),
     ...data.profiles.filter((p) => asString(p.id) !== data.active_id),
   ];
+  // Team member (TEAM-23): every write here is the admin's (403
+  // `admin_only`), so the tab is the list of models, read-only, and where a
+  // member's own key goes instead of the admin's form.
+  const readOnly = settingsReadOnly();
 
   return (
     <div>
       <Hdr title={t("cust.tab.models")} sub={t("cust.models.subtitle2")} />
+      {readOnly ? (
+        <div data-admin-only="">
+          <Note>{roleT("role.models.member")}</Note>
+        </div>
+      ) : null}
       <Subhead>{t("cust.models.configuredHeading")}</Subhead>
-      {live && !data.active_id ? liveModelRow(live, protocols) : null}
+      {live && !data.active_id ? liveModelRow(live, protocols, !readOnly) : null}
       {!data.profiles.length ? (
         <Empty>{live && !data.active_id ? copy("liveNoProfiles") : t("cust.models.empty2")}</Empty>
       ) : (
@@ -201,6 +211,7 @@ export function ModelsTab() {
             p={p}
             activeId={data.active_id}
             protocols={protocols}
+            readOnly={readOnly}
             onEdit={() => startEdit(p)}
             onDeleted={() => {
               if (editing && editing.id === p.id) resetForm();
@@ -208,6 +219,8 @@ export function ModelsTab() {
           />
         ))
       )}
+      {readOnly ? null : (
+      <>
       <Subhead>{t("cust.volc.title")}</Subhead>
       <VolcenginePanel />
       <Subhead>{t("cust.models.local.title")}</Subhead>
@@ -359,6 +372,8 @@ export function ModelsTab() {
           ) : null}
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -366,8 +381,9 @@ export function ModelsTab() {
 /**
  * The configuration turns run on when no saved profile is active. A plain
  * render helper rather than a component: it holds no state of its own.
+ * `showBase`: false for a team member, who has no use for the admin's endpoint.
  */
-function liveModelRow(live: LiveModel, protocols: ProtocolOption[]) {
+function liveModelRow(live: LiveModel, protocols: ProtocolOption[], showBase = true) {
   const bits: string[] = [];
   if (live.provider) bits.push(protocolLabelOf(protocols, live.provider));
   bits.push(live.model);
@@ -385,7 +401,7 @@ function liveModelRow(live: LiveModel, protocols: ProtocolOption[]) {
           <span>{live.model}</span> <Pill>{t("cust.models.activePill")}</Pill>
         </div>
         <div class="ds">
-          {bits.join(" · ") + (live.baseUrl ? "  ·  " + live.baseUrl : "")}
+          {bits.join(" · ") + (showBase && live.baseUrl ? "  ·  " + live.baseUrl : "")}
         </div>
         <div class="ds">{copy("liveSource")}</div>
       </div>
@@ -473,12 +489,15 @@ export function ProfileRow({
   p,
   activeId,
   protocols,
+  readOnly = false,
   onEdit,
   onDeleted,
 }: {
   p: Profile;
   activeId: string;
   protocols: ProtocolOption[];
+  /** A team member's view: no Set active / Test / Edit / Delete, no endpoint. */
+  readOnly?: boolean;
   onEdit: () => void;
   onDeleted?: () => void;
 }) {
@@ -515,7 +534,7 @@ export function ProfileRow({
           ) : null}
         </div>
         <div class="ds">
-          {bits.join(" · ") + (p.base_url ? "  ·  " + asString(p.base_url) : "")}
+          {bits.join(" · ") + (!readOnly && p.base_url ? "  ·  " + asString(p.base_url) : "")}
         </div>
         {rd.state && rd.state !== "ready" ? (
           <div class="ds prof-warn">{publicText(rd.detail || rd.state, 200)}</div>
@@ -527,6 +546,8 @@ export function ProfileRow({
         />
         {probe != null ? <div class={probeClass}>{probe}</div> : null}
       </div>
+      {readOnly ? null : (
+      <>
       {!isActive ? (
         <button
           type="button"
@@ -608,6 +629,8 @@ export function ProfileRow({
           }
         }}
       />
+      </>
+      )}
     </div>
   );
 }

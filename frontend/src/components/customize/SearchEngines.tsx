@@ -26,9 +26,12 @@ import { useAlive } from "./use-timer-lease";
 export function SearchEngines({
   raw,
   onSaved,
+  readOnly = false,
 }: {
   raw: Record<string, unknown>;
   onSaved: (next: Record<string, unknown>) => void;
+  /** A team member: the list as it stands, with no key fields (TEAM-23). */
+  readOnly?: boolean;
 }) {
   const alive = useAlive();
   const config = readSearchConfig(raw);
@@ -79,7 +82,8 @@ export function SearchEngines({
           index={index}
           last={index === config.engines.length - 1}
           config={config}
-          busy={busy}
+          busy={busy || readOnly}
+          readOnly={readOnly}
           dragging={dragging === engine.id}
           onMove={(delta) => reorder(moved(order, engine.id, delta))}
           onToggle={() =>
@@ -108,6 +112,7 @@ function EngineRow({
   last,
   config,
   busy,
+  readOnly,
   dragging,
   onMove,
   onToggle,
@@ -121,6 +126,7 @@ function EngineRow({
   last: boolean;
   config: SearchConfig;
   busy: boolean;
+  readOnly: boolean;
   dragging: boolean;
   onMove: (delta: number) => void;
   onToggle: () => void;
@@ -160,7 +166,7 @@ function EngineRow({
           {index + 1}. {engineLabel(engine.id)}
         </div>
         <div class="ds">{engineDescription(engine)}</div>
-        {engine.acceptsKey ? (
+        {engine.acceptsKey && !readOnly ? (
           <div class="job-submit">
             <input
               class="cust-input"

@@ -9,6 +9,7 @@ vi.mock("preact/hooks", () => ({
 import { effect } from "@preact/signals";
 import {
   customizeLoad,
+  customizeNotice,
   customizeOpen,
   customizeTab,
   nestedEditor,
@@ -59,6 +60,37 @@ function renders(render: () => unknown): { count: () => number; stop: () => void
   });
   return { count: () => count, stop };
 }
+
+// TEAM-23: `hint()` writes under the composer, behind this modal, so a
+// refused save in Settings showed nothing at all.
+describe("Customize status line", () => {
+  afterEach(() => {
+    customizeNotice.value = null;
+  });
+  const notice = () => {
+    const slot = find(Customize(), (node) => typeof node.type === "function" && node.type.name === "Notice");
+    return slot ? ((slot.type as () => unknown)() as Node | null) : null;
+  };
+
+  it("shows what the last action reported, as an alert when it failed", () => {
+    customizeOpen.value = true;
+    expect(notice()).toBeNull();
+    customizeNotice.value = { text: "Only an administrator can change this setting.", error: true };
+    const line = notice()!;
+    expect(line.props!.role).toBe("alert");
+    expect(line.props!.class).toBe("cust-notice err");
+    expect(JSON.stringify(line.props!.children)).toContain("Only an administrator");
+    // Dismissable.
+    const close = find(line, (node) => node.type === "button")!;
+    (close.props!.onClick as () => void)();
+    expect(customizeNotice.value).toBeNull();
+  });
+
+  it("is not rendered while Settings is closed", () => {
+    customizeNotice.value = { text: "stale", error: false };
+    expect(find(Customize(), (node) => typeof node.type === "function" && node.type.name === "Notice")).toBeNull();
+  });
+});
 
 describe("Customize backdrops", () => {
   it("keeps Customize open when a selection drag ends on the backdrop", () => {

@@ -283,6 +283,29 @@
   font-size: 13px;
   color: var(--text-300, inherit);
 }
+/* What the last action reported (TEAM-23): a line under the tab body, so it
+   is in view wherever the tab is scrolled. */
+#cust .cust-notice {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 10px 20px;
+  border-top: 1px solid var(--border, #e6dfd8);
+  background: var(--bg-100, #f5f0e8);
+  color: var(--text-200, inherit);
+  font-size: 13px;
+  line-height: 1.4;
+}
+#cust .cust-notice.err {
+  background: var(--danger-bg, #f6e2de);
+  color: var(--danger, inherit);
+}
+#cust .cust-notice > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 900px) {
   #cust .modal-head {
     position: static;

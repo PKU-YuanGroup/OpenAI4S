@@ -7,6 +7,7 @@ import { isReady } from "../../compat/stub";
 import { currentId, project, projects, sessions } from "../../stores/session";
 import { skillsCatalog } from "../../stores/customize";
 import { _envSnapById } from "../../stores/artifacts";
+import { customizeNotice, customizeOpen } from "./state";
 import { t } from "../../i18n";
 
 export { loadModels } from "./models";
@@ -26,6 +27,10 @@ export function hostWindow(): HostWindow {
 
 export function hint(message: string, err?: boolean, spin?: boolean): void {
   if (typeof window === "undefined") return;
+  // The composer line is under the modal: Settings says it in its own line.
+  if (customizeOpen.value && !spin) {
+    customizeNotice.value = message ? { text: message, error: !!err } : null;
+  }
   const fn = hostWindow().hint;
   if (isReady(fn)) fn(message, err, spin);
 }
