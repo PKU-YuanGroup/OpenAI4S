@@ -190,4 +190,31 @@ describe("turn progress", () => {
     expect(usage.textContent).toBe("1k tokens · +1k this turn");
     expect(usage.classList.contains("hidden")).toBe(false);
   });
+
+  it("turns amber past 200k tokens in the running turn and says Stop is there (SYNC-6)", async () => {
+    currentId.value = "f-h";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "f-h", input_tokens: 690_000, output_tokens: 2_300 }),
+      })),
+    );
+    const call = (input: number) => ({ turn_id: "turn-1", kind: "code", usage: { input_tokens: input, output_tokens: 100 } });
+    actionTimeline.value = { root_frame_id: "f-h", has_earlier: false, groups: [{ turn_id: "turn-1", kind: "user" }, call(150_000)] };
+    running.value = true;
+    await refreshSessionUsage();
+    expect(usage.classList.contains("heavy")).toBe(false);
+    expect(usage.title).not.toContain("■");
+    actionTimeline.value = { ...(actionTimeline.value as object), groups: [{ turn_id: "turn-1", kind: "user" }, call(150_000), call(60_000)] };
+    paintUsageTitle();
+    expect(usage.classList.contains("heavy")).toBe(true);
+    expect(usage.title.startsWith("本轮已用超过 200k tokens。")).toBe(true);
+    expect(usage.title).toContain("停止");
+    // A finished turn is history: no warning for a Stop that cannot be pressed.
+    running.value = false;
+    paintUsageTitle();
+    expect(usage.classList.contains("heavy")).toBe(false);
+  });
 });
