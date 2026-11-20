@@ -689,6 +689,56 @@ def test_repeated_native_tool_trips_no_progress(monkeypatch, tmp_path):
     assert "completion" not in terminal["result"]
 
 
+def test_a_cli_run_withholds_tools_after_two_ignored_cell_notes(monkeypatch, tmp_path):
+    """The CLI and delegated children compose the Engine here, through
+    ``ChatModel`` into the ``chat`` facade: the third call forbids tool calls,
+    its cell runs, and the fourth call offers tools again."""
+
+    choices = []
+
+    def chat(messages, cfg, **kwargs):
+        del messages, cfg
+        index = len(choices)
+        choices.append((kwargs.get("tool_choice"), bool(kwargs.get("tools"))))
+        if kwargs.get("tool_choice") == "none":
+            content = "```python\nprint('sheets')\n```"
+            return {"content": content, "tool_calls": []}
+        call = {
+            "id": f"promise-{index}",
+            "wire_id": f"promise-{index}",
+            "name": "list_dir",
+            "ordinal": 0,
+            "raw_arguments": json.dumps({"path": f"dir{index}"}),
+            "arguments": {"path": f"dir{index}"},
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        content = "现在用 Python 读取 Excel。"
+        return {
+            "content": content,
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [call],
+            },
+        }
+
+    monkeypatch.setattr(loop_mod, "chat", chat)
+    agent = Agent(
+        use_skills=False, allow_delegate=False, max_turns=4, workspace=tmp_path
+    )
+    result = agent.run("read demo.xlsx")
+
+    assert result["stop_reason"] == "max_turns"
+    # The declarations stay listed on the tool-less call; the facade decides
+    # per wire whether to send them.
+    assert choices == [(None, True), (None, True), ("none", True), (None, True)]
+    groups = agent.dispatcher.store.list_action_groups(agent.frame_id)
+    kinds = [group["kind"] for group in groups if group["kind"] != "user"]
+    assert kinds == ["native_tools", "native_tools", "code", "native_tools", "terminal"]
+
+
 # ---- R execution channel (```r) -------------------------------------------
 
 

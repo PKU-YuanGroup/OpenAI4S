@@ -34,6 +34,9 @@ const COPY: CopyTable = {
     "nb.cell.status.running": "运行中",
     "nb.cell.status.interrupted": "已中断",
     "nb.cell.status.cancelled": "已取消",
+    // A model draft the agent is still writing (`notebook_cell_draft`).
+    "nb.cell.status.drafting": "草稿中",
+    "nb.cell.status.ready": "待运行",
     "nb.runtime.live": "就绪",
     "nb.runtime.busy": "忙碌",
     "nb.runtime.ended": "已结束",
@@ -91,6 +94,8 @@ const COPY: CopyTable = {
     "nb.cell.status.running": "running",
     "nb.cell.status.interrupted": "interrupted",
     "nb.cell.status.cancelled": "cancelled",
+    "nb.cell.status.drafting": "drafting",
+    "nb.cell.status.ready": "ready",
     "nb.runtime.live": "Live",
     "nb.runtime.busy": "Busy",
     "nb.runtime.ended": "Ended",

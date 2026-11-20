@@ -4,6 +4,7 @@ import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import { DATAPRO_CONNECTOR_ID } from "../../features/customize/vendors";
+import { connectorDescription } from "../../features/customize/copy";
 import {
   asList,
   asString,
@@ -60,7 +61,11 @@ export function ConnectorsTab() {
       {conns
         .filter((k) => k.connector_id !== DATAPRO_CONNECTOR_ID)
         .map((k) => (
-          <ConnectorRow key={asString(k.connector_id)} k={k} />
+          <ConnectorRow
+            key={asString(k.connector_id)}
+            k={k}
+            catalog={directory.find((item) => item.id === k.connector_id)?.description}
+          />
         ))}
       <Subhead>{t("cust.connectors.fromDirectory")}</Subhead>
       {directory.map((item) => {
@@ -74,7 +79,7 @@ export function ConnectorsTab() {
           <div class="cust-row" key={asString(item.id)}>
             <div class="info">
               <div class="nm">{asString(item.name)}</div>
-              <div class="ds">{asString(item.description)}</div>
+              <div class="ds">{connectorDescription(item.id, item.description)}</div>
             </div>
             <button
               type="button"
@@ -151,7 +156,7 @@ export function ConnectorsTab() {
   );
 }
 
-export function ConnectorRow({ k }: { k: Record<string, unknown> }) {
+export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catalog?: unknown }) {
   const enabled = useOptimisticToggle(!!k.enabled, (on) =>
     api(`/connectors/${k.connector_id}/enabled`, {
       method: "PUT",
@@ -165,7 +170,7 @@ export function ConnectorRow({ k }: { k: Record<string, unknown> }) {
         <div class="nm">
           <span>{asString(k.name)}</span> <Pill>{asString(k.connector_id)}</Pill>
         </div>
-        <div class="ds">{asString(k.description)}</div>
+        <div class="ds">{connectorDescription(k.connector_id, k.description, catalog)}</div>
       </div>
       <IconGhost
         name="pencil"

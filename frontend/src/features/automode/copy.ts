@@ -243,7 +243,7 @@ const COPY: CopyTable = {
     "autoMode.ceiling.max_review_rounds": "每个候选的审核尝试",
     "autoMode.ceiling.max_repair_rounds": "修复轮数",
     "autoMode.ceiling.repair_turns_per_round": "每轮修复回合",
-    "autoMode.ceiling.max_extra_cells": "额外 Cell",
+    "autoMode.ceiling.max_extra_cells": "额外单元",
     "autoMode.ceiling.wall_time_s": "自动运行时长",
     "autoMode.ceiling.extra_token_multiplier": "超出初始回合的额外令牌",
     "autoMode.ceiling.repeated_finding_limit": "重复且未变化的发现",

@@ -498,7 +498,7 @@ async function openArtifactReview(page, filename) {
       step = "ctx-item";
       await page.locator(".ctx-item").filter({ hasText: /Provenance|溯源/ }).click();
     }
-    const review = page.locator(".prov-subtab").filter({ hasText: /Review/ });
+    const review = page.locator(".prov-subtab").filter({ hasText: /^(?:Origin|来源)$/ });
     step = "prov-subtab";
     await review.waitFor({ state: "visible", timeout: 30000 });
     await review.click();
@@ -772,7 +772,7 @@ async function runAcceptance() {
     assertion(codeReview.view_code_links === 0, "delegated code UI fabricated a Notebook view-code link");
     const nativeReview = await openArtifactReview(page, nativeProducer.filename);
     assertion(nativeReview.text.includes(nativeProducer.frame_id) && /delegate frame/.test(nativeReview.text), "delegated native UI hid the child frame");
-    assertion(/non-Cell action|非 Cell 动作/.test(nativeReview.text), "delegated native UI fabricated or hid its non-Cell identity");
+    assertion(/non-Cell action|非单元动作/.test(nativeReview.text), "delegated native UI fabricated or hid its non-Cell identity");
     assertion(nativeReview.view_code_links === 0, "delegated native UI fabricated a Notebook view-code link");
     summary.delegated_provenance = {
       code_api_child_frame: true,

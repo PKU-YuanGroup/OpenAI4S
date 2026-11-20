@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any, Callable, Iterable, Mapping, Sequence, cast
 
 from .actions import (
+    ANNOUNCED_CELL_WITHHOLD_AFTER,
     announced_cell_note,
     route_action,
     tool_only_streak_note,
@@ -146,8 +147,13 @@ class AgentEngine:
         built-in model.  Lightweight embeddings can instead expose a
         ``policy_tools(messages)`` method on their executor.  The returned
         declarations are copied so a sampler cannot mutate a live catalog.
+        It is empty for a decision the Engine makes without tools (see
+        :meth:`_tools_withheld`), so an external policy samples it as the
+        built-in model does.
         """
 
+        if self._tools_withheld(state):
+            return ()
         provider = self.tool_schema_provider
         if provider is not None:
             raw = provider(state)
@@ -241,7 +247,13 @@ class AgentEngine:
 
         raw_reply = sampled_reply
         if raw_reply is None:
-            raw_reply = self.model.complete(state.messages, on_delta)
+            raw_reply = (
+                # Passed only when withheld, so a port written before the
+                # switch keeps its two-argument call everywhere else.
+                self.model.complete(state.messages, on_delta, offer_tools=False)
+                if self._tools_withheld(state)
+                else self.model.complete(state.messages, on_delta)
+            )
         reply = self._reply(raw_reply)
         if reply.finish_reason == "cancelled":
             return EngineStep(turn, prepared, None, None, None, stop_reason="cancelled")
@@ -276,7 +288,9 @@ class AgentEngine:
             outcome,
             (
                 unexecuted_cell_note(reply.content, action)
-                or announced_cell_note(reply.content, action)
+                or announced_cell_note(
+                    reply.content, action, circuit.announced_cell_streak
+                )
             )
             # The circuit's first stage: what repeated, before it stops the
             # turn for it.
@@ -285,6 +299,9 @@ class AgentEngine:
             # so the streak's turn is spent on whichever of them applies.
             or tool_only_streak_note(action, circuit.tool_only_streak),
         )
+        # Counted from the results as noted, which is what the ledger records,
+        # so a rebuilt circuit counts the same replies.
+        circuit.observe_announced_cell(action, outcome.history_messages)
         state.messages.extend(dict(message) for message in outcome.history_messages)
         state.turn += 1
         self.event_sink.emit(OutcomeProduced(outcome, turn))
@@ -366,6 +383,17 @@ class AgentEngine:
         return (
             value if isinstance(value, ModelReply) else ModelReply.from_mapping(value)
         )
+
+    def _tools_withheld(self, state: RunState) -> bool:
+        """Whether the next model call offers no native tools.
+
+        True right after the announced-cell note went out on
+        ``ANNOUNCED_CELL_WITHHOLD_AFTER`` replies in a row (see
+        ``TOOLS_WITHHELD_NOTE``). The reply to that call resets or moves the
+        count past the threshold, so tools come back on the call after it.
+        """
+        streak = self._circuit(state).announced_cell_streak
+        return bool(streak == ANNOUNCED_CELL_WITHHOLD_AFTER)
 
     def _circuit(self, state: RunState) -> ProgressCircuit:
         existing = circuit_from_state(state)

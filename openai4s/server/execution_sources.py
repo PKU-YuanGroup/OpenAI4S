@@ -91,18 +91,18 @@ included and marked by status in the file name (e.g. `cell_0002_error.py`).
 _README_ZH = """# 已执行代码源文件
 
 本压缩包是一个 OpenAI4S 会话的执行历史：根会话（`root/`）以及每个被委派的
-子 frame（`children/<序号>_<名称>_<frameid8>/`，递归嵌套）中每个已记录 Cell
-实际执行的源代码，按真实执行顺序排列。失败与被中断的 Cell 一并包含，并在
+子 frame（`children/<序号>_<名称>_<frameid8>/`，递归嵌套）中每个已记录单元
+实际执行的源代码，按真实执行顺序排列。失败与被中断的单元一并包含，并在
 文件名中标注状态（例如 `cell_0002_error.py`）。
 
-* 这些 Cell 是在**持久内核**中顺序执行的：前面的 Cell 创建了后面 Cell 所
-  依赖的变量、导入与文件，因此**单个 Cell 文件不保证可以独立运行**。每个
+* 这些单元是在**持久内核**中顺序执行的：前面的单元创建了后面单元所
+  依赖的变量、导入与文件，因此**单个单元文件不保证可以独立运行**。每个
   frame 的 `session.py` / `session.R` 用 `# %%` 分隔符按顺序拼接了该 frame
-  的全部 Cell，是最接近可运行形态的历史呈现。
-* `manifest.json` 描述了每个 frame 与 Cell：id、顺序、语言、状态、源代码
-  SHA-256、内核 generation、环境标识以及 Artifact 版本关联。
+  的全部单元，是最接近可运行形态的历史呈现。
+* `manifest.json` 描述了每个 frame 与单元：id、顺序、语言、状态、源代码
+  SHA-256、内核 generation、环境标识以及产物版本关联。
 * 压缩包只包含已执行的源代码与公开的执行元数据——不含对话提示词、host
-  载荷、Cell 输出或任何凭据。
+  载荷、单元输出或任何凭据。
 """
 
 

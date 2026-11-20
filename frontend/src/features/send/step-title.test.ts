@@ -16,6 +16,8 @@ describe("step titles and summaries in the UI language (I18N-1)", () => {
     expect(stepTitleText("Switching to the local r-mini environment")).toBe("切换到本机环境 r-mini");
     expect(stepTitleText("Installing lifelines into base")).toBe("安装 lifelines 到 base");
     expect(stepTitleText("Running which")).toBe("运行 which");
+    expect(stepTitleText("Calling calc via example")).toBe("通过 example 调用 calc");
+    expect(stepTitleText("Calling now via example")).toBe("通过 example 调用 now");
     expect(stepSummaryText("12 results")).toBe("12 条结果");
     expect(stepSummaryText("1 artifact")).toBe("1 个产物");
     expect(stepSummaryText("exit 0 · 3 file changes")).toBe("退出码 0 · 3 个文件变更");

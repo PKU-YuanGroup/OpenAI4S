@@ -18,3 +18,4 @@ F-07 车道：机械抽取的 zh/en 字典，以及 `t()` / `tOptional` 运行�
 | [`i18n.test.ts`](i18n.test.ts) | 键集对齐、抽取结果与 app.js 的 diff、`t()` 语义（经由 `t()` 的渲染在切换语言后会重绘）、计划模式 payload、按浏览器语言顺序的首次启动检测以及跟随系统模式。 |
 | [`static-i18n-race.test.ts`](static-i18n-race.test.ts) | 把语言分包挡在闸门后：字典到达前应用的静态标签保留可读的兜底文字，字典到达后连同语言切换按钮和语言钩子一起重绘。每个分包各设一道闸门：en 与 zh 同时请求；仅 zh 兜底失败时仍以英文重绘；活跃语言分包失败时仍然 reject。 |
 | [`system-language.test.ts`](system-language.test.ts) | 跟随浏览器语言：加载 runtime 时会注册 `languagechange` 监听，在没有保存选择时切换页面语言；存储被阻止时，用户的选择仍在本页生效；其他标签页（共享同一存储的第二个 runtime 实例）保存语言或改回跟随系统时，本页会跟随；`theme-bootstrap.js`（在 VM 中运行）对每一组浏览器语言列表写出的 `<html lang>` 与 `systemLang` 一致。 |
+| [`terminology.test.ts`](terminology.test.ts) | I18N-1：生成的 zh 词典和工作台源码里的每个中文字符串都用「产物」「单元」「标注」和 Notebook，不用「制品」「Cell / 代码单元」「批注」「笔记本」。 |

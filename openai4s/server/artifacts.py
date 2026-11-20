@@ -22,7 +22,7 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Protocol
 
-from openai4s.artifact_paths import ignored_artifact_path
+from openai4s.artifact_paths import artifact_role, ignored_artifact_path
 from openai4s.artifact_restore import (
     ArtifactRestoreDenied,
     ArtifactRestoreRefused,
@@ -2204,6 +2204,7 @@ class ArtifactManager:
                         "id": artifact_id,
                         "artifact_id": artifact_id,
                         "filename": restored.get("filename"),
+                        "role": artifact_role(restored.get("filename")),
                         "content_type": restored.get("content_type"),
                         "version_id": restored_version_id,
                         "root_frame_id": root_frame_id,
@@ -2308,6 +2309,7 @@ class ArtifactManager:
                 "artifact": {
                     "id": artifact_id,
                     "filename": artifact["filename"],
+                    "role": artifact_role(artifact["filename"]),
                     "version_id": version_id,
                     "root_frame_id": root_frame_id,
                 },
@@ -2434,6 +2436,7 @@ class ArtifactManager:
                 "artifact": {
                     "id": artifact_id,
                     "filename": filename,
+                    "role": artifact_role(filename),
                     "root_frame_id": root_frame_id,
                 },
             },
@@ -3788,6 +3791,9 @@ class ArtifactManager:
                     "artifact_id": record["artifact_id"],
                     "version_id": record["version_id"],
                     "filename": display_filename,
+                    # The list routes' classification (ART-4), so a scratch
+                    # script is folded live exactly as it is after a reload.
+                    "role": artifact_role(display_filename),
                     "content_type": record.get("content_type"),
                     "size_bytes": size,
                     "project_id": session.project_id,

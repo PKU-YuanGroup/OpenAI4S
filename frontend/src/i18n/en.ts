@@ -1006,7 +1006,7 @@ const dict: Record<string, string> = {
   "prov.sub.environment": "Environment",
   "prov.sub.exec": "Execution Log",
   "prov.sub.messages": "Messages",
-  "prov.sub.review": "Review",
+  "prov.sub.review": "Origin",
   "send.imageAnnotationFallback": "(Image annotation feedback)",
   "session.badge.liveTip": "Kernel alive (can resume anytime)",
   "session.badge.runningTip": "Task still running in the background — click to resume",

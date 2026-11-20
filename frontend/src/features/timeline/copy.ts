@@ -146,7 +146,7 @@ const TIMELINE_OVERRIDES: CopyTable = {
   zh: {
     "timeline.title": "行动时间线",
     "timeline.subtitle": "智能体在这个会话里做的每一步：运行的代码、调用的工具、等待的批准。点一行查看详情。",
-    "timeline.empty": "还没有可显示的行动。Notebook 只保留科研代码单元，完整的执行过程会显示在这里。",
+    "timeline.empty": "还没有可显示的行动。Notebook 只保留科研单元，完整的执行过程会显示在这里。",
     "timeline.noBranch": "还没有分支与检查点信息。",
     "timeline.noContext": "还没有上下文信息。",
     "timeline.noSecurity": "还没有沙盒与权限信息。",

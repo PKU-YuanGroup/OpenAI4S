@@ -3,6 +3,7 @@ import { dockArtifact, _envSnapById } from "../../stores/artifacts";
 import { cells, lineage, _lineageFor } from "../../stores/notebook";
 import { currentId, _openGen } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
+import { setLang } from "../../i18n/runtime";
 import { provMode, provSub } from "../../stores/ui";
 import { artifactMetadataCacheKey } from "../artifacts/cache";
 import { filesT } from "../artifacts/copy";
@@ -292,5 +293,22 @@ describe("a downloaded file's provenance (SCI-10)", () => {
     renderProvReview(root as unknown as HTMLElement, a, { ...lin, download: { ...download, url: "javascript:alert(1)" } });
     expect(walk(root).some((n) => n.className.includes("prov-url"))).toBe(false);
     expect(text(root)).toContain("javascript:alert(1)");
+  });
+});
+
+describe("the drawer's tabs speak the UI language (I18N-1)", () => {
+  afterEach(async () => { await setLang("en"); });
+  it("labels every tab in Chinese, and names the origin tab for what it shows", async () => {
+    const tabs = () => walk(view({ id: "a" })).filter((n) => /^prov-subtab( |$)/.test(n.className)).map((n) => n.textContent);
+    // A language switch repaints the page's static labels too.
+    vi.stubGlobal("document", {
+      createElement: () => new Node(), getElementById: () => null, querySelectorAll: () => [],
+      documentElement: { lang: "", setAttribute: () => {} },
+    });
+    open({ id: "a" }, "environment");
+    await setLang("zh");
+    expect(tabs()).toEqual(["代码", "执行日志", "消息", "环境", "来源"]);
+    await setLang("en");
+    expect(tabs()).toEqual(["Code", "Execution Log", "Messages", "Environment", "Origin"]);
   });
 });

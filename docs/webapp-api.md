@@ -1244,6 +1244,13 @@ The gateway emits **four different shapes** under the same event type:
    `{"type":"artifact_created","root_frame_id"}` with **no artifact info
    whatsoever**.
 
+Where the event names its file (auto-capture, edit, rename, version restore,
+and the context-output spill) the nested `artifact` also carries `role`
+(`deliverable` | `process` | `internal`) from `artifact_paths.artifact_role`,
+the same value the list routes return, so a scratch script is folded live as
+it is after a reload. Upload omits it: a person's own file is never a process
+file.
+
 The event can also be **absent entirely**: the edit/rename/upload/delete/
 restore broadcasts only fire when the artifact has a `root_frame_id` (for
 uploads, only when `frame_id` was supplied in the request) — an upload

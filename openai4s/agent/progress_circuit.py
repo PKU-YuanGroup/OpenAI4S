@@ -15,6 +15,7 @@ from difflib import SequenceMatcher
 from typing import Any, Mapping, Protocol, Sequence
 
 from .actions import (
+    ANNOUNCED_CELL_NOTE,
     CODE_RUNNING_TOOLS,
     ENGINE_NOTE_PREFIX,
     Action,
@@ -276,6 +277,12 @@ class ProgressCircuit:
     #: trips the circuit: the Engine reads it to send its tool-only reminder
     #: once, and a restart rebuilds it so the reminder is not sent twice.
     tool_only_streak: int = 0
+    #: Consecutive replies whose tool results carried the announced-cell
+    #: note. It never trips either: at ``ANNOUNCED_CELL_WITHHOLD_AFTER`` the
+    #: Engine makes the next model call with no tools. It is read off the
+    #: results the model read, so a restart rebuilds it and that call is
+    #: neither lost nor made twice.
+    announced_cell_streak: int = 0
     #: Per file target: how many differing calls reached it, and the last
     #: call's fingerprint. Cleared by an executed cell.
     target_calls: dict[str, tuple[int, str]] = field(default_factory=dict)
@@ -340,6 +347,18 @@ class ProgressCircuit:
             return
         if isinstance(action, CodeCell):
             self.observe_code_progress()
+
+    def observe_announced_cell(
+        self, action: Action | None, results: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """Count a native batch whose results carry the announced-cell note.
+
+        Observed after the Engine attached its notes, from the results the
+        model reads and the ledger records. Any other reply resets the count.
+        """
+        self._count_announced_cell(
+            results if isinstance(action, NativeToolBatch) else ()
+        )
 
     def observe_finalize(
         self,
@@ -449,6 +468,7 @@ class ProgressCircuit:
             calls, results = _group_calls_and_results(group)
             self.observe_native_batch(calls, results)
             self._count_tool_only_turn(calls)
+            self._count_announced_cell(results)
             return
         if kind == _FINALIZE_KIND:
             # The ledger writes a finalize group exactly like a one-call
@@ -457,12 +477,15 @@ class ProgressCircuit:
             calls, results = _group_calls_and_results(group)
             if calls:
                 self.observe_finalize(calls[0], results)
+            self._count_announced_cell(())
             return
         if kind == _CODE_KIND:
             self.observe_code_progress()
+            self._count_announced_cell(())
             return
         if kind == _NO_ACTION_KIND:
             self.observe_assistant_text(_group_assistant_text(group))
+            self._count_announced_cell(())
 
     def _observe_tool_results(self, results: Sequence[Mapping[str, Any]]) -> None:
         error_messages = [
@@ -547,6 +570,16 @@ class ProgressCircuit:
             self.tool_only_streak = 0
         else:
             self.tool_only_streak += 1
+
+    def _count_announced_cell(self, results: Sequence[Mapping[str, Any]]) -> None:
+        if any(
+            ANNOUNCED_CELL_NOTE in _result_text(message.get("content"))
+            for message in results
+            if isinstance(message, Mapping)
+        ):
+            self.announced_cell_streak += 1
+        else:
+            self.announced_cell_streak = 0
 
     def _reset_same_action(self) -> None:
         self.same_action_fingerprint = None
