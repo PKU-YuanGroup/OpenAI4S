@@ -159,6 +159,46 @@ def _store_for(cfg: Any) -> Any:
         return None
 
 
+def _model_source(
+    provider: str, model: str, default_model: str, store: Any
+) -> tuple[str, str, str]:
+    """Where the reported model id came from: (source, note, overridden variable).
+
+    A turn reads the settings saved by Customize -> Models or `openai4s init`
+    before it reads the environment, so a model saved once keeps winning over
+    an `OPENAI4S_LLM_MODEL` edited afterwards. The report named the model and
+    not its origin, which left "I changed `.env` and nothing happened" with no
+    explanation anywhere.
+    """
+    key = str(provider or "").strip().upper().replace("-", "_")
+    env_name = env_value = ""
+    for name in (f"OPENAI4S_{key}_MODEL", "OPENAI4S_LLM_MODEL"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            env_name, env_value = name, value
+            break
+    saved = ""
+    if store is not None:
+        try:
+            saved = str(store.get_setting("llm_model") or "").strip()
+        except Exception:  # noqa: BLE001 - an unreadable setting names no source
+            saved = ""
+    if saved and saved == model:
+        note = "saved by Customize -> Models or `openai4s init`"
+        if env_value and env_value != saved:
+            return (
+                "settings",
+                f"{note}; this overrides {env_name}={env_value!r}",
+                env_name,
+            )
+        return "settings", note, ""
+    if env_value and env_value == model:
+        return "environment", f"from {env_name}", ""
+    if model and model == default_model:
+        return "default", "provider default", ""
+    return "config", "", ""
+
+
 def _model(cfg: Any) -> Check:
     """Can we reach a model at all? Configuration only — no network call.
 
@@ -171,7 +211,8 @@ def _model(cfg: Any) -> Check:
     from openai4s.llm.resolve import is_loopback_endpoint, resolve_llm_config
 
     unopened = unopened_database(cfg)
-    llm = resolve_llm_config(cfg.llm, None if unopened else _store_for(cfg))
+    store = None if unopened else _store_for(cfg)
+    llm = resolve_llm_config(cfg.llm, store)
     try:
         from openai4s.llm.registry import provider_spec
 
@@ -203,12 +244,19 @@ def _model(cfg: Any) -> Check:
         )
     except Exception:  # noqa: BLE001 - fall back to the loopback rule
         pass
+    source, source_note, overridden = _model_source(
+        llm.provider, str(model or ""), str(spec.get("model") or ""), store
+    )
+    named = f"model {model!r}" + (f" ({source_note})" if source_note else "")
     facts = {
         "provider": llm.provider,
         "model": model,
+        "model_source": source,
         "api_key_configured": bool(llm.api_key),
         "endpoint_is_local": keyless,
     }
+    if overridden:
+        facts["model_overrides_env"] = overridden
     if unopened is not None:
         facts["database_settings_read"] = False
     # The value is never reported, only whether one resolved.
@@ -245,14 +293,14 @@ def _model(cfg: Any) -> Check:
         return Check(
             "model",
             OK,
-            f"provider {llm.provider!r}, model {model!r}, local endpoint "
+            f"provider {llm.provider!r}, {named}, local endpoint "
             f"{_sanitize_endpoint(base_url)} (no credential required)",
             facts=facts,
         )
     return Check(
         "model",
         OK,
-        f"provider {llm.provider!r}, model {model!r}, credential configured",
+        f"provider {llm.provider!r}, {named}, credential configured",
         facts=facts,
     )
 

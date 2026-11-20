@@ -2785,8 +2785,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     pi = sub.add_parser("init", help="guided first-run model configuration")
     pi.add_argument("--provider", help="provider id (default: current provider)")
-    pi.add_argument("--model", help="model id (default: provider default)")
-    pi.add_argument("--base-url", help="provider API base URL")
+    pi.add_argument(
+        "--model",
+        help="model id (default: the model already saved for this provider, "
+        "else the provider default). A saved model takes precedence over "
+        "OPENAI4S_LLM_MODEL; `openai4s doctor` shows which one is in use",
+    )
+    pi.add_argument(
+        "--base-url",
+        help="provider API base URL (default: the saved URL, else the "
+        "provider default)",
+    )
     pi.add_argument(
         "--api-key-stdin",
         action="store_true",

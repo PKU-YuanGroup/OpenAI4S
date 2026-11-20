@@ -749,6 +749,50 @@ def test_the_doctor_and_the_runtime_resolve_the_same_model(cfg):
     assert check["facts"]["model"] == resolved.model
 
 
+def test_a_saved_model_that_overrides_the_environment_is_named_as_such(
+    tmp_path, monkeypatch
+):
+    """CLI-8. `openai4s init` (or Customize -> Models) saves the model, and a
+    saved model is read before `OPENAI4S_LLM_MODEL`. doctor printed the model
+    without its origin, so editing `.env` changed nothing and nothing said why.
+    """
+    from openai4s.store import get_store
+
+    monkeypatch.setenv("OPENAI4S_LLM_MODEL", "model-from-env")
+    (tmp_path / "skills").mkdir()
+    cfg = Config(
+        data_dir=tmp_path, llm=LLMConfig(provider="chatgpt", api_key="test-key")
+    )
+    assert cfg.llm.model == "model-from-env"
+
+    from_env = _by_name(doctor.report(cfg))["model"]
+    assert from_env["facts"]["model_source"] == "environment"
+    assert "from OPENAI4S_LLM_MODEL" in from_env["detail"]
+    assert "model_overrides_env" not in from_env["facts"]
+
+    get_store(cfg.db_path).set_setting("llm_model", "model-saved-by-init")
+
+    saved = _by_name(doctor.report(cfg))["model"]
+    assert saved["status"] == doctor.OK
+    assert saved["facts"]["model"] == "model-saved-by-init"
+    assert saved["facts"]["model_source"] == "settings"
+    assert saved["facts"]["model_overrides_env"] == "OPENAI4S_LLM_MODEL"
+    assert "model-saved-by-init" in saved["detail"]
+    assert "overrides OPENAI4S_LLM_MODEL='model-from-env'" in saved["detail"]
+
+
+def test_a_provider_default_model_is_reported_as_the_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI4S_LLM_MODEL", raising=False)
+    (tmp_path / "skills").mkdir()
+    cfg = Config(
+        data_dir=tmp_path, llm=LLMConfig(provider="chatgpt", api_key="test-key")
+    )
+
+    check = _by_name(doctor.report(cfg))["model"]
+    assert check["facts"]["model_source"] == "default"
+    assert "(provider default)" in check["detail"]
+
+
 def test_r_is_resolved_the_way_the_r_kernel_resolves_it(cfg, monkeypatch):
     """`shutil.which("Rscript")` reported "R cells will not run" on exactly the
     installations `openai4s setup` had just built an R environment for: a conda
