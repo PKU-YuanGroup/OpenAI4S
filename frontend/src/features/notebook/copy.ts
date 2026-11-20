@@ -62,6 +62,8 @@ const COPY: CopyTable = {
     "nb.variables.showCode": "显示模块、函数和类（{0}）",
     "nb.variables.hideCode": "只显示数据变量",
     "nb.variables.onlyCode": "还没有数据变量。",
+    "nb.variables.shape": "{0} 行 × {1} 列",
+    "nb.variables.columnNames": "列：{0}",
     "nb.newCells.one": "有 1 个新单元 ↓",
   },
   en: {
@@ -121,6 +123,8 @@ const COPY: CopyTable = {
     "nb.variables.showCode": "Show modules, functions and classes ({0})",
     "nb.variables.hideCode": "Data variables only",
     "nb.variables.onlyCode": "No data variables yet.",
+    "nb.variables.shape": "{0} rows × {1} columns",
+    "nb.variables.columnNames": "Columns: {0}",
     "nb.newCells.one": "1 new cell ↓",
   },
 };

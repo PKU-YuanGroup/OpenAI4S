@@ -102,6 +102,41 @@ def test_active_inspection_is_narrow_and_does_not_enter_cell_state():
     assert kernel.calls == 1
 
 
+def test_a_table_entry_keeps_its_shape_and_column_labels_only():
+    """NB-3: rows, columns and up to twenty text labels pass; anything else on a
+    table entry, or a non-string label, does not."""
+    kernel = _Kernel(
+        {
+            "variables": [
+                {
+                    "name": "growth",
+                    "type": "DataFrame",
+                    "kind": "table",
+                    "rows": 1764,
+                    "columns": 9,
+                    "column_names": ["well", 7, "od\x00", ""]
+                    + [f"c{i}" for i in range(30)],
+                    "dtypes": {"well": "object"},
+                },
+                {"name": "bad", "type": "DataFrame", "rows": -1, "columns": "9"},
+            ]
+        }
+    )
+    state = SimpleNamespace(turn_lock=threading.Lock(), kernels=_Kernels(kernel))
+
+    variables = _service(state).inspect("root", "python")["variables"]
+
+    assert variables[0] == {
+        "name": "growth",
+        "type": "DataFrame",
+        "kind": "table",
+        "rows": 1764,
+        "columns": 9,
+        "column_names": ["well", "od"] + [f"c{i}" for i in range(16)],
+    }
+    assert variables[1] == {"name": "bad", "type": "DataFrame"}
+
+
 def test_busy_restoring_ended_and_never_started_fail_without_protocol_reads():
     kernel = _Kernel()
     state = SimpleNamespace(turn_lock=threading.Lock(), kernels=_Kernels(kernel))

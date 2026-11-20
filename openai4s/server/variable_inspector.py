@@ -167,6 +167,16 @@ def _safe_payload(payload: Any) -> dict[str, Any]:
         fingerprint = _text(raw.get("fingerprint"), 128).lower()
         if _FINGERPRINT.fullmatch(fingerprint):
             item["fingerprint"] = fingerprint
+        # A table's shape and first column labels (NB-3).
+        for key in ("rows", "columns"):
+            count = raw.get(key)
+            if type(count) is int and count >= 0:
+                item[key] = min(count, 1_000_000_000_000)
+        column_names = raw.get("column_names")
+        if type(column_names) is list:
+            item["column_names"] = [
+                label for label in (_text(x, 80) for x in column_names[:20]) if label
+            ]
         safe.append(item)
     return {
         "variables": safe,
