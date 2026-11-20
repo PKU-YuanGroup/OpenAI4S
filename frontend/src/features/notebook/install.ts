@@ -8,7 +8,8 @@ import { effect, untracked } from "@preact/signals";
 import { settleLiveCellCard } from "../messages/cardState";
 import { setArtifactCreatedSideEffects } from "../ws/handlers";
 import { currentId } from "../../stores/session";
-import { _replayGap } from "../../stores/stream";
+import { _replayGap, running } from "../../stores/stream";
+import { refreshLoadedInspector } from "../execution/inspector";
 import { eventFrameId, mine } from "../ws/guards";
 import { hasWsHandler, registerWsHandler } from "../ws/registry";
 import type { WsHandler, WsMessage } from "../ws/types";
@@ -50,6 +51,8 @@ export function registerNotebookHandlers(): void {
       nbCellFinished(m);
       if (currentId.value) void loadExecutionLog(currentId.value);
       scheduleWorkbenchRefresh();
+      // A manual cell outside a turn: the variable list follows it (M-77).
+      if (!running.value) refreshLoadedInspector();
     }
   });
   registerUnless("kernel_status", (m: WsMessage) => {
@@ -61,6 +64,19 @@ function assignWindow(target: WindowTarget): void {
   target.highlightTraceback = highlightTraceback;
   target.notebookExportLink = notebookExportLink;
   target.loadExecutionLog = loadExecutionLog;
+}
+
+let runEndWatch: (() => void) | null = null;
+
+/** M-77: when an agent turn ends, a variable list the reader loaded is read again. One per page. */
+function watchRunEnd(): void {
+  if (runEndWatch) return;
+  let wasRunning = false;
+  runEndWatch = effect(() => {
+    const now = running.value;
+    if (wasRunning && !now) untracked(() => refreshLoadedInspector());
+    wasRunning = now;
+  });
 }
 
 let replayGapWatch: (() => void) | null = null;
@@ -100,6 +116,7 @@ export function installNotebook(
   wireArtifactFigures();
   watchNotebookVisibility();
   watchReplayGaps();
+  watchRunEnd();
 }
 
 export { highlightTraceback, notebookExportLink };

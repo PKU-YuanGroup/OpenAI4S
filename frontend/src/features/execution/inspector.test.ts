@@ -4,7 +4,13 @@ import { variableInspector } from "../../stores/notebook";
 import { resetStoreFields } from "../../stores/signal-field";
 import { currentId } from "../../stores/session";
 import { setExecutionFetch } from "./api";
-import { isCodeVariable, refreshVariableInspector, renderVariableInspector, setPaintInspector } from "./inspector";
+import {
+  isCodeVariable,
+  refreshLoadedInspector,
+  refreshVariableInspector,
+  renderVariableInspector,
+  setPaintInspector,
+} from "./inspector";
 import { nbT } from "../notebook/copy";
 
 type Inspector = { loading: string | null; results: Record<string, { variables?: Array<{ name?: string }> }> };
@@ -100,5 +106,35 @@ describe("variable inspector list", () => {
       setPaintInspector(null);
       vi.unstubAllGlobals();
     }
+  });
+});
+
+// M-77: the list had to be refreshed by hand after every run.
+describe("variable inspector after a run", () => {
+  it("reads a list the reader loaded again, and leaves an unloaded one alone", async () => {
+    const reads: string[] = [];
+    setExecutionFetch(async (url) => {
+      reads.push(String(url));
+      return new Response(
+        JSON.stringify({
+          root_frame_id: "frame-v",
+          branch_id: "frame-v",
+          language: "python",
+          state: "active",
+          available: true,
+          state_revision: 4,
+          variables: [{ name: "df", type: "DataFrame" }],
+        }),
+      );
+    });
+    refreshLoadedInspector();
+    await Promise.resolve();
+    expect(reads).toEqual([]);
+
+    await refreshVariableInspector();
+    expect(reads).toHaveLength(1);
+    refreshLoadedInspector();
+    await vi.waitFor(() => expect(reads).toHaveLength(2));
+    expect(reads[1]).toBe("/api/v1/frames/frame-v/kernel/variables?language=python");
   });
 });

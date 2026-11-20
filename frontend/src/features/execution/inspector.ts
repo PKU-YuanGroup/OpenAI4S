@@ -87,6 +87,19 @@ export async function refreshVariableInspector(): Promise<void> {
   }
 }
 
+/**
+ * M-77: the variable list had to be refreshed by hand after every run. A list
+ * the reader has loaded is read again when a run ends; the read never starts
+ * a kernel and the server answers it only while the kernel is idle.
+ */
+export function refreshLoadedInspector(): void {
+  const state = inspectorState();
+  if (!state || state.loading || !currentId.value) return;
+  const language = state.language === "r" ? "r" : "python";
+  if (!state.results || !Object.prototype.hasOwnProperty.call(state.results, language)) return;
+  void refreshVariableInspector();
+}
+
 type VarRow = {
   name?: string;
   type?: string;

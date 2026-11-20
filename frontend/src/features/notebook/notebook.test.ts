@@ -73,6 +73,7 @@ import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent } from "./editor
 import { environmentMenuItems, envSelectable, envSourceLabel } from "./envmenu";
 import { nbT } from "./copy";
 import { installNotebook } from "./install";
+import { setExecutionFetch } from "../execution/api";
 import type { NotebookCell } from "./types";
 import {
   copyNotebookCell,
@@ -792,6 +793,27 @@ describe("F-14 Notebook", () => {
       followStreamingOutput();
       flushRaf(rafs);
       expect(body.scrollTop).toBe(0);
+    });
+
+    // M-77: the variable list had to be refreshed by hand after every run.
+    it("reads a variable list the reader loaded again when the turn ends", async () => {
+      const reads: string[] = [];
+      setExecutionFetch(async (url) => {
+        reads.push(String(url));
+        return new Response(JSON.stringify({ available: false, state: "busy" }));
+      });
+      try {
+        running.value = true;
+        running.value = false;
+        await Promise.resolve();
+        expect(reads).toEqual([]);
+        variableInspector.value = { ...variableInspector.value, language: "python", results: { python: {} } };
+        running.value = true;
+        running.value = false;
+        await vi.waitFor(() => expect(reads).toHaveLength(1));
+      } finally {
+        setExecutionFetch(null);
+      }
     });
 
     it("never holds back another session's list", () => {
