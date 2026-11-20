@@ -316,8 +316,16 @@ export async function loadFolders(options: { render?: boolean } = {}): Promise<v
     }
     folders.value = data.folders;
     _foldersFor.value = pid;
-  } catch {
+  } catch (error) {
     if (!current()) return;
+    if ((error as { status?: unknown } | null)?.status === 404) {
+      // The project is not there for this login (a teammate's link to a
+      // project it is not in, TEAM-26): it has no folders to show, and
+      // "Could not load folders. Retry" would only invite a retry that 404s.
+      folders.value = [];
+      _foldersFor.value = pid;
+      return;
+    }
     // An unread list is not an empty one: keep whatever was confirmed and say
     // the read failed, so renderSessions can offer Retry instead of "no rows".
     foldersLoadError.value = true;

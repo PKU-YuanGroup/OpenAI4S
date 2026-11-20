@@ -33,6 +33,8 @@ import { api } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { grow } from "../sessions/dom";
 import { iconEl } from "../sessions/icon";
+import { teamT } from "../chrome/team-copy";
+import { teamUser } from "../chrome/team-identity";
 import { historyT } from "./copy";
 import { el, messagesHost } from "./dom";
 import { failureMeta } from "./failure";
@@ -606,7 +608,9 @@ export function renderMissingSession(
   const wrap = el("div", "empty-session missing-session");
   wrap.setAttribute("role", "alert");
   wrap.appendChild(el("div", "es-title", historyT("history.missing.title")));
-  wrap.appendChild(el("div", "es-sub", historyT("history.missing.sub")));
+  // In team mode the usual reason is a session its owner keeps private, or a
+  // project this login is not in: the API answers 404 either way (TEAM-26).
+  wrap.appendChild(el("div", "es-sub", teamUser.value ? teamT("team.missing.sub") : historyT("history.missing.sub")));
   const actions = el("div", "missing-actions");
   const button = (label: string, onClick: () => void): void => {
     const b = el("button", "outline-btn", label) as HTMLButtonElement;
