@@ -7,7 +7,7 @@
  * #conn-dot is dead (no such node). The banner + hint take over ws onclose/onopen.
  */
 
-import { LANG } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { _menu } from "../../stores/ui";
 import { ws as wsSignal } from "../../stores/stream";
 import { apiErrorText } from "./api";
@@ -37,6 +37,18 @@ export function hint(text?: string | null, err?: boolean, spin?: boolean): void 
   const s = el("span", null, shown);
   if (err) s.style.color = "var(--danger)";
   h.appendChild(s);
+  if (err) {
+    // SYNC-29: an error line stays until the next hint; on a short screen it
+    // costs two lines of the conversation, so it can be put away. An icon,
+    // not a "×" character: readers of the hint's text must not see one.
+    const close = el("button", "hint-dismiss");
+    close.type = "button";
+    close.title = t("common.close");
+    close.setAttribute("aria-label", close.title);
+    close.appendChild(iconEl("x", 12));
+    close.onclick = () => hint("");
+    h.appendChild(close);
+  }
 }
 
 /**

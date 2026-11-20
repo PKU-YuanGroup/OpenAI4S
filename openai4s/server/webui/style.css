@@ -210,7 +210,7 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .conv-title-wrap{display:flex;align-items:center;min-width:0;max-width:520px}
 .conv-title-wrap .conv-title{font-weight:500}
 .conv-title-wrap .conv-title:hover{border-color:var(--border)}
-.conv-title{flex:1;min-width:0;background:transparent;border:1px solid transparent;border-radius:8px;padding:5px 8px;font:inherit;font-size:14px;font-weight:400;color:var(--text-000)}
+.conv-title{flex:1;min-width:0;background:transparent;border:1px solid transparent;border-radius:8px;padding:5px 8px;font:inherit;font-size:14px;font-weight:400;color:var(--text-000);text-overflow:ellipsis}
 .conv-head-actions{display:flex;align-items:center;gap:2px;flex:none}
 .messages{flex:1;overflow:auto;padding:0 24px 20px;position:relative}
 .msg{max-width:var(--col);margin:0 auto 18px;width:100%}
@@ -1849,6 +1849,8 @@ html:not([data-theme-instant]) .modal-box,html:not([data-theme-instant]) .nb-car
   /* prevent iOS zoom on focus: inputs >= 16px */
   #composer,input,textarea,select{font-size:16px}
   .nb-model select{font-size:15px;max-width:120px}
+  /* SYNC-29: a session row's ⋯ and a tab's × are finger targets, not 16-20px glyphs. */
+  .session .s-menu,.folder-head .s-menu,.tab .t-close,.dock-tab .t-close{min-width:32px;min-height:32px}
 }
 
 /* ---- content-visibility for long transcripts (perf) ---- */
@@ -2400,6 +2402,8 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .nb-right,.nb-model{min-width:0}
 .nb-model select{min-width:0;text-overflow:ellipsis}
 .composer-hint{margin-top:8px;font-size:12px;color:var(--text-400)}
+.composer-hint .hint-dismiss{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;min-width:24px;min-height:24px;margin-left:4px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--text-400);cursor:pointer}
+.composer-hint .hint-dismiss:hover{background:var(--bg-200);color:var(--text-000)}
 .composer-refs{padding:8px 2px 0}
 .msg-ref-chip{padding:2px 9px;border:0;border-radius:999px;background:var(--bg-200);color:var(--text-200);font-size:12px}
 .msg-ref-chip.unresolved{border:1px solid var(--warn);background:transparent;color:var(--warn-text)}

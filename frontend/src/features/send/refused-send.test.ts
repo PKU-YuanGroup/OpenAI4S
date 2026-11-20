@@ -97,7 +97,8 @@ describe("send(): a message the server refuses before admission", () => {
   let routes: Record<string, { status: number; body: unknown }> = {};
 
   function lastHint(): string {
-    const spans = nodes["composer-hint"]!.children as FakeEl[];
+    // An error line ends with its dismiss icon (SYNC-29); the text is the span before it.
+    const spans = (nodes["composer-hint"]!.children as FakeEl[]).filter((n) => n.className !== "hint-dismiss");
     const last = spans[spans.length - 1];
     return last ? String(last.textContent) : "";
   }

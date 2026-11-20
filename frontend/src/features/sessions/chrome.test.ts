@@ -68,15 +68,64 @@ describe("watchActivateKeys", () => {
 describe("reportFailure", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  type HintNode = {
+    className: string;
+    textContent: string;
+    innerHTML: string;
+    title: string;
+    type: string;
+    style: Record<string, string>;
+    attrs: Record<string, string>;
+    children: HintNode[];
+    onclick: (() => void) | null;
+    setAttribute: (name: string, value: string) => void;
+    appendChild: (node: HintNode) => HintNode;
+  };
+  const hintNode = (): HintNode => {
+    const node: HintNode = {
+      className: "",
+      textContent: "",
+      title: "",
+      type: "",
+      style: {},
+      attrs: {},
+      children: [],
+      onclick: null,
+      setAttribute: (name, value) => void (node.attrs[name] = value),
+      appendChild: (child) => (node.children.push(child), child),
+      get innerHTML() {
+        return "";
+      },
+      set innerHTML(_value: string) {
+        node.children = [];
+      },
+    };
+    return node;
+  };
+
   it("shows the failure, with the error's own text, as an error hint", () => {
-    const shown: string[] = [];
-    const hintHost = { setAttribute() {}, innerHTML: "", appendChild: (node: { textContent: string }) => shown.push(node.textContent) };
+    const hintHost = hintNode();
     vi.stubGlobal("document", {
       querySelector: (sel: string) => (sel === "#composer-hint" ? hintHost : null),
-      createElement: () => ({ textContent: "", style: {} }),
+      createElement: () => hintNode(),
     });
     reportFailure(new Error("module refused"));
-    expect(shown).toEqual([errorPrefix(LANG) + actionFailedCopy("module refused")]);
+    expect(hintHost.children[0]!.textContent).toBe(errorPrefix(LANG) + actionFailedCopy("module refused"));
+  });
+
+  // SYNC-29: two persistent red lines took a third of a 720x450 window.
+  it("an error hint can be put away; its × adds no text to the hint", () => {
+    const hintHost = hintNode();
+    vi.stubGlobal("document", {
+      querySelector: (sel: string) => (sel === "#composer-hint" ? hintHost : null),
+      createElement: () => hintNode(),
+    });
+    reportFailure(new Error("module refused"));
+    const close = hintHost.children.find((child) => child.className === "hint-dismiss")!;
+    expect(close.attrs["aria-label"]).toBeTruthy();
+    expect(close.textContent).toBe("");
+    close.onclick!();
+    expect(hintHost.children).toEqual([]);
   });
 });
 
@@ -195,5 +244,61 @@ describe("context menu keyboard (SYNC-9, SYNC-10)", () => {
     anchor.focus();
     expect(doc.key("ArrowDown").defaultPrevented).toBe(false);
     expect(doc.activeElement).toBe(anchor);
+  });
+});
+
+// SYNC-29: at phone width the sidebar opened as an overlay that a tap outside
+// closed but Escape did not.
+describe("mobile sidebar overlay", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function mount(blocker: string | null = null) {
+    const classes = (initial = "") => {
+      const set = new Set(initial.split(" ").filter(Boolean));
+      return {
+        toggle: (name: string, on?: boolean) => ((on ?? !set.has(name)) ? set.add(name) : set.delete(name), set.has(name)),
+        contains: (name: string) => set.has(name),
+      };
+    };
+    const keydown: Array<(e: { key: string; defaultPrevented: boolean }) => void> = [];
+    const reopen = { classList: classes(), focus: vi.fn() };
+    const body = { classList: classes(), appendChild: vi.fn() };
+    let scrim: { id: string; className: string; classList: ReturnType<typeof classes>; onclick: unknown } | null = null;
+    vi.stubGlobal("window", { matchMedia: () => ({ matches: true }) });
+    vi.stubGlobal("document", {
+      body,
+      getElementById: (id: string) => (id === "mobile-scrim" ? scrim : null),
+      querySelector: (sel: string) => (sel === "#sidebar-reopen" ? reopen : blocker && sel.includes(blocker) ? {} : null),
+      createElement: () => {
+        const node = { id: "", onclick: null as unknown, classList: classes(), set className(v: string) { node.classList = classes(v); } };
+        scrim = node as unknown as typeof scrim;
+        return node;
+      },
+      addEventListener: (type: string, fn: (e: { key: string; defaultPrevented: boolean }) => void) => {
+        if (type === "keydown") keydown.push(fn);
+      },
+    });
+    const press = (key: string) => keydown.forEach((fn) => fn({ key, defaultPrevented: false }));
+    return { body, reopen, press };
+  }
+
+  it("Escape closes the open overlay and puts focus on the button that reopens it", async () => {
+    vi.resetModules();
+    const { setSidebar } = await import("./dom");
+    const { body, reopen, press } = mount();
+    setSidebar(false);
+    expect(body.classList.contains("sidebar-collapsed")).toBe(false);
+    press("Escape");
+    expect(body.classList.contains("sidebar-collapsed")).toBe(true);
+    expect(reopen.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves Escape to a menu open above the overlay", async () => {
+    vi.resetModules();
+    const { setSidebar } = await import("./dom");
+    const { body, press } = mount(".ctx-menu");
+    setSidebar(false);
+    press("Escape");
+    expect(body.classList.contains("sidebar-collapsed")).toBe(false);
   });
 });
