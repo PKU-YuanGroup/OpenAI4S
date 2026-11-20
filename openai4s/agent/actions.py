@@ -326,6 +326,14 @@ _ZH_NOW = (
 _ZH_CLAUSE = r"[^。；;，,\n]"
 _ANNOUNCED_CELL = re.compile(
     r"\b(?:python|code|foreground|r)\s+cell\b"
+    # "Running the complete pipeline now in a single cell": six replies said
+    # this and re-read one file each time. The cell is still code here, so a
+    # cell type, line or count ("in a single cell type") is left alone.
+    r"|\b(?:in|into|inside|within|as)\s+(?:a|one|the\s+same)\s+"
+    r"(?:single\s+|new\s+|final\s+)?cell\b(?![-\w])"
+    r"(?!\s+(?:types?|lines?|populations?|cycles?|states?|counts?|cultures?|"
+    r"suspensions?|levels?|lineages?|walls?|membranes?|surfaces?|fate|death|"
+    r"division|resolution|sequencing)\b)"
     r"|\b(?:in|into|inside|via|using|through|within|to)\s+(?:the\s+|a\s+)?"
     r"(?:python\s+|r\s+)?(?:kernel|runtime)\b"
     r"|\b(?:enter|entering|execute|executing|run|running|switch|switching|"
@@ -340,6 +348,8 @@ _ANNOUNCED_CELL = re.compile(
     rf"{_ZH_CLAUSE}{{0,6}}?(?:运行|执行|跑)"
     # 用 Python 读取… / 在 R 中…
     rf"|{_ZH_NOW}(?:用|使用|在)\s*(?:python|r(?![a-z0-9_²-]))"
+    # 在一个单元里跑完整流程 / 放在一个 cell 里执行 (单元格 is a spreadsheet's)
+    rf"|{_ZH_NOW}(?:用|在)\s*(?:同一个|一个|单个)\s*(?:cell(?![a-z_-])|单元(?!格))"
     # 写一段代码检查…
     rf"|{_ZH_NOW}(?:写|编写){_ZH_CLAUSE}{{0,8}}?(?:代码|单元)",
     re.IGNORECASE,

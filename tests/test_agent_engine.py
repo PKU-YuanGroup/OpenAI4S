@@ -543,6 +543,15 @@ def _run_native_reply(content, *, name="web_search", arguments=None):
         "下面用 R 绘制年份分布图。",
         "我来写一段代码检查数据形状。",
         "把脚本跑一下看看输出。",
+        # SCI-16: six replies of one session, each followed by one more read
+        # of the same PDB file, named the cell by its count, not its language.
+        "Now I'll run the full pipeline in a single cell.",
+        "All record layouts confirmed. Running the complete pipeline now in a "
+        "single cell.",
+        "Next, I will execute the whole analysis in one cell.",
+        "现在在一个单元里跑完整流程。",
+        "接下来我会在一个 cell 中完成全部分析。",
+        "下面我把整个流程放在一个cell里执行。",
     ],
 )
 def test_native_call_that_promises_a_cell_says_no_code_ran(content):
@@ -582,6 +591,13 @@ def test_native_call_that_promises_a_cell_says_no_code_ran(content):
         "文件已导入。现在检查 Excel 的工作表结构和原始数据格式。",
         "检索 RNA 聚合酶相关文献，并用 RCSB 接口核实条目。",
         "执行计划已更新：下一步检索数据库。",
+        # A cell that is biology, a spreadsheet's cell, or a later plan step.
+        "Expression was measured in a single cell type and in a single cell "
+        "suspension.",
+        "Loading it as a single cell-level matrix.",
+        "每个 cell 中的 UMI 数差别很大，先检索相关方法。",
+        "在一个单元格里填入样本编号。",
+        "先读取文件，最后在一个单元里汇总。",
     ],
 )
 def test_native_call_that_does_not_promise_a_cell_is_left_alone(content):
