@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-M-01 first-run wizard kernel. Four required decision steps, skip/checklist, and B-04 `capability_receipt` badge rows. GET `/onboarding` is redacted and contacts nobody; Test is the only action that probes a provider.
+M-01 first-run wizard kernel. Four required decision steps, skip, and B-04 `capability_receipt` badge rows. GET `/onboarding` is redacted and contacts nobody; Test is the only action that probes a provider.
 
 ## Files
 
@@ -17,7 +17,7 @@ M-01 first-run wizard kernel. Four required decision steps, skip/checklist, and 
 | [`copy.ts`](copy.ts) | Lane-local zh/en strings (`ot`). Does not rewrite generated i18n. `copyLookup(table)` is the lookup `ot` and `judgmentT` share. |
 | [`copy.test.ts`](copy.test.ts) | `copyLookup`: active language, then English, then the key; the loaded dictionary wins; positional holes. `ot` and `judgmentT` are built on it. |
 | [`index.ts`](index.ts) | Public re-exports. |
-| [`machine.test.ts`](machine.test.ts) | Skip / checklist / request-id errors; providerRequests=0 before Test, and a model-list fetch counts without deciding Test; model identity changes clear receipts and Test decisions; a probe result measured for another profile is dropped. |
+| [`machine.test.ts`](machine.test.ts) | Skip / step-rail jumps / request-id errors; providerRequests=0 before Test, and a model-list fetch counts without deciding Test; model identity changes clear receipts and Test decisions; a probe result measured for another profile is dropped. |
 | [`machine.ts`](machine.ts) | Four-step reducer. Model identity changes clear the prior capability receipt and Test decision; display-only changes preserve them. A `testResult` names the profile it measured and is ignored unless that is the selected path. Credentials never enter wizard state. |
 | [`mount.ts`](mount.ts) | `mountOnboarding()`: renders `WizardHost` into `#onboarding-root`. The only importer of the wizard UI, so the build keeps it out of the first-load bundle. |
 | [`presets.ts`](presets.ts) | Provider presets for the wizard's cloud form: `readProviderPresets` reads `provider_presets` from `GET /onboarding` (the registry's endpoint and default model per protocol), `presetLabel` names a provider, and `keyPage` gives the page a key comes from only where `docs/startup-guide.md` names one. No URL is made up in the UI. |

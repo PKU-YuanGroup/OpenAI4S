@@ -3,7 +3,6 @@ import { ApiError } from "../customize/api";
 import {
   INITIAL_WIZARD,
   REQUIRED_STEPS,
-  checklistItems,
   formatWizardError,
   reduceWizard,
   requiredStepCount,
@@ -48,19 +47,12 @@ describe("M-01 wizard state machine", () => {
     expect(next.providerRequests).toBe(0);
   });
 
-  it("checklist lists four items and jump-to-project does not require going back", () => {
+  it("the step rail jumps to project without going back, and marks only what was decided", () => {
     const listed = run([
       { type: "hydrate", complete: false },
       { type: "choosePath", path: PATH },
-      { type: "showChecklist" },
     ]);
-    expect(listed.surface).toBe("checklist");
-    expect(checklistItems(listed)).toEqual([
-      { step: "path", done: true },
-      { step: "test", done: false },
-      { step: "readiness", done: false },
-      { step: "project", done: false },
-    ]);
+    expect(listed.decided).toEqual(["path"]);
     const jumped = reduceWizard(listed, { type: "goto", step: "project" });
     expect(jumped.surface).toBe("wizard");
     expect(jumped.step).toBe("project");
@@ -133,14 +125,13 @@ describe("M-01 wizard state machine", () => {
       { type: "next" },
       { type: "startTest" },
       { type: "testResult", receipt: { native_tool_call: "true", streaming: "true", stale: false, native_completion: true, reachable: true }, detail: "model A receipt", reachable: true },
-      { type: "showChecklist" },
       { type: "goto", step: "path" },
       { type: "choosePath", path: { ...PATH, ...changed } },
     ]);
     expect(state.receipt).toBeNull();
     expect(state.probeDetail).toBe("");
     expect(state.testClicked).toBe(false);
-    expect(checklistItems(state).find((item) => item.step === "test")?.done).toBe(false);
+    expect(state.decided).not.toContain("test");
     // This counts requests actually sent during the wizard, across profiles.
     expect(state.providerRequests).toBe(1);
   });

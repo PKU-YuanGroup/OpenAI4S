@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-M-01 首次运行向导内核。四个必需决策步骤、skip/清单，以及 B-04 `capability_receipt` badge 行。`GET /onboarding` 脱敏且零出站；只有 Test 会探测供应商。
+M-01 首次运行向导内核。四个必需决策步骤、skip，以及 B-04 `capability_receipt` badge 行。`GET /onboarding` 脱敏且零出站；只有 Test 会探测供应商。
 
 ## 文件
 
@@ -17,7 +17,7 @@ M-01 首次运行向导内核。四个必需决策步骤、skip/清单，以及 
 | [`copy.ts`](copy.ts) | 车道本地 zh/en 文案（`ot`）。不改生成的 i18n。`copyLookup(table)` 是 `ot` 与 `judgmentT` 共用的查表函数。 |
 | [`copy.test.ts`](copy.test.ts) | `copyLookup`：先查当前语言，再查英文，最后返回 key；已加载的词典优先；按位置填充占位符。`ot` 与 `judgmentT` 都基于它。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
-| [`machine.test.ts`](machine.test.ts) | skip / 清单 / 带 request id 的错误；Test 前 providerRequests=0，获取模型列表会计入请求数但不算作 Test 决定；模型身份变化时清除回执和测试决定；为其他配置档测得的 probe 结果会被丢弃。 |
+| [`machine.test.ts`](machine.test.ts) | skip / 步骤条跳转 / 带 request id 的错误；Test 前 providerRequests=0，获取模型列表会计入请求数但不算作 Test 决定；模型身份变化时清除回执和测试决定；为其他配置档测得的 probe 结果会被丢弃。 |
 | [`machine.ts`](machine.ts) | 四步 reducer。模型身份改变时清除旧能力回执和测试决定；仅展示字段变化时保留。`testResult` 带上它实际测的配置档，若不是当前所选路径则忽略。凭据不进入向导状态。 |
 | [`mount.ts`](mount.ts) | `mountOnboarding()`：把 `WizardHost` 渲染到 `#onboarding-root`。它是唯一导入向导 UI 的模块，构建时因此被拆出首屏包。 |
 | [`presets.ts`](presets.ts) | 向导云端表单的服务商预设：`readProviderPresets` 读取 `GET /onboarding` 的 `provider_presets`（注册表里每个协议自己的地址和默认模型），`presetLabel` 给出服务商名称，`keyPage` 只在 `docs/startup-guide.md` 写明了的地方给出获取 Key 的页面。界面不自造任何 URL。 |

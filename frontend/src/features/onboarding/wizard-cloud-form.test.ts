@@ -165,7 +165,8 @@ describe("first-run wizard: the cloud model form", () => {
     const { shell } = render();
     expect(textOf(has(shell, "data-onboarding-lang")[0])).toBe(ot("onboarding.lang.switch"));
     const buttons = all(shell, (node) => node.type === "button").map(textOf);
-    expect(buttons).not.toContain(ot("onboarding.checklist"));
+    expect(buttons).not.toContain("Checklist");
+    expect(buttons).not.toContain("清单");
     // tests/browser_auth.mjs dismisses the wizard through this attribute: the
     // first outline button in the dialog is no longer Skip.
     expect(textOf(has(shell, "data-onboarding-skip")[0])).toBe(ot("onboarding.skip"));
