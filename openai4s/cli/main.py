@@ -2921,7 +2921,12 @@ def cmd_share(args) -> int:
     if args.json:
         print(json.dumps(rec, ensure_ascii=False, indent=2))
     elif status >= 400:
-        print(f"error: {rec.get('error') or rec}", file=sys.stderr)
+        detail = rec.get("error") if isinstance(rec, dict) else rec
+        if not detail:
+            # Never the dict's repr.
+            code = rec.get("code") if isinstance(rec, dict) else None
+            detail = f"HTTP {status}" + (f" ({code})" if code else "")
+        print(f"error: {detail}", file=sys.stderr)
         if isinstance(rec, dict) and rec.get("code") == "sharing_unconfigured":
             print(_SHARE_SETUP_STEPS, file=sys.stderr)
     elif action == "create" or action == "update":
@@ -2955,7 +2960,8 @@ def cmd_share(args) -> int:
         print(_share_status_text(rec))
     elif action == "revoke":
         print(
-            f"share {args.share_id} was already revoked"
+            # `already` is also the answer for an id that never existed.
+            f"share {args.share_id} was not active (nothing to revoke)"
             if rec.get("already")
             else f"revoked share {args.share_id}; its link no longer works"
         )
@@ -3092,7 +3098,14 @@ def cmd_cluster(args) -> int:
         # refused submit printed "submitted None (None)" and a 401 on `list`
         # printed "no jobs", with the daemon's own explanation nowhere.
         detail = rec.get("error") if isinstance(rec, dict) else None
+        if isinstance(rec, dict) and rec.get("code") == "already_final":
+            # The body has no `error`, so this printed the dict's repr.
+            detail = f"job {args.job_id} already finished ({rec.get('phase')})"
+        elif not detail and isinstance(rec, dict):
+            detail = f"HTTP {status}" + (f" ({rec['code']})" if rec.get("code") else "")
         print(f"error: {detail or rec or f'HTTP {status}'}", file=sys.stderr)
+    elif action == "cancel":
+        print(f"cancel requested for {rec.get('id')} ({rec.get('reason')})")
     elif action == "list":
         import shlex
 

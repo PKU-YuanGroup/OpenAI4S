@@ -605,3 +605,60 @@ def test_share_list_shows_title_contents_and_expiry(monkeypatch, capsys):
         "never expires",
         "https://sh-1.example.org/",
     ]
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-19: no raw JSON or Python dict repr as human output
+# --------------------------------------------------------------------------- #
+
+
+def test_cluster_cancel_answers_in_words(monkeypatch, capsys):
+    """It printed the daemon's JSON."""
+    module = _cli_module()
+    _stub_daemon(
+        monkeypatch,
+        module,
+        (200, {"ok": True, "id": "wl_1", "reason": "USER_CANCELLED"}),
+    )
+
+    assert module.cmd_cluster(_cluster_args("cancel")) == 0
+    assert (
+        capsys.readouterr().out.strip() == "cancel requested for wl_1 (USER_CANCELLED)"
+    )
+
+
+def test_cancelling_a_finished_job_is_a_sentence_not_a_dict(monkeypatch, capsys):
+    """`error: {'ok': False, 'phase': 'COMPLETED', 'code': 'already_final'}`."""
+    module = _cli_module()
+    _stub_daemon(
+        monkeypatch,
+        module,
+        (409, {"ok": False, "phase": "COMPLETED", "code": "already_final"}),
+    )
+
+    assert module.cmd_cluster(_cluster_args("cancel")) == 2
+    err = capsys.readouterr().err.strip()
+    assert err == "error: job wl_1 already finished (COMPLETED)"
+
+
+def test_an_error_body_without_a_message_is_never_a_dict_repr(monkeypatch, capsys):
+    module = _cli_module()
+    _stub_daemon(monkeypatch, module, (500, {"code": "internal"}))
+    module.cmd_cluster(_cluster_args("list"))
+    _share(monkeypatch, ["list"], {("GET", "/shares"): (500, {"code": "internal"})})
+
+    err = capsys.readouterr().err
+    assert err.splitlines() == ["error: HTTP 500 (internal)"] * 2
+
+
+def test_revoking_a_share_that_was_not_active_says_so(monkeypatch, capsys):
+    """`share revoke nosuch` printed `{"ok": true, "already": true}`."""
+    _share(
+        monkeypatch,
+        ["revoke", "nosuch"],
+        {("DELETE", "/shares/nosuch"): (200, {"ok": True, "already": True})},
+    )
+
+    assert capsys.readouterr().out.strip() == (
+        "share nosuch was not active (nothing to revoke)"
+    )
