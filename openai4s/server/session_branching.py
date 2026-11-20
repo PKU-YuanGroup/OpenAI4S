@@ -1492,9 +1492,54 @@ class SessionBranchingService:
             pass
 
 
+def project_branch_steps(
+    store: Any,
+    root_frame_id: str,
+    steps: list[dict[str, Any]],
+    *,
+    branch_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """The transcript's activity steps as one branch sees them.
+
+    Steps carry no branch and no cursor, so activating a branch forked at the
+    second question still showed every step card the original branch wrote
+    after that point. A step belongs to the branch of the latest user message
+    written before it (turns run one at a time per session, and every turn
+    starts with one), and it is part of a checkpoint's history when it was
+    written no later than that checkpoint: the same append-only projection the
+    messages and cells use, with the checkpoint's own time as the cursor.
+    """
+
+    import bisect
+
+    from openai4s.storage.branch_projection import project_branch_records
+
+    selected = branch_id or store.active_session_branch(root_frame_id)
+    users = sorted(
+        (int(message.get("created_at") or 0), str(message.get("branch_id") or ""))
+        for message in store.list_message_boundaries(root_frame_id, limit=None)
+        if message.get("role") == "user"
+    )
+    times = [at for at, _branch in users]
+    local: dict[str, list[dict[str, Any]]] = {}
+    for step in steps:
+        index = bisect.bisect_right(times, int(step.get("created_at") or 0)) - 1
+        owner = (users[index][1] if index >= 0 else "") or root_frame_id
+        local.setdefault(owner, []).append(step)
+    return project_branch_records(
+        store,
+        root_frame_id,
+        selected,
+        list_local=lambda branch: local.get(branch, []),
+        record_position=lambda step: int(step.get("created_at") or 0),
+        cursor_key="created_at",
+    )
+
+
 __all__ = [
     "CheckpointRequest",
     "RevertRecoveryRequiredError",
     "SessionBranchingService",
     "SnapshotRepository",
+    "project_branch_steps",
 ]

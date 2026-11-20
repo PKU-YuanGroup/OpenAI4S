@@ -1207,3 +1207,159 @@ def test_an_unknown_recovery_action_is_rejected(tmp_path):
             assert code == 404, f"an unroutable action must 404, got {code}"
     finally:
         runner.close()
+
+
+def _turns_that_save_a_file(runner, frame_id):
+    """Each turn writes the next of A.txt, B.txt, C.txt with one step."""
+
+    written = {"n": 0}
+
+    def loop(st, _emit, _visible):
+        name = "ABC"[written["n"]] + ".txt"
+        written["n"] += 1
+        path = st.workspace / name
+        path.write_text(name + "\n", encoding="utf-8")
+        runner.store.add_step(
+            step_id=f"step-{name}",
+            frame_id=frame_id,
+            kind="artifact",
+            title=f"Saving {name}",
+            status="done",
+        )
+        runner.store.save_artifact(
+            path=str(path),
+            filename=name,
+            content_type="text/plain",
+            size_bytes=path.stat().st_size,
+            checksum=hashlib.sha256(path.read_bytes()).hexdigest(),
+            frame_id=frame_id,
+            root_frame_id=frame_id,
+            project_id="project-domain",
+        )
+        st.dispatcher.last_output = {"output": "done"}
+        return "submitted"
+
+    runner._loop = loop
+
+
+def _titles(handler, frame_id):
+    code, steps = _call(handler, "GET", f"/frames/{frame_id}/steps")
+    assert code == 200
+    return [step["title"] for step in steps["steps"]]
+
+
+def _filenames(handler, frame_id):
+    code, artifacts = _call(handler, "GET", f"/frames/{frame_id}/artifacts")
+    assert code == 200
+    return sorted(artifact["filename"] for artifact in artifacts)
+
+
+def test_activated_branch_lists_only_its_own_steps_and_files(tmp_path):
+    """M-73: after activating a branch forked at the second question, the
+    conversation still showed the original branch's later step cards, and its
+    later files under "generated"."""
+
+    runner, handler, frame_id = _setup(tmp_path)
+    runner.store.update_frame(frame_id, name="two turns")
+    _turns_that_save_a_file(runner, frame_id)
+    try:
+        for text in ("message one", "message two"):
+            assert runner.run_message(frame_id, "project-domain", text)["status"] == (
+                "completed"
+            )
+        assert _titles(handler, frame_id) == ["Saving A.txt", "Saving B.txt"]
+        # A real turn ends its cells with a cursor checkpoint; this loop has none.
+        code, _ = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/checkpoints",
+            body={"reason": "turn two done"},
+        )
+        assert code == 200
+        code, messages = _call(handler, "GET", f"/frames/{frame_id}/messages")
+        second = next(m for m in messages["messages"] if m["content"] == "message two")
+        code, fork = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/fork",
+            body={"from_message_id": second["message_id"]},
+        )
+        assert code == 200
+        code, _activated = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/{fork['branch_id']}/activate",
+        )
+        assert code == 200
+
+        assert _titles(handler, frame_id) == ["Saving A.txt"]
+        assert _filenames(handler, frame_id) == ["A.txt"]
+
+        # What the branch does next is its own and follows the inherited part.
+        runner.run_message(frame_id, "project-domain", "message three")
+        assert _titles(handler, frame_id) == ["Saving A.txt", "Saving C.txt"]
+        assert _filenames(handler, frame_id) == ["A.txt", "C.txt"]
+
+        # Back on the original branch: its history, without the fork's step.
+        code, _ = _call(
+            handler, "POST", f"/frames/{frame_id}/branches/{frame_id}/activate"
+        )
+        assert code == 200
+        assert _titles(handler, frame_id) == ["Saving A.txt", "Saving B.txt"]
+        assert _filenames(handler, frame_id) == ["A.txt", "B.txt"]
+    finally:
+        runner.close()
+
+
+def test_restore_runs_on_an_activated_fork_branch(tmp_path):
+    """M-73: a fork's head is its parent's checkpoint, whose kernel manifest
+    names the parent's workspace. Restore on the activated fork refused with
+    "checkpoint working directory does not match this session workspace"."""
+
+    runner, handler, frame_id = _setup(tmp_path)
+    runner.store.update_frame(frame_id, name="restore on a fork")
+    _turns_that_save_a_file(runner, frame_id)
+    try:
+        assert runner.start_kernel(frame_id, "project-domain")["state"] == "running"
+        runner.run_message(frame_id, "project-domain", "message one")
+        # A cell that wrote a file is never replayed, so recovery stays partial.
+        runner.store.log_cell(
+            frame_id=frame_id,
+            root_frame_id=frame_id,
+            project_id="project-domain",
+            code="x = 1\nopen('A.txt', 'w').write('A')\n",
+            result={"status": "ok", "stdout": "", "error": None},
+            cell_index=1,
+            state_revision=1,
+            files_written=["A.txt"],
+        )
+        runner.run_message(frame_id, "project-domain", "message two")
+        code, messages = _call(handler, "GET", f"/frames/{frame_id}/messages")
+        second = next(m for m in messages["messages"] if m["content"] == "message two")
+        code, fork = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/fork",
+            body={"from_message_id": second["message_id"]},
+        )
+        branch_id = fork["branch_id"]
+        code, activated = _call(
+            handler, "POST", f"/frames/{frame_id}/branches/{branch_id}/activate"
+        )
+        assert code == 200 and activated["status"] == "partial"
+
+        code, restored = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/recovery/actions/restore",
+            body={"branch_id": branch_id},
+        )
+        # It ran: the same honest partial outcome, not a refusal to start.
+        assert restored["status"] == "partial", restored
+        issues = [issue for item in restored["results"] for issue in item["issues"]]
+        assert issues and not any(
+            "working directory" in str(issue.get("error") or "") for issue in issues
+        )
+        assert runner._existing_state(frame_id).branch_id == branch_id
+    finally:
+        runner.close()

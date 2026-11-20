@@ -18149,7 +18149,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/steps", sub)
             if m and method == "GET":
-                self._json({"steps": store.list_steps(m.group(1))})
+                # M-73: only the active branch's steps, like its messages.
+                from openai4s.server.session_branching import project_branch_steps
+
+                fid = m.group(1)
+                self._json(
+                    {"steps": project_branch_steps(store, fid, store.list_steps(fid))}
+                )
                 return
             m = re.fullmatch(r"/frames/([^/]+)/review", sub)
             if m and method == "POST":
@@ -19143,7 +19149,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/artifacts", sub)
             if m and method == "GET":
                 fid = m.group(1)
-                arts = store.list_artifacts({"root_frame_id": fid})
+                # M-73: activating a branch clears the head of every Artifact
+                # its checkpoint does not hold; such a row is no file of the
+                # active branch, and listing it showed later work as "generated".
+                arts = [
+                    a
+                    for a in store.list_artifacts({"root_frame_id": fid})
+                    if a.get("latest_version_id")
+                ]
                 self._json(
                     [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
                 )
