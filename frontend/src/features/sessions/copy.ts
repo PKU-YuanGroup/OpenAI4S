@@ -135,7 +135,7 @@ export const projectHistoryCopy = copyLookup({
 /** Home dashboard strings the generated dictionaries do not carry (NAV-4). */
 export const dashCopy = copyLookup({
   en: {
-    "dash.example.runningNote": "The example analysis is running; it takes a minute or two. Open the session to watch it.",
+    "dash.example.runningNote": "The example analysis is running; it usually finishes in well under a minute. Its steps appear in the session as they run, and its code cells in the session's Notebook.",
     "dash.example.done": "The example analysis finished: all {0} cells ran without an error.",
     "dash.example.doneFailed": "The example analysis ended: {0} of {1} cells did not complete. The session says why.",
     "dash.example.doneStepFailed": "The example analysis finished: all {0} cells ran, but {1} step(s) failed along the way (a data source may be unreachable). The session says which.",
@@ -149,7 +149,7 @@ export const dashCopy = copyLookup({
     "dash.example.tag": "Example",
   },
   zh: {
-    "dash.example.runningNote": "示例分析正在运行，大约需要一两分钟。可以打开会话看它运行。",
+    "dash.example.runningNote": "示例分析正在运行，通常不到一分钟即可完成。各步骤会在会话里陆续出现，代码单元在该会话的 Notebook 里。",
     "dash.example.done": "示例分析已完成：{0} 个单元都运行完毕，没有出错。",
     "dash.example.doneFailed": "示例分析已结束：{1} 个单元中有 {0} 个没有完成，会话里写明了原因。",
     "dash.example.doneStepFailed": "示例分析已完成：{0} 个单元都运行完毕，但有 {1} 个步骤失败（可能是某个数据源连不上），会话里写明了是哪一步。",
