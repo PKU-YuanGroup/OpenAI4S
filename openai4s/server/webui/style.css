@@ -1917,10 +1917,10 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 .msg.user>.msg-queued{display:none}
 .msg.user.queued:not(.cancelled){flex-wrap:wrap}
 .msg.user.queued:not(.cancelled)>.msg-queued{display:block;flex:0 0 100%;margin-top:4px;text-align:right;font-size:12px;color:var(--text-400)}
-/* The strip's "stop and send now" (timeline/queue.ts) wraps under the note on a narrow screen. */
+/* The strip's "stop and send now" (or, after a failed turn, "run them": timeline/queue.ts) wraps under the note on a narrow screen. */
 .queue-head{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}
 .queue-head-t{flex:1 1 auto;min-width:0}
-.queue-send-now{flex:none;height:24px;padding:0 9px;font-size:12px}
+.queue-send-now,.queue-resume{flex:none;height:24px;padding:0 9px;font-size:12px}
 /* A message that was queued and then dropped stays legible on purpose: the
    user can re-send it, which they cannot do with a bubble that vanished. */
 .msg.user.cancelled .bubble{opacity:.5;text-decoration:line-through}

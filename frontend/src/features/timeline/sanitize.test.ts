@@ -298,6 +298,17 @@ describe("sanitizeExecutionQueue", () => {
     expect(safe.queue).toHaveLength(100);
     expect(safe.queue[0]?.owner.kind).toBe("agent");
   });
+
+  it("keeps whether a queued item is held after a failed turn (M-31)", () => {
+    const safe = sanitizeExecutionQueue({
+      queue: [
+        { execution_id: "q1", owner: { kind: "agent", id: "a" }, held: true },
+        { execution_id: "q2", owner: { kind: "agent", id: "b" }, held: "yes" },
+        { execution_id: "q3", owner: { kind: "agent", id: "c" } },
+      ],
+    });
+    expect(safe.queue.map((item) => item.held)).toEqual([true, false, false]);
+  });
 });
 
 describe("sanitizeRecovery / actions", () => {

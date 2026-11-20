@@ -634,6 +634,45 @@ describe("queue strip", () => {
     expect(said.mock.calls.at(-1)?.[0]).toBe(t("queue.cancelled"));
   });
 
+  it("after a failed turn asks before the held messages run, and runs them on request (M-31)", async () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    const calls = stubApi(() => ({ ok: true, released: 2 }));
+    S.currentId = "frame-a";
+    S.executionQueue = {
+      owner: null,
+      queue: [{ ...queued("exec-h1", "KM by EGFR"), held: true }, { ...queued("exec-h2", "and by TP53"), held: true }],
+    };
+    renderQueueStrip();
+    expect(doc.querySelector("#queue-strip .queue-head-t")!.textContent).toBe(
+      "The last turn failed. Run the 2 queued messages?",
+    );
+    // Nothing is running, so "stop and send now" has nothing to stop.
+    expect(doc.querySelector("#queue-strip .queue-send-now")).toBeNull();
+    // Each one can still be dropped, and its bubble says it is on hold.
+    expect(doc.querySelectorAll("#queue-strip .queue-cancel")).toHaveLength(2);
+    expect(host.querySelector(".msg.user .msg-queued")!.textContent).toBe("On hold · the last turn failed");
+    // Stop would hand the session to none of them.
+    expect(queuedFollowUpCount()).toBe(0);
+    const run = doc.querySelector("#queue-strip .queue-resume") as unknown as HTMLButtonElement;
+    expect(run.textContent).toBe("Run them");
+    run.click();
+    run.click();
+    await flush();
+    expect(calls.map((call) => [call.method, call.path])).toEqual([
+      ["POST", "/frames/frame-a/execution-queue/resume"],
+    ]);
+    // One held message: the question counts it as one.
+    S.executionQueue = { owner: null, queue: [{ ...queued("exec-h1", "KM by EGFR"), held: true }] };
+    renderQueueStrip();
+    expect(doc.querySelector("#queue-strip .queue-head-t")!.textContent).toBe(
+      "The last turn failed. Run the queued message?",
+    );
+    expect(doc.querySelector("#queue-strip .queue-resume")!.textContent).toBe("Run it");
+  });
+
   it("a queued bubble whose execution started is not marked dropped by a late queue event", () => {
     const doc = mountDocument();
     const host = doc.createElement("div");

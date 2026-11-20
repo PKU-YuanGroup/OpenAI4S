@@ -8352,15 +8352,30 @@ class SessionRunner:
     def running_frames(self) -> set:
         """Set of root_frame_ids with a live turn — compute ONCE for list views
         instead of re-scanning _jobs per row."""
-        return {
-            j.root_frame_id for j in list(self._jobs.values()) if not j.done.is_set()
-        }
+        held: dict[str, frozenset[str]] = {}
+        running: set[str] = set()
+        for j in list(self._jobs.values()):
+            if j.done.is_set():
+                continue
+            # Not a turn held after a failed one (M-31): it waits for the user.
+            if j.root_frame_id not in held:
+                held[j.root_frame_id] = self.executions.held_ids(j.root_frame_id)
+            if j.execution_id not in held[j.root_frame_id]:
+                running.add(j.root_frame_id)
+        return running
 
     def is_running(self, root_frame_id: str) -> bool:
         """True while an agent turn is executing for this frame (survives client
         disconnect — the MessageJob runs in a daemon thread)."""
+        # A turn held after a failed one waits for the user, not for the
+        # session: nothing runs until they say so (M-31).
+        held = self.executions.held_ids(root_frame_id)
         for job in list(self._jobs.values()):
-            if job.root_frame_id == root_frame_id and not job.done.is_set():
+            if (
+                job.root_frame_id == root_frame_id
+                and not job.done.is_set()
+                and job.execution_id not in held
+            ):
                 return True
         return False
 
@@ -19322,7 +19337,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # as a 500 from the stricter projections).
             workbench = re.fullmatch(
                 r"/frames/([^/]+)/(?:"
-                r"action-timeline|execution-queue|context|security|"
+                r"action-timeline|execution-queue(?:/resume)?|context|security|"
                 r"delegations|"
                 r"recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|"
                 r"branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|"
@@ -19383,6 +19398,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/execution-queue", sub)
             if m and method == "GET":
                 self._json(runner.executions.snapshot(m.group(1)))
+                return
+            # After a failed turn the messages queued behind it wait for the
+            # user (M-31); this is their "run them".
+            m = re.fullmatch(r"/frames/([^/]+)/execution-queue/resume", sub)
+            if m and method == "POST":
+                released = runner.executions.release_held(m.group(1))
+                self._json({"ok": True, "frame_id": m.group(1), "released": released})
                 return
             m = re.fullmatch(r"/frames/([^/]+)/context", sub)
             if m and method == "GET":

@@ -103,6 +103,8 @@ export type ExecutionTicket = {
   queued_at: unknown;
   started_at: unknown;
   cancel_requested: boolean;
+  /** Waiting for the user after a failed turn (M-31): `POST …/execution-queue/resume` runs it. */
+  held: boolean;
   metadata: QueueMetadata;
 };
 

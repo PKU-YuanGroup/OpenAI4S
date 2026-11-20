@@ -34,9 +34,9 @@ function queuedAgentItems(): any[] {
   );
 }
 
-/** Queued follow-ups of the open session: what a Stop now hands the session to. */
+/** Queued follow-ups of the open session: what a Stop now hands the session to (not the held ones). */
 export function queuedFollowUpCount(): number {
-  return queuedAgentItems().length;
+  return queuedAgentItems().filter((item: any) => !item.held).length;
 }
 
 /** The user bubble this tab shows for a queued execution, if it shows one. */
@@ -85,7 +85,7 @@ function previewBubble(item: any): HTMLElement {
   // Replaced by the whole message when its turn starts (messages/list.ts).
   row.dataset.queuePreview = "1";
   row.appendChild(el("div", "bubble", meta.preview || t("queue.noPreview")));
-  row.appendChild(el("span", "msg-queued", sendCopy("queuedBadge")));
+  row.appendChild(el("span", "msg-queued", item.held ? queueT("queueRow.heldBadge") : sendCopy("queuedBadge")));
   return row;
 }
 
@@ -121,6 +121,9 @@ export function syncQueuedBubbles(): void {
   let drew = false;
   items.forEach((item: any) => {
     const id = String(item.execution_id || "");
+    // On hold after a failed turn, or waiting its turn: the badge says which.
+    const badge = bubbleFor(id)?.querySelector(".msg-queued");
+    if (badge) badge.textContent = item.held ? queueT("queueRow.heldBadge") : sendCopy("queuedBadge");
     // Taken back by this tab (✕ or Edit): its bubble is already handled.
     if (!id || bubbleFor(id) || queueCancelPending.has(id)) return;
     const own = ownBubble(String((item.metadata || {}).request_id || ""));
@@ -167,26 +170,47 @@ export function renderQueueStrip(): void {
   box.classList.toggle("hidden", !queue.length);
   syncQueuedBubbles();
   if (!queue.length) return;
-  // Says what Stop does to these before anyone presses it: Stop ends only the
-  // running turn, and the first queued message starts right after.
   const head = el("div", "queue-head");
-  head.appendChild(
-    el("span", "queue-head-t", t("queue.waiting", queue.length) + " · " + queueT("queueRow.headNote")),
-  );
-  // For a correction that cannot wait: the existing Stop, whose turn's end
-  // starts the first queued message at once. Pressing the Stop button itself
-  // keeps one stop path (and its hints). Stop is hidden while a stop is in
-  // flight, and a second one would land on the message that just started.
-  const now = el("button", "outline-btn small queue-send-now", queueT("queueRow.sendNow")) as HTMLButtonElement;
-  now.type = "button";
-  now.title = queueT("queueRow.sendNowTitle");
-  now.onclick = () => {
-    const stop = document.getElementById("cancel-btn") as HTMLButtonElement | null;
-    if (now.disabled || !stop || stop.classList.contains("hidden")) return;
-    now.disabled = true;
-    stop.click();
-  };
-  head.appendChild(now);
+  const held = queue.filter((item: any) => item.held).length;
+  if (held) {
+    // M-31: the turn they were typed behind failed, and they usually build
+    // on its result, so they wait for the user instead of starting.
+    head.classList.add("queue-held");
+    head.appendChild(el("span", "queue-head-t", queueT("queueRow.held", held)));
+    const run = el(
+      "button",
+      "outline-btn small queue-resume",
+      queueT(held === 1 ? "queueRow.resumeOne" : "queueRow.resume"),
+    ) as HTMLButtonElement;
+    run.type = "button";
+    run.title = queueT("queueRow.resumeTitle");
+    run.onclick = () => {
+      if (run.disabled) return;
+      run.disabled = true;
+      void resumeHeldQueue(frameId, run);
+    };
+    head.appendChild(run);
+  } else {
+    // Says what Stop does to these before anyone presses it: Stop ends only the
+    // running turn, and the first queued message starts right after.
+    head.appendChild(
+      el("span", "queue-head-t", t("queue.waiting", queue.length) + " · " + queueT("queueRow.headNote")),
+    );
+    // For a correction that cannot wait: the existing Stop, whose turn's end
+    // starts the first queued message at once. Pressing the Stop button itself
+    // keeps one stop path (and its hints). Stop is hidden while a stop is in
+    // flight, and a second one would land on the message that just started.
+    const now = el("button", "outline-btn small queue-send-now", queueT("queueRow.sendNow")) as HTMLButtonElement;
+    now.type = "button";
+    now.title = queueT("queueRow.sendNowTitle");
+    now.onclick = () => {
+      const stop = document.getElementById("cancel-btn") as HTMLButtonElement | null;
+      if (now.disabled || !stop || stop.classList.contains("hidden")) return;
+      now.disabled = true;
+      stop.click();
+    };
+    head.appendChild(now);
+  }
   box.appendChild(head);
   queue.forEach((item: any) => {
     const row = el("div", "queue-row");
@@ -225,6 +249,21 @@ export function renderQueueStrip(): void {
     row.appendChild(drop);
     box.appendChild(row);
   });
+}
+
+/** "Run them": the messages held after a failed turn run, in their order (M-31). */
+async function resumeHeldQueue(fid: string | null, button: HTMLButtonElement): Promise<void> {
+  if (!fid) return;
+  try {
+    const r = (await api(`/frames/${fid}/execution-queue/resume`, { method: "POST", body: "{}" })) as {
+      ok?: boolean;
+    };
+    // The queue event that follows repaints the strip; a refusal leaves it as it was.
+    if (!r || r.ok !== true) button.disabled = false;
+  } catch (e) {
+    button.disabled = false;
+    hint(queueT("queueRow.resumeFailed", apiErrorText(e)), true);
+  }
 }
 
 /** POST the exact cancel for one queued execution. True when it was accepted. */

@@ -352,6 +352,7 @@ export function sanitizeExecutionQueue(payload: unknown): ExecutionQueue {
       queued_at: rec.queued_at,
       started_at: rec.started_at,
       cancel_requested: !!rec.cancel_requested,
+      held: rec.held === true,
       metadata: queueMetadata(rec.metadata),
     };
   };
