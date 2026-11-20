@@ -736,6 +736,65 @@ def test_unfinished_turns_are_counted_back_to_the_last_finished_one():
     assert unfinished_turns_since([]) is None
 
 
+def test_completed_work_leaves_out_what_the_summary_and_findings_said():
+    """SCI-15: "Keep it short" came back as a summary, five findings and a
+    "Completed work" list that named the same identifiers a third time."""
+    output = {
+        "summary": (
+            "Loaded the literature-review skill and grounded every identifier in "
+            "live database records. Crambin: UniProt accession P01542; one PDB "
+            "ID: 1CRN, verified in NCBI's structure database. Two real crambin "
+            "crystal-structure papers, each with PMID and DOI verified in PubMed. "
+            "Sequence length re-confirmed as 46 amino acids."
+        ),
+        "findings": [
+            "UniProt: P01542 - Crambin, entry name CRAM_CRAAB, length 46 aa.",
+            "Length re-check: the NCBI protein record for UniProt P01542 states "
+            "46 aa, matching the UniProt search result.",
+        ],
+    }
+    bullets = [
+        "Verified UniProt P01542 (crambin, 46 aa) and PDB entry 1CRN from live "
+        "database records",
+        "Verified two crambin crystal-structure papers with PMID and DOI",
+        "Re-confirmed the 46-aa sequence length via the NCBI record of the "
+        "UniProt entry",
+        # Something the message has not said yet stays.
+        "Used the skill's retrieve-first approach for every identifier",
+    ]
+    text = completion_message(
+        {"output": output, "completion_bullets": bullets}, language="en"
+    )
+
+    done = text.split("Completed work:\n", 1)[1]
+    assert done.strip() == (
+        "- Used the skill's retrieve-first approach for every identifier"
+    )
+
+    # Nothing left to add: no heading at all.
+    covered = completion_message(
+        {"output": output, "completion_bullets": bullets[:3]}, language="en"
+    )
+    assert "Completed work:" not in covered
+
+    # Chinese bullets are compared by character pairs.
+    zh = completion_message(
+        {
+            "output": {
+                "summary": "已核实 UniProt 编号 P01542 与 PDB 结构 1CRN。",
+                "findings": ["两条记录的序列长度一致"],
+            },
+            "completion_bullets": [
+                "核实了 UniProt 编号 P01542 与 PDB 结构 1CRN",
+                "导出了比对表",
+            ],
+        },
+        language="zh",
+    )
+    assert "完成内容：\n- 导出了比对表" in zh
+    assert "- 核实了" not in zh
+
+
 def test_the_summary_groups_deliverables_by_kind():
     """ART-1: 26 links in one flat newest-first list; the report was item 3."""
     artifacts = [

@@ -599,10 +599,16 @@ def completion_message(
         if fallback and _normalized(fallback) not in previous:
             parts.append(fallback)
 
+    # SCI-15: "Completed work" was the third telling of the same identifiers,
+    # after the summary and the findings. A bullet whose words those already
+    # carry is left out; one that says something new stays.
+    said = _content_tokens(" ".join([previous_text, *parts]))
     fresh_bullets = [
         str(item).strip()
         for item in bullets
-        if str(item).strip() and _normalized(str(item)) not in previous
+        if str(item).strip()
+        and _normalized(str(item)) not in previous
+        and not _already_said(str(item), said)
     ]
     bullets_at = len(parts)  # the list goes here, once the artifacts are known
 
@@ -661,6 +667,34 @@ def completion_message(
     if not parts and require_fallback:
         return "任务已完成。" if zh else "The task is complete."
     return "\n\n".join(parts)
+
+
+_WORD = re.compile(r"[a-z0-9][a-z0-9._'-]*")
+_CJK_RUN = re.compile(r"[㐀-䶿一-鿿]+")
+_FILLER_WORDS = frozenset(
+    "the and with from into for its their this that was were are has have had "
+    "via all each both".split()
+)
+#: The share of a bullet's words the message must already carry to drop it.
+_ALREADY_SAID = 0.7
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Words of three or more characters, and Chinese character pairs."""
+    lowered = str(text or "").lower()
+    tokens = {
+        word.strip("._'-")
+        for word in _WORD.findall(lowered)
+        if len(word.strip("._'-")) >= 3 and word.strip("._'-") not in _FILLER_WORDS
+    }
+    for run in _CJK_RUN.findall(lowered):
+        tokens.update(run[index : index + 2] for index in range(max(1, len(run) - 1)))
+    return tokens
+
+
+def _already_said(bullet: str, said: set[str]) -> bool:
+    tokens = _content_tokens(bullet)
+    return bool(tokens) and len(tokens & said) >= _ALREADY_SAID * len(tokens)
 
 
 def unfinished_turns_since(messages: Iterable[dict]) -> int | None:
