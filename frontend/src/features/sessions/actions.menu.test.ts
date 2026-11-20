@@ -18,6 +18,8 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { saveCurrentAsSkill, sessionMenu, showContextUsage } from "./actions";
 import { openMenu, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
+import { shareCopy } from "./copy";
+import { primeShareStatus, resetShareStatus } from "./share";
 import { openProjectResearchView } from "./projects";
 import { actionTimelineCard } from "../timeline/island";
 
@@ -145,5 +147,32 @@ describe("Run location", () => {
     const items = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
     items.find((item) => item.label === t("compute.menu.runLocation"))!.onClick!();
     expect(openRunLocationDialog).toHaveBeenCalledExactlyOnceWith("f");
+  });
+});
+
+// EXP-3: in a default install Share opens a setup guide; the item says so.
+describe("Share (read-only link)", () => {
+  async function shareItem(status: Record<string, unknown>): Promise<MenuItem> {
+    resetShareStatus();
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify(status)));
+    await primeShareStatus();
+    vi.unstubAllGlobals();
+    vi.mocked(openMenu).mockReset();
+    sessions.value = [{ id: "f", project_id: "P" }];
+    sessionMenu({} as Element, "f");
+    const items = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
+    return items.find((item) => item.label === t("share.menu"))!;
+  }
+
+  it("carries a needs-setup line while no relay is configured", async () => {
+    expect((await shareItem({ state: "disabled", configured: false })).desc).toBe(
+      shareCopy("menuNeedsSetup"),
+    );
+    expect((await shareItem({ state: "unconfigured" })).desc).toBe(shareCopy("menuNeedsSetup"));
+  });
+
+  it("carries none once a relay is configured", async () => {
+    expect((await shareItem({ state: "ready", configured: true })).desc).toBeUndefined();
+    expect((await shareItem({ state: "disabled", configured: true })).desc).toBeUndefined();
   });
 });

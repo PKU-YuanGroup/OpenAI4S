@@ -13,7 +13,7 @@ import { exploreMode, pendingExecutionId, planMode, running } from "../../stores
 import { API, ApiError, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
-import { composerCopy } from "./copy";
+import { composerCopy, shareCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
 // Imported, not reached through `callLane`. Neither name is ever assigned to
 // `window` (they are in neither CONTRACT_GLOBAL_NAMES nor SEND_CONTRACT_NAMES),
@@ -31,7 +31,7 @@ import { callLane } from "./lane";
 import { assignFolder, invalidateFolders, loadProjects, loadSessions, renderSessions } from "./load";
 import { fetchAllMessages, fetchRecentMessages } from "./messages";
 import { publicText } from "../scrub/scrub";
-import { openShareDialog } from "./share";
+import { openShareDialog, shareNeedsSetup } from "./share";
 import type { SessionLike } from "./paging";
 
 export async function commitTitle(): Promise<void> {
@@ -313,7 +313,14 @@ export function sessionMenu(anchor: Element, fid: string): void {
   }
   items.push(
     { label: t("sessionMenu.exportMarkdown"), icon: "download", onClick: () => void exportSession(fid) },
-    { label: t("share.menu"), icon: "share", onClick: () => void openShareDialog(fid, frame) },
+    {
+      label: t("share.menu"),
+      icon: "share",
+      // In a default install no relay is configured and the dialog can only
+      // explain the setup: say so on the item.
+      ...(shareNeedsSetup() ? { desc: shareCopy("menuNeedsSetup") } : {}),
+      onClick: () => void openShareDialog(fid, frame),
+    },
     { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
     {
       label: t("sessionMenu.downloadArtifacts"),

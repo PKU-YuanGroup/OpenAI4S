@@ -2749,6 +2749,8 @@ html[data-theme="dark"] #dash-project-search{background-image:url("data:image/sv
 .share-setup li{margin:.35em 0}
 .share-label{font-size:14px;font-weight:500;color:var(--text-000)}
 .share-box>.share-label{margin-bottom:-12px}
+/* no relay configured: what is missing, said first and on its own line */
+.share-text.share-lead{font-weight:600;color:var(--text-000)}
 .share-url-row{display:flex;gap:8px}
 .share-url{flex:1;min-width:0;height:42px;box-sizing:border-box;padding:0 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-100);color:var(--text-000);font:13px var(--mono)}
 .share-url:focus{outline:none;border-color:var(--accent-fill);box-shadow:var(--focus-ring)}

@@ -27,6 +27,7 @@ import { bindModalDismiss } from "../chrome/modal";
 import { paintIcons } from "./icon";
 import { callLane, hostWindow } from "./lane";
 import { loadSessions, renderSessions, syncCurrentTitle } from "./load";
+import { primeShareStatus } from "./share";
 import { renderEmptySession } from "../messages/list";
 import {
   fetchAllMessages,
@@ -196,6 +197,8 @@ export function bindWorkbench(): Promise<void> {
   watchActivateKeys(document);
   watchDisconnect();
   setLoadSessionsImpl(async () => { await loadSessions(); });
+  // So the session menu's Share item can say "needs setup" on first open.
+  void primeShareStatus();
 
   document.querySelectorAll(".lang-btn").forEach((b) => {
     (b as HTMLElement).onclick = () => {

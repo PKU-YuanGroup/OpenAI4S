@@ -207,6 +207,8 @@ export function shareCopy(
     | "linkLabel"
     | "updateDesc"
     | "revokeDesc"
+    | "menuNeedsSetup"
+    | "setupLead"
     | "setupIntro"
     | "setupEnv"
     | "setupRestart"
@@ -217,7 +219,9 @@ export function shareCopy(
     linkLabel: "Read-only link",
     updateDesc: "The link stays the same; its content becomes this session's latest state.",
     revokeDesc: "The link stops working immediately.",
-    setupIntro: "Sharing publishes a read-only snapshot through a relay server you run. No relay is configured yet, so this session cannot be shared. To set it up:",
+    menuNeedsSetup: "Needs setup: a relay server you host",
+    setupLead: "Sharing needs a relay server that you host on a public machine. None is configured, so this session cannot be shared yet.",
+    setupIntro: "A share link serves a read-only snapshot through that relay. To set it up:",
     setupEnv: "Set OPENAI4S_SHARE_RELAY_URL and OPENAI4S_SHARE_AUTH_TOKEN (and OPENAI4S_SHARE_BASE_DOMAIN) in the .env file in the OpenAI4S folder. The relay itself runs on a public host with “openai4s relay”.",
     setupRestart: "Restart OpenAI4S.",
     setupEnable: "Open this dialog again and click Enable sharing, or run “openai4s share enable”.",
@@ -226,7 +230,9 @@ export function shareCopy(
     linkLabel: "只读链接",
     updateDesc: "链接不变，内容换成当前会话的最新状态。",
     revokeDesc: "撤销后立即失效。",
-    setupIntro: "分享会通过你自己运行的中转服务器（relay）发布一份只读快照。目前还没有配置中转服务器，所以这个会话还不能分享。配置步骤：",
+    menuNeedsSetup: "需配置：要先部署自己的中转服务器",
+    setupLead: "分享需要一台由你自己部署在公网主机上的中转服务器（relay）。现在还没有配置，所以这个会话暂时不能分享。",
+    setupIntro: "分享链接通过这台中转服务器提供一份只读快照。配置步骤：",
     setupEnv: "在 OpenAI4S 文件夹的 .env 文件里设置 OPENAI4S_SHARE_RELAY_URL 和 OPENAI4S_SHARE_AUTH_TOKEN（以及 OPENAI4S_SHARE_BASE_DOMAIN）。中转服务器本身用「openai4s relay」部署在一台公网主机上。",
     setupRestart: "重启 OpenAI4S。",
     setupEnable: "再次打开这个对话框，点「启用分享」；或在终端运行「openai4s share enable」。",

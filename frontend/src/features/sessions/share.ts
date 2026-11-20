@@ -8,6 +8,41 @@ import { shareCopy } from "./copy";
 import { icon } from "./icon";
 import type { SessionLike } from "./paging";
 
+/** No relay is configured: the default install, where Share can only explain the setup. */
+function relayUnconfigured(status: Record<string, unknown>): boolean {
+  const state = String(status.state || "");
+  return state === "unconfigured" || (state === "disabled" && !status.configured);
+}
+
+/** What `/share/status` last said; null until it has been read. */
+let needsSetup: boolean | null = null;
+
+/** Whether the session menu's Share item should carry the "needs setup" line. */
+export function shareNeedsSetup(): boolean {
+  return needsSetup === true;
+}
+
+/**
+ * Read the share status once, so the menu can say "needs setup" before the
+ * dialog is opened. A failed read leaves the item untagged.
+ */
+export async function primeShareStatus(): Promise<void> {
+  if (needsSetup !== null) return;
+  try {
+    const status = await fetch(`${API}/share/status`).then((r) => r.json());
+    if (status && typeof status === "object" && typeof status.state === "string") {
+      needsSetup = relayUnconfigured(status as Record<string, unknown>);
+    }
+  } catch {
+    /* unknown: no tag */
+  }
+}
+
+/** For tests. */
+export function resetShareStatus(): void {
+  needsSetup = null;
+}
+
 export async function openShareDialog(fid: string, frame: SessionLike = {}): Promise<void> {
   let status: Record<string, unknown>;
   let shares: { shares?: Array<Record<string, unknown>> };
@@ -18,6 +53,7 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
     ]);
     status = pair[0] as Record<string, unknown>;
     shares = pair[1] as { shares?: Array<Record<string, unknown>> };
+    needsSetup = relayUnconfigured(status);
   } catch (error) {
     hint(t("nb.action.failed", apiErrorText(error)), true);
     return;
@@ -63,7 +99,11 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
   // No relay configured — the default install. "Sharing is off." with only a
   // Close button was a dead end (and the docs pointed at a settings tab that
   // does not exist), so both states say how to get from here to a link.
-  if (state === "unconfigured" || (state === "disabled" && !status.configured)) {
+  if (relayUnconfigured(status)) {
+    // First, and on its own line: what is missing. Then the steps.
+    const lead = para(shareCopy("setupLead"));
+    lead.className = (lead.className ? lead.className + " " : "") + "share-lead";
+    box.appendChild(lead);
     box.appendChild(para(shareCopy("setupIntro")));
     const steps = document.createElement("ol");
     steps.className = "share-setup";
