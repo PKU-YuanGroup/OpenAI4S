@@ -28,7 +28,7 @@ import { publicText } from "../scrub/scrub";
 import { appendLiveOutput } from "../stream/cap";
 import { API } from "../ws/connect";
 import type { WsMessage } from "../ws/types";
-import { nbRender, setNotebookBottomHook } from "./scroll";
+import { followStreamingOutput, nbRender, setNotebookBottomHook } from "./scroll";
 import type { NotebookCell, NotebookOutputArtifact } from "./types";
 
 export function asCells(value: unknown): NotebookCell[] {
@@ -332,6 +332,7 @@ export function nbCellChunk(event: WsMessage): void {
   cell[stream] = appendLiveOutput(cell[stream], String(event.chunk || ""));
   const rec = cellOutput(nbCellKey(cell));
   rec[stream].value = String(cell[stream] || "");
+  followStreamingOutput();
 }
 
 /** app.js:9858-9876 */

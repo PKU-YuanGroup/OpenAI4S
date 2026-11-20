@@ -152,9 +152,11 @@ def spawn_r_kernel(
     """
     rs = rscript or resolve_r_interpreter(env)
     if not rs:
+        # M-58: the R cell's card is where this is read; say what to do there.
         raise RuntimeError(
             "no R interpreter available: build the prebuilt 'r' environment "
-            "(openai4s setup) or install R so Rscript is on PATH"
+            "(openai4s setup), install R so Rscript is on PATH, or choose an R "
+            "under Runtime environment (Python / R) in the session options"
         )
     env_root = None
     env_name = None

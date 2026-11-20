@@ -10,7 +10,17 @@
  */
 
 import { LANG, tOptional } from "../../i18n/runtime";
-import { provenanceT } from "../execution/copy";
+import {
+  branchDisplayName,
+  checkpointLabel,
+  kernelGapText,
+  kernelOutcome,
+  recoveryActionWords,
+  restoreBranchKernel,
+  switchedText,
+  type KernelOutcome,
+} from "../execution/branch";
+import { branchT, provenanceT } from "../execution/copy";
 import { publicText } from "../scrub/scrub";
 import { pendingReplIdentity } from "../../stores/notebook";
 import { nbFindCell } from "../notebook/cells";
@@ -2894,14 +2904,9 @@ function recoveryTimelineCard(state: any, actionsState: any): HTMLElement {
   head.appendChild(el("span", "timeline-status", status));
   card.appendChild(head);
   if (state.message) card.appendChild(el("div", "timeline-card-title", state.message));
+  // M-64: the checkpoint's internal id is a tooltip, not a line of the card.
   if (actionsState.checkpoint_id)
-    card.appendChild(
-      el(
-        "div",
-        "recovery-checkpoint",
-        t("recovery.checkpoint", shortRuntime(actionsState.checkpoint_id)),
-      ),
-    );
+    card.title = t("recovery.checkpoint", shortRuntime(actionsState.checkpoint_id));
   if (state.progress != null) {
     const track = el("div", "recovery-progress");
     const bar = el("span");
@@ -2918,7 +2923,7 @@ function recoveryTimelineCard(state: any, actionsState: any): HTMLElement {
       ? t("recovery.action.unavailable")
       : !currentBranch
         ? t("recovery.action.currentOnly")
-        : action.reason || t("recovery.action.ready");
+        : recoveryActionWords(action);
     row.appendChild(
       disabledWorkbenchButton(
         loading ? t("recovery.action.loading") : t("recovery.action." + action.id),
@@ -3043,29 +3048,67 @@ async function forkSessionCheckpoint(checkpointId: string): Promise<void> {
   }
 }
 
+/**
+ * M-73: what the last activation left this session's kernel with. The branch
+ * panel shows it beside "Restart kernel and restore" until the kernel is
+ * restored, the branch changes, or the session does.
+ */
+let branchKernel: {
+  frameId: string;
+  branchId: string;
+  outcome: KernelOutcome;
+  restoring: boolean;
+} | null = null;
+
+async function restoreActivatedBranch(): Promise<void> {
+  const pending = branchKernel;
+  if (!pending || pending.restoring || pending.frameId !== S.currentId) return;
+  pending.restoring = true;
+  renderActionTimeline();
+  const outcome = await restoreBranchKernel(pending.frameId, pending.branchId);
+  if (branchKernel !== pending) return;
+  pending.restoring = false;
+  pending.outcome = outcome;
+  if (S.currentId === pending.frameId) {
+    invalidateKernelCache();
+    await Promise.all([
+      loadWorkbenchState(pending.frameId, true),
+      Promise.resolve(laneCall("loadExecutionLog", pending.frameId)),
+    ]);
+    hint(kernelGapText(outcome), outcome.status === "failed" && !!outcome.message);
+  }
+  renderActionTimeline();
+}
+
 async function activateSessionBranch(branchId: string): Promise<void> {
   branchId = publicText(branchId, 96);
   if (!S.currentId || !branchId || !branchCapability("activate") || S._branchActionLoading) return;
+  const target = ((S.branchState && S.branchState.branches) || []).find(
+    (branch: any) => branch && branch.branch_id === branchId,
+  );
+  const name = branchDisplayName(target || { branch_id: branchId }, S.currentId);
+  // M-73: the kernel stopped and its variables were gone without a word.
+  if (!confirm(branchT("branch.activateConfirm", name))) return;
   const frameId = S.currentId;
   S._branchActionLoading = "activate:" + branchId;
   delete S.workbenchErrors.branchAction;
   renderActionTimeline();
   try {
-    const result = (await api(
+    const result = await api(
       `/frames/${encodeURIComponent(frameId)}/branches/${encodeURIComponent(branchId)}/activate`,
       { method: "POST", body: "{}" },
-    )) as { status?: string };
+    );
     if (S.currentId !== frameId) return;
     invalidateKernelCache();
     S.cells = [];
     S.liveCells = [];
     S._liveCell = null;
     pendingReplIdentity.value = null;
+    const outcome = kernelOutcome(result);
+    branchKernel = outcome.status === "active" ? null : { frameId, branchId, outcome, restoring: false };
     await Promise.resolve(laneCall("openConversation", frameId, S.project, { resetHistory: true }));
-    if (S.currentId === frameId) {
-      const partial = String((result && result.status) || "").toLowerCase() !== "active";
-      hint(t(partial ? "branch.activatedPartial" : "branch.activated", shortRuntime(branchId)), partial);
-    }
+    // The switch happened: not an error, and no "inspect Recovery" errand.
+    if (S.currentId === frameId) hint(switchedText(name, outcome));
   } catch (error) {
     if (S.currentId === frameId)
       S.workbenchErrors.branchAction = publicText((error as Error).message, 240);
@@ -3190,6 +3233,34 @@ async function undoSessionRevert(): Promise<void> {
   }
 }
 
+/** M-73: what the activation did not bring back, with the one action that can. */
+function branchKernelNotice(pending: NonNullable<typeof branchKernel>): HTMLElement {
+  const box = el("div", "branch-kernel-gap");
+  box.setAttribute("role", "status");
+  box.appendChild(el("span", null, kernelGapText(pending.outcome)));
+  if (pending.outcome.status !== "active") {
+    const button = disabledWorkbenchButton(
+      pending.restoring ? branchT("branch.restoring") : branchT("branch.restoreKernel"),
+      !pending.restoring && !S._branchActionLoading && !S._recoveryActionLoading,
+      () => {
+        void restoreActivatedBranch();
+      },
+      undefined,
+      "branch-restore-kernel",
+    );
+    button.title = branchT("branch.restoreKernelTitle");
+    box.appendChild(button);
+  }
+  return box;
+}
+
+function currentBranchName(state: any): string {
+  const current = ((state && state.branches) || []).find(
+    (branch: any) => branch && branch.branch_id === state.branch_id,
+  );
+  return branchDisplayName(current || { branch_id: state.branch_id }, S.currentId);
+}
+
 export function renderBranchPanel(): HTMLElement {
   const panel = panelShell(t("timeline.panel.branches"), "branch-panel"),
     state = S.branchState;
@@ -3221,7 +3292,7 @@ export function renderBranchPanel(): HTMLElement {
   panel.appendChild(controls);
   if (state && state.branch_id)
     panel.appendChild(
-      el("div", "branch-current-summary", t("branch.currentSummary", shortRuntime(state.branch_id))),
+      el("div", "branch-current-summary", t("branch.currentSummary", currentBranchName(state))),
     );
   if (S.workbenchErrors.branchAction)
     panel.appendChild(
@@ -3234,7 +3305,7 @@ export function renderBranchPanel(): HTMLElement {
   (state.branches || []).forEach((branch: any) => {
     const row = el("div", "branch-row" + (branch.branch_id === state.branch_id ? " current" : ""));
     const head = el("div", "branch-head");
-    head.appendChild(el("span", "branch-name", branch.name || shortRuntime(branch.branch_id)));
+    head.appendChild(el("span", "branch-name", branchDisplayName(branch, S.currentId)));
     if (branch.branch_id === state.branch_id)
       head.appendChild(el("span", "timeline-pill", t("branch.current")));
     else {
@@ -3251,17 +3322,34 @@ export function renderBranchPanel(): HTMLElement {
         ),
       );
     }
-    if (branch.head_checkpoint_id)
-      head.appendChild(
-        el("span", "branch-head-id", t("branch.head", shortRuntime(branch.head_checkpoint_id))),
+    if (branch.head_checkpoint_id) {
+      // M-64: the head as "when a question was asked · 10:32:05", not "cp-967e8…".
+      const headCheckpoint = (branch.checkpoints || []).find(
+        (cp: any) => cp && cp.checkpoint_id === branch.head_checkpoint_id,
       );
+      const headId = el(
+        "span",
+        "branch-head-id",
+        t("branch.head", headCheckpoint ? checkpointLabel(headCheckpoint) : shortRuntime(branch.head_checkpoint_id)),
+      );
+      headId.title = shortRuntime(branch.head_checkpoint_id);
+      head.appendChild(headId);
+    }
     row.appendChild(head);
+    if (
+      branchKernel &&
+      branch.branch_id === state.branch_id &&
+      branchKernel.frameId === S.currentId &&
+      branchKernel.branchId === branch.branch_id
+    )
+      row.appendChild(branchKernelNotice(branchKernel));
     const cps = el("div", "checkpoint-list"),
       allCheckpoints = branch.checkpoints || [];
     const checkpointRow = (cp: any) => {
       const cpRow = el("div", "checkpoint-row");
-      cpRow.appendChild(el("span", "checkpoint-id", shortRuntime(cp.checkpoint_id)));
-      cpRow.appendChild(el("span", "checkpoint-reason", cp.reason || "checkpoint"));
+      // M-64: when and why, not "cp-33f1… cursor_cell"; the id stays in the tooltip.
+      cpRow.title = shortRuntime(cp.checkpoint_id);
+      cpRow.appendChild(el("span", "checkpoint-reason", checkpointLabel(cp)));
       const actions = el("span", "checkpoint-actions");
       actions.appendChild(
         disabledWorkbenchButton(

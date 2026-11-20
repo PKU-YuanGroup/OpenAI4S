@@ -73,6 +73,7 @@ import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent } from "./editor
 import { environmentMenuItems, envSelectable, envSourceLabel } from "./envmenu";
 import { nbT } from "./copy";
 import { installNotebook } from "./install";
+import { setExecutionFetch } from "../execution/api";
 import type { NotebookCell } from "./types";
 import {
   copyNotebookCell,
@@ -97,11 +98,13 @@ import {
   syncKernel,
 } from "./kernel";
 import {
+  followStreamingOutput,
   isNearBottom,
   measureNotebookFollow,
   nbRender,
   onNotebookScroll,
   setNotebookRenderImpl,
+  takeJumpToLatest,
 } from "./scroll";
 
 function flushRaf(queue: Array<(t: number) => void>): void {
@@ -753,6 +756,66 @@ describe("F-14 Notebook", () => {
       expect(notebookViewEntries().map(nbCellKey)).toEqual(["a", "b"]);
     });
 
+    // M-54: the Notebook opened at cell 1 and stayed there.
+    it("opens at the latest cell, once there is a cell to show", () => {
+      takeJumpToLatest(true);
+      activeTab.value = "files";
+      activeTab.value = "notebook";
+      expect(takeJumpToLatest(false)).toBe(false);
+      expect(takeJumpToLatest(true)).toBe(true);
+      expect(takeJumpToLatest(true)).toBe(false);
+      currentId.value = "frame-2";
+      expect(takeJumpToLatest(true)).toBe(true);
+    });
+
+    // M-57: streaming output pushed the end away by itself, after which no
+    // new cell was followed and the list could be held for the whole turn.
+    it("keeps a following reader at the end while output streams, and only them", () => {
+      const body = { scrollHeight: 3000, scrollTop: 0, clientHeight: 400 };
+      vi.stubGlobal("document", { getElementById: () => ({ parentElement: body }) });
+      running.value = true;
+      _nbReading.value = false;
+      followStreamingOutput();
+      followStreamingOutput();
+      expect(rafs).toHaveLength(1);
+      flushRaf(rafs);
+      expect(body.scrollTop).toBe(3000);
+      // The scroll event of our own move, after more output landed, is not
+      // the reader scrolling away.
+      body.scrollHeight = 3600;
+      onNotebookScroll(body);
+      expect(_nbReading.value).toBe(false);
+
+      // A reader who scrolled up is left where they are.
+      body.scrollTop = 0;
+      onNotebookScroll(body);
+      expect(_nbReading.value).toBe(true);
+      followStreamingOutput();
+      flushRaf(rafs);
+      expect(body.scrollTop).toBe(0);
+    });
+
+    // M-77: the variable list had to be refreshed by hand after every run.
+    it("reads a variable list the reader loaded again when the turn ends", async () => {
+      const reads: string[] = [];
+      setExecutionFetch(async (url) => {
+        reads.push(String(url));
+        return new Response(JSON.stringify({ available: false, state: "busy" }));
+      });
+      try {
+        running.value = true;
+        running.value = false;
+        await Promise.resolve();
+        expect(reads).toEqual([]);
+        variableInspector.value = { ...variableInspector.value, language: "python", results: { python: {} } };
+        running.value = true;
+        running.value = false;
+        await vi.waitFor(() => expect(reads).toHaveLength(1));
+      } finally {
+        setExecutionFetch(null);
+      }
+    });
+
     it("never holds back another session's list", () => {
       cells.value = [{ producing_cell_id: "a", cell_index: 1 }];
       notebookViewEntries();
@@ -1318,5 +1381,37 @@ describe("Session options environment picker (ENV-6)", () => {
     expect(
       headings({ envs: pythonOnly, current: "base", currentR: null, runtimes: { python, r: { ...r, environment: "" } } }),
     ).toContain(nbT("nb.env.group", "R", nbT("nb.env.default") + " → R installed on this computer · local · R 4.4.1"));
+  });
+
+  // SCI-20: no ticked "default" row in the R group, and no way back to it
+  // once a local R was picked.
+  it("offers a default R row that goes back, and says which key package it lacks", () => {
+    const python = { available: true, environment: "base", kind: "builtin", version: "3.13.1" };
+    const r = {
+      available: true,
+      selected: false,
+      checked: true,
+      environment: "lab_env",
+      kind: "local",
+      version: "4.4.1",
+      packages: [
+        { name: "jsonlite", available: false },
+        { name: "ggplot2", available: true },
+      ],
+    };
+    const backToDefault = vi.fn();
+    const labels = (currentR: string | null) =>
+      environmentMenuItems({ envs, current: "base", currentR, runtimes: { python, r } }, () => undefined, backToDefault);
+    const inUse = labels(null).find((item) => String(item.label || "").includes(nbT("nb.env.rDefaultRow", "")));
+    expect(inUse?.label).toBe(
+      "✓  " + nbT("nb.env.rDefaultRow", "lab_env · local · R 4.4.1 · jsonlite is not available"),
+    );
+    inUse?.onClick?.();
+    expect(backToDefault).not.toHaveBeenCalled();
+
+    const picked = labels("lab_env").find((item) => String(item.label || "").startsWith(nbT("nb.env.rDefaultRow", "")));
+    expect(picked?.label).toBe(nbT("nb.env.rDefaultRow", nbT("nb.env.rDefaultAuto")));
+    picked?.onClick?.();
+    expect(backToDefault).toHaveBeenCalledTimes(1);
   });
 });

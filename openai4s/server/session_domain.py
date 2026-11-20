@@ -517,6 +517,8 @@ class SessionDomainService:
                     f"{source_kind} has no exact cursor checkpoint"
                 )
             checkpoint_id = str(checkpoint["checkpoint_id"])
+        if name is None and source_kind == "message":
+            name = self._question_branch_name(root_frame_id, str(source_id))
         result = self.branching.fork(
             root_frame_id,
             from_checkpoint_id=checkpoint_id,
@@ -534,6 +536,23 @@ class SessionDomainService:
             "view_only": True,
             "activatable": True,
         }
+
+    def _question_branch_name(self, root_frame_id: str, message_id: str) -> str | None:
+        """M-73: a branch forked from a question is called after it.
+
+        It was a bare `br-e5b2…` everywhere it appeared. The first 40
+        characters of the question, on one line; None if it cannot be read.
+        """
+        reader = getattr(self.store, "list_message_boundaries", None)
+        if not callable(reader):
+            return None
+        for message in reader(root_frame_id, limit=None):
+            if message.get("message_id") == message_id:
+                text = " ".join(str(message.get("content") or "").split())
+                if not text:
+                    return None
+                return text if len(text) <= 40 else text[:40].rstrip() + "…"
+        return None
 
     def prepare_activation(
         self,

@@ -8808,7 +8808,11 @@ class SessionRunner:
             }
         st = self._state(root_frame_id, project_id)
         dispatcher = self._ensure_runtime(st)
-        dispatcher.active_r_env = env.name
+        # SCI-20: `env=None` goes back to the default resolution; once a local
+        # R was picked there was no way back. The next R cell respawns.
+        dispatcher.active_r_env = env.name if env is not None else None
+        if env is None:
+            st.r_env_name = None
         status = st.kernels.status("r")
         self.hub.emitter(root_frame_id)(
             {
@@ -8816,13 +8820,13 @@ class SessionRunner:
                 "frame_id": root_frame_id,
                 "status": "env_changed",
                 "language": "r",
-                "env": {"name": env.name, "language": "r"},
+                "env": {"name": env.name if env is not None else None, "language": "r"},
             }
         )
         return {
             "ok": True,
             "state": status["state"],
-            "env": env.name,
+            "env": env.name if env is not None else None,
             "generation": status["generation"],
             "generation_id": status.get("generation_id"),
             "language": "r",
@@ -18253,7 +18257,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/steps", sub)
             if m and method == "GET":
-                self._json({"steps": store.list_steps(m.group(1))})
+                # M-73: only the active branch's steps, like its messages.
+                from openai4s.server.session_branching import project_branch_steps
+
+                fid = m.group(1)
+                self._json(
+                    {"steps": project_branch_steps(store, fid, store.list_steps(fid))}
+                )
                 return
             m = re.fullmatch(r"/frames/([^/]+)/review", sub)
             if m and method == "POST":
@@ -19254,7 +19264,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/artifacts", sub)
             if m and method == "GET":
                 fid = m.group(1)
-                arts = store.list_artifacts({"root_frame_id": fid})
+                # M-73: activating a branch clears the head of every Artifact
+                # its checkpoint does not hold; such a row is no file of the
+                # active branch, and listing it showed later work as "generated".
+                arts = [
+                    a
+                    for a in store.list_artifacts({"root_frame_id": fid})
+                    if a.get("latest_version_id")
+                ]
                 self._json(
                     [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
                 )

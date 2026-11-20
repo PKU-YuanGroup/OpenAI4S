@@ -4,7 +4,20 @@ import { currentId } from "../../stores/session";
 import { workbenchErrors } from "../../stores/timeline";
 import { historyT } from "../messages/copy";
 import { setExecutionFetch } from "./api";
-import { applyForkPresentation, forkFromMessage, setMessageForkRefresh } from "./branch";
+import {
+  applyForkPresentation,
+  branchDisplayName,
+  checkpointLabel,
+  forkFromMessage,
+  kernelGapText,
+  kernelOutcome,
+  missingNames,
+  recoveryActionWords,
+  restoreBranchKernel,
+  setMessageForkRefresh,
+  switchedText,
+} from "./branch";
+import { branchT } from "./copy";
 import {
   FORK_NO_CHECKPOINT_MESSAGE,
   forkErrorDisplay,
@@ -295,5 +308,78 @@ describe("applyForkPresentation", () => {
     stop();
     expect(seen).toHaveLength(2);
     expect(seen[1]).toEqual({ recoveryAction: "earlier", branchAction: FORK_NO_CHECKPOINT_MESSAGE });
+  });
+});
+
+// M-73: what a branch switch or a Restore left the kernel with, read from the
+// server's report rather than shown as "error: … inspect Recovery".
+describe("kernel outcome after a branch switch", () => {
+  afterEach(() => {
+    setExecutionFetch(null);
+  });
+
+  it("names the variables an activation did not bring back", () => {
+    const outcome = kernelOutcome({
+      status: "partial",
+      dimensions: { namespace: { issues: [{ type: "non_replayable" }, { type: "missing_symbols", names: ["df", "fit"] }] } },
+      recovery: { results: [{ issues: [{ type: "missing_symbols", names: ["fit", "cox"] }] }] },
+    });
+    expect(outcome).toEqual({ status: "partial", missing: ["df", "fit", "cox"], message: "" });
+    expect(switchedText("Q2", outcome)).toBe(branchT("branch.switchedGap", "Q2", missingNames(outcome)));
+    expect(switchedText("Q2", kernelOutcome({ status: "active" }))).toBe(branchT("branch.switched", "Q2"));
+    expect(branchDisplayName({ branch_id: "br-0123456789abcdef" })).toBe("br-01234…");
+    expect(branchDisplayName({ branch_id: "br-1", name: "Q2" })).toBe("Q2");
+  });
+
+  it("reads a partial Restore answered with 409 as an outcome, and a refusal as a failure", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    let reply: Response = new Response("{}");
+    setExecutionFetch(async (url, init) => {
+      posts.push({ url: String(url), body: JSON.parse(String(init?.body || "{}")) });
+      return reply;
+    });
+    reply = new Response(
+      JSON.stringify({ ok: false, status: "partial", results: [{ issues: [{ type: "missing_symbols", names: ["x1"] }] }] }),
+      { status: 409 },
+    );
+    const partial = await restoreBranchKernel("frame-1", "br-1");
+    expect(posts).toEqual([
+      { url: "/api/v1/frames/frame-1/recovery/actions/restore", body: { branch_id: "br-1", confirm: false } },
+    ]);
+    expect(partial).toEqual({ status: "partial", missing: ["x1"], message: "" });
+    expect(kernelGapText(partial)).toBe(branchT("branch.kernelGap", "x1"));
+
+    reply = new Response(JSON.stringify({ error: "recovery already running" }), { status: 409 });
+    const refused = await restoreBranchKernel("frame-1", "br-1");
+    expect(refused).toEqual({ status: "failed", missing: [], message: "recovery already running" });
+    expect(kernelGapText(refused)).toBe(branchT("branch.restoreFailed", "recovery already running"));
+  });
+});
+
+// M-64: internal recovery reasons and checkpoint ids, said in words.
+describe("recovery and checkpoint words", () => {
+  it("groups the server's reasons by what the reader can do", () => {
+    const why = (reason: string) => recoveryActionWords({ id: "restore", enabled: false, reason });
+    expect(why("checkpoint has an invalid python bootstrap manifest")).toBe(branchT("recovery.why.checkpoint"));
+    expect(why("checkpoint workspace tree is missing or corrupt")).toBe(branchT("recovery.why.checkpoint"));
+    expect(why("no checkpoint exists")).toBe(branchT("recovery.why.noCheckpoint"));
+    expect(why("kernel is already active")).toBe(branchT("recovery.why.active"));
+    expect(why("recovery already running")).toBe(branchT("recovery.why.busy"));
+    expect(why("latest recovery is not partial or failed")).toBe(branchT("recovery.why.notRetryable"));
+    expect(why("workspace revert must be restored or reconciled first")).toBe(branchT("recovery.why.revertFirst"));
+    expect(why("something new")).toBe(branchT("recovery.why.other"));
+    expect(recoveryActionWords({ id: "restart_fresh", enabled: true })).toBe(branchT("recovery.what.restart_fresh"));
+  });
+
+  it("labels a checkpoint by when and why it was taken", () => {
+    const at = new Date(2026, 10, 20, 10, 32, 5).getTime();
+    expect(checkpointLabel({ checkpoint_id: "cp-1", reason: "cursor_message", created_at: at })).toMatch(
+      /10:32:05/,
+    );
+    expect(checkpointLabel({ checkpoint_id: "cp-1", reason: "cursor_message", created_at: at })).not.toContain("cp-1");
+    expect(checkpointLabel({ reason: "cursor_cell", created_at: at })).toBe(
+      branchT("branch.cp.cell", new Date(at).toLocaleTimeString("en-US", { hour12: false })),
+    );
+    expect(checkpointLabel({ reason: "before cleanup" })).toBe("before cleanup");
   });
 });

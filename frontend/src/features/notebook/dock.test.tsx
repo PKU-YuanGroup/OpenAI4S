@@ -239,6 +239,46 @@ describe("Notebook cell actions", () => {
   });
 });
 
+// M-54 / SCI-23: nearly every cell wore "Current"; a stale one said why only
+// in a tooltip, as "… superseded by c-4653d2c179b5 (S3)".
+describe("Notebook cell state", () => {
+  const stateText = (cell: NotebookCell) =>
+    textOf(CellList({ entries: [cell] })).replace(/\s+/g, " ");
+
+  it("shows no badge on a cell whose results hold", () => {
+    const text = stateText({ producing_cell_id: "a", cell_index: 1, source: "x = 1", status: "ok" });
+    expect(text).not.toContain(nbLabelT("nb.cell.current"));
+  });
+
+  it("says why a cell is stale, naming cells the way the Notebook does", () => {
+    cells.value = [
+      { producing_cell_id: "c-a", cell_index: 2, language: "python", source: "y = x" },
+      { producing_cell_id: "c-b", cell_index: 5, language: "python", source: "x = 2" },
+    ];
+    const stale: NotebookCell = {
+      producing_cell_id: "c-c",
+      cell_index: 3,
+      source: "z = y",
+      stale: true,
+      stale_reasons: ["depends on c-a (S2): variable 'x' was superseded by c-b (S5)"],
+    };
+    const text = stateText(stale);
+    expect(text).toContain(nbLabelT("nb.cell.stale"));
+    expect(text).toContain(
+      nbT("nb.stale.via", "python [2]", nbT("nb.stale.superseded", "python [5]", "x")),
+    );
+    expect(text).not.toContain("c-b");
+  });
+
+  it("says where the manual cells switch is when Rerun is grey", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { repl_enabled: false }, envs: null, cur: null };
+    const titles = JSON.stringify(CellActions({ cell: { producing_cell_id: "c", source: "x = 1" } }));
+    expect(titles).toContain(nbT("nb.action.needsManual"));
+    expect(titles).not.toContain(t("nb.action.unavailable"));
+  });
+});
+
 describe("Notebook reading gate", () => {
   it("CellList paints the entries it is handed and subscribes to no cell store", () => {
     const entries = [{ producing_cell_id: "shown", cell_index: 1, status: "error" }];

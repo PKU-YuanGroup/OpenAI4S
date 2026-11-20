@@ -46,6 +46,8 @@ describe("branch actions replace scoped history", () => {
     });
     const open = vi.fn(async () => {});
     vi.stubGlobal("openConversation", open);
+    // M-73: activation asks first.
+    vi.stubGlobal("confirm", () => true);
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true, status: 200, text: async () => JSON.stringify({ status: "active", ok: true }),
     })));

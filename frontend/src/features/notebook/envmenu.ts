@@ -7,12 +7,12 @@
  * or one found on this machine ("Local env", `builtin: false`).
  */
 import { currentId } from "../../stores/session";
-import { rDefaultLabel, readRuntimes, type Runtimes } from "../customize/runtimes";
+import { rDefaultLabel, readRuntimes, runtimeSummary, runtimeT, type Runtimes } from "../customize/runtimes";
 import { hint, openMenu, type MenuItem } from "../sessions/chrome";
 import { el } from "../sessions/dom";
 import { notebookFetch } from "./cells";
 import { nbT } from "./copy";
-import { nbSwitchEnv } from "./kernel";
+import { nbSwitchEnv, nbUseDefaultR } from "./kernel";
 import type { KernelEnvRow } from "./types";
 
 export type EnvChoice = {
@@ -60,7 +60,30 @@ function heading(text: string): MenuItem {
   return { node };
 }
 
-export function environmentMenuItems(choice: EnvChoice, pick: (name: string) => void): MenuItem[] {
+/**
+ * SCI-20: the R group's own "default" row, ticked when no R environment is
+ * picked, saying which R that is and which key package it lacks. Once a local
+ * R was picked there was no row that went back.
+ */
+function rDefaultRow(choice: EnvChoice, useDefault: () => void): MenuItem {
+  const r = !choice.currentR && choice.runtimes ? choice.runtimes.r : null;
+  let detail = r && r.available ? runtimeSummary("r", r) : nbT("nb.env.rDefaultAuto");
+  const missing = r && r.checked ? (r.packages || []).filter((p) => !p.available) : [];
+  if (missing.length) detail += " · " + missing.map((p) => runtimeT("rt.r.pkgMissing", p.name)).join(" · ");
+  return {
+    label: (choice.currentR ? "" : "✓  ") + nbT("nb.env.rDefaultRow", detail),
+    icon: "terminal",
+    onClick: () => {
+      if (choice.currentR) useDefault();
+    },
+  };
+}
+
+export function environmentMenuItems(
+  choice: EnvChoice,
+  pick: (name: string) => void,
+  useDefaultR: () => void = () => undefined,
+): MenuItem[] {
   const items: MenuItem[] = [];
   const groups: Array<["python" | "r", string, string | null]> = [
     ["python", "Python", choice.current],
@@ -75,6 +98,7 @@ export function environmentMenuItems(choice: EnvChoice, pick: (name: string) => 
     if (items.length) items.push({ sep: true });
     const inUse = current || (rDefault ? rDefaultLabel(rDefault) : nbT("nb.env.default"));
     items.push(heading(nbT("nb.env.group", title, inUse)));
+    if (language === "r") items.push(rDefaultRow(choice, useDefaultR));
     for (const row of rows) {
       items.push({
         label: envRowLabel(row, row.name === current),
@@ -112,5 +136,12 @@ export async function openEnvironmentMenu(anchor: Element): Promise<void> {
     return;
   }
   if (!choice || currentId.value !== frameId) return;
-  openMenu(anchor, environmentMenuItems(choice, (name) => void nbSwitchEnv(name)));
+  openMenu(
+    anchor,
+    environmentMenuItems(
+      choice,
+      (name) => void nbSwitchEnv(name),
+      () => void nbUseDefaultR(),
+    ),
+  );
 }
