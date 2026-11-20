@@ -326,6 +326,42 @@ def test_login_page_and_assets_are_reachable_anonymously(daemon):
     assert _get(daemon.port, "/login")[0] == 200
     assert _get(daemon.port, "/static/login.js")[0] == 200
     assert _get(daemon.port, "/health")[0] == 200
+    # TEAM-1: the page wears the workbench's theme, fonts and language.
+    assert _get(daemon.port, "/static/style.css")[0] == 200
+    assert _get(daemon.port, "/static/theme-bootstrap.js")[0] == 200
+
+
+_WEBUI = Path(__file__).resolve().parents[1] / "openai4s" / "server" / "webui"
+
+
+def _login_copy() -> dict:
+    src = (_WEBUI / "login.js").read_text(encoding="utf-8")
+    start = src.index("var COPY = ") + len("var COPY = ")
+    return json.loads(src[start : src.index("};", start) + 1])
+
+
+def test_the_login_page_speaks_both_interface_languages():
+    """TEAM-1: the page was a bare English form with a hard-coded
+    `lang="en"`, a blue button of its own, and the server's raw sentence as
+    its error. It now loads the workbench's theme bootstrap and stylesheet,
+    and every string it shows comes from a zh + en table."""
+    import re
+
+    html = (_WEBUI / "login.html").read_text(encoding="utf-8")
+    assert '<script src="/static/theme-bootstrap.js"></script>' in html
+    assert '<link rel="stylesheet" href="/static/style.css">' in html
+    copy = _login_copy()
+    assert set(copy) == {"en", "zh"}
+    assert set(copy["en"]) == set(copy["zh"])
+    keys = set(re.findall(r'data-i18n="([^"]+)"', html))
+    assert keys and keys <= set(copy["en"])
+    # every refusal the login route can give has its own sentence
+    js = (_WEBUI / "login.js").read_text(encoding="utf-8")
+    for code in ("account_disabled", "rate_limited"):
+        assert f'"{code}"' in js
+    for key in ("err.invalid", "err.disabled", "err.rateLimited", "err.network"):
+        assert copy["zh"][key] and copy["zh"][key] != copy["en"][key]
+    assert "body.error" not in js  # never the server's English sentence
 
 
 def test_access_token_no_longer_buys_a_browser_cookie(daemon):

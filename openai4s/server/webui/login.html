@@ -4,41 +4,59 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenAI4S — sign in</title>
+<!-- The workbench's own theme and language, before the body paints: the
+     saved light/dark pick and the saved (else the browser's) language. -->
+<script src="/static/theme-bootstrap.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/favicon_anim_64.gif">
 <style>
-  :root { color-scheme: light dark; }
-  body {
-    font: 15px/1.6 -apple-system, system-ui, sans-serif;
-    max-width: 22rem; margin: 16vh auto; padding: 0 1.5rem; color: #222;
+  .login-tools { position: fixed; top: 14px; right: 16px; display: flex; gap: 6px; }
+  .login-tools .outline-btn { min-width: 40px; justify-content: center; }
+  .login-wrap { max-width: 23rem; margin: 15vh auto 8vh; padding: 0 1.25rem; }
+  .login-brand { font-family: var(--serif); font-size: 2rem; line-height: 1.2; color: var(--text-000); }
+  .login-sub { color: var(--text-400); font-size: 14px; margin: .25rem 0 1.4rem; }
+  .login-card {
+    background: var(--bg-000); border: 1px solid var(--border-card);
+    border-radius: var(--radius-card); padding: 22px 22px 18px;
   }
-  h1 { font-size: 1.25rem; margin-bottom: 1.2rem; }
-  label { display: block; margin: .8em 0 .25em; font-weight: 600; font-size: .85rem; }
-  input {
-    width: 100%; box-sizing: border-box; padding: .55em .7em;
-    border: 1px solid #d4d4d8; border-radius: 6px; font: inherit;
-    background: transparent; color: inherit;
+  .login-card label { display: block; margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--text-200); }
+  .login-field { margin-bottom: 14px; }
+  .login-card input {
+    width: 100%; height: 40px; padding: 0 12px; font: 15px/1 var(--sans);
+    color: var(--text-000); background: var(--bg-000);
+    border: 1px solid var(--border); border-radius: var(--radius);
   }
-  button {
-    margin-top: 1.2em; width: 100%; padding: .6em; border: 0; border-radius: 6px;
-    background: #2563eb; color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+  .login-card input:focus { outline: none; border-color: var(--accent-fill); box-shadow: var(--focus-ring); }
+  .login-submit {
+    width: 100%; height: 40px; margin-top: 4px; border: 0; border-radius: var(--radius);
+    background: var(--accent-fill); color: #fff; font-weight: 600; font-size: 14px;
   }
-  button:disabled { opacity: .6; cursor: default; }
-  #err { color: #dc2626; min-height: 1.4em; margin-top: .8em; font-size: .9rem; }
-  @media (prefers-color-scheme: dark) {
-    body { background: #18181b; color: #e4e4e7; }
-    input { border-color: #3f3f46; }
-  }
+  .login-submit:hover { background: var(--accent); }
+  .login-submit:disabled { opacity: .6; cursor: default; }
+  #err { color: var(--danger); min-height: 1.4em; margin-top: 10px; font-size: 13.5px; }
 </style>
 </head>
 <body>
-<h1>OpenAI4S · Team sign in</h1>
-<form id="f">
-  <label for="u">Username</label>
-  <input id="u" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" autofocus required>
-  <label for="p">Password</label>
-  <input id="p" name="password" type="password" autocomplete="current-password" required>
-  <button id="b" type="submit">Sign in</button>
-  <div id="err" role="alert"></div>
-</form>
+<div class="login-tools">
+  <button id="login-lang" class="outline-btn" type="button">中文</button>
+  <button id="login-theme" class="outline-btn" type="button" aria-label="Dark theme">☾</button>
+</div>
+<main class="login-wrap">
+  <div class="login-brand">OpenAI4S</div>
+  <div class="login-sub" data-i18n="subtitle">Sign in to your team workspace</div>
+  <form id="f" class="login-card">
+    <div class="login-field">
+      <label for="u" data-i18n="username">Username</label>
+      <input id="u" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" autofocus required>
+    </div>
+    <div class="login-field">
+      <label for="p" data-i18n="password">Password</label>
+      <input id="p" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <button id="b" class="login-submit" type="submit" data-i18n="submit">Sign in</button>
+    <div id="err" role="alert"></div>
+  </form>
+</main>
 <script src="/static/login.js"></script>
 </body>
 </html>
