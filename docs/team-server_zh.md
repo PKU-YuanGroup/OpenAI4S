@@ -19,7 +19,11 @@ openai4s serve
 openai4s user add alice --role admin
 ```
 
+它会打印一次自动生成的 16 位密码。自己指定的密码（`--password-stdin`、管理员路由、邀请）至少 8 个字符。账号不论团队模式开没开都能建，但只有 daemon 以 `OPENAI4S_TEAM_MODE=1` 运行时才能用它登录；`user add` 会说明当前是哪种情况。
+
 loopback CLI 按决策 D2 等同管理员——能读到宿主上 access-token 文件的人本来就拥有这台机器——它的动作以 `cli` 记账，而不是冒充某个真人账号。
+
+`openai4s user disable <name>` 会让该账号在所有地方下线（在终端里会先确认；`--yes` 跳过确认），`openai4s user enable <name>` 撤销停用（HTTP 上是 `POST /api/v1/team/users/{id}/disable` 与 `/enable`）；管理员也可以在用户菜单的「团队管理」面板里添加、停用、启用账号和重置密码。最后一个启用中的管理员不能被停用。停用还会删除该账号的个人 LLM key——凭据不应比看管它的账号活得更久——所以 `enable` 之后需要由本人重新填写。
 
 **绑定地址仍然是安全边界。** 团队模式加的是账号，不是"可以暴露"。放在终结 TLS 的反向代理后面，或者走 SSH——见 [`security.md`](security.md)。明文 HTTP 上的口令，就是这张网上的口令。
 
@@ -85,6 +89,7 @@ Seatbelt/bubblewrap 无法建立并通过自测，Cell 即使在
 
 - 写实例配置——LLM 提供方、它的端点与凭据、模型 profile、默认模型。改一下 `llm_base_url`，全员的流量就指向了写的人选的主机。选择**自己的**会话跑在管理员*已保存*的哪个 profile 上则不算实例配置：composer 的选择框会改绑当前打开的会话（`POST /frames/{id}/model-binding {model_id}`），会话所有者或管理员可以这样做，其他成员不行（`403 owner_only`）；同一个选择框的 `PUT /models/default` 仍只有管理员能做，所以成员的切换既不会改默认值，也不会动别人的会话；
 - 旧的 compute-job 运行器（`/compute/jobs`），它以 daemon 自己的 uid 执行 `bash -c <command>`——读也不给，因为一条作业行就是某个人敲下的命令；
+- 读取 daemon 所在账号的 SSH 主机（`GET /compute/ssh-aliases`、`GET /compute/remote`）。两者的答案都来自该账号的 `~/.ssh/config`——运维者写在里面的每一个 `Host` 别名，无论是否注册给了 OpenAI4S——后者还会以 daemon 身份逐个 SSH 探测已注册的主机。成员的「设置 → 计算」只显示本机内核环境的只读信息；
 - 向任一内置 backend 提交批处理作业（`POST /orchestration/jobs`）。`local` 以 daemon 身份、在 kernel 沙箱之外执行 argv；`cluster` 则用 daemon 的 Unix 身份和站点凭据调用调度器。OpenAI4S 没有经过鉴权的“浏览器成员 → 调度器账号”映射，因此两种 backend 都不能当作该成员自己的执行身份；
 - 为会话请求交互式集群放置（`POST /sessions/{id}/compute`），它调用的是同一套 daemon 管理的调度器身份。会话属主可以释放一份已有的分配，但只有管理员可以请求分配；
 - 注册远程算力、通过 `/kernel/install` 或 `/frames/{fid}/kernel/install` 往所有内核共用的 venv 里装包、配置携带组凭据的连接器、往每位成员的 agent 都会加载的目录里发布 skill、重置常设权限规则，以及创建**全局**权限规则（成员可以为自己的会话、或自己参与的项目建规则）。
@@ -95,6 +100,8 @@ Seatbelt/bubblewrap 无法建立并通过自测，Cell 即使在
 默认也从静默放行改为询问。这不取消成员主动调用的 HTTP project 控制：成员仍可回滚到
 启用历史能证明由 Web 创作、且仅含配方的版本；重新启用含 `kernel.py` 的版本或
 来源无法确认的旧 Host 历史需要管理员。
+
+访客（邀请得来的账号，或 `openai4s user add --role guest`）没有工作台：打开任何页面都会进入只读回放页（`/replay`；会话链接直接打开那个会话），页面列出访客受邀项目里所有项目可见的会话。
 
 成员保留 UI 需要的每一项读取。完整清单在 `openai4s/server/team_policy.py`；不在其上的路由就是成员的。
 

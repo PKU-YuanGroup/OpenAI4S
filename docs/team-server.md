@@ -26,9 +26,25 @@ itself:
 openai4s user add alice --role admin
 ```
 
+It prints a generated 16-character password once. A password you choose
+(`--password-stdin`, the admin routes, an invite) must be at least 8
+characters. Accounts exist whether or not team mode is on, but nobody can
+sign in with one until the daemon runs with `OPENAI4S_TEAM_MODE=1`; `user
+add` says which of the two it found.
+
 The loopback CLI is admin-equivalent by decision D2 — whoever can read
 the access-token file on the host owns the box anyway — and its actions
 are audited as `cli` rather than impersonating a human account.
+
+`openai4s user disable <name>` signs the account out everywhere (a
+terminal is asked to confirm; `--yes` skips that) and `openai4s user
+enable <name>` undoes it (`POST /api/v1/team/users/{id}/disable` and
+`/enable` over HTTP); an admin can also add, disable, enable and reset
+accounts from the Team admin panel in the user menu. The last enabled
+admin cannot be disabled.
+Disabling also deletes the account's personal LLM keys — a credential
+must not outlive the account that watches it — so after `enable` their
+owner enters them again.
 
 **The bind address is still the security boundary.** Team mode adds
 accounts; it does not make the daemon safe to expose. Put it behind a
@@ -163,6 +179,12 @@ operator's regardless of who is logged in:
 - the legacy compute-job runner (`/compute/jobs`), which executes
   `bash -c <command>` as the daemon's own uid — reads included, since a
   job's row is somebody's command line;
+- reading the daemon account's SSH hosts (`GET /compute/ssh-aliases`,
+  `GET /compute/remote`). Both answer from that account's `~/.ssh/config` —
+  every `Host` alias the operator keeps there, registered with OpenAI4S or
+  not — and the second also opens an SSH connection to each registered host
+  as the daemon. A member's Settings → Compute shows the local kernel
+  environment, read-only;
 - submitting a batch job to either built-in backend
   (`POST /orchestration/jobs`). `local` runs the argv as the daemon,
   outside the kernel sandbox; `cluster` invokes the scheduler with the
@@ -194,6 +216,11 @@ allow. This does not remove members' deliberate HTTP project controls, whose
 project-membership guard remains the human authoring boundary. Member rollback
 is limited to recipe-only versions with Web-authoring provenance; reactivating
 a `kernel.py` version or un-attributed legacy Host history requires an admin.
+
+A guest — an invite's account, or `openai4s user add --role guest` — has
+no workbench: a page load goes to the read-only replay viewer (`/replay`, a
+session link opening that session), which lists the project-visible
+sessions of the projects the guest was invited into.
 
 Members keep every read the UI needs. The full list is
 `openai4s/server/team_policy.py`, and a route not on it is a member's.

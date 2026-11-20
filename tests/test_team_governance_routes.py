@@ -60,6 +60,14 @@ def _create_session(daemon, cookie: str) -> str:
     return str(_body(raw).get("frame_id") or _body(raw).get("id"))
 
 
+def _create_session_in(daemon, cookie: str, project_id: str) -> str:
+    status, raw = _post(
+        daemon.port, "/api/v1/frames", {"project_id": project_id}, cookie=cookie
+    )
+    assert status == 200, raw[:300]
+    return str(_body(raw).get("frame_id") or _body(raw).get("id"))
+
+
 def _delete(daemon, path: str, cookie: str, body: dict | None = None):
     payload = json.dumps(body or {}).encode()
     lines = [
@@ -142,6 +150,79 @@ def test_admin_user_management_routes(daemon):
     assert daemon.store.team.verify_password("dave", generated) is None  # disabled
     actions = [x["action"] for x in daemon.store.team.list_audit()]
     assert {"user_add", "user_disable", "user_reset_password"} <= set(actions)
+
+
+def test_enable_route_undoes_a_disable_and_is_admin_only(daemon):
+    """CLI-15: disable had no inverse anywhere -- not in the CLI, not over
+    HTTP -- so one mistyped name was a permanent lockout."""
+    root = _login(daemon, "root", "fake-pw-r")
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob_id = _uid(daemon, "bob")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    status, raw = _post(
+        daemon.port, f"/api/v1/team/users/{bob_id}/disable", {}, cookie=root
+    )
+    assert status == 200, raw[:200]
+    assert _body(raw)["user"]["disabled"] is True
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=bob)[0] == 401
+
+    enable = f"/api/v1/team/users/{bob_id}/enable"
+    # a member, the disabled account's dead cookie, and nobody at all
+    status, raw = _post(daemon.port, enable, {}, cookie=alice)
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "admin_only"
+    assert _post(daemon.port, enable, {}, cookie=bob)[0] == 401
+    assert _post(daemon.port, enable, {})[0] == 401
+    assert daemon.store.team.get_user(bob_id)["disabled"] is True
+
+    status, raw = _post(daemon.port, enable, {}, cookie=root)
+    assert status == 200, raw[:200]
+    assert _body(raw)["user"] == {
+        "id": bob_id,
+        "username": "bob",
+        "display_name": None,
+        "role": "member",
+        "disabled": False,
+    }
+    assert daemon.store.team.get_user(bob_id)["disabled"] is False
+    # the old cookie stays dead; the password works again
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=bob)[0] == 401
+    _login(daemon, "bob", "fake-pw-b")
+    assert "user_enable" in [x["action"] for x in daemon.store.team.list_audit()]
+
+    status, raw = _post(
+        daemon.port, "/api/v1/team/users/user_nope/enable", {}, cookie=root
+    )
+    assert status == 404, raw[:200]
+
+
+def test_the_last_enabled_admin_cannot_be_disabled(daemon):
+    """With no admin left nobody can open the panel that would undo it."""
+    root = _login(daemon, "root", "fake-pw-r")
+    root_id = _uid(daemon, "root")
+    status, raw = _post(
+        daemon.port, f"/api/v1/team/users/{root_id}/disable", {}, cookie=root
+    )
+    assert status == 409, raw[:200]
+    assert _body(raw).get("code") == "last_admin"
+    assert daemon.store.team.get_user(root_id)["disabled"] is False
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=root)[0] == 200
+    assert "user_disable" not in [x["action"] for x in daemon.store.team.list_audit()]
+
+    # A second admin makes the first one replaceable.
+    daemon.seed_user("erika", "fake-pw-e", role="admin")
+    status, raw = _post(
+        daemon.port, f"/api/v1/team/users/{root_id}/disable", {}, cookie=root
+    )
+    assert status == 200, raw[:200]
+    erika = _login(daemon, "erika", "fake-pw-e")
+    status, raw = _post(
+        daemon.port,
+        f"/api/v1/team/users/{_uid(daemon, 'erika')}/disable",
+        {},
+        cookie=erika,
+    )
+    assert status == 409, raw[:200]
 
 
 # -- D4 visibility matrix -----------------------------------------------------
@@ -655,6 +736,68 @@ def test_invite_redeem_creates_replay_only_guest(daemon):
     assert _get(daemon.port, "/api/v1/auth/me", cookie=guest_cookie)[0] == 200
 
 
+def test_a_guest_lands_on_the_replay_list_not_the_workbench(daemon):
+    """TEAM-28: a guest was sent to the full workbench, which fired a run of
+    403s, then on to /replay: one input asking for a session id the guest
+    had no way to know. The server now sends a guest's page loads straight
+    to the viewer, and the viewer lists what this login may replay."""
+    r = _login(daemon, "root", "fake-pw-r")
+    a = _login(daemon, "alice", "fake-pw-a")
+    shared = _create_session(daemon, a)
+    private = _create_session(daemon, a)
+    _post(
+        daemon.port,
+        f"/api/v1/frames/{private}/visibility",
+        {"visibility": "private"},
+        cookie=a,
+    )
+    guest = _invite_guest(daemon, r, "visitor")
+    # a project-visible session of a project the guest was not invited into
+    other_project = daemon.store.create_project(
+        name="other", description="", context=""
+    )
+    elsewhere = _create_session_in(daemon, a, other_project["project_id"])
+
+    status, raw = _get(daemon.port, "/", cookie=guest, accept="text/html")
+    assert status == 303 and b"location: /replay\r\n" in raw.lower(), raw[:300]
+    link = f"/projects/{_pid(daemon)}/frames/{shared}"
+    status, raw = _get(daemon.port, link, cookie=guest, accept="text/html")
+    assert status == 303, raw[:300]
+    assert f"location: /replay#{shared}".encode() in raw.lower()
+    # a member still gets the workbench
+    assert _get(daemon.port, "/", cookie=a, accept="text/html")[0] == 200
+
+    status, raw = _get(daemon.port, "/api/v1/auth/me/replays", cookie=guest)
+    assert status == 200, raw[:300]
+    listed = [row["session_id"] for row in _body(raw)["sessions"]]
+    assert listed == [shared]  # not the private one, not another project's
+    assert elsewhere not in listed
+    # every listed id really opens
+    assert (
+        _get(daemon.port, f"/api/v1/sessions/{shared}/replay", cookie=guest)[0] == 200
+    )
+
+    # a member sees their own sessions, private ones included
+    status, raw = _get(daemon.port, "/api/v1/auth/me/replays", cookie=a)
+    assert status == 200
+    assert {shared, private} <= {row["session_id"] for row in _body(raw)["sessions"]}
+    # another member sees neither of alice's private ones
+    b = _login(daemon, "bob", "fake-pw-b")
+    status, raw = _get(daemon.port, "/api/v1/auth/me/replays", cookie=b)
+    assert private not in {row["session_id"] for row in _body(raw)["sessions"]}
+    # and nobody at all gets nothing
+    assert _get(daemon.port, "/api/v1/auth/me/replays")[0] == 401
+
+
+def test_the_guest_landing_never_writes_more_than_a_session_id():
+    from openai4s.server.team_auth import guest_landing
+
+    assert guest_landing("/") == "/replay"
+    assert guest_landing("/projects/p/frames/f-abc_1") == "/replay#f-abc_1"
+    assert guest_landing("/projects/p/frames/f-a%0d%0aX") == "/replay"
+    assert guest_landing("/projects/p/frames/f-a/extra") == "/replay"
+
+
 def test_invite_is_single_use_and_username_collision_does_not_burn_it(daemon):
     r = _login(daemon, "root", "fake-pw-r")
     status, raw = _post(
@@ -671,15 +814,83 @@ def test_invite_is_single_use_and_username_collision_does_not_burn_it(daemon):
     status, _ = _post(
         daemon.port,
         "/api/v1/auth/redeem-invite",
-        {"token": token, "username": "fresh", "password": "fake-pw"},
+        {"token": token, "username": "fresh", "password": "fake-pw-1"},
     )
     assert status == 201
     status, _ = _post(
         daemon.port,
         "/api/v1/auth/redeem-invite",
-        {"token": token, "username": "fresh2", "password": "fake-pw"},
+        {"token": token, "username": "fresh2", "password": "fake-pw-1"},
     )
     assert status == 403
+
+
+def test_adding_a_user_without_a_password_generates_one_shown_once(daemon):
+    """TEAM-25: the admin panel adds a person the way `openai4s user add`
+    does -- a generated password answered once -- and only an admin may."""
+    payload = {"username": "erin", "role": "member", "display_name": " Erin E "}
+    a = _login(daemon, "alice", "fake-pw-a")
+    status, raw = _post(daemon.port, "/api/v1/team/users", payload, cookie=a)
+    assert status == 403 and _body(raw)["code"] == "admin_only", raw[:200]
+    assert _post(daemon.port, "/api/v1/team/users", payload)[0] == 401
+    assert daemon.store.team.get_user_by_username("erin") is None
+
+    r = _login(daemon, "root", "fake-pw-r")
+    status, raw = _post(daemon.port, "/api/v1/team/users", payload, cookie=r)
+    assert status == 201, raw[:200]
+    body = _body(raw)
+    assert body["user"]["display_name"] == "Erin E"
+    assert len(body["password"]) >= 16
+    assert daemon.store.team.verify_password("erin", body["password"]) is not None
+    # it is never listed again
+    status, raw = _get(daemon.port, "/api/v1/team/users", cookie=r)
+    assert body["password"].encode() not in raw
+
+
+def test_every_door_that_takes_a_chosen_password_holds_it_to_the_minimum(daemon):
+    """CLI-16: a one-character password was accepted. The admin routes and
+    the invite redemption take a chosen password too, so they get the same
+    rule as `openai4s user add --password-stdin`."""
+    r = _login(daemon, "root", "fake-pw-r")
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/team/users",
+        {"username": "erin", "password": "1"},
+        cookie=r,
+    )
+    assert status == 400, raw[:200]
+    assert "at least 8 characters" in _body(raw)["error"]
+    assert daemon.store.team.get_user_by_username("erin") is None
+
+    bob_id = _uid(daemon, "bob")
+    status, raw = _post(
+        daemon.port,
+        f"/api/v1/team/users/{bob_id}/reset-password",
+        {"password": "short"},
+        cookie=r,
+    )
+    assert status == 400, raw[:200]
+    assert _body(raw)["code"] == "weak_password"
+    _login(daemon, "bob", "fake-pw-b")  # unchanged
+
+    status, raw = _post(
+        daemon.port, "/api/v1/team/invites", {"project_id": _pid(daemon)}, cookie=r
+    )
+    token = _body(raw)["token"]
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/auth/redeem-invite",
+        {"token": token, "username": "fresh", "password": "1234567"},
+    )
+    assert status == 400, raw[:200]
+    assert _body(raw)["code"] == "weak_password"
+    # the refusal did not burn the single-use invite
+    status, _ = _post(
+        daemon.port,
+        "/api/v1/auth/redeem-invite",
+        {"token": token, "username": "fresh", "password": "12345678"},
+    )
+    assert status == 201
 
 
 def test_member_replay_and_isolation(daemon):

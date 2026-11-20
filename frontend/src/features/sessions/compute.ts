@@ -90,7 +90,7 @@ export type ComputeReadState = {
 export type ComputeResult =
   | { phase: "available"; status: ComputeStatus }
   | { phase: "unsupported"; error: string }
-  | { phase: "unavailable"; error: string };
+  | { phase: "unavailable"; error: string; missing?: true };
 
 // Validate the fields the UI reads. A 200 with an HTML body or an incomplete
 // status is unknown, never evidence that the session is running locally.
@@ -153,9 +153,12 @@ export async function loadComputeStatus(fid: string): Promise<ComputeResult> {
     if (!validStatus(status)) throw new Error(t("compute.status.invalid"));
     return { phase: "available", status };
   } catch (error) {
+    if (unsupportedRead(error)) return { phase: "unsupported", error: apiErrorText(error) };
     return {
-      phase: unsupportedRead(error) ? "unsupported" : "unavailable",
+      phase: "unavailable",
       error: apiErrorText(error),
+      // "404 session not found": no such session for this login (TEAM-26).
+      ...(error instanceof ApiError && error.status === 404 ? { missing: true as const } : {}),
     };
   }
 }
@@ -186,6 +189,15 @@ async function readComputeStatus(fid: string): Promise<ComputeResult> {
   renderComputeLostBanner();
   const result = await loadComputeStatus(fid);
   if (fid !== currentId.value || generation !== _openGen.value || computeStatus.value !== loading) return result;
+  if (result.phase === "unavailable" && result.missing) {
+    // A session this login cannot see has no run location to report; the
+    // page already says it is not there, and "Run location unavailable"
+    // beside that read as a second, unrelated failure (TEAM-26).
+    computeStatus.value = null;
+    renderComputeBadge();
+    renderComputeLostBanner();
+    return result;
+  }
   computeStatus.value = result.phase === "available"
     ? { fid, generation, ...result }
     : { ...loading, ...result };

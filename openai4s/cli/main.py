@@ -2982,9 +2982,32 @@ def _read_new_password(args) -> tuple[str, str | None]:
         pw = sys.stdin.readline().rstrip("\r\n")
         if not pw:
             raise ValueError("empty password on stdin")
-        return pw, None
+        from openai4s.storage.team import check_new_password
+
+        # A lab server's account: `echo 1 | ... --password-stdin` was
+        # accepted (CLI-16).
+        return check_new_password(pw), None
     generated = _secrets.token_urlsafe(12)
     return generated, generated
+
+
+def _team_mode_next_step(cfg) -> tuple[bool, str]:
+    """(team mode is on, the line that says what happens next).
+
+    Accounts do nothing until the daemon runs in team mode, and `user add`
+    used to end on "created ..." with no word about that: the operator made
+    an account, opened the browser, and still met the token page (CLI-16).
+    The live daemon's own record decides when one is running; otherwise
+    this shell's OPENAI4S_TEAM_MODE.
+    """
+    url = _sign_in_url(cfg, team_mode=True)
+    if _live_team_mode(cfg):
+        return True, f"sign in at {url}"
+    return False, (
+        "note: team mode is off, so accounts cannot sign in yet. Start the "
+        "daemon with OPENAI4S_TEAM_MODE=1 (restart `openai4s serve` if it is "
+        f"running), then sign in at {url}"
+    )
 
 
 def cmd_user(args) -> int:
@@ -3010,23 +3033,55 @@ def cmd_user(args) -> int:
             if generated is not None:
                 # printed exactly once, never stored or logged
                 print(f"initial password: {generated}")
+            team_on, next_step = _team_mode_next_step(get_config())
+            print(next_step, file=sys.stdout if team_on else sys.stderr)
         elif action == "list":
             users = store.team.list_users()
             if getattr(args, "json", False):
                 print(json.dumps(users, indent=2))
             else:
+                # A header, and the display name: it was set with
+                # --display-name and then visible only under --json (TEAM-7).
+                # Last, because it is free text and may be wide.
+                width = max([len("USERNAME")] + [len(u["username"]) for u in users])
+                if users:
+                    print(
+                        f"{'USERNAME':<{width}}  {'ROLE':<6}  {'STATE':<8}  "
+                        f"{'ID':<17}  DISPLAY NAME"
+                    )
                 for u in users:
-                    flag = " [disabled]" if u["disabled"] else ""
-                    print(f"{u['username']:<20} {u['role']:<7} {u['id']}{flag}")
+                    state = "disabled" if u["disabled"] else "active"
+                    row = (
+                        f"{u['username']:<{width}}  {u['role']:<6}  {state:<8}  "
+                        f"{u['id']:<17}  {u['display_name'] or ''}"
+                    )
+                    print(row.rstrip())
                 if not users:
                     print(
                         "no users; create one with: openai4s user add <name> --role admin"
                     )
+                team_on, next_step = _team_mode_next_step(get_config())
+                if not team_on:
+                    print(next_step, file=sys.stderr)
         elif action == "disable":
             user = store.team.get_user_by_username(args.username)
             if user is None:
                 print(f"error: no such user {args.username!r}", file=sys.stderr)
                 return 2
+            # A mistyped name signs somebody out everywhere and deletes their
+            # personal LLM keys, so a person at a terminal is asked first. A
+            # script (no TTY) and `--yes` are not.
+            if not getattr(args, "yes", False) and sys.stdin.isatty():
+                answer = input(
+                    f"Disable {user['username']} ({user['role']})? This signs "
+                    "them out everywhere and deletes their personal LLM "
+                    "key(s). [y/N] "
+                )
+                if answer.strip().lower() not in ("y", "yes"):
+                    print("aborted; nothing changed")
+                    return 1
+            # Raises LastAdminError (a ValueError, reported below) rather
+            # than leave the instance with nobody who can manage it.
             store.team.set_disabled(user["id"], True)
             # What the HTTP route does, on the path an operator uses when the
             # daemon is down. Leaving the row behind made the credential
@@ -3043,8 +3098,35 @@ def cmd_user(args) -> int:
                 user_id=user["id"],
                 target=args.username,
             )
-            keys = f", {cleared} LLM key(s) cleared" if cleared else ""
-            print(f"disabled {args.username} (live sessions revoked{keys})")
+            # The key deletion is deliberate (a credential must not outlive
+            # the account that watches it), so say that it is not undone.
+            keys = (
+                f", {cleared} personal LLM key(s) deleted and not restored "
+                "by `user enable`"
+                if cleared
+                else ""
+            )
+            print(f"disabled {user['username']} (live sessions revoked{keys})")
+            print(f"undo with: openai4s user enable {user['username']}")
+        elif action == "enable":
+            user = store.team.get_user_by_username(args.username)
+            if user is None:
+                print(f"error: no such user {args.username!r}", file=sys.stderr)
+                return 2
+            if not user["disabled"]:
+                print(f"{user['username']} is already enabled")
+                return 0
+            store.team.set_disabled(user["id"], False)
+            store.team.audit(
+                actor="cli",
+                action="user_enable",
+                user_id=user["id"],
+                target=user["username"],
+            )
+            print(
+                f"enabled {user['username']}; they can sign in again with "
+                "their existing password"
+            )
         elif action == "reset-password":
             user = store.team.get_user_by_username(args.username)
             if user is None:
@@ -3062,9 +3144,16 @@ def cmd_user(args) -> int:
                 user_id=user["id"],
                 target=args.username,
             )
-            print(f"password reset for {args.username} (live sessions revoked)")
+            print(f"password reset for {user['username']} (live sessions revoked)")
             if generated is not None:
                 print(f"new password: {generated}")
+            if user["disabled"]:
+                # A new password does not lift a disable, and the login page
+                # would keep refusing with no hint why.
+                print(
+                    f"note: {user['username']} is disabled and still cannot "
+                    f"sign in; run: openai4s user enable {user['username']}"
+                )
         else:  # pragma: no cover - argparse enforces choices
             return 2
     except ValueError as e:
@@ -3493,28 +3582,52 @@ def build_parser() -> argparse.ArgumentParser:
     puser = sub.add_parser(
         "user",
         help="manage team-mode accounts (direct database access, no daemon needed)",
+        description="Manage team-mode accounts. Direct database access: no "
+        "daemon needed. Accounts are used only while the daemon runs with "
+        "OPENAI4S_TEAM_MODE=1; people then sign in at /login.",
     )
     usub = puser.add_subparsers(dest="user_action", required=True)
     ua = usub.add_parser("add", help="create an account")
     ua.add_argument("username")
-    ua.add_argument("--role", choices=("admin", "member", "guest"), default="member")
+    ua.add_argument(
+        "--role",
+        choices=("admin", "member", "guest"),
+        default="member",
+        help="admin: everything a member can, plus accounts, instance settings "
+        "(models, compute, installs) and every session; member (default): runs "
+        "their own sessions and reads project-visible ones of their projects; "
+        "guest: read-only replay of project-visible sessions in projects they "
+        "were invited to",
+    )
     ua.add_argument("--display-name", dest="display_name")
     ua.add_argument(
         "--password-stdin",
         dest="password_stdin",
         action="store_true",
-        help="read the password from stdin; otherwise one is generated and "
-        "printed once (a password never goes on the command line)",
+        help="read the password from stdin (at least 8 characters); otherwise "
+        "one is generated and printed once (a password never goes on the "
+        "command line)",
     )
     ua.set_defaults(fn=cmd_user)
     ul = usub.add_parser("list", help="list accounts")
     ul.add_argument("--json", action="store_true")
     ul.set_defaults(fn=cmd_user)
     ud = usub.add_parser(
-        "disable", help="disable an account and revoke its live sessions"
+        "disable",
+        help="disable an account, revoke its live sessions and delete its "
+        "personal LLM keys (undo with `user enable`; the keys are not restored)",
     )
     ud.add_argument("username")
+    ud.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="do not ask for confirmation (a terminal is asked; a script is not)",
+    )
     ud.set_defaults(fn=cmd_user)
+    ue = usub.add_parser("enable", help="re-enable a disabled account")
+    ue.add_argument("username")
+    ue.set_defaults(fn=cmd_user)
     ur = usub.add_parser(
         "reset-password", help="set a new password and revoke live sessions"
     )
@@ -3523,8 +3636,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--password-stdin",
         dest="password_stdin",
         action="store_true",
-        help="read the new password from stdin; otherwise one is generated "
-        "and printed once",
+        help="read the new password from stdin (at least 8 characters); "
+        "otherwise one is generated and printed once",
     )
     ur.set_defaults(fn=cmd_user)
 

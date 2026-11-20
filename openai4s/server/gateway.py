@@ -643,6 +643,8 @@ _GUEST_AUTH_PATHS = frozenset(
         "/auth/me",
         "/auth/status",
         "/auth/redeem-invite",
+        # Read-only: the sessions this guest may replay (TEAM-28).
+        "/auth/me/replays",
     }
 )
 
@@ -14982,6 +14984,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     from openai4s.server.team_auth import SERVICE_IDENTITY as _TEAM_SERVICE_IDENTITY
     from openai4s.server.team_auth import TEAM_COOKIE as _TEAM_COOKIE
     from openai4s.server.team_auth import TeamAuthService as _TeamAuthService
+    from openai4s.server.team_auth import guest_landing as _team_guest_landing
+    from openai4s.server.team_auth import login_location as _team_login_location
 
     # A TLS proxy terminates encryption before this loopback HTTP server, so
     # transport state here cannot prove whether the browser used HTTPS.  The
@@ -15625,10 +15629,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self.close_connection = True
             if method == "GET" and _wants_html(self.headers):
                 # A person in a browser: send them to the login page rather
-                # than a JSON refusal they cannot act on.
+                # than a JSON refusal they cannot act on -- carrying the page
+                # they asked for, so a colleague's session link still lands
+                # on that session after the login (TEAM-9).
                 self._last_status = 303
                 self.send_response(303)
-                self.send_header("Location", "/login")
+                self.send_header("Location", _team_login_location(self.path))
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return False
@@ -16216,6 +16222,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- static -----------------------------------------------------
         def _serve_index(self) -> None:
+            _identity = getattr(self, "_team_identity", None)
+            if (
+                _team_auth is not None
+                and _identity is not None
+                and _identity.kind == "user"
+                and _identity.role == "guest"
+            ):
+                # A replay-only guest has no workbench: loading it only made
+                # its API reads 403 until the client sent them on (TEAM-28).
+                self._last_status = 303
+                self.send_response(303)
+                self.send_header(
+                    "Location", _team_guest_landing(urlparse(self.path).path)
+                )
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             index = (
                 WEBUI_DIR / "index.html"
                 if _webui_legacy_enabled()

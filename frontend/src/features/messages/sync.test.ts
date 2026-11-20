@@ -1122,4 +1122,20 @@ describe("a missing session", () => {
     renderMissingSession(messages(), { project: null, home: vi.fn() });
     expect(Array.from(messages().querySelectorAll("button")).map((b) => b.textContent)).toEqual(["Back to Home"]);
   });
+
+  it("in team mode names the likely reason: no access to a teammate's session (TEAM-26)", async () => {
+    const { teamUser } = await import("../chrome/team-identity");
+    const sub = () => (messages().querySelector(".missing-session .es-sub") as HTMLElement).textContent || "";
+    renderMissingSession(messages(), { project: null, home: vi.fn() });
+    expect(sub()).toContain("does not exist or has been deleted");
+    messages().innerHTML = "";
+    teamUser.value = { username: "bob", role: "member" };
+    try {
+      renderMissingSession(messages(), { project: null, home: vi.fn() });
+      expect(sub()).toContain("you do not have access");
+      expect(sub()).toContain("visible to the project");
+    } finally {
+      teamUser.value = null;
+    }
+  });
 });
