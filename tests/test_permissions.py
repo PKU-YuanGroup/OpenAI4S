@@ -2533,13 +2533,17 @@ def test_a_sub_agents_request_names_the_sub_agent_and_its_task(tmp_path):
             break
         time.sleep(0.01)
     ask = next(e for e in events if e.get("type") == "await_permission")
-    assert ask["sub_agent"] is True
-    assert ask["sub_agent_name"] == "general"
-    assert ask["sub_agent_task"] == "Compute the average MW of ACDEFGHIK."
-    stored = st.get_permission_request(ask["decision_id"])["payload"]
-    assert stored["sub_agent_task"] == "Compute the average MW of ACDEFGHIK."
-    b.resolve_result(
-        ask["decision_id"], allow=False, scope="once", store=st, root_frame_id=root
-    )
-    t.join(timeout=5)
+    try:
+        assert ask["sub_agent"] is True
+        assert ask.get("sub_agent_name") == "general"
+        assert ask.get("sub_agent_task") == "Compute the average MW of ACDEFGHIK."
+        stored = st.get_permission_request(ask["decision_id"])["payload"]
+        assert stored.get("sub_agent_task") == "Compute the average MW of ACDEFGHIK."
+    finally:
+        # Answered whatever happened above, so a failure never leaves the
+        # gate's thread waiting out its timeout.
+        b.resolve_result(
+            ask["decision_id"], allow=False, scope="once", store=st, root_frame_id=root
+        )
+        t.join(timeout=5)
     assert out["res"]["allow"] is False
