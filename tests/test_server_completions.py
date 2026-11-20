@@ -198,6 +198,48 @@ def test_the_web_prompt_says_to_run_a_users_cell_as_written():
     assert "say why instead of doing something else" in _GATEWAY_PROMPT_EXTRA
 
 
+def test_a_cell_that_lacks_a_package_says_what_to_install_and_how():
+    """SCI-32: `No module named 'Bio'` and R's `there is no package called
+    'Seurat'` were shown with no next step, and nothing said that Bio is
+    installed as biopython."""
+
+    def failed(language, error):
+        return outcome_narration(
+            CodeCell(language, "x"),
+            ExecutionOutcome(
+                observation=f"[Observation]\nERROR (cell line 1):\nTraceback...\n{error}"
+            ),
+            "en",
+        ), outcome_narration(
+            CodeCell(language, "x"),
+            ExecutionOutcome(
+                observation=f"[Observation]\nERROR (cell line 1):\nTraceback...\n{error}"
+            ),
+            "zh",
+        )
+
+    en, zh = failed("python", "ModuleNotFoundError: No module named 'Bio.SeqUtils'")
+    assert "`Bio` is installed as the `biopython` package" in en
+    assert "The agent asks before installing it" in en
+    assert "Settings → Compute" in en
+    assert "will correct it from this error" not in en
+    assert "`Bio` 由 `biopython` 包提供" in zh and "设置 → 计算" in zh
+
+    en, _ = failed("python", "ModuleNotFoundError: No module named 'statsmodels'")
+    assert "This environment does not have the `statsmodels` package." in en
+
+    en, zh = failed(
+        "r", "Error in library(Seurat) : there is no package called \u2018Seurat\u2019"
+    )
+    assert "This R environment does not have the `Seurat` package." in en
+    assert "`openai4s setup`" in en and "cannot be installed from a session" in en
+    assert "Settings → Compute" not in en  # decision 12: no R installer
+    assert "当前 R 环境没有 `Seurat` 包" in zh
+
+    other, _ = failed("python", "ValueError: bad input")
+    assert "will correct it from this error" in other
+
+
 def test_code_outcome_narration_uses_real_error_and_redacts_secrets():
     action = CodeCell("python", "raise RuntimeError('hidden source')")
     failed = ExecutionOutcome(

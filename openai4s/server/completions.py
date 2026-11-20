@@ -213,6 +213,13 @@ def outcome_narration(
     if refusal is not None:
         return _refusal_narration(refusal, zh)
     if error:
+        missing = _missing_package_hint(error, zh)
+        if missing:
+            return (
+                f"这个单元运行出错：`{error}`。{missing}"
+                if zh
+                else f"This cell failed: `{error}`. {missing}"
+            )
         return (
             f"这个单元运行出错：`{error}`。智能体会根据这条报错修正后重试。"
             if zh
@@ -289,6 +296,70 @@ def outcome_narration(
             "warnings or errors; see the Notebook."
         )
     return "\n".join(parts)
+
+
+_MISSING_MODULE = re.compile(r"No module named '(?P<module>[A-Za-z_][\w.]*)'")
+_MISSING_R_PACKAGE = re.compile(
+    r"there is no package called [‘'`\"](?P<package>[A-Za-z][\w.]*)[’'`\"]"
+)
+#: Import names whose package is called something else ("Bio" is installed as
+#: biopython): a newcomer cannot guess these from the error.
+_PACKAGE_OF_MODULE = {
+    "Bio": "biopython",
+    "sklearn": "scikit-learn",
+    "skimage": "scikit-image",
+    "PIL": "pillow",
+    "cv2": "opencv-python",
+    "yaml": "pyyaml",
+    "bs4": "beautifulsoup4",
+    "dateutil": "python-dateutil",
+    "Crypto": "pycryptodome",
+    "docx": "python-docx",
+    "pptx": "python-pptx",
+}
+
+
+def _missing_package_hint(error: str, zh: bool) -> str:
+    """The next step for a cell that failed on a package it does not have.
+
+    SCI-32: ``No module named 'Bio'`` and R's ``there is no package called
+    'Seurat'`` were shown with no way forward, and nothing said that ``Bio``
+    is installed as ``biopython``. Installing stays the agent's to ask for
+    (owner decision 1); R has no installer in a session (decision 12).
+    """
+    match = _MISSING_MODULE.search(error)
+    if match:
+        module = match.group("module").split(".")[0]
+        package = _PACKAGE_OF_MODULE.get(module, module)
+        if zh:
+            what = (
+                f"`{module}` 由 `{package}` 包提供，当前环境没有安装。"
+                if package != module
+                else f"当前环境没有安装 `{package}` 包。"
+            )
+            return what + "智能体安装前会先询问你；也可以在 设置 → 计算 里安装。"
+        what = (
+            f"`{module}` is installed as the `{package}` package, which this "
+            "environment does not have."
+            if package != module
+            else f"This environment does not have the `{package}` package."
+        )
+        return (
+            what + " The agent asks before installing it; you can also install it "
+            "in Settings → Compute."
+        )
+    match = _MISSING_R_PACKAGE.search(error)
+    if match:
+        package = match.group("package")
+        return (
+            f"当前 R 环境没有 `{package}` 包。会话里不能安装 R 包：运行 `openai4s setup` "
+            "构建托管的 R 环境，或在本机 R 里安装后选用它。"
+            if zh
+            else f"This R environment does not have the `{package}` package. R packages "
+            "cannot be installed from a session: run `openai4s setup` to build the "
+            "managed R environment, or install it in your own R and select that."
+        )
+    return ""
 
 
 #: The omission marker ``agent.runtime._budgeted`` puts into a long section.
