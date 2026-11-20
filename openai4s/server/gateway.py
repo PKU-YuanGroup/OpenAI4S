@@ -107,6 +107,7 @@ from openai4s.server import (
     compute_tasks,
     contract,
     diagnostics_routes,
+    example_session,
     file_routes,
     governance_routes,
     kernel_routes,
@@ -2665,7 +2666,10 @@ open. You do NOT need to call `host.save_artifact`; writing the file is enough.
 summary based only on already-observed results and name the deliverable files. Put a \
 PURE protocol-only submit cell last in that same reply; it is hidden from the \
 Notebook. The submitted output should normally contain `summary`, `findings`, \
-`metrics`, and `limitations` fields so the durable completion view remains useful.
+`metrics`, and `limitations` fields so the durable completion view remains useful. \
+A short follow-up or a direct question is the exception: answer it directly in \
+`summary` and leave out every field that would only repeat that answer. Key \
+`metrics` by short plain-language labels a reader understands, not code identifiers.
 
 Harness tools (an opencode-parity toolset, callable from any ```python cell as host.*):
 - `host.todo_write([{content,status}]) / host.todo_read()` — OPTIONAL progress \
@@ -17541,7 +17545,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             'APIs; POST {"confirm": true} to run it',
                             "confirmation_required",
                         )
-                    started = runner.example_seed.start(cfg, runner)
+                    started = runner.example_seed.start(
+                        cfg, runner, str(self._body().get("lang") or "en")
+                    )
                 self._json(
                     {
                         "seeded": existing is not None,
@@ -19435,6 +19441,39 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     {
                         "Content-Disposition": (
                             f'attachment; filename="{exported["filename"]}"'
+                        ),
+                        "X-Content-SHA256": exported["sha256"],
+                    },
+                )
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/session/export-html", sub)
+            if m and method == "GET":
+                # EXP-3: the read-only share page as one self-contained file,
+                # for a session nobody has set a relay up for. Same view, same
+                # frame scope guard as every `/frames/{id}/...` read.
+                fid = m.group(1)
+                frame = store.get_frame(fid)
+                if frame is None:
+                    raise GatewayError(404, "session not found")
+                try:
+                    exported = runner.shares.export_page(
+                        fid, language=str((q.get("lang") or ["en"])[0])
+                    )
+                except SessionPackageError as error:
+                    raise GatewayError(
+                        409, str(error), "session_not_exportable"
+                    ) from error
+                title = str(
+                    frame.get("name") or frame.get("task_summary") or ""
+                ).strip()
+                self._send(
+                    200,
+                    exported["data"],
+                    exported["content_type"],
+                    {
+                        "Content-Disposition": download_content_disposition(
+                            f"{title}.html" if title else exported["filename"],
+                            exported["filename"],
                         ),
                         "X-Content-SHA256": exported["sha256"],
                     },
@@ -22388,6 +22427,8 @@ class _ExampleSeedState:
         self._thread: threading.Thread | None = None
         self._last_error: str | None = None
         self._last_result: dict[str, int] | None = None
+        #: The UI language the example's own text is written in.
+        self.language = "en"
 
     def running(self) -> bool:
         with self._lock:
@@ -22407,7 +22448,7 @@ class _ExampleSeedState:
         with self._lock:
             return dict(self._last_result) if self._last_result else None
 
-    def start(self, cfg: Config, runner: "SessionRunner") -> bool:
+    def start(self, cfg: Config, runner: "SessionRunner", language: str = "en") -> bool:
         """Begin seeding on a background thread. False if one is already going.
 
         Background because the seed runs real cells against live APIs: on the
@@ -22420,6 +22461,7 @@ class _ExampleSeedState:
                 return False
             self._last_error = None
             self._last_result = None
+            self.language = "zh" if language == "zh" else "en"
 
             def _run() -> None:
                 try:
@@ -22986,6 +23028,9 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
             _retire_demo_frame(runner, r.get("frame_id") or r.get("id"))
     if any((r.get("name") or "") == _DEMO_SESSION_NAME for r in roots):
         return None  # current demo already present
+    # The UI language of whoever asked for the example (CHAT-7); English for
+    # the opt-in startup seed, which nobody asked for in a language.
+    language = str(getattr(runner.example_seed, "language", "en"))
     fid = store.new_frame(
         kind="turn", project_id="proj_example", status="done", model=cfg.llm.model
     )
@@ -23010,84 +23055,30 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
     store.update_frame(
         fid,
         name=_DEMO_SESSION_NAME,
-        task_summary="Pull NIF3/DUF34 family records + sequences from the UniProt "
-        "REST API, compute real per-protein biochemistry and pairwise "
-        "identity with a Kyte-Doolittle hydropathy "
-        "profile, fetch a representative structure from the RCSB PDB "
-        "API, and write a reproducible report — every value real.",
+        task_summary=example_session.copy(language, "task_summary"),
     )
     demo_user_message = store.add_message(
         root_frame_id=fid,
         role="user",
         frame_id=fid,
-        content="Analyse the NIF3/DUF34 protein family using real data only: pull "
-        "family records and sequences from the UniProt REST API, compute "
-        "per-protein biochemistry (MW, pI, GRAVY) and pairwise sequence "
-        "identity, plot a Kyte-Doolittle hydropathy profile, fetch a "
-        "representative 3D structure from the RCSB PDB API, and write a "
-        "short reproducible report.",
+        content=example_session.copy(language, "prompt"),
     )
     runner._capture_cursor_checkpoint_best_effort(  # noqa: SLF001
         fid,
         source_kind="message",
         source_id=demo_user_message["message_id"],
     )
-    # One row per demo cell: its source plus, where the cell has a
-    # user-visible deliverable, how to recognize it in the artifact store and
-    # the success line to render. The execution loop and the material lines
-    # both derive from this table — the cell number in each fallback comes
-    # from the same enumeration — so inserting or reordering a demo cell
-    # cannot leave the message citing the wrong cell, and a cell's expected
-    # artifact lives on the same row as the cell that writes it.
-    demo_plan: tuple[tuple[str, dict[str, Any] | None], ...] = (
+    # One row per demo cell: its source plus the material it writes, if any.
+    # `example_session.summary_text` words each material and recognises its
+    # file from this same key, so inserting or reordering a demo cell cannot
+    # leave the message citing the wrong cell.
+    demo_plan: tuple[tuple[str, str | None], ...] = (
         (_DEMO_UNIPROT, None),
         (_DEMO_MCP, None),
-        (
-            _DEMO_PLOT,
-            {
-                # Any .png, not an exact name: the figure filename carries the
-                # producing cell's index. If _DEMO_PLOT ever exports another
-                # format, update this predicate on the same row.
-                "produced": lambda names: any(
-                    str(name or "").endswith(".png") for name in names
-                ),
-                "line": "- **hydropathy figure (PNG)** — Kyte-Doolittle "
-                "profile of the reference sequence\n",
-                "label": "hydropathy figure",
-            },
-        ),
-        (
-            _DEMO_CSV,
-            {
-                "filename": "family_biochemistry.csv",
-                "line": "- **family_biochemistry.csv** — per-protein length "
-                "/ MW / pI / GRAVY / % identity\n",
-                "label": "biochemistry table",
-            },
-        ),
-        (
-            _DEMO_PDB,
-            {
-                "filename": "nif3_structure.pdb",
-                "line": "- **nif3_structure.pdb** — real RCSB structure "
-                "(opens in the 3Dmol viewer)\n",
-                # Bespoke fallback: a missing structure is a deliberate
-                # skip (Cell 5 writes it only on a successful live RCSB
-                # download), not a crash to send the reader hunting for.
-                "missing": "- _3D structure_ — skipped this run: the RCSB "
-                "download was unreachable (no placeholder is ever "
-                "substituted; see nif3_report.md)\n",
-            },
-        ),
-        (
-            _DEMO_MD,
-            {
-                "filename": "nif3_report.md",
-                "line": "- **nif3_report.md** — reproducible summary with "
-                "data provenance\n",
-                "label": "summary report",
-            },
-        ),
+        (_DEMO_PLOT, "figure"),
+        (_DEMO_CSV, "table"),
+        (_DEMO_PDB, "structure"),
+        (_DEMO_MD, "report"),
     )
     cell_failures: list[str] = []
     for index, (code, _material) in enumerate(demo_plan, start=1):
@@ -23113,86 +23104,26 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
             # treating those as successes reopened the all-green "Done —
             # every value is real" header over cells that never finished.
             cell_failures.append(f"{label}: interrupted before completion")
-    # Describe only the materials that were actually produced. Every
-    # deliverable is conditional in practice — the structure needs a live
-    # RCSB download, the figure/table/report need optional science libraries
-    # the lightweight install does not ship (matplotlib, pandas) —
-    # so every line branches on the artifact store rather than over-claiming.
-    _produced = {
-        a.get("filename") for a in store.list_artifacts({"root_frame_id": fid})
-    }
-    _material_lines: list[str] = []
-    for index, (_code, material) in enumerate(demo_plan, start=1):
-        if material is None:
-            continue
-        produced = (
-            material["produced"](_produced)
-            if "produced" in material
-            else material["filename"] in _produced
-        )
-        if produced:
-            _material_lines.append(material["line"])
-        elif "missing" in material:
-            _material_lines.append(material["missing"])
-        else:
-            _material_lines.append(
-                f"- _{material['label']}_ — not produced this run (Cell "
-                f"{index} did not complete; see its error in the Notebook "
-                "tab)\n"
-            )
-    if cell_failures:
-        # An honest header beats the reassuring one: some cells crashed, so
-        # "every value is real" must not be claimed on their behalf. A missing
-        # module is the common cause, so name it and say how to install it
-        # rather than leaving the reader to guess.
-        missing_modules = sorted(
-            {
-                match.group(1).split(".")[0]
-                for failure in cell_failures
-                for match in [re.search(r"No module named '([^']+)'", failure)]
-                if match
-            }
-        )
-        install_hint = ""
-        if missing_modules:
-            install_hint = (
-                "\nMissing Python module(s): "
-                + ", ".join(f"`{name}`" for name in missing_modules)
-                + ". The example uses the science extra (numpy, pandas, "
-                "matplotlib). From a source checkout run `uv sync --extra "
-                "science` (or `./setup.sh`); for a pip install run `pip install "
-                '"openai4s[science]"`. Restart OpenAI4S afterwards so new '
-                "kernels pick them up.\n"
-            )
-        _header = (
-            f"{len(cell_failures)} of {len(demo_plan)} example cells did not "
-            "complete on this install:\n"
-            + "".join(f"- {failure}\n" for failure in cell_failures)
-            + install_hint
-            + "\nEvery value that **was** produced is computed from real data "
-            "(no simulated or placeholder values), and the materials below "
-            "list only what was actually produced."
-        )
-    else:
-        _header = (
-            "Done — every value in this session is computed from real data "
-            "(no simulated or placeholder values)."
-        )
-    store.add_message(
-        root_frame_id=fid,
-        role="assistant",
+    # Describe only the materials that were actually produced, as real links
+    # (CHAT-7), and name every failure: a crashed cell, and a step that failed
+    # inside a cell that carried on (CHAT-1).
+    step_failures = example_session.failed_steps(store, fid)
+    example_session.finish(
+        store=store,
+        emit=runner.hub.emitter(fid),
         frame_id=fid,
-        content=_header + "\n\n"
-        "**Real inputs**\n"
-        "- **UniProt REST API** — NIF3/DUF34 family records + sequences\n"
-        "- **RCSB PDB API** — full-text search + coordinate download of a "
-        "representative structure\n"
-        "- **MCP connector `example`** — `calc` / `now` tools over the "
-        "Connectors bridge\n\n"
-        "**Materials — click any artifact to view**\n"
-        + "".join(_material_lines)
-        + "\nOpen the **Notebook** tab to replay the executed cells, or the "
-        "**Files** panel to view each material.",
+        failed_cells=len(cell_failures),
+        summary=example_session.summary_text(
+            language=language,
+            materials=[material for _code, material in demo_plan],
+            artifacts=store.list_artifacts({"root_frame_id": fid}),
+            cell_failures=cell_failures,
+            step_failures=step_failures,
+            trusted_delivery=bool(getattr(runner, "stage1_trusted_delivery", False)),
+        ),
     )
-    store.update_frame(fid, status="done")
-    return {"cells": len(demo_plan), "failed": len(cell_failures)}
+    return {
+        "cells": len(demo_plan),
+        "failed": len(cell_failures),
+        "failed_steps": len(step_failures),
+    }

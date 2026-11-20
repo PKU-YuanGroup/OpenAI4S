@@ -330,6 +330,10 @@ class WebEventSink:
     _code_draft: CodeDraftStreamer | None = field(default=None, init=False)
     _current_action: Action | None = field(default=None, init=False)
     _reply_received: bool = field(default=False, init=False)
+    # CHAT-4: an "I am ... first" line belongs to the run's first action only,
+    # and the same status line is not said twice in a row.
+    _actions_routed: int = field(default=0, init=False)
+    _last_visible: str = field(default="", init=False)
 
     def emit(self, event: AgentEvent) -> None:
         # Persist the canonical engine event before projecting it to transient
@@ -368,6 +372,7 @@ class WebEventSink:
             self.model_prose = prose
             self.current_prose = prose
             if prose:
+                self._last_visible = prose
                 self.assistant_visible.append(
                     {"at": int(time.time() * 1000) - 1, "text": prose}
                 )
@@ -387,9 +392,12 @@ class WebEventSink:
                 or is_completion_only_cell(event.action)
             ):
                 self._code_draft.clear("not_executed")
+            opening = self._actions_routed == 0
+            self._actions_routed += 1
             if self.narrate_actions and not self.current_prose and not self.cancelled():
                 self._publish(
-                    action_narration(event.action, self.language), before_action=True
+                    action_narration(event.action, self.language, opening=opening),
+                    before_action=True,
                 )
         elif isinstance(event, OutcomeProduced):
             if self._code_draft is not None:
@@ -441,6 +449,9 @@ class WebEventSink:
         if not prose:
             return
         self.current_prose = prose
+        if prose == self._last_visible:
+            return
+        self._last_visible = prose
         self.assistant_visible.append(
             {
                 "at": int(time.time() * 1000) - (1 if before_action else 0),

@@ -285,7 +285,13 @@ describe("the seeded example project's name", () => {
 // NAV-4: after "Run the example analysis" the card vanished as soon as the
 // session existed, and nothing said when it finished or that cells failed.
 describe("the example run's notice", () => {
-  it("follows the run and says how many cells did not complete", async () => {
+  // CHAT-1: a fetch that failed inside a cell that carried on left "all 6
+  // cells ran without an error" on the card.
+  it.each([
+    [{ cells: 6, failed: 2 }, () => dashCopy("dash.example.doneFailed", 2, 6)],
+    [{ cells: 6, failed: 0, failed_steps: 1 }, () => dashCopy("dash.example.doneStepFailed", 6, 1)],
+    [{ cells: 6, failed: 0, failed_steps: 0 }, () => dashCopy("dash.example.done", 6)],
+  ])("follows the run and says how it ended: %j", async (result, expected) => {
     const ticks: Array<() => void> = [];
     vi.stubGlobal("window", {
       setInterval: (tick: () => void) => {
@@ -324,12 +330,10 @@ describe("the example run's notice", () => {
       frame_id: "f-example",
       project_id: "proj_example",
       error: null,
-      result: { cells: 6, failed: 2 },
+      result,
     };
     ticks[0]!();
-    await vi.waitFor(() =>
-      expect(texts(dom["#dash-sessions"])).toContain(dashCopy("dash.example.doneFailed", 2, 6)),
-    );
+    await vi.waitFor(() => expect(texts(dom["#dash-sessions"])).toContain(expected()));
     expect(texts(dom["#dash-sessions"])).toContain(dashCopy("dash.example.open"));
     expect(intervals.size).toBe(0);
   });

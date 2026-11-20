@@ -116,7 +116,7 @@ type ExampleStatus = {
   seeded?: boolean;
   frame_id?: string | null;
   project_id?: string;
-  result?: { cells?: number; failed?: number } | null;
+  result?: { cells?: number; failed?: number; failed_steps?: number } | null;
 };
 
 /**
@@ -130,6 +130,8 @@ type ExampleRun = {
   projectId: string;
   cells: number;
   failed: number | null;
+  /** Steps that failed inside cells that still completed (CHAT-1). */
+  failedSteps: number;
   error: string;
   listed: boolean;
 };
@@ -162,6 +164,7 @@ function applyExampleStatus(st: ExampleStatus): void {
       if (result && Number.isFinite(Number(result.cells))) {
         run.cells = Number(result.cells);
         run.failed = Math.max(0, Number(result.failed) || 0);
+        run.failedSteps = Math.max(0, Number(result.failed_steps) || 0);
       }
     }
   }
@@ -201,6 +204,7 @@ function beginExampleRun(st: ExampleStatus): void {
     projectId: "proj_example",
     cells: 0,
     failed: null,
+    failedSteps: 0,
     error: "",
     listed: false,
   };
@@ -222,7 +226,9 @@ function exampleStatusBox(run: ExampleRun): HTMLElement {
           ? dashCopy("dash.example.ended")
           : run.failed > 0
             ? dashCopy("dash.example.doneFailed", run.failed, run.cells)
-            : dashCopy("dash.example.done", run.cells);
+            : run.failedSteps > 0
+              ? dashCopy("dash.example.doneStepFailed", run.cells, run.failedSteps)
+              : dashCopy("dash.example.done", run.cells);
   box.appendChild(el("div", "dash-example-msg", text));
   const actions = el("div", "dash-example-actions");
   if (run.frameId) {
@@ -398,7 +404,8 @@ function exampleSeedCta(): HTMLElement {
   btn.onclick = () => {
     btn.disabled = true;
     btn.textContent = t("dash.example.running");
-    api("/example/session", { method: "POST", body: JSON.stringify({ confirm: true }) })
+    // `lang`: the example's own prompt and summary follow the UI language.
+    api("/example/session", { method: "POST", body: JSON.stringify({ confirm: true, lang: LANG }) })
       .then((st) => {
         if (live()) beginExampleRun(st as ExampleStatus);
       })

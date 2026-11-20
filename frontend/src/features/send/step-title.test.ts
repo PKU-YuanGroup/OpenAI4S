@@ -22,6 +22,14 @@ describe("step titles and summaries in the UI language (I18N-1)", () => {
     expect(stepSummaryText("failed: timeout")).toBe("失败：timeout");
   });
 
+  it("says which lines a paged read returned, and names a spill file plainly (TURN-3)", async () => {
+    await setLang("zh");
+    expect(stepTitleText("Reading an earlier step's full output")).toBe("读取先前步骤的完整输出");
+    expect(stepSummaryText("lines 121–270 of 336")).toBe("第 121–270 行，共 336 行");
+    expect(stepSummaryText("past the end (336 lines)")).toBe("已超出文件末尾（共 336 行）");
+    expect(stepSummaryText("336 lines")).toBe("336 行");
+  });
+
   it("leaves English, unknown titles and a cell's own title alone", async () => {
     expect(stepTitleText("Reading project file cohort.csv")).toBe("Reading project file cohort.csv");
     await setLang("zh");

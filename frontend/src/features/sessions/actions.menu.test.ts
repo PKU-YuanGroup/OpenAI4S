@@ -78,6 +78,45 @@ describe("Save as skill", () => {
   });
 });
 
+// EXP-3: sharing needed a relay somebody hosts; the menu also offers the
+// same read-only view as one file.
+describe("Export read-only web page", () => {
+  it("is one menu item that downloads the session as a single .html in the UI language", async () => {
+    const previous = LANG;
+    const links: Array<{ href: string; download: string; click: () => void; remove: () => void }> = [];
+    try {
+      await setLang("zh");
+      vi.stubGlobal("document", {
+        createElement: () => {
+          const link = { href: "", download: "", click: vi.fn(), remove: vi.fn() };
+          links.push(link);
+          return link;
+        },
+        body: { appendChild: vi.fn() },
+      });
+      sessions.value = [{ id: "f 1", name: "生长曲线 QC" }];
+      sessionMenu(new FakeNode() as unknown as Element, "f 1");
+      const items = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
+      const mine = items.filter((item) => item.label === "导出只读网页");
+      expect(mine).toHaveLength(1);
+      mine[0]!.onClick!();
+      expect(links).toHaveLength(1);
+      expect(links[0]!.href).toMatch(/\/frames\/f%201\/session\/export-html\?lang=zh$/);
+      expect(links[0]!.download).toBe("生长曲线_QC.html");
+      expect(links[0]!.click).toHaveBeenCalled();
+      vi.unstubAllGlobals();
+      await setLang("en");
+      vi.mocked(openMenu).mockReset();
+      sessionMenu(new FakeNode() as unknown as Element, "f 1");
+      const english = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
+      expect(english.filter((item) => item.label === "Export read-only web page")).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+      await setLang(previous);
+    }
+  });
+});
+
 describe("Context usage", () => {
   it("labels the card in the language on screen", async () => {
     const previous = LANG;

@@ -402,7 +402,7 @@ def test_a_confirmed_seed_completes_without_an_attached_approver(tmp_path, monke
         runner.close()
 
 
-def _seed_with_fake_cells(tmp_path, monkeypatch, cell_behaviour):
+def _seed_with_fake_cells(tmp_path, monkeypatch, cell_behaviour, hub=None):
     """Run the real `_seed_demo_session` with `run_repl` replaced per cell.
 
     `cell_behaviour(index, register)` returns the kernel error string for that
@@ -411,7 +411,7 @@ def _seed_with_fake_cells(tmp_path, monkeypatch, cell_behaviour):
     cell would have written. Returns (store, final assistant message content).
     """
     cfg = _cfg(tmp_path)
-    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    runner = gateway_mod.SessionRunner(cfg, hub or _Hub())
     store = get_store(cfg.db_path)
     executed: list[str] = []
 
@@ -506,10 +506,10 @@ def test_the_example_seed_message_lists_only_materials_that_really_exist(
         a.get("filename") for a in store.list_artifacts({"project_id": "proj_example"})
     }
     assert produced == {"figure_cell3_0001.png", "nif3_structure.pdb"}
-    assert "**hydropathy figure (PNG)**" in content
-    assert "**nif3_structure.pdb**" in content
-    assert "**family_biochemistry.csv**" not in content
-    assert "**nif3_report.md**" not in content
+    assert "- [figure_cell3_0001.png](" in content
+    assert "- [nif3_structure.pdb](" in content
+    assert "family_biochemistry.csv](" not in content
+    assert "nif3_report.md](" not in content
     assert "_biochemistry table_ — not produced this run" in content
     assert "_summary report_ — not produced this run" in content
 
@@ -536,13 +536,94 @@ def test_the_example_seed_message_keeps_the_full_claim_when_everything_ran(
     assert content.startswith("Done — every value in this session")
     assert "did not complete" not in content
     assert "Missing Python module" not in content
+    # CHAT-7: "click any artifact to view" sat over bold text. Each material
+    # is the same link a normal completion gives an artifact.
+    ids = {
+        a["filename"]: a["artifact_id"]
+        for a in _store.list_artifacts({"project_id": "proj_example"})
+    }
     for name in (
-        "**hydropathy figure (PNG)**",
-        "**family_biochemistry.csv**",
-        "**nif3_structure.pdb**",
-        "**nif3_report.md**",
+        "figure_cell3_0001.png",
+        "family_biochemistry.csv",
+        "nif3_structure.pdb",
+        "nif3_report.md",
     ):
-        assert name in content
+        assert f"- [{name}]({API_ROOT}/artifacts/{ids[name]}) — " in content
+    assert "**family_biochemistry.csv**" not in content
+
+
+def test_the_example_is_written_in_the_language_it_was_asked_for_in(
+    tmp_path, monkeypatch
+):
+    """CHAT-7: the example's prompt and summary were English in a Chinese UI.
+    `POST /example/session {"lang": "zh"}` carries the UI language."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    real_init = gateway_mod._ExampleSeedState.__init__
+
+    def chinese(self):
+        real_init(self)
+        self.language = "zh"
+
+    monkeypatch.setattr(gateway_mod._ExampleSeedState, "__init__", chinese)
+
+    def behaviour(index, register):
+        if index == 4:
+            register("family_biochemistry.csv")
+        return (
+            "Traceback\nModuleNotFoundError: No module named 'Bio'"
+            if index == 6
+            else None
+        )
+
+    store, content = _seed_with_fake_cells(tmp_path, monkeypatch, behaviour)
+
+    assert content.startswith("6 个示例单元中有 1 个在这台机器上没有完成：")
+    assert "缺少 Python 模块：`Bio`。" in content
+    assert "**产物（点击即可查看）**" in content and "制品" not in content
+    assert "](" + API_ROOT + "/artifacts/" in content
+    assert "- _总结报告_：本次没有生成（单元 6 没有完成" in content
+    assert "- _三维结构_：本次跳过" in content
+    frame = _example_frame(store)
+    messages = store.list_messages(frame["frame_id"])
+    assert messages[0]["content"].startswith("只用真实数据分析 NIF3/DUF34 蛋白家族")
+    assert frame["task_summary"].startswith("从 UniProt REST API 获取")
+    # The name stays the key the seed is found by.
+    assert frame["name"] == gateway_mod._DEMO_SESSION_NAME
+
+    state = gateway_mod._ExampleSeedState.__new__(gateway_mod._ExampleSeedState)
+    real_init(state)
+    monkeypatch.setattr(gateway_mod, "_seed_demo_session", lambda *_a: None)
+    assert state.language == "en"
+    state.start(_cfg(tmp_path), object(), "zh")
+    assert state.language == "zh"
+    state.start(_cfg(tmp_path), object(), "fr")  # unknown: English, or still running
+    assert state.language in {"en", "zh"}
+
+
+def test_a_connector_step_card_shows_the_call_and_the_answer():
+    """CHAT-7: "Calling calc via example · done" opened to the raw result
+    envelope `{"is_error": false, "text": "1380", "raw": {…}}` and never
+    showed what the connector had been asked."""
+    from openai4s.host_dispatch import _step_begin, _step_end
+
+    spec = {"server": "example", "tool": "calc", "args": {"expression": "1376 + 4"}}
+    kind, title, shown = _step_begin("mcp_call", [spec])
+    assert (kind, title) == ("mcp", "Calling calc via example")
+    assert shown["request"] == 'example.calc(expression="1376 + 4")'
+    assert shown["args"] == {"expression": "1376 + 4"}
+
+    envelope = {
+        "is_error": False,
+        "text": "1380",
+        "raw": {"content": [{"type": "text", "text": "1380"}], "isError": False},
+    }
+    output, summary = _step_end("mcp_call", "mcp", envelope, True)
+    assert output == {"result": "1380", "is_error": False}
+    assert summary == "1380"
+    long_text = {"is_error": False, "text": "line\n" * 200}
+    output, summary = _step_end("mcp_call", "mcp", long_text, True)
+    assert summary == "done" and output["result"].startswith("line\nline")
+    assert "raw" not in output and len(output["result"]) <= 2000
 
 
 def test_the_example_biochemistry_cell_runs_without_biopython(tmp_path, monkeypatch):
@@ -612,6 +693,88 @@ def test_the_example_seed_counts_interrupted_cells_as_failures(tmp_path, monkeyp
     assert "1 of 6 example cells did not complete" in content
     assert "cell 3/6: interrupted before completion" in content
     assert "_hydropathy figure_ — not produced this run" in content
+
+
+def _example_frame(store):
+    return next(
+        row
+        for row in store.browse_frames(project_id="proj_example", roots_only=True)
+        if (row.get("name") or "") == gateway_mod._DEMO_SESSION_NAME
+    )
+
+
+def test_the_example_summary_reaches_the_open_page_and_names_a_failed_step(
+    tmp_path, monkeypatch
+):
+    """CHAT-1: the summary was written to the store only, so a page watching
+    the example saw step cards and no conclusion until it reloaded; and a
+    fetch that failed inside a cell that carried on left "Done" and `done`."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    hub = _Hub()
+    seeded: dict = {}
+    real_seed = gateway_mod._seed_demo_session
+
+    def behaviour(index, register):
+        if index == 3:
+            register("figure_cell3_0001.png")
+        elif index == 4:
+            register("family_biochemistry.csv")
+        elif index == 5:
+            # The cell catches the failed fetch and finishes without an error.
+            store = get_store(_cfg(tmp_path).db_path)
+            fid = _example_frame(store)["frame_id"]
+            store.add_step(
+                step_id="s-rcsb",
+                frame_id=fid,
+                kind="fetch",
+                title="Reading search.rcsb.org",
+            )
+            store.update_step(
+                "s-rcsb",
+                status="error",
+                summary="failed: web_fetch: certificate verify failed",
+            )
+        elif index == 6:
+            register("nif3_report.md")
+        return None
+
+    def seed(cfg, runner):
+        seeded["result"] = real_seed(cfg, runner)
+        return seeded["result"]
+
+    monkeypatch.setattr(gateway_mod, "_seed_demo_session", seed)
+    store, content = _seed_with_fake_cells(tmp_path, monkeypatch, behaviour, hub=hub)
+
+    assert "1 step failed along the way" in content
+    assert "- Reading search.rcsb.org: web_fetch: certificate verify failed" in content
+    assert seeded["result"] == {"cells": 6, "failed": 0, "failed_steps": 1}
+    frame = _example_frame(store)
+    assert frame["status"] == "done"  # every cell completed
+    # The page that is watching gets the same text, then the terminal event.
+    fid = frame["frame_id"]
+    tail = [event for event in hub.events if event.get("frame_id") == fid][-2:]
+    assert [event["type"] for event in tail] == ["text_chunk", "frame_update"]
+    assert tail[0]["chunk"] == content + "\n" and tail[0]["block_type"] == "text"
+    assert tail[1]["status"] == "completed"
+
+
+def test_the_example_session_is_failed_when_a_cell_did_not_complete(
+    tmp_path, monkeypatch
+):
+    """CHAT-1: crashed cells used to leave the session `done`."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    hub = _Hub()
+
+    def behaviour(index, register):
+        return "Traceback\nValueError: boom" if index == 4 else None
+
+    store, content = _seed_with_fake_cells(tmp_path, monkeypatch, behaviour, hub=hub)
+
+    assert "1 of 6 example cells did not complete" in content
+    assert "step failed along the way" not in content
+    assert _example_frame(store)["status"] == "failed"
+    assert hub.events[-1]["type"] == "frame_update"
+    assert hub.events[-1]["status"] == "failed"
 
 
 def test_build_app_server_closes_runner_when_startup_raises_before_bind(
