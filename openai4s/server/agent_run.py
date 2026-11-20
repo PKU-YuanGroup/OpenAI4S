@@ -345,6 +345,17 @@ class ProseStreamer:
         if target.startswith(self.emitted) and len(target) > len(self.emitted):
             self._emit_prose(target[len(self.emitted) :])
 
+    def end_paragraph(self) -> None:
+        """End the reply's prose with a blank line (SYNC-13).
+
+        The client appends consecutive text chunks to one markdown block, and
+        a reply's prose often ends without a newline, so the next stored row
+        ran on into it ("...in a Python cell.Now I'll run ..."). Each row is
+        its own paragraph on reload; it is one live too.
+        """
+        if self.emitted and not self.emitted.endswith("\n\n"):
+            self._emit_prose("\n" if self.emitted.endswith("\n") else "\n\n")
+
 
 @dataclass
 class WebEventSink:
@@ -398,6 +409,7 @@ class WebEventSink:
             self._reply_received = True
             streamer = self._ensure_streamer()
             streamer.finalize()
+            streamer.end_paragraph()
             if self._code_draft is not None:
                 self._code_draft.finalize(event.reply.content)
             if event.reply.usage:
@@ -416,7 +428,7 @@ class WebEventSink:
                             "type": "text_chunk",
                             "frame_id": self.root_frame_id,
                             "block_type": "text",
-                            "chunk": prose + "\n",
+                            "chunk": prose + "\n\n",
                         }
                     )
         elif isinstance(event, ActionRouted):
@@ -497,7 +509,8 @@ class WebEventSink:
                 "type": "text_chunk",
                 "frame_id": self.root_frame_id,
                 "block_type": "text",
-                "chunk": prose + "\n",
+                # Its own paragraph, as the stored row is on reload (SYNC-13).
+                "chunk": prose + "\n\n",
             }
         )
 
