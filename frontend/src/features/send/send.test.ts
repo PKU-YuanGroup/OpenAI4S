@@ -13,6 +13,7 @@ vi.mock("../sessions/load", () => loadMock);
 import { setLang, t } from "../../i18n/runtime";
 import { currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
+import { running } from "../../stores/stream";
 import { clearMentions, composerMentions, rememberMention } from "../autocomplete/mentions";
 import { UPLOAD_STATE } from "../chrome/upload";
 import { renderRefProblems } from "./problems";
@@ -116,6 +117,22 @@ describe("send()", () => {
     await send(nodes.composer!.value);
     expect(posted()).toHaveLength(1);
     expect(nodes.composer!.value).toBe("");
+  });
+
+  it("a message queued behind a running turn says so on its bubble (TURN-5)", async () => {
+    type Row = { className: string; textContent: string; children: Row[] };
+    const badges = (): string[] =>
+      (nodes.messages!.children as Row[])
+        .flatMap((row) => row.children)
+        .filter((kid) => kid.className === "msg-queued")
+        .map((kid) => kid.textContent);
+    await send("fit the curve");
+    // Sent with nothing running: an ordinary bubble.
+    expect(badges()).toEqual([]);
+    running.value = true;
+    await send("use the log scale instead");
+    expect(posted()).toHaveLength(2);
+    expect(badges()).toEqual(["Queued · not sent yet"]);
   });
 
   it("a picked @ file is sent as `@name` with its version beside the text (ART-16)", async () => {

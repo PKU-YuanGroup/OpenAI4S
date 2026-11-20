@@ -428,7 +428,12 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     );
   }
   if (anns.length) w.appendChild(annotAttachment(anns));
-  if (queueing) w.classList.add("queued");
+  if (queueing) {
+    w.classList.add("queued");
+    // Says so in words: a slightly faded bubble read as delivered. Shown only
+    // while the row is `.queued`, which its turn's `user_message` removes.
+    w.appendChild(el("span", "msg-queued", sendCopy("queuedBadge")));
+  }
   const host = $("#messages");
   if (host) host.appendChild(w);
   down(true);

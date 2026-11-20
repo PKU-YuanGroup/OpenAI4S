@@ -56,6 +56,8 @@ const QUEUE_COPY: CopyTable = {
     "queueRow.editBusy": "The composer already holds a draft: send or clear it first, then edit the queued message",
     "queueRow.editing": "Taken out of the queue: edit it and send it again (it rejoins at the end of the queue)",
     "queueRow.started": "Now running your queued message: “{0}”",
+    "queueRow.sendNow": "Stop and send now",
+    "queueRow.sendNowTitle": "Stop the running turn; the first queued message starts right away",
     "queueRow.stopping": "Stopping the current turn… {0} queued message(s) will run next",
   },
   zh: {
@@ -66,6 +68,8 @@ const QUEUE_COPY: CopyTable = {
     "queueRow.editBusy": "输入框里还有未发送的内容：先发送或清空它，再编辑排队的消息",
     "queueRow.editing": "已撤出队列：修改后重新发送即可（会重新排到队尾）",
     "queueRow.started": "开始处理你排队的消息：“{0}”",
+    "queueRow.sendNow": "停止并立即发送",
+    "queueRow.sendNowTitle": "停止当前回合，排队的第一条消息随即开始",
     "queueRow.stopping": "正在停止当前任务… 排队的 {0} 条消息会接着运行",
   },
 };
