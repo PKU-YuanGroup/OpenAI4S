@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import sys
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -489,7 +490,9 @@ class Agent:
 
     def _log(self, *a: object) -> None:
         if self.verbose:
-            print(*a, flush=True)
+            # stderr: the trace is commentary on the run. stdout carries the
+            # result alone, so `run -v --json` still pipes into a JSON parser.
+            print(*a, file=sys.stderr, flush=True)
 
     def _python_read_isolation(self) -> KernelReadIsolation | None:
         """Add only sidecars visible to this Agent to its exact read grants."""

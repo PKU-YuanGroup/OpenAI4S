@@ -1675,8 +1675,18 @@ def cmd_run(args) -> int:
                 "submitted_output:",
                 json.dumps(result["submitted_output"], ensure_ascii=False, indent=2),
             )
-        if result.get("final_message"):
-            print("final:", result["final_message"])
+        final = result.get("final_message")
+        submitted = result.get("submitted_output")
+        output = submitted.get("output") if isinstance(submitted, dict) else None
+        summaries = [
+            str(block.get("summary") or "").strip()
+            for block in (submitted, output)
+            if isinstance(block, dict)
+        ]
+        # A structured completion's summary IS the final message; printing it
+        # again under another label only made the answer look like two.
+        if final and str(final).strip() not in summaries:
+            print("final:", final)
         auto = result.get("auto_mode")
         if auto:
             print(f"=== review: {auto['terminal']} — {auto['user_truth']} ===")
@@ -2883,7 +2893,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pr.add_argument("task", help="the task description")
     pr.add_argument("--json", action="store_true", help="emit full JSON result")
-    pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
+    pr.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="trace every turn on stderr: the model's reply, each tool call "
+        "with its arguments, and the head of each result (the result itself "
+        "stays on stdout)",
+    )
     pr.add_argument(
         "--debug",
         action="store_true",

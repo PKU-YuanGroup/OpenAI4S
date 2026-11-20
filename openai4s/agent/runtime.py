@@ -65,7 +65,7 @@ from .control import (
     execute_native_batch,
     tool_parallel_policy,
 )
-from .events import AgentEvent, OutcomeProduced, ReplyReceived
+from .events import ActionRouted, AgentEvent, OutcomeProduced, ReplyReceived
 from .finalize import (
     execute_finalize_action,
     execution_evidence,
@@ -1653,6 +1653,54 @@ class LocalActionExecutor:
         )
 
 
+#: How much of one observation the `-v` trace shows. The transcript, the model
+#: and `--json` keep every character; a trace that prints a 24 KB Skill
+#: document on a single line buries the turn that follows it.
+_TRACE_MAX_LINES = 20
+_TRACE_MAX_CHARS = 2_000
+_TRACE_MAX_ARGUMENT_CHARS = 300
+
+
+def _trace_preview(text: str) -> str:
+    """The head of an observation, and how much of it the trace left out."""
+
+    shown = "\n".join(text.splitlines()[:_TRACE_MAX_LINES])[:_TRACE_MAX_CHARS]
+    if len(shown) >= len(text.rstrip("\n")):
+        return text
+    return (
+        f"{shown}\n… [trace shows {len(shown):,} of {len(text):,} characters; "
+        "the transcript in --json has all of it]"
+    )
+
+
+def _trace_tool_calls(action: Action | None) -> list[str]:
+    """One `→ name(arguments)` line per native call the model made.
+
+    The assistant text of a tool-only reply is empty, so without these lines
+    the trace showed a result and never the question that produced it.
+    """
+
+    if isinstance(action, NativeToolBatch):
+        calls = action.calls
+    elif isinstance(action, FinalizeAction):
+        calls = (action.call,)
+    else:
+        return []
+    lines = []
+    for call in calls:
+        if isinstance(call.arguments, Mapping):
+            rendered = ", ".join(
+                f"{key}={json.dumps(value, ensure_ascii=False, default=str)}"
+                for key, value in call.arguments.items()
+            )
+        else:
+            rendered = str(call.raw_arguments or "")
+        if len(rendered) > _TRACE_MAX_ARGUMENT_CHARS:
+            rendered = rendered[:_TRACE_MAX_ARGUMENT_CHARS] + "…"
+        lines.append(f"→ {call.name or '<unnamed>'}({rendered})")
+    return lines
+
+
 @dataclass
 class TranscriptEventSink:
     """Project typed engine events onto the stable CLI transcript."""
@@ -1661,15 +1709,24 @@ class TranscriptEventSink:
     log: LogFn = _null_log
 
     def emit(self, event: AgentEvent) -> None:
+        # Turns are numbered from 1 for a reader; the engine counts from 0.
         if isinstance(event, ReplyReceived):
             self.transcript.append(TranscriptTurn("assistant", event.reply.content))
-            self.log(f"\n--- turn {event.turn} (assistant) ---\n{event.reply.content}")
+            self.log(
+                f"\n--- turn {event.turn + 1} (assistant) ---\n{event.reply.content}"
+            )
+        elif isinstance(event, ActionRouted):
+            for line in _trace_tool_calls(event.action):
+                self.log(line)
         elif (
             isinstance(event, OutcomeProduced) and event.outcome.observation is not None
         ):
             content = str(event.outcome.observation)
             self.transcript.append(TranscriptTurn("observation", content))
-            self.log(f"--- turn {event.turn} (observation) ---\n{content}")
+            self.log(
+                f"--- turn {event.turn + 1} (observation) ---\n"
+                f"{_trace_preview(content)}"
+            )
 
 
 # Per-section ceiling on what reaches the model. A cell that prints a 2M-char

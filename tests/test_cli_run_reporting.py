@@ -229,3 +229,133 @@ def test_run_help_documents_exit_4_and_the_codes_it_names(capsys):
     ):
         assert code in row, code
     assert "--debug" in row and "OPENAI4S_DEBUG" in row
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-25: `-v` is a readable trace on stderr; the result alone is on stdout
+# --------------------------------------------------------------------------- #
+
+_SUBMIT_REPLY = (
+    "```python\nhost.submit_output({'summary': 'two'}, ['Computed 1+1'])\n```"
+)
+
+
+def _scripted_chat(replies):
+    pending = list(replies)
+
+    def chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        return {
+            "content": pending.pop(0) if pending else "Still thinking.",
+            "reasoning": None,
+            "usage": {},
+            "finish_reason": "stop",
+            "raw": {},
+        }
+
+    return chat
+
+
+def test_the_verbose_trace_goes_to_stderr_and_json_stays_parseable(
+    tmp_path, monkeypatch, capsys
+):
+    """`-v` printed the trace on stdout, so `run -v --json` was a trace with a
+    JSON document glued to its end."""
+
+    module, _cfg = _real_run(
+        tmp_path,
+        monkeypatch,
+        _scripted_chat(["```python\nprint('cell ran')\n```", _SUBMIT_REPLY]),
+    )
+
+    status = module.main(["run", "-v", "--json", "Compute 1+1 and submit it."])
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert json.loads(captured.out)["stop_reason"] == "submitted"
+    assert "--- turn 1 (assistant) ---" in captured.err
+    assert "--- turn 1 (observation) ---" in captured.err
+    assert "cell ran" in captured.err
+    assert "--- turn" not in captured.out
+
+
+def test_the_final_answer_is_printed_once(tmp_path, monkeypatch, capsys):
+    """A structured completion's summary was printed inside
+    `submitted_output` and again as `final:`."""
+
+    module, _cfg = _real_run(tmp_path, monkeypatch, _scripted_chat([_SUBMIT_REPLY]))
+
+    status = module.main(["run", "Compute 1+1 and submit it."])
+
+    out = capsys.readouterr().out
+    assert status == 0
+    assert out.count("two") == 1
+    assert "final:" not in out
+
+
+def _trace_of(events):
+    from openai4s.agent.runtime import TranscriptEventSink
+
+    lines: list[str] = []
+    transcript: list = []
+    sink = TranscriptEventSink(transcript, log=lines.append)
+    for event in events:
+        sink.emit(event)
+    return "\n".join(lines), transcript
+
+
+def test_the_trace_names_each_tool_call_and_its_arguments():
+    """A tool-only reply has no text, so the trace showed an empty assistant
+    turn followed by a result and never what was asked."""
+    from openai4s.agent.actions import NativeToolBatch, NativeToolCall
+    from openai4s.agent.events import ActionRouted, ReplyReceived
+    from openai4s.agent.models import ModelReply
+
+    call = NativeToolCall(
+        id="c1",
+        wire_id="c1",
+        name="search_skills",
+        ordinal=0,
+        raw_arguments='{"query": "linear fit"}',
+        arguments={"query": "linear fit", "limit": 3},
+    )
+    trace, _ = _trace_of(
+        [
+            ReplyReceived(ModelReply(content="", tool_calls=(call,)), 0),
+            ActionRouted(NativeToolBatch((call,)), 0),
+        ]
+    )
+
+    assert "--- turn 1 (assistant) ---" in trace
+    assert '→ search_skills(query="linear fit", limit=3)' in trace
+
+
+def test_the_trace_previews_a_long_result_and_the_transcript_keeps_all_of_it():
+    """One `search_skills` result was three lines of 11-24 KB each."""
+    from openai4s.agent.events import OutcomeProduced
+    from openai4s.agent.models import ExecutionOutcome
+
+    long_line = "x" * 24_000
+    observation = f"[Tool Results]\n[Tool: search_skills] {long_line}\n" + "\n".join(
+        f"line {n}" for n in range(200)
+    )
+    trace, transcript = _trace_of(
+        [OutcomeProduced(ExecutionOutcome(observation=observation), 0)]
+    )
+
+    assert max(len(line) for line in trace.splitlines()) <= 2_000
+    assert f"of {len(observation):,} characters" in trace
+    assert "line 199" not in trace
+    assert transcript[0].content == observation
+
+
+def test_the_trace_shows_a_short_result_whole():
+    from openai4s.agent.events import OutcomeProduced
+    from openai4s.agent.models import ExecutionOutcome
+
+    trace, _ = _trace_of(
+        [OutcomeProduced(ExecutionOutcome(observation="[Observation]\nstdout:\n2"), 0)]
+    )
+
+    assert trace.endswith("[Observation]\nstdout:\n2")
+    assert "trace shows" not in trace
