@@ -67,6 +67,7 @@ from openai4s.tools.project_files import (
     project_permission_checks,
     resolve_project_permissions,
 )
+from openai4s.tools.read_text_file import read_step_summary, read_step_title
 from openai4s.tools.registry import (
     BUILTIN_CONTROL_HOST_METHODS,
     format_tool_result,
@@ -305,7 +306,7 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
         )
     if method == "read_file":
         p = a.get("path", "")
-        return ("read", f"Reading {p}", {"path": p})
+        return ("read", read_step_title(p), {"path": p})
     if method == "project_read_file":
         p = a.get("path", "")
         return ("read", f"Reading project file {p}", {"path": p})
@@ -1122,7 +1123,7 @@ def _step_end(
                 "total_lines": r.get("total_lines"),
                 "content": (r.get("content") or "")[:6000],
             },
-            _plural(int(r.get("total_lines") or 0), "line"),
+            read_step_summary(r),
         )
     if kind == "files":
         rows = r.get("matches") or r.get("entries") or []
