@@ -177,7 +177,11 @@ export function paintUsageTitle(): void {
   const totals = lastTotals;
   if (!node || !totals || totals.fid !== currentId.value) return;
   const turn = latestTurnUsage(actionTimeline.value, totals.fid);
-  const total = formatTokens(totals.input + totals.output);
+  // The frame's totals are re-read now and then, the timeline arrives live:
+  // never "0 tokens · +1.3k this turn".
+  const sum = Math.max(totals.input + totals.output, turn ? turn.total : 0);
+  node.classList.toggle("hidden", !(sum > 0));
+  const total = formatTokens(sum);
   node.textContent = turn ? copy("tokensTurn", total, formatTokens(turn.total)) : copy("tokens", total);
   const parts = usageBreakdown(actionTimeline.value, totals.fid);
   const turnLine = turn
@@ -216,8 +220,6 @@ export async function refreshSessionUsage(): Promise<void> {
   if (seq !== usageSeq || currentId.value !== fid) return;
   const input = Number(frame.input_tokens || 0);
   const output = Number(frame.output_tokens || 0);
-  const total = input + output;
-  node.classList.toggle("hidden", !(total > 0));
   lastTotals = { fid, input, output };
   paintUsageTitle();
 }
@@ -261,6 +263,23 @@ export function bindTurnProgress(onUsageClick?: () => void): void {
   // The timeline is read after the session opens and again as the turn goes on.
   effect(() => {
     void actionTimeline.value;
-    untracked(() => paintUsageTitle());
+    untracked(() => followTimeline());
   });
+}
+
+let lastTurnTotal = -1;
+let usageRefresh: ReturnType<typeof setTimeout> | null = null;
+
+/** A model call landed in the timeline: the session's totals moved too, so they are re-read soon. */
+function followTimeline(): void {
+  paintUsageTitle();
+  const turn = latestTurnUsage(actionTimeline.value, currentId.value);
+  const total = turn ? turn.total : 0;
+  if (total === lastTurnTotal) return;
+  lastTurnTotal = total;
+  if (usageRefresh) return;
+  usageRefresh = setTimeout(() => {
+    usageRefresh = null;
+    void refreshSessionUsage();
+  }, 500);
 }

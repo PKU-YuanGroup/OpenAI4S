@@ -180,5 +180,14 @@ describe("turn progress", () => {
     actionTimeline.value = { root_frame_id: "f-t", has_earlier: false, groups: [row("turn-3", "code", 900, 0, 100)] };
     paintUsageTitle();
     expect(usage.textContent).toBe("936k tokens · +1k this turn");
+    // The frame's totals are re-read now and then; the timeline arrives live.
+    // The total is never below the turn it contains.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ id: "f-t" }) })),
+    );
+    await refreshSessionUsage();
+    expect(usage.textContent).toBe("1k tokens · +1k this turn");
+    expect(usage.classList.contains("hidden")).toBe(false);
   });
 });
