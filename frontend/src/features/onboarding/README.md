@@ -12,7 +12,7 @@ M-01 first-run wizard kernel. Four required decision steps, skip/checklist, and 
 | [`api.ts`](api.ts) | `GET /onboarding`, `POST /onboarding/complete`, profile save/update/activate/probe. |
 | [`badges.test.ts`](badges.test.ts) | Tri-state badge rows and the pills `CapabilityBadges` renders from them; unknown reason is not rewritten. |
 | [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` rows + stale. The tri-state word follows the UI language (支持 / 不支持 / 未确定). |
-| [`boot.ts`](boot.ts) | `bootOnboarding()` loads and mounts the wizard (`#onboarding-root`) only when setup is not complete or its status cannot be read (`startOnboarding`). |
+| [`boot.ts`](boot.ts) | `bootOnboarding()` loads and mounts the wizard (`#onboarding-root`) only when setup is not complete and this reader may save it (`can_configure`; never for a team member), or when its status cannot be read (`startOnboarding`, `wizardWanted`). |
 | [`boot.test.ts`](boot.test.ts) | The wizard chunk is not loaded for a completed setup; it is for one still to do, and for an unreadable status. |
 | [`copy.ts`](copy.ts) | Lane-local zh/en strings (`ot`). Does not rewrite generated i18n. `copyLookup(table)` is the lookup `ot` and `judgmentT` share. |
 | [`copy.test.ts`](copy.test.ts) | `copyLookup`: active language, then English, then the key; the loaded dictionary wins; positional holes. `ot` and `judgmentT` are built on it. |

@@ -169,6 +169,30 @@ def test_complete_is_instance_config_and_members_are_refused():
     assert handler.sent[1]["code"] == "admin_only"
 
 
+def test_get_onboarding_says_whether_the_reader_may_configure(tmp_path):
+    """TEAM-10: a team member was shown the admin's model wizard and could
+    neither continue nor skip it (both 403). The read says who may save."""
+    _runner, call = _api(tmp_path)
+    alone = call("GET", "/onboarding")
+    assert alone["code"] == 200, alone
+    assert alone["body"]["can_configure"] is True
+
+    admin = call(
+        "GET",
+        "/onboarding",
+        identity=SimpleNamespace(is_admin=True, user_id="alice"),
+    )
+    assert admin["body"]["can_configure"] is True
+
+    member = call(
+        "GET",
+        "/onboarding",
+        identity=SimpleNamespace(is_admin=False, user_id="bob"),
+    )
+    assert member["code"] == 200, member
+    assert member["body"]["can_configure"] is False
+
+
 def test_web_status_never_returns_the_key(tmp_path):
     from openai4s.llm.registry import provider_specs
     from openai4s.store import get_store

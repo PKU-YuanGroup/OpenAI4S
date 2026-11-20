@@ -105,6 +105,8 @@ const COPY: CopyTable = {
     "onboarding.project.empty": "还没有项目。创建一个即可进入工作台。",
     "onboarding.project.needName": "请输入项目名称。",
     "onboarding.load.err": "无法加载首次设置：{0}",
+    "onboarding.adminOnly":
+      "只有管理员可以修改这台服务器的模型配置。请联系管理员；也可以在右上角你的名字 →「我的模型 key」里添加你自己的 key。",
   },
   en: {
     "onboarding.title": "First-run setup",
@@ -210,6 +212,8 @@ const COPY: CopyTable = {
     "onboarding.project.empty": "No projects yet. Create one to enter the workbench.",
     "onboarding.project.needName": "Enter a project name.",
     "onboarding.load.err": "Could not load first-run setup: {0}",
+    "onboarding.adminOnly":
+      "Only an administrator can change this server's model setup. Ask your administrator, or add your own key under your name (top right) → My model keys.",
   },
 };
 

@@ -596,7 +596,8 @@ export function WizardHost() {
       const next = await fetchOnboarding();
       if (!alive.current) return;
       setStatus(next);
-      dispatch({ type: "hydrate", complete: next.complete });
+      // Mounted after a failed first read: a member still never gets it.
+      dispatch({ type: "hydrate", complete: next.complete || !next.can_configure });
     } catch (error) {
       if (!alive.current) return;
       const fail = wizardErrorFromUnknown(error);
@@ -674,9 +675,9 @@ export function WizardHost() {
     }
   };
 
-  const choosePath = (path: PathChoice) => {
+  const choosePath = (path: PathChoice, saved = false) => {
     leaveTest();
-    dispatch({ type: "choosePath", path });
+    dispatch({ type: "choosePath", path, saved });
   };
 
   const onSkip = async () => {
@@ -746,7 +747,7 @@ export function WizardHost() {
       const id = await saveProfile(env, "");
       if (!alive.current || !id) return "";
       // Not `choosePath`: that retires the probe this save is about to start.
-      dispatch({ type: "choosePath", path: { ...env, profileId: id } });
+      dispatch({ type: "choosePath", path: { ...env, profileId: id }, saved: true });
       const refreshed = await fetchOnboarding();
       if (alive.current) setStatus(refreshed);
       return id;
@@ -792,7 +793,7 @@ export function WizardHost() {
     if (!state.path && status?.active_id) {
       const active = status.profiles.find((profile) => asString(profile.id) === status.active_id);
       if (active) {
-        choosePath(pathFromProfile(active));
+        choosePath(pathFromProfile(active), true);
         id = status.active_id;
       }
     }

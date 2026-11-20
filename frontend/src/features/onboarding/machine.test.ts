@@ -51,7 +51,7 @@ describe("M-01 wizard state machine", () => {
   it("checklist lists four items and jump-to-project does not require going back", () => {
     const listed = run([
       { type: "hydrate", complete: false },
-      { type: "choosePath", path: PATH },
+      { type: "choosePath", path: PATH, saved: true },
       { type: "showChecklist" },
     ]);
     expect(listed.surface).toBe("checklist");
@@ -65,6 +65,27 @@ describe("M-01 wizard state machine", () => {
     expect(jumped.surface).toBe("wizard");
     expect(jumped.step).toBe("project");
     expect(jumped.providerRequests).toBe(0);
+  });
+
+  it("ticks step 1 only once the choice is saved, not on a radio click (TEAM-10)", () => {
+    const picked = run([{ type: "hydrate", complete: false }, { type: "choosePath", path: PATH }]);
+    expect(picked.decided).not.toContain("path");
+    // A refused Continue: still not ticked.
+    const refused = reduceWizard(picked, { type: "fail", message: "refused", requestId: "" });
+    expect(checklistItems(refused)[0]).toEqual({ step: "path", done: false });
+    // Continue succeeded: the wizard moves on and step 1 is done.
+    expect(reduceWizard(picked, { type: "next" }).decided).toContain("path");
+    // A profile that is already saved and active is a decided step 1.
+    expect(reduceWizard(picked, { type: "choosePath", path: PATH, saved: true }).decided).toContain("path");
+  });
+
+  it("says who may change the setup instead of a bare admin_only refusal (TEAM-10)", () => {
+    const refusal = wizardErrorFromUnknown(
+      new ApiError({ error: "admin only", code: "admin_only", request_id: "req-7" }, 403),
+    );
+    expect(refusal.requestId).toBe("");
+    expect(formatWizardError(refusal)).not.toContain("admin only");
+    expect(formatWizardError(refusal)).toMatch(/administrator|管理员/);
   });
 
   it("errors keep the request id in the display string", () => {
@@ -179,7 +200,7 @@ describe("M-01 wizard state machine", () => {
   it("will not grow decided past the four required steps", () => {
     let state = INITIAL_WIZARD;
     for (const step of REQUIRED_STEPS) {
-      state = reduceWizard(state, { type: "choosePath", path: PATH });
+      state = reduceWizard(state, { type: "choosePath", path: PATH, saved: true });
       if (step === "test") state = reduceWizard(state, { type: "startTest" });
       if (step === "readiness") state = reduceWizard(state, { type: "markReadinessSeen" });
       if (step === "project") state = reduceWizard(state, { type: "markProjectOpened" });
