@@ -1993,6 +1993,26 @@ def cmd_jupyter_describe(args) -> int:
 def _print_kernelspec_writes(written: list[dict], action: str) -> None:
     for item in written:
         print(f"{action} {item['name']}: {item['kernel_json']}")
+    from openai4s.adapters.jupyter import adapter_status
+
+    # The specs' argv is `<this python> -m openai4s.adapters.jupyter.bridge`.
+    # Without ipykernel in this interpreter they appear in JupyterLab and fail
+    # the moment one is started, and "installed …" said nothing about it.
+    if written and not adapter_status()["bridge_available"]:
+        import importlib.util
+
+        # A uv-made .venv (./setup.sh) has no pip.
+        installer = (
+            f"{sys.executable} -m pip install"
+            if importlib.util.find_spec("pip") is not None
+            else f"uv pip install --python {sys.executable}"
+        )
+        print(
+            "warning: ipykernel is not installed in this Python, so these "
+            "kernels will appear in Jupyter but fail to start. Install it "
+            f"with: {installer} 'ipykernel>=7,<8'",
+            file=sys.stderr,
+        )
 
 
 def cmd_jupyter_export(args) -> int:

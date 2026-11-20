@@ -741,3 +741,28 @@ def test_jupyter_export_over_an_existing_spec_names_the_cli_flag(tmp_path, capsy
     err = capsys.readouterr().err
     assert "pass --replace to rewrite its kernel.json" in err
     assert cli.main(["jupyter", "export", str(kernels), "--replace"]) == 0
+
+
+@pytest.mark.parametrize("bridge", [False, True])
+def test_jupyter_install_warns_when_the_kernels_it_wrote_cannot_start(
+    tmp_path, monkeypatch, capsys, bridge
+):
+    """CLI-34. Without ipykernel, `jupyter install` printed "installed
+    openai4s-python …" and exit 0; the kernels showed up in JupyterLab and
+    failed the moment one was started."""
+    import openai4s.adapters.jupyter as jupyter
+
+    status = dict(jupyter.adapter_status(), bridge_available=bridge)
+    monkeypatch.setattr(jupyter, "adapter_status", lambda: status)
+
+    rc = _cli().main(["jupyter", "install", "--prefix", str(tmp_path)])
+
+    out = capsys.readouterr()
+    assert rc == 0
+    assert "installed openai4s-python:" in out.out
+    if bridge:
+        assert "warning" not in out.err
+    else:
+        assert out.err.startswith("warning: ipykernel is not installed in this ")
+        assert "fail to start" in out.err
+        assert "'ipykernel>=7,<8'" in out.err
