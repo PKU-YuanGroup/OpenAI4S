@@ -1393,7 +1393,8 @@ ran in its Notebook.
 _RUN_EXIT_STATUS_HELP = """\
 exit status:
   0  the run completed (stop_reason "submitted")
-  1  an unhandled error (a Python traceback on stderr)
+  1  an unhandled error: a Python traceback on stderr, also saved in
+     <data_dir>/logs/cli-run.log (summarised by `openai4s diagnostics`)
   2  refused: a usage error (an empty task: empty_task; an invalid
      --allow-test-command: invalid_allow_test_command), an explicit --mode
      reusable_pipeline|codebase_change whose test command nothing can
@@ -1750,6 +1751,79 @@ def _record_run_answer(agent, task: str, result=None, *, error=None) -> None:
         pass
 
 
+#: Where `run` keeps the traceback of a crash. `<data_dir>/logs/*.log*` is what
+#: `openai4s diagnostics` collects -- as a structured record plus line counts
+#: and a fingerprint, never the text -- and the file itself stays readable here.
+_RUN_CRASH_LOG = "cli-run.log"
+_RUN_CRASH_LOG_MAX_BYTES = 1_000_000
+
+
+def _record_run_crash(
+    cfg, error: BaseException, *, agent=None, task: str = ""
+) -> Path | None:
+    """Record a crashed run: in its session, and in the CLI run log.
+
+    The session gets the same kind of failure message the other exits store;
+    the log gets a structured record and the redacted traceback. Returns the
+    log's path, or None when it could not be written.
+    """
+
+    import traceback
+
+    _record_run_answer(
+        agent,
+        task,
+        error={
+            "error": f"the run stopped on an unexpected error ({type(error).__name__})",
+            "code": "run_crashed",
+        },
+    )
+
+    from openai4s.observability import redact_text
+    from openai4s.server.errors import (
+        DIAGNOSTIC_DETAIL,
+        error_class,
+        safe_type_name,
+    )
+
+    try:
+        logs = Path(cfg.data_dir) / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        path = logs / _RUN_CRASH_LOG
+        if path.exists() and path.stat().st_size > _RUN_CRASH_LOG_MAX_BYTES:
+            # One older generation; `cli-run.log.1` still matches the glob.
+            path.replace(logs / f"{_RUN_CRASH_LOG}.1")
+        # The shape `server.errors.record_diagnostic` emits, so the bundle
+        # keeps the same fields for a CLI crash as for a daemon one.
+        record = {
+            "ts": round(time.time(), 3),
+            "event": "unhandled_exception",
+            "level": "error",
+            "surface": "cli:run",
+            "exception": safe_type_name(error),
+            "detail": DIAGNOSTIC_DETAIL,
+            "error_class": error_class(error),
+        }
+        trace = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+            # Line by line: `redact_text` scans space-separated words, and a
+            # token at the end of a line would otherwise carry its newline.
+            for line in trace.splitlines():
+                handle.write(redact_text(line) + "\n")
+        try:
+            from openai4s.security.permissions import harden_file
+
+            harden_file(path)
+        except Exception:  # noqa: BLE001 - hardening is best-effort
+            pass
+        return path
+    except Exception:  # noqa: BLE001 - reporting a crash must not mask it
+        return None
+
+
 def _run_interrupted(args, agent) -> int:
     """Report a run that Ctrl-C ended: one line (or the --json result), exit 3.
 
@@ -1911,6 +1985,18 @@ def cmd_run(args) -> int:
         # traceback with the cause on its last line, and as nothing at all on
         # stdout under --json.
         return _run_llm_failed(args, error, cfg, agent)
+    except Exception as error:
+        # A crash still ends with its traceback (exit 1), but it used to exist
+        # only in the terminal: the support bundle had no trace of it.
+        where = _record_run_crash(cfg, error, agent=agent, task=args.task)
+        if where is not None:
+            print(
+                f"error: the run crashed ({type(error).__name__}). The traceback "
+                f"below is also saved in {where}; `openai4s diagnostics` "
+                "includes a summary of it.",
+                file=sys.stderr,
+            )
+        raise
     _record_run_answer(agent, args.task, result)
     if getattr(agent, "frame_id", None):
         # The session the run is stored as (`openai4s share create <id>`).

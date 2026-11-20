@@ -792,3 +792,54 @@ def test_run_help_says_where_things_go_without_internal_jargon(capsys):
     assert "No daemon is needed" in options
     assert "current directory" in options and "Notebook" in options
     assert "analysis_run (the default" in options
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-33: a crash's traceback reaches the support bundle
+# --------------------------------------------------------------------------- #
+
+
+def test_a_crash_is_logged_where_diagnostics_collects_it(tmp_path, monkeypatch, capsys):
+    """The traceback of a crashed run was printed to the terminal and kept
+    nowhere, so `openai4s diagnostics` -- the help path for "run crashed" --
+    had no trace of the crash."""
+    import zipfile
+
+    secret = "sk-9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c"
+    module, cfg = _real_run(
+        tmp_path,
+        monkeypatch,
+        _failing_chat(RuntimeError(f"unexpected state while using {secret}")),
+    )
+
+    with pytest.raises(RuntimeError):
+        module.main(["run", "--quiet", "Compute 1+1 and submit it."])
+
+    err = capsys.readouterr().err
+    log = cfg.data_dir / "logs" / "cli-run.log"
+    assert f"also saved in {log}" in err
+    text = log.read_text(encoding="utf-8")
+    record = json.loads(text.splitlines()[0])
+    assert record["event"] == "unhandled_exception"
+    assert record["surface"] == "cli:run"
+    assert "Traceback (most recent call last)" in text
+    assert "RuntimeError: unexpected state while using" in text
+    assert secret not in text
+    # The session says how it ended, as the other failures do.
+    _, messages, _ = _session(cfg, _frame_rows(cfg)[0][0])
+    assert json.loads(messages[-1][2]) == {"failure": {"code": "run_crashed"}}
+
+    from openai4s.diagnostics import build_bundle
+
+    bundle = tmp_path / "diag.zip"
+    build_bundle(cfg, bundle)
+    with zipfile.ZipFile(bundle) as archive:
+        logs = [
+            archive.read(n).decode()
+            for n in archive.namelist()
+            if n.startswith("logs/")
+        ]
+    assert any(
+        '"unhandled_exception"' in member and '"traceback"' in member for member in logs
+    )
+    assert not any(secret in member for member in logs)
