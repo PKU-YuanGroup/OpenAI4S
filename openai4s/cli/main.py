@@ -1538,6 +1538,7 @@ def _run_llm_failed(args, error, cfg, agent) -> int:
 
         traceback.print_exception(type(error), error, error.__traceback__)
     payload = _run_llm_failure(error, cfg)
+    _record_run_answer(agent, args.task, error=payload)
     frame_id = getattr(agent, "frame_id", None)
     if frame_id:
         payload["frame_id"] = str(frame_id)
@@ -1551,6 +1552,83 @@ def _run_llm_failed(args, error, cfg, agent) -> int:
     return RUN_LLM_FAILED_EXIT
 
 
+def _run_session(agent) -> tuple:
+    """The Store and root frame a CLI run records its conversation in."""
+
+    store = getattr(getattr(agent, "dispatcher", None), "store", None)
+    frame_id = getattr(agent, "frame_id", None)
+    if store is None or not frame_id or not hasattr(store, "add_message"):
+        return None, None
+    return store, str(frame_id)
+
+
+def _record_run_task(agent, task: str) -> None:
+    """Open the run's session the way the Web composer opens one.
+
+    A CLI run left a root frame with no message and no title: the Web UI
+    listed it as a blank "Untitled session" -- or hid it when the run wrote
+    no file -- and its export and share page were empty. The task is the
+    user message and, until something better names it, the title.
+    """
+
+    store, frame_id = _run_session(agent)
+    if store is None:
+        return
+    try:
+        frame = store.get_frame(frame_id) or {}
+        if not (frame.get("name") or frame.get("task_summary")):
+            store.update_frame(frame_id, task_summary=" ".join(task.split())[:80])
+        store.add_message(
+            root_frame_id=frame_id, role="user", content=task, frame_id=frame_id
+        )
+    except Exception:  # noqa: BLE001 - a record cannot stop the run
+        pass
+
+
+def _record_run_answer(agent, task: str, result=None, *, error=None) -> None:
+    """Store how the run ended as the session's assistant message.
+
+    The same words the Web turn stores: the rendered completion, the stop
+    marker for a cancelled run, or the error a failed run printed.
+    """
+
+    store, frame_id = _run_session(agent)
+    if store is None:
+        return
+    try:
+        from openai4s.server.completions import (
+            cancellation_marker,
+            completion_message,
+            response_language,
+        )
+
+        language = response_language(task)
+        metadata = None
+        result = result or {}
+        stop_reason = result.get("stop_reason")
+        if error is not None:
+            content = f"error: {error['error']}"
+            metadata = {"failure": {"code": str(error.get("code") or "run_failed")}}
+        elif stop_reason == "submitted" and result.get("submitted_output"):
+            content = completion_message(result["submitted_output"], language=language)
+        elif stop_reason == "cancelled":
+            content = cancellation_marker("user", language)
+            metadata = {"cancelled": {"reason": "user"}}
+        else:
+            content = str(result.get("final_message") or "").strip() or (
+                f"_The run ended without completing ({stop_reason})._"
+            )
+        store.add_message(
+            root_frame_id=frame_id,
+            role="assistant",
+            content=content,
+            frame_id=frame_id,
+            metadata=metadata,
+        )
+    except Exception:  # noqa: BLE001 - the run's own result is already final
+        pass
+
+
 def _run_interrupted(args, agent) -> int:
     """Report a run that Ctrl-C ended: one line (or the --json result), exit 3.
 
@@ -1559,6 +1637,7 @@ def _run_interrupted(args, agent) -> int:
     """
 
     result = agent.interrupted_result()
+    _record_run_answer(agent, args.task, result)
     frame_id = getattr(agent, "frame_id", None)
     if frame_id:
         result["frame_id"] = str(frame_id)
@@ -1628,10 +1707,10 @@ def cmd_run(args) -> int:
     agent_options: dict = {}
     if allowed_tests:
         agent_options["allowed_test_commands"] = tuple(allowed_tests)
-    if getattr(args, "auto", False):
-        # The post-run review judges what the run recorded; without its cells
-        # the reviewer sees an answer and no executed code or output at all.
-        agent_options["record_cells"] = True
+    # Every run records its cells: the session's Notebook is where the code
+    # behind a number is found later (it was in no file, no terminal and no
+    # Notebook), and `--auto`'s post-run review judges what the run recorded.
+    agent_options["record_cells"] = True
     progress = None
     if not getattr(args, "quiet", False):
         # On stderr, so stdout stays the result. Without it a run printed
@@ -1672,6 +1751,7 @@ def cmd_run(args) -> int:
                 args,
                 {"error": refusal, "code": "code_mode_test_runner_unauthorized"},
             )
+    _record_run_task(agent, args.task)
     try:
         try:
             with _foreground_cell_interrupt(agent):
@@ -1691,6 +1771,7 @@ def cmd_run(args) -> int:
             "code": error.error_code,
             "standard_profile_readiness": error.readiness,
         }
+        _record_run_answer(agent, args.task, error=payload)
         if args.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
@@ -1702,6 +1783,10 @@ def cmd_run(args) -> int:
         # traceback with the cause on its last line, and as nothing at all on
         # stdout under --json.
         return _run_llm_failed(args, error, cfg, agent)
+    _record_run_answer(agent, args.task, result)
+    if getattr(agent, "frame_id", None):
+        # The session the run is stored as (`openai4s share create <id>`).
+        result = {**result, "frame_id": str(agent.frame_id)}
     if getattr(args, "auto", False):
         # A machine-readable terminal is the point of --auto: CI needs to tell
         # "ran and was verified" from "ran and nobody checked".

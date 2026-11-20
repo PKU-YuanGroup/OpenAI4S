@@ -541,3 +541,81 @@ def test_run_help_says_ctrl_c_exits_3(capsys):
     text = " ".join(capsys.readouterr().out.split())
     row = text[text.index("3 the run ended without completing") :]
     assert "Ctrl-C" in row[: row.index(" 4 ")]
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-27: a CLI run is stored as a session with its question and answer
+# --------------------------------------------------------------------------- #
+
+
+def _session(cfg, frame_id):
+    with sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True) as db:
+        frame = db.execute(
+            "SELECT name, task_summary FROM frames WHERE frame_id=?", (frame_id,)
+        ).fetchone()
+        messages = db.execute(
+            "SELECT role, content, metadata FROM messages WHERE root_frame_id=? "
+            "ORDER BY seq",
+            (frame_id,),
+        ).fetchall()
+        cells = db.execute(
+            "SELECT code FROM execution_log WHERE frame_id=?", (frame_id,)
+        ).fetchall()
+    return frame, messages, [row[0] for row in cells]
+
+
+def test_a_run_is_stored_with_its_task_answer_and_cells(tmp_path, monkeypatch, capsys):
+    """The Web UI showed a CLI run as a blank "Untitled session": no question,
+    no answer, an empty Notebook -- and a run with no file was not listed."""
+
+    module, cfg = _real_run(
+        tmp_path,
+        monkeypatch,
+        _scripted_chat(["```python\nprint('cell ran')\n```", _SUBMIT_REPLY]),
+    )
+    task = "Compute 1+1\n  and submit it."
+
+    status = module.main(["run", "--json", "--quiet", task])
+
+    assert status == 0
+    frame_id = json.loads(capsys.readouterr().out)["frame_id"]
+    assert frame_id == _frame_rows(cfg)[0][0]
+    frame, messages, cells = _session(cfg, frame_id)
+    assert frame == (None, "Compute 1+1 and submit it.")
+    assert [(role, content) for role, content, _ in messages][0] == ("user", task)
+    assert messages[1][0] == "assistant"
+    assert "two" in messages[1][1] and "Computed 1+1" in messages[1][1]
+    assert len(messages) == 2
+    assert any("print('cell ran')" in code for code in cells)
+
+    from openai4s.server.gateway import _frame_json, _session_is_unused
+    from openai4s.store import get_store
+
+    store = get_store(cfg.db_path)
+    assert not _session_is_unused(store, _frame_json(store.get_frame(frame_id), store))
+
+
+def test_a_failed_run_stores_the_error_it_printed(tmp_path, monkeypatch, capsys):
+    module, cfg = _real_run(tmp_path, monkeypatch, _failing_chat(_transport_error(401)))
+
+    status = module.main(["run", "--quiet", "Compute 1+1 and submit it."])
+
+    assert status == 4
+    error_line = capsys.readouterr().err.strip()
+    _, messages, _ = _session(cfg, _frame_rows(cfg)[0][0])
+    assert [role for role, _, _ in messages] == ["user", "assistant"]
+    assert error_line.startswith(messages[1][1])
+    assert json.loads(messages[1][2]) == {"failure": {"code": "llm_auth_failed"}}
+
+
+def test_a_cancelled_run_stores_the_stop_marker(tmp_path, monkeypatch, capsys):
+    module, cfg = _real_run(tmp_path, monkeypatch, _interrupted_chat([]))
+
+    status = _main_survives_ctrl_c(module, ["run", "Compute 1+1 and submit it."])
+
+    assert status == 3
+    _, messages, _ = _session(cfg, _frame_rows(cfg)[0][0])
+    assert [(role, content) for role, content, _ in messages] == [
+        ("user", "Compute 1+1 and submit it."),
+        ("assistant", "_Stopped by user._"),
+    ]
