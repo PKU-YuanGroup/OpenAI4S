@@ -774,7 +774,7 @@ if (isTRUE(tryCatch(capabilities("png"), error = function(e) FALSE))) {
     .oai4s_respond(
       .oai4s_regex_id(line), "", "",
       if (.oai4s_have_jsonlite) "invalid JSON request" else
-        "openai4s R worker requires the 'jsonlite' package — install.packages(\"jsonlite\") or select the prebuilt 'r' environment",
+        "openai4s R worker requires the 'jsonlite' package — install.packages(\"jsonlite\"), or choose an R that has it under Runtime environment (Python / R) in the session options",
       FALSE, NULL, NULL, 0, 0, 0L
     )
     return("ok")
