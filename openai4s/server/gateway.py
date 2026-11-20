@@ -713,7 +713,10 @@ def _guess_ctype(name: str) -> str:
         return "chemical/x-daylight-smiles"
     if low.endswith(".xyz"):
         return "chemical/x-xyz"
-    if low.endswith((".fasta", ".fa", ".nwk", ".treefile", ".log")):
+    # M-62: R and Julia sources are text; they were stored as octet-stream.
+    if low.endswith(
+        (".fasta", ".fa", ".nwk", ".treefile", ".log", ".r", ".rmd", ".jl")
+    ):
         return "text/plain; charset=utf-8"
     ctype, encoding = mimetypes.guess_type(name)
     if encoding:

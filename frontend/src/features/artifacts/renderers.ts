@@ -1,6 +1,7 @@
 import { isReady } from "../../compat/stub";
 import { parseTable } from "../csv/csv";
 import { typesetMath } from "../md/math";
+import { mdHighlight } from "../md/highlight";
 import { renderMd } from "../md/render";
 import { noteEncodingIn } from "./encoding-note";
 import { resolveRelativeImages } from "./markdown-assets";
@@ -171,10 +172,40 @@ export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, u
 const SOURCE_PREVIEW_CHARACTERS = TEXT_SOURCE_PREVIEW_CHARACTERS;
 
 /** Render bounded raw text; returns whether an exact-version download entry was included. */
+/** M-62: source files the chat's code highlighter already knows, by extension. */
+const CODE_LANGUAGES: Record<string, string> = {
+  py: "python",
+  r: "r",
+  jl: "julia",
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
+  js: "javascript",
+  mjs: "javascript",
+  ts: "javascript",
+  sql: "sql",
+  yaml: "yaml",
+  yml: "yaml",
+  toml: "toml",
+  rb: "ruby",
+};
+
+export function codeLanguage(filename: string | null | undefined): string | null {
+  const ext = /\.([A-Za-z0-9]+)$/.exec(String(filename || ""));
+  return (ext && CODE_LANGUAGES[(ext[1] || "").toLowerCase()]) || null;
+}
+
 export function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): boolean {
   const slice = previewSlice(text, SOURCE_PREVIEW_CHARACTERS);
-  const pre = el("pre", "renderer-source");
-  pre.textContent = slice.shown;
+  const lang = codeLanguage(a.filename);
+  const pre = el("pre", lang ? "renderer-source renderer-code" : "renderer-source");
+  // `mdHighlight` escapes every character it emits (its spans' text is the
+  // source byte for byte), so file text reaches the DOM only as text.
+  const show = (value: string): void => {
+    if (lang) pre.innerHTML = mdHighlight(value, lang);
+    else pre.textContent = value;
+  };
+  show(slice.shown);
   container.appendChild(pre);
   if (!slice.truncated) return false;
   partialNotice(container, slice.shown.length);
@@ -183,7 +214,7 @@ export function renderRawSource(container: HTMLElement, a: ArtifactRow, text: st
   const expand = el("button", "outline-btn small", filesT("viewer.text.expand"));
   expand.setAttribute("aria-expanded", "false");
   expand.onclick = () => {
-    pre.textContent = text;
+    show(text);
     expand.setAttribute("aria-expanded", "true");
     expand.disabled = true;
   };

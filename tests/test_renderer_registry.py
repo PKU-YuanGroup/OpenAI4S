@@ -114,6 +114,19 @@ def test_notebook_renderer_is_read_only_and_declares_view_copy_only():
     assert "application/x-ipynb+json" in notebook.content_types
 
 
+@pytest.mark.parametrize("name", ["cox_crosscheck.R", "model.r", "fit.jl"])
+def test_r_and_julia_sources_are_text_shown_as_text(name):
+    """M-62: an R script was stored as application/octet-stream."""
+    from openai4s.server.gateway import _guess_ctype
+
+    content_type = _guess_ctype(name)
+    assert content_type == "text/plain; charset=utf-8"
+    selected = RendererRegistry().select(
+        {"filename": name, "content_type": content_type}
+    )
+    assert selected["renderer"]["renderer_id"] == "text"
+
+
 @pytest.mark.parametrize(
     ("name", "content_type"),
     [

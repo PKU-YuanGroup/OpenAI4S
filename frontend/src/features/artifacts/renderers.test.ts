@@ -116,6 +116,56 @@ describe("text artifacts that look binary (AUDIT A01)", () => {
   });
 });
 
+describe("source files are highlighted by extension (M-62)", () => {
+  class HtmlNode extends FakeNode {
+    html = "";
+    override get innerHTML(): string {
+      return this.html;
+    }
+    override set innerHTML(value: string) {
+      this.children = [];
+      this.html = value;
+    }
+  }
+  beforeEach(() => {
+    vi.stubGlobal("document", { createElement: (tag: string) => new HtmlNode(tag) });
+  });
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+  });
+  const unescape = (html: string) =>
+    html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+
+  it("colours an R script and keeps its text byte for byte", async () => {
+    const source = 'fit <- coxph(Surv(time, status) ~ age, data = df) # model\nif (x < 1) print("<b>")\n';
+    serve(source);
+    const container = new HtmlNode();
+    renderTextArtifact(host(container), { id: "r", filename: "cox_crosscheck.R" }, "/api/v1/artifacts/r");
+    await settle();
+    await settle();
+    const pre = walk(container).find((node) => node.tagName === "pre") as HtmlNode | undefined;
+    expect(pre?.className).toBe("renderer-source renderer-code");
+    expect(pre!.html).toContain('<span class="tok-kw">if</span>');
+    expect(pre!.html).toContain('<span class="tok-com"># model</span>');
+    // The file's own markup is text, never markup.
+    expect(pre!.html).not.toContain("<b>");
+    expect(unescape(pre!.html)).toBe(source);
+  });
+
+  it("leaves a file with no known language as plain text", async () => {
+    serve("if this were code\n");
+    const container = new HtmlNode();
+    renderTextArtifact(host(container), { id: "t", filename: "notes.txt" }, "/api/v1/artifacts/t");
+    await settle();
+    await settle();
+    const pre = walk(container).find((node) => node.tagName === "pre") as HtmlNode | undefined;
+    expect(pre?.className).toBe("renderer-source");
+    expect(pre?.textContent).toBe("if this were code\n");
+    expect(pre?.html).toBe("");
+  });
+});
+
 describe("FASTA in the sequence viewer (SCI-27)", () => {
   // The real parser, not a stub: the record count, lengths and alphabet come
   // from it, and they are what the summary promises.

@@ -429,3 +429,16 @@ table.sheet th[data-sort="desc"]::after {
   color: var(--text-400);
   user-select: none;
 }
+
+/* M-62: a highlighted source file in the viewer. The chat's token colours
+   assume a dark code block; this preview is on the page background. */
+.renderer-code .tok-kw { color: #a626a4; }
+.renderer-code .tok-str { color: #3f833b; }
+.renderer-code .tok-com { color: #6f7079; font-style: italic; }
+.renderer-code .tok-num { color: #986801; }
+.renderer-code .tok-fn { color: #3d6fe0; }
+html[data-theme="dark"] .renderer-code .tok-kw { color: #c678dd; }
+html[data-theme="dark"] .renderer-code .tok-str { color: #98c379; }
+html[data-theme="dark"] .renderer-code .tok-com { color: #8b909a; }
+html[data-theme="dark"] .renderer-code .tok-num { color: #d19a66; }
+html[data-theme="dark"] .renderer-code .tok-fn { color: #61afef; }
