@@ -383,6 +383,34 @@ type Attempt = {
 
 let projections = new Map<string, { records: NotebookCell[]; cell: NotebookCell }>();
 
+const CODE_TOKEN = /[A-Za-z_][A-Za-z0-9_]*|[0-9]+/g;
+
+function tokenBag(text: string): Map<string, number> {
+  const bag = new Map<string, number>();
+  for (const token of text.match(CODE_TOKEN) || []) bag.set(token, (bag.get(token) || 0) + 1);
+  return bag;
+}
+
+/**
+ * Whether two sources share most of their identifiers and numbers: token
+ * bags, Dice coefficient >= 0.6, in integers. The twin of `_similar_code` in
+ * openai4s/server/execution_views.py, so a cell groups the same way live and
+ * after a reload. The step after a failed cell is often an unrelated one.
+ */
+export function similarCode(left: string, right: string): boolean {
+  const first = tokenBag(left);
+  const second = tokenBag(right);
+  let total = 0;
+  let shared = 0;
+  first.forEach((count, token) => {
+    total += count;
+    shared += Math.min(count, second.get(token) || 0);
+  });
+  second.forEach((count) => (total += count));
+  if (!total) return left.trim() === right.trim();
+  return 10 * shared >= 3 * total;
+}
+
 /**
  * app.js:10076-10112. A group whose members are the same finished records
  * as on the last call returns the same projected object, so the memoized
@@ -414,8 +442,11 @@ export function projectNotebookCells(
         prev &&
         (prev.kernel_id || "python") === (cell.kernel_id || "python") &&
         (prev.language || "python") === (cell.language || "python");
+      // A draft's source is still arriving: it is judged once, when it runs.
+      const sameCode =
+        prev && !cell.draft && similarCode(String(prev.source || ""), String(cell.source || ""));
       entry =
-        previous && prev && previousFailed && sameRuntime && agentRetry
+        previous && prev && previousFailed && sameRuntime && agentRetry && sameCode
           ? {
               cell,
               groupId: previous.groupId || nbCellKey(prev),

@@ -221,7 +221,7 @@ def test_execution_log_projects_consecutive_failed_retries_without_dropping_rows
             "kernel_id": "python",
             "language": "python",
             "origin": "agent",
-            "code": "calculate()",
+            "code": "score = calculate(table)",
             "status": "error",
             "error": "NameError",
         },
@@ -231,7 +231,7 @@ def test_execution_log_projects_consecutive_failed_retries_without_dropping_rows
             "kernel_id": "python",
             "language": "python",
             "origin": "agent",
-            "code": "repair_and_calculate()",
+            "code": "table = load()\nscore = calculate(table)",
             "status": "error",
             "error": "ValueError",
         },
@@ -241,7 +241,7 @@ def test_execution_log_projects_consecutive_failed_retries_without_dropping_rows
             "kernel_id": "python",
             "language": "python",
             "origin": "agent",
-            "code": "repair_again()",
+            "code": "table = load().dropna()\nscore = calculate(table)",
             "status": "ok",
         },
         {
@@ -283,6 +283,43 @@ def test_execution_log_projects_consecutive_failed_retries_without_dropping_rows
     ]
     assert entries[3]["attempt_group_id"] == "cell-4"
     assert entries[3]["attempt_count"] == 1
+
+
+def test_an_unrelated_cell_after_a_failure_is_not_its_retry():
+    """NB-4: a failed import was folded into the next, unrelated cell as
+    "2 attempts", hiding the failure behind something that never retried it."""
+    store = _Store()
+
+    def cell(cell_id, code, status):
+        return {
+            "producing_cell_id": cell_id,
+            "kernel_id": "python",
+            "language": "python",
+            "origin": "agent",
+            "code": code,
+            "status": status,
+        }
+
+    store.cells["frame"] = [
+        cell(
+            "load", "import openpyxl\nwb = openpyxl.load_workbook('demo.xlsx')", "error"
+        ),
+        cell("probe", "host.env.list(['openpyxl', 'pandas'])", "ok"),
+        cell("fit", "model = fit(table, start=0.5)", "error"),
+        cell("refit", "model = fit(table, start=0.1, bounds=(0, 1))", "ok"),
+    ]
+
+    entries = _service(store).execution_log("frame")["entries"]
+
+    assert [entry["attempt_group_id"] for entry in entries] == [
+        "load",
+        "probe",
+        "fit",
+        "fit",
+    ]
+    assert [entry["attempt_count"] for entry in entries] == [1, 1, 2, 2]
+    assert entries[1]["revision_of"] is None
+    assert entries[3]["revision_of"] == "fit"
 
 
 def test_retry_projection_does_not_cross_runtime_or_non_agent_boundaries():
