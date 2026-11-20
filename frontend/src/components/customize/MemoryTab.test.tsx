@@ -145,3 +145,24 @@ describe("MemoryTab add", () => {
     expect(saveButton().props!.disabled).toBe(false);
   });
 });
+
+// M-81: the type menu showed the stored enum and the context line was
+// "1 injected · 0 omitted · 0 inherited from global · 0 hidden by …".
+describe("memory types and what a new conversation gets", () => {
+  it("names each type and says what it is for", async () => {
+    const { MEMORY_BLOCKS, memoryBlockHint, memoryBlockLabel } = await import("../../features/customize/memory");
+    expect(MEMORY_BLOCKS.map(memoryBlockLabel)).toEqual(["About you", "Project context", "Preference", "Fact", "Other"]);
+    expect(MEMORY_BLOCKS.every((block) => memoryBlockHint(block).length > 0)).toBe(true);
+    expect(memoryBlockLabel("custom")).toBe("custom");
+  });
+
+  it("says how many memories a new conversation starts with, and the rest only when it is not zero", async () => {
+    const { memoryAppliedText } = await import("../../features/customize/memory");
+    expect(memoryAppliedText({ included_count: 1, omitted: [], inherited_count: 0, overridden_count: 0 })).toBe(
+      "Saved memories added to each new conversation: 1",
+    );
+    expect(memoryAppliedText({ included_count: 3, omitted: [{}, {}], inherited_count: 1, overridden_count: 0 })).toBe(
+      "Saved memories added to each new conversation: 3; 2 more left out for length; 1 of them from Global",
+    );
+  });
+});

@@ -18,7 +18,7 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer`；直接 re-export `models.ts` 里真正的 `loadModels`（不经 window 桥）；`effProject`，以及供渲染使用的 `customizeProject`（它的 computed，只在项目变化时通知）。 |
 | [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` 与对外 re-export。`window.openCust` / `custTab` 先加载并挂载设置 UI（`ensureCustomizeMounted` / `openCustomize`）；加载失败会提示，下次打开时重试。 |
 | [`layout.ts`](layout.ts) | `os-layout` 密度。`setLayout` / `applyLayout`。 |
-| [`memory.ts`](memory.ts) | Memory 作用域 id 与名称。绝不发送字面 `"default"`。 |
+| [`memory.ts`](memory.ts) | Memory 作用域 id 与名称。绝不发送字面 `"default"`。 每种类型都有名称和一句用途说明（`memoryBlockLabel`、`memoryBlockHint`）；`memoryAppliedText` 说明新会话会带上几条记忆，省略/继承/被取代的数量只在不为零时才写出（M-81）。 |
 | [`permissions.ts`](permissions.ts) | 设置 → 权限 的文案（`permT`）：每个工具名一句说明（`toolDescription`），以及 `globalRulesSummary`——从规则本身读出全局规则的实际效果（读取 / 写入 / 联网 / 装包 / 后台命令 / 连接器 / 技能）。 |
 | [`permissions.test.ts`](permissions.test.ts) | 摘要与种子规则一致、随规则变化而变化；没有通配规则的工具按“询问”计；未知工具名没有说明。 |
 | [`runtimes.ts`](runtimes.ts) | 设置 → 计算 的文案（`runtimeT`），以及把环境列表里的 `runtimes` 说成人话：`runtimeSummary`（环境名 · 内置 / 托管 / 本机 · 版本，绝不显示路径）、`rPackagesNote`（R 的关键包能否加载，以及托管 R 环境自带它们）、`rDefaultLabel`（运行环境菜单里 R 的“默认”指的是什么）、`installOutcome`（一次安装做了什么：版本、装到哪个环境、运行中的内核需要做什么）。 |

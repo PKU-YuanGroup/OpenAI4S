@@ -3,7 +3,14 @@ import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { asList, asString, customizeProject, hint } from "../../features/customize/host";
-import { MEMORY_BLOCKS, memScopeIds, memScopeLabel } from "../../features/customize/memory";
+import {
+  MEMORY_BLOCKS,
+  memScopeIds,
+  memScopeLabel,
+  memoryAppliedText,
+  memoryBlockHint,
+  memoryBlockLabel,
+} from "../../features/customize/memory";
 import { roleT, settingsReadOnly } from "../../features/customize/roles";
 import { useAlive } from "./use-timer-lease";
 import { useOptimisticToggle, useTabRead } from "./hooks";
@@ -124,7 +131,7 @@ export function MemoryTab() {
             >
               {MEMORY_BLOCKS.map((k) => (
                 <option value={k} key={k}>
-                  {k}
+                  {memoryBlockLabel(k)}
                 </option>
               ))}
             </select>
@@ -164,6 +171,11 @@ export function MemoryTab() {
             </button>
           </div>
           )}
+          {scopes.length ? (
+            <div class="ds" data-memory-block-hint="">
+              {memoryBlockHint(block)}
+            </div>
+          ) : null}
         </div>
       </div>
       {ctx ? (
@@ -172,14 +184,8 @@ export function MemoryTab() {
             <div class="nm">
               <InjectedInto pid={active} />
             </div>
-            <div class="ds">
-              {t(
-                "cust.memory.injectedCounts",
-                String(ctx.included_count || 0),
-                String(asList(ctx.omitted).length),
-                String(ctx.inherited_count || 0),
-                String(ctx.overridden_count || 0),
-              )}
+            <div class="ds" data-memory-applied="">
+              {memoryAppliedText(ctx)}
             </div>
           </div>
         </div>
@@ -191,7 +197,7 @@ export function MemoryTab() {
             <div class="ds">
               {cats.map((k, i) => (
                 <Pill key={i}>
-                  {asString(k.block, "general") + " · " + String(k.count)}
+                  {memoryBlockLabel(asString(k.block, "general")) + " · " + String(k.count)}
                 </Pill>
               ))}
             </div>
@@ -202,7 +208,7 @@ export function MemoryTab() {
         .sort()
         .map((b) => (
           <div key={b}>
-            <Subhead>{b}</Subhead>
+            <Subhead>{memoryBlockLabel(b)}</Subhead>
             {(groups[b] || []).map((x) => (
               <div class="cust-row" key={asString(x.memory_id)}>
                 <div class="info">

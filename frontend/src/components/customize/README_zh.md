@@ -20,7 +20,7 @@ F-19 Customize 模态。十一个 tab、嵌套编辑层，以及 `vendors/` 卡�
 | [`UpdateCheck.test.tsx`](UpdateCheck.test.tsx) | Vitest（HTTP 替身）：挂载只发一次本地 GET、无 POST；两个按钮分别恰发一次 `{refresh:false}` / `{refresh:true}`；双击只发一次 POST；429 显示有界等待；`unknown` 显示原因与上次答案；`admin_only` 拒绝后隐藏按钮；畸形载荷降级为「无法读取」；refusal 命令可复制且不存在安装/下载/重启动作；卸载后到达的答复被丢弃。 |
 | [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | 被动安全姿态、显式检查、脱敏支持包下载。位于「诊断与更新」页，在更新一行上方。 |
 | [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | 页面加载只发一次 status GET；检查与下载包要等点击；请求 id 在纯 http 下也能复制，没复制成功时如实提示。 |
-| [`MemoryTab.tsx`](MemoryTab.tsx) | Memory 开关 / 添加 / 编辑 / 删除，作用域显式发送。团队成员看到的开关是锁定的并写明原因，也没有「所有项目」作用域。 |
+| [`MemoryTab.tsx`](MemoryTab.tsx) | Memory 开关 / 添加 / 编辑 / 删除，作用域显式发送。团队成员看到的开关是锁定的并写明原因，也没有「所有项目」作用域。 类型按名称列出并附一句用途说明，上下文一行说明新会话会带上什么（M-81）。 |
 | [`MemoryTab.test.tsx`](MemoryTab.test.tsx) | 首次读取同时请求四项数据；写入进行中无论按几次保存，只添加一条记忆。 |
 | [`ModelsTab.tsx`](ModelsTab.tsx) | 添加表单的「模型」输入框可以用「获取模型列表」（`POST /model-profiles/discover`，与向导同一个列表）给出候选，也仍可填写任意 id。配置档、本机扫描、probe、capability-receipt badge。没有激活的配置档时，把 `GET /config/llm` 的在用模型（环境变量或已保存设置）显示为当前行。团队成员只能查看列表（没有添加表单、key 输入框、服务商面板、本机扫描和行内操作，也不显示接口地址），并会看到自己的 key 该放在哪里。 |
 | [`ModelsTab.test.tsx`](ModelsTab.test.tsx) | 只靠 `.env` 配置、没有配置档的安装会显示在用模型，而不是「还没有配置模型」；已有激活配置档时不重复加行；读不到配置也不遮住配置档列表；靠环境变量密钥运行的配置档标成「密钥来自环境变量」，而不是「无密钥」；写入进行中无论按几次添加，本机模型只添加一次；新增、删除配置档或添加本机模型后，重新读取输入框旁 `#model-select` 的列表。 |
