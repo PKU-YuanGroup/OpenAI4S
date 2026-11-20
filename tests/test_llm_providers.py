@@ -11,9 +11,15 @@ assert, deterministically, that:
  * the auth headers differ per wire (Bearer / x-api-key / x-goog-api-key).
 """
 
+import copy
+import json
+
 import pytest
 
 from openai4s import llm
+from openai4s.agent.actions import CodeCell
+from openai4s.agent.engine import AgentEngine
+from openai4s.agent.models import ExecutionOutcome
 from openai4s.config import LLMConfig
 
 # --- a capturing fake transport ------------------------------------------
@@ -252,56 +258,120 @@ _LOOKUP = {
     "description": "Look up a fact.",
     "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
 }
-# One earlier call and its answer: the history a tool-less call is sent with.
-_TOOL_HISTORY = [
-    {"role": "user", "content": "find it"},
-    {
-        "role": "assistant",
-        "content": "现在用 Python 读取 Excel。",
-        "tool_calls": [
-            {
-                "id": "call_1",
-                "wire_id": "call_1",
-                "name": "lookup",
+
+
+def _run_cell_requests():
+    """The third and fourth requests of an Engine run whose model promises
+    Python with a lookup twice, then answers the run_cell-only call with a
+    run_cell call: what each wire is handed, built by the real Engine."""
+
+    requests = []
+
+    class Model:
+        def complete(self, messages, on_delta, *, only_tools=None):
+            index = len(requests)
+            requests.append((copy.deepcopy(list(messages)), only_tools))
+            if only_tools is not None:
+                name, arguments = "run_cell", {"language": "python", "code": "print(2)"}
+            else:
+                name, arguments = "lookup", {"q": str(index)}
+            call = {
+                "id": f"call_{index}",
+                "wire_id": f"call_{index}",
+                "name": name,
                 "ordinal": 0,
-                "raw_arguments": '{"q":"x"}',
-                "arguments": {"q": "x"},
+                "raw_arguments": json.dumps(arguments),
+                "arguments": arguments,
                 "parse_error": None,
                 "provider_meta": {},
             }
-        ],
-    },
-    {"role": "tool", "tool_call_id": "call_1", "name": "lookup", "content": "found"},
-]
+            return {"content": "现在用 Python 读取 Excel。", "tool_calls": [call]}
+
+    class Executor:
+        def execute(self, action, reply, state):
+            if isinstance(action, CodeCell):
+                # What every executor answers a cell with.
+                return ExecutionOutcome(
+                    ({"role": "user", "content": "[Observation]\n2"},),
+                    observation="[Observation]\n2",
+                )
+            return ExecutionOutcome(
+                tuple(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "wire_id": call.wire_id,
+                        "name": call.name,
+                        "content": "found",
+                        "is_error": False,
+                    }
+                    for call in action.calls
+                )
+            )
+
+    AgentEngine(Model(), Executor(), max_turns=4).run(
+        [{"role": "user", "content": "read demo.xlsx"}]
+    )
+    (third, offered), (fourth, again) = requests[2], requests[3]
+    assert [tool["name"] for tool in offered] == ["run_cell"] and again is None
+    return third, offered, fourth
+
+
+def _no_forced_choice(provider, payload):
+    """``auto`` or no choice at all: a fenced cell in the text still counts."""
+    if provider == "claude":
+        assert payload.get("tool_choice", {"type": "auto"})["type"] == "auto"
+    elif provider == "gemini":
+        mode = payload.get("toolConfig", {}).get("functionCallingConfig", {})
+        assert mode.get("mode", "AUTO") == "AUTO"
+    else:
+        assert payload.get("tool_choice", "auto") == "auto"
 
 
 @pytest.mark.parametrize("provider", ["ark", "chatgpt", "claude", "gemini"])
-def test_a_call_that_may_use_no_tool_still_carries_a_valid_tool_history(cap, provider):
-    """``tool_choice="none"`` is how the Agent withholds tools for one call.
+def test_the_run_cell_call_and_its_answer_are_well_formed_on_every_wire(cap, provider):
+    """The Agent's fallback call offers run_cell alone, with the default tool
+    choice; the next call offers the catalogue again and answers run_cell's
+    call id with the cell's observation as a tool result."""
+    third, offered, fourth = _run_cell_requests()
 
-    The OpenAI-compatible wire sends no declarations: servers there differ on
-    ``tool_choice``. Anthropic keeps them, because it rejects tool_use and
-    tool_result blocks in a request that defines no tools, and its ``none``
-    choice takes no other field. Gemini keeps them with its NONE mode.
-    """
-    llm.chat(_TOOL_HISTORY, _cfg(provider), tools=[_LOOKUP], tool_choice="none")
+    llm.chat(third, _cfg(provider), tools=offered)
     payload = cap.payload
-
+    _no_forced_choice(provider, payload)
     if provider in ("ark", "chatgpt"):
-        assert payload["messages"][1]["tool_calls"][0]["id"] == "call_1"
-        assert not {"tools", "tool_choice", "parallel_tool_calls"} & set(payload)
+        names = [tool["function"]["name"] for tool in payload["tools"]]
     elif provider == "claude":
-        assert payload["messages"][1]["content"][-1]["type"] == "tool_use"
-        assert [tool["name"] for tool in payload["tools"]] == ["lookup"]
-        assert payload["tool_choice"] == {"type": "none"}
+        names = [tool["name"] for tool in payload["tools"]]
     else:
-        assert "functionCall" in payload["contents"][1]["parts"][-1]
-        declarations = payload["tools"][0]["functionDeclarations"]
-        assert [tool["name"] for tool in declarations] == ["lookup"]
-        assert payload["toolConfig"] == {"functionCallingConfig": {"mode": "NONE"}}
+        names = [tool["name"] for tool in payload["tools"][0]["functionDeclarations"]]
+    assert names == ["run_cell"]
+
+    llm.chat(fourth, _cfg(provider), tools=[_LOOKUP])
+    payload = cap.payload
+    if provider in ("ark", "chatgpt"):
+        call, answer = payload["messages"][-2:]
+        assert call["tool_calls"][0]["function"]["name"] == "run_cell"
+        assert call["tool_calls"][0]["id"] == answer["tool_call_id"] == "call_2"
+        assert (answer["role"], answer["content"]) == ("tool", "[Observation]\n2")
+    elif provider == "claude":
+        call, answer = payload["messages"][-2:]
+        (use,) = [part for part in call["content"] if part["type"] == "tool_use"]
+        (result,) = answer["content"]
+        assert (use["name"], use["id"]) == ("run_cell", "call_2")
+        assert (result["type"], result["tool_use_id"]) == ("tool_result", "call_2")
+        assert result["content"] == "[Observation]\n2"
+    else:
+        call, answer = payload["contents"][-2:]
+        (use,) = [
+            part["functionCall"] for part in call["parts"] if "functionCall" in part
+        ]
+        (result,) = [part["functionResponse"] for part in answer["parts"]]
+        assert (use["name"], use["id"]) == ("run_cell", "call_2")
+        assert (result["name"], result["id"]) == ("run_cell", "call_2")
+        assert result["response"] == {"output": "[Observation]\n2"}
 
 
-def test_a_responses_call_that_may_use_no_tool_keeps_its_declarations(monkeypatch):
+def test_the_run_cell_call_and_its_answer_are_well_formed_on_responses(monkeypatch):
     sent = []
 
     def post_sse(url, payload, headers, timeout, on_event):
@@ -321,18 +391,34 @@ def test_a_responses_call_that_may_use_no_tool_keeps_its_declarations(monkeypatc
         )
 
     monkeypatch.setattr(llm.transport, "post_sse", post_sse)
+    third, offered, fourth = _run_cell_requests()
+    llm.chat(third, _cfg("openai_responses"), tools=offered)
+    llm.chat(fourth, _cfg("openai_responses"), tools=[_LOOKUP])
+
+    first, second = sent
+    _no_forced_choice("openai_responses", first)
+    assert [tool["name"] for tool in first["tools"]] == ["run_cell"]
+    call, answer = second["input"][-2:]
+    assert (call["type"], call["name"], call["call_id"]) == (
+        "function_call",
+        "run_cell",
+        "call_2",
+    )
+    assert (answer["type"], answer["call_id"]) == ("function_call_output", "call_2")
+    assert answer["output"] == "[Observation]\n2"
+
+
+def test_an_anthropic_none_choice_takes_no_other_field(cap):
+    # The facade's "no tool calls" shape on the Anthropic wire, which rejects
+    # ``disable_parallel_tool_use`` beside ``{"type": "none"}``.
     llm.chat(
-        _TOOL_HISTORY,
-        _cfg("openai_responses"),
+        [{"role": "user", "content": "hi"}],
+        _cfg("claude"),
         tools=[_LOOKUP],
         tool_choice="none",
+        parallel_tool_calls=False,
     )
-
-    (payload,) = sent
-    types = [item.get("type") for item in payload["input"]]
-    assert types[-2:] == ["function_call", "function_call_output"]
-    assert [tool["name"] for tool in payload["tools"]] == ["lookup"]
-    assert payload["tool_choice"] == "none"
+    assert cap.payload["tool_choice"] == {"type": "none"}
 
 
 def test_config_base_url_override(cap):

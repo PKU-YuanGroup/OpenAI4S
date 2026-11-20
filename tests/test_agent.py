@@ -689,27 +689,38 @@ def test_repeated_native_tool_trips_no_progress(monkeypatch, tmp_path):
     assert "completion" not in terminal["result"]
 
 
-def test_a_cli_run_withholds_tools_after_two_ignored_cell_notes(monkeypatch, tmp_path):
+def test_a_cli_run_offers_only_run_cell_after_two_ignored_cell_notes(
+    monkeypatch, tmp_path
+):
     """The CLI and delegated children compose the Engine here, through
-    ``ChatModel`` into the ``chat`` facade: the third call forbids tool calls,
-    its cell runs, and the fourth call offers tools again."""
+    ``ChatModel`` into the ``chat`` facade. A model that only ever answers with
+    function calls: the third call offers run_cell alone, the call runs in the
+    real kernel and is recorded like any cell, and the fourth call offers the
+    catalogue again with the cell's output as the tool result for that id."""
 
-    choices = []
+    offered = []
+    sent = []
 
     def chat(messages, cfg, **kwargs):
-        del messages, cfg
-        index = len(choices)
-        choices.append((kwargs.get("tool_choice"), bool(kwargs.get("tools"))))
-        if kwargs.get("tool_choice") == "none":
-            content = "```python\nprint('sheets')\n```"
-            return {"content": content, "tool_calls": []}
+        del cfg
+        index = len(offered)
+        names = [
+            getattr(tool, "name", None) or tool["name"] for tool in kwargs["tools"]
+        ]
+        offered.append((names, kwargs.get("tool_choice")))
+        sent.append([dict(message) for message in messages])
+        if names == ["run_cell"]:
+            name = "run_cell"
+            arguments = {"language": "python", "code": "print('sheets', 6 * 7)"}
+        else:
+            name, arguments = "list_dir", {"path": f"dir{index}"}
         call = {
-            "id": f"promise-{index}",
-            "wire_id": f"promise-{index}",
-            "name": "list_dir",
+            "id": f"call-{index}",
+            "wire_id": f"call-{index}",
+            "name": name,
             "ordinal": 0,
-            "raw_arguments": json.dumps({"path": f"dir{index}"}),
-            "arguments": {"path": f"dir{index}"},
+            "raw_arguments": json.dumps(arguments),
+            "arguments": arguments,
             "parse_error": None,
             "provider_meta": {"provider": "test"},
         }
@@ -726,17 +737,33 @@ def test_a_cli_run_withholds_tools_after_two_ignored_cell_notes(monkeypatch, tmp
 
     monkeypatch.setattr(loop_mod, "chat", chat)
     agent = Agent(
-        use_skills=False, allow_delegate=False, max_turns=4, workspace=tmp_path
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=4,
+        workspace=tmp_path,
+        record_cells=True,
     )
     result = agent.run("read demo.xlsx")
 
     assert result["stop_reason"] == "max_turns"
-    # The declarations stay listed on the tool-less call; the facade decides
-    # per wire whether to send them.
-    assert choices == [(None, True), (None, True), ("none", True), (None, True)]
+    assert [names == ["run_cell"] for names, _ in offered] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert "run_cell" not in offered[0][0] and "list_dir" in offered[3][0]
+    assert {choice for _, choice in offered} == {None}
     groups = agent.dispatcher.store.list_action_groups(agent.frame_id)
     kinds = [group["kind"] for group in groups if group["kind"] != "user"]
     assert kinds == ["native_tools", "native_tools", "code", "native_tools", "terminal"]
+    # Recorded by the same cell recorder a fenced cell goes through.
+    (cell,) = agent.dispatcher.store.list_cells(agent.frame_id)
+    assert cell["code"] == "print('sheets', 6 * 7)" and cell["origin"] == "agent"
+    answer = next(
+        message for message in sent[3] if message.get("tool_call_id") == "call-2"
+    )
+    assert answer["role"] == "tool" and "sheets 42" in answer["content"]
 
 
 # ---- R execution channel (```r) -------------------------------------------

@@ -15,9 +15,13 @@ class ModelPort(Protocol):
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
         *,
-        offer_tools: bool = True,
+        only_tools: Sequence[Mapping[str, Any]] | None = None,
     ) -> ModelReply | Mapping[str, Any]:
-        """One model call. ``offer_tools=False``: no native tool may be called."""
+        """One model call.
+
+        ``only_tools``: offer exactly these declarations on this call instead
+        of the port's own catalogue (the Engine's ``run_cell`` fallback).
+        """
         ...
 
 

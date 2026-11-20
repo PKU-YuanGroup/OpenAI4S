@@ -437,7 +437,7 @@ class ChatModel:
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
         *,
-        offer_tools: bool = True,
+        only_tools: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         """One provider call, with its telemetry riding along.
 
@@ -448,7 +448,7 @@ class ChatModel:
         """
         probe = _CallProbe(stream=self.stream)
         try:
-            reply = self._complete(messages, on_delta, probe, offer_tools)
+            reply = self._complete(messages, on_delta, probe, only_tools)
         except BaseException as error:
             try:
                 error.call_telemetry = probe.record("error")  # type: ignore[attr-defined]
@@ -468,11 +468,17 @@ class ChatModel:
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
         probe: _CallProbe,
-        offer_tools: bool = True,
+        only_tools: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         if self.quota_gate is not None:
             self.quota_gate()
-        if callable(self.tools):
+        if only_tools is not None:
+            # The Engine's run_cell call: these declarations replace the
+            # catalogue for this one request, with the default tool choice,
+            # so every wire sends a non-empty tool list beside the tool
+            # history and a fenced cell in the text still counts.
+            source: Sequence[Any] = only_tools
+        elif callable(self.tools):
             try:
                 source = self.tools(messages)
             except TypeError as original:
@@ -483,12 +489,6 @@ class ChatModel:
         else:
             source = self.tools
         kwargs: dict[str, Any] = {"tools": tuple(source)}
-        if not offer_tools:
-            # The facade's "no tool calls on this request". The declarations
-            # stay: Anthropic rejects a history of tool_use/tool_result blocks
-            # sent with no tools defined. The OpenAI-compatible wire drops them
-            # itself, since not every server there takes ``tool_choice``.
-            kwargs["tool_choice"] = "none"
         if self.call_context is not None:
             # Here, on the owning thread: this is the last point at which the
             # session state still describes the turn making this call.
