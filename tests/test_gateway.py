@@ -5346,6 +5346,32 @@ def test_execution_log_route_serializer_contract(tmp_path):
     assert e1["finished_at"] == e1["started_at"]
 
 
+def test_a_dislike_can_carry_a_reason_that_stays_local(tmp_path):
+    """M-72: POST /frames/{fid}/feedback takes an optional reason with a 👎;
+    the ratings the conversation reads back are unchanged."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    store = get_store(cfg.db_path)
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    replies = []
+    handler._query = lambda: {}
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+
+    handler._body = lambda: {
+        "key": "m1",
+        "rating": "down",
+        "reason": "  wrong column  ",
+    }
+    handler._api("POST", f"/frames/{fid}/feedback")
+    assert replies[-1] == (200, {"ok": True})
+    handler._body = lambda: {}
+    handler._api("GET", f"/frames/{fid}/feedback")
+    assert replies[-1] == (200, {"feedback": {"m1": "down"}})
+    assert store.get_setting(f"fb:{fid}:m1:reason") == "wrong column"
+
+
 def test_execution_log_places_a_cell_by_when_it_ran(tmp_path):
     """M-69: a reopened conversation puts each Cell's card where the live turn
     showed it, before the files the Cell saved. The Cell is recorded only after

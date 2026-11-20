@@ -18797,7 +18797,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "POST":
                 fid = m.group(1)
                 b = self._body()
-                store.set_feedback(fid, str(b.get("key") or "0"), b.get("rating"))
+                # M-72: a 👎 may say why; kept with the rating, on this computer.
+                reason = b.get("reason")
+                store.set_feedback(
+                    fid,
+                    str(b.get("key") or "0"),
+                    b.get("rating"),
+                    reason.strip()[:2000] if isinstance(reason, str) else None,
+                )
                 self._json({"ok": True})
                 return
             m = re.fullmatch(r"/frames/([^/]+)/feedback", sub)

@@ -466,6 +466,32 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.composer.value).toBe("my draft");
   });
 
+  it.each(ROW_RENDERERS)("%s: a 👎 asks why, optionally, and says the feedback stays on this computer (M-72)", (_name, render) => {
+    currentId.value = "frame-1";
+    const posts: Array<{ key?: string; rating?: unknown; reason?: unknown }> = [];
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {
+      posts.push(JSON.parse(String(init?.body || "{}")));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") });
+    });
+    const row = render({ role: "assistant", content: "Answer B." }) as unknown as RowEl;
+    const [, up, down] = row.querySelector(".msg-actions")!.children as [RowEl, RowEl, RowEl];
+    down.onclick!();
+    expect(down.attrs["aria-pressed"]).toBe("true");
+    expect(doc.hint.textContent).toContain("Saved on this computer");
+    const box = row.querySelector(".msg-feedback")!;
+    expect(box.querySelector(".mf-note")!.textContent).toContain("not sent anywhere");
+    (box.querySelector(".mf-reason") as unknown as { value: string }).value = "  used the wrong column ";
+    box.querySelector(".outline-btn")!.onclick!();
+    expect(posts.at(-1)).toEqual({ key: posts[0]!.key, rating: "down", reason: "used the wrong column" });
+    expect(row.querySelector(".msg-feedback")).toBeNull();
+    // A 👍 instead closes the question; the rating is all it sends.
+    down.onclick!();
+    up.onclick!();
+    expect(row.querySelector(".msg-feedback")).toBeNull();
+    expect(posts.at(-1)).toEqual({ key: posts[0]!.key, rating: "up" });
+    expect(up.attrs["aria-pressed"]).toBe("true");
+    expect(down.attrs["aria-pressed"]).toBe("false");
+  });
 
   it("the first page, load-earlier and the live turn share one row implementation", () => {
     expect(transcript.renderStored).toBe(renderFirstPage);

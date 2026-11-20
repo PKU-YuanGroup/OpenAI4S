@@ -25,7 +25,15 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     "history.missing.sub": "This link points to a session that does not exist or has been deleted.",
     "history.missing.project": "Back to the project",
     "history.missing.home": "Back to Home",
-    "history.projectRef": "A file in the project folder: {0}"
+    "history.projectRef": "A file in the project folder: {0}",
+    "history.feedback.up": "Saved on this computer: liked 👍",
+    "history.feedback.down": "Saved on this computer: disliked 👎",
+    "history.feedback.cleared": "Feedback cleared",
+    "history.feedback.reasonLabel": "What went wrong? (optional)",
+    "history.feedback.reasonPlaceholder": "For example: it used the wrong column",
+    "history.feedback.reasonSave": "Save reason",
+    "history.feedback.reasonSaved": "Reason saved on this computer",
+    "history.feedback.where": "Ratings and reasons are kept with this session on this computer. They are not sent anywhere."
   },
   "zh": {
     "history.renderFailed": "历史暂时无法显示。",
@@ -50,7 +58,15 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     "history.missing.sub": "这个链接指向的会话不存在或已被删除。",
     "history.missing.project": "返回项目",
     "history.missing.home": "返回首页",
-    "history.projectRef": "项目文件夹中的文件：{0}"
+    "history.projectRef": "项目文件夹中的文件：{0}",
+    "history.feedback.up": "已保存在本机：赞 👍",
+    "history.feedback.down": "已保存在本机：踩 👎",
+    "history.feedback.cleared": "已取消反馈",
+    "history.feedback.reasonLabel": "哪里不对？（可选）",
+    "history.feedback.reasonPlaceholder": "例如：用错了数据列",
+    "history.feedback.reasonSave": "保存原因",
+    "history.feedback.reasonSaved": "原因已保存在本机",
+    "history.feedback.where": "评价与原因随本会话保存在这台电脑上，不会发送到任何地方。"
   }
 };
 

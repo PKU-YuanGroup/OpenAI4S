@@ -4999,8 +4999,10 @@ class Store:
         return self._memories.blocks(project_id)
 
     # --- feedback (per message) -----------------------------------------
-    def set_feedback(self, frame_id: str, key: str, rating: str | None) -> None:
-        self._settings.set_feedback(frame_id, key, rating)
+    def set_feedback(
+        self, frame_id: str, key: str, rating: str | None, reason: str | None = None
+    ) -> None:
+        self._settings.set_feedback(frame_id, key, rating, reason)
 
     def list_feedback(self, frame_id: str) -> dict:
         return self._settings.list_feedback(frame_id)

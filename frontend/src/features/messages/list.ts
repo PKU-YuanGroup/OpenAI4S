@@ -136,22 +136,53 @@ function feedbackBag(): Record<string, unknown> {
   return next;
 }
 
-function sendFeedback(key: string, rating: string | null): void {
+/**
+ * Store a rating (and a 👎's optional reason) with the session. It is kept in
+ * this daemon's database and nowhere else (M-72): the line says so instead of
+ * a bare "Recorded".
+ */
+function sendFeedback(key: string, rating: string | null, reason?: string): void {
   if (!currentId.value) return;
   const bag = feedbackBag();
   if (rating) bag[key] = rating;
   else delete bag[key];
   api("/frames/" + currentId.value + "/feedback", {
     method: "POST",
-    body: JSON.stringify({ key, rating }),
+    body: JSON.stringify(reason ? { key, rating, reason } : { key, rating }),
   }).catch(() => {});
   hint(
-    rating === "up"
-      ? t("toast.feedbackUp")
-      : rating === "down"
-        ? t("toast.feedbackDown")
-        : t("toast.feedbackCancelled"),
+    historyT(
+      reason
+        ? "history.feedback.reasonSaved"
+        : rating === "up"
+          ? "history.feedback.up"
+          : rating === "down"
+            ? "history.feedback.down"
+            : "history.feedback.cleared",
+    ),
   );
+}
+
+/** After a 👎: what went wrong, if the user wants to say (M-72). */
+function feedbackReasonBox(key: string, done: () => void): HTMLElement {
+  const box = el("div", "msg-feedback");
+  const label = el("label", "mf-label", historyT("history.feedback.reasonLabel"));
+  const area = el("textarea", "mf-reason") as HTMLTextAreaElement;
+  area.rows = 2;
+  area.maxLength = 2000;
+  area.placeholder = historyT("history.feedback.reasonPlaceholder");
+  label.appendChild(area);
+  box.appendChild(label);
+  const save = el("button", "outline-btn", historyT("history.feedback.reasonSave")) as HTMLButtonElement;
+  save.type = "button";
+  save.onclick = () => {
+    const reason = area.value.trim();
+    if (reason) sendFeedback(key, "down", reason);
+    done();
+  };
+  box.appendChild(save);
+  box.appendChild(el("div", "mf-note", historyT("history.feedback.where")));
+  return box;
 }
 
 /**
@@ -198,11 +229,17 @@ export function addMsgActions(wrap: HTMLElement, text: string): void {
     tdn.setAttribute("aria-pressed", String(tdn.classList.contains("on")));
   };
   pressed();
+  let reasonBox: HTMLElement | null = null;
+  const closeReason = (): void => {
+    reasonBox?.remove();
+    reasonBox = null;
+  };
   tup.onclick = () => {
     const on = !tup.classList.contains("on");
     tup.classList.toggle("on", on);
     tdn.classList.remove("on");
     pressed();
+    closeReason();
     sendFeedback(key, on ? "up" : null);
   };
   tdn.onclick = () => {
@@ -210,7 +247,12 @@ export function addMsgActions(wrap: HTMLElement, text: string): void {
     tdn.classList.toggle("on", on);
     tup.classList.remove("on");
     pressed();
+    closeReason();
     sendFeedback(key, on ? "down" : null);
+    if (on) {
+      reasonBox = feedbackReasonBox(key, closeReason);
+      row.parentNode?.insertBefore(reasonBox, row.nextSibling ?? null);
+    }
   };
   // M-71 / SYNC-26: no "Edit" on an answer. It poured the turn's raw Markdown
   // into the composer, overwriting the draft, with nothing to say why.
