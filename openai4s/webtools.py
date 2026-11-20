@@ -34,6 +34,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, BinaryIO, Callable, Iterator, Sequence
 
+from openai4s import tls_trust
+
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -333,7 +335,7 @@ def _no_redirect_opener() -> urllib.request.OpenerDirector:
     a test that patches `urllib.request.build_opener` -- which is exactly how
     `web_probe`'s own test drives this code.
     """
-    return urllib.request.build_opener(_NoRedirect)
+    return urllib.request.build_opener(_NoRedirect, tls_trust.https_handler())
 
 
 #: The 3xx codes a redirect-following client would act on. 304 is deliberately
@@ -413,6 +415,13 @@ def _open_http_response(
                 cur = urllib.parse.urljoin(cur, location)
                 continue
             raise
+        except urllib.error.URLError as error:
+            # "unable to get local issuer certificate" names neither the host
+            # nor a remedy; say both.
+            untrusted = tls_trust.untrusted_certificate(error, cur)
+            if untrusted is None:
+                raise
+            raise untrusted from error
         with response:
             yield (
                 response,
@@ -723,7 +732,7 @@ def web_probe(
             "status": 0,
             "location": "",
             "exists": False,
-            "error": str(error.reason),
+            "error": str(tls_trust.untrusted_certificate(error, url) or error.reason),
         }
     return {
         "url": url,
