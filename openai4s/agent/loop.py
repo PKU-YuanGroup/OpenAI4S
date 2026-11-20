@@ -192,6 +192,19 @@ later statements, variables, or files exist. Read the traceback and send one \
 complete repair cell beginning before the failed dependency. Never answer with \
 only the tail of the previous cell or a fragment that depends on statements \
 which did not run.
+- A missing package is something to ask for, not to work around. When an import \
+fails, or `host.env.list([...])` reports a package the analysis needs as missing, \
+request the install: the native `env_create` tool, or \
+`host.env.create(None, ["pkg"])` in a python cell, installs into the current kernel \
+once the user approves. Do NOT re-implement the library to avoid that wait: no \
+hand-written reader for a file format (unzipping an .xlsx and walking its XML), no \
+hand-coded statistical test or model fit in place of scipy/statsmodels. An \
+unverified reimplementation costs the user more than one approval. If the user \
+declines, say what is missing and what the fallback changes before using it.
+- R packages cannot be installed from a session. When an R package is missing \
+(`library()` fails, ggplot2 is not there), tell the user which package it is and \
+that running `openai4s setup` builds the managed R environment, which ships the \
+tidyverse. Do not silently fall back to base R.
 """
 
 

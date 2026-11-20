@@ -499,6 +499,56 @@ def test_resolve_env_falls_back_to_base(tmp_path, monkeypatch):
 # Rscript (r-mini, without survival) while PATH had a complete R.
 
 
+def test_the_base_description_lists_what_is_installed_instead_of_a_promise(tmp_path):
+    """`host.env.list` described the default kernel as "启动即预装
+    numpy/pandas/scipy/matplotlib/联网栈" on every install. The reviewed one
+    had no networking stack and no openpyxl; the line is now read off the
+    interpreter's own packages."""
+    root = _make_py_env(tmp_path, "daemon-venv", packages=("numpy", "openpyxl"))
+    base = E.Environment(
+        name="base", language="python", root=root, python=sys.executable, is_conda=False
+    )
+
+    assert base.description() == "内置默认内核：已安装 numpy, openpyxl"
+    for promised in ("scipy", "matplotlib", "联网栈", "预装"):
+        assert promised not in base.description()
+
+    bare = E.Environment(
+        name="base",
+        language="python",
+        root=_make_py_env(tmp_path, "bare-venv", packages=()),
+        python=sys.executable,
+        is_conda=False,
+    )
+    assert bare.description() == "内置默认内核：未检测到常用科学计算包"
+
+
+def test_the_prompt_asks_for_a_missing_package_instead_of_working_around_it():
+    """The reviewed model found no openpyxl, did not ask for it, and parsed the
+    .xlsx with zipfile + XML and hand-wrote the ANOVA "to avoid the install
+    wait". The Web prompt had told it to: fall back to the stdlib when a
+    package is missing, or pip-install through host.bash."""
+    from openai4s.agent.loop import SYSTEM_PROMPT
+
+    web = SYSTEM_PROMPT + gateway_mod._GATEWAY_PROMPT_EXTRA
+
+    assert "A missing package is something to ask for, not to work around." in web
+    assert "native `env_create` tool" in SYSTEM_PROMPT
+    assert 'host.env.create(None, ["pkg"])' in SYSTEM_PROMPT
+    assert "Do NOT re-implement the library to avoid that wait" in SYSTEM_PROMPT
+    assert "unzipping an .xlsx" in SYSTEM_PROMPT
+    assert "hand-coded statistical test" in SYSTEM_PROMPT
+    # R has no installer (owner decision): name the package, point at setup.
+    assert "R packages cannot be installed from a session." in SYSTEM_PROMPT
+    assert "`openai4s setup` builds the managed R environment" in SYSTEM_PROMPT
+    assert "Do not silently fall back to base R." in SYSTEM_PROMPT
+    # What the Web half used to say instead.
+    assert "pip install --break-system-packages" not in web
+    assert "matplotlib fallback" not in web
+    assert "request the install with `host.env.create(None, [pkg])`" in web
+    assert "do not substitute your own parser or statistic" in web
+
+
 def test_envs_in_the_users_conda_root_are_local_but_product_names_are_not(
     tmp_path, monkeypatch
 ):

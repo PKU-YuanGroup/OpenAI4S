@@ -46,6 +46,7 @@ _ALWAYS_HIDE: set[str] = set()
 _HIGHLIGHT = [
     "numpy",
     "pandas",
+    "openpyxl",
     "scipy",
     "matplotlib",
     "seaborn",
@@ -77,8 +78,12 @@ _KNOWN_DESC = {
     "struct": "结构生物学：biotite / biotraj，mmCIF/PDB 解析、坐标与接触分析",
     "phylo": "系统发育：真实的 MAFFT / IQ-TREE / trimAl / FastTree + biopython",
     "r": "R 统计与绘图：tidyverse / ggplot2（用 ```r 单元格在持久 R 内核中运行）",
-    "base": "内置默认内核：启动即预装 numpy/pandas/scipy/matplotlib/联网栈",
 }
+# `base` has no curated line. It is whatever the daemon's own interpreter has,
+# and the line it used to carry ("启动即预装 numpy/pandas/scipy/matplotlib/联网栈")
+# promised a networking stack no install ever had: a model that read it went
+# looking for openpyxl, found the promise false, and stopped trusting the list.
+_BASE_DESC = "内置默认内核"
 
 
 @dataclass
@@ -138,6 +143,11 @@ class Environment:
     def description(self) -> str:
         if self.name in _KNOWN_DESC:
             return _KNOWN_DESC[self.name]
+        if self.name == "base":
+            installed = self.notable(8)
+            if installed:
+                return f"{_BASE_DESC}：已安装 {', '.join(installed)}"
+            return f"{_BASE_DESC}：未检测到常用科学计算包"
         note = self.notable(6)
         if note:
             return f"{self.language} 环境：{', '.join(note)}"
