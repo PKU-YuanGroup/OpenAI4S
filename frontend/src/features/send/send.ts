@@ -59,6 +59,7 @@ import {
 import { effProject } from "../customize/host";
 import { composerChoiceMark, composerModelChoicePending, modelT, noteAdmittedModelBinding, noteSessionModelBinding } from "../customize/models";
 import { $, el } from "../messages/dom";
+import { continueMarker, isContinuePrompt } from "../messages/failure";
 import { down } from "../messages/scroll";
 import { runtimeSummary } from "../notebook/kernel";
 import { api, apiErrorText } from "../sessions/api";
@@ -419,6 +420,12 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   // As a reload shows it: a typed `@name#v-<id>` reads as `@name`.
   b.textContent = stripRefVersions(text) || t("send.imageAnnotationFallback");
   w.appendChild(b);
+  if (isContinuePrompt(text)) {
+    // Sent by the Continue button: the platform's line, not the user's words.
+    w.classList.add("continue-seed");
+    b.remove();
+    w.appendChild(continueMarker());
+  }
   // The same chips a reload draws from the stored `artifact_refs`.
   if (sentMentions.length) {
     renderMessageRefChips(

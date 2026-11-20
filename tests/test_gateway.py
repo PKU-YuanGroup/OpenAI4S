@@ -7385,6 +7385,79 @@ def test_no_progress_stop_is_a_failed_turn_with_a_stable_code(monkeypatch, tmp_p
 
 
 @pytest.mark.stubbed_backend
+def test_a_no_progress_stop_names_what_repeated_and_shows_it_as_a_step(
+    monkeypatch, tmp_path
+):
+    """TURN-6. The reviewed session's turn ended on three `query` no-ops with
+    "已停止重复动作。已记录重复原因…": no tool, no count, and no step card for any
+    of the calls, because `query` draws none. A real turn, a real circuit, a
+    model that sends the same call until it is stopped."""
+    from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
+
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=12,
+    )
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    store = runner.store
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    sent = []
+
+    def same_call(messages, cfg, on_delta=None, **kwargs):
+        index = len(sent)
+        sent.append(index)
+        arguments = {"sql": "SELECT 1"}
+        call = {
+            "id": f"loop-{index}",
+            "wire_id": f"loop-{index}",
+            "name": "query",
+            "arguments": arguments,
+            "raw_arguments": json.dumps(arguments),
+            "ordinal": 0,
+        }
+        return {"content": "", "tool_calls": [call], "usage": {}}
+
+    monkeypatch.setattr(gateway_mod, "chat", same_call)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+
+    result = runner.run_message(fid, "default", "解析结构并统计每条链")
+
+    assert result["status"] == "failed"
+    assert result.get("code") == NO_PROGRESS_STOP_REASON
+    assert len(sent) == 5, "a reminder on the third identical call, a stop on the fifth"
+    notice = store.list_messages(fid)[-1]["content"]
+    assert (
+        "已停止重复动作：模型连续 5 次发出完全相同的 `query` 调用，结果没有变化。"
+        in notice
+    )
+    assert "已记录重复原因" not in notice
+
+    steps = [e for e in hub.events if e.get("type") == "step"]
+    updates = [e for e in hub.events if e.get("type") == "step_update"]
+    (card,) = [e for e in steps if e.get("kind") == "loop"]
+    assert card["title"] == "重复调用 query × 5"
+    assert card["input"] == {"tools": ["query"], "count": 5, "reason": "same_action"}
+    (closed,) = [e for e in updates if e.get("step_id") == card["step_id"]]
+    assert (closed["status"], closed["summary"]) == ("warning", "参数相同，结果相同")
+    # The card is in the conversation before the sentence that refers to it,
+    # and it is stored, so a reopened session shows the same thing.
+    notice_at = next(
+        index
+        for index, event in enumerate(hub.events)
+        if event.get("type") == "text_chunk"
+        and "已停止重复动作" in event.get("chunk", "")
+    )
+    assert hub.events.index(card) < notice_at
+    stored = [step for step in store.list_steps(fid) if step["kind"] == "loop"]
+    assert [(step["title"], step["status"]) for step in stored] == [
+        ("重复调用 query × 5", "warning")
+    ]
+    runner.close()
+
+
+@pytest.mark.stubbed_backend
 def test_a_budget_stop_keeps_the_partial_prose_it_interrupted(monkeypatch, tmp_path):
     """A budget refusal cuts the reply the same way an upstream interruption does.
 

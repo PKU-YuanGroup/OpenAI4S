@@ -1182,3 +1182,100 @@ def test_an_accepted_finalize_never_moves_the_circuit_live_or_rebuilt(tmp_path):
         tmp_path, ["valid"] * 4, name="accepted"
     )
     assert live == restored == ProgressCircuit()
+
+
+def _stop_detail(replies, executor=None, *, max_turns=20):
+    from openai4s.agent.recovery import progress_stop_detail
+
+    state = RunState([{"role": "user", "content": "look around"}], max_turns=max_turns)
+    engine, _, _ = _engine(replies, executor, max_turns=max_turns)
+    result = engine.run(state)
+    names = [call.name for call in result.last_reply.tool_calls]
+    return progress_stop_detail(
+        result.progress_reason, circuit_from_state(state), names
+    )
+
+
+def test_a_stop_reports_which_call_repeated_and_how_often():
+    from openai4s.agent.recovery import no_progress_notice, no_progress_step
+
+    detail = _stop_detail(
+        _native_replies(8, name="query", arguments={"sql": "SELECT 1"})
+    )
+
+    assert detail == {
+        "reason": PROGRESS_REASON_SAME_ACTION,
+        "count": 5,
+        "tools": ["query"],
+        "target": "",
+    }
+    english = no_progress_notice(detail, "en")
+    assert (
+        "Stopped repeating actions: the model sent the identical `query` call 5 "
+        "times in a row and its result never changed." in english
+    )
+    assert no_progress_step(detail, "en") == {
+        "kind": "loop",
+        "title": "Repeated query × 5",
+        "input": {"tools": ["query"], "count": 5, "reason": "same_action"},
+        "summary": "same arguments, same result",
+    }
+
+
+def test_a_same_target_stop_names_the_file_but_not_a_spilled_output():
+    from openai4s.agent.recovery import no_progress_notice
+
+    detail = _stop_detail(_reads(12))
+    assert detail == {
+        "reason": PROGRESS_REASON_SAME_TARGET,
+        "count": 8,
+        "tools": ["read_text_file"],
+        "target": "notes/protocol.txt",
+    }
+    assert (
+        "模型对 `notes/protocol.txt` 调用了 8 次 `read_text_file`"
+        in no_progress_notice(detail, "zh")
+    )
+
+    spilled = _stop_detail(_reads(12, path=".openai4s/context/" + "ab" * 32 + ".txt"))
+    notice = no_progress_notice(spilled, "zh")
+    assert "模型对一份已存档的工具输出调用了 8 次 `read_text_file`" in notice
+    assert ".openai4s" not in notice
+
+
+@pytest.mark.parametrize("language", ["en", "zh"])
+def test_a_stop_without_a_recorded_cause_keeps_the_plain_notice(language):
+    from openai4s.agent.recovery import no_progress_notice, no_progress_step
+
+    notice = no_progress_notice(None, language)
+    assert ("Stopped repeating actions." in notice) or ("已停止重复动作。" in notice)
+    assert no_progress_step(None, language) is None
+    # A stop with no tool to point at (empty replies) says so and draws no card.
+    empty = {
+        "reason": PROGRESS_REASON_EMPTY_REPLY,
+        "count": 2,
+        "tools": [],
+        "target": "",
+    }
+    assert ("empty reply 2 times" in no_progress_notice(empty, language)) or (
+        "连续 2 次返回空回复" in no_progress_notice(empty, language)
+    )
+    assert no_progress_step(empty, language) is None
+
+
+def test_a_stop_detail_carries_no_arguments_or_unsafe_names():
+    from openai4s.agent.recovery import progress_stop_detail
+
+    circuit = ProgressCircuit()
+    circuit.trip_reason = PROGRESS_REASON_TOOL_ERROR
+    circuit.error_streak = 2
+    detail = progress_stop_detail(
+        PROGRESS_REASON_TOOL_ERROR, circuit, ["read_text_file", "x`; rm -rf /", 7]
+    )
+    assert detail == {
+        "reason": PROGRESS_REASON_TOOL_ERROR,
+        "count": 2,
+        "tools": ["read_text_file"],
+        "target": "",
+    }
+    assert progress_stop_detail(None, circuit, ["query"]) is None

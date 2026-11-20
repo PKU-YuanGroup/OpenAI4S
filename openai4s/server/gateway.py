@@ -58,7 +58,12 @@ from openai4s.agent.ledger import (
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
-from openai4s.agent.recovery import recovery_message
+from openai4s.agent.recovery import (
+    no_progress_notice,
+    no_progress_step,
+    progress_stop_detail,
+    recovery_message,
+)
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
 from openai4s.agent.task_modes import TaskMode, resolve_task_mode, task_mode_prompt
 from openai4s.config import (
@@ -2161,6 +2166,8 @@ class SessionState:
         self.task_mode_binding: bool = False
         self.last_model_prose: str = ""
         self.last_engine_completion = None
+        # What the no-progress circuit stopped this turn for, if it did.
+        self.last_progress_stop: dict | None = None
         # Set only around one AgentEngine CodeCell dispatch so the compatible
         # ``_execute_and_log`` call shape need not expose ledger internals.
         self.active_action_group_id: str | None = None
@@ -11255,6 +11262,7 @@ class SessionRunner:
             try:
                 st.dispatcher.last_output = None
                 st.last_engine_completion = None
+                st.last_progress_stop = None
                 st.active_action_ledger = action_ledger
                 try:
                     started_auto_run = self.scientific_review.begin_turn_run(
@@ -11324,15 +11332,25 @@ class SessionRunner:
                     # disagrees with the frame's status.
                     status = "failed"
                     failure_meta["code"] = NO_PROGRESS_STOP_REASON
-                    err_text = (
-                        "已停止重复动作。已记录重复原因；继续时会要求模型利用已有结果并换一种方法。也可编辑提示说明缺少的条件。"
-                        if response_language(user_text) == "zh"
-                        else (
-                            "Stopped repeating actions. "
-                            "The repetition context is recorded. Continue to ask the model "
-                            "to use existing results and choose a different approach, or edit the prompt."
+                    # The notice names what repeated and how often, and the
+                    # repeated call gets a step card: most of the tools a
+                    # model loops on (`query` did) draw none of their own.
+                    stop_language = response_language(user_text)
+                    err_text = no_progress_notice(st.last_progress_stop, stop_language)
+                    repeated = no_progress_step(st.last_progress_stop, stop_language)
+                    step_sink = getattr(st.dispatcher, "on_step", None)
+                    if repeated is not None and callable(step_sink):
+                        step_id = "s-" + uuid.uuid4().hex[:12]
+                        step_sink({"phase": "begin", "step_id": step_id, **repeated})
+                        step_sink(
+                            {
+                                "phase": "end",
+                                "step_id": step_id,
+                                "status": "warning",
+                                "output": repeated["input"],
+                                "summary": repeated["summary"],
+                            }
                         )
-                    )
                     emit(
                         {
                             "type": "text_chunk",
@@ -12677,6 +12695,7 @@ class SessionRunner:
         from openai4s.agent.progress_circuit import (
             ProgressCircuit,
             attach_progress_circuit,
+            circuit_from_state,
         )
 
         try:
@@ -12706,6 +12725,15 @@ class SessionRunner:
             raise
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
+        st.last_progress_stop = progress_stop_detail(
+            result.progress_reason,
+            circuit_from_state(state),
+            (
+                (call.name for call in result.last_reply.tool_calls)
+                if result.last_reply is not None
+                else ()
+            ),
+        )
         # A `no_progress` stop is projected by `run_message`, next to
         # `max_turns`: it is a failed turn with a stable code, not a notice
         # appended to a turn that then records itself as completed.
