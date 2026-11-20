@@ -471,21 +471,52 @@ Host-RPC limitations.
 
 ## CLI
 
+Every subcommand, in the order a new installation meets them. `openai4s
+<command> --help` has the details. In a checkout set up by `./setup.sh` the
+command lives in `.venv/bin`, which is not on `PATH`: run it as `uv run
+openai4s …` from that folder, or `source .venv/bin/activate` first.
+
 ```bash
+# get started
 openai4s init      # guided first-run model configuration (headless-friendly)
+openai4s doctor    # can this install do the work? model, runtime, sandbox, disk,
+                   # connectors; no daemon needed; exit 0 ok / 1 degraded / 2 failed.
+                   # One small request verifies the API key and model; --offline skips it
 openai4s serve     # daemon + web UI (foreground; --detached to background,
                    # plus --host/--port/--no-browser; the detached parent waits
                    # up to 60s for /health, OPENAI4S_DETACHED_READY_TIMEOUT overrides)
-openai4s status    # is it up? (plain URL, never the access token)
 openai4s url       # the sign-in URL; it carries the access token, so keep it out of logs
+openai4s status    # is it up? (plain URL, never the access token; --json for scripts)
 openai4s stop      # stop the daemon; waits up to --timeout (default 30s), --force to SIGKILL
+
+# work without the web UI
 openai4s run "…"   # one Code-as-Action task in-process, no daemon
-openai4s setup --profile standard          # build Python + R
+openai4s cluster submit|list|cancel|logs|profiles   # batch jobs through the daemon
+openai4s share create|update|list|revoke|enable|disable|status|import
+                   # read-only session shares through a relay (docs/webshare.md)
+openai4s relay serve|gen-token                       # the public share relay, on a VPS
+
+# environments
+openai4s setup --profile standard          # build the Python + R conda envs in place
 openai4s setup --profile standard --update # sync Python + R, no pruning
 openai4s setup                             # build all four environments
+openai4s env plan|apply|list|rollback|recover
+                   # the same envs/*.yml specs as verified generations under the
+                   # data dir, with rollback; the agent finds envs made either way
 openai4s jupyter describe               # inspect optional bridge availability
 openai4s jupyter export ./kernel-specs  # pure-stdlib KernelSpec export
 openai4s jupyter install                # install user KernelSpecs
+
+# support and evidence
+openai4s diagnostics -o bundle.zip   # redacted support bundle; its report.json has
+                                     # versions, postures, doctor's verdicts, recent runs
+openai4s verify-package <file>.openai4s-session.zip   # an exported session's hashes
+openai4s inspect-package <file>.openai4s-session.zip  # how that session's run behaved
+openai4s benchmark                   # the workflow benchmark against the real subsystems
+
+# team server and lab
+openai4s user add|list|disable|reset-password   # team-mode accounts
+openai4s lab …     # the simulated OpenMHS lab (`openai4s lab --help`)
 ```
 
 `openai4s run` exits with a status a script can branch on:

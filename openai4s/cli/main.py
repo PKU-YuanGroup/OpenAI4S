@@ -2007,15 +2007,27 @@ def cmd_jupyter_describe(args) -> int:
     if args.json:
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0
-    bridge = "available" if status["bridge_available"] else "not installed"
+    bridge = (
+        "available"
+        if status["bridge_available"]
+        else "not installed (ipykernel is missing in this Python)"
+    )
+    # Said in the user's terms: "host RPC: unavailable" and "Jupyter wire
+    # adapter -> hardened OpenAI4S JSON-line worker" described the plumbing.
     print(f"Jupyter bridge: {bridge}")
-    print("  scope      : standalone (not a Web-session attachment)")
-    print("  host RPC   : unavailable")
-    print("  protocol   : Jupyter wire adapter -> hardened OpenAI4S JSON-line worker")
+    print("  what it is : OpenAI4S's Python and R kernels, usable from Jupyter")
+    print(
+        "  sessions   : standalone; a Jupyter kernel does not see a workbench "
+        "session's variables"
+    )
+    print(
+        "  host.*     : not available (host.llm, host.delegate, "
+        "host.submit_output, ...); plain Python and R code runs"
+    )
     for kernel in status["kernels"]:
         print(f"  kernelspec : {kernel['name']} ({kernel['language']})")
     if not status["bridge_available"]:
-        print("  install    : python -m pip install 'ipykernel>=7,<8'")
+        print(f"  install    : {_ipykernel_installer()} 'ipykernel>=7,<8'")
     return 0
 
 
@@ -2028,20 +2040,21 @@ def _print_kernelspec_writes(written: list[dict], action: str) -> None:
     # Without ipykernel in this interpreter they appear in JupyterLab and fail
     # the moment one is started, and "installed …" said nothing about it.
     if written and not adapter_status()["bridge_available"]:
-        import importlib.util
-
-        # A uv-made .venv (./setup.sh) has no pip.
-        installer = (
-            f"{sys.executable} -m pip install"
-            if importlib.util.find_spec("pip") is not None
-            else f"uv pip install --python {sys.executable}"
-        )
         print(
             "warning: ipykernel is not installed in this Python, so these "
             "kernels will appear in Jupyter but fail to start. Install it "
-            f"with: {installer} 'ipykernel>=7,<8'",
+            f"with: {_ipykernel_installer()} 'ipykernel>=7,<8'",
             file=sys.stderr,
         )
+
+
+def _ipykernel_installer() -> str:
+    """The install command for this interpreter; a uv-made .venv has no pip."""
+    import importlib.util
+
+    if importlib.util.find_spec("pip") is not None:
+        return f"{sys.executable} -m pip install"
+    return f"uv pip install --python {sys.executable}"
 
 
 def cmd_jupyter_export(args) -> int:
@@ -3045,7 +3058,14 @@ def cmd_user(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="openai4s", description="openai4s CLI")
+    p = argparse.ArgumentParser(
+        prog="openai4s",
+        description="OpenAI4S command line. A new installation goes: `openai4s "
+        "init` (choose the model) -> `openai4s doctor` (check the install) -> "
+        "`openai4s serve` or ./start.sh (the web UI) -> `openai4s url` (the "
+        "sign-in link). In a checkout set up by ./setup.sh, run it as `uv run "
+        "openai4s ...`.",
+    )
     p.add_argument(
         "-V",
         "--version",

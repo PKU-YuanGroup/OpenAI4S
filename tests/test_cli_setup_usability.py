@@ -866,3 +866,51 @@ def test_a_package_command_recognises_a_diagnostics_bundle(
     out = capsys.readouterr().out
     assert "is a diagnostics bundle from `openai4s diagnostics`" in out
     assert "read its report.json" in out
+
+
+# --------------------------------------------------------------------------
+# Help and documentation a scientist can read
+# --------------------------------------------------------------------------
+
+
+def _subcommands() -> list[str]:
+    import argparse
+
+    parser = _cli().build_parser()
+    (action,) = [
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    ]
+    return list(action.choices)
+
+
+def test_the_configuration_doc_lists_every_subcommand():
+    """CLI-35. docs/configuration.md's CLI section listed 8 of 19 subcommands;
+    doctor, diagnostics, env, share, cluster, user, lab, benchmark,
+    verify-package, inspect-package and relay were only in --help."""
+    text = (_REPO / "docs" / "configuration.md").read_text(encoding="utf-8")
+    section = text.split("\n## CLI\n", 1)[1].split("\n## ", 1)[0]
+
+    missing = [name for name in _subcommands() if f"openai4s {name}" not in section]
+
+    assert missing == []
+
+
+def test_top_level_help_says_where_a_new_installation_starts(capsys):
+    """CLI-35. `openai4s --help` listed the subcommands in definition order
+    (serve, status, doctor, ..., run, init, setup) with no word on which to
+    run first."""
+    text = _help_text([], capsys)
+
+    assert "A new installation goes: `openai4s init`" in text
+    assert "`openai4s doctor`" in text and "`openai4s url`" in text
+
+
+def test_jupyter_describe_speaks_in_the_users_terms(capsys):
+    """CLI-35. `jupyter describe` said `host RPC : unavailable` and
+    `protocol : Jupyter wire adapter -> hardened OpenAI4S JSON-line worker`."""
+    assert _cli().main(["jupyter", "describe"]) == 0
+
+    out = capsys.readouterr().out
+    assert "host RPC" not in out and "JSON-line worker" not in out
+    assert "host.llm, host.delegate" in out
+    assert "does not see a workbench session's variables" in out

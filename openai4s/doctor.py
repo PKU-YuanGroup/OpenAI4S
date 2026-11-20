@@ -548,7 +548,12 @@ def _runtime(cfg: Any) -> Check:
             "the Python and R environments.",
             facts,
         )
-    detail = f"{len(prebuilt)} prebuilt environment(s) available"
+    # Not "prebuilt": these are every conda env found, the user's own local
+    # environments among them, not only what `openai4s setup` built.
+    detail = (
+        f"{len(prebuilt)} environment(s) found besides the built-in one "
+        "(local conda envs and any OpenAI4S built)"
+    )
     if not r_path:
         return Check(
             "runtime",
