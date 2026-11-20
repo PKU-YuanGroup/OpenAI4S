@@ -1560,6 +1560,7 @@ def test_managed_product_config_routes_project_only_local_credential_state(tmp_p
             {
                 "key_configured": False,
                 "ark_key_reused": False,
+                "model_key_available": False,
                 "connector_id": datapro.CONNECTOR_ID,
                 "connector_enabled": True,
                 "skill_name": datapro.SKILL_NAME,
@@ -1573,6 +1574,7 @@ def test_managed_product_config_routes_project_only_local_credential_state(tmp_p
             {
                 "key_configured": False,
                 "ark_key_reused": False,
+                "model_key_available": False,
                 "provider": "doubao-search",
                 "primary": True,
             },
@@ -1586,6 +1588,7 @@ def test_managed_product_config_routes_project_only_local_credential_state(tmp_p
             "ok": True,
             "key_configured": True,
             "ark_key_reused": False,
+            "model_key_available": False,
             "connector_id": datapro.CONNECTOR_ID,
             "connector_enabled": True,
             "skill_name": datapro.SKILL_NAME,
@@ -1600,6 +1603,7 @@ def test_managed_product_config_routes_project_only_local_credential_state(tmp_p
             {
                 "key_configured": True,
                 "ark_key_reused": False,
+                "model_key_available": False,
                 "provider": "doubao-search",
                 "primary": True,
             },
@@ -1612,6 +1616,7 @@ def test_managed_product_config_routes_project_only_local_credential_state(tmp_p
                 "ok": True,
                 "key_configured": True,
                 "ark_key_reused": False,
+                "model_key_available": False,
                 "provider": "doubao-search",
                 "primary": True,
             },

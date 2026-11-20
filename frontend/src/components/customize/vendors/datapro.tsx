@@ -15,7 +15,24 @@ import {
   openViewer,
 } from "../../../features/customize/host";
 import { useOptimisticToggle } from "../hooks";
-import { useVendorKey } from "./use-vendor-key";
+import { useVendorKey, vendorKeyT } from "./use-vendor-key";
+import { overrideLookup } from "../../../i18n/copy";
+
+/**
+ * M-6: the description promised "an existing Ark API Key is reused
+ * automatically" right above "Agent Plan Key is not configured" when the model
+ * ran on a key from the environment, which is not shared on its own.
+ */
+const dataproT = overrideLookup({
+  zh: {
+    "cust.datapro.desc":
+      "保存 Agent Plan Key 后直接调用 dataPro_search。「模型」页里配置的方舟 Agent Plan 模型会自动共用它的 Key；只通过环境变量提供给模型的 Key 不会自动共用。",
+  },
+  en: {
+    "cust.datapro.desc":
+      "Save one Agent Plan Key and call dataPro_search directly. An Ark Agent Plan model set up under Models shares its key automatically; a model key given only through environment variables is not shared on its own.",
+  },
+});
 
 const connectorPath = `/connectors/${encodeURIComponent(DATAPRO_CONNECTOR_ID)}/enabled`;
 
@@ -107,7 +124,7 @@ export function DataProCard({
       <div class="datapro-head">
         <div>
           <div class="datapro-title">{t("cust.datapro.title")}</div>
-          <div class="datapro-desc">{t("cust.datapro.desc")}</div>
+          <div class="datapro-desc">{dataproT("cust.datapro.desc")}</div>
         </div>
         <button
           type="button"
@@ -189,6 +206,19 @@ export function DataProCard({
           {vendorKey.keyState}
         </div>
       </div>
+      {vendorKey.missing && vendorKey.modelKeyAvailable ? (
+        <div class="datapro-field" data-vendor-model-key="">
+          <div class="ds">{vendorKeyT("vendor.modelKeyHint")}</div>
+          <button
+            type="button"
+            class="outline-btn small"
+            disabled={vendorKey.savingKey}
+            onClick={() => vendorKey.useModelKey()}
+          >
+            {vendorKeyT("vendor.useModelKey")}
+          </button>
+        </div>
+      ) : null}
       <div class="datapro-field">
         <label class="skill-lbl">{t("cust.datapro.queryLabel")}</label>
         <textarea
