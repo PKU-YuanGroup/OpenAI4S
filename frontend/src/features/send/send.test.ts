@@ -111,6 +111,20 @@ describe("send()", () => {
     expect(nodes.composer!.value).toBe("half a thought about the next step");
   });
 
+  it("Continue's canned text is sent as the message but shown as a platform line (TURN-6)", async () => {
+    const seeded = (row: FakeEl) =>
+      (row.children as FakeEl[]).some((c) => (c.dataset as Record<string, string>).continueSeed === "1");
+    await send("Continue with the approved tool call.");
+    expect(seeded(nodes.messages!.children[0] as FakeEl)).toBe(false);
+
+    const canned =
+      "Continue from the completed work. Follow the stopped-turn recovery guidance, choose a different approach if the last attempt repeated itself, and finish only the remaining work.";
+    await send(canned);
+    // The model still gets the instruction; only the bubble is not the user's.
+    expect((posted()[1]!.input_data as { request?: string }).request).toBe(canned);
+    expect(seeded(nodes.messages!.children[1] as FakeEl)).toBe(true);
+  });
+
   it("the composer's own text is cleared once it is sent", async () => {
     nodes.composer!.value = "  plot the growth curve \n";
     await send(nodes.composer!.value);

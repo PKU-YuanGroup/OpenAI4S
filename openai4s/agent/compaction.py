@@ -42,6 +42,16 @@ _SUMMARY_SYSTEM = SUMMARY_FORK
 # public helper without adding a Config field (and thus without breaking old
 # Config-like test doubles).
 DEFAULT_LARGE_OUTPUT_CHARS = 16_384
+# A Skill document is not an output to preview: it is the recipe the next
+# steps follow, and the Skill tools already bound it at 50,000 characters so
+# that it arrives whole. Under the threshold above, `figure-style/SKILL.md`
+# (16,632 chars, 248 over) was replaced by a preview and read back through
+# `read_text_file` in five model calls; 369 of the 612 bundled documents are
+# over it, the largest 42,452. A Skill tool's result is externalized only
+# past this cap, which a test holds above both the tools' own limit and every
+# bundled document.
+SKILL_DOCUMENT_TOOLS = frozenset({"load_skill", "read_skill_file"})
+SKILL_DOCUMENT_MAX_CHARS = 56_000
 DEFAULT_PREVIEW_CHARS = 768
 IMAGE_TOKEN_ESTIMATE = 1_024
 _SUMMARY_TOOL_ARG_CHARS = 2_000
@@ -1052,7 +1062,13 @@ def externalize_large_outputs(
         if content is None or not _large_output_candidate(messages, index):
             continue
         original_chars = _content_chars(content)
-        if original_chars <= threshold_chars:
+        limit = threshold_chars
+        if (
+            message.get("role") == "tool"
+            and message.get("name") in SKILL_DOCUMENT_TOOLS
+        ):
+            limit = max(threshold_chars, SKILL_DOCUMENT_MAX_CHARS)
+        if original_chars <= limit:
             continue
         digest, payload = _content_blob_payload(content, message, metadata)
         preview = _preview(content, preview_chars)

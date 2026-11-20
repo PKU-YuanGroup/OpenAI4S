@@ -35,7 +35,7 @@ import { grow } from "../sessions/dom";
 import { iconEl } from "../sessions/icon";
 import { historyT } from "./copy";
 import { el, messagesHost } from "./dom";
-import { failureMeta } from "./failure";
+import { continueMarker, failureMeta, isContinuePrompt } from "./failure";
 import { embedArtifactFigures } from "./figures";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
@@ -360,6 +360,16 @@ export function renderStored(
     // A plan's execution seed is the server's instruction, not the user's message.
     const marker = el("div", "msg plan-seed");
     marker.appendChild(planSeedMarker(seed));
+    marker.dataset.ts = String(new Date(String(m.created_at || "")).getTime() || 0);
+    (target || messagesHost())?.appendChild(marker);
+    return marker;
+  }
+  if (m.role === "user" && isContinuePrompt(text)) {
+    // Continue's canned instruction is the platform's line, not the user's
+    // words. Still a user row, so the live event finds and adopts it.
+    const marker = el("div", "msg user continue-seed");
+    rememberCandidateIdentity(marker, m);
+    marker.appendChild(continueMarker());
     marker.dataset.ts = String(new Date(String(m.created_at || "")).getTime() || 0);
     (target || messagesHost())?.appendChild(marker);
     return marker;

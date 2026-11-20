@@ -625,7 +625,11 @@ def test_max_turns_stop(monkeypatch):
 
 
 def test_repeated_native_tool_trips_no_progress(monkeypatch, tmp_path):
-    """Same native tool+args three times must stop as no_progress, not completed."""
+    """An identical native call that keeps coming stops as no_progress, not completed.
+
+    The third identical result carries the circuit's reminder; the fifth ends
+    the turn.
+    """
 
     provider_calls = []
 
@@ -664,10 +668,20 @@ def test_repeated_native_tool_trips_no_progress(monkeypatch, tmp_path):
 
     assert result["stop_reason"] == "no_progress"
     assert result["submitted_output"] is None
-    assert len(provider_calls) == 3
+    assert len(provider_calls) == 5
     groups = agent.dispatcher.store.list_action_groups(agent.frame_id)
     kinds = [group["kind"] for group in groups]
-    assert kinds.count("native_tools") == 3
+    assert kinds.count("native_tools") == 5
+    recorded = [
+        event["result"]["content"]
+        for group in groups
+        if group["kind"] == "native_tools"
+        for event in group["events"]
+        if event["type"] == "result"
+    ]
+    assert [
+        "identical call number 3 in a row to `list_dir`" in text for text in recorded
+    ] == [False, False, True, False, False]
     assert kinds[-1] == "terminal"
     terminal = groups[-1]["events"][0]
     assert terminal["type"] == "failed"

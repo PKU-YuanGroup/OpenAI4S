@@ -147,9 +147,11 @@ def kernel_constraints_note(
         "$HOME). "
         + ("The kernel cannot write there, and " if sandboxed else "")
         + "other sessions run in the same environments. If a package is "
-        'missing, call host.env.list(["pkg"]) to find an environment that has '
-        'it and switch with host.env.use("<name>"), or ask for one with '
-        "env_setup / host.env.create (the user approves each install)."
+        'missing, call host.env.list(["pkg"]): switch to the built-in '
+        'environment it recommends with host.env.use("<name>"), or request the '
+        "install with env_setup / host.env.create (the user approves each "
+        "install). An environment listed with builtin=false is the user's own: "
+        "switch into it only if the user named it."
     )
     files = (
         "- Files: Cells can write only the session workspace (the current "

@@ -19,6 +19,7 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     continue: "Continue",
     draft: "Send or clear the draft in the composer first; Continue sends its own message.",
     prompt: "Continue from the completed work. Follow the stopped-turn recovery guidance, choose a different approach if the last attempt repeated itself, and finish only the remaining work.",
+    continued: "Continued · the platform asked the model to build on the recorded results and finish only what is left",
   },
   zh: {
     llm_stream_timeout: "上游长时间未发送数据，流式响应已超时。已完成的工作已保留，可继续处理未完成部分。",
@@ -29,8 +30,30 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     continue: "继续",
     draft: "请先发送或清空输入框里的草稿；“继续”会发送它自己的消息。",
     prompt: "请基于已完成的工作继续，遵循中断恢复提示；如果上次陷入重复，请换一种方法，只处理尚未完成的部分。",
+    continued: "已继续 · 平台已要求模型利用已有结果，只处理尚未完成的部分",
   },
 };
+
+/**
+ * Whether a user-role row is the text Continue sends. The turn needs a
+ * message to start from, so the button sends one, but the user pressed a
+ * button and did not write it: shown as their bubble it read as something
+ * they had said.
+ */
+export function isContinuePrompt(text: unknown): boolean {
+  const value = String(text ?? "").trim();
+  return value !== "" && (value === COPY.en.prompt || value === COPY.zh.prompt);
+}
+
+/** The one muted platform line that stands in for that bubble, live and on reopen. */
+export function continueMarker(): HTMLElement {
+  const box = el("div", "msg-plan-seed msg-continue-seed");
+  box.dataset.continueSeed = "1";
+  // What was actually sent stays one hover away.
+  box.title = COPY[LANG].prompt || COPY.en.prompt!;
+  box.appendChild(el("span", "lbl", COPY[LANG].continued || COPY.en.continued!));
+  return box;
+}
 
 export function canContinueFailure(code: unknown): boolean {
   // The two local-limit codes sit here for the same reason as the upstream

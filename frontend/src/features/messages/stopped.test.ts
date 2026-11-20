@@ -254,6 +254,34 @@ describe("stopped turn marker", () => {
     },
   );
 
+  it("shows the text Continue sends as a platform line, not as the user's bubble", async () => {
+    // TURN-6: pressing Continue put "请基于已完成的工作继续，遵循中断恢复提示…"
+    // into the conversation as a user bubble, as if the user had written it.
+    vi.stubGlobal("Node", FakeEl);
+    const sent = {
+      zh: "请基于已完成的工作继续，遵循中断恢复提示；如果上次陷入重复，请换一种方法，只处理尚未完成的部分。",
+      en: "Continue from the completed work. Follow the stopped-turn recovery guidance, choose a different approach if the last attempt repeated itself, and finish only the remaining work.",
+    };
+    for (const lang of ["zh", "en"] as const) {
+      await setLang(lang);
+      // Whichever language it was sent in, a reopened row is recognised.
+      for (const content of [sent.zh, sent.en]) {
+        const row = renderStored({ role: "user", content, message_id: "m-" + lang }) as unknown as FakeEl;
+        // Still a user row: the live `user_message` event adopts it by that.
+        expect(row.classList.contains("user")).toBe(true);
+        expect(row.classList.contains("continue-seed")).toBe(true);
+        expect(row.querySelector(".bubble")).toBeNull();
+        const line = row.querySelector(".msg-continue-seed")!;
+        expect(line.textContent).toContain(lang === "zh" ? "已继续 · 平台已要求模型" : "Continued · the platform asked the model");
+        expect(line.textContent).not.toContain(content);
+      }
+    }
+    // What the user wrote themselves keeps its bubble, however close.
+    const own = renderStored({ role: "user", content: "请基于已完成的工作继续" }) as unknown as FakeEl;
+    expect(own.querySelector(".bubble")!.textContent).toBe("请基于已完成的工作继续");
+    expect(own.querySelector(".msg-continue-seed")).toBeNull();
+  });
+
   it("renders the streamed marker as a stopped marker and stops the running card", () => {
     startStream();
     feed("text", "I have prepared a Python cell and am running it now.\n", {
