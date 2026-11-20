@@ -324,6 +324,8 @@ class WebEventSink:
     narrate_actions: bool = True
     cancelled: Callable[[], bool] = _never_cancelled
     action_ledger: Any | None = None
+    #: `completions.narration_paths` for this session (CHAT-4).
+    local_paths: tuple[tuple[str, str], ...] = ()
     current_prose: str = field(default="", init=False)
     model_prose: str = field(default="", init=False)
     _streamer: ProseStreamer | None = field(default=None, init=False)
@@ -409,6 +411,7 @@ class WebEventSink:
                         event.outcome,
                         self.language,
                         had_public_prose=bool(self.model_prose),
+                        local_paths=self.local_paths,
                     ),
                     before_action=False,
                 )

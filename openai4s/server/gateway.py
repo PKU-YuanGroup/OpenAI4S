@@ -169,6 +169,7 @@ from openai4s.server.completions import (
     CANCEL_REASONS,
     cancellation_marker,
     completion_message,
+    narration_paths,
     response_language,
 )
 from openai4s.server.delivery import (
@@ -12518,6 +12519,7 @@ class SessionRunner:
             narrate_actions=not st.plan,
             cancelled=st.cancel.is_set,
             action_ledger=action_ledger,
+            local_paths=narration_paths(st.workspace, self.cfg.data_dir),
         )
 
         def apply_pending() -> None:

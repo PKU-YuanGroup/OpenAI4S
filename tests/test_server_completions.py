@@ -11,6 +11,7 @@ from openai4s.server.completions import (
     cancellation_marker,
     completion_message,
     is_progress_narration,
+    narration_paths,
     outcome_narration,
     response_language,
 )
@@ -570,6 +571,78 @@ def test_bookkeeping_cells_get_one_plain_line_not_their_raw_return_value():
         "last):\nRuntimeError: host.plan_update error: no active plan for this session"
     )
     assert "运行出错" in outcome_narration(CodeCell("python", plan), failed, "zh")
+
+
+def test_a_cell_that_only_registers_an_artifact_gets_one_line_not_its_path():
+    """CHAT-4 follow-up: `print(host.save_artifact(...))` was narrated as
+    "单元已运行结束，输出：" plus the returned dict, whose `path` is the
+    snapshot's absolute location in this machine's data directory."""
+
+    def narrate(code: str, echo: str, language: str = "zh") -> str:
+        outcome = ExecutionOutcome(observation=f"[Observation]\nstdout:\n{echo}")
+        return outcome_narration(CodeCell("python", code), outcome, language)
+
+    saved = (
+        "{'artifact_id': 'a-3d114679ee0d', 'version_id': 'v-4e29182b8516', "
+        "'filename': 'fig_growth.png', 'path': "
+        "'/home/someone/.openai4s/artifacts/v-e5d72409264e__fig_growth.png', "
+        "'content_type': None, 'size_bytes': 472632, 'created_at': 1795167627993}"
+    )
+    code = 'art = host.save_artifact("fig_growth.png", "fig_growth.png")\nprint(art)'
+    assert narrate(code, saved) == "已登记产物 fig_growth.png。"
+    assert narrate(code, saved, "en") == "Registered the artifact fig_growth.png."
+    assert narrate('host.save_artifact("demo.csv")', "") == "已登记产物。"
+    assert narrate('host.save_artifact("demo.csv")', "", "en") == (
+        "Registered an artifact."
+    )
+    # A name that is not one plain path segment is not repeated.
+    odd = saved.replace("'fig_growth.png', 'path'", "'../x`y.png', 'path'")
+    assert narrate(code, odd) == "已登记产物。"
+    for language in ("zh", "en"):
+        assert is_progress_narration(narrate(code, saved, language))
+        assert is_progress_narration(narrate('host.save_artifact("a")', "", language))
+    # The cleaned notebook export still keeps the cell that registered it.
+    assert bookkeeping_calls(code) == ()
+
+
+def test_cell_output_narration_shows_workspace_and_data_dir_paths_relative(
+    tmp_path,
+):
+    """CHAT-4 follow-up: whatever a cell printed, the chat never repeats an
+    absolute path under the session workspace or the data directory -- even
+    when the line is long enough that the preview cuts it."""
+    data_dir = tmp_path / "data"
+    workspace = data_dir / "agent-workspaces" / "f-1"
+    workspace.mkdir(parents=True)
+    paths = narration_paths(workspace, data_dir)
+    snapshot = f"{data_dir}/artifacts/v-e5d72409264e__fig_growth.png"
+    printed = (
+        f"{{'artifact_id': 'a-1', 'filename': 'fig_growth.png', "
+        f"'path': '{snapshot}', 'content_type': None, 'size_bytes': 472632}}"
+        + " " * 200
+        + f"\nwrote {workspace}/fig_growth.png\ncwd {workspace}\n"
+        f"{tmp_path}/datafile\n{data_dir}-other/x"
+    )
+    code = 'art = host.save_artifact("fig_growth.png")\nprint(art)\nshow(art)'
+    outcome = ExecutionOutcome(observation=f"[Observation]\nstdout:\n{printed}")
+
+    text = outcome_narration(CodeCell("python", code), outcome, "zh", local_paths=paths)
+
+    assert str(data_dir) + "/" not in text and str(workspace) not in text
+    assert "'path': '<data_dir>/artifacts/v-e5d72409264e__fig_growth.png'" in text
+    assert "wrote ./fig_growth.png" in text
+    assert "cwd .\n" in text
+    # Only those two roots: a sibling or a longer name is left alone.
+    assert f"{tmp_path}/datafile" in text and f"{data_dir}-other/x" in text
+
+    failed = ExecutionOutcome(
+        observation="[Observation]\nERROR (cell line 1):\nTraceback (most recent "
+        "call last):\nFileNotFoundError: [Errno 2] No such file or directory: "
+        f"'{workspace}/demo.csv'"
+    )
+    error = outcome_narration(CodeCell("python", "x"), failed, "en", local_paths=paths)
+    assert "No such file or directory: './demo.csv'" in error
+    assert str(workspace) not in error
 
 
 def test_mid_task_narration_does_not_read_like_starting_over():
