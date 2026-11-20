@@ -474,7 +474,15 @@ export function Shell() {
                 <span class="ic" data-icon="download" data-icon-size="14" />
                 <span data-i18n="common.download">下载</span>
               </a>
-              <button id="modal-close" class="icon-ghost" data-icon="x" data-icon-size="16" aria-label="Close" type="button" />
+              <button
+                id="modal-close"
+                class="icon-ghost"
+                data-icon="x"
+                data-icon-size="16"
+                aria-label="Close"
+                data-i18n-aria="common.close"
+                type="button"
+              />
             </div>
           </div>
           <div id="modal-body" class="modal-body" />
@@ -499,6 +507,7 @@ export function Shell() {
               data-icon="x"
               data-icon-size="16"
               aria-label="Close"
+              data-i18n-aria="common.close"
               type="button"
             />
           </div>

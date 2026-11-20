@@ -96,6 +96,7 @@ export function MemoryTab() {
         </div>
         <Toggle
           on={memory.on}
+          label={t("cust.memory.enableName")}
           disabled={!memory.ready || readOnly}
           onClick={() => {
             if (!readOnly) memory.toggle();

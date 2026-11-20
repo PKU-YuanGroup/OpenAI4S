@@ -223,6 +223,7 @@ export function NetworkTab() {
         </div>
         <Toggle
           on={network.on}
+          label={nt("network.allowName")}
           disabled={!network.ready || readOnly}
           title={readOnly ? roleT("role.adminOnly") : undefined}
           onClick={() => {
@@ -299,7 +300,7 @@ function TelemetryToggle({ alive, readOnly }: { alive: () => boolean; readOnly: 
           <div class="nm">{t("cust.telemetry.name")}</div>
           <div class="ds">{why}</div>
         </div>
-        <Toggle on={consent.enabled} disabled title={why} onClick={() => {}} />
+        <Toggle on={consent.enabled} disabled title={why} label={t("cust.telemetry.name")} onClick={() => {}} />
       </div>
     );
   }
@@ -329,7 +330,7 @@ function LiveTelemetry({
         <div class="nm">{t("cust.telemetry.name")}</div>
         <div class="ds">{on ? t("cust.telemetry.on") : t("cust.telemetry.off")}</div>
       </div>
-      <Toggle on={on} onClick={() => drain.onclick()} />
+      <Toggle on={on} label={t("cust.telemetry.name")} onClick={() => drain.onclick()} />
     </div>
   );
 }

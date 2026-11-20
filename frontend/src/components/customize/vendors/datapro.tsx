@@ -170,6 +170,9 @@ export function DataProCard({
         <button
           type="button"
           class={"toggle" + (connector.on ? " on" : "")}
+          role="switch"
+          aria-checked={connector.on ? "true" : "false"}
+          aria-label={t("cust.datapro.connectorToggle")}
           data-action="datapro-toggle-connector"
           title={t("cust.datapro.connectorToggle")}
           disabled={!connector.ready}

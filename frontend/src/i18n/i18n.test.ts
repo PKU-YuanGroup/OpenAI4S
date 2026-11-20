@@ -348,13 +348,24 @@ describe("F-07 setLang / detectLang / applyStaticI18n", () => {
       value: "",
       getAttribute: (name: string) => (name === "data-i18n" ? "theme.toggle" : null),
     };
-    const titleEl: FakeEl = {
+    const aria: Record<string, string> = {};
+    const titleEl: FakeEl & { setAttribute: (name: string, value: string) => void } = {
       textContent: "",
       title: "",
       placeholder: "",
       value: "",
       getAttribute: (name: string) =>
         name === "data-i18n-title" ? "theme.toggle" : null,
+      setAttribute: (name: string, value: string) => {
+        aria["title:" + name] = value;
+      },
+    };
+    const closeEl = {
+      textContent: "",
+      getAttribute: (name: string) => (name === "data-i18n-aria" ? "common.close" : null),
+      setAttribute: (name: string, value: string) => {
+        aria["close:" + name] = value;
+      },
     };
     const phEl: FakeEl = {
       textContent: "",
@@ -377,12 +388,16 @@ describe("F-07 setLang / detectLang / applyStaticI18n", () => {
       "[data-i18n-title]": [titleEl],
       "[data-i18n-ph]": [phEl],
       "[data-i18n-val]": [valEl],
+      "[data-i18n-aria]": [closeEl as unknown as FakeEl],
     };
     applyStaticI18n({
       querySelectorAll: (sel: string) => bySel[sel] ?? [],
     } as unknown as Parameters<typeof applyStaticI18n>[0]);
     expect(textEl.textContent).toBe("切换主题");
     expect(titleEl.title).toBe("切换主题");
+    // SYNC-12: an icon-only control's name follows its tooltip; data-i18n-aria names a bare ×.
+    expect(aria["title:aria-label"]).toBe("切换主题");
+    expect(aria["close:aria-label"]).toBe(t("common.close"));
     expect(phEl.placeholder).toBe(t("annot.draft.placeholder"));
     expect(valEl.value).toBe(t("conv.title.default"));
   });

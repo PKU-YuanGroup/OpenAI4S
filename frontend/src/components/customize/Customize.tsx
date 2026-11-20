@@ -212,7 +212,7 @@ export function Customize() {
             class="icon-ghost"
             data-icon="x"
             data-icon-size="16"
-            aria-label="Close"
+            aria-label={t("common.close")}
             type="button"
             onClick={() => closeCust()}
           >

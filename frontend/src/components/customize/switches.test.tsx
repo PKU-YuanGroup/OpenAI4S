@@ -341,4 +341,16 @@ describe("Toggle", () => {
     expect(on.props!["aria-checked"]).toBe("true");
     expect(off.props!["aria-checked"]).toBe("false");
   });
+
+  // SYNC-12: the Skills / Specialists / Connectors list switches had no text,
+  // no title and no label -- a screen reader announced an unnamed switch.
+  it.each([
+    ["Skill", () => SkillRow({ s: { name: "fold", enabled: true }, pid: null }), "fold"],
+    ["specialist", () => BuiltinRow({ ag: { name: "planner", enabled: true } }), "planner"],
+    ["connector", () => ConnectorRow({ k: { connector_id: "c1", name: "Files", enabled: true } }), "Files"],
+  ] as const)("a %s row's switch is named after the row", (_kind, row, name) => {
+    const toggle = firstSwitch(render(row));
+    const button = Toggle(toggle.props as Parameters<typeof Toggle>[0]) as Node;
+    expect(button.props!["aria-label"]).toBe(name);
+  });
 });

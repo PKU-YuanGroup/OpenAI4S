@@ -416,7 +416,7 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
         </>
       ) : null}
       {scope !== "project" ? (
-        <Toggle on={enabled.on} onClick={enabled.toggle} />
+        <Toggle on={enabled.on} label={asString(s.name)} onClick={enabled.toggle} />
       ) : null}
     </div>
   );

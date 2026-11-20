@@ -212,7 +212,7 @@ export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catal
       >
         {testing ? t("cust.connectors.testing") : t("cust.connectors.test")}
       </button>
-      <Toggle on={enabled.on} onClick={enabled.toggle} />
+      <Toggle on={enabled.on} label={asString(k.name)} onClick={enabled.toggle} />
       <IconGhost
         name="trash-2"
         title={t("common.delete")}

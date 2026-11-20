@@ -17,6 +17,7 @@ export function LabTabSetting() {
     <CustRow name={labCopy("tabSetting")} desc={hidden ? labCopy("tabHidden") : labCopy("tabShown")}>
       <Toggle
         on={!hidden}
+        label={labCopy("tabSetting")}
         onClick={() => {
           setLabTabHidden(!hidden);
           setHidden(!hidden);
