@@ -722,10 +722,59 @@ def _structured_body(value: Any) -> str:
 _SNAKE_KEY = re.compile(r"[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+")
 
 
-def _readable_key(key: str) -> str:
-    """``cox_tmb_HR_low`` reads as "cox tmb HR low" (ART-8); prose keys stay."""
+#: A unit a snake_case metric key ends in, as written there (case matters:
+#: ``uM`` is a concentration, ``um`` a length) -> as a reader writes it.
+#: Single letters are left out: ``_s``, ``_h`` or ``_C`` name groups as often.
+_KEY_UNITS = {
+    "Da": "Da",
+    "kDa": "kDa",
+    "bp": "bp",
+    "kb": "kb",
+    "Mb": "Mb",
+    "nm": "nm",
+    "um": "µm",
+    "mm": "mm",
+    "cm": "cm",
+    "ms": "ms",
+    "sec": "s",
+    "min": "min",
+    "days": "days",
+    "mg": "mg",
+    "ug": "µg",
+    "ng": "ng",
+    "kg": "kg",
+    "mL": "mL",
+    "ml": "mL",
+    "uL": "µL",
+    "ul": "µL",
+    "nM": "nM",
+    "uM": "µM",
+    "mM": "mM",
+    "pM": "pM",
+    "degC": "°C",
+    "Hz": "Hz",
+    "kHz": "kHz",
+    "ppm": "ppm",
+    "pct": "%",
+    "percent": "%",
+    "rpm": "rpm",
+}
 
-    return key.replace("_", " ") if _SNAKE_KEY.fullmatch(key) else key
+
+def _readable_key(key: str) -> str:
+    """``cox_tmb_HR_low`` reads as "cox tmb HR low" (ART-8); prose keys stay.
+
+    A trailing unit is set apart (SCI-24): ``peptide_avg_MW_Da`` reads as
+    "peptide avg MW (Da)", not as if Da were part of the name.
+    """
+
+    if not _SNAKE_KEY.fullmatch(key):
+        return key
+    head, _, last = key.rpartition("_")
+    unit = _KEY_UNITS.get(last)
+    if unit:
+        return f"{head.replace('_', ' ')} ({unit})"
+    return key.replace("_", " ")
 
 
 def _compact_value(value: Any) -> str:

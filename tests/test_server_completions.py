@@ -685,7 +685,8 @@ def test_metrics_show_the_values_the_agent_submitted():
     body = text.split("Metrics:\n", 1)[1]
 
     for shown in (
-        ": 1019.14",
+        # The unit is set apart from the name.
+        "- peptide avg MW (Da): 1019.14",
         "welch t: -4.6602",
         "welch df: 7.6113",
         "ci95 low: -1.8591",
@@ -696,6 +697,17 @@ def test_metrics_show_the_values_the_agent_submitted():
         "- n: 9",
     ):
         assert shown in body, shown
+    readable = completion_message(
+        {
+            "output": {
+                "summary": "Done.",
+                "metrics": {"dose_uM": 5, "width_um": 2, "yield_pct": 41.5},
+            }
+        }
+    )
+    assert "- dose (µM): 5" in readable
+    assert "- width (µm): 2" in readable
+    assert "- yield (%): 41.5" in readable
 
 
 def test_the_summary_groups_deliverables_by_kind():
