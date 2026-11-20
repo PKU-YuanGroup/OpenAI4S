@@ -330,3 +330,15 @@ describe("egress allowlist restart command", () => {
     expect(page).toContain("only an administrator");
   });
 });
+
+// SYNC-22: on a phone the switch read as a disc, on and off told apart by
+// colour alone; it says which it is to assistive tech too.
+describe("Toggle", () => {
+  it("is a switch that says whether it is on", () => {
+    const on = Toggle({ on: true, onClick: () => undefined }) as Node;
+    const off = Toggle({ on: false, onClick: () => undefined }) as Node;
+    expect(on.props!.role).toBe("switch");
+    expect(on.props!["aria-checked"]).toBe("true");
+    expect(off.props!["aria-checked"]).toBe("false");
+  });
+});

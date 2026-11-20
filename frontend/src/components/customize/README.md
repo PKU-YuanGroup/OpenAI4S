@@ -36,12 +36,12 @@ F-19 Customize modal. Eleven tabs, a nested editor overlay, and `vendors/` cards
 | [`SkillsTab.test.tsx`](SkillsTab.test.tsx) | Skills-tab search finds a skill by name, description word, Chinese keyword or declared domain, reaches collection members, and finds nothing for a miss; only a `host_only` skill gets a network-limit badge. |
 | [`SpecialistsTab.tsx`](SpecialistsTab.tsx) | Custom specialists and builtin roles. |
 | [`switches.test.tsx`](switches.test.tsx) | The Notebook manual-cells switch writes `repl_enabled` and is locked when forced by the environment or for a team member. The Network egress and Memory switches stay disabled until the first read lands, ignore a click while a write is in flight, and go back to the confirmed value when a write fails. The Skill, specialist and connector row switches show what a later read brings and keep a write the server took over an older read. |
-| [`customize.css`](customize.css) | Lane-local modal chrome until F-21 ports `style.css`. |
+| [`customize.css`](customize.css) | Lane-local modal chrome until F-21 ports `style.css`. Narrow screens (SYNC-22): the switch keeps its pill shape with a 40px target, the tab strip shows a shadow at an edge with more tabs, and at ≤480px a row's control and the add rows wrap instead of leaving the screen. |
 | [`icons.tsx`](icons.tsx) | `Icon`: draws from the shared `features/icons/paths.ts` table and keeps no drawings of its own. |
 | [`icons.test.tsx`](icons.test.tsx) | Every name the modal paints is drawn, a shared name comes from the shared table, an unknown name draws nothing. |
 | [`hooks.ts`](hooks.ts) | `useTabRead`: a tab's reads, on mount and again in place after a write (`refreshCustTab`); only the newest read applies, the first settles the pane's load status. `useOptimistic` / `useOptimisticToggle`: a control bound to one server setting is disabled until the tab's first read lands (`null`), moves at once, allows one write at a time, and goes back to the confirmed value when a write fails, saying so (`toast.failed`) when the caller gave no failure handler. |
 | [`index.ts`](index.ts) | Re-exports `Customize`. |
-| [`ui.tsx`](ui.tsx) | Shared `Hdr` / `CustRow` / `Seg` / `Toggle` / `Pill`. |
+| [`ui.tsx`](ui.tsx) | Shared `Hdr` / `CustRow` / `Seg` / `Toggle` (`role="switch"` with `aria-checked`) / `Pill`. |
 | [`use-timer-lease.ts`](use-timer-lease.ts) | `useTimerLease` / `useAlive` bound to unmount. |
 | [`ExperimentsTab.tsx`](ExperimentsTab.tsx) | The Experimental page's semantic-judgment block: disclosure, capability toggles, TypeSafe key, connection probe. |
 | [`ExperimentsTab.test.tsx`](ExperimentsTab.test.tsx) | Disclosure must be acknowledged before enable; `env_off` disables toggles; key is never echoed; probe shows ok / unavailable / disabled. |

@@ -336,11 +336,59 @@
   #cust .cust-tab {
     white-space: nowrap;
   }
+  /* SYNC-22: say that the tab strip scrolls. A shadow shows at each edge
+     that has more tabs beyond it (the `local` covers hide it at an end). */
+  #cust .cust-tabs {
+    background:
+      linear-gradient(to right, var(--bg-100, #f5f0e8) 30%, transparent) left / 32px 100% no-repeat local,
+      linear-gradient(to left, var(--bg-100, #f5f0e8) 30%, transparent) right / 32px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgba(20, 20, 19, 0.22), transparent) left / 14px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgba(20, 20, 19, 0.22), transparent) right / 14px 100% no-repeat scroll;
+    background-color: var(--bg-100, #f5f0e8);
+  }
+  /* SYNC-22: the touch-target rule (style.css, ≥40px) turned the 38×22
+     switch into a 40px disc with on/off told apart by colour alone. The pill
+     keeps its shape; a transparent border carries the 40px target and the
+     negative margin keeps the row's layout. */
+  #cust .toggle {
+    box-sizing: content-box;
+    width: 38px;
+    height: 22px;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    border: 9px solid transparent;
+    background-clip: padding-box;
+    margin: -9px;
+  }
   #cust .cust-content {
     padding: 24px 20px;
   }
   #cust .cust-h {
     margin-right: 0;
     font-size: 32px;
+  }
+}
+@media (max-width: 480px) {
+  /* SYNC-22: a row's control goes under its description instead of
+     squeezing it to a 60px column cut mid-word. */
+  #cust .cust-row:not(.prof-row) {
+    flex-wrap: wrap;
+  }
+  #cust .cust-row:not(.prof-row) > .info {
+    flex: 1 1 200px;
+  }
+  /* Add rows (memory, connectors, compute) wrap instead of pushing Save off
+     the screen. */
+  #cust .job-submit {
+    flex-wrap: wrap;
+  }
+  #cust .job-submit > input,
+  #cust .job-submit > textarea {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  #cust .job-submit > select {
+    max-width: 100%;
   }
 }

@@ -36,12 +36,12 @@ F-19 Customize 模态。十一个 tab、嵌套编辑层，以及 `vendors/` 卡�
 | [`SkillsTab.test.tsx`](SkillsTab.test.tsx) | 技能页搜索能按名称、说明里的词、中文关键词或声明的域名找到技能，能找到合集成员，未命中时为空；只有 `host_only` 技能带联网限制标记。 |
 | [`SpecialistsTab.tsx`](SpecialistsTab.tsx) | 自定义 specialist 与内置角色。 |
 | [`switches.test.tsx`](switches.test.tsx) | Notebook 手动单元开关写入 `repl_enabled`，被环境变量强制开启或对团队成员时锁定。网络出站与记忆开关在第一次读取落地前保持禁用；写入进行中再次点击不生效；写入失败时回到服务端确认过的值。Skill、specialist 与连接器行上的开关显示之后读取带来的值，服务端已接受的写入不会被更早的读取覆盖。 |
-| [`customize.css`](customize.css) | 车道本地模态样式，直到 F-21 移植 `style.css`。 |
+| [`customize.css`](customize.css) | 车道本地模态样式，直到 F-21 移植 `style.css`。窄屏（SYNC-22）：开关保持胶囊形状且点击区域为 40px，标签条在还有更多标签的一侧显示阴影，≤480px 时行内控件和添加行会换行，不再超出屏幕。 |
 | [`icons.tsx`](icons.tsx) | `Icon`：只从共享的 `features/icons/paths.ts` 表取图形，自己不再保留任何图形。 |
 | [`icons.test.tsx`](icons.test.tsx) | 模态用到的每个图标名都能画出；共享表里有的名字取自共享表；未知名字不画任何东西。 |
 | [`hooks.ts`](hooks.ts) | `useTabRead`：tab 的读取，挂载时读一次，写入后经 `refreshCustTab` 原地重读；只有最新一次读取生效，第一次读取结算面板的加载状态。`useOptimistic` / `useOptimisticToggle`：绑定某项服务端设置的控件，在 tab 第一次读取落地前（`null`）保持禁用；点击后立即变化，同一时间只允许一次写入，写入失败时回到服务端确认过的值；调用方没有提供失败处理时会说明失败（`toast.failed`）。 |
 | [`index.ts`](index.ts) | 再导出 `Customize`。 |
-| [`ui.tsx`](ui.tsx) | 共用的 `Hdr` / `CustRow` / `Seg` / `Toggle` / `Pill`。 |
+| [`ui.tsx`](ui.tsx) | 共用的 `Hdr` / `CustRow` / `Seg` / `Toggle`（`role="switch"` 并带 `aria-checked`）/ `Pill`。 |
 | [`use-timer-lease.ts`](use-timer-lease.ts) | 绑 unmount 的 `useTimerLease` / `useAlive`。 |
 | [`ExperimentsTab.tsx`](ExperimentsTab.tsx) | 「实验功能」页的语义判断区块：披露确认、能力开关、TypeSafe key、连接测试。 |
 | [`ExperimentsTab.test.tsx`](ExperimentsTab.test.tsx) | 未确认披露不能打开；`env_off` 置灰开关；key 不回显；连接测试覆盖 ok / unavailable / disabled。 |
