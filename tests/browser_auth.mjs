@@ -41,6 +41,21 @@ export function daemonToken() {
 // every call: this is the path a real browser takes, so the harness exercises
 // the 303 and the cookie hand-off instead of routing around them.
 export async function authenticate(page, baseUrl, explicitToken = undefined) {
+  // The Timeline's technical panels (branches and checkpoints, recovery,
+  // sub-agents, remote compute, diagnostics, sandbox) sit under one disclosure
+  // that is closed until a viewer opens it, and the choice is remembered in
+  // localStorage. These scripts drive the controls inside it, so every page
+  // starts the way it does for a viewer who opened it once. Self-test doubles
+  // of `page` have no init scripts.
+  if (typeof page.addInitScript === "function") {
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem("os-timeline-technical", "open");
+      } catch {
+        /* storage blocked: the scripts that need the panels will say so */
+      }
+    });
+  }
   // Security-sensitive harnesses may validate and open a particular token
   // file themselves, then pass the captured value here. In that mode never
   // perform a second environment/default-directory lookup: doing so would

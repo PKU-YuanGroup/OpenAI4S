@@ -32,7 +32,7 @@ import {
   renderSecurityPanel,
 } from "./island";
 import { timelineLocalClock, timelineOverviewExactTime } from "./model";
-import { queueT, timelineT } from "./copy";
+import { queueT, timelineT, workbenchT } from "./copy";
 import { noteQueuedTurnStarted, queuedFollowUpCount, renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
@@ -1425,5 +1425,93 @@ describe("side panels in a scientist's words", () => {
     expect(timelineLocalClock(ms)).toBe(
       `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:56.159`,
     );
+  });
+});
+
+// SET-4: the ledger sat below six panels of runtime, recovery, branch,
+// sub-agent, remote compute, diagnostics and sandbox state.
+describe("the timeline comes first; the technical panels share one disclosure", () => {
+  function stubStorage(initial: Record<string, string> = {}): Map<string, string> {
+    const store = new Map(Object.entries(initial));
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, String(value)),
+    });
+    return store;
+  }
+
+  function shown(): FakeDocument {
+    const doc = mountDocument();
+    stubFrames();
+    stubResizeObserver();
+    showTimeline("frame-t", [group("g-1", 1)]);
+    renderActionTimeline();
+    return doc;
+  }
+
+  it("puts the ledger before the panels and keeps the panels closed by default", () => {
+    stubStorage();
+    const doc = shown();
+    const order = doc.getElementById("dock-timeline")!.children.map((node) => node.className);
+    const ledger = order.findIndex((name) => name.includes("timeline-actions"));
+    const technical = order.findIndex((name) => name.includes("timeline-technical"));
+    expect(ledger).toBeGreaterThan(-1);
+    expect(technical).toBeGreaterThan(ledger);
+
+    const details = doc.querySelector("details.timeline-technical")!;
+    expect(details.open).toBe(false);
+    // Every panel is inside the disclosure, none beside the ledger.
+    for (const panel of [".branch-panel", ".delegation-panel", ".context-panel", ".security-panel"]) {
+      expect(details.querySelector(panel), panel).not.toBeNull();
+      expect(doc.querySelector(".timeline-actions " + panel), panel).toBeNull();
+    }
+    expect(details.querySelector(".timeline-technical-label")!.textContent).toBe(workbenchT("wb.details"));
+  });
+
+  it("remembers what the viewer chose, and only that", () => {
+    const store = stubStorage();
+    const details = shown().querySelector("details.timeline-technical")!;
+    details.querySelector("summary")!.click();
+    details.open = true;
+    details.dispatchEvent({ type: "toggle" });
+    expect(store.get("os-timeline-technical")).toBe("open");
+  });
+
+  it("starts from the stored choice, and does not write back a toggle the viewer did not make", () => {
+    const store = stubStorage({ "os-timeline-technical": "open" });
+    const details = shown().querySelector("details.timeline-technical")!;
+    expect(details.open).toBe(true);
+    details.open = false;
+    details.dispatchEvent({ type: "toggle" });
+    expect(store.get("os-timeline-technical")).toBe("open");
+  });
+
+  it("opens for a recovery that stopped part-way, without storing that", () => {
+    const store = stubStorage({ "os-timeline-technical": "closed" });
+    const doc = mountDocument();
+    stubFrames();
+    stubResizeObserver();
+    showTimeline("frame-t", [group("g-1", 1)]);
+    S.recoveryState = { status: "partial", log: [] };
+    renderActionTimeline();
+    const details = doc.querySelector("details.timeline-technical")!;
+    expect(details.open).toBe(true);
+    expect(details.querySelector(".kind-recovery")).not.toBeNull();
+    expect(store.get("os-timeline-technical")).toBe("closed");
+  });
+
+  it("works without storage", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    });
+    const details = shown().querySelector("details.timeline-technical")!;
+    expect(details.open).toBe(false);
+    details.querySelector("summary")!.click();
+    expect(() => details.dispatchEvent({ type: "toggle" })).not.toThrow();
   });
 });

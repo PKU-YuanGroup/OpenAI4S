@@ -1425,8 +1425,12 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .timeline-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
 .timeline-title{font:600 18px/1.25 var(--serif);color:var(--text-000)}
 .timeline-subtitle{max-width:620px;margin-top:3px;color:var(--text-400);font-size:11.5px;line-height:1.45}
-.workbench-layout{display:grid;grid-template-columns:minmax(210px,.72fr) minmax(290px,1.28fr);gap:12px;margin-top:12px;align-items:start}
-.workbench-side,.timeline-actions{display:flex;flex-direction:column;gap:10px;min-width:0}
+/* The action ledger comes first; runtime, recovery, branch, sub-agent, remote
+   compute, diagnostics and sandbox panels sit under one disclosure below it. */
+.timeline-actions,.timeline-technical{margin-top:12px}
+.timeline-technical-summary{padding:8px 2px;cursor:pointer;color:var(--text-200);font-size:13px;font-weight:600}
+.timeline-technical-hint{margin-left:8px;color:var(--text-400);font-size:11.5px;font-weight:400}
+.workbench-side,.timeline-actions,.timeline-technical-body{display:flex;flex-direction:column;gap:10px;min-width:0}
 .workbench-panel,.timeline-card{border:var(--hair);border-radius:12px;background:var(--card);box-shadow:var(--shadow-soft);overflow:hidden}
 .workbench-panel{padding:10px}
 .workbench-panel-title{font-size:11px;font-weight:650;letter-spacing:.03em;color:var(--text-300);margin-bottom:8px}
@@ -1615,7 +1619,6 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .delegation-evidence-reasons{color:var(--text-400);font-size:10.5px;line-height:1.35;word-break:break-word}
 
 @media (max-width:760px){
-  .workbench-layout{grid-template-columns:1fr}
   .timeline-toolbar{align-items:stretch;flex-direction:column}.timeline-search-meta{align-items:flex-start;text-align:left}
   .timeline-ledger-scroll{max-height:clamp(240px,52vh,560px)}
   .timeline-inspector{position:relative;top:auto}
@@ -2534,8 +2537,7 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .timeline-top{margin-bottom:14px}
 .timeline-title{font:400 36px/1.15 var(--serif);letter-spacing:-.02em;color:var(--text-000);font-variant-numeric:lining-nums}
 .timeline-subtitle{margin-top:6px;font-size:14px;line-height:1.5;color:var(--text-400)}
-.workbench-layout{gap:16px}
-.workbench-side,.timeline-actions,.timeline-ledger-region{gap:12px}
+.workbench-side,.timeline-actions,.timeline-technical-body,.timeline-ledger-region{gap:12px}
 .workbench-panel,.timeline-card,.timeline-empty,.timeline-toolbar,.timeline-ledger-scroll,.timeline-inspector,.timeline-filter-empty{border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg);box-shadow:none}
 .workbench-panel{padding:14px 16px}
 .workbench-panel-title{margin-bottom:10px;font-size:13px;font-weight:500;letter-spacing:0;color:var(--text-000)}
