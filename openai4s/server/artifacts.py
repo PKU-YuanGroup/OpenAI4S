@@ -4330,9 +4330,15 @@ class BackgroundCaptureLifetime:
         self._emit = emit
         self._before: WorkspaceSnapshot | None = None
         self._exec_id = "background"
+        self._outcome: Mapping[str, Any] | None = None
 
     def bind_background_exec(self, exec_id: str) -> None:
         self._exec_id = str(exec_id or "background")
+
+    def record_background_outcome(self, outcome: Mapping[str, Any]) -> None:
+        """The finished job, written as a Notebook cell when the lease ends."""
+
+        self._outcome = outcome
 
     def __enter__(self) -> Any:
         entered = self._lease.__enter__()
@@ -4344,15 +4350,118 @@ class BackgroundCaptureLifetime:
         return entered
 
     def __exit__(self, *exc_info: Any) -> Any:
+        records: list[dict] = []
         try:
             if self._before is not None:
-                self._manager.capture_background(
+                records = self._manager.capture_background(
                     self._session, self._exec_id, self._before, self._emit
                 )
         except Exception as error:  # noqa: BLE001 — the job's outcome stands
             record_diagnostic(error, surface="artifacts:capture:background")
+        try:
+            if self._outcome is not None and self._exec_id != "background":
+                record_background_cell(
+                    self._manager.store,
+                    self._session,
+                    self._exec_id,
+                    self._outcome,
+                    records,
+                    self._emit,
+                )
+        except Exception as error:  # noqa: BLE001 — the job's outcome stands
+            record_diagnostic(error, surface="artifacts:record:background")
         finally:
             return self._lease.__exit__(*exc_info)
+
+
+#: The Notebook runtime segment a background cell is shown under. It ran in a
+#: kernel of its own, so nothing it defined exists in the session's kernel.
+BACKGROUND_KERNEL_ID = "python — background"
+
+
+def record_background_cell(
+    store: Any,
+    session: ArtifactSession,
+    exec_id: str,
+    outcome: Mapping[str, Any],
+    records: list[dict],
+    emit: EventSink | None = None,
+) -> None:
+    """Write one finished ``host.exec_background`` job into the Notebook (TEAM-11).
+
+    The cell's id is the job id, which is also the producer its captured
+    Artifact versions name, so "produced by" resolves and a session package
+    carries the code that made its files. Source and output are the job's;
+    it is never replayed. The revision is the session's next one, taken from
+    the in-memory cursor foreground cells advance, so a cell started after
+    this one cannot reuse it.
+    """
+
+    root = session.root_frame_id
+    latest = int(store.latest_state_revision(root) or 0)
+    current = getattr(session, "cell_index", None)
+    current = current if isinstance(current, int) else 0
+    revision = (current if current > latest else latest) + 1
+    if hasattr(session, "cell_index"):
+        setattr(session, "cell_index", revision)
+    written = [
+        str(record.get("filename"))
+        for record in records or ()
+        if isinstance(record, Mapping) and record.get("filename")
+    ]
+    result = {
+        "id": exec_id,
+        "stdout": str(outcome.get("stdout") or ""),
+        "error": outcome.get("error") or None,
+        "interrupted": bool(outcome.get("interrupted")),
+        "usage": dict(outcome.get("usage") or {}),
+    }
+    origin = "user" if outcome.get("origin") == "user" else "agent"
+    code = str(outcome.get("code") or "")
+    store.log_cell(
+        frame_id=root,
+        root_frame_id=root,
+        project_id=session.project_id,
+        code=code,
+        result=result,
+        origin=origin,
+        cell_seq=revision,
+        cell_index=revision,
+        state_revision=revision,
+        kernel_id=BACKGROUND_KERNEL_ID,
+        language="python",
+        replay_policy="never",
+        files_written=written,
+    )
+    if emit is None:
+        return
+    status = (
+        "interrupted"
+        if result["interrupted"]
+        else ("error" if result["error"] else "ok")
+    )
+    emit(
+        {
+            "type": "notebook_cell_finished",
+            "frame_id": root,
+            "root_frame_id": root,
+            "producing_cell_id": exec_id,
+            "cell_index": revision,
+            "state_revision": revision,
+            "generation_id": None,
+            "kernel_id": BACKGROUND_KERNEL_ID,
+            "language": "python",
+            "origin": origin,
+            "source": code,
+            "stdout": result["stdout"][:65536],
+            "stderr": "",
+            "error": str(result["error"] or "")[:65536],
+            "status": status,
+            "figures": [],
+            "files_written": written,
+            "files_read": [],
+        }
+    )
 
 
 def _capture_snippet(index: int, *, save: bool = True) -> str:

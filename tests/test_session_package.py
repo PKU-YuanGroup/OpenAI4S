@@ -4274,6 +4274,61 @@ def test_an_artifact_from_an_unrecorded_background_task_imports_back(tmp_path):
         store.close()
 
 
+def test_a_background_task_recorded_as_a_cell_travels_with_its_files(tmp_path):
+    """TEAM-11: the background job is a cell, so its files keep their producer."""
+
+    from types import SimpleNamespace
+
+    from openai4s.server.artifacts import BACKGROUND_KERNEL_ID, record_background_cell
+
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    try:
+        code = "import random\nrandom.seed(42)\nsave_scatter('scatter.png')\n"
+        session = SimpleNamespace(
+            root_frame_id=root,
+            project_id=project["project_id"],
+            workspace=workspace(root, root),
+        )
+        record_background_cell(
+            store,
+            session,
+            _BACKGROUND_TASK,
+            {"code": code, "stdout": "saved\n", "origin": "agent"},
+            [{"filename": "scatter.png"}],
+        )
+        _add_produced(
+            store, root, project, workspace(root, root), "scatter.png", _BACKGROUND_TASK
+        )
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+        versions = _versions_by_filename(files)
+        assert versions["scatter.png"]["producing_cell_id"] == _BACKGROUND_TASK
+        cells = json.loads(files["notebook.json"])["cells"]
+        background = next(
+            c for c in cells if c["producing_cell_id"] == _BACKGROUND_TASK
+        )
+        assert background["code"] == code
+        assert background["kernel_id"] == BACKGROUND_KERNEL_ID
+        assert "have no producing" not in files["REPRODUCE.md"].decode("utf-8")
+
+        assert _verify(tmp_path, exported["data"])["ok"] is True
+        imported = domain.session_import(exported["data"])
+        new_root = imported["root_frame_id"]
+        imported_cell = next(
+            cell for cell in store.list_cells(new_root) if cell["code"] == code
+        )
+        assert imported_cell["kernel_id"] == BACKGROUND_KERNEL_ID
+        figure = next(
+            item
+            for item in store.list_artifacts({"root_frame_id": new_root})
+            if item["filename"] == "scatter.png"
+        )
+        version = store.version_meta(figure["latest_version_id"])
+        assert version["producing_cell_id"] == imported_cell["producing_cell_id"]
+    finally:
+        store.close()
+
+
 def test_a_package_written_before_the_fix_still_imports(tmp_path):
     """Built the way the old exporter wrote it: the task id kept as producer."""
 
