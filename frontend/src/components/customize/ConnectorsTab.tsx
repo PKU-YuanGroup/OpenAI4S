@@ -217,7 +217,7 @@ export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catal
         name="trash-2"
         title={t("common.delete")}
         onClick={async () => {
-          if (!confirmAction(t("cust.connectors.deleteConfirm", asString(k.name)))) return;
+          if (!(await confirmAction(t("cust.connectors.deleteConfirm", asString(k.name))))) return;
           try {
             await api(`/connectors/${k.connector_id}`, { method: "DELETE" });
             refreshCustTab("connectors");

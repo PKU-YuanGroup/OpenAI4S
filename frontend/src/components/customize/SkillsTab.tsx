@@ -401,7 +401,7 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
             name="trash-2"
             title={t("common.delete")}
             onClick={async () => {
-              if (!confirmAction(t("cust.skills.deleteConfirm", asString(s.name)))) return;
+              if (!(await confirmAction(t("cust.skills.deleteConfirm", asString(s.name))))) return;
               try {
                 await api(`/skills/${encodeURIComponent(asString(s.name))}`, {
                   method: "DELETE",

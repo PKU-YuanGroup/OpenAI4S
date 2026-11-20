@@ -14,6 +14,8 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`chrome.css`](chrome.css) | 本车道样式：palette / team / resizer / 输入框附件类名。 |
 | [`clipboard.test.ts`](clipboard.test.ts) | 异步 API 以方法形式调用；被拒时退回选区复制；两条路都不可用时返回 false。 |
 | [`clipboard.ts`](clipboard.ts) | `copyText()`：所有复制按钮共用的剪贴板写入，只有确认写入成功才返回 `true`。 |
+| [`dialog.ts`](dialog.ts) | M-45 应用内的 `askConfirm` / `askText` / `showNotice`，取代原生 `confirm()` / `prompt()` / `alert()`：按需建一个小对话框，走共用的焦点陷阱，跟随主题和界面语言；Esc、取消和点遮罩都算“否”，危险操作的确认先聚焦“取消”，没有 document 时按取消返回。 |
+| [`dialog.test.ts`](dialog.test.ts) | 每条回答路径（确定、取消、不冒泡的 Esc、遮罩按下）、危险操作的初始焦点、文本提交与输入法回车、提示框、无 document；外加一次源码扫描，证明 `frontend/src` 里除测试外没有任何原生 `prompt()` / `confirm()` / `alert()` 调用。 |
 | [`drafts.ts`](drafts.ts) | SYNC-24 输入框草稿按会话保存：切换会话时保存当前草稿（连同 `@` 引用）并换上目标会话的草稿；刷新后从 `localStorage` 的 `os-composer-drafts` 恢复（最多 50 个会话、每条 20,000 字符，所有读写都在 try/catch 中）；发送后清除；从「尚无会话」的输入框新建的会话会带上草稿（`adoptCreatedFrame` 调用 `carryDraftTo`）。 |
 | [`drafts.test.ts`](drafts.test.ts) | 新建会话不带走 A 的草稿且回到 A 能找回、刷新恢复、发送后内存与存储都清除、草稿随新建会话迁移、`@` 引用跟随草稿、存储被禁用、长度上限。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `localDateTime` / `localClock` / `hint` / `grow`。`icon` 取自共享的 `icons/paths.ts` 表。 `ago` / `agoMs` 按界面语言给出相对时间（刚刚 / 3 分钟前，just now / 3m）。 |

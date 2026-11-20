@@ -677,7 +677,7 @@ export function ProfileRow({
         title={t("common.delete")}
         size={14}
         onClick={async () => {
-          if (!confirmAction(t("model.delete.confirm", asString(p.name || p.id)))) return;
+          if (!(await confirmAction(t("model.delete.confirm", asString(p.name || p.id))))) return;
           try {
             await api(`/model-profiles/${p.id}`, { method: "DELETE" });
             hint(t("toast.deleted"));

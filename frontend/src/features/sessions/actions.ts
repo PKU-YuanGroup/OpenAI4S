@@ -12,6 +12,7 @@ import { _openGen, _titleName, currentId, folders, project, sessions } from "../
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
 import { API, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
+import { askConfirm, askText } from "../chrome/dialog";
 import { expectOwnDeletion, forgetOwnDeletion } from "./deleted";
 import { buildSkillBody, procedureSteps } from "./skill-draft";
 import { openRunLocationDialog } from "./compute";
@@ -431,8 +432,9 @@ export function sessionMenu(anchor: Element, fid: string): void {
       label: t("common.delete"),
       icon: "trash-2",
       danger: true,
-      onClick: () => {
-        if (confirm(t("confirm.deleteSession"))) void deleteSession(fid);
+      onClick: async () => {
+        if (await askConfirm(t("confirm.deleteSession"), { danger: true, okLabel: t("common.delete") }))
+          void deleteSession(fid);
       },
     },
   );
@@ -481,7 +483,7 @@ export function moveToFolderAt(anchor: Element, fid: string): void {
     label: t("moveFolder.newFolderAndMove"),
     icon: "plus",
     onClick: async () => {
-      const n = prompt(t("folder.new.prompt"));
+      const n = await askText(t("folder.new.prompt"));
       if (!n || !project.value) return;
       let r: { folder_id: string };
       try {

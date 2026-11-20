@@ -30,6 +30,7 @@ import {
 import { activeTab, dock } from "../../stores/ui";
 import { t } from "../../i18n/runtime";
 import { copyFailedText, copyText } from "../chrome/clipboard";
+import { askConfirm } from "../chrome/dialog";
 import { forkFromCell } from "../execution/branch";
 import { publicText } from "../scrub/scrub";
 import { sanitizeSecurity } from "../timeline/sanitize";
@@ -357,8 +358,10 @@ export const kernelAction = field<{ sid: string; action: string } | null>(() => 
 export async function kernelCtl(action: string): Promise<void> {
   const sid = currentId.value;
   if (!sid) return;
-  if (action === "restart" && !globalThis.confirm(t("nb.kernel.restartConfirm"))) return;
-  if (action === "stop" && !globalThis.confirm(t("nb.kernel.stopConfirm"))) return;
+  const confirmKey =
+    action === "restart" ? "nb.kernel.restartConfirm" : action === "stop" ? "nb.kernel.stopConfirm" : "";
+  if (confirmKey && !(await askConfirm(t(confirmKey), { danger: true }))) return;
+  if (currentId.value !== sid) return;
   const ticket = { sid, action };
   kernelAction.value = ticket;
   if (dockIsNotebook()) nbRender();

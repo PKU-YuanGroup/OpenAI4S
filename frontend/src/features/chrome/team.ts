@@ -12,6 +12,7 @@ import type { MenuItem } from "../sessions/chrome";
 import { API } from "./api";
 import { byId, el, iconEl } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
+import { showNotice } from "./dialog";
 import { openChangePassword, openMyKeys } from "./team-account";
 import { auditActionLabel, renderUsersSection, userLabel } from "./team-admin";
 import { teamRoleLabel, teamT } from "./team-copy";
@@ -535,14 +536,17 @@ function bindTeamChrome(): void {
       fetch(url, { method: "POST", body: file })
         .then((r) => {
           if (!r.ok) {
-            return r.json().then((b: { error?: string }) => {
-              alert((b && b.error) || "upload failed (" + r.status + ")");
-            });
+            const failed = (detail?: string) =>
+              void showNotice(teamT("team.files.uploadFailed", detail || "HTTP " + r.status));
+            return r.json().then(
+              (b: { error?: string }) => failed(b && b.error),
+              () => failed(),
+            );
           }
           loadTeamFiles(tfState.path);
         })
         .catch(() => {
-          alert("upload failed");
+          void showNotice(teamT("team.files.uploadUnreachable"));
         });
     };
   }

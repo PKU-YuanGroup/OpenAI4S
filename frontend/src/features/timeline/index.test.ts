@@ -1,4 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 import { resetStoreFields } from "../../stores/signal-field";
 import { renderBranchPanel } from "./island";
 import { S } from "./s";
@@ -28,7 +35,7 @@ class BranchNode {
   walk(): BranchNode[] { return [this, ...this.children.flatMap((child) => child.walk())]; }
 }
 
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); dialogMock.answer = () => false; });
 
 describe("branch actions replace scoped history", () => {
   it.each(["activate", "revert", "undo"])("%s requests replacement instead of merging cached earlier rows", async (action) => {
@@ -47,7 +54,7 @@ describe("branch actions replace scoped history", () => {
     const open = vi.fn(async () => {});
     vi.stubGlobal("openConversation", open);
     // M-73: activation asks first.
-    vi.stubGlobal("confirm", () => true);
+    dialogMock.answer = () => true;
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true, status: 200, text: async () => JSON.stringify({ status: "active", ok: true }),
     })));

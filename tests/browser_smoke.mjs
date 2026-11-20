@@ -2462,12 +2462,14 @@ try {
     });
   }
 
-  // Fork is a real mutation with a browser prompt. The new branch remains
-  // isolated until explicit activation reconstructs its own runtime state.
-  page.once("dialog", (dialog) => dialog.accept("Browser smoke fork"));
+  // Fork is a real mutation that asks for a name in the workbench's own
+  // dialog (M-45). The new branch remains isolated until explicit activation
+  // reconstructs its own runtime state.
   const forkButton = page.locator(".checkpoint-row button").filter({ hasText: /^(Fork|分叉)$/i }).first();
   if (await forkButton.isDisabled()) throw new Error("checkpoint Fork was unexpectedly disabled");
   await forkButton.click();
+  await page.locator(".app-dialog-modal .app-dialog-input").fill("Browser smoke fork");
+  await page.locator(".app-dialog-modal .app-dialog-ok").click();
   await page.locator(".branch-name").filter({ hasText: "Browser smoke fork" }).waitFor({ state: "visible" });
   await page.reload({ waitUntil: "networkidle" });
   await ensureDockOpen();

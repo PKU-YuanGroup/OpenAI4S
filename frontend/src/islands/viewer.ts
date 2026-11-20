@@ -31,6 +31,7 @@ import {
 import { edacTeardown } from "../features/autocomplete/editor";
 import { copyFailedText, copyText } from "../features/chrome/clipboard";
 import { openModalEl } from "../features/chrome/modal";
+import { askConfirm, askText } from "../features/chrome/dialog";
 import { hint, openMenu, type MenuItem } from "../features/sessions/chrome";
 import { ago } from "../features/sessions/dom";
 import { $, el, ghostIconBtn, icon } from "./dom";
@@ -256,8 +257,7 @@ export function absoluteLink(href: string): string {
 }
 
 async function renameArtifact(a: ArtifactRow): Promise<void> {
-  const name =
-    typeof prompt === "function" ? prompt(filesT("artifact.rename.promptFile"), a.filename || "") : null;
+  const name = await askText(filesT("artifact.rename.promptFile"), a.filename || "");
   if (!name || name === a.filename) return;
   try {
     // ART-12: the server renames the workspace file too, keeps the extension
@@ -281,7 +281,10 @@ async function renameArtifact(a: ArtifactRow): Promise<void> {
 }
 
 async function deleteArtifact(a: ArtifactRow): Promise<void> {
-  const ok = typeof confirm === "function" ? confirm(translate("artifact.delete.confirm")) : false;
+  const ok = await askConfirm(translate("artifact.delete.confirm"), {
+    danger: true,
+    okLabel: translate("common.delete"),
+  });
   if (!ok) return;
   try {
     await api(`/artifacts/${a.id}`, { method: "DELETE" });

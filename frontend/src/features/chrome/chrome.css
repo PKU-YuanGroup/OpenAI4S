@@ -95,3 +95,9 @@ body.sidebar-collapsed .col-resizer-side{display:none}
 .upload-conflict .upload-conflict-note{font-size:12px;font-weight:400;opacity:.8;overflow-wrap:anywhere}
 .upload-conflict .upload-conflict-remember{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--text-300)}
 .upload-conflict .upload-conflict-remember input{height:auto;margin:0;padding:0}
+
+/* M-45: in-app confirm / text / notice dialogs (dialog.ts), above every other overlay. */
+.app-dialog-modal{z-index:1100}
+.app-dialog .app-dialog-msg{margin:0;font-size:14px;font-weight:400;line-height:1.5;color:var(--text-000);white-space:pre-line;overflow-wrap:anywhere}
+.app-dialog .app-dialog-input{margin-top:8px}
+.app-dialog .solid-btn.danger{background:var(--danger)}

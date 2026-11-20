@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 
 const highlightCalls = vi.hoisted(() => vi.fn());
 
@@ -141,6 +148,7 @@ describe("F-14 Notebook", () => {
   });
 
   afterEach(() => {
+    dialogMock.answer = () => false;
     vi.unstubAllGlobals();
     setNotebookRenderImpl(null);
     setNotebookApi(null);
@@ -575,7 +583,7 @@ describe("F-14 Notebook", () => {
     it("Restart interrupts the user's own running cell instead of queueing behind it", async () => {
       // NB-10: a restart waited for the running REPL cell, and the header kept
       // the old generation and "Busy" with nothing saying a restart was asked.
-      vi.stubGlobal("confirm", () => true);
+      dialogMock.answer = () => true;
       vi.stubGlobal("hint", () => undefined);
       executionQueue.value = {
         owner: { execution_id: "repl-1", owner: { kind: "user_repl", id: "repl-1" } },

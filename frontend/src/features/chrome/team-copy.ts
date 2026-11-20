@@ -113,6 +113,8 @@ export const teamT = copyLookup({
     "team.audit.user_llm_key_set": "设置个人模型 key",
     "team.audit.user_llm_key_clear": "移除个人模型 key",
     "team.files": "团队文件",
+    "team.files.uploadFailed": "上传失败：{0}",
+    "team.files.uploadUnreachable": "上传失败：无法连接到服务。",
     "team.missing.sub":
       "这个会话不存在、已被删除，或你没有访问权限。如果是同事发来的链接，请让会话所有者把它设为项目可见，并确认你是该项目的成员。",
   },
@@ -222,6 +224,8 @@ export const teamT = copyLookup({
     "team.audit.user_llm_key_set": "own model key set",
     "team.audit.user_llm_key_clear": "own model key removed",
     "team.files": "Team files",
+    "team.files.uploadFailed": "Upload failed: {0}",
+    "team.files.uploadUnreachable": "Upload failed: the server could not be reached.",
     "team.missing.sub":
       "This session does not exist, was deleted, or you do not have access to it. If a colleague sent the link, ask the session's owner to make it visible to the project, and check that you are a member of that project.",
   },

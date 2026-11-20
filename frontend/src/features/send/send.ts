@@ -48,6 +48,7 @@ import {
 } from "../chrome/upload";
 import { restoreAttachments, takeAttachments, type ComposerAttachment } from "../chrome/attachments";
 import { clearDraft } from "../chrome/drafts";
+import { askConfirm } from "../chrome/dialog";
 import { loadSkillsCatalog } from "../autocomplete/catalog";
 import { acHoldSend, acPending } from "../autocomplete/composer";
 import {
@@ -631,8 +632,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       err &&
       (err.code === "model_revision_unavailable" || err.code === "model_revision_ambiguous")
     ) {
-      const ask =
-        typeof globalThis.confirm === "function" ? globalThis.confirm(rebindConfirmText(err)) : false;
+      const ask = await askConfirm(rebindConfirmText(err));
       if (ask) {
         try {
           const rebound = await api(`/frames/${encodeURIComponent(dispatchFrameId)}/model-binding`, {

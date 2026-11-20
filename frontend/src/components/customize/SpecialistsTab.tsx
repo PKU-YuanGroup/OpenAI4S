@@ -69,7 +69,7 @@ export function SpecialistsTab() {
             name="trash-2"
             title={t("common.delete")}
             onClick={async () => {
-              if (!confirmAction(t("cust.specialists.deleteConfirm", asString(s.name))))
+              if (!(await confirmAction(t("cust.specialists.deleteConfirm", asString(s.name)))))
                 return;
               try {
                 await api(`/specialists/${encodeURIComponent(asString(s.name))}`, {

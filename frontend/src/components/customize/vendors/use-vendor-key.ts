@@ -2,7 +2,7 @@ import { useState } from "preact/hooks";
 import { t } from "../../../i18n";
 import { copyLookup } from "../../../i18n/copy";
 import { api, apiErrorText } from "../../../features/customize/api";
-import { confirmAction } from "../../../features/customize/host";
+import { askConfirm } from "../../../features/chrome/dialog";
 
 /** Feature-local: the generated `i18n/en.ts` / `zh.ts` are byte-checked extracts. */
 export const vendorKeyT = copyLookup({
@@ -90,9 +90,9 @@ export function useVendorKey(
    * to the browser.
    */
   const modelKeyAvailable = loaded && !failure && !!config?.model_key_available;
-  const useModelKey = () => {
+  const useModelKey = async () => {
     if (!config || savingKey || !modelKeyAvailable) return;
-    if (!confirmAction(vendorKeyT("vendor.useModelKeyConfirm"))) return;
+    if (!(await askConfirm(vendorKeyT("vendor.useModelKeyConfirm")))) return;
     void submit({ use_model_key: true });
   };
 

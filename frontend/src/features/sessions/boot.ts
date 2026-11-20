@@ -26,6 +26,7 @@ import { loadDashboard, repaintDashboard, showDashboard } from "./dashboard";
 import { $, grow, setSidebar, setTitle, syncMobileChrome } from "./dom";
 import { bindMessageScroll } from "../messages/scroll";
 import { bindModalDismiss } from "../chrome/modal";
+import { askConfirm } from "../chrome/dialog";
 import { paintIcons } from "./icon";
 import { callLane, hostWindow } from "./lane";
 import { loadSessions, renderSessions, syncCurrentTitle } from "./load";
@@ -229,7 +230,8 @@ export function bindWorkbench(): Promise<void> {
   if (pmDelete) {
     pmDelete.onclick = async () => {
       const id = editingProject.value;
-      if (!id || !confirm(t("proj.delete.confirm"))) return;
+      if (!id) return;
+      if (!(await askConfirm(t("proj.delete.confirm"), { danger: true, okLabel: t("common.delete") }))) return;
       await deleteProject(String(id));
     };
   }

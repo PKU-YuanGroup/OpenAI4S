@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../../../features/chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 
 // The tabs render the DataPro and Doubao cards before their config request
 // answers. The cards must show what that request brings once it lands, not
@@ -501,11 +508,11 @@ describe.each([
 
   it("asks once, then has the server save the model's key; the key never passes through", async () => {
     const tree = await open(true);
-    vi.stubGlobal("window", { confirm: () => false });
+    dialogMock.answer = () => false;
     shareButton(tree)!.props!.onClick!();
     await settle();
     expect(writes()).toEqual([]);
-    vi.stubGlobal("window", { confirm: () => true });
+    dialogMock.answer = () => true;
     shareButton(tree)!.props!.onClick!();
     await settle();
     expect(writes()).toEqual([["/api/v1" + path, JSON.stringify({ use_model_key: true })]]);

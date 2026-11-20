@@ -9,12 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: String, API: "/api/v1", ApiError: Error }));
 vi.mock("./chrome", () => ({ hint: vi.fn(), openMenu: vi.fn(), ensureActivateKeys: vi.fn() }));
 vi.mock("./conversation", () => ({ openConversation: vi.fn(), resumeWatch: vi.fn() }));
+vi.mock("../chrome/dialog", () => ({ askConfirm: vi.fn(), askText: vi.fn(), showNotice: vi.fn() }));
 
 import { t } from "../../i18n";
 import { _foldersFor, _sessionScope, currentId, folders, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { deleteSession, moveToFolderAt } from "./actions";
 import { api } from "./api";
+import { askText } from "../chrome/dialog";
 import { openMenu, type MenuItem } from "./chrome";
 import { openConversation } from "./conversation";
 
@@ -48,7 +50,7 @@ describe("New folder and move", () => {
       if (path.startsWith("/frames?")) return { frames: [{ id: "f", project_id: "P", folder_id: "new" }], has_more: false };
       throw new Error(`unexpected request: ${path}`);
     });
-    vi.stubGlobal("prompt", () => "Lab");
+    vi.mocked(askText).mockResolvedValue("Lab");
 
     moveToFolderAt({} as Element, "f");
     const items = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
