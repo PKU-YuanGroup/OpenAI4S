@@ -69,7 +69,7 @@ describe("a failure fixed in Settings", () => {
     const box = failureMeta({ code: "llm_no_credential", request_id: "web-1" }) as unknown as FakeNode;
 
     // The bubble above already carries the sentence; this row adds the id.
-    expect(box.textContent).toBe("Support ID: web-1");
+    expect(box.textContent).toBe("Support ID: web-1 Details: logs/support.log in the data directory.");
     expect(box.dataset.failureCode).toBe("llm_no_credential");
     const [button] = box.children;
     expect(box.children).toHaveLength(1);
@@ -86,6 +86,8 @@ describe("a failure fixed in Settings", () => {
       expect(needsModelSettings(code)).toBe(false);
       const box = failureMeta({ code, request_id: "web-2" }) as unknown as FakeNode;
       expect(box.children).toHaveLength(0);
+      // Any failure with an id says where that id can be looked up.
+      expect(box.textContent).toContain("logs/support.log");
     }
     expect(openCustomize).not.toHaveBeenCalled();
   });

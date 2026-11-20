@@ -39,6 +39,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import uuid
 from typing import Any, Callable
@@ -394,7 +395,93 @@ def log_event(event: str, /, **fields: Any) -> dict:
     return record
 
 
+#: The file a support id shown to a user can be looked up in.
+SUPPORT_LOG_NAME = "support.log"
+_SUPPORT_MAX_BYTES = 1024 * 1024
+_SUPPORT_KEEP = 2
+_SUPPORT_LINE_MAX = 4096
+_SUPPORT_TEXT_MAX = 500
+_SUPPORT_ID = re.compile(r"[A-Za-z0-9._:-]{1,96}")
+_support_lock = threading.Lock()
+
+
+def support_log_path() -> Any:
+    """``<data_dir>/logs/support.log``, or ``None`` when there is no data dir."""
+    try:
+        from openai4s.config import get_config
+
+        return get_config().logs_dir / SUPPORT_LOG_NAME
+    except Exception:  # noqa: BLE001 - no usable data directory, no log
+        return None
+
+
+def record_support_event(
+    request_id: Any, /, *, evidence: Any = None, **fields: Any
+) -> dict | None:
+    """Append the one line a quoted support id can be looked up by.
+
+    A failure shown to a user carries an id and a deliberately generic
+    sentence. That trade is only fair if the id leads somewhere, and
+    `log_event` is off unless `OPENAI4S_STRUCTURED_LOGS` is set -- so on a
+    default install the id led nowhere at all. This sink is always on.
+
+    It is not a second place for exception text. Callers pass typed facts and
+    sentences this codebase wrote; every value still goes through the same
+    field redaction as `log_event`, and free text through `redact_text` and
+    `redact_identities`, bounded. Never a request body, a key or a token.
+
+    ``evidence`` is the exception's typed record (type chain, stable codes,
+    code locations -- `package_runtime.failure_evidence`), which holds no
+    message text by construction. It is kept as given: the field redactor
+    reads a dotted type name or a ``file.py:123`` location as an opaque token
+    and would fingerprint exactly the part worth reading.
+
+    Bounded by rotation (two generations of 1 MiB), owner-only, and it never
+    raises: a failure to log must not become the failure.
+    """
+    if type(request_id) is not str or not _SUPPORT_ID.fullmatch(request_id):
+        return None
+    record: dict[str, Any] = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "request_id": request_id,
+    }
+    for key, value in fields.items():
+        if value is None or value == "":
+            continue
+        value = redact(value, _key=key)
+        if isinstance(value, str):
+            value = redact_identities(redact_text(value))[:_SUPPORT_TEXT_MAX]
+        record[key] = value
+    if isinstance(evidence, dict) and evidence:
+        record["evidence"] = evidence
+    try:
+        line = json.dumps(record, ensure_ascii=False, default=str)
+        if len(line) > _SUPPORT_LINE_MAX:
+            # The typed evidence is the only part that can be large.
+            record.pop("evidence", None)
+            line = json.dumps(record, ensure_ascii=False, default=str)
+        path = support_log_path()
+        if path is None:
+            return None
+        from openai4s.diagnostics import rotate_log
+
+        with _support_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            rotate_log(path, max_bytes=_SUPPORT_MAX_BYTES, keep=_SUPPORT_KEEP)
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags, 0o600)
+            try:
+                os.write(fd, (line[:_SUPPORT_LINE_MAX] + "\n").encode("utf-8"))
+            finally:
+                os.close(fd)
+    except Exception:  # noqa: BLE001 - logging must never break a request
+        return None
+    return record
+
+
 __all__ = [
+    "SUPPORT_LOG_NAME",
     "correlation_id",
     "enabled",
     "fingerprint",
@@ -405,6 +492,8 @@ __all__ = [
     "redact_identities",
     "redact_text",
     "redact_url",
+    "record_support_event",
     "reset_correlation_id",
     "set_correlation_id",
+    "support_log_path",
 ]

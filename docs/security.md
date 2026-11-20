@@ -544,6 +544,17 @@ Structured logs are **off unless `OPENAI4S_STRUCTURED_LOGS=1`**: turning them on
 by default would change what every existing deployment writes to disk. When on,
 each event is one JSON object per line on stderr.
 
+One thing is written regardless of that switch. A failure shown to a user
+carries a support ID and a deliberately generic sentence, so every such ID also
+gets one line in `<data_dir>/logs/support.log` (owner-only, two rotated
+generations of 1 MiB): the time, the ID, the surface, the exception category,
+the stable code and status, and where in the code it came from. It holds text
+only when this codebase wrote it (a refusal the client was sent, or the
+missing-credential message); an unknown exception's own message is never
+rendered there, for the same reason it is not shown. `grep <id>` on that file
+is how an ID is looked up. The diagnostics bundle collects it with the other
+logs.
+
 Redaction is by **value shape, not field name**. A denylist of key names is not
 evidence that a log has no secrets in it — a credential stored under an
 unremarkable key is precisely the one such a rule misses. So any long, opaque,

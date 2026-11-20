@@ -23,6 +23,7 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     llm_model_not_found: "The model provider has no such model or route. Check the model name and base URL in Settings → Models.",
     llm_network: "The model service could not be reached. Check the network and the base URL in Settings → Models.",
     openModels: "Open model settings",
+    supportLog: "Details: logs/support.log in the data directory.",
     continue: "Continue",
     draft: "Send or clear the draft in the composer first; Continue sends its own message.",
     prompt: "Continue from the completed work. Follow the stopped-turn recovery guidance, choose a different approach if the last attempt repeated itself, and finish only the remaining work.",
@@ -39,6 +40,7 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     llm_model_not_found: "模型服务找不到这个模型或接口。请在 设置 → 模型 检查模型名称和服务地址。",
     llm_network: "无法连接到模型服务。请检查网络，以及 设置 → 模型 里的服务地址。",
     openModels: "打开模型设置",
+    supportLog: "详情见数据目录下的 logs/support.log。",
     continue: "继续",
     draft: "请先发送或清空输入框里的草稿；“继续”会发送它自己的消息。",
     prompt: "请基于已完成的工作继续，遵循中断恢复提示；如果上次陷入重复，请换一种方法，只处理尚未完成的部分。",
@@ -94,7 +96,9 @@ export function failureMeta(failure: Failure): HTMLElement {
   const cause = recoverable || setup ? "" : failureCodeHint(failure.code);
   if (cause) bits.push(cause);
   if (failure.output_committed && !recoverable) bits.push(t("turn.failedCommitted"));
-  if (failure.request_id) bits.push(t("turn.supportId", String(failure.request_id).slice(0, 96)));
+  // The id is only worth quoting if it leads somewhere: the daemon writes one
+  // line per id there, whether or not structured logs are on.
+  if (failure.request_id) bits.push(t("turn.supportId", String(failure.request_id).slice(0, 96)), COPY[LANG].supportLog || "");
   box.textContent = bits.join(" ");
   box.dataset.requestId = failure.request_id ? String(failure.request_id).slice(0, 96) : "";
   box.dataset.failureCode = failure.code ? String(failure.code).slice(0, 64) : "";

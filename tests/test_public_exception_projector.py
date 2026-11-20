@@ -2227,6 +2227,138 @@ def test_the_model_list_says_when_no_credential_is_configured(runner, monkeypatc
     assert body["credential_missing"] is False
 
 
+# --------------------------------------------------------------------------
+# a support id leads somewhere on a default install (usability review SET-1)
+# --------------------------------------------------------------------------
+
+
+def _support_lines():
+    from openai4s.observability import support_log_path
+
+    path = support_log_path()
+    if path is None or not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text("utf-8").splitlines()]
+
+
+@pytest.mark.stubbed_backend
+def test_a_support_id_shown_to_a_user_can_be_looked_up(runner, monkeypatch):
+    """The UI said "Support ID: web-..." and nothing on disk contained it:
+    `<data_dir>/logs/` was empty and structured logs are off by default."""
+    from openai4s.llm.models import MissingCredentialError
+
+    monkeypatch.delenv("OPENAI4S_STRUCTURED_LOGS", raising=False)
+    exc = MissingCredentialError("no API key configured for provider 'deepseek'")
+    _fid, _accepted, result, _messages = _run_failing_turn(runner, monkeypatch, exc)
+
+    assert result["request_id"]
+    [line] = [
+        row for row in _support_lines() if row["request_id"] == result["request_id"]
+    ]
+    assert line["surface"] == "web:turn"
+    assert line["code"] == "llm_no_credential"
+    assert line["exception"] == "LLMError"
+    assert "no API key configured" in line["detail"]
+    assert line["ts"].endswith("Z")
+    # Readable, not fingerprinted: the type chain and the code locations are
+    # what tell an operator where the failure came from.
+    assert any("MissingCredentialError" in label for label in line["evidence"]["chain"])
+    assert any(".py" in place for place in line["evidence"]["where"])
+
+
+@pytest.mark.stubbed_backend
+def test_the_support_log_never_carries_an_unknown_exceptions_text(runner, monkeypatch):
+    """Not a second place for `str(exc)`: the generic public sentence exists
+    because a provider can echo a key and an OSError can name a path. The line
+    says what kind of failure it was and where, from typed fields."""
+    exc = TransportError(
+        f"POST failed for {CANARIES[0]} reading {CANARIES[1]} via {CANARIES[2]}",
+        provider="deepseek",
+        status=502,
+        body=f"upstream body {CANARIES[0]}",
+    )
+    _fid, _accepted, result, _messages = _run_failing_turn(runner, monkeypatch, exc)
+    public_exception(CanaryFailure(), surface="canary:test", request_id="web-canary")
+
+    from openai4s.observability import support_log_path
+
+    text = support_log_path().read_text("utf-8")
+    for canary in CANARIES:
+        assert canary not in text
+    by_id = {row["request_id"]: row for row in _support_lines()}
+    turn = by_id[result["request_id"]]
+    assert turn["status"] == 502 and turn["provider"] == "deepseek"
+    assert turn["exception"] == "LLMError"
+    assert "detail" not in turn
+    unknown = by_id["web-canary"]
+    assert unknown["surface"] == "canary:test"
+    assert unknown["exception"] == "RuntimeError"
+    assert "detail" not in unknown
+
+
+def test_a_gateway_errors_own_message_is_logged_with_its_code():
+    """An author-written refusal is the one text that is safe to keep: the
+    client was sent the same words."""
+    public_exception(
+        gateway_mod.GatewayError(409, "the model pin is dangling", "model_pin_missing"),
+        surface="web:turn",
+        request_id="web-pin-1",
+    )
+
+    [line] = [row for row in _support_lines() if row["request_id"] == "web-pin-1"]
+    assert line["detail"] == "the model pin is dangling"
+    assert line["code"] == "model_pin_missing"
+    assert line["status"] == 409
+
+
+def test_support_log_text_is_redacted_and_ids_are_validated():
+    from openai4s.observability import record_support_event, support_log_path
+
+    assert record_support_event("not an id\nwith a newline", surface="x") is None
+    assert record_support_event("", surface="x") is None
+    assert record_support_event(None, surface="x") is None
+    assert not support_log_path().exists()
+
+    record_support_event(
+        "web-redact-1",
+        surface="web:turn",
+        detail=f"refused for {CREDENTIAL} under /Users/somebody/project/data.csv",
+        api_key=CREDENTIAL,
+        empty="",
+    )
+
+    text = support_log_path().read_text("utf-8")
+    assert CREDENTIAL not in text
+    assert "/Users/somebody" not in text
+    [line] = _support_lines()
+    assert line["request_id"] == "web-redact-1"
+    assert line["api_key"].startswith("<redacted:")
+    assert "empty" not in line
+
+
+def test_the_support_log_is_bounded_and_owner_only(monkeypatch):
+    import os
+
+    from openai4s import observability
+
+    monkeypatch.setattr(observability, "_SUPPORT_MAX_BYTES", 2_000)
+    for index in range(200):
+        observability.record_support_event(
+            f"web-{index}", surface="web:turn", detail="x" * 200
+        )
+
+    path = observability.support_log_path()
+    generations = sorted(p.name for p in path.parent.glob("support.log*"))
+    assert generations == ["support.log", "support.log.1", "support.log.2"]
+    assert all(
+        p.stat().st_size < 2_000 + 1_000 for p in path.parent.glob("support.log*")
+    )
+    # The newest id is still there to be found.
+    assert "web-199" in path.read_text("utf-8")
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
 def test_the_running_executions_own_terminal_still_closes_the_window(hub):
     """The guard must not make a turn impossible to finish."""
     hub._record(
