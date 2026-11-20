@@ -1184,11 +1184,56 @@ def cmd_diagnostics(args) -> int:
     return 0
 
 
+def _state_config():
+    """The config for `status`, `url` and `stop`, which only read state files.
+
+    ``get_config()`` creates the data directory and its subdirectories, so a
+    mistyped ``OPENAI4S_DATA_DIR`` answered "not running" and left a new empty
+    data directory behind, and one naming a file or an unwritable place was a
+    traceback from ``mkdir``.
+    """
+    return get_config(initialize_dirs=False)
+
+
+def _data_dir_not_a_directory(cfg) -> str | None:
+    """The `error:` line for a data dir that names a file, else None.
+
+    Reading the pidfile below such a path raises ``NotADirectoryError``.
+    """
+    data_dir = getattr(cfg, "data_dir", None)
+    if data_dir is None:
+        return None
+    target = Path(data_dir)
+    if target.exists() and not target.is_dir():
+        return (
+            f"error: the data directory {target} is not a directory; point "
+            "OPENAI4S_DATA_DIR at the one the daemon was started with"
+        )
+    return None
+
+
+def _not_running_line(cfg) -> str:
+    """`daemon: not running`, naming the data dir that was checked."""
+    data_dir = getattr(cfg, "data_dir", None)
+    if data_dir is None:
+        return "daemon: not running"
+    if not Path(data_dir).exists():
+        return (
+            f"daemon: not running (there is no data directory at {data_dir}; "
+            "check OPENAI4S_DATA_DIR)"
+        )
+    return f"daemon: not running (data dir {data_dir})"
+
+
 def cmd_status(args) -> int:
-    cfg = get_config()
+    cfg = _state_config()
+    refusal = _data_dir_not_a_directory(cfg)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
     pid = _read_pid(cfg)
     if not pid or not _daemon_alive(cfg, pid):
-        print("daemon: not running")
+        print(_not_running_line(cfg))
         return 1
     endpoint = _recorded_endpoint(cfg, pid)
     # confirm via /health
@@ -1299,10 +1344,14 @@ def _poll_attempts(seconds: float) -> int:
 
 
 def cmd_stop(args) -> int:
-    cfg = get_config()
+    cfg = _state_config()
+    refusal = _data_dir_not_a_directory(cfg)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
     pid = _read_pid(cfg)
     if not pid or not _daemon_alive(cfg, pid):
-        print("daemon: not running")
+        print(_not_running_line(cfg))
         _clear_state(cfg)
         return 1
     timeout = getattr(args, "timeout", None) or STOP_TIMEOUT_S
@@ -1364,7 +1413,11 @@ def cmd_lab(args) -> int:
 
 
 def cmd_url(args) -> int:
-    cfg = get_config()
+    cfg = _state_config()
+    refusal = _data_dir_not_a_directory(cfg)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
     print(
         _sign_in_url(
             cfg,
@@ -1380,9 +1433,10 @@ def cmd_url(args) -> int:
     if getattr(cfg, "pidfile", None) is not None and not (
         pid and _daemon_alive(cfg, pid)
     ):
+        missing = "" if Path(cfg.data_dir).exists() else " (it does not exist)"
         print(
             "warning: no OpenAI4S daemon is running for data dir "
-            f"{cfg.data_dir}; start it with ./start.sh or `openai4s serve`. If "
+            f"{cfg.data_dir}{missing}; start it with ./start.sh or `openai4s serve`. If "
             "it was started with OPENAI4S_DATA_DIR or OPENAI4S_PORT, run this "
             "command with the same variables.",
             file=sys.stderr,

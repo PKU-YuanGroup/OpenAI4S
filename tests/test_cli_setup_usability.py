@@ -327,3 +327,66 @@ def test_serve_names_the_way_to_sign_in_once_and_with_the_path_fallback(tmp_path
 
     assert banner.splitlines()[-1].strip() == cli._sign_in_hint(cfg)
     assert "uv run openai4s url" in banner
+
+
+# --------------------------------------------------------------------------
+# `status`, `url`, `stop`: read the daemon's state, create nothing
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["status", "url", "stop"])
+def test_a_state_command_leaves_a_mistyped_data_dir_uncreated(
+    tmp_path, monkeypatch, capsys, command
+):
+    """CLI-13. `OPENAI4S_DATA_DIR=<typo> openai4s status` answered "daemon:
+    not running" and created <typo>/{artifacts,logs,...} as a side effect, so
+    the typo turned into a real, empty data directory."""
+    typo = tmp_path / "typo-dir"
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(typo))
+
+    rc = _cli().main([command])
+
+    out = capsys.readouterr()
+    assert not typo.exists()
+    assert str(typo) in out.out + out.err
+    if command == "url":
+        assert rc == 0
+        assert "it does not exist" in out.err
+    else:
+        assert rc == 1
+        assert f"there is no data directory at {typo}" in out.out
+
+
+@pytest.mark.parametrize("command", ["status", "stop"])
+def test_not_running_names_the_data_dir_it_checked(
+    tmp_path, monkeypatch, capsys, command
+):
+    """CLI-13. `status` and `stop` said only "daemon: not running", while
+    `url` named the data dir it looked in; a daemon started under another
+    OPENAI4S_DATA_DIR looked simply absent."""
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(data))
+
+    assert _cli().main([command]) == 1
+
+    assert f"daemon: not running (data dir {data})" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["status", "url", "stop"])
+def test_a_state_command_refuses_a_data_dir_that_is_a_file(
+    tmp_path, monkeypatch, capsys, command
+):
+    """CLI-12. `OPENAI4S_DATA_DIR=<a file> openai4s status` was a
+    FileExistsError traceback from mkdir."""
+    afile = tmp_path / "afile"
+    afile.write_text("", encoding="utf-8")
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(afile))
+
+    rc = _cli().main([command])
+
+    out = capsys.readouterr()
+    assert rc == 1
+    assert out.err.startswith(f"error: the data directory {afile} is not a directory")
+    assert "Traceback" not in out.err
+    assert out.out == ""
