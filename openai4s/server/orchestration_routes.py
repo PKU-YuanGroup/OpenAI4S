@@ -112,9 +112,10 @@ def _may_submit_to(self, backend: str) -> bool:
     return backend not in PRIVILEGED_BACKENDS
 
 
-def _job_json(workload: Any, allocation: Any = None) -> dict:
+def _job_json(workload: Any, allocation: Any = None, exit_code: Any = None) -> dict:
     """The wire shape. `allocation_id` is the public identity of a running
-    attempt; the backend's own job id stays inside (INV-2)."""
+    attempt; the backend's own job id stays inside (INV-2). `exit_code` is
+    the finished attempt's status, when its backend reported one."""
     payload = {
         "id": workload.id,
         "kind": workload.spec.kind.value,
@@ -130,6 +131,8 @@ def _job_json(workload: Any, allocation: Any = None) -> dict:
         "created_at": getattr(workload, "created_at", None),
         "updated_at": getattr(workload, "updated_at", None),
     }
+    if exit_code is not None:
+        payload["exit_code"] = exit_code
     if allocation is not None:
         payload["allocation"] = {
             "allocation_id": allocation.id,
@@ -138,6 +141,21 @@ def _job_json(workload: Any, allocation: Any = None) -> dict:
             "reason": allocation.reason.value if allocation.reason else None,
         }
     return payload
+
+
+def _exit_code(store: Any, workload: Any) -> int | None:
+    """The exit status of a finished job's last attempt, if one was seen.
+
+    A FAILED job with no reason and empty logs said nothing at all about why;
+    the status the backend observed is the first thing to look at.
+    """
+    if not workload.phase.is_terminal:
+        return None
+    allocations = store.workloads.list_allocations(workload.id)
+    if not allocations:
+        return None
+    code = (allocations[-1].diagnostics or {}).get("exit_code")
+    return code if isinstance(code, int) and not isinstance(code, bool) else None
 
 
 def handle(
@@ -227,7 +245,7 @@ def handle(
             self._json({"error": "job not found"}, 404)
             return True
         allocation = store.workloads.active_allocation(workload.id)
-        payload = _job_json(workload, allocation)
+        payload = _job_json(workload, allocation, _exit_code(store, workload))
         payload["allocations"] = [
             {
                 "allocation_id": a.id,
@@ -261,7 +279,11 @@ def handle(
         self._json(
             {
                 "jobs": [
-                    _job_json(w, store.workloads.active_allocation(w.id))
+                    _job_json(
+                        w,
+                        store.workloads.active_allocation(w.id),
+                        _exit_code(store, w),
+                    )
                     for w in workloads
                 ]
             }

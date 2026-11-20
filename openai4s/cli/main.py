@@ -2870,6 +2870,26 @@ def cmd_relay_gen_token(args) -> int:
     return 0
 
 
+def _cluster_command_refusal(command: list[str]) -> str | None:
+    """Why ``command`` cannot be what the user meant, or None.
+
+    `cluster submit "echo hi"` is the natural way to type a command, and it
+    asks for a program named `echo hi`: the job was accepted, FAILED, and
+    showed the same `echo hi` as a job that ran. One argument with a space in
+    it that is not an existing path is refused with the form that works.
+    """
+
+    if len(command) != 1 or not any(ch.isspace() for ch in command[0]):
+        return None
+    if os.path.exists(command[0]):
+        return None
+    return (
+        f"{command[0]!r} is one argument, which names a program called "
+        "exactly that. Give the command as separate arguments, without the "
+        f"quotes: openai4s cluster submit {command[0].strip()}"
+    )
+
+
 def cmd_cluster(args) -> int:
     """`openai4s cluster …` — batch jobs, through the daemon.
 
@@ -2880,6 +2900,14 @@ def cmd_cluster(args) -> int:
     """
     cfg = get_config()
     action = args.cluster_action
+    if action == "submit":
+        refusal = _cluster_command_refusal(list(args.command))
+        if refusal is not None:
+            if getattr(args, "json", False):
+                print(json.dumps({"error": refusal, "code": "command_is_one_string"}))
+            else:
+                print(f"error: {refusal}", file=sys.stderr)
+            return 2
     if not _require_daemon(cfg):
         return 1
     try:
@@ -2920,11 +2948,19 @@ def cmd_cluster(args) -> int:
         detail = rec.get("error") if isinstance(rec, dict) else None
         print(f"error: {detail or rec or f'HTTP {status}'}", file=sys.stderr)
     elif action == "list":
+        import shlex
+
         jobs = (rec or {}).get("jobs") or []
         for job in jobs:
+            # Quoted as a shell would need it: `['echo hi']` and
+            # `['echo', 'hi']` printed the same `echo hi`, and only one ran.
+            why = [str(job["reason"])] if job.get("reason") else []
+            if job.get("exit_code") not in (None, 0):
+                why.append(f"exit {job['exit_code']}")
             print(
                 f"{job['id']}  {job['phase']:<10} {job['profile']:<16} "
-                f"{' '.join(job['command'])[:48]}"
+                f"{shlex.join(job['command'])[:48]}"
+                + (f"  ({', '.join(why)})" if why else "")
             )
         if not jobs:
             print("no jobs")
@@ -2935,6 +2971,8 @@ def cmd_cluster(args) -> int:
             print(rec["stdout"], end="")
         if rec.get("stderr"):
             print(rec["stderr"], end="", file=sys.stderr)
+        if not (rec.get("stdout") or rec.get("stderr")):
+            print("(no output)", file=sys.stderr)
     elif action == "profiles":
         for profile in (rec or {}).get("profiles") or []:
             print(

@@ -170,7 +170,11 @@ try:
         env=os.environ,
     )
     exit_code = child.wait()
-except (OSError, ValueError):
+except (OSError, ValueError) as exc:
+    # The job's stderr log is the one place a user looks; without this line
+    # a command that never started was FAILED with empty logs.
+    sys.stderr.write("openai4s: cannot start %r: %s\n" % (command[0], exc))
+    sys.stderr.flush()
     exit_code = 127
 if exit_code < 0:
     signum = -exit_code
@@ -1096,8 +1100,14 @@ class LocalBackend:
                 )
             # A negative code is a signal. SIGKILL after an OOM is the one
             # worth naming, because "killed" and "failed" send an operator
-            # looking in different places.
-            reason = Reason.OUT_OF_MEMORY if code == -signal.SIGKILL else None
+            # looking in different places. 126/127 are the POSIX "cannot
+            # execute" / "not found" statuses (the launcher's own, too): the
+            # command never ran, which is a different place to look again.
+            reason = (
+                Reason.OUT_OF_MEMORY
+                if code == -signal.SIGKILL
+                else Reason.BOOTSTRAP_FAILED if code in (126, 127) else None
+            )
             return Observation(
                 phase=Phase.FAILED,
                 reason=reason,
