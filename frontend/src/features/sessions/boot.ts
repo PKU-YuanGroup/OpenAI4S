@@ -19,6 +19,7 @@ import {
 import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
 import { watchImportedSession } from "./imported";
 import { newSession, routeInitialView } from "./conversation";
+import { bootDocumentTitle } from "./doc-title";
 import { setScopedExecutionRequest } from "../notebook/kernel";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { loadDashboard, repaintDashboard, showDashboard } from "./dashboard";
@@ -198,6 +199,8 @@ export function bindWorkbench(): Promise<void> {
   watchActivateKeys(document);
   watchDisconnect();
   watchImportedSession();
+  // SYNC-18: the browser tab names the open session.
+  bootDocumentTitle();
   setLoadSessionsImpl(async () => { await loadSessions(); });
   // So the session menu's Share item can say "needs setup" on first open.
   void primeShareStatus();

@@ -25,6 +25,8 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`actions.cancel.test.ts`](actions.cancel.test.ts) | 取消回执只有在它命名的执行仍是本客户端正在运行的那个时，才切换到「正在停止…」。 |
 | [`dashboard.ts`](dashboard.ts) | 首页列表、项目搜索 / 加载更多 / 重试、示例 CTA 轮询绑视图生命周期，以及仪表盘唯一的 4 秒轮询，其他功能经 `onDashPoll` 搭载。 每个会话只列一次：等你决定的只在「需要处理」里，运行中的只在「运行中」卡片里，其余在「最近会话」（其他会话都在上方时会说明，而不是显示「还没有会话」）；运行中卡片的副标题是项目名，任务摘要只在比标题多说了内容时才显示。示例分析会保留一条状态提示（运行中，之后是已完成或「6 个单元中有 N 个没有完成」，来自 `/example/session` 的 `result`），带打开会话的按钮；示例按钮是有样式的主按钮。 |
 | [`dashboard.sessions.test.ts`](dashboard.sessions.test.ts) | 仪表盘轮询用一个定时器驱动「运行中」卡片和所有搭载者，启动时立即读取一次。仪表盘的会话列表与示例 CTA：`/frames` 读取失败时如实提示并提供重试，保留上次读到的行，而不是显示没有会话并推荐示例；无论有多少次重绘与它的首次状态读取竞争，CTA 的状态轮询都只跑一份，离开仪表盘之后也不会再启动。 等待审批的会话只出现在「需要处理」，运行中的只出现在「运行中」；「最近会话」会说明会话都在上方，而不是提供示例；运行中卡片的副标题不重复标题；示例分析的状态提示跟随运行，并说明有几个单元没有完成。 种子示例项目的名称和标签跟随界面语言。 |
+| [`doc-title.ts`](doc-title.ts) | SYNC-18：打开会话时 `document.title` 为 `<会话> · <项目> — OpenAI4S`，回合运行中前面加 `⏳ `（等待批准时沿用 `messages/approval.ts` 的「（待批准）」前缀），其他时候为 `OpenAI4S`。 |
+| [`doc-title.test.ts`](doc-title.test.ts) | 各状态下的标题：首页、会话加项目、改名、运行中、待批准。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer 辅助；`FRAME_ROUTE` / `PROJECT_ROUTE` / `routesToWorkspace` 由 `routeInitialView` 与 Shell 首帧共用。`setTitle` 从静态 `data-i18n-val` 标签手中接管 `#conv-title`。 `ago` 使用共享的、随界面语言变化的相对时间（`chrome/dom.ts`）。 |
 | [`icon.ts`](icon.ts) | 本车道菜单、行和 `[data-icon]` 标记用的 `icon` / `iconEl` / `paintIcons`。图形路径取自共享的 `icons/paths.ts` 表。 |
 | [`imported.ts`](imported.ts) | M-66：当打开的会话是被隔离的导入副本（读 `/kernel` 状态，再跟随 Recovery 动作）时，在对话上方显示“只读副本”横幅，并可打开 Recovery 面板里需确认的「全新重启」；输入框被禁用并说明原因，切到其他会话时恢复。由 `boot.ts` 安装。 |
