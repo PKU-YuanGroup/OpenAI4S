@@ -1133,6 +1133,42 @@ describe("a turn's code cells, live and reopened", () => {
       "Load the plate\n" + CODE_1 + "\n----- output -----\nrow 0\nrow 1\nrow 2\n",
     );
   });
+
+  it("says in the UI language where to choose another R when the R kernel refused, live and reopened (M-58)", async () => {
+    await setLang("zh");
+    const NO_R =
+      "R kernel unavailable: no R interpreter available: build the prebuilt 'r' environment (openai4s setup), " +
+      "install R so Rscript is on PATH, or choose an R under Runtime environment (Python / R) in the session options";
+    const help = (): string[] =>
+      Array.from(messages().querySelectorAll(".activity .cell-help")).map((node) => node.textContent || "");
+    renderStored({ role: "user", content: "用 R 画生存曲线", message_id: "m-1" });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    streamCell("c-r", 1, "KM in R", "library(survival)", "", NO_R);
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-r", cell_index: 1, status: "error", error: NO_R });
+    const live = help();
+    expect(live).toHaveLength(1);
+    expect(live[0]).toContain("本会话没有可用的 R");
+    expect(live[0]).toContain("会话选项 → 运行环境（Python / R）");
+    // Settling again does not add a second line.
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-r", cell_index: 1, status: "error", error: NO_R });
+    expect(help()).toEqual(live);
+    turnDone("failed", { type: "frame_update", status: "failed" });
+
+    messages().replaceChildren();
+    await paintHistory(interleaveHistory(
+      [{ role: "user", content: "用 R 画生存曲线", message_id: "m-1", created_at: at(0) }],
+      [],
+      [],
+      [{
+        producing_cell_id: "c-r", cell_index: 1, origin: "agent", title: "KM in R", source: "library(survival)",
+        stdout: "", stderr: "", error: NO_R, status: "error", started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 50,
+      }],
+    ));
+    expect(help()).toEqual(live);
+    // An ordinary failure gets no such line.
+    expect(help().some((line) => line.includes("Traceback"))).toBe(false);
+    await setLang("en");
+  });
 });
 
 // --------------------------------------------------------------------------
