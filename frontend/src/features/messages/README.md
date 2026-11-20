@@ -8,7 +8,8 @@ F-10 message stream. Framed history paint (40 rows per rAF + one fragment), dual
 
 | File | Responsibility |
 | --- | --- |
-| [`failure.ts`](failure.ts) | Shared live and restored failure hints, with explicit continuation for stream interruption and repeated-action stops. |
+| [`failure.ts`](failure.ts) | Shared live and restored failure hints, with explicit continuation for stream interruption and repeated-action stops, and a button to Settings → Models for failures that are fixed there. |
+| [`failure.test.ts`](failure.test.ts) | The five failures fixed in Settings → Models (no key, rejected key, no quota, no such model, no connection) each have a hint in both languages; their failure row offers a button that opens Settings → Models and does not repeat the cause; other failures get no such button. |
 | [`approval.test.ts`](approval.test.ts) | Title, status line and row badge follow an open card and its answer; the card is scrolled into view clear of the pill; the pill points at an out-of-view card and goes back to "Latest". |
 | [`approval.ts`](approval.ts) | A turn waiting for approval is its own state: the open session's open card drives the composer status line, the tab title prefix, the session row's badge (other rows use the server's `awaiting_approval`), the jump pill, and brings the card's buttons into view (above the pill band) when it appears, when a session opens on it, and from the home page's "Approve". A leaf module: nothing from `sessions/` or `scroll.ts`. Feature-local copy. |
 | [`cardState.test.ts`](cardState.test.ts) | A cell card keeps its duration once it ends; a cell under two seconds shows none. |

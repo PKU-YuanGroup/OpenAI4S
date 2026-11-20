@@ -63,6 +63,18 @@ def request_capabilities(cfg: LLMConfig) -> Any:
     )
 
 
+def credential_missing(cfg: LLMConfig, capabilities: Any = None) -> bool:
+    """Whether `chat` would refuse ``cfg`` for want of an API key.
+
+    The one definition of "no model is configured": `chat` raises on it, and
+    the composer and `openai4s status` say it before the first message is sent
+    instead of after it fails.
+    """
+    if cfg.api_key:
+        return False
+    return not (capabilities or request_capabilities(cfg)).local_endpoint
+
+
 def _guard_vision(provider: str, messages: list[dict], *, capabilities=None) -> None:
     """Raise a clear error if image parts are sent to a text-only provider."""
     if (capabilities or get_model_capabilities(provider)).vision:
@@ -102,7 +114,7 @@ def chat(
         # The same resolver `explain_model_capabilities` projects, so the tools
         # and streaming this call decides are the ones the UI can explain.
         capabilities = request_capabilities(cfg)
-        if not cfg.api_key and not capabilities.local_endpoint:
+        if credential_missing(cfg, capabilities):
             raise MissingCredentialError(
                 f"no API key configured for provider {cfg.provider!r}: set the "
                 f"OPENAI4S_{cfg.provider.upper()}_API_KEY (or generic OPENAI4S_LLM_API_KEY) "

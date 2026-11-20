@@ -2139,6 +2139,94 @@ def test_every_late_event_from_the_previous_execution_is_dropped(hub):
     assert "B says" in text, "B's own stream was lost"
 
 
+# --------------------------------------------------------------------------
+# a failure the user fixes in Settings says so (usability review FR-1)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.stubbed_backend
+def test_a_missing_api_key_is_named_on_every_surface(runner, monkeypatch):
+    """Skipping the wizard and sending a message produced "The LLM call
+    failed. Check the model and API key ..." and a code of `internal_error`:
+    the daemon knew exactly which of the two it was and said neither."""
+    from openai4s.llm.models import MissingCredentialError
+
+    exc = MissingCredentialError(
+        "no API key configured for provider 'deepseek': set the "
+        "OPENAI4S_DEEPSEEK_API_KEY environment variable"
+    )
+    _fid, _accepted, result, messages = _run_failing_turn(runner, monkeypatch, exc)
+    updates = _failed_frame_updates(runner)
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert result["code"] == "llm_no_credential"
+    assert updates[-1]["code"] == "llm_no_credential"
+    assert stored[-1]["failure"]["code"] == "llm_no_credential"
+    assert "No API key is configured" in result["error"]
+    assert "Settings → Models" in result["error"]
+    assert "The LLM call failed" not in result["error"]
+    assert stored[-1]["content"] == result["error"]
+
+
+@pytest.mark.stubbed_backend
+def test_a_missing_api_key_is_said_in_the_language_of_the_request(runner, monkeypatch):
+    from openai4s.llm.models import MissingCredentialError
+
+    _fid, _accepted, result, _messages = _run_failing_turn(
+        runner, monkeypatch, MissingCredentialError("no key"), request="帮我画一张图"
+    )
+
+    assert result["code"] == "llm_no_credential"
+    assert "设置 → 模型" in result["error"]
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    ("status", "code", "needle"),
+    [
+        (401, "llm_auth_rejected", "rejected the API key"),
+        (403, "llm_auth_rejected", "rejected the API key"),
+        (404, "llm_model_not_found", "no such model"),
+        (None, "llm_network", "could not be reached"),
+    ],
+)
+def test_rejected_key_unknown_model_and_no_connection_each_get_a_code(
+    runner, monkeypatch, status, code, needle
+):
+    exc = TransportError(
+        f"LLM HTTP {status}: {CANARIES[0]}", provider="deepseek", status=status
+    )
+    _fid, _accepted, result, _messages = _run_failing_turn(runner, monkeypatch, exc)
+
+    assert result["code"] == code
+    assert _failed_frame_updates(runner)[-1]["code"] == code
+    assert needle in result["error"]
+    assert CANARIES[0] not in result["error"]
+
+
+def test_the_model_list_says_when_no_credential_is_configured(runner, monkeypatch):
+    """The composer showed a default model name as if it were ready."""
+    body, status = _api(runner, "GET", "/models")
+    assert status == 200
+    assert body["credential_missing"] is False
+
+    # A provider the registry knows: the suite's own "deepseek" is not one,
+    # and an unresolvable configuration makes no claim either way.
+    keyless = LLMConfig(provider="claude")
+    keyless.api_key = ""  # after __post_init__'s environment fallback
+    monkeypatch.setattr(runner, "_llm_cfg", lambda *a, **k: keyless)
+
+    body, _status = _api(runner, "GET", "/models")
+    assert body["credential_missing"] is True
+
+    local = LLMConfig(provider="ollama", base_url="http://127.0.0.1:11434/v1")
+    local.api_key = ""
+    monkeypatch.setattr(runner, "_llm_cfg", lambda *a, **k: local)
+
+    body, _status = _api(runner, "GET", "/models")
+    assert body["credential_missing"] is False
+
+
 def test_the_running_executions_own_terminal_still_closes_the_window(hub):
     """The guard must not make a turn impossible to finish."""
     hub._record(

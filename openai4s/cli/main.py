@@ -1214,6 +1214,15 @@ def cmd_status(args) -> int:
         )
         print("  open     : run `openai4s url` for the sign-in URL")
         print(f"  model    : {health.get('model')}")
+        from openai4s import doctor
+
+        if doctor.credential_missing(cfg):
+            # A model name alone reads as "ready". Local configuration, like
+            # the data directory below: nothing is asked of the daemon.
+            print(
+                "  api key  : not configured — add one in Settings → Models "
+                "(or set OPENAI4S_LLM_API_KEY in .env and restart)"
+            )
         # The loopback health response is intentionally a minimal public
         # projection.  The CLI already owns the local configuration, so it can
         # report the data directory without publishing an absolute host path

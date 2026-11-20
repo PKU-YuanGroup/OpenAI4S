@@ -282,6 +282,24 @@ def _model(cfg: Any) -> Check:
     )
 
 
+def credential_missing(cfg: Any) -> bool:
+    """Whether the configured model needs an API key and none is configured.
+
+    The model check's own answer, for `openai4s status`: a model name alone
+    read as "ready". ``False`` whenever that cannot be told (the settings
+    database was not opened, or the check itself failed) -- no claim.
+    """
+    try:
+        facts = _model(cfg).facts
+    except Exception:  # noqa: BLE001 - status must not fail on a diagnosis
+        return False
+    return (
+        facts.get("api_key_configured") is False
+        and not facts.get("endpoint_is_local")
+        and facts.get("database_settings_read", True)
+    )
+
+
 def _runtime(cfg: Any) -> Check:
     """Is there an interpreter for the scientific execution plane?"""
     import sys

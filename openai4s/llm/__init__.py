@@ -53,6 +53,7 @@ from .client import supports_vision, supports_vision_for
 from .models import (
     LLMError,
     TransportError,
+    llm_error_kind,
     llm_failure_code,
     llm_retry_outcome,
     parse_retry_after,
@@ -84,6 +85,7 @@ __all__ = [
     "TransportError",
     "UsageMapping",
     "adopted_receipts",
+    "llm_error_kind",
     "llm_failure_code",
     "llm_retry_outcome",
     "parse_retry_after",

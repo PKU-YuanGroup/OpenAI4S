@@ -1147,3 +1147,16 @@ def test_the_cli_flag_is_what_turns_the_probe_on(monkeypatch, capsys):
     assert cli.main(["doctor", "--network"]) == 0
     assert seen == [False, True]
     capsys.readouterr()
+
+
+def test_credential_missing_is_the_model_checks_own_answer(cfg, monkeypatch):
+    """`openai4s status` printed a model name as if it were ready (FR-1)."""
+    assert doctor.credential_missing(cfg) is False
+
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    assert _by_name(doctor.report(cfg))["model"]["status"] == doctor.FAIL
+    assert doctor.credential_missing(cfg) is True
+
+    # Nothing can be told from a config the check cannot read: no claim.
+    assert doctor.credential_missing(types.SimpleNamespace()) is False

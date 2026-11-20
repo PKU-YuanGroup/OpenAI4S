@@ -1481,6 +1481,18 @@ def test_status_reports_the_local_data_dir_without_trusting_health(monkeypatch, 
     assert "model    : demo" in output
     assert "data_dir : /trusted/local-data" in output
     assert "/leaked" not in output
+    # No claim about the key when the model check cannot run on this config.
+    assert "api key" not in output
+
+    # A model name alone read as "ready" (usability review FR-1).
+    from openai4s import doctor
+
+    monkeypatch.setattr(doctor, "credential_missing", lambda cfg: cfg is config)
+    assert module.cmd_status(SimpleNamespace()) == 0
+    output = capsys.readouterr().out
+    assert "model    : demo" in output
+    assert "api key  : not configured" in output
+    assert "Settings → Models" in output
 
 
 def test_status_probes_and_reports_the_live_recorded_endpoint(
