@@ -22,7 +22,7 @@ import { running } from "../../stores/stream";
 import { executionQueue } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { publicText } from "../scrub/scrub";
-import { cellOutput, markNotebookSeen, nbCellKey, notebookViewEntries, paintStreamedText, unseenNotebookCells } from "./cells";
+import { cellOutput, markNotebookSeen, nbCellKey, nbFindCell, notebookViewEntries, paintStreamedText, unseenNotebookCells } from "./cells";
 import {
   notebookArtifactState,
   el,
@@ -102,6 +102,51 @@ function notebookCellState(cell: NotebookCell): {
     };
   }
   return { key: "current", cls: "current" };
+}
+
+/** "python [3]" for a cell the Notebook shows, by its producing id. */
+function cellRef(id: string): string {
+  const cell = nbFindCell(id);
+  if (!cell || cell.cell_index == null) return nbT("nb.stale.laterCell");
+  return (cell.language || cell.kernel_id || "python") + " [" + cell.cell_index + "]";
+}
+
+const SUPERSEDED = /^(?:depends on (\S+)(?: \(S\d+\))?: )?variable '([^']+)' was superseded by (\S+)(?: \(S\d+\))?$/;
+const UNCERTAIN = /^(\S+)(?: \(S\d+\))? may have mutated unknown namespace state$/;
+
+/**
+ * SCI-23: why a cell is stale, in words and with the cell numbers the
+ * Notebook shows. The reason was only in a tooltip, as "variable '_seq' was
+ * superseded by c-4653d2c179b5 (S3)" -- an internal id, not "python [3]".
+ */
+export function staleReasonWords(reason: unknown): string {
+  const text = publicText(reason, 400);
+  const superseded = SUPERSEDED.exec(text);
+  if (superseded) {
+    const [, via, variable, by] = superseded;
+    const sentence = nbT("nb.stale.superseded", cellRef(by!), variable);
+    return via ? nbT("nb.stale.via", cellRef(via), sentence) : sentence;
+  }
+  const uncertain = UNCERTAIN.exec(text);
+  if (uncertain) return nbT("nb.stale.uncertain", cellRef(uncertain[1]!));
+  return nbT("nb.stale.other");
+}
+
+/**
+ * M-54: almost every cell wore a "Current" badge, which said nothing. A cell
+ * whose results still hold shows no state; the others say what they are.
+ */
+function CellStateBadge({ state }: { state: ReturnType<typeof notebookCellState> }) {
+  if (state.key === "current") return null;
+  const reasons = (state.reasons || []).map(staleReasonWords);
+  return (
+    <>
+      <span class={"nbc-state " + state.cls} title={reasons.join("\n")}>
+        {nbLabelT("nb.cell." + state.key)}
+      </span>
+      {reasons.length ? <span class="nbc-state-reason">{reasons[0]}</span> : null}
+    </>
+  );
 }
 
 /**
@@ -333,6 +378,17 @@ function CellIo({ cell }: { cell: NotebookCell }) {
   );
 }
 
+/**
+ * SCI-23: why Rerun / Edit as new cell are grey. "This operation is not
+ * exposed by the current server" read as a missing feature; it is the manual
+ * cells switch, or another manual cell still running.
+ */
+function unavailableReason(cell: NotebookCell): string {
+  if (!canRerun.value) return nbT("nb.action.needsManual");
+  if (replBusy.value) return nbT("nb.action.replBusy");
+  return cell.live || !String(cell.source || "").trim() ? t("nb.action.unavailable") : "";
+}
+
 export function CellActions({ cell }: { cell: NotebookCell }) {
   const appendable =
     canRerun.value && !replBusy.value && !cell.live && !!String(cell.source || "").trim();
@@ -348,7 +404,7 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
       <button
         class="nbc-action"
         disabled={!appendable}
-        title={appendable ? t("nb.action.rerun") : t("nb.action.unavailable")}
+        title={appendable ? t("nb.action.rerun") : unavailableReason(cell)}
         onClick={() => {
           if (appendable) void executeNotebookCode(cell.source || "", cell.language || "python");
         }}
@@ -359,7 +415,7 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
         class="nbc-action"
         data-action="edit-as-new-cell"
         disabled={!editable}
-        title={editable ? nbT("nb.action.editTitle") : t("nb.action.unavailable")}
+        title={editable ? nbT("nb.action.editTitle") : unavailableReason(cell)}
         onClick={() => {
           if (editable) editAsNewCell(cell);
         }}
@@ -414,12 +470,7 @@ function CellShell({
         </details>
       ) : null}
       <div class="nbc-cell-meta">
-        <span
-          class={"nbc-state " + cellState.cls}
-          title={(cellState.reasons || []).map((r) => publicText(r, 240)).filter(Boolean).join("\n")}
-        >
-          {nbLabelT("nb.cell." + cellState.key)}
-        </span>
+        <CellStateBadge state={cellState} />
         {/* NB-9: one number per cell. The state revision equals the cell number
             except on a branch or a replay; only then is it a second, labelled fact. */}
         {cell.state_revision != null && cell.state_revision !== cell.cell_index ? (
@@ -1096,9 +1147,14 @@ export function cellNode(e: NotebookCell): HTMLElement {
   const st = e.status || (e.live ? "running" : "ok");
   const idx = e.cell_index != null ? e.cell_index : "…";
   const cellState = notebookCellState(e);
-  const cellMeta = el("div", "nbc-cell-meta");
-  cellMeta.appendChild(el("span", "nbc-state " + cellState.cls, nbLabelT("nb.cell." + cellState.key)));
-  c.appendChild(cellMeta);
+  // M-54: a cell whose results hold carries no badge.
+  if (cellState.key !== "current") {
+    const cellMeta = el("div", "nbc-cell-meta");
+    cellMeta.appendChild(el("span", "nbc-state " + cellState.cls, nbLabelT("nb.cell." + cellState.key)));
+    const reason = (cellState.reasons || [])[0];
+    if (reason != null) cellMeta.appendChild(el("span", "nbc-state-reason", staleReasonWords(reason)));
+    c.appendChild(cellMeta);
+  }
   const wrap = el("div", "os-code");
   const head = el("div", "oc-head");
   const lg = el("span", "oc-lang");

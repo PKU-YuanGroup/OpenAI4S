@@ -60,6 +60,13 @@ const COPY: CopyTable = {
     "nb.variables.hideCode": "只显示数据变量",
     "nb.variables.onlyCode": "还没有数据变量。",
     "nb.newCells.one": "有 1 个新单元 ↓",
+    "nb.stale.superseded": "后续单元 {0} 重新定义了 {1}",
+    "nb.stale.via": "它读取的 {0} 已过期：{1}",
+    "nb.stale.uncertain": "后续单元 {0} 可能改动了它用到的变量",
+    "nb.stale.laterCell": "一个后续单元",
+    "nb.stale.other": "后续单元改动了它用到的变量",
+    "nb.action.needsManual": "在 设置 → 通用 中开启「Notebook 手动单元」后可用。",
+    "nb.action.replBusy": "另一个手动单元正在运行，结束后可用。",
   },
   en: {
     "nb.crash.notice":
@@ -117,6 +124,13 @@ const COPY: CopyTable = {
     "nb.variables.hideCode": "Data variables only",
     "nb.variables.onlyCode": "No data variables yet.",
     "nb.newCells.one": "1 new cell ↓",
+    "nb.stale.superseded": "Later cell {0} redefined {1}",
+    "nb.stale.via": "It reads {0}, which is out of date: {1}",
+    "nb.stale.uncertain": "Later cell {0} may have changed variables it uses",
+    "nb.stale.laterCell": "a later cell",
+    "nb.stale.other": "A later cell changed variables it uses",
+    "nb.action.needsManual": "Available once “Notebook manual cells” is on in Settings → General.",
+    "nb.action.replBusy": "Another manual cell is running; available when it finishes.",
   },
 };
 

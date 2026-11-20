@@ -77,3 +77,18 @@
   font-weight: 600;
   color: var(--text-400);
 }
+
+/* M-54: a cell whose results hold shows no state badge; then the row is empty. */
+.notebook-cell > .nbc-cell-meta:empty {
+  display: none;
+}
+
+/* SCI-23: why a cell is stale, in words beside its badge. */
+.nbc-state-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--warn-text);
+  font-size: 12px;
+}
