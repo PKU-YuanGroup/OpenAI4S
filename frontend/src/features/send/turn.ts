@@ -65,12 +65,13 @@ export function lastTerminalFailure(): {
  * The line under the composer for a failed turn. `shown`: the failed turn's
  * bubble already carries it (its sentence, its support ID and its button), so
  * the line does not say it a second time in other words (M-37): a failure
- * fixed in Settings leaves it empty, any other keeps a short pointer without
- * the ID.
+ * fixed in Settings, or a stop that Continue picks up (SYNC-16: "Stopped
+ * repeating actions" was said twice, worded two ways), leaves it empty; any
+ * other keeps a short pointer without the ID.
  */
 export function failureHint(detail: unknown, shown = false): string {
   const rec = detail && typeof detail === "object" ? (detail as Record<string, unknown>) : null;
-  if (shown) return needsModelSettings(rec?.code) ? "" : t("turn.failed");
+  if (shown) return needsModelSettings(rec?.code) || canContinueFailure(rec?.code) ? "" : t("turn.failed");
   const committed = !!(rec && rec.output_committed) && !canContinueFailure(rec?.code);
   const cause = failureCodeHint(rec && rec.code);
   const base = committed

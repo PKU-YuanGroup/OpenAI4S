@@ -779,4 +779,24 @@ describe("a turn that failed on the model service", () => {
     expect(failureHint({ code: "llm_network", request_id: "req-x" })).toContain("req-x");
     expect(failureHint({ code: "llm_network", request_id: "req-x" })).toContain("passing network problem");
   });
+
+  // SYNC-16: the bubble said "Stopped repeating actions…" with Continue, and the
+  // line under the composer said it again in other words, with the ID again.
+  it("leaves the line under the composer empty after a stop the bubble explains", () => {
+    vi.stubGlobal("Node", FakeEl);
+    currentId.value = "loop-frame";
+    const line = hintLine();
+    startStream();
+    feed("text", "Stopped repeating actions: the model read growth_assay.csv 3 times.\n", {
+      type: "text_chunk",
+      block_type: "text",
+    });
+    const wrap = live().wrap as unknown as FakeEl;
+    turnDone("failed", { code: "no_progress", request_id: "req-loop" });
+    expect(wrap.querySelectorAll(".turn-continue")).toHaveLength(1);
+    expect(line.textContent).toBe("");
+    for (const code of ["llm_stream_timeout", "llm_deadline_exceeded", "no_progress"]) {
+      expect(failureHint({ code, request_id: "req-loop" }, true)).toBe("");
+    }
+  });
 });
