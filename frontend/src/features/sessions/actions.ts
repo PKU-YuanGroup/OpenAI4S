@@ -226,6 +226,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     heading("groupModes"),
     {
       label: checked(review.delegation_enabled !== false) + t("composer.option.delegation"),
+      desc: optionsMenuCopy("delegationDesc"),
       icon: "users",
       onClick: async () => {
         const on = review.delegation_enabled === false;
@@ -259,6 +260,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     heading("groupReview"),
     {
       label: checked(!!review.auto_review) + t("composer.option.autoReview"),
+      desc: optionsMenuCopy("autoReviewDesc"),
       icon: "eye-context",
       onClick: async () => {
         try {
@@ -274,6 +276,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     },
     {
       label: t("composer.option.reviewerModel") + (review.reviewer_model ? ` · ${review.reviewer_model}` : ""),
+      desc: optionsMenuCopy("reviewerModelDesc"),
       icon: "sliders",
       onClick: () => reviewerModelMenu(anchor, review.reviewer_model),
     },
@@ -290,8 +293,18 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     },
     { sep: true },
     heading("groupSettings"),
-    { label: t("composer.option.memory"), icon: "book", onClick: () => callLane("openCust", "memory") },
-    { label: t("composer.option.specialist"), icon: "users", onClick: () => callLane("openCust", "specialists") },
+    {
+      label: t("composer.option.memory"),
+      desc: optionsMenuCopy("memoryDesc"),
+      icon: "book",
+      onClick: () => callLane("openCust", "memory"),
+    },
+    {
+      label: t("composer.option.specialist"),
+      desc: optionsMenuCopy("specialistDesc"),
+      icon: "users",
+      onClick: () => callLane("openCust", "specialists"),
+    },
     {
       label: t("composer.option.compute"),
       desc: optionsMenuCopy("computeDesc"),

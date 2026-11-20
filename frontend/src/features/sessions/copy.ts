@@ -216,7 +216,18 @@ export function composerCopy(key: "usage" | "reviewing" | "on" | "off", ...args:
 
 /** Group headings and distinguishing lines for the composer's session-options menu. */
 export function optionsMenuCopy(
-  key: "groupModes" | "groupReview" | "groupSession" | "groupSettings" | "runtimeDesc" | "computeDesc",
+  key:
+    | "groupModes"
+    | "groupReview"
+    | "groupSession"
+    | "groupSettings"
+    | "runtimeDesc"
+    | "computeDesc"
+    | "delegationDesc"
+    | "autoReviewDesc"
+    | "reviewerModelDesc"
+    | "memoryDesc"
+    | "specialistDesc",
 ): string {
   const copy = LANG === "en" ? {
     groupModes: "How the agent works",
@@ -225,6 +236,12 @@ export function optionsMenuCopy(
     groupSettings: "Open Settings",
     runtimeDesc: "Pick the Python / R environment this session's code runs in",
     computeDesc: "Settings → Compute: environment status, installed packages, remote GPU, background jobs",
+    // SCI-34: every row says what it does, not only the two modes.
+    delegationDesc: "Hands parts of a task to sub-agents in parallel",
+    autoReviewDesc: "A second model checks each answer",
+    reviewerModelDesc: "The model that does that check",
+    memoryDesc: "What the agent keeps between sessions",
+    specialistDesc: "Roles the agent can hand work to",
   } : {
     groupModes: "工作方式",
     groupReview: "审阅",
@@ -232,6 +249,11 @@ export function optionsMenuCopy(
     groupSettings: "打开设置",
     runtimeDesc: "选择这个会话的代码在哪个 Python / R 环境里运行",
     computeDesc: "设置 → 计算：环境状态、已装的包、远程 GPU、后台任务",
+    delegationDesc: "把任务的一部分交给并行的子智能体",
+    autoReviewDesc: "由另一个模型检查每次回答",
+    reviewerModelDesc: "做这次检查的模型",
+    memoryDesc: "智能体在会话之间记住的内容",
+    specialistDesc: "智能体可以把工作交给的角色",
   };
   return copy[key];
 }

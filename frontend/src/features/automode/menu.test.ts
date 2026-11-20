@@ -216,9 +216,37 @@ describe("the menu block", () => {
         "Circuit tripped · Paused · Budget exhausted",
       ]),
     );
+    // SCI-34: a block that needs attention is not folded away.
+    const fold = block.byClass("am-collapse")! as unknown as { open: boolean; children: FakeEl[] };
+    expect(fold.open).toBe(true);
     // The Audit entry sits with the run line, above the ceilings.
-    const order = block.children.map((node) => node.className);
+    const order = fold.children.map((node) => node.className);
     expect(order.indexOf("am-actions")).toBeLessThan(order.indexOf("am-budget am-budget-warn"));
+  });
+
+  it("SCI-34: is one line until opened, and the reader's choice is kept", async () => {
+    const saved = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => saved.get(k) ?? null,
+      setItem: (k: string, v: string) => void saved.set(k, v),
+      removeItem: (k: string) => void saved.delete(k),
+    });
+    autoMode = () => json(autoModeBody());
+    let { block } = await openOptions();
+    let fold = block.byClass("am-collapse")! as unknown as FakeEl & { open: boolean; ontoggle: () => void };
+    expect(fold.open).toBe(false);
+    expect(fold.byClass("am-title")!.textContent).toBe("Auto Mode status · Off");
+    fold.open = true;
+    fold.ontoggle();
+    ({ block } = await openOptions());
+    fold = block.byClass("am-collapse")! as unknown as FakeEl & { open: boolean; ontoggle: () => void };
+    expect(fold.open).toBe(true);
+  });
+
+  it("SCI-34: every option row says what it does", async () => {
+    const { items } = await openOptions();
+    const rows = items.filter((item) => item.label);
+    expect(rows.filter((item) => !item.desc).map((item) => item.label)).toEqual([]);
   });
 
   it("re-places the menu when a disclosure opens", async () => {
