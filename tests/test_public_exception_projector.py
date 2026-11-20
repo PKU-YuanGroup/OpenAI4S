@@ -2503,6 +2503,9 @@ def test_a_late_turn_does_not_end_the_resume_window_of_the_running_one(tmp_path)
         )
         allow_a_finish.set()
         job_a.wait_result()
+        # A failed, so B waits for the user before it runs (M-31); they say run it.
+        assert runner.executions.held_ids(frame_id) == {job_b.execution_id}
+        assert runner.executions.release_held(frame_id) == 1
         assert b_running.wait(20), "B never started"
 
         # B is blocked inside its loop, so it is unambiguously the running
@@ -3362,6 +3365,8 @@ def test_a_failing_plan_turn_owns_the_session_while_it_settles(runner):
         )
         if job_a is not None:
             job_a.wait_result()
+        # The plan turn failed, so the follow-up waits for the user (M-31).
+        runner.executions.release_held(frame_id)
         if job_b is not None:
             job_b.wait_result()
 
