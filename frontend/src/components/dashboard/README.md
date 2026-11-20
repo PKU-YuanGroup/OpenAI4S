@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-F-13 workbench chrome. Frozen ids match `tests/webui-contract.md` (`#dashboard`, `#dash-projects`, `#dash-sessions`, `#workspace`, `#messages`, `#dock-notebook`). `#composer-hint` is `role=status aria-live=polite`. `#tab-close` is a real button. The disconnect banner replaces the missing `#conn-dot`.
+F-13 workbench chrome. Frozen ids match `tests/webui-contract.md` (`#dashboard`, `#dash-projects`, `#dash-sessions`, `#workspace`, `#messages`, `#dock-notebook`). `#composer-hint` is `role=status aria-live=polite`. The conversation header shows the session's name (`#conv-title` in `#tabbar`), renamable in place; it is not drawn as tabs (M-41). The disconnect banner replaces the missing `#conn-dot`.
 
 ## Files
 

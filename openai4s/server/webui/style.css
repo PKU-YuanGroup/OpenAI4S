@@ -156,13 +156,15 @@ body.sidebar-collapsed .workspace{grid-template-columns:0 minmax(0,1fr) auto}
 /* keep #sidebar in the grid (width 0) so #main / #rightdock stay in their
    columns — display:none would shift the remaining items left and collapse main */
 body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;border:0}
-#sidebar{background:var(--bg);border-right:.5px solid var(--border);display:flex;flex-direction:column;padding:12px 12px;min-width:0;height:100vh;overflow:hidden}
+#sidebar{position:relative;background:var(--bg);border-right:.5px solid var(--border);display:flex;flex-direction:column;padding:12px 12px;min-width:0;height:100vh;overflow:hidden}
 .side-top{display:flex;align-items:center;gap:2px;margin-bottom:10px}
 .proj-name{flex:1;min-width:0;display:flex;align-items:center;gap:6px;text-align:left;background:transparent;border:0;font-weight:600;font-size:14px;color:var(--text-000);white-space:nowrap;overflow:hidden;padding:4px 6px;border-radius:var(--radius)}
 .proj-name #proj-current{overflow:hidden;text-overflow:ellipsis}
 .proj-name:hover{background:var(--bg-200)}
 .chev{color:var(--text-400);display:inline-flex;flex:none}
 .proj-menu{background:var(--bg-000);border:.5px solid var(--border-btn);border-radius:var(--radius-card);margin-bottom:8px;overflow:hidden;box-shadow:var(--shadow-pop);padding:6px}
+/* M-41: a dropdown over the sidebar, not a block that pushes its content down. */
+.proj-menu{position:absolute;top:56px;left:12px;right:12px;z-index:60;max-height:calc(100% - 96px);overflow:auto}
 .proj-item{padding:6px 8px;border-radius:8px;font-size:14px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--text-000)}
 .proj-item:hover{background:var(--bg-200)}
 .proj-item .del{opacity:0;color:var(--text-400);display:inline-flex}.proj-item:hover .del{opacity:1}
@@ -201,6 +203,10 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .tab .t-close{display:inline-flex;color:var(--text-400);opacity:0}
 .tab.active .t-close{opacity:.7}.tab .t-close:hover{opacity:1;color:var(--text-000)}
 .tab .conv-title{width:auto;min-width:40px;background:transparent;border:0;padding:0;font:inherit;font-size:14px;color:inherit}
+/* M-41: the session's name as a title, not a tab. */
+.conv-title-wrap{display:flex;align-items:center;min-width:0;max-width:520px}
+.conv-title-wrap .conv-title{font-weight:500}
+.conv-title-wrap .conv-title:hover{border-color:var(--border)}
 .conv-title{flex:1;min-width:0;background:transparent;border:1px solid transparent;border-radius:8px;padding:5px 8px;font:inherit;font-size:14px;font-weight:400;color:var(--text-000)}
 .conv-head-actions{display:flex;align-items:center;gap:2px;flex:none}
 .messages{flex:1;overflow:auto;padding:0 24px 20px;position:relative}

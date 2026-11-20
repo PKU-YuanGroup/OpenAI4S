@@ -234,15 +234,6 @@ export function bindWorkbench(): Promise<void> {
   if (back) back.onclick = showDashboard;
   const newBtn = $("#new-session");
   if (newBtn) newBtn.onclick = () => void newSession();
-  const tabNew = $("#tab-new");
-  if (tabNew) tabNew.onclick = () => void newSession();
-  const tabClose = $("#tab-close");
-  if (tabClose) {
-    tabClose.onclick = (e) => {
-      e.stopPropagation();
-      showDashboard();
-    };
-  }
   const collapse = $("#sidebar-collapse");
   if (collapse) collapse.onclick = () => setSidebar(true);
   const reopen = $("#sidebar-reopen");
@@ -261,8 +252,29 @@ export function bindWorkbench(): Promise<void> {
       const menu = $("#proj-menu");
       if (!menu) return;
       menu.classList.toggle("hidden");
-      if (!menu.classList.contains("hidden")) renderProjMenu();
+      if (!menu.classList.contains("hidden")) {
+        renderProjMenu();
+        // Just under the button it drops from, wherever the header ends.
+        const side = $("#sidebar");
+        if (side) {
+          const top = projBtn.getBoundingClientRect().bottom - side.getBoundingClientRect().top + 4;
+          menu.style.top = Math.max(0, Math.round(top)) + "px";
+        }
+      }
     };
+    // M-41: the project menu floats over the sidebar now, so a click
+    // anywhere else, or Escape, closes it.
+    document.addEventListener("click", (e) => {
+      const menu = $("#proj-menu");
+      const target = e.target as Node | null;
+      if (!menu || menu.classList.contains("hidden") || !target) return;
+      if (menu.contains(target) || projBtn.contains(target)) return;
+      menu.classList.add("hidden");
+    });
+    document.addEventListener("keydown", (e) => {
+      const menu = $("#proj-menu");
+      if (e.key === "Escape" && menu && !menu.classList.contains("hidden")) menu.classList.add("hidden");
+    });
   }
   const ct = $("#conv-title") as HTMLInputElement | null;
   if (ct) {

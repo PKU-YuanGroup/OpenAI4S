@@ -301,7 +301,9 @@ export async function navigationChecks(page, api) {
         const first = await page.evaluate(() => S.currentId);
         assert.notEqual(first, a.frames[0]);
         secondCreation = await holdResponse(page, creationRead);
-        await page.locator("#tab-new").click();
+        // M-41: the header's "New session" pseudo-tab is gone; the second
+        // deliberate New is the sidebar button again.
+        await page.locator("#new-session").click();
         await waitUntil("second creation response held", secondCreation.waiting);
         const second = secondCreation.body().id;
         assert.ok(second && first !== second);
