@@ -98,6 +98,7 @@ body.sidebar-collapsed .col-resizer-side{display:none}
 
 /* M-45: in-app confirm / text / notice dialogs (dialog.ts), above every other overlay. */
 .app-dialog-modal{z-index:1100}
+.app-dialog-modal .modal-box{height:auto;max-height:92vh;overflow:auto}
 .app-dialog .app-dialog-msg{margin:0;font-size:14px;font-weight:400;line-height:1.5;color:var(--text-000);white-space:pre-line;overflow-wrap:anywhere}
 .app-dialog .app-dialog-input{margin-top:8px}
 .app-dialog .solid-btn.danger{background:var(--danger)}
