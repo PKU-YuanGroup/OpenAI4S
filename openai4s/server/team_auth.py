@@ -64,6 +64,15 @@ class RateLimited(Exception):
     """Too many login attempts for this (username, ip) in the last minute."""
 
 
+class AccountDisabled(Exception):
+    """The password was right and the account is disabled (TEAM-3).
+
+    Raised only after the password matched, so it answers nothing a guesser
+    could use; it tells the account's owner to ask an administrator rather
+    than retry or ask for a reset, which does not lift a disable.
+    """
+
+
 class TeamAuthService:
     """Login/logout/resolve on top of the Store's TeamRepository."""
 
@@ -125,7 +134,9 @@ class TeamAuthService:
 
         Raises :class:`RateLimited` when the bucket is empty — *before* the
         password is even looked at, so the limiter also bounds the PBKDF2
-        work an attacker can make this daemon do.
+        work an attacker can make this daemon do — and
+        :class:`AccountDisabled` for the right password of a disabled
+        account (a wrong one is None, like an unknown name).
         """
         if not self._take_login_token(username, ip):
             self._store.team.audit(
@@ -137,7 +148,12 @@ class TeamAuthService:
                 f"too many login attempts; wait a minute (limit "
                 f"{LOGIN_ATTEMPTS_PER_MINUTE}/min per user+ip)"
             )
-        user = self._store.team.verify_password(username, password)
+        outcome, user = self._store.team.authenticate(username, password)
+        if outcome == "disabled":
+            self._store.team.audit(
+                actor=username or "?", action="login_disabled", detail=f"ip={ip}"
+            )
+            raise AccountDisabled("this account is disabled")
         if user is None:
             self._store.team.audit(
                 actor=username or "?", action="login_failed", detail=f"ip={ip}"
@@ -194,6 +210,7 @@ def public_user(user: dict) -> dict:
 
 
 __all__ = [
+    "AccountDisabled",
     "LOGIN_ATTEMPTS_PER_MINUTE",
     "RateLimited",
     "SERVICE_IDENTITY",

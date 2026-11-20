@@ -421,6 +421,18 @@ class TeamRepository:
     def verify_password(self, username: str, password: str) -> dict | None:
         """The user row on success; None for wrong password, unknown user, or
         a disabled account — indistinguishably, and in constant-ish time."""
+        outcome, user = self.authenticate(username, password)
+        return user if outcome == "ok" else None
+
+    def authenticate(self, username: str, password: str) -> tuple[str, dict | None]:
+        """``("ok", user)``, ``("disabled", None)`` or ``("invalid", None)``.
+
+        ``disabled`` is answered only for the *right* password. With a wrong
+        one a disabled account is ``invalid`` like an unknown name, so the
+        distinction tells nothing to somebody guessing -- only the account's
+        owner learns that a new password will not help and an administrator
+        has to enable the account. The PBKDF2 work is the same either way.
+        """
         with self._lock:
             user_id = self._user_id_by_name(username)
             row = (
@@ -436,14 +448,15 @@ class TeamRepository:
             # Burn the same PBKDF2 work an existing user costs, so "no such
             # user" and "wrong password" have the same timing profile.
             hash_password(password, b"timing-equalizer-salt")
-            return None
+            return "invalid", None
         user_id, stored, salt, iterations, disabled = row
         candidate = hash_password(password, bytes(salt), int(iterations))
         if not hmac.compare_digest(candidate, bytes(stored)):
-            return None
+            return "invalid", None
         if disabled:
-            return None
-        return self.get_user(str(user_id))
+            return "disabled", None
+        user = self.get_user(str(user_id))
+        return ("ok", user) if user is not None else ("invalid", None)
 
     # --- login sessions --------------------------------------------------
 

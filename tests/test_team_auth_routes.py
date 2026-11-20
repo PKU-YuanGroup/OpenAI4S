@@ -413,6 +413,46 @@ def test_disabled_user_cookie_stops_working(daemon):
     assert status == 401
 
 
+def test_a_disabled_account_is_told_so_only_with_the_right_password(daemon):
+    """TEAM-3: the right password of a disabled account was answered exactly
+    like a wrong one, so its owner kept retrying or asked for a reset (which
+    does not lift a disable). Say it -- but only to the right password: with
+    a wrong one a disabled account must stay indistinguishable from an
+    unknown name, or the login form becomes an account-state oracle."""
+    user = daemon.seed_user("carol", "fake-pw-carol")
+    daemon.store.team.set_disabled(user["id"], True)
+
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/auth/login",
+        {"username": "carol", "password": "fake-pw-carol"},
+    )
+    assert status == 403, raw[:300]
+    body = _body_json(raw)
+    assert body["code"] == "account_disabled"
+    assert b"os_user=" not in raw  # no session for a disabled account
+
+    wrong = _post(
+        daemon.port,
+        "/api/v1/auth/login",
+        {"username": "carol", "password": "wrong"},
+    )
+    unknown = _post(
+        daemon.port,
+        "/api/v1/auth/login",
+        {"username": "nobody-here", "password": "wrong"},
+    )
+    assert wrong[0] == unknown[0] == 401
+    strip = lambda b: {k: v for k, v in b.items() if k != "request_id"}  # noqa: E731
+    assert strip(_body_json(wrong[1])) == strip(_body_json(unknown[1]))
+    actions = [r["action"] for r in daemon.store.team.list_audit()]
+    assert "login_disabled" in actions and "login" not in actions
+
+    # enabled again, the same password signs in
+    daemon.store.team.set_disabled(user["id"], False)
+    assert _login(daemon, "carol", "fake-pw-carol")
+
+
 def test_login_rate_limit_answers_429(daemon):
     daemon.seed_user("mallory", "fake-pw-real")
     for _ in range(5):

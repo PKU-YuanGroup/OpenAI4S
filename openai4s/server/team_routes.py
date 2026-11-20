@@ -24,7 +24,7 @@ import json
 from typing import Any
 
 from . import contract
-from .team_auth import TEAM_COOKIE, RateLimited, public_user
+from .team_auth import TEAM_COOKIE, AccountDisabled, RateLimited, public_user
 
 _LOGIN = contract.RouteSpec("auth.login", "POST", r"/auth/login", mutates=True)
 _LOGOUT = contract.RouteSpec("auth.logout", "POST", r"/auth/logout", mutates=True)
@@ -158,9 +158,23 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
         except RateLimited as e:
             self._json({"error": str(e), "code": "rate_limited"}, 429)
             return True
+        except AccountDisabled:
+            # Only reachable with the right password, so it is not the
+            # enumeration oracle the sentence below guards against: it tells
+            # the account's owner that retrying, or a new password, will not
+            # help -- an administrator has to enable the account.
+            self._json(
+                {
+                    "error": "this account is disabled; ask an administrator",
+                    "code": "account_disabled",
+                },
+                403,
+            )
+            return True
         if result is None:
-            # One sentence for wrong password, unknown user, and disabled
-            # account alike — the difference is an attacker's question.
+            # One sentence for wrong password and unknown user alike (and a
+            # disabled account with a wrong password) — the difference is an
+            # attacker's question.
             self._json({"error": "invalid username or password"}, 401)
             return True
         token, user = result

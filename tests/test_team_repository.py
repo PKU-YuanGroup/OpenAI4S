@@ -154,6 +154,19 @@ def test_disabled_user_cannot_login_and_sessions_die(store):
     assert store.team.resolve_auth_session(token) is None
 
 
+def test_authenticate_says_disabled_only_for_the_right_password(store):
+    user = store.team.create_user(username="carol", password="test-password-not-real")
+    assert store.team.authenticate("carol", "test-password-not-real")[0] == "ok"
+    store.team.set_disabled(user["id"], True)
+    assert store.team.authenticate("carol", "test-password-not-real") == (
+        "disabled",
+        None,
+    )
+    assert store.team.authenticate("carol", "wrong-password") == ("invalid", None)
+    assert store.team.authenticate("nobody", "wrong-password") == ("invalid", None)
+    assert store.team.verify_password("carol", "test-password-not-real") is None
+
+
 def test_auth_session_round_trip_and_revoke(store):
     user = store.team.create_user(username="alice", password="test-password-not-real")
     token = store.team.create_auth_session(user["id"])
