@@ -4491,8 +4491,14 @@ def _capture_snippet(index: int, *, save: bool = True) -> str:
     # from `Figure.stale`, which matplotlib 3.11 leaves True after every
     # `fig.savefig`, so the test never held. A figure with no mark (a kernel
     # whose hook did not install) is saved, as an unsaved one is.
+    #
+    # SCI-28: "figure_cell3_1.png" said nothing about the figure, and a
+    # report citing it could not be matched to it. The figure's own title
+    # (its suptitle, else its first axes title) is appended to the name; the
+    # "figure_cellN_" prefix stays, because image annotations read N from it.
     return (
         "import json as __oj\n"
+        "import re as __ore\n"
         "__osfigs=[]\n"
         "try:\n"
         " import sys as __sys\n"
@@ -4502,6 +4508,13 @@ def _capture_snippet(index: int, *, save: bool = True) -> str:
         f"   __nm='figure_cell{index}_'+str(__n)+'.png'\n"
         "   try:\n"
         "    __f=__plt.figure(__n)\n"
+        "    try:\n"
+        "     __st=getattr(__f,'_suptitle',None)\n"
+        "     __t=(__st.get_text() if __st is not None else '') or next("
+        "(__a.get_title() for __a in __f.axes if __a.get_title()),'')\n"
+        "     __t=__ore.sub(r'\\W+','_',str(__t)).strip('_')[:40].strip('_')\n"
+        f"     if __t: __nm='figure_cell{index}_'+str(__n)+'_'+__t+'.png'\n"
+        "    except Exception: pass\n"
         "    __kept=getattr(__f,'_openai4s_saved',False) is True\n"
         "    __drawn=any(getattr(__f,__a,None) for __a in ('axes','texts',"
         "'lines','patches','images','legends','artists','subfigs'))\n"
