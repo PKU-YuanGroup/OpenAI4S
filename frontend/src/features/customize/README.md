@@ -30,7 +30,7 @@ F-19 Customize domain logic. Tab state machine, timer lease (unmount clears ever
 | [`state.ts`](state.ts) | `customizeOpen` / `customizeTab` / `customizeGeneration` / `customizeRefresh` / `nestedEditor`, and `customizeNotice`: what `hint()` last reported while Settings was open, cleared on a tab change or close. |
 | [`roles.ts`](roles.ts) | Team mode in Settings: `settingsReadOnly()` (a member, from `/auth/me`), `isAdminOnlyRefusal`, and the `roleT` copy that says who may change what. |
 | [`roles.test.ts`](roles.test.ts) | A 403 `admin_only` reads as who can do it, without a request id; `hint()` reaches the Settings status line only while Settings is open and a tab change clears it; only a member is read-only. |
-| [`tabs.ts`](tabs.ts) | Nine tab ids; `agents` → `specialists`. |
+| [`tabs.ts`](tabs.ts) | Eleven tab ids (`experiments` and `diagnostics` last, the `OPERATOR_TABS` a team member is not offered); `agents` → `specialists`; `custTabLabel` names a tab. |
 | [`tabs.test.ts`](tabs.test.ts) | Tab state machine; an in-place refresh re-reads only the tab on screen and never remounts it or closes its editor. |
 | [`telemetry.ts`](telemetry.ts) | Consent drain loop; contract `telemetryRow(host)`. |
 | [`timers.ts`](timers.ts) | Per-mount timer lease. Dispose on unmount. |

@@ -10,7 +10,6 @@ const COPY: CopyTable = {
     "update.title": "Version and updates",
     "update.desc":
       "This version only provides checking and guidance. It never downloads, installs, restarts or upgrades anything in place, and it never checks by itself.",
-    "update.only": "This version only provides checking and guidance.",
     "update.current": "Current version",
     "update.channel": "Install channel",
     "update.latest": "Latest known version",
@@ -94,7 +93,6 @@ const COPY: CopyTable = {
     "update.title": "版本与更新",
     "update.desc":
       "本版本只提供检查与指引。它不会下载、安装、重启或在原位升级任何东西，也不会自行检查。",
-    "update.only": "本版本只提供检查与指引。",
     "update.current": "当前版本",
     "update.channel": "安装渠道",
     "update.latest": "最近已知版本",

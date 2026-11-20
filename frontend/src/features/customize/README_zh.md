@@ -30,7 +30,7 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`state.ts`](state.ts) | `customizeOpen` / `customizeTab` / `customizeGeneration` / `customizeRefresh` / `nestedEditor`，以及 `customizeNotice`：「设置」打开期间 `hint()` 最后报告的内容，切换 tab 或关闭时清空。 |
 | [`roles.ts`](roles.ts) | 「设置」里的团队模式：`settingsReadOnly()`（来自 `/auth/me` 的成员身份）、`isAdminOnlyRefusal`，以及说明谁能改什么的 `roleT` 文案。 |
 | [`roles.test.ts`](roles.test.ts) | 403 `admin_only` 显示为谁可以操作、不带请求 ID；只有「设置」打开时 `hint()` 才进入设置状态行，切换 tab 会清空；只有成员是只读的。 |
-| [`tabs.ts`](tabs.ts) | 九个 tab id；`agents` → `specialists`。 |
+| [`tabs.ts`](tabs.ts) | 十一个 tab id（`experiments` 和 `diagnostics` 在最后，即不向团队成员提供的 `OPERATOR_TABS`）；`agents` → `specialists`；`custTabLabel` 给出 tab 名称。 |
 | [`tabs.test.ts`](tabs.test.ts) | Tab 状态机；原地刷新只重读正在显示的 tab，不重新挂载，也不关闭它的编辑器。 |
 | [`telemetry.ts`](telemetry.ts) | 同意开关 drain 循环；契约 `telemetryRow(host)`。 |
 | [`timers.ts`](timers.ts) | 按挂载的定时器租约。unmount 即 dispose。 |

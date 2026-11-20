@@ -288,7 +288,6 @@ export function UpdateCheck() {
             ))}
           </div>
         ) : null}
-        <div class="ds update-check-note">{updateT("update.only")}</div>
         <details class="update-check-guidance">
           <summary>{updateT("update.guidance")}</summary>
           <p class="ds">{updateT("update.guidanceBody")}</p>

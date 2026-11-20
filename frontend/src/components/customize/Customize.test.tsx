@@ -14,6 +14,7 @@ import {
   customizeTab,
   nestedEditor,
 } from "../../features/customize/state";
+import { teamUser } from "../../features/chrome/team-identity";
 import { currentId, projects, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { Customize } from "./Customize";
@@ -63,6 +64,37 @@ function renders(render: () => unknown): { count: () => number; stop: () => void
 
 // TEAM-23: `hint()` writes under the composer, behind this modal, so a
 // refused save in Settings showed nothing at all.
+describe("Customize tab list", () => {
+  afterEach(() => {
+    teamUser.value = null;
+  });
+  const tabIds = () => {
+    const ids: string[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== "object") return;
+      const current = node as Node;
+      if (current.props?.class && String(current.props.class).startsWith("cust-tab") && current.props["data-tab"]) {
+        ids.push(String(current.props["data-tab"]));
+      }
+      walk(current.props?.children);
+    };
+    walk(Customize());
+    return ids;
+  };
+
+  it("offers Experimental and Diagnostics as pages of their own (M-22)", () => {
+    expect(tabIds().slice(-2)).toEqual(["experiments", "diagnostics"]);
+  });
+
+  it("does not offer a team member the operator's pages", () => {
+    teamUser.value = { username: "bob", role: "member" };
+    expect(tabIds()).not.toContain("experiments");
+    expect(tabIds()).not.toContain("diagnostics");
+    expect(tabIds()).toContain("models");
+  });
+});
+
 describe("Customize status line", () => {
   afterEach(() => {
     customizeNotice.value = null;

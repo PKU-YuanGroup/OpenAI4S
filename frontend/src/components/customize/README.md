@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors/` cards. Class names (`#cust`, `.cust-tab`, `.prof-row`, `.cust-row`, `.toggle`) match the E2E contract. Tab unmount disposes the timer lease.
+F-19 Customize modal. Eleven tabs, a nested editor overlay, and `vendors/` cards. Class names (`#cust`, `.cust-tab`, `.prof-row`, `.cust-row`, `.toggle`) match the E2E contract. Tab unmount disposes the timer lease.
 
 ## Files
 
@@ -14,11 +14,11 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`Customize.tsx`](Customize.tsx) | `#cust` shell, tablist, Esc / backdrop close, and the status line under the tab body that repeats what the last action reported (`customizeNotice`; `hint()` alone writes under the composer, behind the modal). |
 | [`Customize.test.tsx`](Customize.test.tsx) | A selection drag that ends on the Customize or nested-editor backdrop keeps the dialog open; a press on the backdrop still closes it. The modal does not re-render for a settling load or a nested editor, and the Skills and Memory tabs re-render for a change of project, not for every session-list update. |
 | [`NotebookReplSetting.tsx`](NotebookReplSetting.tsx) | The "Notebook manual cells" switch on General (`GET`/`PUT /notebook/settings`): off by default, locked when `OPENAI4S_NOTEBOOK_REPL` forces it on or the user is not an admin in team mode; a change makes the open Notebook re-read it. |
-| [`GeneralTab.tsx`](GeneralTab.tsx) | Theme, layout, language, API-key shortcut, the Notebook manual-cells switch and the "Version and updates" row. A theme, layout or language pick updates its segment in place; the language control also offers following the system (the browser's language order), which is what it shows until a language is picked. `LabTabSetting` shows or hides the Lab dock tab. |
-| [`GeneralTab.test.tsx`](GeneralTab.test.tsx) | Picking a theme or layout moves its own segment without remounting or re-reading the tab; the language control offers "System", shows it while nothing is saved, and passes each pick to `setLang`. |
+| [`GeneralTab.tsx`](GeneralTab.tsx) | Theme, layout, language, the Lab tab and the Notebook manual-cells switch; it reads nothing from the server. The model key is on Models, updates and diagnostics on Diagnostics, the judgment layer on Experimental (M-22). A theme, layout or language pick updates its segment in place; the language control also offers following the system (the browser's language order), which is what it shows until a language is picked. `LabTabSetting` shows or hides the Lab dock tab. |
+| [`GeneralTab.test.tsx`](GeneralTab.test.tsx) | Picking a theme or layout moves its own segment without remounting or reading anything; General holds no update, experiments or diagnostics section; the language control offers "System", shows it while nothing is saved, and passes each pick to `setLang`. |
 | [`UpdateCheck.tsx`](UpdateCheck.tsx) | U2 "Version and updates" row over appendix B.2: mount reads only the local `GET /updates/status`; "Check for updates" posts `{refresh:false}` and "Force a fresh check" `{refresh:true}`. It shows the running/latest version, channel, cache age, check time, the two-word trust summary (authorship always "not verified") and, for `unknown`, the reason code plus the last known answer with its time; only `up_to_date` says "this is the latest version". Channel refusal commands are copyable text and are never executed — there is no download, install, restart, one-click upgrade or polling. |
 | [`UpdateCheck.test.tsx`](UpdateCheck.test.tsx) | Vitest against an HTTP stand-in: mount is one local GET with no POST; the two buttons post `{refresh:false}` / `{refresh:true}` exactly once; a double click sends one POST; 429 shows the bounded wait; `unknown` shows the reason and the previous answer; an `admin_only` refusal hides the buttons; a malformed payload degrades to "could not read"; the refusal command is copyable and no install/download/restart action exists; an answer after unmount is dropped. |
-| [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | Passive security posture, explicit checks, and redacted support-bundle download. Mounted from General. |
+| [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | Passive security posture, explicit checks, and redacted support-bundle download. The Diagnostics page, above the update row. |
 | [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | Page load is a single status GET; checks and bundle wait for a click; the request id copies over plain http, and a copy that did not happen is reported. |
 | [`MemoryTab.tsx`](MemoryTab.tsx) | Memory enable / add / edit / delete with explicit scope. A team member gets the switch locked with the reason and no all-projects scope. |
 | [`MemoryTab.test.tsx`](MemoryTab.test.tsx) | The first read asks for its four lists at once; Save adds a memory once however often it is pressed while the write is in flight. |
@@ -43,7 +43,7 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`index.ts`](index.ts) | Re-exports `Customize`. |
 | [`ui.tsx`](ui.tsx) | Shared `Hdr` / `CustRow` / `Seg` / `Toggle` / `Pill`. |
 | [`use-timer-lease.ts`](use-timer-lease.ts) | `useTimerLease` / `useAlive` bound to unmount. |
-| [`ExperimentsTab.tsx`](ExperimentsTab.tsx) | Experimental semantic-judgment block on General: disclosure, capability toggles, TypeSafe key, connection probe. |
+| [`ExperimentsTab.tsx`](ExperimentsTab.tsx) | The Experimental page's semantic-judgment block: disclosure, capability toggles, TypeSafe key, connection probe. |
 | [`ExperimentsTab.test.tsx`](ExperimentsTab.test.tsx) | Disclosure must be acknowledged before enable; `env_off` disables toggles; key is never echoed; probe shows ok / unavailable / disabled. |
 
 ## Subdirectories

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-F-19 Customize 模态。九个 tab 组件、嵌套编辑层，以及 `vendors/` 卡。类名（`#cust`、`.cust-tab`、`.prof-row`、`.cust-row`、`.toggle`）与 E2E 契约一致。Tab unmount 会 dispose 定时器租约。
+F-19 Customize 模态。十一个 tab、嵌套编辑层，以及 `vendors/` 卡。类名（`#cust`、`.cust-tab`、`.prof-row`、`.cust-row`、`.toggle`）与 E2E 契约一致。Tab unmount 会 dispose 定时器租约。
 
 ## 文件
 
@@ -14,11 +14,11 @@ F-19 Customize 模态。九个 tab 组件、嵌套编辑层，以及 `vendors/` 
 | [`Customize.tsx`](Customize.tsx) | `#cust` 外壳、tablist、Esc / 背景关闭，以及 tab 内容下方的状态行：重复显示上一个操作报告的结果（`customizeNotice`；单靠 `hint()` 只会写到输入框下方，被弹窗挡住）。 |
 | [`Customize.test.tsx`](Customize.test.tsx) | 在输入框里拖选文字、到 Customize 或嵌套编辑器的遮罩上才松开，弹窗保持打开；在遮罩上按下仍会关闭。加载状态变化或嵌套编辑器开关不会让模态重新渲染；Skills 与 Memory tab 只在项目变化时重新渲染，不随每次会话列表更新重新渲染。 |
 | [`NotebookReplSetting.tsx`](NotebookReplSetting.tsx) | 「通用」页上的「Notebook 手动单元」开关（`GET`/`PUT /notebook/settings`）：默认关闭；`OPENAI4S_NOTEBOOK_REPL` 强制开启时、或团队模式下非管理员时锁定；改动后让已打开的 Notebook 重新读取。 |
-| [`GeneralTab.tsx`](GeneralTab.tsx) | 主题、布局、语言、API key 快捷入口、Notebook 手动单元开关，以及「版本与更新」一行。选主题、布局或语言只在原处更新对应的分段控件；语言控件还提供「跟随系统」（按浏览器语言顺序），在用户选定语言之前显示的就是它。 `LabTabSetting` 显示或隐藏实验室标签。 |
-| [`GeneralTab.test.tsx`](GeneralTab.test.tsx) | 选主题或布局只移动它自己的分段控件，不重新挂载，也不重新读取整个 tab；语言控件提供「跟随系统」，未保存选择时显示它，并把每次选择交给 `setLang`。 |
+| [`GeneralTab.tsx`](GeneralTab.tsx) | 主题、布局、语言、实验室标签和 Notebook 手动单元开关；不向服务端读取任何东西。模型 key 在「模型」页，更新和诊断在「诊断与更新」页，语义判断层在「实验功能」页（M-22）。选主题、布局或语言只在原处更新对应的分段控件；语言控件还提供「跟随系统」（按浏览器语言顺序），在用户选定语言之前显示的就是它。 `LabTabSetting` 显示或隐藏实验室标签。 |
+| [`GeneralTab.test.tsx`](GeneralTab.test.tsx) | 选主题或布局只移动它自己的分段控件，不重新挂载，也不读取任何东西；「通用」页没有更新、实验功能或诊断区块；语言控件提供「跟随系统」，未保存选择时显示它，并把每次选择交给 `setLang`。 |
 | [`UpdateCheck.tsx`](UpdateCheck.tsx) | U2「版本与更新」一行（附录 B.2）：挂载只读本地 `GET /updates/status`；「检查更新」发 `{refresh:false}`、「强制重新检查」发 `{refresh:true}`。显示运行/最新版本、安装渠道、缓存年龄、检查时间、两词信任摘要（作者身份始终「未验证」），`unknown` 时显示原因码与上次已知答案及时间；只有 `up_to_date` 才显示「已是最新版本」。渠道的 refusal 命令仅作可复制文本、绝不执行——无下载、安装、重启、一键升级或轮询。 |
 | [`UpdateCheck.test.tsx`](UpdateCheck.test.tsx) | Vitest（HTTP 替身）：挂载只发一次本地 GET、无 POST；两个按钮分别恰发一次 `{refresh:false}` / `{refresh:true}`；双击只发一次 POST；429 显示有界等待；`unknown` 显示原因与上次答案；`admin_only` 拒绝后隐藏按钮；畸形载荷降级为「无法读取」；refusal 命令可复制且不存在安装/下载/重启动作；卸载后到达的答复被丢弃。 |
-| [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | 被动安全姿态、显式检查、脱敏支持包下载。挂在 General 下。 |
+| [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | 被动安全姿态、显式检查、脱敏支持包下载。位于「诊断与更新」页，在更新一行上方。 |
 | [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | 页面加载只发一次 status GET；检查与下载包要等点击；请求 id 在纯 http 下也能复制，没复制成功时如实提示。 |
 | [`MemoryTab.tsx`](MemoryTab.tsx) | Memory 开关 / 添加 / 编辑 / 删除，作用域显式发送。团队成员看到的开关是锁定的并写明原因，也没有「所有项目」作用域。 |
 | [`MemoryTab.test.tsx`](MemoryTab.test.tsx) | 首次读取同时请求四项数据；写入进行中无论按几次保存，只添加一条记忆。 |
@@ -43,7 +43,7 @@ F-19 Customize 模态。九个 tab 组件、嵌套编辑层，以及 `vendors/` 
 | [`index.ts`](index.ts) | 再导出 `Customize`。 |
 | [`ui.tsx`](ui.tsx) | 共用的 `Hdr` / `CustRow` / `Seg` / `Toggle` / `Pill`。 |
 | [`use-timer-lease.ts`](use-timer-lease.ts) | 绑 unmount 的 `useTimerLease` / `useAlive`。 |
-| [`ExperimentsTab.tsx`](ExperimentsTab.tsx) | General 上的实验性语义判断区块：披露确认、能力开关、TypeSafe key、连接测试。 |
+| [`ExperimentsTab.tsx`](ExperimentsTab.tsx) | 「实验功能」页的语义判断区块：披露确认、能力开关、TypeSafe key、连接测试。 |
 | [`ExperimentsTab.test.tsx`](ExperimentsTab.test.tsx) | 未确认披露不能打开；`env_off` 置灰开关；key 不回显；连接测试覆盖 ok / unavailable / disabled。 |
 
 ## 子目录
