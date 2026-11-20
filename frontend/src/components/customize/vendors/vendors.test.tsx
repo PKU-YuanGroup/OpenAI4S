@@ -263,7 +263,7 @@ describe("Connectors actions answer beside their control", () => {
     });
     expect(noteOf(row())).toBeNull();
     await testButton(row())();
-    expect(noteOf(row())).toEqual({ text: "toast.connectors.probeOk echo、now" });
+    expect(noteOf(row())).toEqual({ text: "toast.connectors.probeOk echo, now" });
 
     routes({ "POST /connectors/example/probe": () => Promise.resolve(response({ error: "spawn failed" }, 500)) });
     await testButton(row())();
