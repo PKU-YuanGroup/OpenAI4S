@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
-import { t } from "../../i18n";
+import { LANG, setLang, t } from "../../i18n";
 import { publicText } from "../../features/scrub/scrub";
 import { asString } from "../../features/customize/host";
 import {
@@ -20,10 +20,10 @@ import {
   updateModelProfile,
 } from "../../features/onboarding/api";
 import { ot } from "../../features/onboarding/copy";
+import { keyPage, presetLabel } from "../../features/onboarding/presets";
 import {
   INITIAL_WIZARD,
   REQUIRED_STEPS,
-  checklistItems,
   formatWizardError,
   reduceWizard,
   wizardErrorFromUnknown,
@@ -139,7 +139,12 @@ function PathStep({
 }) {
   const keyRef = useRef<HTMLInputElement>(null);
   const protocols = modelProtocolOptions(status.protocols);
-  const [kind, setKind] = useState<PathChoice["kind"]>(state.path?.kind || "existing");
+  const env = environmentPath(status);
+  // With nothing configured the "configured models" tab is an empty page:
+  // open on the cloud form instead.
+  const [kind, setKind] = useState<PathChoice["kind"]>(
+    state.path?.kind || (status.profiles.length || env ? "existing" : "cloud"),
+  );
   const [provider, setProvider] = useState(state.path?.provider || protocols[0]?.value || "chatgpt");
   const [name, setName] = useState(state.path?.name || "");
   // Name edits do not invalidate a fetch, so Continue reads the latest value
@@ -154,8 +159,11 @@ function PathStep({
   const discoveryRun = useRef(0);
   const discoveryPending = useRef(false);
   const autoModel = useRef("");
+  // Last, so the hooks above keep their order.
+  const [nameError, setNameError] = useState("");
   const locals = status.local_model_catalog.endpoints;
-  const env = environmentPath(status);
+  const preset = (status.provider_presets || []).find((item) => item.id === provider) || null;
+  const keySource = keyPage(provider);
   // The environment's key applies to a new cloud profile only for the same
   // provider at its own endpoint (the server's credential rule): say so
   // instead of "not configured; enter one".
@@ -221,7 +229,9 @@ function PathStep({
   const submitCloud = async () => {
     if (busy || discoveryPending.current) return;
     if (!name.trim()) {
-      setDiscoveryError(t("toast.specialist.enterName"));
+      // Shown under the name field. It used to appear beside "Fetch model
+      // list", three fields away from the one it is about.
+      setNameError(t("toast.specialist.enterName"));
       return;
     }
     const apiKey = keyRef.current?.value || "";
@@ -309,16 +319,13 @@ function PathStep({
       ) : null}
       {kind === "cloud" ? (
         <div class="skill-form">
-          <label class="skill-lbl">{t("cust.connectors.namePlaceholder")}</label>
-          <input
-            class="cust-input"
-            value={name}
-            onInput={(e) => setName((e.currentTarget as HTMLInputElement).value)}
-            placeholder={t("cust.models.namePlaceholder")}
-          />
-          <label class="skill-lbl">{t("cust.models.label.protocol")}</label>
+          {/* Order: provider, name, endpoint, key, then the model. The key
+              used to come last, so "Fetch model list" above it failed with
+              "API key required" until the form was filled bottom-up. */}
+          <label class="skill-lbl">{ot("onboarding.path.provider")}</label>
           <select
             class="cust-input"
+            data-onboarding-provider=""
             value={provider}
             onChange={(e) => {
               setProvider((e.currentTarget as HTMLSelectElement).value);
@@ -327,10 +334,36 @@ function PathStep({
           >
             {protocols.map((item) => (
               <option value={item.value} key={item.value}>
-                {item.label}
+                {presetLabel(item.value, item.label)}
               </option>
             ))}
           </select>
+          {preset ? (
+            <div class="ds onb-field-note" data-onboarding-preset="">
+              {ot(
+                "onboarding.path.presetInfo",
+                protocols.find((item) => item.value === provider)?.label || provider,
+                preset.model,
+              )}
+            </div>
+          ) : null}
+          <label class="skill-lbl">{t("cust.connectors.namePlaceholder")}</label>
+          <input
+            class="cust-input"
+            data-onboarding-name=""
+            value={name}
+            aria-invalid={nameError ? "true" : undefined}
+            onInput={(e) => {
+              setName((e.currentTarget as HTMLInputElement).value);
+              setNameError("");
+            }}
+            placeholder={t("cust.models.namePlaceholder")}
+          />
+          {nameError ? (
+            <div class="onb-field-error" role="alert" data-onboarding-name-error="">
+              {nameError}
+            </div>
+          ) : null}
           <label class="skill-lbl">{t("cust.models.label.baseUrl")}</label>
           <input
             class="cust-input"
@@ -339,8 +372,34 @@ function PathStep({
               setBaseUrl((e.currentTarget as HTMLInputElement).value);
               invalidateDiscovery();
             }}
-            placeholder={t("cust.models.baseUrlPlaceholder")}
+            placeholder={
+              preset && preset.baseUrl
+                ? ot("onboarding.path.baseUrlDefault", preset.baseUrl)
+                : t("cust.models.baseUrlPlaceholder")
+            }
           />
+          <label class="skill-lbl">{t("cust.models.label.apiKey")}</label>
+          <input
+            ref={keyRef}
+            class="cust-input"
+            type="password"
+            autocomplete="off"
+            onInput={() => invalidateDiscovery()}
+            placeholder={
+              envKeyApplies
+                ? ot("onboarding.path.keyFromEnv")
+                : t("cust.models.keyPlaceholderUnset")
+            }
+          />
+          <div class="ds onb-field-note" data-onboarding-key-source="">
+            {keySource ? (
+              <a href={keySource.url} target="_blank" rel="noopener noreferrer">
+                {ot("onboarding.path.getKey", keySource.label)}
+              </a>
+            ) : (
+              ot("onboarding.path.getKeyVendor")
+            )}
+          </div>
           <label class="skill-lbl">{t("label.model")}</label>
           <input
             class="cust-input"
@@ -370,19 +429,6 @@ function PathStep({
             </button>
             {discoveryError ? <span class="onb-model-discovery-error">{discoveryError}</span> : null}
           </div>
-          <label class="skill-lbl">{t("cust.models.label.apiKey")}</label>
-          <input
-            ref={keyRef}
-            class="cust-input"
-            type="password"
-            autocomplete="off"
-            onInput={() => invalidateDiscovery()}
-            placeholder={
-              envKeyApplies
-                ? ot("onboarding.path.keyFromEnv")
-                : t("cust.models.keyPlaceholderUnset")
-            }
-          />
           <button type="button" class="solid-btn" disabled={busy || discovering} onClick={submitCloud}>
             {ot("onboarding.next")}
           </button>
@@ -878,39 +924,31 @@ export function WizardHost() {
       data-provider-requests={String(state.providerRequests)}
     >
       <div class="onb-box">
-        <div id="onboarding-title" class="onb-h">
-          {state.surface === "checklist" ? ot("onboarding.checklist.title") : ot("onboarding.title")}
+        <div class="onb-top">
+          <div id="onboarding-title" class="onb-h">
+            {ot("onboarding.title")}
+          </div>
+          {/* The wizard is modal and covers the workbench's language switch. */}
+          <button
+            type="button"
+            class="outline-btn small onb-lang"
+            data-onboarding-lang=""
+            title={ot("onboarding.lang.title")}
+            onClick={() => void setLang(LANG === "zh" ? "en" : "zh")}
+          >
+            {ot("onboarding.lang.switch")}
+          </button>
         </div>
-        <div class="onb-sub">
-          {state.surface === "checklist" ? ot("onboarding.checklist.hint") : ot("onboarding.subtitle")}
-        </div>
+        <div class="onb-sub">{ot("onboarding.subtitle")}</div>
         {errorText ? (
           <div class="onb-error" role="alert">
             {errorText}
           </div>
         ) : null}
-        {state.surface === "checklist" ? (
-          <div class="onb-list">
-            {checklistItems(state).map((item) => (
-              <button
-                key={item.step}
-                type="button"
-                class={"onb-step" + (item.done ? " done" : "")}
-                aria-label={item.done ? ot("onboarding.step.done", stepLabel(item.step)) : undefined}
-                onClick={() => {
-                  if (item.step === "readiness") dispatch({ type: "markReadinessSeen" });
-                  dispatch({ type: "goto", step: item.step });
-                }}
-              >
-                {item.done ? "✓ " : ""}
-                {stepLabel(item.step)}
-              </button>
-            ))}
-          </div>
-        ) : state.surface === "wizard" ? (
+        {state.surface === "wizard" ? (
           <>
-            {/* The rail looked clickable and was not: only the Checklist could
-                move between steps, and nothing on the rail said which were done. */}
+            {/* The rail moves between steps and marks the finished ones; the
+                separate "Checklist" view listed the same four steps again. */}
             <nav class="onb-steps onb-rail" aria-label={ot("onboarding.checklist.title")}>
               {REQUIRED_STEPS.map((step, index) => {
                 const done = state.decided.includes(step);
@@ -994,31 +1032,15 @@ export function WizardHost() {
           </>
         ) : null}
         <div class="onb-actions">
-          <button type="button" class="outline-btn" disabled={busy} onClick={() => void onSkip()}>
+          <button
+            type="button"
+            class="outline-btn"
+            data-onboarding-skip=""
+            disabled={busy}
+            onClick={() => void onSkip()}
+          >
             {ot("onboarding.skip")}
           </button>
-          {state.surface === "wizard" ? (
-            <button
-              type="button"
-              class="outline-btn"
-              disabled={busy}
-              onClick={() => {
-                leaveTest();
-                dispatch({ type: "showChecklist" });
-              }}
-            >
-              {ot("onboarding.checklist")}
-            </button>
-          ) : (
-            <button
-              type="button"
-              class="outline-btn"
-              disabled={busy}
-              onClick={() => dispatch({ type: "showWizard" })}
-            >
-              {ot("onboarding.title")}
-            </button>
-          )}
           {state.surface === "wizard" && state.step !== "path" && state.step !== "project" ? (
             <button
               type="button"

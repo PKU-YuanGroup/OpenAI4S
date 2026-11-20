@@ -184,6 +184,35 @@ def test_web_status_never_returns_the_key(tmp_path):
     assert "api_key" not in payload
 
 
+def test_web_status_offers_the_registry_endpoint_for_each_protocol(tmp_path):
+    """The wizard's provider presets come from the registry, not from the UI.
+
+    The cloud form showed a protocol name and an empty Base URL box. Each
+    offered protocol now carries the registry's own endpoint and default
+    model; a protocol the registry does not know is left out, not guessed.
+    """
+    from openai4s.llm.registry import provider_specs
+    from openai4s.store import get_store
+
+    cfg = Config(data_dir=tmp_path / "data", llm=LLMConfig(provider="chatgpt"))
+    specs = provider_specs()
+    service = OnboardingService(cfg, get_store(cfg.db_path), specs)
+
+    payload = service.web_status(
+        profiles={"profiles": [], "protocols": ["claude", "not-a-provider", "ark"]}
+    )
+
+    assert payload["provider_presets"] == [
+        {
+            "id": name,
+            "base_url": specs[name]["base_url"],
+            "model": specs[name]["model"],
+        }
+        for name in ("claude", "ark")
+    ]
+    assert "provider_presets" not in service.web_status()
+
+
 def test_diagnostics_bundle_does_not_include_the_key(tmp_path):
     """key 在 GET/DOM/日志/diagnostics 命中数 0 — diagnostics half."""
     from openai4s.diagnostics import redact_text

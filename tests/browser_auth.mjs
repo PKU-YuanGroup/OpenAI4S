@@ -122,7 +122,9 @@ export async function skipFirstRunWizard(page, baseUrl) {
   }
   const wizard = page.locator("#onboarding");
   if (await wizard.isVisible().catch(() => false)) {
-    await wizard.locator("button.outline-btn").first().click();
+    // Skip by name: the first outline button in the dialog is now the
+    // language switch, and the cloud form's "Fetch model list" precedes Skip.
+    await wizard.locator("button[data-onboarding-skip]").click();
     await wizard.waitFor({ state: "hidden", timeout: 10000 });
   }
 }
