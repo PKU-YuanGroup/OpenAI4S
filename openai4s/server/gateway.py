@@ -459,6 +459,12 @@ def _unauthorized_page(accept_language: str = "") -> bytes:
             "<p>如果你用的是桌面应用，退出后重新打开即可，应用打开的页面已经登录。</p>"
             "<p>在容器里运行时，请执行 "
             "<code>docker exec &lt;container&gt; openai4s url</code>。</p>"
+            # The header only says which language comes first in the browser,
+            # not which one the person reads: a Chinese speaker on an
+            # English-first browser got an English-only page. Each page ends
+            # with the one instruction that matters, in the other language.
+            "<p lang=en>English: run <code>openai4s url</code> in a terminal "
+            "and open the link it prints.</p>"
         ).encode("utf-8")
     return (
         "<!doctype html><html lang=en><meta charset=utf-8>"
@@ -480,6 +486,8 @@ def _unauthorized_page(accept_language: str = "") -> bytes:
         "app opens a page that is already signed in.</p>"
         "<p>In a container, run "
         "<code>docker exec &lt;container&gt; openai4s url</code>.</p>"
+        "<p lang=zh-CN>中文：在终端运行 <code>openai4s url</code>，"
+        "然后打开它打印出的链接即可登录。</p>"
     ).encode("utf-8")
 
 
@@ -22197,6 +22205,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
                     file=sys.stderr,
                 )
         else:
+            from openai4s.doctor import MISSING_ENVIRONMENTS_REMEDY
             from openai4s.kernel import preinstall
 
             plan = preinstall.core_plan()
@@ -22205,8 +22214,8 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
                     f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
                     f"installed: {', '.join(plan['missing'][:6])}"
                     f"{' …' if len(plan['missing']) > 6 else ''}\n"
-                    f"[openai4s] startup does not install packages. Run "
-                    f"`openai4s setup`, or install from Customize → Compute.",
+                    f"[openai4s] startup does not install packages. "
+                    f"{MISSING_ENVIRONMENTS_REMEDY}",
                     file=sys.stderr,
                 )
     except Exception as error:  # noqa: BLE001 - diagnostics must never block startup

@@ -1495,6 +1495,41 @@ def test_status_reports_the_local_data_dir_without_trusting_health(monkeypatch, 
     assert "Settings → Models" in output
 
 
+@pytest.mark.skipif(os.name != "posix", reason="start.sh is a POSIX shell script")
+def test_start_sh_does_not_announce_an_address_it_cannot_know(tmp_path):
+    """FR-3: `OPENAI4S_PORT=8796 ./start.sh` printed "→ http://127.0.0.1:8760/".
+    The port also comes from `.env` and `--port`, which the script cannot see,
+    and the bare address is a 401 anyway; the daemon prints the one it bound."""
+    import shutil
+    import subprocess
+
+    checkout = tmp_path / "checkout"
+    (checkout / ".venv" / "bin").mkdir(parents=True)
+    shutil.copy(_REPO / "start.sh", checkout / "start.sh")
+    stub = checkout / ".venv" / "bin" / "openai4s"
+    stub.write_text('#!/bin/sh\necho "stub: $*"\n', encoding="utf-8")
+    stub.chmod(0o755)
+
+    done = subprocess.run(
+        ["bash", str(checkout / "start.sh"), "--port", "8797"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "OPENAI4S_PORT": "8796",
+            "OPENAI4S_HOST": "127.0.0.1",
+        },
+    )
+
+    assert done.returncode == 0, done.stderr
+    announcement, launched = done.stdout.splitlines()
+    assert launched == "stub: serve --port 8797"
+    assert "8760" not in announcement
+    assert "http://" not in announcement
+    assert ".venv/bin/openai4s url" in announcement
+
+
 def test_status_probes_and_reports_the_live_recorded_endpoint(
     tmp_path, monkeypatch, capsys
 ):

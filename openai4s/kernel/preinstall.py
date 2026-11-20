@@ -508,8 +508,11 @@ def core_plan() -> dict:
                 installing=[],
                 missing=list(pip_names),
                 message=(
+                    # The wording `doctor.MISSING_ENVIRONMENTS_REMEDY` fixes;
+                    # this layer cannot import upward to share the constant.
                     f"{len(pip_names)} scientific package(s) not installed — "
-                    f"run `openai4s setup` or install from Customize → Compute"
+                    f"run `openai4s setup` to build the managed Python + R "
+                    f"environments; install single packages in Settings → Compute"
                 ),
             )
     return {
