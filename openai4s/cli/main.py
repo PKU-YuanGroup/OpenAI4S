@@ -1703,9 +1703,22 @@ def _onboarding_service():
 def _prompt_search() -> tuple[str | None, str]:
     """Interactive init's one web-search decision; (None, "") keeps the setup."""
 
+    # Doubao is not one of the backups: whenever an Agent Plan key is stored
+    # (an Ark Agent Plan model key counts) it is tried before them, whatever is
+    # picked here. Item 4 said "built-in keyless engines only" and the run then
+    # said "Web search: Doubao, then builtin".
     print(
-        "Web search: 1) Doubao (Agent Plan key)  2) Tavily (API key)  "
-        "3) You.com (free; key optional)  4) built-in keyless engines only  5) Parallel (keyless)"
+        "Web search (Doubao is tried before the backups whenever an Agent Plan "
+        "key is stored, an Ark Agent Plan model key included; 2-5 choose the "
+        "backups):"
+    )
+    print(
+        "  1) Doubao (Agent Plan key)  2) Tavily first (API key)  "
+        "3) You.com first (free; key optional)"
+    )
+    print(
+        "  4) backups: built-in keyless engines only (Doubao, if configured, "
+        "is still tried first)  5) Parallel first (keyless)"
     )
     choices = {
         "1": "doubao",
@@ -3140,7 +3153,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--search",
         choices=("doubao", "tavily", "you", "builtin", "parallel"),
         help="web search: Doubao (Agent Plan key), or the backup engine to try "
-        "first (builtin = keyless engines only)",
+        "first (builtin = only the keyless engines as backups; Doubao is still "
+        "tried before them whenever its key is stored)",
     )
     pi.add_argument(
         "--search-key-stdin",

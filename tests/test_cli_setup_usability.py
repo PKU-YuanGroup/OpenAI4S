@@ -208,6 +208,23 @@ def test_init_asks_the_search_choice_again_on_a_number_off_the_menu(wizard):
     assert _search_result(wizard.out).startswith("Web search: parallel")
 
 
+def test_init_search_menu_says_doubao_is_tried_before_any_backup_choice(wizard):
+    """CLI-5. Item 4 read "built-in keyless engines only", and with an Ark
+    Agent Plan key stored the run then said "Web search: Doubao, then
+    builtin". The behaviour stays (lead decision); the menu now says it."""
+    wizard.run(["", "", "", "n", "4"])
+
+    assert wizard.rc == 0
+    menu = [line for line in wizard.out.splitlines() if "4)" in line]
+    assert menu == [
+        "  4) backups: built-in keyless engines only (Doubao, if configured, "
+        "is still tried first)  5) Parallel first (keyless)"
+    ]
+    assert "Doubao is tried before the backups whenever an Agent Plan key" in (
+        wizard.out
+    )
+
+
 def test_init_enter_at_the_search_choice_still_keeps_the_current_setup(wizard):
     wizard.run(["", "", "", "", ""])
 

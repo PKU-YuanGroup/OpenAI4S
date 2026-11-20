@@ -512,7 +512,9 @@ model; `--search doubao|tavily|you|builtin|parallel` makes it non-interactively,
 `--search-key-stdin` supplying the Agent Plan, Tavily or You.com key (stdin
 carries one key per run, so not together with `--api-key-stdin`). `doubao`
 stores the Agent Plan key; any other choice moves that engine to the front of
-the backup list, and `builtin` keeps only the keyless engines.
+the backup list, and `builtin` keeps only the keyless engines as backups.
+Doubao is not a backup: whenever an Agent Plan key is stored (an Ark Agent Plan
+model key counts) it is tried before the backups, whichever one is chosen.
 
 ## Platform support
 
