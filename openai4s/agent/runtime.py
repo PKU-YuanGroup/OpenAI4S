@@ -1158,6 +1158,126 @@ class KernelGenerationRecorder:
         return str(generation_id) if generation_id else None
 
 
+class LiveCellOutput:
+    """A running cell's stdout as it arrives, for `openai4s run` (CLI-29).
+
+    The ``-v`` trace showed a cell's output only in its observation, once the
+    cell had ended: a long cell was silent, and Ctrl-C lost everything it had
+    printed. With ``write`` set, each chunk is written as the kernel reads it
+    (from the sink's reader thread); either way the current cell's text is
+    kept, so a cell Ctrl-C stops still has the output it printed.
+    """
+
+    #: The kernel already caps a cell's kept stdout at this many bytes.
+    MAX_CHARS = 1_000_000
+
+    def __init__(self, write: Callable[[str], None] | None = None) -> None:
+        self._write = write
+        self._lock = threading.Lock()
+        self._header = ""
+        self._header_due = False
+        # Chunks, not one growing string: a chatty cell sends thousands.
+        self._parts: list[str] = []
+        self._size = 0
+        self._running = False
+        self._interrupted = ""
+        self._written_ends_line = True
+
+    def label(self, header: str) -> None:
+        """The trace line the next cell's live output starts under."""
+        with self._lock:
+            self._header = header
+
+    def begin(self) -> None:
+        """A cell is about to run: forget the previous one."""
+        with self._lock:
+            self._parts = []
+            self._size = 0
+            self._interrupted = ""
+            self._running = True
+            self._header_due = True
+            self._written_ends_line = True
+
+    def chunk(self, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            room = self.MAX_CHARS - self._size
+            if room > 0:
+                kept = text[:room]
+                self._parts.append(kept)
+                self._size += len(kept)
+            if self._write is None:
+                return
+            try:
+                if self._header_due and self._header:
+                    self._write(self._header + "\n")
+                self._header_due = False
+                self._write(text)
+                self._written_ends_line = text.endswith("\n")
+            except Exception:  # noqa: BLE001 - a trace write must not stop a cell
+                pass
+
+    def end(self, *, interrupted: bool = False) -> str:
+        """The cell is over; returns what it printed when it was interrupted."""
+        with self._lock:
+            self._running = False
+            if interrupted:
+                self._interrupted = "".join(self._parts)
+            if self._write is not None and not self._written_ends_line:
+                try:
+                    self._write("\n")
+                except Exception:  # noqa: BLE001
+                    pass
+                self._written_ends_line = True
+            return self._interrupted
+
+    def interrupted_output(self) -> str:
+        """What the cell that was stopped mid-run had printed, or ``""``."""
+        with self._lock:
+            return self._interrupted
+
+    def take_printed(self) -> str:
+        """The last cell's output if it was already written live, once."""
+        with self._lock:
+            if self._write is None or self._running:
+                return ""
+            text = "".join(self._parts)
+            self._parts, self._size = [], 0
+            return text
+
+
+def _without_printed_stdout(observation: str, printed: str) -> str:
+    """The observation for the trace, without the stdout it already showed.
+
+    ``format_observation`` writes the section as ``stdout:\\n`` plus the
+    budgeted text, so it is found exactly; anything else (a capped stream, a
+    worker that did not stream) leaves the observation as it is.
+    """
+    out = printed.rstrip()
+    if not out:
+        return observation
+    if len(out) <= OBSERVATION_SECTION_BUDGET:
+        section = "stdout:\n" + out
+        start = observation.find(section)
+        if start < 0:
+            return observation
+        end = start + len(section)
+    else:
+        head = "stdout:\n" + out[:_PREVIEW_HEAD]
+        start = observation.find(head)
+        tail = out[-_PREVIEW_TAIL:]
+        tail_at = observation.find(tail, start + len(head)) if start >= 0 else -1
+        if tail_at < 0:
+            return observation
+        end = tail_at + len(tail)
+    return (
+        observation[:start]
+        + "stdout: (shown above as the cell ran)"
+        + observation[end:]
+    )
+
+
 @dataclass
 class LocalActionExecutor:
     """Execute one selected action against a run-scoped local runtime."""
@@ -1179,6 +1299,9 @@ class LocalActionExecutor:
     # Durable kernel-generation registration for Agent-owned workers; None
     # keeps the historical in-memory-only continuity metadata.
     generation_recorder: KernelGenerationRecorder | None = None
+    # A running cell's stdout as it arrives (`LiveCellOutput`), set by
+    # `openai4s run`. None executes cells exactly as before.
+    live_output: LiveCellOutput | None = None
 
     def policy_tools(self, messages: Sequence[Mapping[str, Any]]) -> tuple[Any, ...]:
         """Expose this executor's current native declarations to RL samplers."""
@@ -1393,6 +1516,13 @@ class LocalActionExecutor:
                 self._finish_code_attempt(attempt, "prepare_failed")
             raise
         result: dict | None = None
+        # The cell's stdout as it arrives, only when the run asked for it
+        # (CLI-29); every other caller's kernel call is unchanged.
+        live = self.live_output
+        live_kwargs: dict[str, Any] = {}
+        if live is not None:
+            live.begin()
+            live_kwargs["on_chunk"] = live.chunk
         receipt_binder = getattr(self.dispatcher, "bind_artifact_receipt_scope", None)
         try:
             with (
@@ -1400,9 +1530,11 @@ class LocalActionExecutor:
             ) as artifact_receipts:
                 if action.language == "r":
                     if attempt is None:
-                        result = self.execute_r(action.code)
+                        result = self.execute_r(action.code, **live_kwargs)
                     else:
-                        result = self.execute_r(action.code, cell_id=attempt[2])
+                        result = self.execute_r(
+                            action.code, cell_id=attempt[2], **live_kwargs
+                        )
                 else:
                     group_id = getattr(self.action_ledger, "current_group_id", None)
                     context = (
@@ -1425,12 +1557,14 @@ class LocalActionExecutor:
                                 action.code,
                                 origin="agent",
                                 **({"cell_id": attempt[2]} if attempt else {}),
+                                **live_kwargs,
                             )
                     else:
                         result = self.kernel.execute(
                             action.code,
                             origin="agent",
                             **({"cell_id": attempt[2]} if attempt else {}),
+                            **live_kwargs,
                         )
                     self._record_kernel_generation(state)
                 if attempt is not None:
@@ -1447,6 +1581,12 @@ class LocalActionExecutor:
         except BaseException as exc:
             from openai4s.egress import is_boundary_refusal
 
+            # What a cell Ctrl-C stopped had printed stays with it (CLI-29).
+            printed = (
+                live.end(interrupted=isinstance(exc, KeyboardInterrupt))
+                if live is not None
+                else ""
+            )
             if is_boundary_refusal(exc):
                 try:
                     if hooks is not None:
@@ -1463,7 +1603,16 @@ class LocalActionExecutor:
             try:
                 if hooks is not None:
                     failed_result = (
-                        {"id": attempt[2], "error": "host-side execution failure"}
+                        {
+                            "id": attempt[2],
+                            "error": "host-side execution failure",
+                            **({"stdout": printed} if printed else {}),
+                            **(
+                                {"interrupted": True}
+                                if isinstance(exc, KeyboardInterrupt)
+                                else {}
+                            ),
+                        }
                         if attempt is not None
                         else None
                     )
@@ -1474,6 +1623,8 @@ class LocalActionExecutor:
                         attempt, attempt_state_for_exception(exc, otherwise="failed")
                     )
             raise
+        if live is not None:
+            live.end()
         try:
             if hooks is not None:
                 hooks.after(action, token, result)
@@ -1818,6 +1969,9 @@ class TranscriptEventSink:
     #: Optional live view of the same events (`RunProgress`). It only watches:
     #: a progress line that cannot be written must not end the run.
     progress: Any = None
+    #: The executor's `LiveCellOutput`, when a cell's stdout is written to the
+    #: trace as it runs: its output is then not repeated in the observation.
+    live_output: LiveCellOutput | None = None
 
     def emit(self, event: AgentEvent) -> None:
         if self.progress is not None:
@@ -1834,14 +1988,21 @@ class TranscriptEventSink:
         elif isinstance(event, ActionRouted):
             for line in _trace_tool_calls(event.action):
                 self.log(line)
+            if self.live_output is not None and isinstance(event.action, CodeCell):
+                self.live_output.label(f"--- turn {event.turn + 1} (cell output) ---")
         elif (
             isinstance(event, OutcomeProduced) and event.outcome.observation is not None
         ):
             content = str(event.outcome.observation)
             self.transcript.append(TranscriptTurn("observation", content))
+            shown = content
+            if self.live_output is not None:
+                shown = _without_printed_stdout(
+                    content, self.live_output.take_printed()
+                )
             self.log(
                 f"--- turn {event.turn + 1} (observation) ---\n"
-                f"{_trace_preview(content)}"
+                f"{_trace_preview(shown)}"
             )
 
 
@@ -2079,6 +2240,7 @@ __all__ = [
     "CompactionPolicy",
     "CompletionSignal",
     "KernelGenerationRecorder",
+    "LiveCellOutput",
     "LocalActionExecutor",
     "RunProgress",
     "TranscriptEventSink",

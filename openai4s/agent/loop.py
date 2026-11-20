@@ -393,6 +393,9 @@ class Agent:
     # Optional live view of this run's engine events (`runtime.RunProgress`),
     # set by `openai4s run` so a foreground run says what it is doing.
     progress: object | None = field(default=None, repr=False)
+    # A running cell's stdout as it arrives (`runtime.LiveCellOutput`), set by
+    # `openai4s run`: `-v` shows it live, and Ctrl-C keeps what it printed.
+    live_output: Any | None = field(default=None, repr=False)
     # Durable kernel-generation store handle (duck-typed Store). When set (or
     # defaulted from the dispatcher's store), each worker lifetime writes a
     # kernel_generations row under this Agent's frame so artifact environment
@@ -874,6 +877,19 @@ class Agent:
 
         transcript = list(self._run_transcript)
         turns = sum(1 for turn in transcript if turn.role == "assistant")
+        # A cell Ctrl-C stopped never produced its observation; what it had
+        # printed by then is still the run's output (CLI-29).
+        live = self.live_output
+        printed = live.interrupted_output() if live is not None else ""
+        if printed:
+            transcript.append(
+                TranscriptTurn(
+                    "observation",
+                    "[Observation]\nstdout:\n"
+                    + printed.rstrip()
+                    + "\n[interrupted: Ctrl-C stopped this cell while it ran]",
+                )
+            )
         return self._finish(transcript, None, "cancelled", turns=turns)
 
     def close_unrun_frame(self, status: str = "failed") -> None:
@@ -1095,7 +1111,10 @@ class Agent:
                 except Exception:  # noqa: BLE001 - compatible provider fallback
                     pass
                 transcript_events = TranscriptEventSink(
-                    transcript, log=self._log, progress=self.progress
+                    transcript,
+                    log=self._log,
+                    progress=self.progress,
+                    live_output=self.live_output,
                 )
                 action_ledger = self._action_ledger(tool_catalog, task)
                 event_sink: Any = (
@@ -1219,6 +1238,7 @@ class Agent:
                             lambda: self._apply_pending_env(lazy_kernel)
                         ),
                         generation_recorder=self._generation_recorder,
+                        live_output=self.live_output,
                     ),
                     context_policy=context_policy,
                     event_sink=event_sink,
@@ -1493,7 +1513,13 @@ class Agent:
         self._log(f"[env] switching python kernel to '{environment.name}'")
         lazy_kernel.shutdown()
 
-    def _execute_r(self, code: str, *, cell_id: str | None = None) -> dict:
+    def _execute_r(
+        self,
+        code: str,
+        *,
+        cell_id: str | None = None,
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> dict:
         """Run one ```r cell on the persistent R kernel, spawning it lazily.
 
         The kernel is respawned when host.env.use() retargeted the R channel
@@ -1554,6 +1580,8 @@ class Agent:
                     for parameter in parameters
                 ):
                     kwargs["cell_id"] = cell_id
+            if on_chunk is not None:
+                kwargs["on_chunk"] = on_chunk
             return execute(code, **kwargs)
         except Exception as e:  # noqa: BLE001 — dead worker: drop it, soft-fail
             from openai4s.egress import is_boundary_refusal
