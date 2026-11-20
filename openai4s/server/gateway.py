@@ -167,6 +167,10 @@ from openai4s.server.delivery import (
     CompletionDeliveryService,
     DeliveryValidationError,
 )
+from openai4s.server.download_provenance import (
+    DOWNLOAD_TOOL,
+    record_download_sources,
+)
 from openai4s.server.errors import (
     ERROR_CODES,
     INTERNAL_ERROR_MESSAGE,
@@ -9407,11 +9411,11 @@ class SessionRunner:
             ),
         ):
             return self._invoke_writing_control_with_artifacts_bound(
-                st, emit, invoke, tool_name=str(name)
+                st, emit, invoke, tool_name=str(name), call=call
             )
 
     def _invoke_writing_control_with_artifacts_bound(
-        self, st, emit, invoke, *, tool_name: str
+        self, st, emit, invoke, *, tool_name: str, call: Any = None
     ):
         """Run one declared writing action inside its capture lease."""
 
@@ -9532,6 +9536,10 @@ class SessionRunner:
             try:
                 if not captured_holder:
                     capture_written_files()
+                if tool_name == DOWNLOAD_TOOL and captured_holder:
+                    # SCI-10: the URL, size, digest and approval behind a
+                    # downloaded file, for its Provenance view.
+                    self._record_download_provenance(st, call, captured_holder[-1])
             except Exception as capture_error:  # noqa: BLE001
                 if self.stage1_trusted_delivery:
                     # The tool already ran.  Returning its success would make
@@ -9547,6 +9555,24 @@ class SessionRunner:
             return result
         finally:
             self.recovery.touch(st)
+
+    def _record_download_provenance(self, st, call, captured) -> None:
+        """Best effort: a missing record must never fail the download."""
+
+        try:
+            read = call.get if isinstance(call, dict) else None
+            record_download_sources(
+                self.store,
+                root_frame_id=st.root_frame_id,
+                call_id=str((read("id") if read else getattr(call, "id", None)) or ""),
+                arguments=(
+                    read("arguments") if read else getattr(call, "arguments", None)
+                ),
+                artifacts=captured.artifacts,
+                now=self._clock,
+            )
+        except Exception as error:  # noqa: BLE001
+            record_diagnostic(error, surface="artifacts:download_provenance")
 
     @staticmethod
     def _remote_provenance_drain(st):

@@ -14,6 +14,7 @@ from openai4s.execution.dependencies import (
     default_visibility,
     normalize_string_list,
 )
+from openai4s.server.download_provenance import download_view
 from openai4s.server.execution_sources import output_artifact_bindings
 from openai4s.storage.branch_projection import project_branch_records
 
@@ -407,6 +408,10 @@ class ExecutionViewService:
             result["capture_observations"] = capture_observations
         if producer:
             result["producer"] = producer
+        # SCI-10: a file the download tool saved says where it came from.
+        download = download_view((version or {}).get("source"))
+        if download:
+            result["download"] = download
         return result
 
 

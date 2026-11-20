@@ -39,6 +39,7 @@ streams，验证真实 RPC worker 重启后原结果恢复且不重放 action。
 | [`test_dataset_import_live.py`](test_dataset_import_live.py) | 显式启用的真实 PaRoutes 原生导入与 Store 重开验收；不属于默认离线套件。 |
 | [`test_dataset_import.py`](test_dataset_import.py) | 离线覆盖发现/选择、权限、取消、原生捕获、Host 自有核验收据、来源不可变/重开、完整 Session-package 隔离及捕获失败/重试否决合同；真实内核分析在同字节再次导入、替换被拒和 Store 重开后仍绑定精确输入版本与自动血缘。 |
 | [`test_download_integrity.py`](test_download_integrity.py) | 来源大小/checksum、有界传输、取消及发布顺序。 |
+| [`test_download_provenance.py`](test_download_provenance.py) | SCI-10：`web_download` 工具保存的文件要说明来源。走真实的原生捕获边界（只把传输换成写入这些字节）和真实的 `GET /artifacts/{id}/lineage` handler：网址、ISO 保存时间、捕获的大小与 SHA-256，以及批准方式——针对这一次调用 id 回答的批准卡（不是别的调用的），或 `no_prompt`；其他工具写出的文件没有下载记录。不打标记，好让 schema 捕获看到新的 `download` 字段。 |
 | [`test_live_ark_calls.py`](test_live_ark_calls.py) | 显式 live_llm Ark 流式停止与下一调用恢复；凭据通过继承描述符传递、输出脱敏凭证，不进入离线 CI。 |
 | [`test_llm_usage_evidence.py`](test_llm_usage_evidence.py) | 原始用量证据、未知计量、安全错误投影与旧调用结算回归。 |
 | [`test_llm_resource_bounds.py`](test_llm_resource_bounds.py) | 本地 HTTP 总期限、空闲、DNS、字节上限、原生终态和文本背压回归。 |
