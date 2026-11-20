@@ -56,7 +56,8 @@ vi.mock("../../features/customize/actions", async (importOriginal) => ({
 
 import { createTimerLease, pendingTimerCount, resetTimerLeases } from "../../features/customize/timers";
 import { teamUser } from "../../features/chrome/team-identity";
-import { ComputeTab } from "./ComputeTab";
+import { setLang } from "../../i18n/runtime";
+import { COMPUTE_GUIDE_URL, ComputeTab } from "./ComputeTab";
 
 type Node = {
   type?: unknown;
@@ -309,6 +310,41 @@ describe("Compute job polling", () => {
     expect(listed).toContain("done");
     expect(listed).not.toContain("sleep 60");
     expect(pendingTimerCount()).toBe(0);
+  });
+});
+
+// SCI-18: the GPU row offered "Modal/SSH remote compute" (Modal is future
+// work) and CPU approximations nothing produces; NIM and Slurm had no mention.
+describe("what the Compute tab says about remote compute", () => {
+  async function load() {
+    await setLang("en");
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    return expanded(render());
+  }
+
+  it("names what exists: SSH hosts below, NVIDIA NIM, and `openai4s cluster` for Slurm, with the guide", async () => {
+    const tree = await load();
+    const shown = text(tree);
+    expect(shown).not.toContain("Modal");
+    expect(shown).not.toContain("cust.compute.gpuUnavailable");
+    expect(shown).toContain("None on this machine.");
+    expect(shown).toContain("Add an SSH host with a GPU below, or use NVIDIA NIM.");
+    expect(shown).toContain("NVIDIA NIM: the agent can send jobs");
+    expect(shown).toContain("`openai4s cluster`");
+    const guide = find(tree, (node) => node.type === "a")!;
+    expect(guide.props!.href).toBe(COMPUTE_GUIDE_URL);
+    expect(guide.props!.rel).toBe("noopener noreferrer");
+  });
+
+  it("keeps a team member's tab quiet about setting it up", async () => {
+    teamUser.value = { username: "bob", role: "member", kind: "user" };
+    const shown = text(await load());
+    expect(shown).toContain("None on this machine.");
+    expect(shown).not.toContain("SSH host");
+    expect(shown).not.toContain("NVIDIA NIM");
+    expect(shown).not.toContain("openai4s cluster");
   });
 });
 

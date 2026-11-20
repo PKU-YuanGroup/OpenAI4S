@@ -31,15 +31,37 @@ import { markCustomizeLoaded } from "../../features/customize/load";
 import { EnvironmentCard } from "../onboarding/ReadinessPanel";
 import { ActionStatus, CustRow, Hdr, InfoRow, type ActionNote } from "./ui";
 
+/** Where the compute providers that exist today are described. */
+export const COMPUTE_GUIDE_URL = "https://github.com/PKU-YuanGroup/OpenAI4S/blob/main/docs/compute.md";
+
 /** Feature-local: the generated `i18n/en.ts` / `zh.ts` are byte-checked extracts. */
 const computeCopy = copyLookup({
   zh: {
     "compute.memberNote":
       "远程算力、安装依赖包和后台作业由本服务器的管理员管理；这里显示的是本机环境的只读信息。",
+    // SCI-18: the generated copy offered "Modal/SSH remote compute"; Modal does
+    // not exist, and nothing hands back a CPU approximation for GPU work.
+    "compute.gpuNone":
+      "本机没有 NVIDIA GPU。需要 GPU 的技能在本机会失败；内置的结构预测与突变打分在没有远程 GPU 时直接报错，不会用近似结果代替。",
+    "compute.gpuNoneSetup": "可在下方添加带 GPU 的 SSH 主机，或使用 NVIDIA NIM。",
+    "compute.otherTitle": "其他远程算力",
+    "compute.nim":
+      "NVIDIA NIM：代理可以把作业发到 NVIDIA 托管的 NIM 服务，或本机 GPU 上的 NIM 容器。需要 Docker，以及守护进程环境里的 NVIDIA_API_KEY（托管）或 NGC_API_KEY（容器）；此页无需设置。",
+    "compute.slurm": "Slurm 集群：用 `openai4s cluster` 命令提交并跟踪批处理作业（submit、list、cancel、logs）。",
+    "compute.guide": "算力文档（docs/compute.md）",
   },
   en: {
     "compute.memberNote":
       "Remote compute, package installs and daemon jobs are managed by this server's administrator. This page shows the local environment, read-only.",
+    "compute.gpuNone":
+      "None on this machine. Skills that need an NVIDIA GPU fail here, and the built-in structure prediction and mutation scoring refuse without a remote GPU rather than return an approximation.",
+    "compute.gpuNoneSetup": "Add an SSH host with a GPU below, or use NVIDIA NIM.",
+    "compute.otherTitle": "Other remote compute",
+    "compute.nim":
+      "NVIDIA NIM: the agent can send jobs to NVIDIA's hosted NIM service or to a NIM container on a local GPU. It needs Docker and, in the daemon's environment, NVIDIA_API_KEY (hosted) or NGC_API_KEY (container); there is nothing to set up on this page.",
+    "compute.slurm":
+      "Slurm clusters: submit and follow batch jobs with the `openai4s cluster` command (submit, list, cancel, logs).",
+    "compute.guide": "Compute guide (docs/compute.md)",
   },
 });
 
@@ -201,7 +223,8 @@ export function ComputeTab() {
         detail={
           gpu.available
             ? asString(gpu.gpu_name) || t("cust.compute.gpuAvailable")
-            : t("cust.compute.gpuUnavailable")
+            : computeCopy("compute.gpuNone") +
+              (member ? "" : " " + computeCopy("compute.gpuNoneSetup"))
         }
       />
       {remote ? (
@@ -322,6 +345,20 @@ export function ComputeTab() {
           </div>
         </>
       ) : null}
+      {member ? null : (
+        <CustRow
+          name={computeCopy("compute.otherTitle")}
+          desc={
+            <>
+              <span class="rt-line">{computeCopy("compute.nim")}</span>
+              <span class="rt-line">{computeCopy("compute.slurm")}</span>
+              <a class="rt-line" href={COMPUTE_GUIDE_URL} target="_blank" rel="noopener noreferrer">
+                {computeCopy("compute.guide")}
+              </a>
+            </>
+          }
+        />
+      )}
       {runtimes ? (
         <>
           <InfoRow
