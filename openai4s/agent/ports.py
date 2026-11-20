@@ -14,7 +14,11 @@ class ModelPort(Protocol):
         self,
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
-    ) -> ModelReply | Mapping[str, Any]: ...
+        *,
+        offer_tools: bool = True,
+    ) -> ModelReply | Mapping[str, Any]:
+        """One model call. ``offer_tools=False``: no native tool may be called."""
+        ...
 
 
 class ContextPolicy(Protocol):

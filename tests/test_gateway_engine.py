@@ -2006,6 +2006,51 @@ def test_web_native_schema_history_and_cell_only_completion(monkeypatch, tmp_pat
     ]
 
 
+def test_web_turn_withholds_tools_after_two_ignored_cell_notes(monkeypatch, tmp_path):
+    """The Web composition of the same Engine: two replies promise Python and
+    send a filler tool instead, so the third call forbids tool calls and the
+    cell it answers with runs and completes the turn."""
+
+    class Dispatcher:
+        last_output = None
+
+        def __call__(self, method, args):
+            return {"entries": [{"name": "demo.xlsx", "type": "file"}]}
+
+    runner, _hub, frame_id = _prepare_message_runner(
+        monkeypatch, tmp_path, Dispatcher()
+    )
+    choices: list[tuple[object, bool]] = []
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg, on_delta
+        index = len(choices)
+        choices.append((kwargs.get("tool_choice"), bool(kwargs.get("tools"))))
+        if kwargs.get("tool_choice") == "none":
+            return {
+                "content": "```python\nhost.submit_output({'sheets': 2}, ['read'])\n```",
+                "usage": {},
+            }
+        call = _native_call(f"call-{index}", "list_dir", {"path": f"dir{index}"})
+        return _native_reply("现在用 Python 读取 Excel。", [call])[0]
+
+    def fake_execute(state, code, origin, emit, stream=True, language="python"):
+        del code, origin, emit, stream, language
+        state.dispatcher.last_output = {
+            "output": {"sheets": 2},
+            "completion_bullets": ["read"],
+        }
+        return {"result": {"stdout": "", "stderr": "", "error": None}}
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+
+    result = runner.run_message(frame_id, "default", "读取 demo.xlsx")
+
+    assert result["status"] == "completed"
+    assert choices == [(None, True), (None, True), ("none", True)]
+
+
 def test_cancel_after_llm_reply_prevents_returned_cell(monkeypatch, tmp_path):
     dispatcher = SimpleNamespace(last_output=None)
     runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)

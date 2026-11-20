@@ -267,7 +267,8 @@ def _apply_anthropic_tools(
         choice = {"type": "none"}
     else:
         choice = {"type": "auto"}
-    if parallel_tool_calls is not None:
+    # `{"type": "none"}` takes no other field.
+    if parallel_tool_calls is not None and choice["type"] != "none":
         choice["disable_parallel_tool_use"] = not parallel_tool_calls
     if tool_choice is not None or parallel_tool_calls is not None:
         payload["tool_choice"] = choice

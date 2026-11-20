@@ -286,6 +286,20 @@ ANNOUNCED_CELL_NOTE = (
     "```r) cell as the ONLY action of your next reply, with no tool calls."
 )
 
+# A note asks; it cannot make a model send the cell. Doubao Seed drew the note
+# above on twelve replies in a row, each one sentence promising Python and a
+# different filler tool (glob_files, write_todos, list_dir, list_artifacts,
+# load_skill, review_status), so no repeat rule saw a loop. On the second note
+# in a row the Engine makes the next model call with no native tools on offer:
+# its reply can only be text, and a fenced cell is the one text that runs.
+# Tools come back on the call after that, whatever the reply was.
+ANNOUNCED_CELL_WITHHOLD_AFTER = 2
+TOOLS_WITHHELD_NOTE = (
+    " Tools are withheld for your next reply, so it can only be text: send "
+    "the fenced ```python (or ```r) cell now as your whole reply. Tools come "
+    "back on the reply after it."
+)
+
 # What such a reply says, in the two languages the Web UI is used in. The
 # phrasing varies from turn to turn ("in the kernel", "entering the Python
 # kernel", "execute Python", "move into the Python runtime"), so a verb of
@@ -370,12 +384,16 @@ def unexecuted_cell_note(content: str, action: Action | None) -> str:
     return UNEXECUTED_CELL_NOTE.format(language=cell.language)
 
 
-def announced_cell_note(content: str, action: Action | None) -> str:
+def announced_cell_note(content: str, action: Action | None, streak: int = 0) -> str:
     """The note for a native batch whose reply promised a cell it never sent.
 
     The counterpart of :func:`unexecuted_cell_note`: that one fires when a
     complete cell was displaced by native calls, this one when the reply names
     a cell or the kernel and carries no executable cell at all.
+
+    ``streak`` is how many replies in a row before this one drew the note.
+    The reply that brings it to ``ANNOUNCED_CELL_WITHHOLD_AFTER`` is also told
+    that its next call offers no tools.
     """
     if not isinstance(action, NativeToolBatch):
         return ""
@@ -384,6 +402,8 @@ def announced_cell_note(content: str, action: Action | None) -> str:
     text = content if isinstance(content, str) else ""
     if extract_action(text) is not None or not _ANNOUNCED_CELL.search(text):
         return ""
+    if streak + 1 == ANNOUNCED_CELL_WITHHOLD_AFTER:
+        return ANNOUNCED_CELL_NOTE + TOOLS_WITHHELD_NOTE
     return ANNOUNCED_CELL_NOTE
 
 
