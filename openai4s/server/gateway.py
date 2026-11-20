@@ -19350,7 +19350,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # as a 500 from the stricter projections).
             workbench = re.fullmatch(
                 r"/frames/([^/]+)/(?:"
-                r"action-timeline|execution-queue(?:/resume)?|context|security|"
+                r"action-timeline|execution-queue|context|security|"
                 r"delegations|"
                 r"recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|"
                 r"branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|"
@@ -19416,6 +19416,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # user (M-31); this is their "run them".
             m = re.fullmatch(r"/frames/([^/]+)/execution-queue/resume", sub)
             if m and method == "POST":
+                if store.get_frame(m.group(1)) is None:
+                    raise GatewayError(404, "session not found")
                 released = runner.executions.release_held(m.group(1))
                 self._json({"ok": True, "frame_id": m.group(1), "released": released})
                 return
