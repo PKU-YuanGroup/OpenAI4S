@@ -87,3 +87,6 @@ if [ "$kernel_envs_mode" != "none" ]; then
 fi
 
 echo "· setup complete — launch with ./start.sh"
+# The CLI lives in .venv/bin, which a new terminal does not have on PATH.
+echo "  other commands: \`uv run openai4s <command>\` from this folder, or"
+echo "  \`source .venv/bin/activate\` once per terminal and then \`openai4s <command>\`"

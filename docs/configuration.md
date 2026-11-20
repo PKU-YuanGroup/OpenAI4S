@@ -6,18 +6,20 @@ Config is via env vars (all have working defaults), read from the environment or
 
 One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_url` and `model`, so usually you only set the key. Four wire formats live behind one normalized `host.llm`: OpenAI-compatible `/chat/completions`, OpenAI `/responses`, Anthropic `/v1/messages`, and Gemini `generateContent`.
 
-| provider | wire | default model | vision |
-|---|---|---|:---:|
-| `ark` | openai | `doubao-seed-2.1-pro` (+11 more via plan/v3) | ✅ |
-| `chatgpt` | openai | `gpt-5` | ✅ |
-| `openai_responses` | responses | `gpt-5` | — |
-| `claude` | anthropic | `claude-sonnet-4-5` | ✅ |
-| `gemini` | gemini | `gemini-2.5-flash` | ✅ |
-| `ollama` | openai | `gemma4:31b` (cloud) | ✅ |
+| provider | name in the UI | wire | default model | vision |
+|---|---|---|---|:---:|
+| `ark` | Ark-compatible | openai | `doubao-seed-2.1-pro` (+11 more via plan/v3) | ✅ |
+| `chatgpt` | OpenAI-compatible | openai | `gpt-5` | ✅ |
+| `openai_responses` | OpenAI Responses | responses | `gpt-5` | — |
+| `claude` | Anthropic-compatible | anthropic | `claude-sonnet-4-5` | ✅ |
+| `gemini` | Gemini-compatible | gemini | `gemini-2.5-flash` | ✅ |
+| `ollama` | Ollama | openai | `gemma4:31b` (cloud) | ✅ |
+
+The provider id is what `OPENAI4S_LLM_PROVIDER` and `openai4s init --provider` take; `chatgpt` is the id of the OpenAI-compatible `/chat/completions` protocol, so it is also the one for DeepSeek, vLLM, OpenRouter and similar endpoints (set the base URL). `openai4s init` lists each id with its UI name and accepts either.
 
 `ark` is Volcengine's Agent Plan gateway (the provider's default endpoint) — one endpoint + key serving the plan's text models: `doubao-seed-2.1-pro`, `doubao-seed-evolving`, `doubao-seed-2.1-lite`, `doubao-seed-2.0-mini`, `glm-5.3`, `glm-5.3-flash`, `kimi-k3.1-pro`, `kimi-k2.8-preview`, `deepseek-v4-{pro,flash}` and `deepseek-v4.1-flash` (plus its `-economy` variant), as listed in [the plan's model table](https://www.volcengine.com/docs/82379/2366394). The gateway answers any other id with HTTP 404 `UnsupportedModel`; 1.0.0's `doubao-seed-2.0-{pro,code,lite}` and `minimax-*` presets are no longer served. These are catalog presets, not saved profiles: no profile is pre-registered, so save one for each model you want to switch to. The plan gateway has no model-listing route, so First-run setup's **Fetch models** offers this catalog for it; other endpoints are asked for the ids they actually serve. Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
 
-Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
+Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). **A saved setting wins over all three:** whatever Customize → Models or `openai4s init` stored in the settings database (provider, model, base URL, key) is used before any environment variable is read, so editing `.env` does not change a model that was saved once — change it where it was saved, or run `openai4s init --model <id>`. `openai4s doctor` says where the model it reports came from and names an environment variable that a saved value overrides. The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
 
 The `openai` and `anthropic` wires stream token by token whenever the caller supplies a delta callback, and allow one blocking compatibility request only after HTTP 400/422 explicitly reports `streaming_not_supported`, or `unsupported_parameter` / `unknown_parameter` with structured `param: "stream"`. Authentication failures, empty streams, timeouts and uncertain read failures do not trigger compatibility requests. All transports share one send ceiling (`OPENAI4S_LLM_MAX_RETRIES` + 1, never below two, three by default) and one backoff budget per logical call; the compatibility POST itself is attempted only once, and because it is a fallback rather than a retry, `OPENAI4S_LLM_MAX_RETRIES=0` still leaves room for it. Cancellation before a send prevents it, and received text, reasoning, tool fragments or usage veto transparent replay. `responses` is always SSE; `gemini` is always blocking. `OPENAI4S_LLM_STREAM=0` (also `false`/`no`/`off`) forces the blocking path on the two that choose — worth reaching for behind a proxy that mishandles SSE, at the cost of the reply arriving as one blob per turn.
 
@@ -469,21 +471,52 @@ Host-RPC limitations.
 
 ## CLI
 
+Every subcommand, in the order a new installation meets them. `openai4s
+<command> --help` has the details. In a checkout set up by `./setup.sh` the
+command lives in `.venv/bin`, which is not on `PATH`: run it as `uv run
+openai4s …` from that folder, or `source .venv/bin/activate` first.
+
 ```bash
+# get started
 openai4s init      # guided first-run model configuration (headless-friendly)
+openai4s doctor    # can this install do the work? model, runtime, sandbox, disk,
+                   # connectors; no daemon needed; exit 0 ok / 1 degraded / 2 failed.
+                   # One small request verifies the API key and model; --offline skips it
 openai4s serve     # daemon + web UI (foreground; --detached to background,
                    # plus --host/--port/--no-browser; the detached parent waits
                    # up to 60s for /health, OPENAI4S_DETACHED_READY_TIMEOUT overrides)
-openai4s status    # is it up? (plain URL, never the access token)
 openai4s url       # the sign-in URL; it carries the access token, so keep it out of logs
+openai4s status    # is it up? (plain URL, never the access token; --json for scripts)
 openai4s stop      # stop the daemon; waits up to --timeout (default 30s), --force to SIGKILL
+
+# work without the web UI
 openai4s run "…"   # one Code-as-Action task in-process, no daemon
-openai4s setup --profile standard          # build Python + R
+openai4s cluster submit|list|cancel|logs|profiles   # batch jobs through the daemon
+openai4s share create|update|list|revoke|enable|disable|status|import
+                   # read-only session shares through a relay (docs/webshare.md)
+openai4s relay serve|gen-token                       # the public share relay, on a VPS
+
+# environments
+openai4s setup --profile standard          # build the Python + R conda envs in place
 openai4s setup --profile standard --update # sync Python + R, no pruning
 openai4s setup                             # build all four environments
+openai4s env plan|apply|list|rollback|recover
+                   # the same envs/*.yml specs as verified generations under the
+                   # data dir, with rollback; the agent finds envs made either way
 openai4s jupyter describe               # inspect optional bridge availability
 openai4s jupyter export ./kernel-specs  # pure-stdlib KernelSpec export
 openai4s jupyter install                # install user KernelSpecs
+
+# support and evidence
+openai4s diagnostics -o bundle.zip   # redacted support bundle; its report.json has
+                                     # versions, postures, doctor's verdicts, recent runs
+openai4s verify-package <file>.openai4s-session.zip   # an exported session's hashes
+openai4s inspect-package <file>.openai4s-session.zip  # how that session's run behaved
+openai4s benchmark                   # the workflow benchmark against the real subsystems
+
+# team server and lab
+openai4s user add|list|disable|reset-password   # team-mode accounts
+openai4s lab …     # the simulated OpenMHS lab (`openai4s lab --help`)
 ```
 
 `openai4s run` exits with a status a script can branch on:
@@ -503,14 +536,21 @@ verdict is `auto_mode.terminal`.
 OpenAI4S settings database. Interactive API-key input is hidden; automation may
 pipe one line to `openai4s init --api-key-stdin --non-interactive`. An API key
 is never accepted as a command-line value or returned by `--json`, keeping it
-out of shell history and structured command output.
+out of shell history and structured command output. In the `--json` result
+`complete` only says the first-run setup was saved; `needs_api_key` is true
+while no key is stored for a provider that needs one (a keyless local endpoint
+does not). With stdin not a terminal and no `--non-interactive`, `init` asks
+nothing and says so on stderr before it saves the options given and the
+provider defaults.
 
 The same command makes one web-search choice. Interactively it asks after the
 model; `--search doubao|tavily|you|builtin|parallel` makes it non-interactively, with
 `--search-key-stdin` supplying the Agent Plan, Tavily or You.com key (stdin
 carries one key per run, so not together with `--api-key-stdin`). `doubao`
 stores the Agent Plan key; any other choice moves that engine to the front of
-the backup list, and `builtin` keeps only the keyless engines.
+the backup list, and `builtin` keeps only the keyless engines as backups.
+Doubao is not a backup: whenever an Agent Plan key is stored (an Ark Agent Plan
+model key counts) it is tried before the backups, whichever one is chosen.
 
 ## Platform support
 

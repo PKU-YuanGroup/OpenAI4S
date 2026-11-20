@@ -911,6 +911,33 @@ def _detached_startup_refusal(
     return None
 
 
+def _prepared_config():
+    """``get_config()``, or None after one ``error:`` line about the data dir.
+
+    ``get_config()`` creates the data directory. When ``OPENAI4S_DATA_DIR``
+    names a file, or a place this user cannot create or write, that ``mkdir``
+    was the last line of a traceback; ``doctor`` already said the same thing
+    in words, so this says it the way doctor does and points at it.
+    """
+    try:
+        return get_config()
+    except OSError as exc:
+        target = Path(get_config(initialize_dirs=False).data_dir)
+        if target.exists() and not target.is_dir():
+            reason = "it is not a directory"
+        else:
+            reason = exc.strerror or str(exc)
+            if exc.filename:
+                reason += f": {exc.filename}"
+        print(
+            f"error: cannot use the data directory {target} ({reason}); point "
+            "OPENAI4S_DATA_DIR at a directory this user can write to "
+            "(`openai4s doctor` checks it)",
+            file=sys.stderr,
+        )
+        return None
+
+
 def cmd_serve(args) -> int:
     from openai4s.server import build_server, run_server
 
@@ -919,7 +946,9 @@ def cmd_serve(args) -> int:
     except FutureSchemaError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    cfg = get_config()
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
     _apply_serve_overrides(args, cfg)
     if getattr(args, "detached", False):
         # The parent never claims the singleton: the detached child re-runs
@@ -981,12 +1010,19 @@ def cmd_serve(args) -> int:
         signal.signal(signal.SIGTERM, previous_sigterm)
         _clear_state(cfg, only_if_owned_by=my_pid)
         raise
+    # Flushed: stdout is block-buffered whenever it is not a terminal, so under
+    # nohup, a redirect to a log file or `--detached` these lines -- the only
+    # ones naming the address actually bound -- sat in the buffer until the
+    # daemon exited, and the log of a running daemon never showed them.
+    # No sign-in line here: build_server has just printed the gateway's
+    # startup notice with the same sentence (or team mode's /login address),
+    # and printing ours too showed it twice in two wordings.
     print(
         f"openai4s listening at {_url(cfg, with_token=False)} "
-        f"(model={cfg.llm.model})"
+        f"(model={cfg.llm.model})",
+        flush=True,
     )
-    print(_sign_in_hint(cfg))
-    print("web UI ready. Ctrl-C to stop.")
+    print("web UI ready. Ctrl-C to stop.", flush=True)
     if cfg.team_mode:
         # First boot of team mode with no accounts: print the bootstrap
         # command and start normally — never prompt, never block (M1-3).
@@ -997,7 +1033,8 @@ def cmd_serve(args) -> int:
                 print(
                     "team mode is ON but no users exist yet; create the "
                     "first admin with:\n"
-                    "  openai4s user add <name> --role admin"
+                    "  openai4s user add <name> --role admin",
+                    flush=True,
                 )
         except Exception:
             pass
@@ -1043,6 +1080,18 @@ def _doctor_config():
         return Config()
 
 
+_DOCTOR_EXIT_STATUS_HELP = """\
+exit status:
+  0  every check passed
+  1  usable, with the degradations the report names (warnings)
+  2  not ready: at least one check failed
+
+With a model API key configured and networking allowed, doctor sends one small
+request to the provider to confirm the key and the model id. --offline, or
+OPENAI4S_ALLOW_NETWORK=0, skips it and the model line says "not verified".
+"""
+
+
 def cmd_doctor(args) -> int:
     """Check whether this installation can actually do the work.
 
@@ -1055,12 +1104,40 @@ def cmd_doctor(args) -> int:
     """
     from openai4s import doctor
 
-    result = doctor.report(_doctor_config())
+    # One small authenticated request confirms the key and the model id; a
+    # configured key that the provider rejects otherwise read "All checks
+    # passed" until the first `run`. `--offline` keeps the check local.
+    live = None if getattr(args, "offline", False) else doctor.send_test_request
+    result = doctor.report(_doctor_config(), live_model=live)
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(doctor.render(result))
     return {doctor.OK: 0, doctor.WARN: 1, doctor.FAIL: 2}[result["status"]]
+
+
+def _diagnostics_bundle_note(path) -> str | None:
+    """What to say when a package command is handed a diagnostics bundle.
+
+    Both are zips the CLI writes, and "has no manifest.json; it is not an
+    OpenAI4S package" (the bundle has MANIFEST.json) did not say which command
+    the file belongs to.
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return None
+    if {"report.json", "MANIFEST.json"} <= names and "manifest.json" not in names:
+        return (
+            f"{Path(path).name} is a diagnostics bundle from `openai4s "
+            "diagnostics`, not an exported session: read its report.json "
+            "directly. verify-package and inspect-package read session packages "
+            "exported from the workbench (.openai4s-session.zip)."
+        )
+    return None
 
 
 def cmd_verify_package(args) -> int:
@@ -1070,7 +1147,7 @@ def cmd_verify_package(args) -> int:
     try:
         report = verify_package(args.package)
     except EvidenceError as e:
-        print(f"cannot verify: {e}")
+        print(f"cannot verify: {_diagnostics_bundle_note(args.package) or e}")
         return 2
     print(f"package: {report['path']}")
     print(f"  format: {report['format']} (schema {report['schema_version']})")
@@ -1109,7 +1186,7 @@ def cmd_inspect_package(args) -> int:
         report = verify_package(args.package)
         diagnosis = diagnose(read_package(args.package))
     except (EvidenceError, PackageReadError) as e:
-        print(f"cannot inspect: {e}")
+        print(f"cannot inspect: {_diagnostics_bundle_note(args.package) or e}")
         return 2
     if args.json:
         print(
@@ -1144,11 +1221,32 @@ def cmd_diagnostics(args) -> int:
     """Write a redacted diagnostic bundle for a bug report."""
     from openai4s.diagnostics import build_bundle
 
-    cfg = get_config()
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
     target = (
         Path(args.output) if args.output else Path.cwd() / "openai4s-diagnostics.zip"
     )
-    result = build_bundle(cfg, target)
+    if target.is_dir():
+        print(
+            f"error: {target} is a directory; give the bundle a file name, "
+            f"e.g. -o {target / 'openai4s-diagnostics.zip'}",
+            file=sys.stderr,
+        )
+        return 1
+    from openai4s import doctor
+
+    # Doctor's verdicts go in (offline: no request to the model provider), so
+    # the bundle says whether the sandbox, runtime and model setup held, not
+    # only which knobs were set.
+    try:
+        result = build_bundle(cfg, target, doctor_report=doctor.report(cfg))
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        if exc.filename and str(exc.filename) != str(target):
+            reason += f": {exc.filename}"
+        print(f"error: cannot write {target} ({reason})", file=sys.stderr)
+        return 1
     print(f"wrote {result['path']}")
     print(f"  included: {', '.join(result['included']) or 'nothing'}")
     for item in result["excluded"]:
@@ -1160,11 +1258,59 @@ def cmd_diagnostics(args) -> int:
     return 0
 
 
+def _state_config():
+    """The config for `status`, `url` and `stop`, which only read state files.
+
+    ``get_config()`` creates the data directory and its subdirectories, so a
+    mistyped ``OPENAI4S_DATA_DIR`` answered "not running" and left a new empty
+    data directory behind, and one naming a file or an unwritable place was a
+    traceback from ``mkdir``.
+    """
+    return get_config(initialize_dirs=False)
+
+
+def _data_dir_not_a_directory(cfg) -> str | None:
+    """The `error:` line for a data dir that names a file, else None.
+
+    Reading the pidfile below such a path raises ``NotADirectoryError``.
+    """
+    data_dir = getattr(cfg, "data_dir", None)
+    if data_dir is None:
+        return None
+    target = Path(data_dir)
+    if target.exists() and not target.is_dir():
+        return (
+            f"error: the data directory {target} is not a directory; point "
+            "OPENAI4S_DATA_DIR at the one the daemon was started with"
+        )
+    return None
+
+
+def _not_running_line(cfg) -> str:
+    """`daemon: not running`, naming the data dir that was checked."""
+    data_dir = getattr(cfg, "data_dir", None)
+    if data_dir is None:
+        return "daemon: not running"
+    if not Path(data_dir).exists():
+        return (
+            f"daemon: not running (there is no data directory at {data_dir}; "
+            "check OPENAI4S_DATA_DIR)"
+        )
+    return f"daemon: not running (data dir {data_dir})"
+
+
 def cmd_status(args) -> int:
-    cfg = get_config()
+    cfg = _state_config()
+    refusal = _data_dir_not_a_directory(cfg)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
     pid = _read_pid(cfg)
     if not pid or not _daemon_alive(cfg, pid):
-        print("daemon: not running")
+        if getattr(args, "json", False):
+            print(json.dumps({"running": False, "data_dir": str(cfg.data_dir)}))
+        else:
+            print(_not_running_line(cfg))
         return 1
     endpoint = _recorded_endpoint(cfg, pid)
     # confirm via /health
@@ -1190,6 +1336,9 @@ def cmd_status(args) -> int:
                 or recorded != pid
             ):
                 state = None
+            # Everything the text form says, so a script that wants the port
+            # does not have to parse the sentence. The plain origin, as there.
+            host, port = endpoint if endpoint is not None else (cfg.host, cfg.port)
             print(
                 json.dumps(
                     {
@@ -1197,6 +1346,11 @@ def cmd_status(args) -> int:
                         "pid": pid,
                         "version": (state or {}).get("version"),
                         "bundle_id": (state or {}).get("bundle_id"),
+                        "url": _url(cfg, with_token=False, endpoint=endpoint),
+                        "host": host,
+                        "port": port,
+                        "model": health.get("model"),
+                        "data_dir": str(cfg.data_dir),
                     }
                 )
             )
@@ -1209,7 +1363,10 @@ def cmd_status(args) -> int:
             f"daemon: running (pid {pid}) at "
             f"{_url(cfg, with_token=False, endpoint=endpoint)}"
         )
-        print("  open     : run `openai4s url` for the sign-in URL")
+        print(
+            "  open     : run `openai4s url` for the sign-in URL (in the "
+            "OpenAI4S folder without it on PATH: `uv run openai4s url`)"
+        )
         print(f"  model    : {health.get('model')}")
         # The loopback health response is intentionally a minimal public
         # projection.  The CLI already owns the local configuration, so it can
@@ -1275,10 +1432,14 @@ def _poll_attempts(seconds: float) -> int:
 
 
 def cmd_stop(args) -> int:
-    cfg = get_config()
+    cfg = _state_config()
+    refusal = _data_dir_not_a_directory(cfg)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
     pid = _read_pid(cfg)
     if not pid or not _daemon_alive(cfg, pid):
-        print("daemon: not running")
+        print(_not_running_line(cfg))
         _clear_state(cfg)
         return 1
     timeout = getattr(args, "timeout", None) or STOP_TIMEOUT_S
@@ -1340,7 +1501,11 @@ def cmd_lab(args) -> int:
 
 
 def cmd_url(args) -> int:
-    cfg = get_config()
+    cfg = _state_config()
+    refusal = _data_dir_not_a_directory(cfg)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
     print(
         _sign_in_url(
             cfg,
@@ -1356,9 +1521,10 @@ def cmd_url(args) -> int:
     if getattr(cfg, "pidfile", None) is not None and not (
         pid and _daemon_alive(cfg, pid)
     ):
+        missing = "" if Path(cfg.data_dir).exists() else " (it does not exist)"
         print(
             "warning: no OpenAI4S daemon is running for data dir "
-            f"{cfg.data_dir}; start it with ./start.sh or `openai4s serve`. If "
+            f"{cfg.data_dir}{missing}; start it with ./start.sh or `openai4s serve`. If "
             "it was started with OPENAI4S_DATA_DIR or OPENAI4S_PORT, run this "
             "command with the same variables.",
             file=sys.stderr,
@@ -1566,18 +1732,41 @@ def _onboarding_service():
 def _prompt_search() -> tuple[str | None, str]:
     """Interactive init's one web-search decision; (None, "") keeps the setup."""
 
+    # Doubao is not one of the backups: whenever an Agent Plan key is stored
+    # (an Ark Agent Plan model key counts) it is tried before them, whatever is
+    # picked here. Item 4 said "built-in keyless engines only" and the run then
+    # said "Web search: Doubao, then builtin".
     print(
-        "Web search: 1) Doubao (Agent Plan key)  2) Tavily (API key)  "
-        "3) You.com (free; key optional)  4) built-in keyless engines only  5) Parallel (keyless)"
+        "Web search (Doubao is tried before the backups whenever an Agent Plan "
+        "key is stored, an Ark Agent Plan model key included; 2-5 choose the "
+        "backups):"
     )
-    answer = input("Choose 1-5, or press Enter to keep the current setup: ").strip()
-    choice = {
+    print(
+        "  1) Doubao (Agent Plan key)  2) Tavily first (API key)  "
+        "3) You.com first (free; key optional)"
+    )
+    print(
+        "  4) backups: built-in keyless engines only (Doubao, if configured, "
+        "is still tried first)  5) Parallel first (keyless)"
+    )
+    choices = {
         "1": "doubao",
         "2": "tavily",
         "3": "you",
         "4": "builtin",
         "5": "parallel",
-    }.get(answer)
+    }
+    # Asked again on anything else: `9` used to be read as "keep the current
+    # setup", and the run ended "Configured ..." with no web-search line.
+    while True:
+        answer = input("Choose 1-5, or press Enter to keep the current setup: ")
+        answer = answer.strip()
+        if not answer:
+            return None, ""
+        choice = choices.get(answer)
+        if choice is not None:
+            break
+        print("  enter a number from 1 to 5, or press Enter to keep the current setup")
     if choice == "doubao":
         return choice, getpass.getpass("Agent Plan key (input hidden): ")
     if choice == "tavily":
@@ -1594,14 +1783,98 @@ def _prompt_value(label: str, default: str) -> str:
     return input(f"{label}{suffix}: ").strip() or default
 
 
+def _prompt_yes_no(question: str) -> bool:
+    """y/yes, or n/no/Enter; anything else is asked again.
+
+    `maybe` used to count as no, silently, and the run went on to store no key.
+    """
+    while True:
+        answer = input(question).strip().lower()
+        if answer in {"", "n", "no"}:
+            return False
+        if answer in {"y", "yes"}:
+            return True
+        print("  answer y or n")
+
+
+#: What each built-in provider id selects, under the name the README and the
+#: workbench give the same choice. The wizard listed bare ids, so someone
+#: holding a DeepSeek, vLLM or OpenRouter key had nothing to tell them that
+#: `chatgpt` is the "OpenAI-compatible" protocol.
+_INIT_PROVIDER_NAMES = {
+    "ark": ("Ark-compatible", "Volcengine Ark: Doubao, GLM, Kimi, DeepSeek"),
+    "chatgpt": (
+        "OpenAI-compatible",
+        "/chat/completions: OpenAI, DeepSeek, vLLM, OpenRouter, ...",
+    ),
+    "openai_responses": ("OpenAI Responses", "OpenAI /responses"),
+    "claude": ("Anthropic-compatible", "Anthropic /v1/messages"),
+    "gemini": ("Gemini-compatible", "Google generateContent"),
+    "ollama": ("Ollama", "cloud or local models"),
+}
+#: The vendor names people type for a protocol.
+_INIT_PROVIDER_ALIASES = {
+    "openai": "chatgpt",
+    "anthropic": "claude",
+    "google": "gemini",
+}
+
+
+#: The `--search` choices a key can be stored for.
+_INIT_KEYED_SEARCH = ("doubao", "tavily", "you")
+
+
+def _init_provider_id(value, providers) -> str | None:
+    """The provider id a typed name selects, or None when it names none."""
+    text = str(value or "").strip().lower()
+    if text in providers:
+        return text
+    folded = re.sub(r"[\s_]+", "-", text)
+    for provider, (name, _what) in _INIT_PROVIDER_NAMES.items():
+        if folded in (provider.replace("_", "-"), name.lower().replace(" ", "-")):
+            return provider if provider in providers else None
+    alias = _INIT_PROVIDER_ALIASES.get(folded)
+    return alias if alias in providers else None
+
+
+def _init_provider_lines(providers) -> list[str]:
+    """One line per provider: its id, its UI name, and what speaks it."""
+    lines = []
+    for provider in _INIT_PROVIDER_NAMES:
+        if provider in providers:
+            name, what = _INIT_PROVIDER_NAMES[provider]
+            lines.append(f"  {provider:<17} {name} ({what})")
+    lines.extend(
+        f"  {provider}"
+        for provider in sorted(providers)
+        if provider not in _INIT_PROVIDER_NAMES
+    )
+    return lines
+
+
 def cmd_init(args) -> int:
     service, store = _onboarding_service()
     try:
+        if args.provider:
+            # `--provider OpenAI-compatible` is the same request as `chatgpt`.
+            args.provider = (
+                _init_provider_id(args.provider, service.providers) or args.provider
+            )
         defaults = service.defaults(args.provider)
         if args.api_key_stdin and args.search_key_stdin:
             raise ValueError(
                 "stdin carries one key per run: use --api-key-stdin or "
                 "--search-key-stdin, not both"
+            )
+        if args.search_key_stdin and args.search not in _INIT_KEYED_SEARCH:
+            # Refused before anything is read or saved. The piped key used to
+            # be read and dropped, and the run still ended "Configured ...",
+            # exit 0, with no web-search line to show nothing had happened.
+            raise ValueError(
+                "--search-key-stdin needs --search "
+                + "|".join(_INIT_KEYED_SEARCH)
+                + " to say which engine the key is for"
+                + (f" (--search {args.search} takes no key)" if args.search else "")
             )
         interactive = (
             not args.non_interactive
@@ -1609,6 +1882,21 @@ def cmd_init(args) -> int:
             and not args.search_key_stdin
             and sys.stdin.isatty()
         )
+        if (
+            not interactive
+            and not args.non_interactive
+            and not args.api_key_stdin
+            and not args.search_key_stdin
+        ):
+            # `echo | openai4s init`, `docker exec` without -t, ssh without a
+            # tty: the guided command asked nothing and saved the defaults as
+            # if they had been chosen, without a word.
+            print(
+                "note: stdin is not a terminal, so no questions are asked; "
+                "saving the options given and the provider defaults, as "
+                "--non-interactive does",
+                file=sys.stderr,
+            )
         provider = args.provider or defaults["provider"]
         model = args.model
         base_url = args.base_url
@@ -1617,14 +1905,27 @@ def cmd_init(args) -> int:
         if interactive:
             known = ", ".join(sorted(service.providers))
             print("OpenAI4S first-run setup")
-            print(f"Available providers: {known}")
-            provider = _prompt_value("Provider", provider).lower()
+            print("Providers (type the id on the left, or the name beside it):")
+            for line in _init_provider_lines(service.providers):
+                print(line)
+            # Asked again until it names a provider this build has. A typo used
+            # to be carried through every later question -- each showing the
+            # *current* provider's defaults -- and refused only at the end,
+            # with every answer discarded.
+            while True:
+                typed = _prompt_value("Provider", provider).lower()
+                chosen = _init_provider_id(typed, service.providers)
+                if chosen is not None:
+                    break
+                print(f"  unknown provider {typed!r}; enter one of: {known}")
+            if chosen != typed:
+                print(f"  using provider {chosen}")
+            provider = chosen
             defaults = service.defaults(provider)
             model = model or _prompt_value("Model", defaults["model"])
             base_url = base_url or _prompt_value("Base URL", defaults["base_url"])
             if not args.clear_api_key:
-                answer = input("Configure an API key now? [y/N]: ").strip().lower()
-                if answer in {"y", "yes"}:
+                if _prompt_yes_no("Configure an API key now? [y/N]: "):
                     api_key = getpass.getpass("API key (input hidden): ")
         elif args.api_key_stdin:
             api_key = sys.stdin.readline().rstrip("\r\n")
@@ -1649,13 +1950,27 @@ def cmd_init(args) -> int:
             search = search_settings.apply_setup_choice(
                 store, search_choice, search_key
             )
+    except EOFError:
+        # Ctrl-D, or a pipe that ran dry, at a question that now repeats until
+        # it is answered: end the wizard instead of looping or tracing back.
+        print("\nerror: input ended before setup was finished", file=sys.stderr)
+        return 1
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
         store.close()
 
+    from openai4s.llm.resolve import keyless_endpoint
+
+    # `complete` says the first-run setup was saved (the Web wizard's flag),
+    # not that a model can be called: `"has_api_key": false, "complete": true`
+    # read as ready to a script. A keyless local endpoint needs no key.
+    needs_api_key = not result.has_api_key and not keyless_endpoint(
+        result.provider, result.model, result.base_url
+    )
     payload = result.as_dict()
+    payload["needs_api_key"] = needs_api_key
     if search is not None:
         payload["search"] = search
     if args.json:
@@ -1666,7 +1981,7 @@ def cmd_init(args) -> int:
     else:
         print(f"Configured {result.provider} / {result.model}")
         print(f"Settings stored in {result.data_dir}")
-        if not result.has_api_key:
+        if needs_api_key:
             print("No API key stored; add one in Customize → Models after launch.")
         if search is not None:
             backups = [e["id"] for e in search["engines"] if e["usable"]]
@@ -1674,7 +1989,9 @@ def cmd_init(args) -> int:
             print(f"Web search: {lead}{' → '.join(backups)}")
         if not result.native_runtime_supported:
             print("Native Windows kernels are unsupported; run OpenAI4S under WSL2.")
-        print("Next: openai4s serve")
+        # ./setup.sh leaves `openai4s` in .venv/bin, which is not on PATH in a
+        # new terminal; ./start.sh is the launcher that works from a checkout.
+        print("Next: openai4s serve (or ./start.sh in the OpenAI4S folder)")
     return 0
 
 
@@ -1690,21 +2007,54 @@ def cmd_jupyter_describe(args) -> int:
     if args.json:
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0
-    bridge = "available" if status["bridge_available"] else "not installed"
+    bridge = (
+        "available"
+        if status["bridge_available"]
+        else "not installed (ipykernel is missing in this Python)"
+    )
+    # Said in the user's terms: "host RPC: unavailable" and "Jupyter wire
+    # adapter -> hardened OpenAI4S JSON-line worker" described the plumbing.
     print(f"Jupyter bridge: {bridge}")
-    print("  scope      : standalone (not a Web-session attachment)")
-    print("  host RPC   : unavailable")
-    print("  protocol   : Jupyter wire adapter -> hardened OpenAI4S JSON-line worker")
+    print("  what it is : OpenAI4S's Python and R kernels, usable from Jupyter")
+    print(
+        "  sessions   : standalone; a Jupyter kernel does not see a workbench "
+        "session's variables"
+    )
+    print(
+        "  host.*     : not available (host.llm, host.delegate, "
+        "host.submit_output, ...); plain Python and R code runs"
+    )
     for kernel in status["kernels"]:
         print(f"  kernelspec : {kernel['name']} ({kernel['language']})")
     if not status["bridge_available"]:
-        print("  install    : python -m pip install 'ipykernel>=7,<8'")
+        print(f"  install    : {_ipykernel_installer()} 'ipykernel>=7,<8'")
     return 0
 
 
 def _print_kernelspec_writes(written: list[dict], action: str) -> None:
     for item in written:
         print(f"{action} {item['name']}: {item['kernel_json']}")
+    from openai4s.adapters.jupyter import adapter_status
+
+    # The specs' argv is `<this python> -m openai4s.adapters.jupyter.bridge`.
+    # Without ipykernel in this interpreter they appear in JupyterLab and fail
+    # the moment one is started, and "installed …" said nothing about it.
+    if written and not adapter_status()["bridge_available"]:
+        print(
+            "warning: ipykernel is not installed in this Python, so these "
+            "kernels will appear in Jupyter but fail to start. Install it "
+            f"with: {_ipykernel_installer()} 'ipykernel>=7,<8'",
+            file=sys.stderr,
+        )
+
+
+def _ipykernel_installer() -> str:
+    """The install command for this interpreter; a uv-made .venv has no pip."""
+    import importlib.util
+
+    if importlib.util.find_spec("pip") is not None:
+        return f"{sys.executable} -m pip install"
+    return f"uv pip install --python {sys.executable}"
 
 
 def cmd_jupyter_export(args) -> int:
@@ -1888,7 +2238,12 @@ def cmd_setup(args) -> int:
             continue
         prefix = existing.get(name)
         if prefix is not None and not update_existing:
-            print(f"  [{name}] already exists — skipping (use --update to sync)")
+            # Named with its prefix: these are ordinary conda env names
+            # (`python`, `r`), easily one the user already has for themselves.
+            print(
+                f"  [{name}] conda env '{name}' already exists at {prefix} — "
+                "skipping (use --update to sync it)"
+            )
             skipped += 1
             continue
         cmd = (
@@ -1898,7 +2253,15 @@ def cmd_setup(args) -> int:
         )
         action = "update" if prefix is not None else "create"
         if args.dry_run:
-            print(f"  [{name}] would {action}: {' '.join(cmd)}")
+            where = (
+                f"at {prefix}"
+                if prefix is not None
+                else f"in {tool}'s own envs directory"
+            )
+            print(
+                f"  [{name}] would {action} conda env '{name}' {where}: "
+                f"{' '.join(cmd)}"
+            )
             continue
         print(f"  [{name}] {action}… ({' '.join(cmd)})")
         try:
@@ -1962,19 +2325,48 @@ def _env_verify(prefix: Path, *, name: str | None = None) -> tuple[str, list[str
     return probe_interpreter(prefix)
 
 
+def _unknown_env_names(names) -> str | None:
+    """The `error:` line for names with no spec in envs/, else None.
+
+    A name without ``envs/<name>.yml`` was two chained tracebacks ending in
+    ``EnvironmentError_: cannot read the spec``, and never said which names
+    there are.
+    """
+    unknown = [name for name in names if not _env_spec(name).is_file()]
+    if not unknown:
+        return None
+    known = [name for name in _DEFAULT_ENVS if _env_spec(name).is_file()]
+    return (
+        f"error: no environment named {', '.join(repr(n) for n in unknown)}; "
+        f"choose from: {', '.join(known)} (the specs in {_envs_dir()})"
+    )
+
+
 def cmd_env_plan(args) -> int:
-    cfg = get_config()
+    from openai4s.kernel.env_generations import EnvironmentError_
+
+    refusal = _unknown_env_names(args.names)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
     tool = _find_conda_tool() or "conda"
     store = _env_store(cfg)
-    plans = [
-        store.plan(
-            name,
-            _env_spec(name),
-            tool=tool,
-            force_replace=bool(getattr(args, "repair", False)),
-        )
-        for name in args.names
-    ]
+    try:
+        plans = [
+            store.plan(
+                name,
+                _env_spec(name),
+                tool=tool,
+                force_replace=bool(getattr(args, "repair", False)),
+            )
+            for name in args.names
+        ]
+    except EnvironmentError_ as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps([p.public() for p in plans], indent=2, sort_keys=True))
     else:
@@ -1986,7 +2378,13 @@ def cmd_env_plan(args) -> int:
 def cmd_env_apply(args) -> int:
     from openai4s.kernel.env_generations import EnvironmentError_
 
-    cfg = get_config()
+    refusal = _unknown_env_names(args.names)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
     tool = _find_conda_tool()
     if not tool:
         print("error: no conda/mamba/micromamba found on PATH.", file=sys.stderr)
@@ -1995,12 +2393,17 @@ def cmd_env_apply(args) -> int:
     failed = 0
     for name in args.names:
         spec = _env_spec(name)
-        plan = store.plan(
-            name,
-            spec,
-            tool=tool,
-            force_replace=bool(getattr(args, "repair", False)),
-        )
+        try:
+            plan = store.plan(
+                name,
+                spec,
+                tool=tool,
+                force_replace=bool(getattr(args, "repair", False)),
+            )
+        except EnvironmentError_ as e:
+            failed += 1
+            print(f"  [{name}] FAILED: {e}", file=sys.stderr)
+            continue
         if args.dry_run:
             if plan.changes:
                 print(f"  [{name}] would {plan.action}: {plan.reason}")
@@ -2066,7 +2469,10 @@ def _stderr_tail_lines(tail: str, limit: int = 20) -> list[str]:
 
 
 def cmd_env_list(args) -> int:
-    store = _env_store(get_config())
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
+    store = _env_store(cfg)
     names = args.names or store.environments()
     payload = {
         name: {
@@ -2093,7 +2499,10 @@ def cmd_env_list(args) -> int:
 def cmd_env_rollback(args) -> int:
     from openai4s.kernel.env_generations import EnvironmentError_
 
-    store = _env_store(get_config())
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
+    store = _env_store(cfg)
     try:
         result = store.rollback(args.name, args.generation)
     except EnvironmentError_ as e:
@@ -2104,7 +2513,10 @@ def cmd_env_rollback(args) -> int:
 
 
 def cmd_env_recover(args) -> int:
-    store = _env_store(get_config())
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
+    store = _env_store(cfg)
     names = args.names or store.environments()
     report = {name: store.recover(name) for name in names}
     if args.json:
@@ -2646,7 +3058,14 @@ def cmd_user(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="openai4s", description="openai4s CLI")
+    p = argparse.ArgumentParser(
+        prog="openai4s",
+        description="OpenAI4S command line. A new installation goes: `openai4s "
+        "init` (choose the model) -> `openai4s doctor` (check the install) -> "
+        "`openai4s serve` or ./start.sh (the web UI) -> `openai4s url` (the "
+        "sign-in link). In a checkout set up by ./setup.sh, run it as `uv run "
+        "openai4s ...`.",
+    )
     p.add_argument(
         "-V",
         "--version",
@@ -2677,15 +3096,27 @@ def build_parser() -> argparse.ArgumentParser:
     ps.set_defaults(fn=cmd_serve)
     pstatus = sub.add_parser("status", help="check daemon status")
     pstatus.add_argument(
-        "--json", action="store_true", help="machine-readable running build"
+        "--json",
+        action="store_true",
+        help="machine-readable: running, pid, version, url, host, port, model, "
+        "data_dir",
     )
     pstatus.set_defaults(fn=cmd_status)
     pdoc = sub.add_parser(
         "doctor",
         help="check model, runtime, isolation, disk, connectors and remote "
         "compute (no daemon needed)",
+        epilog=_DOCTOR_EXIT_STATUS_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     pdoc.add_argument("--json", action="store_true", help="machine-readable report")
+    pdoc.add_argument(
+        "--offline",
+        action="store_true",
+        help="do not send the one small test request that verifies the API "
+        "key and model with the provider; the model line then says "
+        "'not verified'",
+    )
     pdoc.set_defaults(fn=cmd_doctor)
     pv = sub.add_parser(
         "verify-package",
@@ -2704,7 +3135,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pinspect.set_defaults(fn=cmd_inspect_package)
     pd = sub.add_parser(
-        "diagnostics", help="write a redacted diagnostic bundle for a bug report"
+        "diagnostics",
+        help="write a redacted diagnostic bundle for a bug report (its "
+        "report.json is the summary; not a session package)",
     )
     pd.add_argument(
         "-o", "--output", help="destination zip (default ./openai4s-diagnostics.zip)"
@@ -2784,9 +3217,23 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(fn=cmd_run)
 
     pi = sub.add_parser("init", help="guided first-run model configuration")
-    pi.add_argument("--provider", help="provider id (default: current provider)")
-    pi.add_argument("--model", help="model id (default: provider default)")
-    pi.add_argument("--base-url", help="provider API base URL")
+    pi.add_argument(
+        "--provider",
+        help="provider id: ark, chatgpt, openai_responses, claude, gemini or "
+        "ollama; the web UI's name for one (OpenAI-compatible, "
+        "Anthropic-compatible, ...) is accepted too (default: current provider)",
+    )
+    pi.add_argument(
+        "--model",
+        help="model id (default: the model already saved for this provider, "
+        "else the provider default). A saved model takes precedence over "
+        "OPENAI4S_LLM_MODEL; `openai4s doctor` shows which one is in use",
+    )
+    pi.add_argument(
+        "--base-url",
+        help="provider API base URL (default: the saved URL, else the "
+        "provider default)",
+    )
     pi.add_argument(
         "--api-key-stdin",
         action="store_true",
@@ -2801,7 +3248,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--search",
         choices=("doubao", "tavily", "you", "builtin", "parallel"),
         help="web search: Doubao (Agent Plan key), or the backup engine to try "
-        "first (builtin = keyless engines only)",
+        "first (builtin = only the keyless engines as backups; Doubao is still "
+        "tried before them whenever its key is stored)",
     )
     pi.add_argument(
         "--search-key-stdin",
@@ -2816,7 +3264,18 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--json", action="store_true", help="emit secret-free JSON")
     pi.set_defaults(fn=cmd_init)
 
-    pu = sub.add_parser("setup", help="create or update conda envs from envs/*.yml")
+    pu = sub.add_parser(
+        "setup",
+        help="build the kernel conda envs (python, r, phylo, struct) in place; "
+        "`env` builds them as generations you can roll back",
+        description="Create or update the kernel conda environments from "
+        "envs/*.yml with micromamba, mamba or conda, in place: each spec becomes "
+        "an ordinary conda env named python, r, phylo or struct in that tool's "
+        "own envs directory. An env of that name that already exists is skipped "
+        "unless --update is given. `openai4s env` builds the same specs instead "
+        "as verified generations under the OpenAI4S data directory, keeps the "
+        "previous one, and can roll back; the agent finds envs made either way.",
+    )
     setup_selection = pu.add_mutually_exclusive_group()
     setup_selection.add_argument(
         "--only",
@@ -2859,40 +3318,67 @@ def build_parser() -> argparse.ArgumentParser:
 
     pe = sub.add_parser(
         "env",
-        help="environments as a transaction: plan, apply, roll back",
+        help="build the kernel envs as verified generations you can roll back; "
+        "`setup` builds them in place",
+        description="Build the envs/*.yml specs as generations under "
+        "<data dir>/environments: each apply builds a fresh environment, "
+        "verifies it by starting its interpreter, and only then makes it "
+        "current, keeping the previous generation for `env rollback`. "
+        "`openai4s setup` instead creates or updates ordinary conda envs in "
+        "place; the agent finds envs made either way.",
     )
     esub = pe.add_subparsers(dest="env_action", required=True)
+    env_names_help = (
+        "environments, by spec name in envs/: python, r, phylo, struct "
+        "(default: all four)"
+    )
     ep = esub.add_parser("plan", help="what would change; touches nothing")
-    ep.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ep.add_argument(
+        "names", nargs="*", default=list(_DEFAULT_ENVS), help=env_names_help
+    )
     ep.add_argument(
         "--repair",
         action="store_true",
         help="plan a fresh verified generation even when the spec is unchanged",
     )
-    ep.add_argument("--json", action="store_true")
+    ep.add_argument("--json", action="store_true", help="machine-readable plan")
     ep.set_defaults(fn=cmd_env_plan)
     ea = esub.add_parser(
         "apply", help="build a new generation and switch to it if it verifies"
     )
-    ea.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ea.add_argument(
+        "names", nargs="*", default=list(_DEFAULT_ENVS), help=env_names_help
+    )
     ea.add_argument(
         "--repair",
         action="store_true",
         help="build a fresh verified generation even when the spec is unchanged",
     )
-    ea.add_argument("--dry-run", action="store_true")
+    ea.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="say what would be built, without building anything",
+    )
     ea.set_defaults(fn=cmd_env_apply)
     el = esub.add_parser("list", help="generations, and which one is current")
-    el.add_argument("names", nargs="*")
-    el.add_argument("--json", action="store_true")
+    el.add_argument(
+        "names", nargs="*", help="environments to list (default: all that have one)"
+    )
+    el.add_argument("--json", action="store_true", help="machine-readable list")
     el.set_defaults(fn=cmd_env_list)
     er = esub.add_parser("rollback", help="point at a generation already on disk")
-    er.add_argument("name")
-    er.add_argument("generation")
+    er.add_argument("name", help="environment name, e.g. python or r")
+    er.add_argument("generation", help="generation id, from `openai4s env list`")
     er.set_defaults(fn=cmd_env_rollback)
-    ev = esub.add_parser("recover", help="what a restart should know")
-    ev.add_argument("names", nargs="*")
-    ev.add_argument("--json", action="store_true")
+    ev = esub.add_parser(
+        "recover",
+        help="after a crash: list generations an interrupted apply left "
+        "behind, and whether an apply still holds the lock",
+    )
+    ev.add_argument(
+        "names", nargs="*", help="environments to check (default: all that have one)"
+    )
+    ev.add_argument("--json", action="store_true", help="machine-readable report")
     ev.set_defaults(fn=cmd_env_recover)
 
     pj = sub.add_parser(

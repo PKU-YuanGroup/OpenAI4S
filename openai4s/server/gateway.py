@@ -22212,12 +22212,17 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
 
             plan = preinstall.core_plan()
             if plan["missing"]:
+                # One note, not a warning: the first line a fresh ./setup.sh
+                # install printed was a truncated list of "not installed"
+                # packages and a pointer at `openai4s setup` (conda, four
+                # environments), which read as a broken install.
                 print(
-                    f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
-                    f"installed: {', '.join(plan['missing'][:6])}"
-                    f"{' …' if len(plan['missing']) > 6 else ''}\n"
-                    f"[openai4s] startup does not install packages. Run "
-                    f"`openai4s setup`, or install from Customize → Compute.",
+                    f"[openai4s] note: {len(plan['missing'])} optional scientific "
+                    f"package(s) are not installed in this Python: "
+                    f"{', '.join(plan['missing'])}. Nothing else is affected: a "
+                    f"cell that imports one fails until it is installed, and the "
+                    f"agent asks before installing one (or install one yourself "
+                    f"in Customize → Compute).",
                     file=sys.stderr,
                 )
     except Exception as error:  # noqa: BLE001 - diagnostics must never block startup
