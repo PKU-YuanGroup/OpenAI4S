@@ -981,3 +981,15 @@ def test_the_summary_never_links_the_platforms_own_spill_files():
     assert "[fit.csv](" in text
     assert "context-output" not in text
     assert "Working files" not in text
+
+
+def test_an_r_cell_takes_its_article_and_old_rows_are_still_recognised():
+    """SCI-35: the English progress line said "I have prepared a R cell"."""
+    text = action_narration(CodeCell("r", "print(1)"), "en")
+    assert text.startswith("I have prepared an R cell")
+    assert action_narration(CodeCell("python", "print(1)"), "en").startswith(
+        "I have prepared a Python cell"
+    )
+    assert is_progress_narration(text)
+    # Rows stored before the fix still leave the clean notebook export.
+    assert is_progress_narration(text.replace("an R cell", "a R cell"))

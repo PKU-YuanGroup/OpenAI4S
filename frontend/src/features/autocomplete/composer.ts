@@ -683,7 +683,7 @@ function showSkillPopup(catalog: AcItem[], now: ComposerDetect): void {
     acClose();
     return;
   }
-  const ranked = rankSkillItems(catalog, now.query);
+  const ranked = rankSkillItems(catalog, now.query, { byCollection: true });
   if (!ranked.length && now.afterCjk && /^[^\x00-\x7f]/.test(now.query)) {
     // "和/或" is prose, not a skill lookup that failed.
     acClose();

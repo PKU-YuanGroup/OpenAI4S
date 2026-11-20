@@ -338,6 +338,18 @@
 #cust .cust-content .solid-btn.small:disabled {
   color: var(--text-400, #6c6a64);
 }
+/* SYNC-29: "Check for updates" / "Force a fresh check" broke into two lines of
+   small text in English; they keep their width and stack instead. */
+#cust .update-check-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: none;
+}
+#cust .update-check-actions .outline-btn {
+  white-space: nowrap;
+  justify-content: center;
+}
 /* A button right after a field matches the field's height. */
 #cust .cust-input + .solid-btn,
 #cust .cust-input + .outline-btn {

@@ -14,6 +14,13 @@ const wsMock = vi.hoisted(() => ({ sub: vi.fn(), unsub: vi.fn() }));
 const loadMock = vi.hoisted(() => ({ loadSessions: vi.fn(async () => {}) }));
 vi.mock("../ws/connect", () => wsMock);
 vi.mock("../sessions/load", () => loadMock);
+// M-45: the rebind question is the workbench's own dialog; each test answers it.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 
 import { setLang, t } from "../../i18n/runtime";
 import { _openGen, currentId, project } from "../../stores/session";
@@ -90,7 +97,8 @@ describe("send(): a message the server refuses before admission", () => {
   let routes: Record<string, { status: number; body: unknown }> = {};
 
   function lastHint(): string {
-    const spans = nodes["composer-hint"]!.children as FakeEl[];
+    // An error line ends with its dismiss icon (SYNC-29); the text is the span before it.
+    const spans = (nodes["composer-hint"]!.children as FakeEl[]).filter((n) => n.className !== "hint-dismiss");
     const last = spans[spans.length - 1];
     return last ? String(last.textContent) : "";
   }
@@ -138,6 +146,7 @@ describe("send(): a message the server refuses before admission", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    dialogMock.answer = () => false;
   });
 
   it.each(["before sending", "during preflight"])("keeps the draft when a model choice starts %s", async (timing) => {
@@ -255,7 +264,7 @@ describe("send(): a message the server refuses before admission", () => {
       "model_revision_unavailable",
       "this session is pinned to a model configuration that is no longer usable; rebind it to continue",
     );
-    vi.stubGlobal("confirm", () => false);
+    dialogMock.answer = () => false;
     await send("hello");
 
     expect(nodes.composer!.value).toBe("hello");
@@ -276,10 +285,10 @@ describe("send(): a message the server refuses before admission", () => {
         "different provider or endpoint; its credential is not sent to the old one. Rebind the session to continue",
     );
     const asked: string[] = [];
-    vi.stubGlobal("confirm", (text: string) => {
+    dialogMock.answer = (text: string) => {
       asked.push(text);
       return false;
-    });
+    };
     await send("hello");
 
     expect(asked).toHaveLength(1);
@@ -296,7 +305,7 @@ describe("send(): a message the server refuses before admission", () => {
       status: 200,
       body: { ok: true, binding: { model_profile_id: "", model_profile_revision: 0, bound: false } },
     };
-    vi.stubGlobal("confirm", () => true);
+    dialogMock.answer = () => true;
     await send("hello");
 
     expect(nodes.composer!.value).toBe("hello");
@@ -311,7 +320,7 @@ describe("send(): a message the server refuses before admission", () => {
       status: 200,
       body: { ok: true, binding: { model_profile_id: "mp-b", model_profile_revision: 3, bound: true } },
     };
-    vi.stubGlobal("confirm", () => true);
+    dialogMock.answer = () => true;
     const bodies: unknown[] = [];
     const routed = globalThis.fetch;
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
@@ -331,7 +340,7 @@ describe("send(): a message the server refuses before admission", () => {
       "model_profile_needs_active",
       "no model profile is active and more than one matches 'gpt-4o'; activate the one this session continues under in Customize -> Models, then send again",
     );
-    vi.stubGlobal("confirm", () => true);
+    dialogMock.answer = () => true;
     await send("hello");
 
     expect(nodes.composer!.value).toBe("hello");
@@ -430,10 +439,10 @@ describe("send(): a message the server refuses before admission", () => {
     let answer: (value: unknown) => void = () => {};
     const paths: string[] = [];
     const asked: string[] = [];
-    vi.stubGlobal("confirm", (text: string) => {
+    dialogMock.answer = (text: string) => {
       asked.push(text);
       return true;
-    });
+    };
     vi.stubGlobal("fetch", (url: string) => {
       const path = String(url).replace("/api/v1", "");
       paths.push(path);

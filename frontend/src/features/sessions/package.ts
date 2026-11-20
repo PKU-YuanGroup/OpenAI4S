@@ -188,7 +188,25 @@ export async function importSessionPackage(file: File | null | undefined): Promi
   }
 }
 
-/** Fetch an export and save it under `filename`; the bytes' size, or null after reporting why not. */
+/** The file name a response's Content-Disposition gives (RFC 5987 form first), or "". */
+export function attachmentName(response: Response): string {
+  const header = response.headers.get("Content-Disposition") || "";
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (star && star[1]) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      /* fall through to the plain name */
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header);
+  return plain && plain[1] ? plain[1] : "";
+}
+
+/**
+ * Fetch an export and save it under `filename` -- or, given "", under the
+ * name the server sends; the bytes' size, or null after reporting why not.
+ */
 export async function saveExport(
   url: string,
   filename: string,
@@ -205,7 +223,9 @@ export async function saveExport(
     const href = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = href;
-    link.download = filename;
+    // A blob link needs a name to download rather than open: an empty one is
+    // the server's (Content-Disposition), as a plain link would have used.
+    link.download = filename || attachmentName(response) || "download";
     document.body.appendChild(link);
     link.click();
     link.remove();

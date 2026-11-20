@@ -8,12 +8,16 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 
 | File | Responsibility |
 | --- | --- |
+| [`a11y-copy.ts`](a11y-copy.ts) | `a11yT`: workbench-wide labels for assistive tech (the skip link, the Settings tab list) in zh/en; `skipToContent` sends the skip link to the view on screen (`#messages`, else `#dashboard`) and focuses it (SYNC-21, SYNC-30). |
+| [`a11y-copy.test.ts`](a11y-copy.test.ts) | The skip link focuses whichever view is on screen. |
 | [`api.ts`](api.ts) | Same-origin JSON helper (`/api/v1`, `ApiError`). |
 | [`attachments.ts`](attachments.ts) | M-10 composer attachment tray (`#composer-attachments`): each chosen file as a chip with its name, size or state, and a × that takes it back (a file the upload created is deleted from the session; a new version of an existing file only leaves the tray), under a line saying the files go with the next message. Send takes the session's settled entries and a refused message puts them back. |
 | [`attachments.test.ts`](attachments.test.ts) | Chips per state, per-composer visibility (a first upload's files follow its new session), × deleting only an Artifact the upload created, a refused delete keeping the chip, × while uploading, take/restore on send. |
 | [`chrome.css`](chrome.css) | Lane styles for palette / team / resizer / composer attachment class names. |
 | [`clipboard.test.ts`](clipboard.test.ts) | The async API is called as a method, a refusal falls back to a selection copy, and nothing available resolves false. |
 | [`clipboard.ts`](clipboard.ts) | `copyText()`: the one clipboard write behind every Copy control; resolves `true` only for a confirmed write. |
+| [`dialog.ts`](dialog.ts) | M-45 in-app `askConfirm` / `askText` / `showNotice`, replacing the native `confirm()` / `prompt()` / `alert()`: a small modal built on demand on the shared trap, in the theme and UI language; Escape, Cancel and the scrim answer no, a destructive confirm focuses Cancel first, and with no document it resolves as a cancel. |
+| [`dialog.test.ts`](dialog.test.ts) | Each answer path (OK, Cancel, Escape without bubbling, scrim press), the destructive focus, text submit and IME Enter, the notice, no document; and a source scan proving no native `prompt()` / `confirm()` / `alert()` call is left in `frontend/src` outside tests. |
 | [`drafts.ts`](drafts.ts) | SYNC-24 per-session composer drafts: switching sessions saves the draft on screen (with its `@` pins) and shows the next session's, a reload restores it from `localStorage` `os-composer-drafts` (50 sessions, 20,000 characters each, every access in try/catch), Send clears it, and a session created from the composer of no session takes the draft along (`carryDraftTo`, called by `adoptCreatedFrame`). |
 | [`drafts.test.ts`](drafts.test.ts) | New not carrying A's draft and A getting it back, reload restore, Send clearing memory and storage, the carry into a created session, pins following their draft, blocked storage, the size bound. |
 | [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `localDateTime` / `localClock` / `hint` / `grow`. `icon` draws from the shared `icons/paths.ts` table. `ago` / `agoMs` say relative time in the UI language (刚刚 / 3 分钟前, just now / 3m). |

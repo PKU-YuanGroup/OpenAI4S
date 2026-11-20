@@ -426,9 +426,9 @@ function SkillHistory({
                     class="outline-btn small"
                     onClick={async () => {
                       if (
-                        !confirmAction(
+                        !(await confirmAction(
                           t("skill.rollbackConfirm", name, versionId.slice(0, 18)),
-                        )
+                        ))
                       )
                         return;
                       try {

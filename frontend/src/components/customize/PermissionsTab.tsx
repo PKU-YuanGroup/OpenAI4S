@@ -59,7 +59,7 @@ function ResetRow({ locked }: { locked: boolean }) {
         title={locked ? roleT("role.perm.resetMember") : undefined}
         onClick={async () => {
           if (locked) return;
-          if (!confirmAction(t("cust.perm.resetConfirm"))) return;
+          if (!(await confirmAction(t("cust.perm.resetConfirm")))) return;
           try {
             await api("/permissions/reset", { method: "POST" });
             refreshCustTab("permissions");

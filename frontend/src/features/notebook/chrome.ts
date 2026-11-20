@@ -114,15 +114,21 @@ export type NotebookExportOption = {
 const EXPORT_COPY = {
   en: {
     clean: "Download notebook (.ipynb; .zip with Python and R)",
+    cleanOne: "Download notebook (.ipynb)",
+    cleanBoth: "Download notebooks (.zip: Python and R)",
     raw: "Raw execution log (every cell, zip)",
     rawPython: "Raw Python execution log (.ipynb)",
     rawR: "Raw R execution log (.ipynb)",
+    saved: "Downloaded {0} ({1})",
   },
   zh: {
     clean: "下载 Notebook（.ipynb；同时有 Python 和 R 时为 .zip）",
+    cleanOne: "下载 Notebook（.ipynb）",
+    cleanBoth: "下载 Notebook（.zip：Python 和 R 各一份）",
     raw: "原始执行日志（全部单元，打包 .zip）",
     rawPython: "原始 Python 执行日志 (.ipynb)",
     rawR: "原始 R 执行日志 (.ipynb)",
+    saved: "已下载 {0}（{1}）",
   },
 } as const;
 
@@ -144,8 +150,49 @@ export const NOTEBOOK_EXPORTS: NotebookExportOption[] = [
   { path: "/execution-sources/export", key: "prov.exec.downloadSources", suffix: "sources.zip" },
 ];
 
-function exportLabel(option: NotebookExportOption): string {
+/**
+ * E / M-61: the clean download says what it will be for this session -- one
+ * .ipynb, or a .zip only when the Notebook holds both Python and R cells.
+ * Where the languages are not known (a provenance panel) it says both.
+ */
+function exportLabel(option: NotebookExportOption, languages?: string): string {
+  if (option.variant === "clean" && languages) {
+    const both = /\bpython\b/.test(languages) && /\br\b/.test(languages);
+    return exportCopy(both ? "cleanBoth" : "cleanOne");
+  }
   return option.label ? option.label() : t(option.key);
+}
+
+/** The languages of the Notebook's kernel ids (`python`, `r — lab_env` …), as "python r". */
+export function notebookLanguages(kernelIds: readonly string[]): string {
+  const out = new Set<string>();
+  kernelIds.forEach((k) => out.add(/^r\b/i.test(k) ? "r" : "python"));
+  return [...out].sort().join(" ");
+}
+
+/**
+ * E / TEAM-13: a click on a download said nothing, and a refused export
+ * opened its JSON error as a page. The bytes are fetched like the session
+ * package's, saved under the server's name, and the line under the composer
+ * says what arrived (or why nothing did).
+ */
+async function downloadNotebookExport(href: string, name: string): Promise<void> {
+  const { attachmentName, byteSize, flash, saveExport } = await import("../sessions/package");
+  let saved = name;
+  // The clean notebook is named by the server after the session.
+  const size = await saveExport(href, name, (response) => {
+    saved = name || attachmentName(response) || "download";
+  });
+  if (size !== null) flash(exportCopy("saved").replace("{0}", saved).replace("{1}", byteSize(size)));
+}
+
+function bindDownload(link: HTMLAnchorElement, after?: () => void): void {
+  link.onclick = (event) => {
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    after?.();
+    void downloadNotebookExport(link.href, link.getAttribute("download") || "");
+  };
 }
 
 /** app.js:10133-10136 */
@@ -171,7 +218,7 @@ export function relabelNotebookExports(root: ParentNode | null = typeof document
   if (!root) return;
   root.querySelectorAll("[data-nb-export]").forEach((node) => {
     const option = NOTEBOOK_EXPORTS[Number((node as HTMLElement).getAttribute("data-nb-export"))];
-    if (option) node.textContent = exportLabel(option);
+    if (option) node.textContent = exportLabel(option, (node as HTMLElement).getAttribute("data-nb-langs") || "");
   });
   root.querySelectorAll(".prov-dlmore").forEach((node) => {
     node.setAttribute("aria-label", t("prov.exec.downloadMore"));
@@ -180,14 +227,15 @@ export function relabelNotebookExports(root: ParentNode | null = typeof document
 
 let exportRelabelBound = false;
 
-function exportLabelSpan(index: number): HTMLElement {
-  const span = el("span", null, exportLabel(NOTEBOOK_EXPORTS[index] as NotebookExportOption));
+function exportLabelSpan(index: number, languages = ""): HTMLElement {
+  const span = el("span", null, exportLabel(NOTEBOOK_EXPORTS[index] as NotebookExportOption, languages));
   span.setAttribute("data-nb-export", String(index));
+  if (languages) span.setAttribute("data-nb-langs", languages);
   return span;
 }
 
 /** app.js:10231-10264. Contract global. */
-export function notebookExportLink(frameId: string): HTMLElement {
+export function notebookExportLink(frameId: string, languages = ""): HTMLElement {
   if (!exportRelabelBound) {
     exportRelabelBound = true;
     onLanguageChange(() => relabelNotebookExports());
@@ -196,9 +244,10 @@ export function notebookExportLink(frameId: string): HTMLElement {
   const primary = NOTEBOOK_EXPORTS[0] as NotebookExportOption;
   const dl = el("a", "prov-dlbtn") as HTMLAnchorElement;
   dl.appendChild(iconEl("download", 14));
-  dl.appendChild(exportLabelSpan(0));
+  dl.appendChild(exportLabelSpan(0, languages));
   dl.href = notebookExportHref(frameId, primary);
   dl.setAttribute("download", exportDownloadName(frameId, primary));
+  bindDownload(dl);
   wrap.appendChild(dl);
 
   const toggle = el("button", "prov-dlmore");
@@ -211,10 +260,10 @@ export function notebookExportLink(frameId: string): HTMLElement {
     item.appendChild(exportLabelSpan(offset + 1));
     item.href = notebookExportHref(frameId, option);
     item.setAttribute("download", exportDownloadName(frameId, option));
-    item.onclick = () => {
+    bindDownload(item, () => {
       menu.classList.add("hidden");
       toggle.setAttribute("aria-expanded", "false");
-    };
+    });
     menu.appendChild(item);
   });
   toggle.onclick = (e) => {

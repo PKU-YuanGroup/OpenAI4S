@@ -9,6 +9,7 @@ import { skillsCatalog } from "../../stores/customize";
 import { _envSnapById } from "../../stores/artifacts";
 import { customizeNotice, customizeOpen } from "./state";
 import { t } from "../../i18n";
+import { askConfirm } from "../chrome/dialog";
 
 export { loadModels } from "./models";
 
@@ -35,12 +36,9 @@ export function hint(message: string, err?: boolean, spin?: boolean): void {
   if (isReady(fn)) fn(message, err, spin);
 }
 
-export function confirmAction(message: string): boolean {
-  try {
-    return window.confirm(message);
-  } catch {
-    return false;
-  }
+/** Settings' destructive confirm, in the workbench's own dialog (M-45). */
+export function confirmAction(message: string): Promise<boolean> {
+  return askConfirm(message, { danger: true });
 }
 
 export function openViewer(artifact: unknown): void {

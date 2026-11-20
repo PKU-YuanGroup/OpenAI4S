@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { t } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
@@ -201,7 +201,7 @@ export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catal
             const tools = asList(r.tools) as Array<{ name?: string }>;
             setNote(
               r.ok
-                ? { text: t("toast.connectors.probeOk", tools.map((x) => x.name).join("、")) }
+                ? { text: t("toast.connectors.probeOk", tools.map((x) => x.name).join(LANG === "en" ? ", " : "、")) }
                 : { text: t("toast.failed", asString(r.error)), err: true },
             );
           } catch (e) {
@@ -212,12 +212,12 @@ export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catal
       >
         {testing ? t("cust.connectors.testing") : t("cust.connectors.test")}
       </button>
-      <Toggle on={enabled.on} onClick={enabled.toggle} />
+      <Toggle on={enabled.on} label={asString(k.name)} onClick={enabled.toggle} />
       <IconGhost
         name="trash-2"
         title={t("common.delete")}
         onClick={async () => {
-          if (!confirmAction(t("cust.connectors.deleteConfirm", asString(k.name)))) return;
+          if (!(await confirmAction(t("cust.connectors.deleteConfirm", asString(k.name))))) return;
           try {
             await api(`/connectors/${k.connector_id}`, { method: "DELETE" });
             refreshCustTab("connectors");

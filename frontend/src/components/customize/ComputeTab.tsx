@@ -313,7 +313,7 @@ export function ComputeTab() {
                 type="button"
                 class="outline-btn small"
                 onClick={async () => {
-                  if (!confirmAction(t("cust.remote.confirmRemove", h.alias))) return;
+                  if (!(await confirmAction(t("cust.remote.confirmRemove", h.alias)))) return;
                   try {
                     await api("/compute/remote/" + encodeURIComponent(asString(h.alias)), {
                       method: "DELETE",

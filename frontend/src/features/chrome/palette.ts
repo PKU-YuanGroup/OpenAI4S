@@ -67,6 +67,8 @@ export type PaletteState = {
   gen: number;
   /** The latest query's skills + /search read, while it is in flight. */
   pending: Promise<void> | null;
+  /** SYNC-9: what had focus when the palette opened; Escape and the scrim give it back. */
+  returnFocus?: Element | null;
 };
 
 /** app.js:10940 */
@@ -275,7 +277,8 @@ export function palActions(): PaletteItem[] {
     },
     {
       group: t("palette.group.commands"),
-      label: t("palette.action.customize"),
+      // M-35: the sidebar entry and the gear open one modal, called Settings.
+      label: t("common.settings"),
       icon: "sliders",
       run: () => {
         invokeHost(hostFn("openCust"));
@@ -302,6 +305,7 @@ export function palActions(): PaletteItem[] {
 export function openPalette(): void {
   if (PAL.open) return;
   PAL.open = true;
+  PAL.returnFocus = typeof document !== "undefined" ? document.activeElement : null;
   const ov = el("div", "palette-ov");
   const box = el("div", "palette");
   const inp = el("input", "palette-input") as HTMLInputElement;
@@ -315,7 +319,7 @@ export function openPalette(): void {
   PAL.el = ov;
   PAL.listEl = list;
   ov.onclick = (e) => {
-    if (e.target === ov) closePalette();
+    if (e.target === ov) dismissPalette();
   };
   inp.addEventListener("input", () => {
     void palSearch(inp.value);
@@ -324,7 +328,7 @@ export function openPalette(): void {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       e.preventDefault();
-      closePalette();
+      dismissPalette();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
       PAL.idx = Math.min(PAL.idx + 1, PAL.items.length - 1);
@@ -364,6 +368,17 @@ export function closePalette(): void {
   PAL.items = [];
   PAL.idx = 0;
   PAL.pending = null;
+  PAL.returnFocus = null;
+}
+
+/**
+ * SYNC-9: Escape or the scrim closes the palette without picking anything, so
+ * focus goes back where it was (the composer, a button) instead of <body>.
+ */
+export function dismissPalette(): void {
+  const back = PAL.returnFocus as HTMLElement | null | undefined;
+  closePalette();
+  if (back && typeof back.focus === "function" && back.isConnected) back.focus();
 }
 
 export function resetPalette(): void {

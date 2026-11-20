@@ -393,7 +393,7 @@ export function VolcenginePanel() {
 }
 
 async function disconnect(): Promise<void> {
-  if (!confirmAction(t("cust.volc.disconnectConfirm"))) return;
+  if (!(await confirmAction(t("cust.volc.disconnectConfirm")))) return;
   try {
     await api("/volcengine/disconnect", {
       method: "POST",

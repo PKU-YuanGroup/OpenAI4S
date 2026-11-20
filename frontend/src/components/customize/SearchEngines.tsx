@@ -219,6 +219,7 @@ function EngineRow({
         </button>
         <Toggle
           on={engine.enabled}
+          label={engineLabel(engine.id)}
           disabled={busy || locked}
           title={locked ? searchT("search.lastUsable") : engineLabel(engine.id)}
           onClick={onToggle}

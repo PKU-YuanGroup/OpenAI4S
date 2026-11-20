@@ -10,6 +10,13 @@
 
 import { effect } from "@preact/signals";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 import { resetStoreFields } from "../../stores/signal-field";
 import { _kc, pendingReplIdentity } from "../../stores/notebook";
 import { delegationState, executionQueue } from "../../stores/timeline";
@@ -524,6 +531,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  dialogMock.answer = () => false;
   // The island keeps its repaint scheduler in module state: end any press or
   // composition a failed test left open and let queued frames run, so the
   // next test's repaints are neither held nor already "queued".
@@ -1690,10 +1698,10 @@ describe("switching to another branch", () => {
     const hints: Array<[string, unknown]> = [];
     const asked: string[] = [];
     vi.stubGlobal("hint", (message: string, error?: boolean) => hints.push([message, error]));
-    vi.stubGlobal("confirm", (message: string) => {
+    dialogMock.answer = (message: string) => {
       asked.push(message);
       return answer;
-    });
+    };
     return { hints, asked };
   }
 

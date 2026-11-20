@@ -26,7 +26,11 @@ describe("Settings describes specialists and connectors in the UI language (I18N
     expect(connectorDescription("fetch", fetchText, fetchText)).toMatch(/^抓取网址/);
     expect(connectorDescription("fetch", "our proxy fetcher", fetchText)).toBe("our proxy fetcher");
     expect(connectorDescription("lab-db", "Lab database")).toBe("Lab database");
+    // SYNC-21: the configured example row is seeded with other words than the catalog's.
+    const seeded = "Local demo MCP server: echo / now / calc / random_int.";
+    expect(connectorDescription("example", seeded, "Local demo MCP server (always available)")).toMatch(/^本地演示/);
     await setLang("en");
+    expect(connectorDescription("example", seeded, "Local demo MCP server (always available)")).toBe(seeded);
     expect(specialistDescription(scientist)).toBe("Primary research agent.");
     expect(connectorDescription("fetch", fetchText)).toBe(fetchText);
     expect(specialistBadge("subagent")).toBe("subagent");

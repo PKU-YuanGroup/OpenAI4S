@@ -12,6 +12,7 @@ import { _openGen, _titleName, currentId, folders, project, sessions } from "../
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
 import { API, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
+import { askConfirm, askText } from "../chrome/dialog";
 import { expectOwnDeletion, forgetOwnDeletion } from "./deleted";
 import { buildSkillBody, procedureSteps } from "./skill-draft";
 import { openRunLocationDialog } from "./compute";
@@ -27,7 +28,7 @@ import { sendCopy } from "../send/copy";
 import { reviewRefusalText, reviewT } from "../send/review-copy";
 import { backgroundStoppedHint, refreshBackgroundCells } from "../send/background";
 import { scopedExecutionRequest } from "../timeline/execution-request";
-import { queueT } from "../timeline/copy";
+import { queueT, timelineT } from "../timeline/copy";
 import { queuedFollowUpCount } from "../timeline/queue";
 import { $, clearConversationChrome, el, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
@@ -125,7 +126,7 @@ export async function showContextUsage(): Promise<void> {
   card.className = "prov-card";
   const h = document.createElement("div");
   h.className = "prov-h";
-  h.textContent = t("context.tokens", (input + output).toLocaleString());
+  h.textContent = timelineT("context.tokens", (input + output).toLocaleString());
   card.appendChild(h);
   const meta = document.createElement("div");
   meta.className = "prov-meta";
@@ -362,7 +363,8 @@ export function sessionMenu(anchor: Element, fid: string): void {
   const items: MenuItem[] = [{ label: t("folder.menu.rename"), icon: "pencil", onClick: () => void renameFrame(fid) }];
   if (frame.running || (fid === currentId.value && running.value)) {
     items.push({
-      label: t("sessionMenu.cancel"),
+      // M-35: the composer's button says Stop; this is the same action.
+      label: t("nb.kernel.stopLabel"),
       icon: "stop",
       onClick: async () => {
         try {
@@ -408,7 +410,7 @@ export function sessionMenu(anchor: Element, fid: string): void {
       ? [
           // M-75: say what it does and what it costs before it starts.
           {
-            label: t("composer.menu.requestReview"),
+            label: reviewT("review.menuLabel"),
             desc: reviewT("review.menuDesc"),
             icon: "eye-context",
             onClick: () => void requestReview(),
@@ -431,8 +433,9 @@ export function sessionMenu(anchor: Element, fid: string): void {
       label: t("common.delete"),
       icon: "trash-2",
       danger: true,
-      onClick: () => {
-        if (confirm(t("confirm.deleteSession"))) void deleteSession(fid);
+      onClick: async () => {
+        if (await askConfirm(t("confirm.deleteSession"), { danger: true, okLabel: t("common.delete") }))
+          void deleteSession(fid);
       },
     },
   );
@@ -481,7 +484,7 @@ export function moveToFolderAt(anchor: Element, fid: string): void {
     label: t("moveFolder.newFolderAndMove"),
     icon: "plus",
     onClick: async () => {
-      const n = prompt(t("folder.new.prompt"));
+      const n = await askText(t("folder.new.prompt"));
       if (!n || !project.value) return;
       let r: { folder_id: string };
       try {

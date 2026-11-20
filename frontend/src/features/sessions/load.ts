@@ -37,6 +37,7 @@ import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { paintSessionBranches } from "./branches";
 import { ensureActivateKeys, hint, openMenu, reportFailure } from "./chrome";
+import { askConfirm, askText } from "../chrome/dialog";
 import { $, el, setTitle } from "./dom";
 import { icon, iconEl } from "./icon";
 import { lastTurnOutcome, sessionCopy } from "./copy";
@@ -641,7 +642,7 @@ function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string
       label: t("folder.menu.rename"),
       icon: "pencil",
       onClick: async () => {
-        const n = prompt(t("folder.rename.prompt"), fold.name);
+        const n = await askText(t("folder.rename.prompt"), fold.name);
         if (!n) return;
         await folderWrite(() =>
           api(`/folders/${fold.folder_id}`, {
@@ -656,7 +657,11 @@ function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string
       icon: "trash-2",
       danger: true,
       onClick: async () => {
-        if (!confirm(t("folder.delete.confirm", fold.name))) return;
+        const yes = await askConfirm(t("folder.delete.confirm", fold.name), {
+          danger: true,
+          okLabel: t("common.delete"),
+        });
+        if (!yes) return;
         await folderWrite(() => api(`/folders/${fold.folder_id}`, { method: "DELETE" }));
       },
     },

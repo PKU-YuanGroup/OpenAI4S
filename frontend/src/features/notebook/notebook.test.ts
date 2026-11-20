@@ -1,7 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 
 const highlightCalls = vi.hoisted(() => vi.fn());
 
+// E / TEAM-13: the Notebook download reports through the session package's saver.
+const saved = vi.hoisted(() => ({ flashes: [] as string[], urls: [] as string[] }));
+vi.mock("../sessions/package", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sessions/package")>()),
+  saveExport: async (url: string, _name: string, onResponse?: (r: Response) => void) => {
+    saved.urls.push(url);
+    onResponse?.(
+      new Response("{}", {
+        headers: { "Content-Disposition": "attachment; filename=\"x.ipynb\"; filename*=UTF-8''Growth%20assay.ipynb" },
+      }),
+    );
+    return 2048;
+  },
+  flash: (text: string) => void saved.flashes.push(text),
+}));
 vi.mock("../md/highlight", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../md/highlight")>();
   return {
@@ -64,6 +86,7 @@ import {
   notebookExportHref,
   notebookExportLink,
   NOTEBOOK_EXPORTS,
+  notebookLanguages,
   relabelNotebookExports,
   resetHighlightMemo,
   resetNotebookCellCaches,
@@ -142,6 +165,7 @@ describe("F-14 Notebook", () => {
   });
 
   afterEach(() => {
+    dialogMock.answer = () => false;
     vi.unstubAllGlobals();
     setNotebookRenderImpl(null);
     setNotebookApi(null);
@@ -601,7 +625,7 @@ describe("F-14 Notebook", () => {
     it("Restart interrupts the user's own running cell instead of queueing behind it", async () => {
       // NB-10: a restart waited for the running REPL cell, and the header kept
       // the old generation and "Busy" with nothing saying a restart was asked.
-      vi.stubGlobal("confirm", () => true);
+      dialogMock.answer = () => true;
       vi.stubGlobal("hint", () => undefined);
       executionQueue.value = {
         owner: { execution_id: "repl-1", owner: { kind: "user_repl", id: "repl-1" } },
@@ -945,6 +969,58 @@ describe("F-14 Notebook", () => {
         expect(label()).not.toEqual(english);
         relabelNotebookExports(doc as unknown as ParentNode);
         expect(label()).toHaveLength(NOTEBOOK_EXPORTS.length);
+      } finally {
+        await setLang(before);
+        vi.unstubAllGlobals();
+      }
+    });
+
+    // E / M-61 and TEAM-13: the label named both formats whatever the session
+    // held, and a click said nothing about whether anything arrived.
+    it("names .ipynb or .zip from the session's languages, and says what was downloaded", async () => {
+      expect(notebookLanguages(["python", "python — lab_env"])).toBe("python");
+      expect(notebookLanguages(["r — lab_env", "python"])).toBe("python r");
+      const made: Array<Record<string, any>> = [];
+      vi.stubGlobal("document", {
+        querySelectorAll: () => [],
+        documentElement: {},
+        createElement: (tag: string) => {
+          const attrs = new Map<string, string>();
+          const node: Record<string, any> = {
+            tagName: tag.toUpperCase(),
+            className: "",
+            textContent: "",
+            innerHTML: "",
+            href: "",
+            kids: [] as unknown[],
+            setAttribute: (k: string, v: string) => void attrs.set(k, v),
+            getAttribute: (k: string) => (attrs.has(k) ? attrs.get(k)! : null),
+            appendChild: (kid: unknown) => (node.kids.push(kid), kid),
+          };
+          made.push(node);
+          return node;
+        },
+      });
+      const before = LANG;
+      try {
+        await setLang("en");
+        const label = (languages: string) => {
+          made.length = 0;
+          notebookExportLink("f-lang", languages);
+          return made.find((n) => n.getAttribute("data-nb-export") === "0")!.textContent;
+        };
+        expect(label("python")).toBe("Download notebook (.ipynb)");
+        expect(label("r")).toBe("Download notebook (.ipynb)");
+        expect(label("python r")).toBe("Download notebooks (.zip: Python and R)");
+        made.length = 0;
+        notebookExportLink("f-lang", "python");
+        const primary = made.find((n) => n.className === "prov-dlbtn")!;
+        let prevented = false;
+        primary.onclick({ button: 0, preventDefault: () => (prevented = true) });
+        await vi.waitFor(() => expect(saved.flashes).toHaveLength(1));
+        expect(prevented).toBe(true);
+        expect(saved.urls).toEqual(["/api/v1/frames/f-lang/notebook/export?variant=clean"]);
+        expect(saved.flashes[0]).toBe("Downloaded Growth assay.ipynb (2.0 KB)");
       } finally {
         await setLang(before);
         vi.unstubAllGlobals();

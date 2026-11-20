@@ -98,6 +98,7 @@ export function NotebookReplSetting() {
         on={toggle.on}
         disabled={!toggle.ready || toggle.busy || locked}
         title={notebookReplCopy("name")}
+        label={notebookReplCopy("name")}
         onClick={() => {
           if (!locked) toggle.toggle();
         }}

@@ -69,7 +69,7 @@ export function SpecialistsTab() {
             name="trash-2"
             title={t("common.delete")}
             onClick={async () => {
-              if (!confirmAction(t("cust.specialists.deleteConfirm", asString(s.name))))
+              if (!(await confirmAction(t("cust.specialists.deleteConfirm", asString(s.name)))))
                 return;
               try {
                 await api(`/specialists/${encodeURIComponent(asString(s.name))}`, {
@@ -112,7 +112,7 @@ export function BuiltinRow({ ag }: { ag: Record<string, unknown> }) {
         </div>
         <div class="ds">{specialistDescription(ag)}</div>
       </div>
-      <Toggle on={enabled.on} onClick={enabled.toggle} />
+      <Toggle on={enabled.on} label={asString(ag.name)} onClick={enabled.toggle} />
     </div>
   );
 }

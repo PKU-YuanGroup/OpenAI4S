@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../../features/chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 
 const hookState: unknown[] = [];
 let hookCursor = 0;
@@ -353,7 +360,7 @@ describe("composer model list after a profile change", () => {
   });
 
   it("re-reads the list after a profile that is not active is deleted", async () => {
-    vi.stubGlobal("window", { confirm: () => true });
+    dialogMock.answer = () => true;
     mocks.fetch.mockImplementation(() => Promise.resolve(response({})));
     hookCursor = 0;
     const row = ProfileRow({ p: { id: "mp-2", name: "Other" }, activeId: "mp-1", protocols: [], onEdit: () => {} });

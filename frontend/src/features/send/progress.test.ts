@@ -94,7 +94,7 @@ describe("turn progress", () => {
     );
     await refreshSessionUsage();
     expect(usage.classList.contains("hidden")).toBe(false);
-    expect(usage.textContent).toBe("12k tokens");
+    expect(usage.textContent).toBe("12k token");
     expect(usage.title).toContain("10,123");
     expect(usage.title).toContain("2,201");
 
@@ -130,7 +130,7 @@ describe("turn progress", () => {
     };
     paintUsageTitle();
     expect(usage.title).toBe(
-      "本会话累计用量：新输入 211,763 · 缓存输入 3,869,032 · 输出 58,464（其中推理 23,720） tokens。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
+      "本会话累计用量：新输入 211,763 · 缓存输入 3,869,032 · 输出 58,464（其中推理 23,720） token。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
     );
     expect(usageBreakdown(actionTimeline.value, "f-u")).toEqual({
       fresh: 211_763,
@@ -170,13 +170,13 @@ describe("turn progress", () => {
       ],
     };
     await refreshSessionUsage();
-    expect(usage.textContent).toBe("936k tokens · 本轮 +84k");
+    expect(usage.textContent).toBe("936k token · 本轮 +84k");
     expect(usage.title).toContain("最近一轮：新输入 12,000 · 缓存输入 70,000 · 输出 2,300。");
     // A turn whose start is in an earlier, unloaded page is not summed as a whole turn.
     actionTimeline.value = { ...(actionTimeline.value as object), groups: [row("turn-2", "code", 40_000, 0, 1)] };
-    expect(usage.textContent).toBe("936k tokens · 本轮 +84k");
+    expect(usage.textContent).toBe("936k token · 本轮 +84k");
     paintUsageTitle();
-    expect(usage.textContent).toBe("936k tokens");
+    expect(usage.textContent).toBe("936k token");
     await setLang("en");
     actionTimeline.value = { root_frame_id: "f-t", has_earlier: false, groups: [row("turn-3", "code", 900, 0, 100)] };
     paintUsageTitle();
@@ -211,7 +211,7 @@ describe("turn progress", () => {
     actionTimeline.value = { ...(actionTimeline.value as object), groups: [{ turn_id: "turn-1", kind: "user" }, call(150_000), call(60_000)] };
     paintUsageTitle();
     expect(usage.classList.contains("heavy")).toBe(true);
-    expect(usage.title.startsWith("本轮已用超过 200k tokens。")).toBe(true);
+    expect(usage.title.startsWith("本轮已用超过 200k token。")).toBe(true);
     expect(usage.title).toContain("停止");
     // A finished turn is history: no warning for a Stop that cannot be pressed.
     running.value = false;

@@ -110,6 +110,9 @@ export async function telemetryRow(host: Element): Promise<void> {
   info.appendChild(ds);
   row.appendChild(info);
   const tg = document.createElement("button");
+  tg.setAttribute("role", "switch");
+  tg.setAttribute("aria-label", t("cust.telemetry.name"));
+  tg.setAttribute("aria-checked", String(!!consent.enabled));
   tg.className =
     "toggle" +
     (consent.enabled ? " on" : "") +
@@ -119,6 +122,7 @@ export async function telemetryRow(host: Element): Promise<void> {
   } else {
     const paint = (on: boolean) => {
       tg.classList.toggle("on", !!on);
+      tg.setAttribute("aria-checked", String(!!on));
       ds.textContent = on ? t("cust.telemetry.on") : t("cust.telemetry.off");
     };
     const drain = createTelemetryDrain(consent.enabled, paint, {

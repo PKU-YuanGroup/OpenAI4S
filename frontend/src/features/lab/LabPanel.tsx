@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { LANG, languageRevision } from "../../i18n/runtime";
 import { api, apiErrorText } from "../timeline/api";
+import { askConfirm } from "../chrome/dialog";
 import { categoryLabel, MarketPanel } from "./MarketPanel";
 import type {
   ActivityItem,
@@ -655,8 +656,9 @@ export function LabPanel() {
   }, []);
 
   const act = async (action: string, endpoint: string) => {
-    if (action === "reset" && !window.confirm(tr("confirmReset"))) return;
-    if (action === "estop" && endpoint === "all" && !window.confirm(tr("confirmEstop"))) return;
+    if (action === "reset" && !(await askConfirm(tr("confirmReset"), { danger: true }))) return;
+    if (action === "estop" && endpoint === "all" && !(await askConfirm(tr("confirmEstop"), { danger: true })))
+      return;
     setBusy(true);
     try {
       await api(`/mhs-lab/${action}`, {
@@ -684,8 +686,8 @@ export function LabPanel() {
     }
   };
 
-  const remove = (id: string) => {
-    if (!window.confirm(tr("confirmRemove"))) return;
+  const remove = async (id: string) => {
+    if (!(await askConfirm(tr("confirmRemove"), { danger: true }))) return;
     void operate("remove", `/mhs-lab/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
   };
 

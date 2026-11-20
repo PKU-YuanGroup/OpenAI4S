@@ -267,7 +267,7 @@ describe("F-20 command palette", () => {
 
     // The empty query lists "New session" first. Typing a command and
     // pressing Enter before /search answers must run that command.
-    type(t("palette.action.customize").toLowerCase());
+    type(t("common.settings").toLowerCase());
     enter();
     expect(openCust).toHaveBeenCalledTimes(1);
     expect(newSession).not.toHaveBeenCalled();
@@ -281,6 +281,51 @@ describe("F-20 command palette", () => {
     await vi.waitFor(() => expect(openConversation).toHaveBeenCalledWith("frame_z", null));
     expect(newSession).not.toHaveBeenCalled();
     expect(PAL.open).toBe(false);
+  });
+
+  // SYNC-9: Escape (or the scrim) left focus on <body>; a keyboard user had to
+  // Tab from "Skip to content" back to the composer.
+  it("Escape and the scrim give focus back to what had it when the palette opened", async () => {
+    const made: Array<Record<string, any>> = [];
+    const composer = { focus: vi.fn(), isConnected: true };
+    vi.stubGlobal("document", {
+      activeElement: composer,
+      createElement: (tag: string) => {
+        const listeners: Record<string, (e: unknown) => void> = {};
+        const node: Record<string, any> = {
+          tagName: tag.toUpperCase(),
+          style: {},
+          listeners,
+          appendChild: vi.fn(),
+          setAttribute: vi.fn(),
+          remove: vi.fn(),
+          focus: vi.fn(),
+          querySelectorAll: () => [],
+          addEventListener: (type: string, fn: (e: unknown) => void) => {
+            listeners[type] = fn;
+          },
+        };
+        made.push(node);
+        return node;
+      },
+      body: { appendChild: vi.fn() },
+    });
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
+    const { PAL, closePalette, openPalette } = await import("./palette");
+    closePalette();
+
+    openPalette();
+    const input = made.filter((node) => node.tagName === "INPUT").at(-1)!;
+    input.listeners.keydown!({ key: "Escape", isComposing: false, keyCode: 27, preventDefault: vi.fn() });
+    expect(PAL.open).toBe(false);
+    expect(composer.focus).toHaveBeenCalledTimes(1);
+
+    openPalette();
+    const overlay = made.filter((node) => node.className === "palette-ov").at(-1)!;
+    overlay.onclick({ target: overlay });
+    expect(PAL.open).toBe(false);
+    expect(composer.focus).toHaveBeenCalledTimes(2);
   });
 
   // EXP-2: a word inside an answer, a cell or its output finds the session;

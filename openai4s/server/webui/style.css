@@ -210,7 +210,7 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .conv-title-wrap{display:flex;align-items:center;min-width:0;max-width:520px}
 .conv-title-wrap .conv-title{font-weight:500}
 .conv-title-wrap .conv-title:hover{border-color:var(--border)}
-.conv-title{flex:1;min-width:0;background:transparent;border:1px solid transparent;border-radius:8px;padding:5px 8px;font:inherit;font-size:14px;font-weight:400;color:var(--text-000)}
+.conv-title{flex:1;min-width:0;background:transparent;border:1px solid transparent;border-radius:8px;padding:5px 8px;font:inherit;font-size:14px;font-weight:400;color:var(--text-000);text-overflow:ellipsis}
 .conv-head-actions{display:flex;align-items:center;gap:2px;flex:none}
 .messages{flex:1;overflow:auto;padding:0 24px 20px;position:relative}
 .msg{max-width:var(--col);margin:0 auto 18px;width:100%}
@@ -585,6 +585,9 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .viewer-head{display:flex;align-items:center;gap:8px;padding:12px 14px 8px}
 .viewer-head .vh-name{font-weight:500;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;color:var(--text-000)}
 .viewer-head .vh-acts{display:flex;gap:1px;flex:none}
+/* SYNC-23: in a narrow side panel the actions move under the file name rather
+   than squeezing the name to one letter or pushing the x past the edge. */
+.viewer-head{flex-wrap:wrap;row-gap:4px}.viewer-head .vh-name{flex:1 1 120px}.viewer-head .vh-acts{margin-left:auto;max-width:100%;flex-wrap:wrap}
 .viewer-body{flex:1;overflow:auto;min-height:0}
 .viewer-body>img{max-width:100%;display:block;margin:auto}
 .viewer-body iframe{width:100%;height:100%;min-height:420px;border:0}
@@ -1508,9 +1511,10 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .timeline-history-state{display:flex;flex-direction:column;gap:10px}
 .timeline-ledger-scroll{max-height:clamp(280px,62vh,720px);min-width:0;overflow:auto;overscroll-behavior-x:contain;overflow-anchor:none;border:var(--hair);border-radius:12px;background:var(--card);box-shadow:var(--shadow-soft)}
 .timeline-ledger-scroll:focus-visible{outline:2px solid var(--accent-fill);outline-offset:2px}
-.timeline-ledger{display:block;width:100%;min-width:410px;border-collapse:separate;border-spacing:0;color:var(--text-200)}
+.timeline-ledger{display:block;width:100%;min-width:436px;border-collapse:separate;border-spacing:0;color:var(--text-200)}
 .timeline-ledger thead{position:sticky;top:0;z-index:3;display:block;background:var(--bg-100)}
-.timeline-ledger thead tr,.timeline-ledger-row{display:grid;grid-template-columns:62px 44px minmax(0,1fr) 68px 62px;width:100%}
+/* SYNC-23: the Tokens column fits its header ("Token 用量") and a 7-digit count. */
+.timeline-ledger thead tr,.timeline-ledger-row{display:grid;grid-template-columns:62px 44px minmax(0,1fr) 68px 88px;width:100%}
 .timeline-ledger th{box-sizing:border-box;min-width:0;overflow:hidden;padding:7px 8px;border-bottom:var(--hair);background:var(--bg-100);color:var(--text-200);font-size:10px;font-weight:700;letter-spacing:.045em;text-align:left;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}
 .timeline-ledger th.timeline-ledger-duration,.timeline-ledger th.timeline-ledger-tokens{text-align:right}
 .timeline-ledger-body{position:relative;display:block;width:100%}
@@ -1856,6 +1860,8 @@ html:not([data-theme-instant]) .modal-box,html:not([data-theme-instant]) .nb-car
   /* prevent iOS zoom on focus: inputs >= 16px */
   #composer,input,textarea,select{font-size:16px}
   .nb-model select{font-size:15px;max-width:120px}
+  /* SYNC-29: a session row's ⋯ and a tab's × are finger targets, not 16-20px glyphs. */
+  .session .s-menu,.folder-head .s-menu,.tab .t-close,.dock-tab .t-close{min-width:32px;min-height:32px}
 }
 
 /* ---- content-visibility for long transcripts (perf) ---- */
@@ -2037,9 +2043,10 @@ body{line-height:1.55;color:var(--text-000)}
 #dash-project-search:focus-visible,.timeline-search-input:focus-visible{outline:none}
 
 /* ---- buttons: coral primary · hairline secondary · ghost icon ---- */
-.solid-btn{justify-content:center;height:36px;padding:0 16px;border-radius:var(--radius);background:var(--clay);color:#fff;font-size:14px;font-weight:500;line-height:1}
+/* SYNC-30: white 14px text needs 4.5:1; on --clay it was 3.28:1, on --clay-em 5.06:1. */
+.solid-btn{justify-content:center;height:36px;padding:0 16px;border-radius:var(--radius);background:var(--clay-em);color:#fff;font-size:14px;font-weight:500;line-height:1}
 .solid-btn:hover{opacity:1}
-.solid-btn:active{background:var(--clay-em)}
+.solid-btn:active{background:color-mix(in srgb,var(--clay-em) 82%,#000)}
 .solid-btn:disabled{background:var(--line);color:var(--text-400);cursor:default}
 .solid-btn.small{height:30px;padding:0 12px;font-size:13px}
 html[data-theme="dark"] .solid-btn{background:var(--clay);color:#fff}
@@ -2381,6 +2388,8 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .nb-card{gap:12px;padding:16px 12px 10px 18px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg);box-shadow:none}
 .nb-card:focus-within{border-color:#d9d0c5}
 html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
+/* SYNC-8: focus in the composer shows on its card, as on the home search box. */
+.nb-card:has(#composer:focus),html[data-theme="dark"] .nb-card:has(#composer:focus){border-color:var(--accent-fill);box-shadow:var(--focus-ring)}
 #composer{min-height:26px;padding:0;font-size:16px;line-height:1.55}
 .nb-left{gap:6px}
 .nb-right{gap:8px}
@@ -2414,6 +2423,8 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .nb-right,.nb-model{min-width:0}
 .nb-model select{min-width:0;text-overflow:ellipsis}
 .composer-hint{margin-top:8px;font-size:12px;color:var(--text-400)}
+.composer-hint .hint-dismiss{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;min-width:24px;min-height:24px;margin-left:4px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--text-400);cursor:pointer}
+.composer-hint .hint-dismiss:hover{background:var(--bg-200);color:var(--text-000)}
 .composer-refs{padding:8px 2px 0}
 .msg-ref-chip{padding:2px 9px;border:0;border-radius:999px;background:var(--bg-200);color:var(--text-200);font-size:12px}
 .msg-ref-chip.unresolved{border:1px solid var(--warn);background:transparent;color:var(--warn-text)}
@@ -2613,6 +2624,8 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .timeline-kind,.timeline-inspector-label,.timeline-overview-label,.timeline-search-label{font-size:12px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--text-000)}
 .timeline-status,.timeline-status.running,.timeline-status.queued,.timeline-status.finalizing{padding:2px 8px;background:var(--bg-200);color:var(--text-000);font-size:12px;text-transform:none}
 .timeline-status.failed,.timeline-status.error,.timeline-status.cancelled{background:var(--danger);color:#fff}
+/* SYNC-30: dark --danger is lighter; white on it was 3.26:1, the dark ink is 5.7:1. */
+html[data-theme="dark"] .timeline-status:is(.failed,.error,.cancelled){color:var(--dark)}
 .timeline-status.completed,.timeline-status.success{background:var(--bg-200);color:var(--text-000)}
 .timeline-card-title{font-size:14px;font-weight:500}
 .timeline-meta{font-size:12px;color:var(--text-400)}

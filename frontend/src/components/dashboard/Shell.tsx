@@ -7,6 +7,7 @@ import { projectFilesCopy } from "../../features/sessions/copy";
 import { browseProjectFolder } from "../../features/sessions/project-files";
 import { callLane } from "../../features/send/host";
 import { TeamChip } from "../../features/chrome/team-chip";
+import { a11yT, skipToContent } from "../../features/chrome/a11y-copy";
 import { DashHeroText } from "./DashHero";
 import { ModelKeyNotice, ModelSelect } from "./ModelSelect";
 import "./dashboard.css";
@@ -57,8 +58,8 @@ export function Shell() {
   return (
     <>
       <div id="conn-banner" role="status" aria-live="polite" hidden />
-      <a class="skip-link" href="#messages">
-        Skip to content
+      <a class="skip-link" href="#messages" onClick={skipToContent}>
+        {a11yT("a11y.skip")}
       </a>
       <div id="dashboard" class={pendingRoute ? "dashboard hidden" : "dashboard"}>
         <header class="dash-head">
@@ -194,7 +195,7 @@ export function Shell() {
             </button>
             <button id="customize-btn" class="side-nav-item" type="button">
               <span class="ic" data-icon="sliders" data-icon-size="16" />
-              <span data-i18n="palette.action.customize">Customize</span>
+              <span data-i18n="common.settings">Settings</span>
             </button>
             <button id="files-btn" class="side-nav-item" type="button">
               <span class="ic" data-icon="files" data-icon-size="16" />
@@ -474,7 +475,15 @@ export function Shell() {
                 <span class="ic" data-icon="download" data-icon-size="14" />
                 <span data-i18n="common.download">下载</span>
               </a>
-              <button id="modal-close" class="icon-ghost" data-icon="x" data-icon-size="16" aria-label="Close" type="button" />
+              <button
+                id="modal-close"
+                class="icon-ghost"
+                data-icon="x"
+                data-icon-size="16"
+                aria-label="Close"
+                data-i18n-aria="common.close"
+                type="button"
+              />
             </div>
           </div>
           <div id="modal-body" class="modal-body" />
@@ -499,6 +508,7 @@ export function Shell() {
               data-icon="x"
               data-icon-size="16"
               aria-label="Close"
+              data-i18n-aria="common.close"
               type="button"
             />
           </div>

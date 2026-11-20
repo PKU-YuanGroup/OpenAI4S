@@ -43,6 +43,7 @@ import {
   writtenImages,
 } from "./Notebook";
 import { nbLabelT, nbT } from "./copy";
+import { kernelLabel } from "./labels";
 
 type VNode = {
   type?: unknown;
@@ -77,6 +78,17 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetStoreFields();
+});
+
+// SCI-35: one chip read "Python", the other "r"; cells said "python [1]" / "r [2]".
+describe("Notebook language names", () => {
+  it("names Python and R the same way in chips and cell labels", () => {
+    expect(kernelLabel("python")).toBe("Python");
+    expect(kernelLabel("r")).toBe("R");
+    expect(kernelLabel("python — lab_env")).toBe("Python — lab_env");
+    expect(kernelLabel("r — lab_env")).toBe("R — lab_env");
+    expect(kernelLabel("rust")).toBe("rust");
+  });
 });
 
 describe("Notebook output judged binary", () => {
@@ -266,7 +278,7 @@ describe("Notebook cell state", () => {
     const text = stateText(stale);
     expect(text).toContain(nbLabelT("nb.cell.stale"));
     expect(text).toContain(
-      nbT("nb.stale.via", "python [2]", nbT("nb.stale.superseded", "python [5]", "x")),
+      nbT("nb.stale.via", "Python [2]", nbT("nb.stale.superseded", "Python [5]", "x")),
     );
     expect(text).not.toContain("c-b");
   });

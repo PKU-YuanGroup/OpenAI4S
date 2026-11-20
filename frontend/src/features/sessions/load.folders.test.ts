@@ -12,6 +12,11 @@ vi.mock("./chrome", async (importOriginal) => ({
   openMenu: vi.fn(),
   reportFailure: vi.fn(),
 }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: vi.fn(async () => true),
+  askText: vi.fn(async () => "Renamed"),
+  showNotice: vi.fn(),
+}));
 
 import { t } from "../../i18n";
 import { _sessionScope, project } from "../../stores/session";
@@ -60,8 +65,6 @@ beforeEach(() => {
     createElement: () => new FakeNode(),
     createDocumentFragment: () => new FakeNode(),
   });
-  vi.stubGlobal("prompt", () => "Renamed");
-  vi.stubGlobal("confirm", () => true);
   vi.mocked(openMenu).mockReset();
   vi.mocked(reportFailure).mockReset();
   vi.mocked(api).mockReset().mockImplementation(async (path: string, init?: RequestInit) => {

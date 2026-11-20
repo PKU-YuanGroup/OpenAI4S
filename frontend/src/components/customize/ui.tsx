@@ -72,11 +72,14 @@ export function Toggle({
   on,
   disabled,
   title,
+  label,
   onClick,
 }: {
   on: boolean;
   disabled?: boolean;
   title?: string;
+  /** What the switch turns on or off; the switch has no text of its own (SYNC-12). */
+  label?: string;
   onClick: () => void;
 }) {
   return (
@@ -85,6 +88,7 @@ export function Toggle({
       // On/off for assistive tech, not only by colour and knob (SYNC-22).
       role="switch"
       aria-checked={on ? "true" : "false"}
+      aria-label={label}
       class={"toggle" + (on ? " on" : "") + (disabled ? " off" : "")}
       disabled={disabled}
       title={title}

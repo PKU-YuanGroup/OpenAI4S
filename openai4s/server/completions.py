@@ -125,10 +125,12 @@ def action_narration(
         if is_completion_only_cell(action):
             return ""
         label = "R" if action.language == "r" else "Python"
+        # SCI-35: "an R cell", not "a R cell".
+        article = "an" if label == "R" else "a"
         return (
             f"我已经准备好一个 {label} 单元，正在执行；真实输出会持续记录到 Notebook。"
             if zh
-            else f"I have prepared a {label} cell and am running it now; its actual output will be recorded in the Notebook."
+            else f"I have prepared {article} {label} cell and am running it now; its actual output will be recorded in the Notebook."
         )
     if not isinstance(action, NativeToolBatch) or not action.calls:
         return ""
@@ -1171,7 +1173,8 @@ _PROGRESS_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
         r"我已经准备好一个 (?:R|Python) (?:单元|Cell)，正在执行；真实输出会持续记录到 Notebook。",
-        r"I have prepared a (?:R|Python) cell and am running it now; its actual "
+        # "a R" is what rows stored before SCI-35 say.
+        r"I have prepared an? (?:R|Python) cell and am running it now; its actual "
         r"output will be recorded in the Notebook\.",
         r"我正在执行 \d+ 个相关步骤，并会根据返回结果继续分析。",
         r"I am running \d+ related steps and will continue from their returned "

@@ -33,6 +33,15 @@ const CONNECTOR_ZH: Record<string, string> = {
   "sequential-thinking": "结构化的分步推理工具（官方；需要 Node）。",
 };
 
+/**
+ * SYNC-21: the description a fresh install's configured rows are seeded with
+ * (the gateway's seed), which differs from the catalog's; still the
+ * product's own words, so it is translated like the catalog's.
+ */
+const SEEDED_EN: Record<string, string> = {
+  example: "Local demo MCP server: echo / now / calc / random_int.",
+};
+
 /** The badges beside a specialist's name. */
 const BADGE_ZH: Record<string, string> = {
   primary: "主智能体",
@@ -61,7 +70,8 @@ export function specialistDescription(row: Record<string, unknown>): string {
  */
 export function connectorDescription(id: unknown, description: unknown, catalog?: unknown): string {
   const described = String(description ?? "");
-  if (catalog !== undefined && catalog !== description) return described;
+  const seeded = SEEDED_EN[String(id ?? "")] === described;
+  if (catalog !== undefined && catalog !== description && !seeded) return described;
   return zh(CONNECTOR_ZH, String(id ?? "")) ?? described;
 }
 

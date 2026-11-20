@@ -152,4 +152,27 @@ describe("session package export", () => {
     expect(vi.mocked(hint).mock.calls.at(-1)?.[1]).toBe(true);
     expect(String(vi.mocked(hint).mock.calls.at(-1)?.[0])).toContain("awaiting recovery");
   });
+
+  // E / TEAM-13: the Notebook's clean export is named by the server; a blob
+  // link without a name opened the notebook as a page instead of saving it.
+  it("saves under the server's name when given none", async () => {
+    vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => undefined });
+    serve({
+      "/notebook/export?variant=clean": () =>
+        new Response("{}", {
+          headers: { "Content-Disposition": "attachment; filename=\"x.ipynb\"; filename*=UTF-8''Growth%20assay.ipynb" },
+        }),
+    });
+    const links: FakeNode[] = [];
+    const make = (tag: string) => {
+      const node = new FakeNode(tag);
+      if (tag === "a") links.push(node);
+      return node;
+    };
+    vi.stubGlobal("document", { body, createElement: make });
+    const { saveExport } = await import("./package");
+    expect(await saveExport("/api/v1/frames/f-1/notebook/export?variant=clean", "")).toBe(2);
+    expect(links[0]?.download).toBe("Growth assay.ipynb");
+    expect(links[0]?.clicked).toBe(1);
+  });
 });

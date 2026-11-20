@@ -40,9 +40,11 @@ export async function editorChecks(page, api, frameId, { artifact: provided } = 
     const label = await page.evaluate(() => window.t("common.edit"));
     await viewer.getByTitle(label, { exact: true }).click();
   };
+  // M-45: discarding asks in the workbench's own dialog, not a native confirm().
+  const acceptDialog = () => page.locator(".app-dialog-modal .app-dialog-ok").click();
   const discard = async (reload = true) => {
-    page.once("dialog", (dialog) => dialog.accept());
     await viewer.locator(".edit-recovery button").nth(reload ? 3 : 4).click();
+    await acceptDialog();
     if (reload) await ready();
   };
   let posts = 0;
@@ -172,8 +174,8 @@ export async function editorChecks(page, api, frameId, { artifact: provided } = 
     await draftList.locator("summary").click();
     const deletedDraft = draftList.locator(".editor-draft").filter({ hasText: "deleted-draft.txt" });
     assert.equal(await deletedDraft.locator("textarea").inputValue(), "Recover even after source deletion");
-    page.once("dialog", (dialog) => dialog.accept());
     await deletedDraft.locator("button").click();
+    await acceptDialog();
     assert.equal(await draftList.locator(".editor-draft").count(), 0);
     // Capacity has an actual user-visible release path, without saving unwanted changes.
     await page.evaluate((fid) => window.openConversation(fid), frameId);
@@ -189,16 +191,16 @@ export async function editorChecks(page, api, frameId, { artifact: provided } = 
     await page.locator("#files-btn").click();
     if (!await draftList.evaluate((node) => node.open)) await draftList.locator("summary").click();
     assert.equal(await draftList.locator(".editor-draft").count(), 10);
-    page.once("dialog", (dialog) => dialog.accept());
     await draftList.locator(".editor-draft button").first().click();
+    await acceptDialog();
     assert.equal(await draftList.locator(".editor-draft").count(), 9);
     await page.locator("#dock-tabs .dock-tab").filter({ hasText: "capacity-10.txt" }).click();
     await ready();
     await page.locator("#files-btn").click();
     assert.equal(await draftList.locator(".editor-draft").count(), 10);
     while (await draftList.locator(".editor-draft").count()) {
-      page.once("dialog", (dialog) => dialog.accept());
       await draftList.locator(".editor-draft button").first().click();
+      await acceptDialog();
     }
     return { artifactId: id, baseline, posts, finalVersion };
   } finally {

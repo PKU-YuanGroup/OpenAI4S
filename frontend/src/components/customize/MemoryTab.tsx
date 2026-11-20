@@ -1,6 +1,7 @@
 import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
+import { askText } from "../../features/chrome/dialog";
 import { refreshCustTab } from "../../features/customize/actions";
 import { asList, asString, customizeProject, hint } from "../../features/customize/host";
 import {
@@ -95,6 +96,7 @@ export function MemoryTab() {
         </div>
         <Toggle
           on={memory.on}
+          label={t("cust.memory.enableName")}
           disabled={!memory.ready || readOnly}
           onClick={() => {
             if (!readOnly) memory.toggle();
@@ -225,7 +227,7 @@ export function MemoryTab() {
                   title={t("common.edit")}
                   size={14}
                   onClick={async () => {
-                    const next = window.prompt(t("cust.memory.editPrompt"), asString(x.content));
+                    const next = await askText(t("cust.memory.editPrompt"), asString(x.content));
                     if (next === null) return;
                     const value = String(next).trim();
                     if (!value || value === asString(x.content)) return;
