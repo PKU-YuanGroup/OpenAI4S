@@ -25,7 +25,9 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     usageParts:
       "Tokens this session has used so far: {0} new input · {1} cached input · {2} output{3}. Cached input is context sent again and read from the provider's cache.",
     usageReasoning: " (of which {0} reasoning)",
+    turnParts: "The latest turn: {0} new input · {1} cached input · {2} output.",
     tokens: "{0} tokens",
+    tokensTurn: "{0} tokens · +{1} this turn",
     minutes: "{0} min {1} s",
     seconds: "{0} s",
   },
@@ -35,7 +37,9 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     usageParts:
       "本会话累计用量：新输入 {0} · 缓存输入 {1} · 输出 {2}{3} tokens。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
     usageReasoning: "（其中推理 {0}）",
+    turnParts: "最近一轮：新输入 {0} · 缓存输入 {1} · 输出 {2}。",
     tokens: "{0} tokens",
+    tokensTurn: "{0} tokens · 本轮 +{1}",
     minutes: "{0} 分 {1} 秒",
     seconds: "{0} 秒",
   },
@@ -124,17 +128,62 @@ export function usageBreakdown(timeline: unknown, fid: string | null): UsageBrea
   return { fresh: Math.max(0, sum.input - sum.cached), cached: sum.cached, output: sum.output, reasoning: sum.reasoning };
 }
 
+type TimelineRow = { turn_id?: unknown; kind?: unknown; usage?: Record<string, unknown> | null };
+
+/**
+ * M-18: what the latest turn added. A session total of "936k tokens" said
+ * nothing about the turn just run. The latest turn is the turn of the
+ * timeline's last row; its model calls are summed when the whole turn is in
+ * the loaded window (its own user row is there, or nothing is earlier).
+ */
+export function latestTurnUsage(timeline: unknown, fid: string | null): (UsageBreakdown & { total: number }) | null {
+  const view = timeline as { root_frame_id?: unknown; has_earlier?: unknown; groups?: unknown } | null;
+  if (!view || !fid || view.root_frame_id !== fid || !Array.isArray(view.groups)) return null;
+  const rows = view.groups as TimelineRow[];
+  const turn = [...rows].reverse().find((row) => row && typeof row.turn_id === "string" && row.turn_id)?.turn_id;
+  if (!turn) return null;
+  const own = rows.filter((row) => row && row.turn_id === turn);
+  if (view.has_earlier === true && !own.some((row) => row.kind === "user")) return null;
+  const sum = { input: 0, cached: 0, output: 0, reasoning: 0 };
+  for (const row of own) {
+    const usage = row.usage;
+    if (!usage) continue;
+    sum.input += Number(usage.input_tokens) || 0;
+    sum.cached += Number(usage.cache_read) || 0;
+    sum.output += Number(usage.output_tokens) || 0;
+    sum.reasoning += Number(usage.reasoning_tokens) || 0;
+  }
+  const total = sum.input + sum.output;
+  if (!(total > 0)) return null;
+  return {
+    fresh: Math.max(0, sum.input - sum.cached),
+    cached: sum.cached,
+    output: sum.output,
+    reasoning: sum.reasoning,
+    total,
+  };
+}
+
 /** The frame's own totals, kept for the tooltip's fallback wording. */
 let lastTotals: { fid: string; input: number; output: number } | null = null;
 
-/** The chip's tooltip: the breakdown when the timeline can give one, else input / output. */
+/**
+ * The chip: the session's total and what the latest turn added (M-18); its
+ * tooltip the breakdown when the timeline can give one, else input / output.
+ */
 export function paintUsageTitle(): void {
   if (typeof document === "undefined") return;
   const node = document.getElementById("session-usage");
   const totals = lastTotals;
   if (!node || !totals || totals.fid !== currentId.value) return;
+  const turn = latestTurnUsage(actionTimeline.value, totals.fid);
+  const total = formatTokens(totals.input + totals.output);
+  node.textContent = turn ? copy("tokensTurn", total, formatTokens(turn.total)) : copy("tokens", total);
   const parts = usageBreakdown(actionTimeline.value, totals.fid);
-  node.title = parts
+  const turnLine = turn
+    ? " " + copy("turnParts", turn.fresh.toLocaleString(), turn.cached.toLocaleString(), turn.output.toLocaleString())
+    : "";
+  node.title = (parts
     ? copy(
         "usageParts",
         parts.fresh.toLocaleString(),
@@ -142,7 +191,7 @@ export function paintUsageTitle(): void {
         parts.output.toLocaleString(),
         parts.reasoning ? copy("usageReasoning", parts.reasoning.toLocaleString()) : "",
       )
-    : copy("usageTitle", totals.input.toLocaleString(), totals.output.toLocaleString());
+    : copy("usageTitle", totals.input.toLocaleString(), totals.output.toLocaleString())) + turnLine;
 }
 
 let usageSeq = 0;
@@ -169,7 +218,6 @@ export async function refreshSessionUsage(): Promise<void> {
   const output = Number(frame.output_tokens || 0);
   const total = input + output;
   node.classList.toggle("hidden", !(total > 0));
-  node.textContent = copy("tokens", formatTokens(total));
   lastTotals = { fid, input, output };
   paintUsageTitle();
 }
