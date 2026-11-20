@@ -189,12 +189,12 @@ describe("history reads", () => {
     ]));
     expect(paint.empty).not.toHaveBeenCalled();
     expect(_replayGap.value).toBe("f");
-    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenCalledTimes(5);
     for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
     const retry = server((path) => path.endsWith("/steps") ? response({ steps: [storedStep] }) : undefined);
     expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(_replayGap.value).toBeNull();
-    expect(retry).toHaveBeenCalledTimes(4);
+    expect(retry).toHaveBeenCalledTimes(5);
     for (const [, init] of retry.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
   });
   it.each([
@@ -258,7 +258,7 @@ describe("history reads", () => {
     const one = recoverConversation("f");
     const two = recoverConversation("f");
     expect(two).toBe(one);
-    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenCalledTimes(5);
     gate.resolve(response({ steps: [] }));
     expect(await one).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(fetcher.mock.calls.map(([path]) => String(path))).toEqual(expect.arrayContaining([
@@ -355,7 +355,7 @@ describe("history reads", () => {
     gate.resolve(response({ messages: [] }));
     expect(await reading).toMatchObject({ messagesLoaded: false });
     await vi.waitFor(() => expect(session.historyLoad.value?.status).toBe("loaded"));
-    expect(fetcher).toHaveBeenCalledTimes(8);
+    expect(fetcher).toHaveBeenCalledTimes(10);
   });
 
   it("an old admission cannot settle a submission after navigating away and back", () => {
@@ -909,7 +909,10 @@ describe("a newly created session's Notebook", () => {
 
   it("an execution-log read of the previous session that lands late adds nothing", async () => {
     const lateA = deferred<Response>();
-    logServer((path) => (path.endsWith("/frames/f/execution-log") ? lateA.promise : undefined));
+    // The conversation reads the log for its cell cards when it opens; the
+    // Notebook's own read below is the one that lands late.
+    let reads = 0;
+    logServer((path) => (path.endsWith("/frames/f/execution-log") && ++reads > 1 ? lateA.promise : undefined));
     await openConversation("f");
     cells.value = A_CELLS;
     const inflight = loadExecutionLog("f");

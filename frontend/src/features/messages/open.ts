@@ -121,6 +121,7 @@ import {
   type StoredMessage,
 } from "./list";
 import { ApiError } from "../sessions/api";
+import { chatCells, type StoredCell } from "./cellCard";
 import { down, updateJumpPill } from "./scroll";
 import { flushRender, type LiveStream } from "./stream";
 import { notePassingHint } from "./turnStatus";
@@ -252,6 +253,16 @@ async function fetchApprovals(fid: string): Promise<Array<Record<string, unknown
   const rows = recordRows(await apiGet(`/frames/${encodeURIComponent(fid)}/approvals`), "approvals");
   return rows.filter((row) => typeof row.decision_id === "string" && !!row.decision_id);
 }
+/**
+ * The session's Cells, for their cards in the conversation (M-69). Optional
+ * history like the approvals: without them the transcript is still complete
+ * prose and steps, as it was before the cards were restored.
+ */
+async function fetchCells(fid: string): Promise<StoredCell[]> {
+  const raw = await apiGet(`/frames/${encodeURIComponent(fid)}/execution-log`);
+  const entries = raw && typeof raw === "object" ? (raw as { entries?: unknown }).entries : null;
+  return chatCells(entries);
+}
 async function fetchRunState(fid: string): Promise<{ running: boolean; status?: string }> {
   const raw = await apiGet(`/frames/${encodeURIComponent(fid)}/status`);
   if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
@@ -298,11 +309,12 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
   // first, then fetch a fresh transcript after the authoritative stopped
   // response; a parallel transcript could still precede the final write.
   const historyReady = streamAtRead ? runStateRead.then(() => {}, () => {}) : null;
-  const [page, steps, runState, approvals] = await Promise.allSettled([
+  const [page, steps, runState, approvals, cellRead] = await Promise.allSettled([
     historyReady ? historyReady.then(() => fetchRecentMessages(fid, MESSAGE_PAGE_SIZE)) : fetchRecentMessages(fid, MESSAGE_PAGE_SIZE),
     historyReady ? historyReady.then(() => fetchSteps(fid)) : fetchSteps(fid),
     runStateRead,
     historyReady ? historyReady.then(() => fetchApprovals(fid)) : fetchApprovals(fid),
+    historyReady ? historyReady.then(() => fetchCells(fid)) : fetchCells(fid),
   ]);
   if (!current(fid, gen)) return obsolete();
   const result = {
@@ -349,13 +361,14 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
     const hasEarlier = prefix.length ? msgHasEarlier.value : !!page.value.has_earlier;
     const stepRows = steps.status === "fulfilled" ? steps.value : cached?.steps || [];
     const approvalRows = approvals.status === "fulfilled" ? approvals.value : cached?.approvals || [];
+    const cellRows = cellRead.status === "fulfilled" ? cellRead.value : cached?.cells || [];
     const chatSteps = stepRows.filter(chatStep);
     const stage = typeof document !== "undefined" ? document.createDocumentFragment() : null;
     const host = messagesHost();
     const stagedSteps: Record<string, unknown> = Object.create(null);
     const stagedPerms: Record<string, unknown> = Object.create(null);
     await new Promise<void>((resolve, reject) => {
-      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], chatSteps, approvalRows), {
+      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], chatSteps, approvalRows, cellRows), {
         host: stage,
         stillCurrent: unchanged,
         onCancel: resolve,
@@ -393,7 +406,7 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       }
       stepEls.value = stagedSteps;
       permCards.value = stagedPerms;
-      historyContent.value = { fid, messages, steps: stepRows, approvals: approvalRows };
+      historyContent.value = { fid, messages, steps: stepRows, approvals: approvalRows, cells: cellRows };
       msgCursor.value = earlierCursor;
       msgHasEarlier.value = hasEarlier;
       callLane("paintEarlierControl");

@@ -1681,7 +1681,14 @@ class FrameRepository:
                 "FROM execution_attempts AS a WHERE a.producing_cell_id="
                 "e.producing_cell_id AND a.generation_id IS NOT NULL "
                 "ORDER BY a.attempt_ordinal DESC LIMIT 1),e.generation_id) "
-                "AS generation_id "
+                "AS generation_id,"
+                # When the Cell started and ended. `created_at` is when it was
+                # recorded, after it ran and after the files it wrote were saved.
+                "(SELECT MIN(COALESCE(a.started_at,a.allocated_at)) FROM "
+                "execution_attempts AS a WHERE a.producing_cell_id="
+                "e.producing_cell_id) AS started_at,"
+                "(SELECT MAX(a.finished_at) FROM execution_attempts AS a WHERE "
+                "a.producing_cell_id=e.producing_cell_id) AS finished_at "
                 "FROM execution_log AS e WHERE e.root_frame_id=? " + branch_filter + " "
                 "ORDER BY COALESCE(e.state_revision,e.cell_index) ASC,"
                 "e.created_at ASC,e.producing_cell_id ASC",

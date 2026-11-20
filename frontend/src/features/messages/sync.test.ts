@@ -35,6 +35,7 @@ import { flushScrollNow, unbindMessageScroll, updateJumpPill } from "./scroll";
 import type { LiveStream } from "./stream";
 import { turnTextKey } from "./turnGroup";
 import { bindTurnStatus, notePassingHint, resetTurnStatus } from "./turnStatus";
+import { settleLiveCellCard } from "./cardState";
 import { turnDone } from "../send/turn";
 import { t } from "../../i18n/runtime";
 import { _liveCell } from "../../stores/notebook";
@@ -945,6 +946,144 @@ describe("the session's file strips", () => {
     expect(order).toEqual(["msg user", "msg user", "msg assistant", "uploaded", "generated"]);
     expect(messages().children[3]).toBe(inputs);
     expect(messages().children[4]).toBe(files);
+  });
+});
+
+// --------------------------------------------------------------------------
+// M-69: a turn's code cells are on screen live and after a reload
+// --------------------------------------------------------------------------
+
+/** The turn's cards and prose, a card by its sorted classes and its head's text. */
+function turnCards(): string[] {
+  const wrap = messages().querySelector(":scope > .msg.assistant") as HTMLElement | null;
+  if (!wrap) return [];
+  return Array.from(wrap.children).map((node) => {
+    const el = node as HTMLElement;
+    const classes = el.className.split(/\s+/).filter(Boolean).sort().join(".");
+    const head = el.querySelector(".a-head") || el.querySelector(".s-head");
+    if (head) return classes + " :: " + (head.textContent || "");
+    if (el.classList.contains("md")) return "md :: " + (el.textContent || "").trim();
+    return classes;
+  });
+}
+
+function toolChunk(text: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { type: "text_chunk", root_frame_id: "f-1", block_type: "tool", chunk: text, ...extra };
+}
+
+/** One Cell as the live stream sends it (`cell_run._start_stream` + `_emit_error`). */
+function streamCell(id: string, index: number, title: string, code: string, output: string, error = ""): void {
+  onEvent(toolChunk("⚙" + title + "\n", { cell_index: index, producing_cell_id: id }));
+  onEvent(toolChunk(code + "\n----- output -----\n", { producing_cell_id: id }));
+  if (output) onEvent(toolChunk(output, { producing_cell_id: id }));
+  if (error) onEvent(toolChunk("\n" + error, { producing_cell_id: id }));
+}
+
+describe("a turn's code cells, live and reopened", () => {
+  const CODE_1 = "# Load the plate\nfor i in range(3):\n    print('row', i)";
+  const CODE_2 = "# ===== Fit the model =====\nraise ValueError('bad shape')";
+  const TRACE = "Traceback (most recent call last):\nValueError: bad shape";
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({}, 404)));
+  });
+
+  it("shows the same cards, outcomes and code after a reload", async () => {
+    renderStored({ role: "user", content: "Fit it", message_id: "m-1" });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Loading the plate.\n\n"));
+    streamCell("c-1", 1, "Load the plate", CODE_1, "row 0\nrow 1\nrow 2\n");
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "artifact", title: "Load the plate", status: "running" });
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-1", status: "done", summary: "2 artifacts", output: { artifacts: [] } });
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-1", cell_index: 1, status: "ok" });
+    onEvent(chunk("The plate loaded.\n\n"));
+    streamCell("c-2", 2, "Fit the model", CODE_2, "fitting\n", TRACE);
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-2", cell_index: 2, status: "error", error: TRACE });
+    onEvent(chunk("This cell failed.\n"));
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    const live = turnCards();
+    const liveBodies = Array.from(messages().querySelectorAll(".activity pre")).map((pre) => pre.textContent);
+    expect(live).toEqual([
+      "md :: Loading the plate.",
+      "activity.has-steps.ok :: Load the plate3 output lines",
+      "open.step.step-artifact :: Load the plate2 artifacts",
+      "md :: The plate loaded.",
+      "activity.failed :: Fit the modelFailed · 3 output lines",
+      "md :: This cell failed.",
+      "msg-actions",
+    ]);
+
+    // Reopened: the stored rows, the step and the two Cells' execution-log entries.
+    messages().replaceChildren();
+    await paintHistory(interleaveHistory(
+      [
+        { role: "user", content: "Fit it", message_id: "m-1", created_at: at(0) },
+        { role: "assistant", content: "Loading the plate.", message_id: "m-2", created_at: at(1) },
+        { role: "assistant", content: "The plate loaded.", message_id: "m-3", created_at: at(4) },
+        { role: "assistant", content: "This cell failed.", message_id: "m-4", created_at: at(7) },
+      ],
+      [{ step_id: "s-1", kind: "artifact", title: "Load the plate", status: "done", summary: "2 artifacts", created_at: Date.parse(at(3)), seq: 0 }],
+      [],
+      [
+        {
+          producing_cell_id: "c-1", cell_index: 1, origin: "agent", title: "Load the plate", source: CODE_1,
+          stdout: "row 0\nrow 1\nrow 2\n", stderr: "", error: "", status: "ok",
+          started_at: Date.parse(at(2)), finished_at: Date.parse(at(2)) + 500,
+        },
+        {
+          producing_cell_id: "c-2", cell_index: 2, origin: "agent", title: "Fit the model", source: CODE_2,
+          stdout: "fitting\n", stderr: "", error: TRACE, status: "error",
+          started_at: Date.parse(at(5)), finished_at: Date.parse(at(5)) + 300,
+        },
+      ],
+    ));
+    expect(turnCards()).toEqual(live);
+    // The code and output are those the live card streamed, once it is opened.
+    const heads = Array.from(messages().querySelectorAll(".activity .a-head")) as Array<HTMLElement & { onclick: () => void }>;
+    heads.forEach((head) => head.onclick());
+    expect(Array.from(messages().querySelectorAll(".activity pre")).map((pre) => pre.textContent)).toEqual(liveBodies);
+  });
+
+  it("names a generated title as the ended card did, with the time the cell ran", async () => {
+    await paintHistory(interleaveHistory(
+      [{ role: "user", content: "Go", message_id: "m-1", created_at: at(0) }],
+      [],
+      [],
+      [
+        {
+          producing_cell_id: "c-3", cell_index: 3, origin: "agent", title: "Running analysis · cell 3",
+          source: "print('ok')", stdout: "ok\n", status: "ok", started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 65_000,
+        },
+        // A Notebook REPL cell never had a card in the conversation.
+        { producing_cell_id: "c-4", cell_index: 4, origin: "notebook", source: "x", status: "ok", started_at: Date.parse(at(2)) },
+      ],
+    ));
+    expect(turnCards()).toEqual(["activity.ok :: Analysis · cell 31:05"]);
+  });
+
+  it("streams a reopened running turn's replay into the cards the reload drew", async () => {
+    await paintHistory(
+      interleaveHistory(
+        [{ role: "user", content: "Fit it", message_id: "m-1", created_at: at(0) }],
+        [],
+        [],
+        [{
+          producing_cell_id: "c-1", cell_index: 1, origin: "agent", title: "Load the plate", source: CODE_1,
+          stdout: "row 0\nrow 1\nrow 2\n", status: "ok", started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 100,
+        }],
+      ),
+      true,
+    );
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Loading the plate.\n\n"));
+    streamCell("c-1", 1, "Load the plate", CODE_1, "row 0\nrow 1\nrow 2\n");
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-1", cell_index: 1, status: "ok" });
+    // One card, in the live turn, after the prose the replay put before it.
+    expect(messages().querySelectorAll(".activity")).toHaveLength(1);
+    expect(transcriptShape()).toEqual(["msg user", "turn:md,activity ok,md"]);
+    expect(messages().querySelector(".activity pre")?.textContent).toBe(
+      "Load the plate\n" + CODE_1 + "\n----- output -----\nrow 0\nrow 1\nrow 2\n",
+    );
   });
 });
 

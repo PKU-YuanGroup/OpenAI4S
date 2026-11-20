@@ -42,6 +42,7 @@ import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { planModeRequestText, planSeed, planSeedMarker } from "./planPrompt";
 import { cancelledIdentity, stoppedMarker } from "./stopped";
+import { cellCardOnScreen, chatCells, renderStoredCell, type StoredCell } from "./cellCard";
 import { dropEmptyProse, openTurnGroup, placeCardInTurn, turnTextKey, type TurnGroup } from "./turnGroup";
 
 export const INITIAL_RENDER_BATCH = 40;
@@ -49,7 +50,7 @@ export const INITIAL_RENDER_BATCH = 40;
 export type HistoryItem = {
   t: number;
   seq: number;
-  kind: "msg" | "step" | "perm";
+  kind: "msg" | "step" | "perm" | "cell";
   v: unknown;
 };
 
@@ -607,9 +608,19 @@ export function historyTurns(): HistoryTurns {
     }) as unknown as ParentNode;
 
   const add = (item: HistoryItem, target: ParentNode): void => {
+    if (item.kind === "cell") {
+      renderStoredCell(item.v as StoredCell, cardSink(target, item.t));
+      return;
+    }
     if (item.kind !== "msg") {
       const render = item.kind === "perm" ? renderStoredPermissionImpl : renderStoredStepImpl;
       if (render) render(item.v, cardSink(target, item.t));
+      // As live: a step after a Cell's card makes that card its quieter head
+      // (`send/step.ts` `demoteToolCard`).
+      if (item.kind === "step" && group) {
+        const cells = group.wrap.querySelectorAll(":scope > .activity");
+        cells[cells.length - 1]?.classList.add("has-steps");
+      }
       return;
     }
     const m = item.v as StoredMessage;
@@ -675,7 +686,12 @@ function historyNode(node: Element): boolean {
 export function prependHistory(
   host: HTMLElement,
   older: StoredMessage[],
-  held: { messages: StoredMessage[]; steps: Array<Record<string, unknown>>; approvals?: Array<Record<string, unknown>> },
+  held: {
+    messages: StoredMessage[];
+    steps: Array<Record<string, unknown>>;
+    approvals?: Array<Record<string, unknown>>;
+    cells?: StoredCell[];
+  },
 ): void {
   const live = (liveStream.value as { wrap?: HTMLElement } | null)?.wrap || null;
   const kids = Array.from(host.children) as HTMLElement[];
@@ -690,13 +706,22 @@ export function prependHistory(
   const firstUser = held.messages.find((m) => m.role === "user" && messageText(m).trim());
   const inLive = (item: HistoryItem): boolean => {
     if (!live || item.kind === "msg") return false;
+    if (item.kind === "cell") {
+      const card = cellCardOnScreen((item.v as StoredCell).producing_cell_id);
+      return !!card && live.contains(card);
+    }
     const row = item.v as { step_id?: unknown; decision_id?: unknown };
     const registry = (item.kind === "perm" ? permCards.value : stepEls.value) as Record<string, { card?: Node } | undefined>;
     const card = registry[String(item.kind === "perm" ? row.decision_id : row.step_id)]?.card;
     return !!card && live.contains(card);
   };
   const items: HistoryItem[] = [];
-  for (const item of interleaveHistory([...older, ...held.messages], held.steps.filter(chatStep), held.approvals)) {
+  for (const item of interleaveHistory(
+    [...older, ...held.messages],
+    held.steps.filter(chatStep),
+    held.approvals,
+    held.cells,
+  )) {
     if (firstUser && item.v === firstUser) break;
     if (!inLive(item)) items.push(item);
   }
@@ -856,8 +881,14 @@ export function interleaveHistory(
   msgs: StoredMessage[],
   steps: Array<{ created_at?: number; seq?: number; [key: string]: unknown }>,
   approvals: Array<{ created_at?: unknown; [key: string]: unknown }> = [],
+  cells: StoredCell[] = [],
 ): HistoryItem[] {
   const items: HistoryItem[] = [];
+  // A Cell's card appears when it starts: before the steps it makes (a tie
+  // with one of them goes to the Cell) and after the prose that announced it.
+  for (const cell of chatCells(cells)) {
+    items.push({ t: Number(cell.started_at), seq: -1, kind: "cell", v: cell });
+  }
   for (const mm of msgs) {
     items.push({
       t: new Date(String(mm.created_at || "")).getTime() || 0,

@@ -5305,6 +5305,9 @@ def test_execution_log_route_serializer_contract(tmp_path):
         "files_read",
         "cpu_seconds",
         "peak_rss_kb",
+        "title",
+        "started_at",
+        "finished_at",
         "attempt_group_id",
         "attempt",
         "revision_of",
@@ -5336,6 +5339,62 @@ def test_execution_log_route_serializer_contract(tmp_path):
     assert e2["status"] == "error"
     assert e2["error"] == "ZeroDivisionError"
     assert e2["figures"] == [] and e2["files_written"] == []
+    # M-69: the conversation card's title, as the live card had it; a Cell
+    # with no attempt rows is placed by the time it was recorded.
+    assert e1["title"] == "Running analysis · cell 1"
+    assert isinstance(e1["started_at"], int) and e1["started_at"] > 0
+    assert e1["finished_at"] == e1["started_at"]
+
+
+def test_execution_log_places_a_cell_by_when_it_ran(tmp_path):
+    """M-69: a reopened conversation puts each Cell's card where the live turn
+    showed it, before the files the Cell saved. The Cell is recorded only after
+    it ran and its files were saved, so the record's own time sorts the card
+    after its own artifact step; the attempt's start does not."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    store = get_store(cfg.db_path)
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    store.append_action_group(
+        group_id="ag-cell", root_frame_id=fid, turn_id="turn", kind="code"
+    )
+    store.allocate_execution_attempt(
+        group_id="ag-cell",
+        producing_cell_id="cell-1",
+        attempt_id="xa-1",
+        allocated_at=1_000,
+    )
+    store.mark_execution_attempt_started("xa-1", started_at=1_001)
+    store.mark_execution_attempt_response("xa-1", response_at=4_000)
+    store.mark_execution_attempt_capture("xa-1", capture_at=4_400)
+    store.finish_execution_attempt(
+        "xa-1", terminal_state="completed", finished_at=4_500
+    )
+    store.log_cell(
+        frame_id=fid,
+        root_frame_id=fid,
+        code="# ===== QC =====\nprint('hi')",
+        result={"id": "cell-1", "stdout": "hi\n", "stderr": "", "error": None},
+        cell_index=1,
+        kernel_id="python",
+        language="python",
+    )
+
+    replies = []
+    handler._query = lambda: {}
+    handler._body = lambda: {}
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    handler._api("GET", f"/frames/{fid}/execution-log")
+
+    code, body = replies[-1]
+    assert code == 200
+    (entry,) = body["entries"]
+    assert entry["started_at"] == 1_001
+    assert entry["finished_at"] == 4_500
+    # A banner comment is not the title (cell_run.activity_title).
+    assert entry["title"] == "QC"
 
 
 def test_lineage_serializer_producing_cell_and_inputs(tmp_path):
