@@ -2100,7 +2100,12 @@ def cmd_setup(args) -> int:
             continue
         prefix = existing.get(name)
         if prefix is not None and not update_existing:
-            print(f"  [{name}] already exists — skipping (use --update to sync)")
+            # Named with its prefix: these are ordinary conda env names
+            # (`python`, `r`), easily one the user already has for themselves.
+            print(
+                f"  [{name}] conda env '{name}' already exists at {prefix} — "
+                "skipping (use --update to sync it)"
+            )
             skipped += 1
             continue
         cmd = (
@@ -2110,7 +2115,15 @@ def cmd_setup(args) -> int:
         )
         action = "update" if prefix is not None else "create"
         if args.dry_run:
-            print(f"  [{name}] would {action}: {' '.join(cmd)}")
+            where = (
+                f"at {prefix}"
+                if prefix is not None
+                else f"in {tool}'s own envs directory"
+            )
+            print(
+                f"  [{name}] would {action} conda env '{name}' {where}: "
+                f"{' '.join(cmd)}"
+            )
             continue
         print(f"  [{name}] {action}… ({' '.join(cmd)})")
         try:
@@ -3100,7 +3113,18 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--json", action="store_true", help="emit secret-free JSON")
     pi.set_defaults(fn=cmd_init)
 
-    pu = sub.add_parser("setup", help="create or update conda envs from envs/*.yml")
+    pu = sub.add_parser(
+        "setup",
+        help="build the kernel conda envs (python, r, phylo, struct) in place; "
+        "`env` builds them as generations you can roll back",
+        description="Create or update the kernel conda environments from "
+        "envs/*.yml with micromamba, mamba or conda, in place: each spec becomes "
+        "an ordinary conda env named python, r, phylo or struct in that tool's "
+        "own envs directory. An env of that name that already exists is skipped "
+        "unless --update is given. `openai4s env` builds the same specs instead "
+        "as verified generations under the OpenAI4S data directory, keeps the "
+        "previous one, and can roll back; the agent finds envs made either way.",
+    )
     setup_selection = pu.add_mutually_exclusive_group()
     setup_selection.add_argument(
         "--only",
@@ -3143,40 +3167,67 @@ def build_parser() -> argparse.ArgumentParser:
 
     pe = sub.add_parser(
         "env",
-        help="environments as a transaction: plan, apply, roll back",
+        help="build the kernel envs as verified generations you can roll back; "
+        "`setup` builds them in place",
+        description="Build the envs/*.yml specs as generations under "
+        "<data dir>/environments: each apply builds a fresh environment, "
+        "verifies it by starting its interpreter, and only then makes it "
+        "current, keeping the previous generation for `env rollback`. "
+        "`openai4s setup` instead creates or updates ordinary conda envs in "
+        "place; the agent finds envs made either way.",
     )
     esub = pe.add_subparsers(dest="env_action", required=True)
+    env_names_help = (
+        "environments, by spec name in envs/: python, r, phylo, struct "
+        "(default: all four)"
+    )
     ep = esub.add_parser("plan", help="what would change; touches nothing")
-    ep.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ep.add_argument(
+        "names", nargs="*", default=list(_DEFAULT_ENVS), help=env_names_help
+    )
     ep.add_argument(
         "--repair",
         action="store_true",
         help="plan a fresh verified generation even when the spec is unchanged",
     )
-    ep.add_argument("--json", action="store_true")
+    ep.add_argument("--json", action="store_true", help="machine-readable plan")
     ep.set_defaults(fn=cmd_env_plan)
     ea = esub.add_parser(
         "apply", help="build a new generation and switch to it if it verifies"
     )
-    ea.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ea.add_argument(
+        "names", nargs="*", default=list(_DEFAULT_ENVS), help=env_names_help
+    )
     ea.add_argument(
         "--repair",
         action="store_true",
         help="build a fresh verified generation even when the spec is unchanged",
     )
-    ea.add_argument("--dry-run", action="store_true")
+    ea.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="say what would be built, without building anything",
+    )
     ea.set_defaults(fn=cmd_env_apply)
     el = esub.add_parser("list", help="generations, and which one is current")
-    el.add_argument("names", nargs="*")
-    el.add_argument("--json", action="store_true")
+    el.add_argument(
+        "names", nargs="*", help="environments to list (default: all that have one)"
+    )
+    el.add_argument("--json", action="store_true", help="machine-readable list")
     el.set_defaults(fn=cmd_env_list)
     er = esub.add_parser("rollback", help="point at a generation already on disk")
-    er.add_argument("name")
-    er.add_argument("generation")
+    er.add_argument("name", help="environment name, e.g. python or r")
+    er.add_argument("generation", help="generation id, from `openai4s env list`")
     er.set_defaults(fn=cmd_env_rollback)
-    ev = esub.add_parser("recover", help="what a restart should know")
-    ev.add_argument("names", nargs="*")
-    ev.add_argument("--json", action="store_true")
+    ev = esub.add_parser(
+        "recover",
+        help="after a crash: list generations an interrupted apply left "
+        "behind, and whether an apply still holds the lock",
+    )
+    ev.add_argument(
+        "names", nargs="*", help="environments to check (default: all that have one)"
+    )
+    ev.add_argument("--json", action="store_true", help="machine-readable report")
     ev.set_defaults(fn=cmd_env_recover)
 
     pj = sub.add_parser(

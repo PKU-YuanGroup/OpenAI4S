@@ -475,3 +475,82 @@ def test_env_names_an_unknown_environment_and_lists_the_real_ones(
     for name in ("python", "r", "phylo", "struct"):
         assert name in err
     assert not (tmp_path / "data").exists()
+
+
+# --------------------------------------------------------------------------
+# `setup` and `env`: two ways to build the kernel envs, each naming the other
+# --------------------------------------------------------------------------
+
+
+def _help_text(argv, capsys) -> str:
+    with pytest.raises(SystemExit) as stopped:
+        _cli().build_parser().parse_args([*argv, "--help"])
+    assert stopped.value.code == 0
+    return " ".join(capsys.readouterr().out.split())
+
+
+def test_setup_and_env_help_say_how_they_differ(capsys):
+    """CLI-22. `setup` ("create or update conda envs") and `env`
+    ("environments as a transaction") never mentioned each other, and a
+    scientist could not tell which one to use."""
+    top = _help_text([], capsys)
+    setup = _help_text(["setup"], capsys)
+    env = _help_text(["env"], capsys)
+
+    assert "`env` builds them as generations you can roll back" in top
+    assert "`setup` builds them in place" in top
+    assert "`openai4s env` builds the same specs" in setup
+    assert "python, r, phylo or struct" in setup
+    assert "`openai4s setup` instead creates or updates ordinary conda envs" in env
+
+
+@pytest.mark.parametrize(
+    ("argv", "phrases"),
+    [
+        (
+            ["env", "plan"],
+            [
+                "by spec name in envs/: python, r, phylo, struct",
+                "machine-readable plan",
+            ],
+        ),
+        (["env", "apply"], ["by spec name in envs/", "without building anything"]),
+        (["env", "list"], ["environments to list", "machine-readable list"]),
+        (["env", "rollback"], ["environment name", "from `openai4s env list`"]),
+        (["env", "recover"], ["environments to check", "machine-readable report"]),
+    ],
+)
+def test_every_env_argument_says_what_it_takes(capsys, argv, phrases):
+    """CLI-22. `names`, `--json`, `--dry-run`, `name` and `generation` had
+    no help at all, and `recover` was "what a restart should know"."""
+    text = _help_text(argv, capsys)
+    for phrase in phrases:
+        assert phrase in text
+    assert "what a restart should know" not in text
+
+
+def test_setup_dry_run_names_the_conda_env_and_where_it_goes(
+    tmp_path, monkeypatch, capsys
+):
+    """CLI-22. `setup --dry-run` printed `[python] would create: conda env
+    create -f .../python.yml` -- not that this makes a conda env literally
+    named `python` (easily one the user already has), nor where."""
+    cli = _cli()
+    for name in ("python", "r"):
+        (tmp_path / f"{name}.yml").write_text(f"name: {name}\n", encoding="utf-8")
+    existing_r = tmp_path / "envs" / "r"
+    monkeypatch.setattr(cli, "_find_conda_tool", lambda: "micromamba")
+    monkeypatch.setattr(cli, "_envs_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli, "_existing_envs", lambda: {"r": existing_r})
+    args = type(
+        "A", (), {"only": None, "profile": "standard", "dry_run": True, "update": False}
+    )()
+
+    assert cli.cmd_setup(args) == 0
+
+    out = capsys.readouterr().out
+    assert (
+        "[python] would create conda env 'python' in micromamba's own envs "
+        "directory: micromamba env create -f" in out
+    )
+    assert f"[r] conda env 'r' already exists at {existing_r}" in out
