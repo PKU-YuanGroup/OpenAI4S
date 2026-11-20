@@ -1101,6 +1101,20 @@ class PermissionBroker:
             # fact without a migration.
             "dangerous": bool(dangerous),
         }
+        if payload["sub_agent"]:
+            # SCI-21: which sub-agent asks -- its name and the first sentence
+            # of its task (`delegation._task_headline`), so two children of one
+            # kind are told apart on the card.
+            try:
+                child_frame = store.get_frame(frame_id) or {}
+            except Exception:  # noqa: BLE001 - a label never blocks the request
+                child_frame = {}
+            child_name = str(child_frame.get("name") or "")[:80]
+            child_task = str(child_frame.get("task_summary") or "")[:160]
+            if child_name:
+                payload["sub_agent_name"] = child_name
+            if child_task:
+                payload["sub_agent_task"] = child_task
         choice_ids = [str(c.get("id") or "") for c in choices or () if c.get("id")]
         if choice_ids:
             payload["choices"] = [

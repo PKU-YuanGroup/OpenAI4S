@@ -38,6 +38,9 @@ type PermEvent = {
   target?: string;
   input?: Record<string, unknown>;
   sub_agent?: unknown;
+  /** SCI-21: which sub-agent asks -- its name and the first sentence of its task. */
+  sub_agent_name?: string;
+  sub_agent_task?: string;
   dangerous?: unknown;
   policy_review_kind?: string;
   resolved_file_path?: string;
@@ -201,6 +204,8 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     toolDescription: "What it does",
     toolCode: "Code that will run ({0} characters)",
     toolInput: "Input schema",
+    subAgentTask: "Asked by the sub-agent working on: {0}",
+    subAgentNamed: "Asked by the sub-agent {0}",
   },
   zh: {
     downloadTo: "保存到工作区：{0}",
@@ -219,6 +224,8 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     toolDescription: "用途",
     toolCode: "将要运行的代码（{0} 个字符）",
     toolInput: "输入参数结构",
+    subAgentTask: "发起请求的子代理正在做：{0}",
+    subAgentNamed: "发起请求的子代理：{0}",
   },
 };
 
@@ -239,6 +246,14 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
   const inp = rec(m.input);
   const lines: string[] = [];
   const code: Array<{ label: string; text: string }> = [];
+  // SCI-21: two sub-agents of one kind ran side by side; the card said only
+  // "Sub-agent". The request names which one, by its task.
+  if (m.sub_agent) {
+    const task = String(m.sub_agent_task || "").trim();
+    const name = String(m.sub_agent_name || "").trim();
+    if (task) lines.push(ctx("subAgentTask", name ? `${task} (${name})` : task));
+    else if (name) lines.push(ctx("subAgentNamed", name));
+  }
   if (m.tool === "web_download") {
     const target = workspaceTarget(inp.path);
     if (target) lines.push(ctx("downloadTo", target));

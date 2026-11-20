@@ -548,3 +548,24 @@ def test_encode_result_truncation_is_faster_than_redacting_every_step():
     assert "EVIDENCE-MARKER-9f3a" in json.dumps(decoded["artifact_evidence"])
     assert current_s < legacy_s * 0.5
     assert len(legacy) <= 16_000
+
+
+def test_a_child_frame_is_labelled_with_the_first_sentence_of_its_task(monkeypatch):
+    # SCI-21: an approval card a sub-agent raised said only "Sub-agent"; two
+    # children of one kind ran side by side and could not be told apart.
+    monkeypatch.setattr(loop_mod.Agent, "run", lambda self, task: _submitted())
+    cfg, store, root = _root_store()
+    runner = DelegationRunner(cfg, parent_frame_id=root, store=store)
+    result = runner(
+        {
+            "name": "general",
+            "request": "Compute the average molecular weight of the peptide "
+            "ACDEFGHIK. Use plain Python if you can.",
+        }
+    )
+    runner.close()
+    child = store.get_frame(result["frame_id"])
+    assert child["name"] == "general"
+    assert child["task_summary"] == (
+        "Compute the average molecular weight of the peptide ACDEFGHIK."
+    )

@@ -1558,6 +1558,14 @@ class DelegationRunner:
                 depth=child.depth,
             )
             child.set_frame(child_frame_id)
+            # SCI-21: an approval card the child raises names it by its task,
+            # not only "Sub-agent" (two children of one kind ran side by side).
+            headline = _task_headline(spec)
+            if headline:
+                try:
+                    self.store.update_frame(child_frame_id, task_summary=headline)
+                except Exception:  # noqa: BLE001 - a label must never fail a child
+                    pass
             self._tree.emit("frame_attached", child)
             # stderr: stdout is the result channel of `openai4s run --json` and
             # `openai4s benchmark --json`, and this line made both unparseable.
@@ -2861,6 +2869,20 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
     raise DelegationError(
         f"delegate: each request item must be str or dict, got {type(item).__name__}"
     )
+
+
+def _task_headline(spec: Mapping[str, Any], limit: int = 120) -> str:
+    """The first sentence of a child's task, bounded: what the user calls it."""
+    request = spec.get("request")
+    if isinstance(request, dict):
+        request = request.get("task") or request.get("prompt")
+    text = " ".join(str(spec.get("task") or request or "").split())
+    if not text:
+        return ""
+    end = re.search(r"[.!?。！？](?:\s|$)", text)
+    if end is not None and end.start() > 0:
+        text = text[: end.start() + 1]
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def _spec_to_task(spec: dict[str, Any]) -> str:

@@ -2510,3 +2510,36 @@ def test_global_rules_are_readable_without_a_session(tmp_path):
         assert replies[-1][1]["rules"]["global"] == rules
     finally:
         runner.store.close()
+
+
+def test_a_sub_agents_request_names_the_sub_agent_and_its_task(tmp_path):
+    # SCI-21: the card said "Sub-agent" and nothing about which one asked.
+    st = _store(tmp_path)
+    root = st.new_frame(kind="turn")
+    child = st.new_frame(parent_id=root, kind="delegate", name="general", depth=1)
+    st.update_frame(child, task_summary="Compute the average MW of ACDEFGHIK.")
+    b = PermissionBroker()
+    events = []
+    b.register_channel(root, lambda ev: events.append(ev))
+    out = {}
+
+    def run():
+        out["res"] = b.gate(store=st, frame_id=child, method="bash", target="pip list")
+
+    t = threading.Thread(target=run)
+    t.start()
+    for _ in range(200):
+        if any(e.get("type") == "await_permission" for e in events):
+            break
+        time.sleep(0.01)
+    ask = next(e for e in events if e.get("type") == "await_permission")
+    assert ask["sub_agent"] is True
+    assert ask["sub_agent_name"] == "general"
+    assert ask["sub_agent_task"] == "Compute the average MW of ACDEFGHIK."
+    stored = st.get_permission_request(ask["decision_id"])["payload"]
+    assert stored["sub_agent_task"] == "Compute the average MW of ACDEFGHIK."
+    b.resolve_result(
+        ask["decision_id"], allow=False, scope="once", store=st, root_frame_id=root
+    )
+    t.join(timeout=5)
+    assert out["res"]["allow"] is False
