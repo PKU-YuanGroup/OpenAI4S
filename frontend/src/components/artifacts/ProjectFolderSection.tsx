@@ -2,10 +2,10 @@ import { useEffect, useState } from "preact/hooks";
 import { api, apiErrorText } from "../../features/artifacts/api";
 import { filesT } from "../../features/artifacts/copy";
 import { effProject } from "../../features/customize/host";
-import { openProjectFiles } from "../../features/sessions/project-files";
+import { entryMeta, openProjectFiles } from "../../features/sessions/project-files";
 import { projects } from "../../stores/session";
 
-type FolderEntry = { name: string; path: string; kind: string; size?: number | null };
+type FolderEntry = { name: string; path: string; kind: string; size?: number | null; modified_ms?: number | null };
 type Listing = { pid: string; entries: FolderEntry[]; truncated: boolean; error: string | null };
 type ProjectRow = { id?: string; project_id?: string; name?: string | null; folder_path?: string | null };
 
@@ -81,6 +81,7 @@ export function ProjectFolderSection() {
               onClick={() => void openProjectFiles(pid, bound.name, entry.path, !folder)}
             >
               {entry.name + (folder ? "/" : "")}
+              {folder ? null : <span class="project-folder-meta">{entryMeta(entry)}</span>}
             </button>
           );
         })}

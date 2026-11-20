@@ -98,6 +98,9 @@ const COPY: CopyTable = {
     "viewer.md.imageMissing": "［图片未找到：{0}］",
     "viewer.image.fit": "适应宽度",
     "viewer.version.latest": "最新版本",
+    "viewer.version.history": "查看版本历史",
+    "viewer.answer.newer": "这条回答之后，这个产物又更新了 {0} 次；现在显示的是最新版本。",
+    "viewer.answer.open": "查看当时的版本",
     "viewer.version.pinned": "固定版本",
     "viewer.kind.image": "图片",
     "viewer.kind.table": "数据表",
@@ -172,6 +175,7 @@ const COPY: CopyTable = {
     "files.sort.name": "按名称",
     "files.showHidden": "显示已隐藏",
     "files.hiddenBadge": "已隐藏",
+    "files.process": "过程文件 · {0}",
     "artifact.unhide": "在列表中显示",
     "artifact.unhidden": "已重新显示：{0}",
     "artifact.unhideFailed": "无法重新显示：{0}",
@@ -285,6 +289,9 @@ const COPY: CopyTable = {
     "viewer.md.imageMissing": "[Image not found: {0}]",
     "viewer.image.fit": "Fit width",
     "viewer.version.latest": "Latest version",
+    "viewer.version.history": "Version history",
+    "viewer.answer.newer": "This file was updated {0} more time(s) after that answer; this is the latest version.",
+    "viewer.answer.open": "Show the version from then",
     "viewer.version.pinned": "Pinned version",
     "viewer.kind.image": "Image",
     "viewer.kind.table": "Data table",
@@ -359,6 +366,7 @@ const COPY: CopyTable = {
     "files.sort.name": "By name",
     "files.showHidden": "Show hidden",
     "files.hiddenBadge": "Hidden",
+    "files.process": "Working files · {0}",
     "artifact.unhide": "Show in list",
     "artifact.unhidden": "Shown again: {0}",
     "artifact.unhideFailed": "Could not show it again: {0}",
@@ -390,6 +398,11 @@ export const filesT = copyLookup(COPY);
  * unprovable size, timeout, or a plain read failure. Cancellation is not an
  * error and is filtered by the caller.
  */
+/** A file over the read limit is over it on every attempt: Retry only repeats the refusal (ART-2). */
+export function readRetryHelps(error: unknown): boolean {
+  return !(error instanceof ArtifactReadError && error.kind === "too_large");
+}
+
 export function readFailureText(error: unknown): string {
   if (error instanceof ArtifactReadError) {
     if (error.kind === "too_large") return filesT("viewer.read.limit", bytes(error.maxBytes));

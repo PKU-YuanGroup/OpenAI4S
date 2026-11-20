@@ -45,10 +45,18 @@ export function onNotebookScroll(body: ScrollBox): void {
   }
   const atBottom = isNearBottom(body);
   _nbReading.value = !atBottom;
+  if (atBottom && bottomHook) bottomHook();
   if (atBottom && _nbDirty.value) {
     _nbDirty.value = false;
     nbRender();
   }
+}
+
+let bottomHook: (() => void) | null = null;
+
+/** cells.ts notes what the reader has seen each time the view is at the bottom (NB-2). */
+export function setNotebookBottomHook(fn: (() => void) | null): void {
+  bottomHook = fn;
 }
 
 export function bindNotebookScroll(body: ScrollBox | null | undefined): void {

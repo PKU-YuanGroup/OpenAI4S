@@ -21,7 +21,7 @@ import {
   PREVIEW_READ_MAX_BYTES,
   previewReadSignal,
 } from "./api";
-import { filesT, readFailureText } from "./copy";
+import { filesT, readFailureText, readRetryHelps } from "./copy";
 import { appendEncodingNote } from "./encoding-note";
 import { previewDownload } from "./partial";
 import { renderSheet } from "./sheet";
@@ -264,7 +264,7 @@ function failureCard(
   card.appendChild(text);
   // A refusal is a fact about the bytes; asking again cannot change it.
   const refused = error instanceof ApiError && error.status >= 400 && error.status < 500;
-  if (!refused) {
+  if (!refused && readRetryHelps(error)) {
     const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
     again.setAttribute("type", "button");
     again.onclick = retry;

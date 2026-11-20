@@ -103,6 +103,7 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.server import (
+    artifact_index,
     artifact_index_routes,
     artifact_preview_routes,
     artifact_refs,
@@ -19122,7 +19123,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 fid = m.group(1)
                 arts = store.list_artifacts({"root_frame_id": fid})
-                self._json([_artifact_json(a) for a in arts])
+                self._json(
+                    [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
+                )
                 return
             m = re.fullmatch(r"/projects/([^/]+)/artifacts", sub)
             if m and method == "GET":
@@ -19133,7 +19136,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 arts = self._team_filter_artifacts(
                     store.list_artifacts({"project_id": pid})
                 )
-                self._json([_artifact_json(a) for a in arts])
+                self._json(
+                    [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
+                )
                 return
             m = re.fullmatch(r"/frames/([^/]+)/execution-log", sub)
             if m and method == "GET":
@@ -21959,6 +21964,8 @@ def _artifact_json(a: dict) -> dict:
         # True when the user uploaded this file (vs. produced by a code cell), so
         # the UI can label it "uploaded" instead of "generated".
         "is_user_upload": bool(a.get("is_user_upload", 0)),
+        # deliverable | process | internal, decided in one place (ART-4).
+        "role": artifact_index.artifact_role(a.get("filename")),
     }
 
 

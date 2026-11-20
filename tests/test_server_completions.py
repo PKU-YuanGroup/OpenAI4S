@@ -651,3 +651,64 @@ def test_the_summary_separates_deliverables_and_reads_metrics_plainly():
     )
     assert "产物：" not in zh
     assert "过程文件（脚本、日志、输入副本，2 个）：" in zh
+
+
+def test_the_summary_groups_deliverables_by_kind():
+    """ART-1: 26 links in one flat newest-first list; the report was item 3."""
+    artifacts = [
+        {"artifact_id": f"a{n}", "filename": name, "version_id": f"v-{n}"}
+        for n, name in enumerate(
+            (
+                "Fig2_parameters.svg",
+                "qc_log.csv",
+                "growth_report.md",
+                "Fig1_curves.png",
+                "model.pt",
+                "scratch_inspect.py",
+            )
+        )
+    ]
+    text = completion_message({"output": {"summary": "完成"}}, artifacts, language="zh")
+    block = text.split("产物：\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert [line for line in block if not line.startswith("  ")] == [
+        "- 报告",
+        "- 图",
+        "- 表与数据",
+        "- 其他",
+    ]
+    assert block[1].startswith("  - [growth_report.md](")
+    # Within a group the order the caller gave is kept.
+    assert [line.split("]")[0] for line in block[3:5]] == [
+        "  - [Fig2_parameters.svg",
+        "  - [Fig1_curves.png",
+    ]
+    assert "scratch_inspect.py" not in "\n".join(block)
+    assert "过程文件（脚本、日志、输入副本，1 个）：" in text
+
+    # One kind only: nothing to tell apart, so no group line.
+    flat = completion_message(
+        {"output": {"summary": "Done."}}, artifacts[:1] + artifacts[3:4], language="en"
+    )
+    assert "Artifacts:\n- [Fig2_parameters.svg](" in flat
+    assert "- Figures" not in flat
+
+
+def test_the_summary_never_links_the_platforms_own_spill_files():
+    """ART-4: a context-output-*.json spill is the platform's bookkeeping. It is
+    stored hidden, but a row that reaches the summary anyway (un-hidden, or an
+    older caller) must not be offered as a result or as a working file."""
+    text = completion_message(
+        {"output": {"summary": "Done."}},
+        [
+            {"artifact_id": "a1", "filename": "fit.csv", "version_id": "v-1"},
+            {
+                "artifact_id": "a2",
+                "filename": "context-output-0123456789abcdef.json",
+                "version_id": "v-2",
+            },
+        ],
+        language="en",
+    )
+    assert "[fit.csv](" in text
+    assert "context-output" not in text
+    assert "Working files" not in text
