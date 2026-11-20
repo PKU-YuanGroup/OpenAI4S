@@ -377,6 +377,9 @@ class Agent:
     # explicit code mode. `openai4s run --auto` sets it: its post-run review
     # can only judge the executed code and output the run actually recorded.
     record_cells: bool = False
+    # Optional live view of this run's engine events (`runtime.RunProgress`),
+    # set by `openai4s run` so a foreground run says what it is doing.
+    progress: object | None = field(default=None, repr=False)
     # Durable kernel-generation store handle (duck-typed Store). When set (or
     # defaulted from the dispatcher's store), each worker lifetime writes a
     # kernel_generations row under this Agent's frame so artifact environment
@@ -1062,7 +1065,9 @@ class Agent:
                         prose_nudge = NO_NATIVE_COMPLETION_NUDGE
                 except Exception:  # noqa: BLE001 - compatible provider fallback
                     pass
-                transcript_events = TranscriptEventSink(transcript, log=self._log)
+                transcript_events = TranscriptEventSink(
+                    transcript, log=self._log, progress=self.progress
+                )
                 action_ledger = self._action_ledger(tool_catalog, task)
                 event_sink: Any = (
                     _LedgerTranscriptEventSink(action_ledger, transcript_events)

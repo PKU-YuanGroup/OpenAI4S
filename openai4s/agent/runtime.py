@@ -65,7 +65,14 @@ from .control import (
     execute_native_batch,
     tool_parallel_policy,
 )
-from .events import ActionRouted, AgentEvent, OutcomeProduced, ReplyReceived
+from .events import (
+    ActionRouted,
+    AgentEvent,
+    OutcomeProduced,
+    ReplyReceived,
+    RunFinished,
+    TurnStarted,
+)
 from .finalize import (
     execute_finalize_action,
     execution_evidence,
@@ -1701,14 +1708,114 @@ def _trace_tool_calls(action: Action | None) -> list[str]:
     return lines
 
 
+def _progress_label(action: Action | None) -> str | None:
+    """What a routed action is doing, in the words of a progress line."""
+
+    if isinstance(action, CodeCell):
+        return f"running {'R' if action.language == 'r' else 'python'} cell"
+    if isinstance(action, NativeToolBatch):
+        names = [call.name or "<unnamed>" for call in action.calls]
+        extra = f" +{len(names) - 3} more" if len(names) > 3 else ""
+        return "calling " + ", ".join(names[:3]) + extra
+    if isinstance(action, FinalizeAction):
+        return "finishing"
+    return None
+
+
+class RunProgress:
+    """Say what a foreground run is doing now, and keep saying it while it lasts.
+
+    `openai4s run` without `-v` printed nothing until it ended -- 81 seconds
+    to three and a half minutes of silence in which a hung run, a rate-limit
+    wait and a long cell all looked the same. This writes one line when a
+    phase starts (`turn 3 · running R cell`) and repeats it with the elapsed
+    time (`turn 3 · running R cell · 60s`) every ``interval`` seconds for as
+    long as that phase lasts. ``phases=False`` keeps only the repeats, for a
+    `-v` trace that already shows where each turn begins.
+    """
+
+    def __init__(
+        self,
+        write: Callable[[str], None],
+        *,
+        phases: bool = True,
+        interval: float = 30.0,
+    ) -> None:
+        self._write = write
+        self._phases = phases
+        self._interval = float(interval)
+        self._lock = threading.Lock()
+        self._phase: str | None = None
+        self._since = 0.0
+        self._next_report = 0.0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def emit(self, event: AgentEvent) -> None:
+        # Turns are numbered from 1 for a reader; the engine counts from 0.
+        if isinstance(event, TurnStarted):
+            self._enter(f"turn {event.turn + 1} · waiting for the model")
+        elif isinstance(event, ActionRouted):
+            label = _progress_label(event.action)
+            if label:
+                self._enter(f"turn {event.turn + 1} · {label}")
+        elif isinstance(event, (OutcomeProduced, RunFinished)):
+            with self._lock:
+                self._phase = None
+
+    def close(self) -> None:
+        """Stop repeating. The run is over, however it ended."""
+
+        self._stop.set()
+        with self._lock:
+            self._phase = None
+
+    def _enter(self, phase: str) -> None:
+        with self._lock:
+            self._phase = phase
+            self._since = time.monotonic()
+            self._next_report = self._interval
+            start = (
+                self._thread is None and self._interval > 0 and not self._stop.is_set()
+            )
+            if start:
+                self._thread = threading.Thread(
+                    target=self._repeat, name="openai4s-run-progress", daemon=True
+                )
+        if start:
+            assert self._thread is not None
+            self._thread.start()
+        if self._phases:
+            self._write(phase)
+
+    def _repeat(self) -> None:
+        while not self._stop.wait(min(1.0, self._interval)):
+            with self._lock:
+                phase = self._phase
+                elapsed = time.monotonic() - self._since
+                due = phase is not None and elapsed >= self._next_report
+                if due:
+                    self._next_report += self._interval
+            if due:
+                self._write(f"{phase} · {int(elapsed)}s")
+
+
 @dataclass
 class TranscriptEventSink:
     """Project typed engine events onto the stable CLI transcript."""
 
     transcript: list[TranscriptTurn]
     log: LogFn = _null_log
+    #: Optional live view of the same events (`RunProgress`). It only watches:
+    #: a progress line that cannot be written must not end the run.
+    progress: Any = None
 
     def emit(self, event: AgentEvent) -> None:
+        if self.progress is not None:
+            try:
+                self.progress.emit(event)
+            except Exception:  # noqa: BLE001 - see the field's comment
+                pass
         # Turns are numbered from 1 for a reader; the engine counts from 0.
         if isinstance(event, ReplyReceived):
             self.transcript.append(TranscriptTurn("assistant", event.reply.content))
@@ -1964,6 +2071,7 @@ __all__ = [
     "CompletionSignal",
     "KernelGenerationRecorder",
     "LocalActionExecutor",
+    "RunProgress",
     "TranscriptEventSink",
     "TranscriptTurn",
     "evidence_cell_id",

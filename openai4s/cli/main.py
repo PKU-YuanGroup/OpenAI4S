@@ -1606,6 +1606,26 @@ def cmd_run(args) -> int:
         # The post-run review judges what the run recorded; without its cells
         # the reviewer sees an answer and no executed code or output at all.
         agent_options["record_cells"] = True
+    progress = None
+    if not getattr(args, "quiet", False):
+        # On stderr, so stdout stays the result. Without it a run printed
+        # nothing until it ended, and a hung run, a rate-limit wait and a long
+        # cell were indistinguishable.
+        from openai4s.agent.runtime import RunProgress
+
+        def _progress_line(line: str) -> None:
+            # One write per line: the repeats come from another thread and
+            # must not split a `-v` trace line in two.
+            sys.stderr.write(line + "\n")
+            sys.stderr.flush()
+
+        progress = RunProgress(
+            _progress_line,
+            # `-v` already shows where each turn begins; it keeps only the
+            # elapsed-time repeats for a phase that lasts.
+            phases=not args.verbose,
+        )
+        agent_options["progress"] = progress
     agent = Agent(cfg=cfg, verbose=args.verbose, task_mode=mode, **agent_options)
     if mode in EVIDENCE_REQUIRED_MODES:
         # Before the first model call: an explicit code mode that can never
@@ -1627,8 +1647,12 @@ def cmd_run(args) -> int:
                 {"error": refusal, "code": "code_mode_test_runner_unauthorized"},
             )
     try:
-        with _foreground_cell_interrupt(agent):
-            result = agent.run(args.task)
+        try:
+            with _foreground_cell_interrupt(agent):
+                result = agent.run(args.task)
+        finally:
+            if progress is not None:
+                progress.close()
     except EnvironmentReadinessError as error:
         # A standard-profile refusal is raised only at the first Code Cell.
         # Keeping this adapter typed lets native tools and structured
@@ -2900,6 +2924,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="trace every turn on stderr: the model's reply, each tool call "
         "with its arguments, and the head of each result (the result itself "
         "stays on stdout)",
+    )
+    pr.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="no progress lines on stderr (by default each turn says what it "
+        "is doing, and repeats it every 30s while it lasts)",
     )
     pr.add_argument(
         "--debug",

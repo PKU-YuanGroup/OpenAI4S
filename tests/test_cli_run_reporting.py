@@ -80,12 +80,14 @@ def test_a_rejected_api_key_is_one_error_line_and_exit_4(tmp_path, monkeypatch, 
     assert captured.out == ""
     assert "Traceback" not in captured.err
     lines = captured.err.strip().splitlines()
-    assert len(lines) == 1, lines
-    assert lines[0].startswith("error: the model provider rejected the API key")
-    assert "HTTP 401" in lines[0]
-    assert "OPENAI4S_DEEPSEEK_API_KEY" in lines[0]
-    assert "OPENAI4S_LLM_API_KEY" in lines[0]
-    assert "The key is wrong." in lines[0]
+    # The progress line says where the run was; the error is one line after it.
+    assert len(lines) == 2, lines
+    assert lines[0] == "turn 1 · waiting for the model"
+    assert lines[1].startswith("error: the model provider rejected the API key")
+    assert "HTTP 401" in lines[1]
+    assert "OPENAI4S_DEEPSEEK_API_KEY" in lines[1]
+    assert "OPENAI4S_LLM_API_KEY" in lines[1]
+    assert "The key is wrong." in lines[1]
     # The run did start, and its frame says how it ended.
     assert [row[1] for row in _frame_rows(cfg)] == ["failed"]
 
@@ -104,7 +106,9 @@ def test_a_failed_model_call_under_json_is_an_error_object_on_stdout(
 
     captured = capsys.readouterr()
     assert status == 4
-    assert captured.err == ""
+    # stderr carries progress only; the error itself is the JSON on stdout.
+    assert "error" not in captured.err
+    assert "Traceback" not in captured.err
     payload = json.loads(captured.out)
     assert payload["code"] == "llm_auth_failed"
     assert payload["status"] == 401
@@ -359,3 +363,95 @@ def test_the_trace_shows_a_short_result_whole():
 
     assert trace.endswith("[Observation]\nstdout:\n2")
     assert "trace shows" not in trace
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-24: a run without `-v` says what it is doing
+# --------------------------------------------------------------------------- #
+
+
+def test_a_plain_run_reports_each_phase_on_stderr(tmp_path, monkeypatch, capsys):
+    """It printed nothing on either stream until it ended, minutes later."""
+
+    module, _cfg = _real_run(
+        tmp_path,
+        monkeypatch,
+        _scripted_chat(["```python\nprint('cell ran')\n```", _SUBMIT_REPLY]),
+    )
+
+    status = module.main(["run", "Compute 1+1 and submit it."])
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert captured.err.splitlines() == [
+        "turn 1 · waiting for the model",
+        "turn 1 · running python cell",
+        "turn 2 · waiting for the model",
+        "turn 2 · running python cell",
+    ]
+    assert "·" not in captured.out
+
+
+def test_quiet_silences_the_progress_lines(tmp_path, monkeypatch, capsys):
+    module, _cfg = _real_run(tmp_path, monkeypatch, _scripted_chat([_SUBMIT_REPLY]))
+
+    status = module.main(["run", "--quiet", "Compute 1+1 and submit it."])
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert captured.err == ""
+
+
+def test_the_verbose_trace_does_not_repeat_each_phase(tmp_path, monkeypatch, capsys):
+    module, _cfg = _real_run(tmp_path, monkeypatch, _scripted_chat([_SUBMIT_REPLY]))
+
+    status = module.main(["run", "-v", "Compute 1+1 and submit it."])
+
+    err = capsys.readouterr().err
+    assert status == 0
+    assert "--- turn 1 (assistant) ---" in err
+    assert "waiting for the model" not in err
+
+
+def test_a_phase_that_lasts_is_repeated_with_its_elapsed_time():
+    """The line a person watching a long cell needs: still this, for this long."""
+    import re
+    import time
+
+    from openai4s.agent.actions import CodeCell
+    from openai4s.agent.events import ActionRouted, OutcomeProduced, TurnStarted
+    from openai4s.agent.models import ExecutionOutcome
+    from openai4s.agent.runtime import RunProgress
+
+    lines: list[str] = []
+    progress = RunProgress(lines.append, interval=0.05)
+    try:
+        progress.emit(TurnStarted(2))
+        progress.emit(ActionRouted(CodeCell("r", "t.test(x)"), 2))
+        deadline = time.monotonic() + 5
+        while len(lines) < 4 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        progress.emit(OutcomeProduced(ExecutionOutcome(observation="done"), 2))
+        settled = len(lines)
+        time.sleep(0.2)
+    finally:
+        progress.close()
+
+    assert lines[:2] == ["turn 3 · waiting for the model", "turn 3 · running R cell"]
+    assert len(lines) >= 4
+    assert all(
+        re.fullmatch(r"turn 3 · running R cell · \d+s", line) for line in lines[2:]
+    )
+    # A finished phase is not repeated.
+    assert len(lines) == settled
+
+
+def test_a_progress_line_that_cannot_be_written_does_not_end_the_run():
+    from openai4s.agent.events import TurnStarted
+    from openai4s.agent.runtime import TranscriptEventSink
+
+    class Broken:
+        def emit(self, event):
+            raise OSError("stderr is closed")
+
+    TranscriptEventSink([], progress=Broken()).emit(TurnStarted(0))
