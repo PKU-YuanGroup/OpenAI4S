@@ -1158,6 +1158,8 @@ describe("the running turn's status row", () => {
     _liveCell.value = { draft: true, status: "drafting", source: "import numpy as np\nx = 1\nprint(x)" };
     expect(label()).toBe("Writing a cell");
     expect(detail()).toContain("3 lines so far");
+    _liveCell.value = { draft: true, status: "drafting", source: "import numpy as np" };
+    expect(detail()).toContain("1 line so far");
     _liveCell.value = { status: "running", source: "print(1)" };
     expect(label()).toBe("Running the cell");
     _liveCell.value = null;

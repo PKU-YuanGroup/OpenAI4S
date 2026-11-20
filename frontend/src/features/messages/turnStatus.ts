@@ -31,6 +31,7 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     running: "Running the cell",
     tool: "Waiting for the tool",
     approval: "Waiting for your approval",
+    line: "{0} line so far",
     lines: "{0} lines so far",
     seconds: "{0} s",
     minutes: "{0} min {1} s",
@@ -41,6 +42,7 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     running: "正在运行单元",
     tool: "等待工具返回",
     approval: "等待你的审批",
+    line: "已 {0} 行",
     lines: "已 {0} 行",
     seconds: "已 {0} 秒",
     minutes: "已 {0} 分 {1} 秒",
@@ -177,7 +179,8 @@ export function syncTurnStatus(now: number = Date.now()): void {
     if (label) label.textContent = copy(state.phase);
   } else if (passing && now - passing.at >= PASSING_MS) retirePassingHint();
   if (detail) {
-    const parts = [state.lines ? copy("lines", state.lines) : "", elapsedText(now - since)];
+    const lines = state.lines === 1 ? "line" : "lines";
+    const parts = [state.lines ? copy(lines, state.lines) : "", elapsedText(now - since)];
     detail.textContent = parts.filter(Boolean).join(" · ");
   }
   place();
