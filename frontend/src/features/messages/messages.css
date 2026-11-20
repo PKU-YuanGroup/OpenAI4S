@@ -147,12 +147,14 @@
     animation: spin 1s linear infinite;
   }
 }
-.msg-failure-meta .turn-continue {
+.msg-failure-meta .turn-continue,
+.msg-failure-meta .turn-open-models {
   margin-inline-start: 0.75rem;
   vertical-align: middle;
 }
 /* style.css dims the whole meta row; a dimmed button reads as disabled. */
-.msg-failure-meta:has(.turn-continue) {
+.msg-failure-meta:has(.turn-continue),
+.msg-failure-meta:has(.turn-open-models) {
   opacity: 1;
   color: var(--text-400);
 }

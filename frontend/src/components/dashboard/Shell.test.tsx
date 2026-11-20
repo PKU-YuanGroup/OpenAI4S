@@ -17,7 +17,7 @@ vi.mock("preact/hooks", () => ({ useEffect: () => undefined }));
 vi.mock("../../features/sessions/boot", () => ({ bindWorkbench: () => Promise.resolve() }));
 vi.mock("../../features/artifacts/boot", () => ({ finishArtifactsBoot: () => undefined }));
 vi.mock("../../features/messages/components", () => ({ HistoryLoadStatus: () => null }));
-vi.mock("./ModelSelect", () => ({ ModelSelect: () => null }));
+vi.mock("./ModelSelect", () => ({ ModelKeyNotice: () => null, ModelSelect: () => null }));
 
 import { Shell } from "./Shell";
 

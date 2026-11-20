@@ -12,6 +12,7 @@ import socket
 import ssl
 from urllib.parse import urlparse
 
+from openai4s import tls_trust
 from openai4s.server import ws_frames
 
 
@@ -53,7 +54,7 @@ class WSClient:
         raw = socket.create_connection((host, port), timeout=timeout)
         try:
             if scheme == "wss":
-                ctx = ssl.create_default_context()
+                ctx = tls_trust.default_context()
                 # check_hostname + CERT_REQUIRED are the defaults; never relax
                 # them. Pin a TLS 1.2 floor explicitly (no legacy protocols).
                 ctx.minimum_version = ssl.TLSVersion.TLSv1_2

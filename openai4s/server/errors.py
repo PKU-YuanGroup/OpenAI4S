@@ -17,7 +17,12 @@ import sys
 import traceback
 from typing import Any
 
-from openai4s.observability import correlation_id, fingerprint, log_event
+from openai4s.observability import (
+    correlation_id,
+    fingerprint,
+    log_event,
+    record_support_event,
+)
 
 # Stable, machine-readable error codes. A client that has to match on English
 # prose is coupled to wording nobody thinks of as an interface, so it breaks the
@@ -364,8 +369,10 @@ def record_diagnostic(
     operator half of this contract — a generic public message redeemable by
     pairing ``request_id`` against the diagnostic — was not redeemable from a
     support bundle at all. The glob is fixed; the default-off part is a posture
-    choice and stands, so on a default install the pairing is redeemable from
-    the terminal the daemon is running in, and nowhere else.
+    choice and stands, so on a default install *this* record is redeemable from
+    the terminal the daemon is running in, and nowhere else. An id that is
+    shown to a user is separately written to ``logs/support.log`` by
+    ``record_support``, switch or no switch.
 
     Returns the emitted record so the projector can tie the public body and
     this line together by ``request_id`` -- that pairing is the whole reason
@@ -382,6 +389,46 @@ def record_diagnostic(
         error_class=error_class(exc),
         request_id=_exact_id(request_id) or _exact_id(correlation_id()) or "",
     )
+
+
+def record_support(
+    exc: BaseException, *, surface: str, request_id: str, code: str | None = None
+) -> None:
+    """Leave the line a support id shown to a user can be looked up by.
+
+    Typed facts only, plus text this codebase wrote. A `GatewayError` message
+    is a literal the client was already sent; a missing-credential error names
+    environment variables. For anything else the exception is never rendered
+    (see `record_diagnostic`): its type chain, stable codes, status and code
+    locations say where it came from, and the traceback is on the daemon's
+    stderr.
+    """
+    try:
+        from openai4s.llm.models import llm_error_kind
+        from openai4s.server.package_runtime import failure_evidence
+
+        if isinstance(exc, GatewayError):
+            detail = str(exc.message) if type(exc.message) is str else ""
+            code = code or exc.error_code or error_code_for(exc.code)
+            status = exc.code
+        else:
+            detail = expected_refusal(exc) or ""
+            code = code or llm_error_kind(exc)
+            status = getattr(exc, "status", None)
+        provider = getattr(exc, "provider", None)
+        record_support_event(
+            request_id,
+            surface=surface if type(surface) is str and surface else "unknown",
+            exception=safe_type_name(exc),
+            error_class=error_class(exc),
+            code=code if type(code) is str else None,
+            status=status if type(status) is int else None,
+            provider=provider if type(provider) is str else None,
+            detail=detail,
+            evidence=failure_evidence(exc),
+        )
+    except Exception:  # noqa: BLE001 - never let the record cost the response
+        pass
 
 
 def public_exception(
@@ -417,6 +464,9 @@ def public_exception(
     # this daemon cannot either, so quoting one in a support ticket wastes the
     # one field the ticket has.
     request_id = str(request_id or correlation_id() or "")
+    # The id below is about to be shown to a person. Whatever branch answers,
+    # it must lead somewhere on a default install.
+    record_support(exc, surface=surface, request_id=request_id, code=error_code)
     if isinstance(exc, GatewayError):
         return _enriched(gateway_error_payload(exc), exc.code, request_id), exc.code
     record_diagnostic(exc, surface=surface, request_id=request_id)
@@ -479,6 +529,7 @@ __all__ = [
     "log_turn_failure",
     "public_exception",
     "public_failure",
+    "record_support",
     "DIAGNOSTIC_DETAIL",
     "UNKNOWN_TYPE_NAME",
     "error_class",

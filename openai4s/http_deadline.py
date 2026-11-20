@@ -28,6 +28,8 @@ import urllib.request
 from collections.abc import Iterable, Iterator
 from typing import Any, Callable
 
+from openai4s import tls_trust
+
 
 class HTTPExchangeTimeout(TimeoutError):
     """One HTTP exchange exceeded its absolute wall-clock deadline."""
@@ -731,7 +733,7 @@ class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
         *,
         connection_class: type[http.client.HTTPSConnection],
     ) -> None:
-        super().__init__()
+        super().__init__(context=tls_trust.https_context())
         self._deadline = deadline
         self._connection_class = connection_class
 

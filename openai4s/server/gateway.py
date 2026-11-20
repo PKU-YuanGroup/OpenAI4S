@@ -87,6 +87,7 @@ from openai4s.llm import (
     PROVIDERS,
     chat,
     get_model_capabilities,
+    llm_error_kind,
     llm_failure_code,
     provider_specs,
 )
@@ -464,6 +465,12 @@ def _unauthorized_page(accept_language: str = "") -> bytes:
             "<p>如果你用的是桌面应用，退出后重新打开即可，应用打开的页面已经登录。</p>"
             "<p>在容器里运行时，请执行 "
             "<code>docker exec &lt;container&gt; openai4s url</code>。</p>"
+            # The header only says which language comes first in the browser,
+            # not which one the person reads: a Chinese speaker on an
+            # English-first browser got an English-only page. Each page ends
+            # with the one instruction that matters, in the other language.
+            "<p lang=en>English: run <code>openai4s url</code> in a terminal "
+            "and open the link it prints.</p>"
         ).encode("utf-8")
     return (
         "<!doctype html><html lang=en><meta charset=utf-8>"
@@ -485,6 +492,8 @@ def _unauthorized_page(accept_language: str = "") -> bytes:
         "app opens a page that is already signed in.</p>"
         "<p>In a container, run "
         "<code>docker exec &lt;container&gt; openai4s url</code>.</p>"
+        "<p lang=zh-CN>中文：在终端运行 <code>openai4s url</code>，"
+        "然后打开它打印出的链接即可登录。</p>"
     ).encode("utf-8")
 
 
@@ -9573,6 +9582,19 @@ class SessionRunner:
             pass
         return self.cfg.llm.api_key or ""
 
+    def llm_credential_missing(self) -> bool:
+        """Whether a message sent now would be refused for want of an API key.
+
+        `chat`'s own rule over the config a turn would resolve, so the composer
+        can say "no API key" before the first send instead of after it fails.
+        """
+        from openai4s.llm.client import credential_missing
+
+        try:
+            return credential_missing(self._llm_cfg())
+        except Exception:  # noqa: BLE001 - an unresolvable config makes no claim
+            return False
+
     def _llm_cfg(
         self, st: "SessionState | None" = None, *, apply_user_key: bool = True
     ):
@@ -9843,16 +9865,25 @@ class SessionRunner:
         own sentence, which is author-written (a `GatewayError`) or generic by
         construction, never the exception's text.
         """
-        from openai4s.llm.models import LLMError, TransportError, llm_retry_outcome
+        from openai4s.llm.models import (
+            LLMError,
+            llm_retry_outcome,
+            llm_setup_message,
+        )
 
         status = getattr(exc, "status", None)
-        code = str(getattr(exc, "error_code", "") or "")
         failure_code = llm_failure_code(exc)
         # How the retry policy ended the call, from typed fields: a capacity
         # message may say "retried" only when the transport recorded a retry.
         retry_outcome = llm_retry_outcome(exc)
         gave_up = retry_outcome != "retried"
         zh = language == "zh"
+        # A failure the user fixes in Settings names itself: no key, a rejected
+        # key, no quota, no such model, no connection. A missing key used to
+        # fall through to the generic sentence at the bottom, as did a 403/404.
+        guidance = llm_setup_message(exc, zh=zh)
+        if guidance is not None:
+            return guidance
         if failure_code == "llm_deadline_exceeded":
             return (
                 "**模型调用已达到总时限。** 请缩小请求后在当前会话继续。"
@@ -9935,15 +9966,6 @@ class SessionRunner:
                 else "**The model provider is currently overloaded.** The request was "
                 "retried with backoff; this is not an API-key configuration problem. "
                 "Continue this session later or temporarily switch models."
-            )
-        if status == 401 or code in ("invalid_api_key", "unauthorized"):
-            return (
-                "**LLM 认证失败（API Key 无效或缺失）。** 请在 Customize → Models "
-                "填写有效的 API Key，或在 `.env` 设置 `OPENAI4S_LLM_API_KEY` 后重启。"
-                if zh
-                else "**LLM authentication failed (the API key is missing or invalid).** "
-                "Enter a valid key in Customize → Models, or set "
-                "`OPENAI4S_LLM_API_KEY` in `.env` and restart."
             )
         if failure_code == "llm_rate_limited":
             if getattr(exc, "output_committed", False):
@@ -10038,17 +10060,6 @@ class SessionRunner:
                 else "**The LLM request timed out.** The network may be unstable or "
                 "the model may be slow. Try again, or increase "
                 "`OPENAI4S_LLM_TIMEOUT` in `.env`."
-            )
-        if isinstance(exc, TransportError) and status is None:
-            # A transport error with no HTTP status never reached the service:
-            # it is a connect, DNS, or read failure by construction.
-            return (
-                "**无法连接到 LLM 服务(或请求中断)。** 请检查网络与 "
-                "`OPENAI4S_LLM_BASE_URL`(Customize → Network 可确认联网是否开启)。"
-                if zh
-                else "**The LLM service could not be reached, or the request was "
-                "interrupted.** Check the network and `OPENAI4S_LLM_BASE_URL`; "
-                "Customize → Network shows whether network access is enabled."
             )
         if isinstance(exc, LLMError):
             return (
@@ -11375,7 +11386,12 @@ class SessionRunner:
                 # after composing the prose would mean the prose came from
                 # somewhere else, which is exactly how `str(exc)` got onto
                 # three surfaces.
-                stable_failure_code = llm_failure_code(e)
+                # The wider vocabulary: a missing or rejected key, an unknown
+                # model and an unreachable service get their own code, so the
+                # client can say what to do and offer Settings instead of
+                # "retry". The recovery ledger below knows none of them and
+                # records `runtime_error`, as it did.
+                stable_failure_code = llm_error_kind(e)
                 safe, _status_code = public_exception(
                     e,
                     surface="web:turn",
@@ -21064,7 +21080,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- payload builders ------------------------------------------
         def _models_payload(self) -> dict:
-            return model_profiles.models_payload(_default_model["id"])
+            payload = model_profiles.models_payload(_default_model["id"])
+            payload["credential_missing"] = runner.llm_credential_missing()
+            return payload
 
         def _mask_profile(self, p: dict) -> dict:
             return model_profiles.public_profile(p)
@@ -22258,6 +22276,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
                     file=sys.stderr,
                 )
         else:
+            from openai4s.doctor import MISSING_ENVIRONMENTS_REMEDY
             from openai4s.kernel import preinstall
 
             plan = preinstall.core_plan()
@@ -22266,8 +22285,8 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
                     f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
                     f"installed: {', '.join(plan['missing'][:6])}"
                     f"{' …' if len(plan['missing']) > 6 else ''}\n"
-                    f"[openai4s] startup does not install packages. Run "
-                    f"`openai4s setup`, or install from Customize → Compute.",
+                    f"[openai4s] startup does not install packages. "
+                    f"{MISSING_ENVIRONMENTS_REMEDY}",
                     file=sys.stderr,
                 )
     except Exception as error:  # noqa: BLE001 - diagnostics must never block startup

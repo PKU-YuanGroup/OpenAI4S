@@ -146,6 +146,116 @@ def llm_failure_code(exc: BaseException) -> str | None:
     return None
 
 
+# Exact provider codes only, for the same reason as the sets above.
+_AUTH_REJECTED_CODES = frozenset({"invalid_api_key", "unauthorized"})
+_MODEL_NOT_FOUND_CODES = frozenset({"model_not_found"})
+_QUOTA_EXHAUSTED_CODES = frozenset({"insufficient_quota"})
+
+
+def llm_error_kind(exc: BaseException) -> str | None:
+    """What a person has to do about a failed model call, as a closed value.
+
+    A superset of `llm_failure_code`, for the surface that tells the user. It
+    adds the failures that are fixed in Settings rather than by waiting:
+
+    * ``llm_no_credential`` -- no API key is configured at all;
+    * ``llm_auth_rejected`` -- the provider refused the key (401/403);
+    * ``llm_quota_exhausted`` -- the account is out of quota (402), which a
+      retry policy cannot help and a rate limit can;
+    * ``llm_model_not_found`` -- the provider has no such model or route (404);
+    * ``llm_network`` -- the request never got an HTTP answer (DNS, connect,
+      TLS).
+
+    Kept apart from `llm_failure_code` because that one also feeds the retry
+    records and the recovery ledger, where these would be new vocabulary.
+    ``None`` is "no claim": every other failure keeps the generic message.
+    """
+
+    if isinstance(exc, MissingCredentialError):
+        return "llm_no_credential"
+    raw_code = getattr(exc, "error_code", None)
+    code = raw_code if type(raw_code) is str else ""
+    status = getattr(exc, "status", None)
+    if status == 402 or code in _QUOTA_EXHAUSTED_CODES:
+        return "llm_quota_exhausted"
+    known = llm_failure_code(exc)
+    if known is not None:
+        return known
+    if status in (401, 403) or code in _AUTH_REJECTED_CODES:
+        return "llm_auth_rejected"
+    if status == 404 or code in _MODEL_NOT_FOUND_CODES:
+        return "llm_model_not_found"
+    if isinstance(exc, TransportError) and status is None:
+        return "llm_network"
+    return None
+
+
+#: What to do about each failure that is fixed in Settings, as (zh, en). Every
+#: sentence is written here; nothing is taken from the exception's own text.
+_SETUP_MESSAGES: dict[str, tuple[str, str]] = {
+    "llm_no_credential": (
+        "**还没有配置模型的 API Key。** 请在 设置 → 模型 填写 API Key 后再发送；"
+        "也可以在 `.env` 设置 `OPENAI4S_LLM_API_KEY` 后重启。",
+        "**No API key is configured for the model.** Add one in Settings → "
+        "Models, then send again; or set `OPENAI4S_LLM_API_KEY` in `.env` and "
+        "restart.",
+    ),
+    "llm_auth_rejected": (
+        "**模型服务拒绝了这个 API Key（401/403）。** 请在 设置 → 模型 检查 Key "
+        "是否正确、是否过期，以及它是否属于当前的服务地址。",
+        "**The model provider rejected the API key (401/403).** In Settings → "
+        "Models, check that the key is correct, not expired, and belongs to "
+        "this endpoint.",
+    ),
+    "llm_quota_exhausted": (
+        "**模型账户的额度已用完。** 重试不会恢复：请到服务商处充值或更换套餐，"
+        "或在 设置 → 模型 换一个模型配置。",
+        "**The model account is out of quota.** Retrying will not help: top up "
+        "or change the plan with the provider, or pick another model in "
+        "Settings → Models.",
+    ),
+    "llm_model_not_found": (
+        "**模型服务找不到这个模型或接口（404）。** 请在 设置 → 模型 检查模型名称"
+        "和服务地址。",
+        "**The model provider has no such model or route (404).** Check the "
+        "model name and the base URL in Settings → Models.",
+    ),
+    "llm_network": (
+        "**无法连接到模型服务（或请求中断）。** 请检查网络、代理，以及 设置 → 模型 "
+        "里的服务地址。",
+        "**The model service could not be reached, or the request was "
+        "interrupted.** Check the network, any proxy, and the base URL in "
+        "Settings → Models.",
+    ),
+}
+_TLS_NOTE = (
+    " TLS 证书校验失败（{detail}）：若经过公司代理，请把 `SSL_CERT_FILE` 指向"
+    "包含其根证书的 PEM 文件后重启。",
+    " The TLS certificate could not be verified ({detail}): behind a corporate "
+    "proxy, point `SSL_CERT_FILE` at a PEM bundle containing its root and "
+    "restart.",
+)
+
+
+def llm_setup_message(exc: BaseException, *, zh: bool) -> str | None:
+    """The sentence for a failure the user fixes in Settings, else ``None``."""
+
+    pair = _SETUP_MESSAGES.get(llm_error_kind(exc) or "")
+    if pair is None:
+        return None
+    text = pair[0 if zh else 1]
+    if llm_error_kind(exc) == "llm_network":
+        from openai4s.tls_trust import certificate_failure
+
+        failure = certificate_failure(exc)
+        if failure is not None:
+            # OpenSSL's own verify message: a fixed vocabulary, not the URL,
+            # the request or anything a provider sent.
+            detail = str(getattr(failure, "verify_message", "") or "verify failed")
+            text += _TLS_NOTE[0 if zh else 1].format(detail=detail)
+    return text
+
+
 def llm_retry_outcome(exc: BaseException) -> str | None:
     """How the transport's retry policy ended a failed call, from typed fields.
 

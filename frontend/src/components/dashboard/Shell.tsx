@@ -7,7 +7,7 @@ import { projectFilesCopy } from "../../features/sessions/copy";
 import { browseProjectFolder } from "../../features/sessions/project-files";
 import { callLane } from "../../features/send/host";
 import { DashHeroText } from "./DashHero";
-import { ModelSelect } from "./ModelSelect";
+import { ModelKeyNotice, ModelSelect } from "./ModelSelect";
 import "./dashboard.css";
 
 /**
@@ -405,6 +405,7 @@ export function Shell() {
                         data-icon-size="18"
                         type="button"
                       />
+                      <ModelKeyNotice />
                       <div class="nb-model">
                         <ModelSelect />
                         <span class="ic" data-icon="chevron-down" data-icon-size="14" />

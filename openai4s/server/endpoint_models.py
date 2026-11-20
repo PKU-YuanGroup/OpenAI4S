@@ -17,6 +17,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
+from openai4s import tls_trust
 from openai4s.server.model_discovery import _RejectRedirects
 
 _MAX_RESPONSE_BYTES = 1_000_000
@@ -53,7 +54,9 @@ class EndpointModelFetcher:
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         max_response_bytes: int = _MAX_RESPONSE_BYTES,
     ) -> None:
-        self.opener = opener or build_opener(ProxyHandler({}), _RejectRedirects())
+        self.opener = opener or build_opener(
+            ProxyHandler({}), _RejectRedirects(), tls_trust.https_handler()
+        )
         self.timeout_s = max(0.5, float(timeout_s))
         self.max_response_bytes = max(1024, int(max_response_bytes))
 

@@ -471,6 +471,15 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     # after it. Cleared on both sides so no verdict is inherited.
     _reset_confinement_self_test()
     _reset_preinstall_status()
+    # Same hazard, third cache. On macOS the first HTTPS context a process
+    # builds exports Apple's roots with `security` and keeps the answer. Under
+    # a test that stubs `subprocess` that call would land in the stub; pinning
+    # "nothing to add" keeps the suite from shelling out at all, and makes the
+    # trust store the same on a laptop as in CI. `tests/test_tls_trust.py`
+    # injects its own platform, runner and roots.
+    import openai4s.tls_trust as tls_trust_mod
+
+    monkeypatch.setattr(tls_trust_mod, "_apple_roots", "")
     yield
     _reset_confinement_self_test()
     _reset_preinstall_status()

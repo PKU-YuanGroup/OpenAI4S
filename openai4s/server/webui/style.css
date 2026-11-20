@@ -365,6 +365,7 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .nb-model:hover{background:var(--bg-200);color:var(--text-000)}
 .nb-model select{border:0;background:transparent;color:inherit;font:inherit;font-size:14px;max-width:150px;outline:0;appearance:none;-webkit-appearance:none;padding:0;cursor:pointer}
 .nb-model .ic{color:inherit;display:inline-flex;pointer-events:none}
+.nb-model-nokey{display:inline-flex;align-items:center;height:24px;padding:0 8px;border:1px solid var(--warn);border-radius:var(--radius);background:var(--warn-bg);color:var(--warn-text);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .composer-hint{max-width:var(--col);margin:6px auto 0;font-size:11px;color:var(--text-400);text-align:center;min-height:14px}
 .spin{display:inline-block;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 
