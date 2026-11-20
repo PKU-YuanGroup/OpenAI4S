@@ -568,6 +568,67 @@ def test_envs_in_the_users_conda_root_are_local_but_product_names_are_not(
     assert E.get_environment("base").builtin is True
 
 
+def test_env_list_does_not_recommend_the_users_own_environment(tmp_path, monkeypatch):
+    """PERM-3. The step card read "4 envs · use <a personal conda env>" and the
+    model asked to switch into it: `recommend` was whichever environment had
+    the most of the requested packages, the user's own included. A built-in
+    environment and an install request come first; a local one is the user's
+    to name."""
+    conda_root = tmp_path / "miniconda3"
+    _make_py_env(
+        conda_root / "envs", "lab_env", packages=("pandas", "openpyxl", "statsmodels")
+    )
+    operator_root = tmp_path / "operator-envs"
+    _make_py_env(operator_root, "curated", packages=("pandas", "openpyxl"))
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(operator_root))
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "d"))
+    E.discover_environments(force=True)
+    disp = build_dispatcher()
+    wanted = ["pandas", "openpyxl", "statsmodels", "nonexistent-probe-pkg"]
+
+    listed = disp._m_env_list({"packages": wanted})
+
+    envs = {e["name"]: e for e in listed["environments"]}
+    assert envs["lab_env"]["builtin"] is False and envs["curated"]["builtin"] is True
+    # The local environment covers more, and is still reported honestly...
+    assert envs["lab_env"]["has"] == ["pandas", "openpyxl", "statsmodels"]
+    # ...but the recommendation is the best built-in one, plus what to ask for.
+    assert listed["recommend"] == "curated"
+    assert listed["install"] == ["statsmodels", "nonexistent-probe-pkg"]
+    assert listed["missing"] == ["statsmodels", "nonexistent-probe-pkg"]
+    assert "only if the user named it" in listed["note"]
+    assert "env_create" in listed["note"]
+    # The standing "Kernel environment" paragraph gives the same order.
+    from openai4s.kernel.constraints import kernel_constraints_note
+
+    standing = kernel_constraints_note(
+        posture={"mode": "off", "backend": None, "raw_network": False}
+    )
+    assert "switch to the built-in environment it recommends" in standing
+    assert "builtin=false is the user's own" in standing
+
+
+def test_env_list_keeps_an_environment_the_user_already_picked(tmp_path, monkeypatch):
+    """A local environment the session already runs in was the user's own
+    choice (a UI pick does not ask), so it stays a candidate; and staying put
+    is not a recommendation to switch."""
+    conda_root = tmp_path / "miniconda3"
+    lab = _make_py_env(conda_root / "envs", "lab_env", packages=("pandas", "openpyxl"))
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "d"))
+    E.discover_environments(force=True)
+    disp = build_dispatcher()
+    disp.active_env_bin = str(lab / "bin")
+
+    listed = disp._m_env_list({"packages": ["openpyxl", "nonexistent-probe-pkg"]})
+
+    assert listed["current"] == "lab_env"
+    assert listed["recommend"] is None
+    assert listed["install"] == ["nonexistent-probe-pkg"]
+    assert listed["missing"] == ["nonexistent-probe-pkg"]
+
+
 def test_switching_into_a_local_env_needs_approval_by_default(tmp_path, monkeypatch):
     from openai4s.store import Store
     from openai4s.tools.env_use import EnvUseTool

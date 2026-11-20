@@ -6295,6 +6295,8 @@ class SessionRunner:
                     if e.name == cur
                     else ("" if e.interpreter else " [R — use ```r cells]")
                 )
+                if not e.builtin:
+                    tag += " [the user's own environment: use only if they named it]"
                 note = ", ".join(e.notable(6)) or e.description()
                 lines.append(f"- {e.name}{tag}: {note}")
             if lines:
