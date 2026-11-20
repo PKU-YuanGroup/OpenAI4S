@@ -11,7 +11,7 @@ import { isReady } from "../../compat/stub";
 import "./messages.css";
 import { registerMessageHandlers } from "./handlers";
 import { insertMessageByTime, renderStored } from "./list";
-import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
+import { openConversation, recoverConversation, alignHistoryAfterTurn, bindTranscriptLanguage } from "./open";
 import { down, updateJumpPill } from "./scroll";
 import { feed, flushRender, startStream, _mdStableCut } from "./stream";
 
@@ -101,6 +101,8 @@ export function installMessages(
   target.startStream = startStream;
   target.flushRender = flushRender;
   target._mdStableCut = _mdStableCut;
+  // DOM-free: a language switch re-reads the open conversation (SYNC-20).
+  bindTranscriptLanguage();
 }
 
 const hostWindow = (globalThis as unknown as { window?: MessagesTarget }).window;

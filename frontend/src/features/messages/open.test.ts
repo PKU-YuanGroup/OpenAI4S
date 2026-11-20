@@ -3,7 +3,8 @@ import { resetStoreFields } from "../../stores/signal-field";
 import * as session from "../../stores/session";
 import { _replayGap, running, stream, _seqSeen, _resumeTimer, ws } from "../../stores/stream";
 import { apiGet, fetchRecentMessages, fetchOlderMessages } from "./fetch";
-import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
+import { openConversation, recoverConversation, alignHistoryAfterTurn, bindTranscriptLanguage } from "./open";
+import { setLang } from "../../i18n/runtime";
 import { loadEarlierMessages } from "../sessions/messages";
 import { showDashboard, stopDashPoll } from "../sessions/dashboard";
 import { routeInitialView } from "../sessions/conversation";
@@ -967,5 +968,47 @@ describe("where a committed transcript leaves the scroll", () => {
     expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true });
     flushScrollNow();
     expect(host.scrollTop).toBe(100);
+  });
+});
+
+/**
+ * SYNC-20. A language switch left every card, status line and button the
+ * transcript had drawn in the old language until a reload; it now re-reads
+ * the open conversation (GET only), and a running turn's when it ends.
+ */
+describe("a language switch", () => {
+  afterEach(async () => {
+    await setLang("en");
+  });
+
+  it("repaints the open conversation from its history, a running one when its turn ends", async () => {
+    await setLang("en");
+    const stop = bindTranscriptLanguage();
+    const fetcher = server();
+    await openConversation("f");
+    const reads = (): number => fetcher.mock.calls.filter(([path]) => String(path).includes("/messages?")).length;
+    const quiet = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+    await quiet();
+    const opened = reads();
+
+    await setLang("zh");
+    await vi.waitFor(() => expect(reads()).toBeGreaterThan(opened));
+    await quiet();
+    const switched = reads();
+    // The same language again changes nothing.
+    await setLang("zh");
+    await quiet();
+    expect(reads()).toBe(switched);
+
+    running.value = true;
+    await setLang("en");
+    await quiet();
+    expect(reads()).toBe(switched);
+    running.value = false;
+    await vi.waitFor(() => expect(reads()).toBeGreaterThan(switched));
+    for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) {
+      expect(init?.method ?? "GET").toBe("GET");
+    }
+    stop();
   });
 });

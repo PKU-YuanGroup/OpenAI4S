@@ -5,7 +5,9 @@ import { beginNavigation, resetSessionDirectory } from "../sessions/navigation";
  * Recovery is GET-only and reports messages, steps and run state separately.
  */
 
+import { effect, untracked } from "@preact/signals";
 import { isReady } from "../../compat/stub";
+import { LANG, onLanguageChange } from "../../i18n/runtime";
 import { historyT as t } from "./copy";
 import { _tbl, dockArtifact, _projArtFor, _editing } from "../../stores/artifacts";
 import {
@@ -528,6 +530,46 @@ export function recoverConversation(fid: string, gen = _openGen.value): Promise<
     }
   });
   return promise;
+}
+
+let transcriptLanguage: (() => void) | null = null;
+
+/**
+ * SYNC-20: a language switch repaints the open conversation from its stored
+ * history. The sidebar, composer and menus followed at once, but every card,
+ * status line and button the transcript had drawn ("Reading … · 201 lines",
+ * "Stopped by user", "Branch from this question", Continue, the action row)
+ * kept the old language until a reload -- which is exactly this read. A turn
+ * that is running is repainted when it ends: its live cards are not in the
+ * stored history yet. Idempotent; returns the unbinding.
+ */
+export function bindTranscriptLanguage(): () => void {
+  if (transcriptLanguage) return transcriptLanguage;
+  let painted = LANG;
+  let pending: string | null = null;
+  const repaint = (fid: string): void => {
+    if (currentId.value === fid && openedFrameId.value === fid) void recoverConversation(fid);
+  };
+  const stopHook = onLanguageChange((lang) => {
+    if (lang === painted) return;
+    painted = lang;
+    const fid = currentId.value;
+    if (!fid || openedFrameId.value !== fid) return;
+    if (running.value) pending = fid;
+    else repaint(fid);
+  });
+  const stopEffect = effect(() => {
+    if (running.value || !pending) return;
+    const fid = pending;
+    pending = null;
+    untracked(() => repaint(fid));
+  });
+  transcriptLanguage = () => {
+    stopHook();
+    stopEffect();
+    transcriptLanguage = null;
+  };
+  return transcriptLanguage;
 }
 
 /**
