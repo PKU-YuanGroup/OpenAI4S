@@ -151,8 +151,10 @@ def extract_action(text: str) -> CodeCell | None:
     Document order decides between languages: whichever labelled (or bare)
     executable fence closes first wins, and exactly one cell runs per step.
     The shared fence scanner preserves labelled fenced examples nested inside
-    the cell (notably a literal ```tool block in a triple-quoted README). An
-    incomplete outer fence is never executable.
+    the cell (notably a literal ```tool block in a triple-quoted README), and
+    reads any fence line inside one of the cell's own string literals as
+    content, so a Markdown code block in a report template cannot end the
+    cell early. An incomplete outer fence is never executable.
     """
     for block in scan_fenced_blocks(text):
         if not (block.closed and block.fence_char == "`"):
