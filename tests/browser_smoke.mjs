@@ -1996,6 +1996,10 @@ try {
     state.requestCount = 0; state.apiRequestCount = 0;
     overview.svg.addEventListener("contextmenu", (event) => { state.contextPrevented = event.defaultPrevented; });
     state.svg = overview.svg; state.queuePath = overview.queuePath; state.table = view.table; state.tbody = view.tbody;
+    // The timeline sits above the diagnostic panels (SET-4), and earlier steps
+    // that click those panels leave the pane scrolled past it: bring it back
+    // before measuring, or every hover lands outside the viewport.
+    overview.svg.scrollIntoView({ block: "center" });
     const point = (time, rank) => {
       const rect = overview.svg.getBoundingClientRect(), ratio = (time - base) / 6800;
       return { x: rect.left + ratio * rect.width, y: rect.top + (rank + .5) / 4 * rect.height };
