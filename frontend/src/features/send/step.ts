@@ -590,11 +590,22 @@ export function stepBody(step: Step): HTMLElement {
         ? [{ filename: out.filename, version_id: out.version_id }]
         : [];
     const arts = artsRaw.map(rec);
+    const imgArts = arts.filter((a) => {
+      const nm = String(a.filename || "").toLowerCase();
+      const ct = String(a.content_type || "");
+      return (
+        a.artifact_id &&
+        (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm))
+      );
+    });
+    // A figure is shown below with its name as the caption; listing it here
+    // too put every file name on the card twice (three times with the title).
+    const shown = new Set(imgArts.map((a) => a.filename));
     const files = (
       Array.isArray(inp.files) && inp.files.length
         ? inp.files
         : arts.map((a) => a.filename)
-    ).filter(Boolean) as unknown[];
+    ).filter((fn) => !!fn && !shown.has(fn)) as unknown[];
     const env = inp.environment || "python";
     const kvRow = (label: string, text: unknown): HTMLElement => {
       const r = el("div", "s-kv");
@@ -629,7 +640,7 @@ export function stepBody(step: Step): HTMLElement {
       fl.appendChild(line);
     });
     fl.appendChild(el("span", "s-brk", "]"));
-    box.appendChild(kvNodeRow("files", fl));
+    if (files.length) box.appendChild(kvNodeRow("files", fl));
     box.appendChild(kvRow("environment", env));
     if (arts.length && (arts[0]?.artifact_id || arts[0]?.checksum)) {
       const wrap = el("div", "s-out");
@@ -648,14 +659,6 @@ export function stepBody(step: Step): HTMLElement {
       wrap.appendChild(json);
       box.appendChild(wrap);
     }
-    const imgArts = arts.filter((a) => {
-      const nm = String(a.filename || "").toLowerCase();
-      const ct = String(a.content_type || "");
-      return (
-        a.artifact_id &&
-        (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm))
-      );
-    });
     if (imgArts.length) {
       const figs = el("div", "s-figs");
       imgArts.forEach((a) => {
@@ -823,14 +826,35 @@ function stepRegistry(): Record<string, StepHandle> {
 
 type DemotableStream = LiveStream & { toolCard?: HTMLElement & { _demoted?: boolean } };
 
-/** A Cell's activity card that steps follow becomes the "Code" group head. */
+/**
+ * A Cell's activity card that steps follow becomes their quieter group head.
+ * It keeps its title: relabelled "Code", a cell the model had titled, or
+ * "Analysis · cell 24", read as a card called "Code".
+ */
 function demoteToolCard(st: DemotableStream): void {
   if (st.toolCard && !st.toolCard._demoted) {
     st.toolCard.classList.add("has-steps");
     st.toolCard._demoted = true;
-    const lbl = st.toolCard.querySelector(".lbl");
-    if (lbl) lbl.textContent = t("step.label.code");
   }
+}
+
+/**
+ * One plan card per turn. Every plan update is a step of its own, and each
+ * used to add another complete "Planning · 6 steps" card to the conversation.
+ * A later plan step of the same turn repaints the turn's card where it is and
+ * answers to its id from then on. Null when `turn` has no plan card yet.
+ */
+function mergePlanStep(turn: Element | null | undefined, step: Step): StepHandle | null {
+  if (!turn || step.kind !== "plan") return null;
+  const registry = stepRegistry();
+  const prior = Object.values(registry).find(
+    (handle) => handle.step.kind === "plan" && handle.card.parentElement === turn,
+  );
+  if (!prior) return null;
+  prior.step = step;
+  if (step.step_id) registry[String(step.step_id)] = prior;
+  applyStepState(prior, LAZY_BODY);
+  return prior;
 }
 
 export function addLiveStep(m: Record<string, unknown>): void {
@@ -850,16 +874,18 @@ export function addLiveStep(m: Record<string, unknown>): void {
   }
   const st = ensure() as DemotableStream | null;
   if (!st) return;
-  const handle = buildStepCard(
-    {
-      step_id: m.step_id != null ? String(m.step_id) : undefined,
-      kind: m.kind != null ? String(m.kind) : undefined,
-      title: m.title != null ? String(m.title) : undefined,
-      input: rec(m.input),
-      status: m.status != null ? String(m.status) : "running",
-    },
-    LAZY_BODY,
-  );
+  const step: Step = {
+    step_id: m.step_id != null ? String(m.step_id) : undefined,
+    kind: m.kind != null ? String(m.kind) : undefined,
+    title: m.title != null ? String(m.title) : undefined,
+    input: rec(m.input),
+    status: m.status != null ? String(m.status) : "running",
+  };
+  if (mergePlanStep(st.wrap, step)) {
+    down();
+    return;
+  }
+  const handle = buildStepCard(step, LAZY_BODY);
   if (m.step_id) stepRegistry()[String(m.step_id)] = handle;
   placeInLiveStream(handle.card, st);
   demoteToolCard(st);
@@ -880,6 +906,9 @@ export function updateLiveStep(m: Record<string, unknown>): void {
 }
 
 export function renderStoredStep(s: Step, target?: ParentNode | null): HTMLElement {
+  // The history paint names the turn its card joins (`messages/list.ts`).
+  const merged = mergePlanStep((target as { turn?: Element | null } | null | undefined)?.turn, s);
+  if (merged) return merged.card;
   const handle = buildStepCard(s, LAZY_BODY);
   if (s.step_id) stepRegistry()[String(s.step_id)] = handle;
   handle.card.dataset.ts = String(s.created_at || 0);

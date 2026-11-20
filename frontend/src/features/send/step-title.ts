@@ -80,9 +80,18 @@ function apply(rules: Rule[], text: string): string | null {
   return null;
 }
 
+/**
+ * A cell's banner comment is not a title: "---------- QC ----------" reads
+ * "QC". The server strips it now (`server/cell_run.py` `activity_title`);
+ * steps stored before that still carry the rule characters.
+ */
+const BANNER = /^(?:[-=*~_#+]\s*){3,}|(?:\s*[-=*~_#+]){3,}$/g;
+
 export function stepTitleText(title: string): string {
-  if (LANG === "en" || !title) return title;
-  return apply(TITLE_ZH, title) ?? title;
+  if (!title) return title;
+  const plain = title.replace(BANNER, "").trim() || title;
+  if (LANG === "en") return plain;
+  return apply(TITLE_ZH, plain) ?? plain;
 }
 
 export function stepSummaryText(summary: string): string {

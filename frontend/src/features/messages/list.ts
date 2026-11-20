@@ -389,9 +389,10 @@ export function renderStored(
     // A text-form `@name#v-<id>` reads as `@name`; the chip below names the
     // version (ART-16). Rows stored before SYNC-5 also hide the product's
     // annotation instructions. The stored row is unchanged.
-    b.textContent = stripRefVersions(userBubbleText(planModeRequestText(text)));
+    b.textContent = stripProjectRefSyntax(stripRefVersions(userBubbleText(planModeRequestText(text))));
     w.appendChild(b);
     renderMessageRefChips(w, m.artifact_refs);
+    renderProjectRefChips(w, text);
     renderAnnotationChip(w, m.annotations);
     if (canForkFromMessage(m) && typeof m.message_id === "string") {
       w.appendChild(forkMessageControl(m.message_id));
@@ -419,6 +420,48 @@ export function renderStored(
   (target || messagesHost())?.appendChild(w);
   if (m.role !== "user") addMsgActions(w, text);
   return w;
+}
+
+/**
+ * `@project:<path>`: a file in the session's project folder, as the `@` menu
+ * writes it (`autocomplete/composer.ts`; the server reads the same token,
+ * `server/artifact_refs.py` `PROJECT_REF`). The prefix is reference syntax,
+ * not the user's words.
+ */
+const PROJECT_REF = /(^|\s)@project:([^\s，。、；：！？（）【】「」]+)/g;
+const PROJECT_REF_TRAILING = /[，。、；：！？,.;:!?)）\]】"']+$/;
+
+/** The distinct project-folder paths a message names. */
+export function projectRefs(text: string): string[] {
+  const paths: string[] = [];
+  for (const match of String(text || "").matchAll(PROJECT_REF)) {
+    const path = (match[2] || "").replace(PROJECT_REF_TRAILING, "");
+    if (path && !path.split("/").includes("..") && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
+
+/** A user bubble's text with `@project:<path>` read as `@<path>`. */
+export function stripProjectRefSyntax(text: string): string {
+  return String(text || "").replace(PROJECT_REF, "$1@$2");
+}
+
+/** The project-folder files a user message names, as chips under its bubble. */
+export function renderProjectRefChips(host: HTMLElement, text: string): void {
+  const paths = projectRefs(text);
+  if (!paths.length) return;
+  let row = host.querySelector(":scope > .msg-refs") as HTMLElement | null;
+  if (!row) {
+    row = el("div", "msg-refs");
+    host.appendChild(row);
+  }
+  for (const path of paths.slice(0, 8)) {
+    const chip = el("span", "msg-ref-chip project");
+    chip.appendChild(iconEl("folder", 11));
+    chip.appendChild(el("span", null, publicText(path.split("/").pop() || path, 60)));
+    chip.title = historyT("history.projectRef", path);
+    row.appendChild(chip);
+  }
 }
 
 /** app.js:7766-7787. The @-refs a user message pinned, as chips under its bubble. */
@@ -542,6 +585,9 @@ export function historyTurns(): HistoryTurns {
   /** A card renderer appends to its target: here, at the turn's current position. */
   const cardSink = (target: ParentNode, ts: number): ParentNode =>
     ({
+      // The turn a card would join: a plan update repaints that turn's plan
+      // card instead of appending another (`send/step.ts`).
+      turn: group ? group.wrap : null,
       appendChild(node: Node): Node {
         const g = turn(target, ts);
         flush();

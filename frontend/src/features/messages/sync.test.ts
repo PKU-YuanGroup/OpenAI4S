@@ -871,6 +871,56 @@ describe("a turn is one container, live and reopened", () => {
 });
 
 // --------------------------------------------------------------------------
+// CHAT-8: small things in the transcript
+// --------------------------------------------------------------------------
+
+describe("transcript details", () => {
+  it("shows a project-folder reference as a file chip, not as reference syntax", () => {
+    const row = renderStored({
+      role: "user",
+      content: "@project:data/plate3.xlsx  fit the growth curves, then @project:notes.md.",
+      message_id: "m-1",
+    }) as HTMLElement;
+    expect(row.querySelector(".bubble")?.textContent).toBe("@data/plate3.xlsx  fit the growth curves, then @notes.md.");
+    const chips = Array.from(row.querySelectorAll(".msg-ref-chip")) as HTMLElement[];
+    expect(chips.map((chip) => chip.textContent)).toEqual(["plate3.xlsx", "notes.md"]);
+    expect(chips[0]?.title).toContain("data/plate3.xlsx");
+    // An ordinary message gets no chip row.
+    const plain = renderStored({ role: "user", content: "no files here", message_id: "m-2" }) as HTMLElement;
+    expect(plain.querySelector(".msg-refs")).toBeNull();
+  });
+
+  it("a reopened turn shows one plan card for all of its plan updates", async () => {
+    const plan = (id: string, second: number, steps: number): Record<string, unknown> => ({
+      step_id: id,
+      kind: "plan",
+      title: "Planning",
+      summary: steps === 1 ? "1 step" : steps + " steps",
+      status: "done",
+      created_at: Date.parse(at(second)),
+      seq: second,
+      output: { todos: Array.from({ length: steps }, (_, n) => ({ content: "todo " + (n + 1), status: "pending" })) },
+    });
+    await paintHistory(interleaveHistory(
+      [
+        { role: "user", content: "First?", created_at: at(0) },
+        { role: "assistant", content: "Planning.", created_at: at(1) },
+        { role: "assistant", content: "Done.", created_at: at(5) },
+        { role: "user", content: "Second?", created_at: at(6) },
+        { role: "assistant", content: "Again.", created_at: at(9) },
+      ],
+      [plan("p-1", 2, 2), plan("p-2", 3, 3), plan("p-3", 4, 3), plan("p-4", 7, 1)],
+    ));
+    const turns = Array.from(messages().querySelectorAll(":scope > .msg.assistant")) as HTMLElement[];
+    expect(turns.map((turn) => turn.querySelectorAll(".step-plan").length)).toEqual([1, 1]);
+    // The first turn's card is the latest of its three updates; the next turn has its own.
+    expect(turns[0]?.querySelector(".step-plan .s-meta")?.textContent).toBe("3 steps");
+    expect(turns[1]?.querySelector(".step-plan .s-meta")?.textContent).toBe("1 step");
+    expect(transcriptShape()).toEqual(["msg user", "turn:md,step,md,actions", "msg user", "turn:step,md,actions"]);
+  });
+});
+
+// --------------------------------------------------------------------------
 // CHAT-6: the session's file strips follow one placement rule
 // --------------------------------------------------------------------------
 

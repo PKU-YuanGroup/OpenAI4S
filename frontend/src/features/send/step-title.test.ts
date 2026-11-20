@@ -22,6 +22,16 @@ describe("step titles and summaries in the UI language (I18N-1)", () => {
     expect(stepSummaryText("failed: timeout")).toBe("失败：timeout");
   });
 
+  it("reads a cell's banner comment as its words, not its rule characters (CHAT-8)", async () => {
+    expect(stepTitleText("---------- QC decisions ----------")).toBe("QC decisions");
+    expect(stepTitleText("=== Fit the curves ===")).toBe("Fit the curves");
+    expect(stepTitleText("step 2 -- fit")).toBe("step 2 -- fit");
+    // Only rule characters: nothing better to show than what came.
+    expect(stepTitleText("----------")).toBe("----------");
+    await setLang("zh");
+    expect(stepTitleText("---------- QC 决策 ----------")).toBe("QC 决策");
+  });
+
   it("leaves English, unknown titles and a cell's own title alone", async () => {
     expect(stepTitleText("Reading project file cohort.csv")).toBe("Reading project file cohort.csv");
     await setLang("zh");

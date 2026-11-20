@@ -65,6 +65,7 @@ import { api, apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { enableComposer, grow } from "../sessions/dom";
 import { loadSessions } from "../sessions/load";
+import { renderProjectRefChips, stripProjectRefSyntax } from "../messages/list";
 import { renderComposerRefChips, renderMessageRefChips } from "../sessions/transcript";
 import { sub } from "../ws/connect";
 import {
@@ -416,7 +417,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   w.dataset.requestId = requestId;
   const b = el("div", "bubble");
   // As a reload shows it: a typed `@name#v-<id>` reads as `@name`.
-  b.textContent = stripRefVersions(text) || t("send.imageAnnotationFallback");
+  b.textContent = stripProjectRefSyntax(stripRefVersions(text)) || t("send.imageAnnotationFallback");
   w.appendChild(b);
   // The same chips a reload draws from the stored `artifact_refs`.
   if (sentMentions.length) {
@@ -425,6 +426,8 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       sentMentions.map((m) => ({ display_name: m.filename, version_id: m.version_id, artifact_id: m.artifact_id })),
     );
   }
+  // A project-folder file the `@` menu named, as the reload shows it.
+  renderProjectRefChips(w, text);
   if (anns.length) w.appendChild(annotAttachment(anns));
   if (queueing) {
     w.classList.add("queued");

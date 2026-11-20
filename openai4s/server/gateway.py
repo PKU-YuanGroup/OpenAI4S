@@ -10997,7 +10997,8 @@ class SessionRunner:
             title_text = plan_mode_request_text(user_text) if st.plan else user_text
             # And without a text-form pin's `#v-<id>`: the title is display
             # text, and the hash is the version, not the user's words (ART-16).
-            title_text = artifact_refs.display_text(title_text)
+            # Nor is a `@project:<path>` token: the title is what was asked.
+            title_text = artifact_refs.title_text(title_text)
             if not (frame.get("name") or frame.get("task_summary")):
                 title_placeholder = re.sub(r"\s+", " ", title_text).strip()[:80]
                 self.store.update_frame(root_frame_id, task_summary=title_placeholder)
