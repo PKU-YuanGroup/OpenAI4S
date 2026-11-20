@@ -36,6 +36,10 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 | [`load.replace.test.ts`](load.replace.test.ts) | A Load-more clicked while a debounced search is still in flight is refused: before the gate it took a newer generation with the *old* query and cursor, so the search reply was discarded as stale and page two of the previous filter landed under the new box text. |
 | [`load.projects.test.ts`](load.projects.test.ts) | Project-list query string has no `offset`; merge/dedupe; empty / retry / load-more view states. |
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / earlier bar. |
+| [`package.ts`](package.ts) | Session-package import dialog (file, check, its result, import, then the session or the importer's reason; TEAM-20) and the package / artifact-zip exports, which fetch their bytes so a refusal is shown and a finished export says what it saved (TEAM-13). `flash` is a status line that clears itself. |
+| [`package.test.ts`](package.test.ts) | A refused import is shown in the dialog (never only in the hidden composer hint), a failed check never imports, a good one opens the session; a package export reports its size, and a 409 is reported instead of downloaded. |
+| [`markdown-export.ts`](markdown-export.ts) | "Export as Markdown" (TEAM-12): one section per turn, each executed cell's source and bounded output in the order it ran, image artifacts embedded as data URIs under the cell that wrote them, in-app links reduced to their text. |
+| [`markdown-export.test.ts`](markdown-export.test.ts) | One heading per turn, code and output in order without the completion RPC, a figure embedded under its cell and no `/api/` link left, long output bounded, only images embedded within the budget. |
 | [`paging.test.ts`](paging.test.ts) | Pagination constants, session sort, walk/dedupe, dashboard filters. |
 | [`paging.ts`](paging.ts) | `MESSAGE_PAGE_SIZE=300`, `SESSION_MAX_PAGES=50`, sort/walk/filter. |
 | [`navigation.ts`](navigation.ts) | The view generation and the synchronous directory reset. Deliberately not a list-read owner: list reads are scoped to their project. |

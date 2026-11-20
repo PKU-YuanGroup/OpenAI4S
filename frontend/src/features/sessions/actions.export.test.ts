@@ -14,7 +14,7 @@ describe("Markdown export requires confirmed reads", () => {
     resetStoreFields(); vi.mocked(hint).mockClear(); clicks.mockClear(); blobs.length = 0;
     messages.fetchAllMessages.mockReset().mockResolvedValue({ messages: [], complete: true });
     sessions.value = [{ id: "f", name: "Original session" }];
-    vi.stubGlobal("document", { createElement: () => ({ click: clicks }) });
+    vi.stubGlobal("document", { createElement: () => ({ click: clicks }), querySelector: () => null });
     vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => { blobs.push(blob as Blob); return "blob:export"; });
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     vi.useFakeTimers();

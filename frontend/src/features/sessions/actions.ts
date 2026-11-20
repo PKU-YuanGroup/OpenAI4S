@@ -10,7 +10,7 @@ import { artifacts } from "../../stores/artifacts";
 import { defaultModelName, models } from "../../stores/customize";
 import { _openGen, _titleName, currentId, folders, project, sessions } from "../../stores/session";
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
-import { API, ApiError, api, apiErrorText } from "./api";
+import { api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
 import { composerCopy } from "./copy";
@@ -28,10 +28,15 @@ import { queueT } from "../timeline/copy";
 import { queuedFollowUpCount } from "../timeline/queue";
 import { $, clearConversationChrome, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
-import { assignFolder, invalidateFolders, loadProjects, loadSessions, renderSessions } from "./load";
+import { assignFolder, invalidateFolders, loadSessions, renderSessions } from "./load";
 import { fetchAllMessages, fetchRecentMessages } from "./messages";
-import { publicText } from "../scrub/scrub";
 import { openShareDialog } from "./share";
+import {
+  downloadSessionArtifacts,
+  exportSessionPackage as exportPackageBytes,
+  flash,
+  importSessionPackage as importPackageWithDialog,
+} from "./package";
 import type { SessionLike } from "./paging";
 
 export async function commitTitle(): Promise<void> {
@@ -319,10 +324,7 @@ export function sessionMenu(anchor: Element, fid: string): void {
       label: t("sessionMenu.downloadArtifacts"),
       icon: "files",
       onClick: () =>
-        downloadArtifactBundle(
-          `${API}/frames/${encodeURIComponent(fid)}/artifacts.zip`,
-          `${frame.name || frame.task_summary || "session"}-artifacts.zip`,
-        ),
+        void downloadSessionArtifacts(fid, `${frame.name || frame.task_summary || "session"}-artifacts.zip`),
     },
     {
       label: t("sessionMenu.viewNotebook"),
@@ -355,60 +357,15 @@ export function sessionMenu(anchor: Element, fid: string): void {
 }
 
 export function exportSessionPackage(fid: string, frame: SessionLike = {}): void {
-  const label = frame.name || frame.task_summary || "session";
-  downloadArtifactBundle(
-    `${API}/frames/${encodeURIComponent(fid)}/session/export`,
-    label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip",
-  );
+  void exportPackageBytes(fid, frame.name || frame.task_summary || "session");
 }
 
 export function chooseSessionPackage(): void {
   $("#session-package-input")?.click();
 }
 
-export async function importSessionPackage(file: File | null | undefined): Promise<void> {
-  if (!file) return;
-  if (file.size > 128 * 1024 * 1024) {
-    hint(t("sessionPackage.tooLarge"), true);
-    return;
-  }
-  try {
-    const checked = await fetch(API + "/sessions/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
-      body: file,
-    });
-    const verdict = (await checked.json().catch(() => ({}))) as {
-      ok?: boolean;
-      problems?: string[];
-      error?: string;
-      files_verified?: unknown[];
-    };
-    if (!checked.ok || !verdict.ok) {
-      const first = (verdict.problems || [])[0] || verdict.error || "";
-      hint(t("sessionPackage.verifyFailed", publicText(first, 160)), true);
-      return;
-    }
-    hint(t("sessionPackage.verified", (verdict.files_verified || []).length));
-    const response = await fetch(API + "/sessions/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
-      body: file,
-    });
-    const result = (await response.json().catch(() => ({}))) as {
-      root_frame_id?: string;
-      project_id?: string;
-    };
-    if (!response.ok || !result.root_frame_id || !result.project_id) {
-      throw new ApiError(result, response.status);
-    }
-    await loadProjects();
-    hint(t("sessionPackage.imported"));
-    await openConversation(result.root_frame_id, result.project_id);
-  } catch (error) {
-    hint(t("toast.importFailed", apiErrorText(error)), true);
-  }
-}
+/** TEAM-20: the import runs in a dialog of its own (package.ts). */
+export const importSessionPackage = importPackageWithDialog;
 
 export function downloadArtifactBundle(url: string, filename: string): void {
   const link = document.createElement("a");
@@ -485,7 +442,7 @@ export async function exportSession(fid: string): Promise<void> {
     link.download = title.replace(/[^\w一-龥-]+/g, "_") + ".md";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-    hint(t("toast.exportedMarkdown"));
+    flash(t("toast.exportedMarkdown"));
   } catch (e) {
     hint(t("toast.exportFailed", apiErrorText(e)), true);
   }

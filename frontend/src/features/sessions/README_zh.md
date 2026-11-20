@@ -36,6 +36,10 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`load.replace.test.ts`](load.replace.test.ts) | 防抖搜索还在等回复时点击「加载更多」会被拒绝：此前它会拿到更新的代号却带着**旧**查询和旧游标发请求，搜索回复因此被当作过期丢弃，旧筛选的第二页落在了新输入的搜索框下面。 |
 | [`load.projects.test.ts`](load.projects.test.ts) | 项目列表查询串不含 `offset`；合并/去重；空态 / 重试 / 加载更多的视图状态。 |
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / 更早消息条。 |
+| [`package.ts`](package.ts) | 会话包导入对话框（文件、校验、校验结果、导入，然后打开会话或给出导入器拒绝的原因；TEAM-20），以及会话包 / 产物 zip 的导出：先取回字节，被拒绝时显示原因，完成时说明保存了什么（TEAM-13）。`flash` 是会自动消失的状态行。 |
+| [`package.test.ts`](package.test.ts) | 导入被拒绝时在对话框里显示（而不只写进隐藏的输入框提示），校验失败不会导入，校验通过则打开会话；导出会话包报告大小，409 会被报告而不是被下载。 |
+| [`markdown-export.ts`](markdown-export.ts) | “导出为 Markdown”（TEAM-12）：每个回合一节，按执行顺序附上每个单元的源码和截断后的输出，图片产物以 data URI 内嵌在产生它的单元下，站内链接只保留文字。 |
+| [`markdown-export.test.ts`](markdown-export.test.ts) | 每个回合一个标题、代码与输出按顺序且不含完成调用、图片内嵌在其单元下且不留 `/api/` 链接、长输出被截断、只在预算内内嵌图片。 |
 | [`paging.test.ts`](paging.test.ts) | 分页常量、会话排序、走页/去重、仪表盘过滤。 |
 | [`paging.ts`](paging.ts) | `MESSAGE_PAGE_SIZE=300`、`SESSION_MAX_PAGES=50`、排序/走页/过滤。 |
 | [`navigation.ts`](navigation.ts) | 视图代际与同步的目录清理。刻意不承担列表读取归属：列表读取以所属项目为界。 |
