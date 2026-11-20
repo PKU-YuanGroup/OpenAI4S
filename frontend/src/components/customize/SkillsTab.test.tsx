@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { searchSkills, skillNetworkDomains } from "./SkillsTab";
+import { setLang } from "../../i18n/runtime";
+import { searchSkills, skillNetworkCopy, skillNetworkDomains } from "./SkillsTab";
 
 // Customize → Skills lists 612 skills; 561 of them sit inside one collection.
 
@@ -48,5 +49,35 @@ describe("a skill's network limit", () => {
     expect(skillNetworkDomains(FIGURE)).toBeNull();
     expect(skillNetworkDomains(MEMBER)).toBeNull();
     expect(skillNetworkDomains({ name: "bare" })).toBeNull();
+  });
+
+  // SCI-07: "Limits network · 0 domains" opened onto a sentence ending in a
+  // colon, and one domain read "1 domains".
+  it("says that no declared domain turns the session's network off, and how to get it back", async () => {
+    await setLang("en");
+    const off = skillNetworkCopy([]);
+    expect(off.summary).toBe("Turns network off");
+    expect(off.detail).toContain("turns network access off for the rest of this session");
+    expect(off.detail).toContain("Start a new session");
+    expect(off.detail).not.toMatch(/:\s*$/);
+
+    await setLang("zh");
+    const offZh = skillNetworkCopy([]);
+    expect(offZh.summary).toBe("加载后关闭联网");
+    expect(offZh.detail).toContain("请新开一个会话");
+  });
+
+  it("names the domains it keeps, with the count in the right number", async () => {
+    await setLang("en");
+    expect(skillNetworkCopy(["integrate.api.nvidia.com"]).summary).toBe("Limits network · 1 domain");
+    const two = skillNetworkCopy(["api.openalex.org", "doi.org"]);
+    expect(two.summary).toBe("Limits network · 2 domains");
+    expect(two.detail).toContain(
+      "Loading this Skill limits network access for the rest of this session to: api.openalex.org, doi.org.",
+    );
+
+    await setLang("zh");
+    expect(skillNetworkCopy(["api.openalex.org", "doi.org"]).summary).toBe("限定联网 · 2 个域名");
+    await setLang("en");
   });
 });

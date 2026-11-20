@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { t } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { copyLookup } from "../../i18n/copy";
 import { rankSkillItems, skillToAcItem, type AcItem } from "../../features/autocomplete/rank";
 import { api, apiErrorText } from "../../features/customize/api";
@@ -26,14 +26,22 @@ const st = copyLookup({
     "skills.searchCount": "{0} 个匹配",
     "skills.searchNone": "没有匹配「{0}」的技能",
     "skills.net": "限定联网 · {0} 个域名",
-    "skills.netTip": "加载这个技能后，本会话的联网请求只能访问它声明的这些域名：",
+    "skills.netOff": "加载后关闭联网",
+    "skills.netTip":
+      "加载这个技能后，本会话余下的联网只能访问：{0}。访问其他网站的请求会被拒绝，批准也无法放宽；要访问其他网站，请新开一个会话。",
+    "skills.netOffTip":
+      "加载这个技能后，本会话余下的时间里不能再联网：网页检索、网页读取、下载以及 host.bash 命令里的网址都会被拒绝，批准也无法放开。要再联网，请新开一个会话。",
   },
   en: {
     "skills.search": "Search skills: name, a word from the description, or a Chinese keyword",
     "skills.searchCount": "{0} matches",
     "skills.searchNone": "No skill matches “{0}”",
-    "skills.net": "Limits network · {0} domains",
-    "skills.netTip": "Loading this skill limits the session's network requests to the domains it declares:",
+    "skills.net": "Limits network · {0}",
+    "skills.netOff": "Turns network off",
+    "skills.netTip":
+      "Loading this Skill limits network access for the rest of this session to: {0}. Requests to other sites are refused, and approving one cannot widen the limit; start a new session to reach them.",
+    "skills.netOffTip":
+      "Loading this Skill turns network access off for the rest of this session: web search, web fetch, downloads and URLs in host.bash commands are refused, and approving one cannot lift it. Start a new session to use the network again.",
   },
 });
 
@@ -43,6 +51,22 @@ export function skillNetworkDomains(s: Skill): string[] | null {
   const network = caps.network && typeof caps.network === "object" ? (caps.network as Skill) : {};
   if (network.mode !== "host_only") return null;
   return asList(network.domains).map((domain) => String(domain));
+}
+
+/**
+ * SCI-07: what loading a `host_only` skill does to the session, in words. With
+ * no declared domain it turns the session's network off, which used to read
+ * as "limited to the domains it declares:" followed by nothing. Same wording
+ * as the conversation's network notice (`send/skill-network.ts`).
+ */
+export function skillNetworkCopy(domains: string[]): { summary: string; detail: string } {
+  if (!domains.length) return { summary: st("skills.netOff"), detail: st("skills.netOffTip") };
+  const count =
+    LANG === "en" ? (domains.length === 1 ? "1 domain" : `${domains.length} domains`) : domains.length;
+  return {
+    summary: st("skills.net", count),
+    detail: st("skills.netTip", domains.join(LANG === "en" ? ", " : "、")),
+  };
 }
 
 function skillScope(s: Skill): "project" | "bundled" | "personal" {
@@ -77,6 +101,7 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
   const name = asString(s.displayName || s.name);
   const note = skillReadinessNoteText(s);
   const domains = skillNetworkDomains(s);
+  const network = domains ? skillNetworkCopy(domains) : null;
   const enabled = useOptimisticToggle(s.enabled !== false, (on) =>
     api(`/skills/catalog/${encodeURIComponent(asString(s.name))}/enabled`, {
       method: "PUT",
@@ -93,12 +118,10 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
         </div>
         <div class="ds">{asString(s.description)}</div>
         {note ? <div class="ds prof-warn">{note}</div> : null}
-        {domains ? (
+        {network ? (
           <details class="skill-net">
-            <summary>{st("skills.net", domains.length)}</summary>
-            <div class="ds">
-              {st("skills.netTip")} {domains.join(", ")}
-            </div>
+            <summary>{network.summary}</summary>
+            <div class="ds">{network.detail}</div>
           </details>
         ) : null}
         <ActionStatus note={actionNote} />
