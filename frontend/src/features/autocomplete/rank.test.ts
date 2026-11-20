@@ -43,7 +43,7 @@ describe("skill picker ranking", () => {
   ].map(skillToAcItem);
 
   const names = (query: string): string[] =>
-    rankSkillItems(CATALOG, query).map((item) => item.insert);
+    rankSkillItems(CATALOG, query, { byCollection: true }).map((item) => item.insert);
 
   it("puts a name match ahead of a substring inside another word", () => {
     // `lit` is inside qua-lit-ative and druggabi-lit-y; the skill named for it comes first.
@@ -79,6 +79,8 @@ describe("skill picker ranking", () => {
     // A name match still comes first; two letters name no collection.
     expect(names("bio")[0]).toBe("bio-metabarcoding-amplicon");
     expect(names("bi")).not.toContain("literature-review");
+    // Settings lists a named collection as its own row, not as 561 hits.
+    expect(rankSkillItems(CATALOG, "bioskills")).toEqual([]);
   });
 
   it("returns every skill for an empty query and nothing for a miss", () => {

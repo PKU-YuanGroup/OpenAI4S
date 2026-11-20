@@ -247,14 +247,20 @@ function scoreSkill(item: AcItem, query: string): number {
  * research vocabulary and hyphen/space/underscore spellings; ties keep the
  * catalog's order with curated skills before collection members. Nothing is
  * capped here: the popup shows the first `SKILL_AC_ROWS` and counts the rest.
+ * `byCollection` (the composer's picker) also lists a collection's members when
+ * the query names it; Settings shows a named collection as a row of its own.
  */
-export function rankSkillItems(items: AcItem[], query: string): AcItem[] {
+export function rankSkillItems(
+  items: AcItem[],
+  query: string,
+  opts: { byCollection?: boolean } = {},
+): AcItem[] {
   const q = normalizeSkillText((query || "").trim()).replace(/^-+|-+$/g, "");
   const scored = items.map((item, index) => ({
     item,
     index,
     curated: skillFacts.get(item)?.curated !== false,
-    score: q ? Math.max(scoreSkill(item, q), namesCollection(item, q) ? 10 : -1) : 0,
+    score: !q ? 0 : Math.max(scoreSkill(item, q), opts.byCollection && namesCollection(item, q) ? 10 : -1),
   }));
   return scored
     .filter((row) => row.score >= 0)
