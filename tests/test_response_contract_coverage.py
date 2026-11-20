@@ -50,12 +50,10 @@ EXEMPT: dict[str, str] = {}
 #: *other* empty-properties schema fails, because that is what a fabricated
 #: coverage entry looks like.
 EMPTY_ACK: dict[str, str] = {
-    # Observed from the probe, which names no real frame: GET of an unknown id
-    # answers `{}`, the not-found shape docs/webapp-api.md keeps for existing
-    # readers. PATCH of one is a 404 (tests/test_frame_patch_unknown_id.py), and
-    # the catch-all's `{}` merges with real frames into a shape that has fields.
-    "/frames/([^/]+)": "GET of an unknown session id answers the documented "
-    "compatibility shape, an empty object",
+    # No `/frames/([^/]+)` entry. GET of an unknown or deleted session id used
+    # to answer `{}`, so another tab kept sending to a session that was gone
+    # (SYNC-17); it is a 404 now (tests/test_deleted_session_routes.py), like
+    # PATCH of one (tests/test_frame_patch_unknown_id.py).
     # No `/projects/([^/]+)` entry. Its `{}` was never an empty patch: it was
     # the contract probe editing the nonexistent `probe-id`, which is now a 404
     # (tests/test_project_patch_unknown_id.py). GET of that id still answers the
