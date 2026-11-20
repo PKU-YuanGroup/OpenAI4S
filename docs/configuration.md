@@ -6,14 +6,16 @@ Config is via env vars (all have working defaults), read from the environment or
 
 One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_url` and `model`, so usually you only set the key. Four wire formats live behind one normalized `host.llm`: OpenAI-compatible `/chat/completions`, OpenAI `/responses`, Anthropic `/v1/messages`, and Gemini `generateContent`.
 
-| provider | wire | default model | vision |
-|---|---|---|:---:|
-| `ark` | openai | `doubao-seed-2.1-pro` (+11 more via plan/v3) | ✅ |
-| `chatgpt` | openai | `gpt-5` | ✅ |
-| `openai_responses` | responses | `gpt-5` | — |
-| `claude` | anthropic | `claude-sonnet-4-5` | ✅ |
-| `gemini` | gemini | `gemini-2.5-flash` | ✅ |
-| `ollama` | openai | `gemma4:31b` (cloud) | ✅ |
+| provider | name in the UI | wire | default model | vision |
+|---|---|---|---|:---:|
+| `ark` | Ark-compatible | openai | `doubao-seed-2.1-pro` (+11 more via plan/v3) | ✅ |
+| `chatgpt` | OpenAI-compatible | openai | `gpt-5` | ✅ |
+| `openai_responses` | OpenAI Responses | responses | `gpt-5` | — |
+| `claude` | Anthropic-compatible | anthropic | `claude-sonnet-4-5` | ✅ |
+| `gemini` | Gemini-compatible | gemini | `gemini-2.5-flash` | ✅ |
+| `ollama` | Ollama | openai | `gemma4:31b` (cloud) | ✅ |
+
+The provider id is what `OPENAI4S_LLM_PROVIDER` and `openai4s init --provider` take; `chatgpt` is the id of the OpenAI-compatible `/chat/completions` protocol, so it is also the one for DeepSeek, vLLM, OpenRouter and similar endpoints (set the base URL). `openai4s init` lists each id with its UI name and accepts either.
 
 `ark` is Volcengine's Agent Plan gateway (the provider's default endpoint) — one endpoint + key serving the plan's text models: `doubao-seed-2.1-pro`, `doubao-seed-evolving`, `doubao-seed-2.1-lite`, `doubao-seed-2.0-mini`, `glm-5.3`, `glm-5.3-flash`, `kimi-k3.1-pro`, `kimi-k2.8-preview`, `deepseek-v4-{pro,flash}` and `deepseek-v4.1-flash` (plus its `-economy` variant), as listed in [the plan's model table](https://www.volcengine.com/docs/82379/2366394). The gateway answers any other id with HTTP 404 `UnsupportedModel`; 1.0.0's `doubao-seed-2.0-{pro,code,lite}` and `minimax-*` presets are no longer served. These are catalog presets, not saved profiles: no profile is pre-registered, so save one for each model you want to switch to. The plan gateway has no model-listing route, so First-run setup's **Fetch models** offers this catalog for it; other endpoints are asked for the ids they actually serve. Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
 

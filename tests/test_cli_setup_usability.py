@@ -117,3 +117,65 @@ def test_init_ends_cleanly_when_input_runs_out_at_a_repeated_question(wizard):
     assert "input ended before setup was finished" in wizard.err
     assert "Traceback" not in wizard.err
     assert not wizard.setting("llm_provider")
+
+
+def test_init_lists_what_each_provider_id_means(wizard):
+    """CLI-3. The wizard printed six bare ids. The README and the workbench
+    call the same choices OpenAI-compatible, Anthropic-compatible and so on,
+    and nothing connected the two vocabularies."""
+    wizard.run(["", "", "", "n", ""])
+
+    assert wizard.rc == 0
+    listed = {
+        line.split()[0]: line
+        for line in wizard.out.splitlines()
+        if line.startswith("  ") and line.split()
+    }
+    assert "OpenAI-compatible" in listed["chatgpt"]
+    assert "DeepSeek" in listed["chatgpt"] and "vLLM" in listed["chatgpt"]
+    assert "Anthropic-compatible" in listed["claude"]
+    assert "Ark-compatible" in listed["ark"]
+    assert "Gemini-compatible" in listed["gemini"]
+    assert "OpenAI Responses" in listed["openai_responses"]
+    assert "ollama" in listed
+
+
+@pytest.mark.parametrize(
+    ("typed", "provider"),
+    [
+        ("openai", "chatgpt"),
+        ("OpenAI-compatible", "chatgpt"),
+        ("openai compatible", "chatgpt"),
+        ("Anthropic-compatible", "claude"),
+        ("anthropic", "claude"),
+        ("Gemini-compatible", "gemini"),
+        ("OpenAI Responses", "openai_responses"),
+        ("openai-responses", "openai_responses"),
+        ("Ark-compatible", "ark"),
+    ],
+)
+def test_init_accepts_the_name_the_readme_uses_for_a_provider(wizard, typed, provider):
+    wizard.run([typed, "", "", "n", ""])
+
+    assert wizard.rc == 0
+    assert f"using provider {provider}" in wizard.out
+    assert wizard.setting("llm_provider") == provider
+
+
+def test_init_provider_flag_accepts_the_same_names(wizard):
+    wizard.run(
+        [],
+        argv=["--non-interactive", "--provider", "OpenAI-compatible"],
+        terminal=False,
+    )
+
+    assert wizard.rc == 0
+    assert wizard.setting("llm_provider") == "chatgpt"
+    assert "Configured chatgpt /" in wizard.out
+
+
+def test_init_still_refuses_a_name_that_selects_nothing(wizard):
+    wizard.run([], argv=["--non-interactive", "--provider", "deepmind"], terminal=False)
+
+    assert wizard.rc == 1
+    assert "unknown provider 'deepmind'" in wizard.err

@@ -1610,9 +1610,65 @@ def _prompt_value(label: str, default: str) -> str:
     return input(f"{label}{suffix}: ").strip() or default
 
 
+#: What each built-in provider id selects, under the name the README and the
+#: workbench give the same choice. The wizard listed bare ids, so someone
+#: holding a DeepSeek, vLLM or OpenRouter key had nothing to tell them that
+#: `chatgpt` is the "OpenAI-compatible" protocol.
+_INIT_PROVIDER_NAMES = {
+    "ark": ("Ark-compatible", "Volcengine Ark: Doubao, GLM, Kimi, DeepSeek"),
+    "chatgpt": (
+        "OpenAI-compatible",
+        "/chat/completions: OpenAI, DeepSeek, vLLM, OpenRouter, ...",
+    ),
+    "openai_responses": ("OpenAI Responses", "OpenAI /responses"),
+    "claude": ("Anthropic-compatible", "Anthropic /v1/messages"),
+    "gemini": ("Gemini-compatible", "Google generateContent"),
+    "ollama": ("Ollama", "cloud or local models"),
+}
+#: The vendor names people type for a protocol.
+_INIT_PROVIDER_ALIASES = {
+    "openai": "chatgpt",
+    "anthropic": "claude",
+    "google": "gemini",
+}
+
+
+def _init_provider_id(value, providers) -> str | None:
+    """The provider id a typed name selects, or None when it names none."""
+    text = str(value or "").strip().lower()
+    if text in providers:
+        return text
+    folded = re.sub(r"[\s_]+", "-", text)
+    for provider, (name, _what) in _INIT_PROVIDER_NAMES.items():
+        if folded in (provider.replace("_", "-"), name.lower().replace(" ", "-")):
+            return provider if provider in providers else None
+    alias = _INIT_PROVIDER_ALIASES.get(folded)
+    return alias if alias in providers else None
+
+
+def _init_provider_lines(providers) -> list[str]:
+    """One line per provider: its id, its UI name, and what speaks it."""
+    lines = []
+    for provider in _INIT_PROVIDER_NAMES:
+        if provider in providers:
+            name, what = _INIT_PROVIDER_NAMES[provider]
+            lines.append(f"  {provider:<17} {name} ({what})")
+    lines.extend(
+        f"  {provider}"
+        for provider in sorted(providers)
+        if provider not in _INIT_PROVIDER_NAMES
+    )
+    return lines
+
+
 def cmd_init(args) -> int:
     service, store = _onboarding_service()
     try:
+        if args.provider:
+            # `--provider OpenAI-compatible` is the same request as `chatgpt`.
+            args.provider = (
+                _init_provider_id(args.provider, service.providers) or args.provider
+            )
         defaults = service.defaults(args.provider)
         if args.api_key_stdin and args.search_key_stdin:
             raise ValueError(
@@ -1633,17 +1689,22 @@ def cmd_init(args) -> int:
         if interactive:
             known = ", ".join(sorted(service.providers))
             print("OpenAI4S first-run setup")
-            print(f"Available providers: {known}")
+            print("Providers (type the id on the left, or the name beside it):")
+            for line in _init_provider_lines(service.providers):
+                print(line)
             # Asked again until it names a provider this build has. A typo used
             # to be carried through every later question -- each showing the
             # *current* provider's defaults -- and refused only at the end,
             # with every answer discarded.
             while True:
                 typed = _prompt_value("Provider", provider).lower()
-                if typed in service.providers:
+                chosen = _init_provider_id(typed, service.providers)
+                if chosen is not None:
                     break
                 print(f"  unknown provider {typed!r}; enter one of: {known}")
-            provider = typed
+            if chosen != typed:
+                print(f"  using provider {chosen}")
+            provider = chosen
             defaults = service.defaults(provider)
             model = model or _prompt_value("Model", defaults["model"])
             base_url = base_url or _prompt_value("Base URL", defaults["base_url"])
@@ -2823,7 +2884,12 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(fn=cmd_run)
 
     pi = sub.add_parser("init", help="guided first-run model configuration")
-    pi.add_argument("--provider", help="provider id (default: current provider)")
+    pi.add_argument(
+        "--provider",
+        help="provider id: ark, chatgpt, openai_responses, claude, gemini or "
+        "ollama; the web UI's name for one (OpenAI-compatible, "
+        "Anthropic-compatible, ...) is accepted too (default: current provider)",
+    )
     pi.add_argument(
         "--model",
         help="model id (default: the model already saved for this provider, "
