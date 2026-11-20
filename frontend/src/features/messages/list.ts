@@ -16,6 +16,7 @@ import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import { artifacts } from "../../stores/artifacts";
 import { currentId, feedback as feedbackSignal } from "../../stores/session";
+import { permCards, running, stepEls, stream as liveStream } from "../../stores/stream";
 import { branchState } from "../../stores/timeline";
 import { stripRefVersions } from "../autocomplete/mentions";
 import { copyFailedText, copyText } from "../chrome/clipboard";
@@ -41,6 +42,7 @@ import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { planModeRequestText, planSeed, planSeedMarker } from "./planPrompt";
 import { cancelledIdentity, stoppedMarker } from "./stopped";
+import { dropEmptyProse, openTurnGroup, placeCardInTurn, turnTextKey, type TurnGroup } from "./turnGroup";
 
 export const INITIAL_RENDER_BATCH = 40;
 
@@ -173,8 +175,11 @@ export function addMsgActions(wrap: HTMLElement, text: string): void {
     paintIcon(copy, "check");
     setTimeout(() => paintIcon(copy, "copy"), 1200);
   };
-  const key = fbKey(text);
-  const cur = feedbackBag()[key] || null;
+  // Keyed on the turn's words, not on how they were chunked: the live stream
+  // and the stored rows of one turn must name the same rating. A rating saved
+  // under the older raw-text key is still shown.
+  const key = fbKey(turnTextKey(text));
+  const cur = feedbackBag()[key] || feedbackBag()[fbKey(text)] || null;
   const tup = el("button", cur === "up" ? "on" : null);
   (tup as HTMLButtonElement).type = "button";
   tup.title = t("msgAction.thumbsUp");
@@ -211,6 +216,18 @@ export function addMsgActions(wrap: HTMLElement, text: string): void {
   row.appendChild(tdn);
   row.appendChild(edit);
   wrap.appendChild(row);
+}
+
+/**
+ * End a turn (`turnGroup.ts`): drop the prose blocks nothing was written to
+ * and give the turn its one action row, whose Copy and rating cover all of
+ * the turn's prose. A turn that said nothing (only cards) gets no row: there
+ * is nothing to copy, and every such turn would share one rating.
+ */
+export function finishTurnGroup(wrap: HTMLElement, text: string): void {
+  dropEmptyProse(wrap);
+  (wrap as HTMLElement & { _messageText?: string })._messageText = text;
+  if (turnTextKey(text)) addMsgActions(wrap, text);
 }
 
 function messageText(m: StoredMessage): string {
@@ -466,22 +483,174 @@ function appendBatch(host: ParentNode, nodes: Node[]): void {
   for (const node of nodes) host.appendChild(node);
 }
 
-export function renderHistoryItem(
-  item: HistoryItem,
-  target: ParentNode,
-): Node | null {
-  if (item.kind === "msg") {
-    return renderStored(item.v as StoredMessage, target);
+export type HistoryTurns = {
+  /** Render one stored item; `target` receives the top-level nodes only. */
+  add(item: HistoryItem, target: ParentNode): void;
+  /** `open`: the last turn is still running, so it is left unfinished. */
+  end(open?: boolean): void;
+};
+
+/**
+ * Stored rows assembled into turns, the way the live stream shows them
+ * (`turnGroup.ts`): a user row is its own node, and everything the assistant
+ * did until the next one -- narration rows, steps, approvals -- is one
+ * `.msg.assistant` with one action row. A reload used to render each stored
+ * narration paragraph as a message with its own Copy and rating, the cards
+ * as its siblings.
+ */
+export function historyTurns(): HistoryTurns {
+  let group: TurnGroup | null = null;
+  /** Narration rows since the last card: one prose block, as live shows them. */
+  let run: string[] = [];
+  let prose: string[] = [];
+  let failure: StoredMessage["failure"] = null;
+  let review: { status: string; truth: unknown } | null = null;
+
+  const flush = (): void => {
+    if (!group || !run.length) return;
+    group.md.innerHTML = renderMd(run.join("\n\n"));
+    embedArtifactFigures(group.md);
+    run = [];
+  };
+  /** The turn in progress, handed to `target` when its first card or prose arrives. */
+  const turn = (target: ParentNode, ts: number): TurnGroup => {
+    if (!group) {
+      group = openTurnGroup();
+      group.wrap.dataset.ts = String(ts || 0);
+      target.appendChild(group.wrap);
+    }
+    return group;
+  };
+  const end = (open = false): void => {
+    if (!group) return;
+    flush();
+    const wrap = group.wrap;
+    if (failure && failure.request_id) wrap.appendChild(failureMeta(failure));
+    if (review) {
+      setMessageReviewBadge(wrap, review.status, review.truth);
+      if (review.status !== "candidate") wrap.dataset.candidateResolved = "true";
+    }
+    // A running turn's stored cards wait for its replay, which takes each one
+    // into the live turn (`adoptIntoLiveStream`); it has no action row yet.
+    if (open) dropEmptyProse(wrap);
+    else finishTurnGroup(wrap, prose.join("\n\n"));
+    group = null;
+    prose = [];
+    failure = null;
+    review = null;
+  };
+  /** A card renderer appends to its target: here, at the turn's current position. */
+  const cardSink = (target: ParentNode, ts: number): ParentNode =>
+    ({
+      appendChild(node: Node): Node {
+        const g = turn(target, ts);
+        flush();
+        placeCardInTurn(g, node as HTMLElement);
+        return node;
+      },
+    }) as unknown as ParentNode;
+
+  const add = (item: HistoryItem, target: ParentNode): void => {
+    if (item.kind !== "msg") {
+      const render = item.kind === "perm" ? renderStoredPermissionImpl : renderStoredStepImpl;
+      if (render) render(item.v, cardSink(target, item.t));
+      return;
+    }
+    const m = item.v as StoredMessage;
+    const text = messageText(m);
+    if (!text.trim()) return;
+    if (m.role === "user") {
+      end();
+      renderStored(m, target);
+      return;
+    }
+    const g = turn(target, item.t);
+    const stopped = cancelledIdentity(m.cancelled);
+    if (stopped) {
+      // As the live stream ends a stopped turn: the marker closes its container.
+      flush();
+      g.wrap.classList.add("turn-stopped");
+      g.wrap.dataset.turnStatus = "cancelled";
+      g.wrap.appendChild(stoppedMarker(stopped));
+      end();
+      return;
+    }
+    const status = reviewStatusOf(m);
+    // A reviewed answer is the row a later `candidate_resolved` names.
+    if (status) delete g.wrap.dataset.messageId;
+    rememberCandidateIdentity(g.wrap, m);
+    if (status) {
+      const raw = m.review_status || (m.metadata && m.metadata.review_status);
+      const truth =
+        raw && typeof raw === "object" && "user_truth" in raw
+          ? (raw as { user_truth?: unknown }).user_truth
+          : undefined;
+      review = { status: String(status), truth };
+    }
+    if (m.failure && m.failure.request_id) failure = m.failure;
+    run.push(text);
+    prose.push(text);
+  };
+  return { add, end };
+}
+
+/**
+ * A Notebook REPL cell's persisted step (`input.origin === "notebook"`). The
+ * live chat never showed it -- a manual cell is not an agent turn -- so the
+ * reopened transcript leaves it out too, rather than showing it alone above
+ * the empty-session welcome.
+ */
+export function chatStep(row: Record<string, unknown>): boolean {
+  const input = row.input;
+  return !(input && typeof input === "object" && (input as { origin?: unknown }).origin === "notebook");
+}
+
+function historyNode(node: Element): boolean {
+  return ["msg", "step", "perm-card"].some((name) => node.classList.contains(name));
+}
+
+/**
+ * "Load earlier". Everything above the first user row on screen is the tail
+ * of a turn whose beginning was not loaded, with every older step and
+ * approval; the older page's rows belong among those, in time order. So that
+ * region is rebuilt, as turns, from the rows it now has; nothing from the
+ * first user row down is touched (the live turn, open cards, expanded steps).
+ */
+export function prependHistory(
+  host: HTMLElement,
+  older: StoredMessage[],
+  held: { messages: StoredMessage[]; steps: Array<Record<string, unknown>>; approvals?: Array<Record<string, unknown>> },
+): void {
+  const live = (liveStream.value as { wrap?: HTMLElement } | null)?.wrap || null;
+  const kids = Array.from(host.children) as HTMLElement[];
+  const userRow = (node: HTMLElement): boolean =>
+    node.classList.contains("msg") && (node.classList.contains("user") || node.classList.contains("plan-seed"));
+  const cut = kids.findIndex((node) => userRow(node) || node === live);
+  const boundary = cut < 0 ? null : (kids[cut] as HTMLElement);
+  const head = (cut < 0 ? kids : kids.slice(0, cut)).filter(historyNode);
+  const lastHead = head[head.length - 1];
+  const anchor = boundary || (lastHead ? lastHead.nextSibling : null);
+  // The same rows, in the same order, the first page was painted from.
+  const firstUser = held.messages.find((m) => m.role === "user" && messageText(m).trim());
+  const inLive = (item: HistoryItem): boolean => {
+    if (!live || item.kind === "msg") return false;
+    const row = item.v as { step_id?: unknown; decision_id?: unknown };
+    const registry = (item.kind === "perm" ? permCards.value : stepEls.value) as Record<string, { card?: Node } | undefined>;
+    const card = registry[String(item.kind === "perm" ? row.decision_id : row.step_id)]?.card;
+    return !!card && live.contains(card);
+  };
+  const items: HistoryItem[] = [];
+  for (const item of interleaveHistory([...older, ...held.messages], held.steps.filter(chatStep), held.approvals)) {
+    if (firstUser && item.v === firstUser) break;
+    if (!inLive(item)) items.push(item);
   }
-  if (item.kind === "perm") {
-    const node = renderStoredPermissionImpl ? renderStoredPermissionImpl(item.v, target) : null;
-    return node instanceof Node ? node : null;
-  }
-  if (renderStoredStepImpl) {
-    const node = renderStoredStepImpl(item.v, target);
-    return node instanceof Node ? node : null;
-  }
-  return null;
+  head.forEach((node) => node.remove());
+  const stage = document.createDocumentFragment();
+  const turns = historyTurns();
+  items.forEach((item) => turns.add(item, stage));
+  // With no user row below it, this region ends in the turn still running.
+  turns.end(!!running.value && !(boundary && userRow(boundary)));
+  host.insertBefore(stage, anchor);
 }
 
 /**
@@ -498,7 +667,10 @@ export function scheduleFramedRender(
     onError?: (error: unknown) => void;
     batch?: number;
     onBatch?: () => void;
-    renderItem?: (item: HistoryItem, target: ParentNode) => void;
+    /** Runs every paint step (a caller that swaps registries around it). */
+    around?: (paint: () => void) => void;
+    /** The session is running: its last turn is not finished by this paint. */
+    openTail?: boolean;
   } = {},
 ): void {
   cancelFramedRender();
@@ -511,6 +683,9 @@ export function scheduleFramedRender(
   }
   const batch = opts.batch ?? INITIAL_RENDER_BATCH;
   let i = 0;
+  // One grouping for the whole paint: a turn spans batches.
+  const turns = historyTurns();
+  const paint = opts.around || ((step: () => void) => step());
   const tick = (): void => {
     framedRaf = 0;
     if (opts.stillCurrent && !opts.stillCurrent()) {
@@ -531,8 +706,9 @@ export function scheduleFramedRender(
       for (; i < end; i++) {
         const item = items[i];
         if (!item) continue;
-        (opts.renderItem || renderHistoryItem)(item, sink);
+        paint(() => turns.add(item, sink));
       }
+      if (i >= items.length) paint(() => turns.end(!!opts.openTail));
     } catch (error) {
       framedOnCancel = null;
       if (opts.onError) opts.onError(error);
