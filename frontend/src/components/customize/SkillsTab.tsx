@@ -3,9 +3,9 @@ import { LANG, t } from "../../i18n";
 import { copyLookup } from "../../i18n/copy";
 import { rankSkillItems, skillToAcItem, type AcItem } from "../../features/autocomplete/rank";
 import { api, apiErrorText } from "../../features/customize/api";
-import { closeCust, refreshCustTab } from "../../features/customize/actions";
+import { closeCust, custTab, refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
-import { skillReadinessNoteText } from "../../features/customize/environment";
+import { skillReadinessNote, skillReadinessT } from "../../features/customize/environment";
 import {
   asList,
   asString,
@@ -99,7 +99,7 @@ export function searchSkills(skills: Skill[], query: string): Skill[] {
 export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
   const scope = skillScope(s);
   const name = asString(s.displayName || s.name);
-  const note = skillReadinessNoteText(s);
+  const note = skillReadinessNote(s);
   const domains = skillNetworkDomains(s);
   const network = domains ? skillNetworkCopy(domains) : null;
   const enabled = useOptimisticToggle(s.enabled !== false, (on) =>
@@ -117,7 +117,16 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
           <span>{name}</span> <Pill>{t(`skill.scope.${scope}`)}</Pill>
         </div>
         <div class="ds">{asString(s.description)}</div>
-        {note ? <div class="ds prof-warn">{note}</div> : null}
+        {note ? (
+          <div class="ds prof-warn skill-ready">
+            <span>{note.text}</span>
+            {note.compute ? (
+              <button type="button" class="outline-btn small skill-ready-go" onClick={() => custTab("compute")}>
+                {skillReadinessT("ready.openCompute")}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {network ? (
           <details class="skill-net">
             <summary>{network.summary}</summary>
