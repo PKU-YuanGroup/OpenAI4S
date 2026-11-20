@@ -12395,6 +12395,7 @@ class SessionRunner:
                     "id": record["artifact_id"],
                     **record,
                     "priority": _INTERNAL_ARTIFACT_PRIORITY,
+                    "role": artifact_index.artifact_role(record.get("filename")),
                 },
             },
         )
