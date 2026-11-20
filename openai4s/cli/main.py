@@ -981,12 +981,17 @@ def cmd_serve(args) -> int:
         signal.signal(signal.SIGTERM, previous_sigterm)
         _clear_state(cfg, only_if_owned_by=my_pid)
         raise
+    # Flushed: stdout is block-buffered whenever it is not a terminal, so under
+    # nohup, a redirect to a log file or `--detached` these lines -- the only
+    # ones naming the address actually bound -- sat in the buffer until the
+    # daemon exited, and the log of a running daemon never showed them.
     print(
         f"openai4s listening at {_url(cfg, with_token=False)} "
-        f"(model={cfg.llm.model})"
+        f"(model={cfg.llm.model})",
+        flush=True,
     )
-    print(_sign_in_hint(cfg))
-    print("web UI ready. Ctrl-C to stop.")
+    print(_sign_in_hint(cfg), flush=True)
+    print("web UI ready. Ctrl-C to stop.", flush=True)
     if cfg.team_mode:
         # First boot of team mode with no accounts: print the bootstrap
         # command and start normally — never prompt, never block (M1-3).
@@ -997,7 +1002,8 @@ def cmd_serve(args) -> int:
                 print(
                     "team mode is ON but no users exist yet; create the "
                     "first admin with:\n"
-                    "  openai4s user add <name> --role admin"
+                    "  openai4s user add <name> --role admin",
+                    flush=True,
                 )
         except Exception:
             pass

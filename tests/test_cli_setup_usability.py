@@ -10,10 +10,17 @@ from __future__ import annotations
 
 import importlib
 import io
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from openai4s.config import Config, LLMConfig
+
+_REPO = Path(__file__).resolve().parents[1]
 
 
 def _cli():
@@ -214,3 +221,93 @@ def test_init_still_stores_a_search_key_that_names_its_engine(wizard):
     assert wizard.rc == 0
     assert "Web search:" in wizard.out
     assert "tavily" in wizard.out
+
+
+# --------------------------------------------------------------------------
+# `./start.sh` and `openai4s serve`: the address a person is told
+# --------------------------------------------------------------------------
+
+
+def _start_sh_with_a_recording_cli(tmp_path) -> Path:
+    """A copy of start.sh beside a `.venv/bin/openai4s` that echoes its argv."""
+    folder = tmp_path / "openai4s-folder"
+    (folder / ".venv" / "bin").mkdir(parents=True)
+    shutil.copy(_REPO / "start.sh", folder / "start.sh")
+    stub = folder / ".venv" / "bin" / "openai4s"
+    stub.write_text('#!/bin/sh\necho "CLI: $*"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    return folder / "start.sh"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="start.sh is a POSIX launcher")
+@pytest.mark.parametrize(
+    ("env", "argv"),
+    [({"OPENAI4S_PORT": "8812"}, ["--no-open"]), ({}, ["--port", "9000"])],
+)
+def test_start_sh_prints_no_address_of_its_own(tmp_path, env, argv):
+    """CLI-9 / M-1. The banner hard-coded http://127.0.0.1:8760/ and printed
+    it whatever port was asked for, directly above the daemon's own
+    `listening at` line naming the real one. The script cannot know the
+    address (--port, OPENAI4S_PORT and .env all move it), so it prints none."""
+    script = _start_sh_with_a_recording_cli(tmp_path)
+
+    result = subprocess.run(
+        ["bash", str(script), *argv],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={"PATH": os.environ.get("PATH", os.defpath), **env},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "8760" not in result.stdout + result.stderr
+    assert "http://" not in result.stdout + result.stderr
+    assert f"CLI: serve {' '.join(argv)}" in result.stdout
+
+
+class _BlockBuffered(io.StringIO):
+    """stdout as it is under nohup, a redirect or --detached: text reaches the
+    log only when it is flushed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_the_log = ""
+
+    def flush(self) -> None:
+        self.in_the_log = self.getvalue()
+
+
+def test_serve_ready_lines_reach_a_redirected_log_while_the_daemon_runs(
+    tmp_path, monkeypatch
+):
+    """CLI-9. `./start.sh > serve.log 2>&1` showed nothing but the wrong
+    banner address for as long as the daemon ran: the `listening at` line was
+    printed without a flush and only appeared after `openai4s stop`."""
+    import openai4s.server as server_pkg
+
+    cli = _cli()
+    cfg = Config(
+        data_dir=tmp_path,
+        host="127.0.0.1",
+        port=8812,
+        llm=LLMConfig(provider="deepseek", api_key="k"),
+    )
+    cfg.ensure_dirs()
+    log = _BlockBuffered()
+    seen_while_serving: list[str] = []
+    monkeypatch.setattr(cli, "get_config", lambda initialize_dirs=True: cfg)
+    monkeypatch.setattr(server_pkg, "build_server", lambda _cfg: object())
+    monkeypatch.setattr(
+        server_pkg,
+        "run_server",
+        lambda _httpd: seen_while_serving.append(log.in_the_log),
+    )
+    monkeypatch.setattr(sys, "stdout", log)
+
+    rc = cli.cmd_serve(type("A", (), {"detached": False, "no_open": True})())
+
+    assert rc == 0
+    (visible,) = seen_while_serving
+    assert "openai4s listening at http://127.0.0.1:8812/" in visible
+    assert "openai4s url" in visible
+    assert "web UI ready" in visible
