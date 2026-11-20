@@ -47,7 +47,7 @@ from openai4s.agent.models import KernelEnvSpec
 from openai4s.agent.runtime import CompactionPolicy
 from openai4s.config import Config
 from openai4s.host.delegation_policy import child_execution_policy
-from openai4s.observability import carry_context
+from openai4s.observability import carry_context, delegate_step
 from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.storage.delegation import project_browser_artifact_evidence
 from openai4s.storage.delegation_attempts import (
@@ -832,6 +832,11 @@ class _ChildStepForwarder:
             "child_name": name,
             "depth": depth,
         }
+        # SCI-22: the delegation card this child's steps belong under -- the
+        # `delegate` step that started it (its context is carried here).
+        parent_step = delegate_step()
+        if parent_step:
+            self._decoration["parent_step_id"] = parent_step
         self._lock = threading.Lock()
         self._forwarded_ids: set[str] = set()
         self._pending_begin: dict[str, dict[str, Any]] = {}

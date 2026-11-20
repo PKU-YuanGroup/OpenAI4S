@@ -771,6 +771,7 @@ export function relabelStepCards(): void {
   for (const handle of Object.values(registry)) {
     if (!handle.card.isConnected) continue;
     paintStepWords(handle);
+    if (handle.step.kind === "delegate") paintChildCount(handle.card);
     // An open body is redrawn now; a closed one when it is next opened.
     if (handle.card.classList.contains("open")) paintStepBody(handle);
     else handle.bodyStale = true;
@@ -875,6 +876,61 @@ export function buildStepCard(step: Step, paint: StepPaint = {}): StepHandle {
 
 const LAZY_BODY: StepPaint = { lazyBody: true };
 
+/**
+ * SCI-22: the delegation card a sub-agent's step belongs under. Its steps
+ * (each `Reading x failed …` probe included) used to land in the main
+ * conversation between the parent's prose, two sub-agents' interleaved. The
+ * server names the card on every relayed step (`input.delegation
+ * .parent_step_id`, live and in the stored row), so the stream and a reload
+ * nest the same way. Null when that card is not on screen: the step stays flat.
+ */
+function delegationParent(step: Step): StepHandle | null {
+  const parentId = rec(rec(step.input).delegation).parent_step_id;
+  if (typeof parentId !== "string" || !parentId || parentId === step.step_id) return null;
+  const parent = stepRegistry()[parentId];
+  return parent && parent.step.kind === "delegate" ? parent : null;
+}
+
+/** Put a sub-agent's step inside its delegation card (shown when the card is open). */
+function nestUnderDelegation(parent: StepHandle, card: HTMLElement): void {
+  nestInStep(parent, card);
+  paintChildCount(parent.card);
+}
+
+function nestInStep(parent: StepHandle, card: HTMLElement): void {
+  let box = ownChild(parent.card, "s-children");
+  if (!box) {
+    box = el("div", "s-children");
+    parent.card.appendChild(box);
+  }
+  box.appendChild(card);
+}
+
+function ownChild(node: HTMLElement, cls: string): HTMLElement | undefined {
+  return (Array.from(node.children) as HTMLElement[]).find((kid) => kid.classList.contains(cls));
+}
+
+/** "3 steps inside" on a delegation card's head, beside its chevron. */
+function paintChildCount(card: HTMLElement): void {
+  const box = ownChild(card, "s-children");
+  const head = ownChild(card, "s-head");
+  if (!box || !head) return;
+  const count = (Array.from(box.children) as HTMLElement[]).filter((kid) => kid.classList.contains("step")).length;
+  let badge = ownChild(head, "s-child-count");
+  if (!badge) {
+    badge = el("span", "s-child-count");
+    head.appendChild(badge);
+    // The chevron stays last.
+    const chev = ownChild(head, "s-chev");
+    if (chev) head.appendChild(chev);
+  }
+  badge.textContent = count === 1 ? sendCopy("subagentStep") : sendCopy("subagentSteps", String(count));
+}
+
+function isNested(card: HTMLElement): boolean {
+  return !!card.parentElement && card.parentElement.classList.contains("s-children");
+}
+
 function stepRegistry(): Record<string, StepHandle> {
   let els = stepEls.value as Record<string, StepHandle> | null;
   if (!els) {
@@ -927,8 +983,11 @@ export function addLiveStep(m: Record<string, unknown>): void {
     applyStepState(existing, LAZY_BODY);
     // A reopened running session rendered this stored step from REST before
     // the turn's replay reached its `step` event: it belongs here, between
-    // the prose before and after it, as it was shown live.
-    if (adoptIntoLiveStream(existing.card)) demoteToolCard(liveStream.value as DemotableStream);
+    // the prose before and after it, as it was shown live. A sub-agent's step
+    // stays in its delegation card, which is adopted with it.
+    if (!isNested(existing.card) && adoptIntoLiveStream(existing.card)) {
+      demoteToolCard(liveStream.value as DemotableStream);
+    }
     down();
     return;
   }
@@ -945,8 +1004,15 @@ export function addLiveStep(m: Record<string, unknown>): void {
     down();
     return;
   }
+  const delegation = delegationParent(step);
   const handle = buildStepCard(step, LAZY_BODY);
   if (m.step_id) stepRegistry()[String(m.step_id)] = handle;
+  if (delegation) {
+    nestUnderDelegation(delegation, handle.card);
+    liveStream.value = st;
+    down();
+    return;
+  }
   placeInLiveStream(handle.card, st);
   demoteToolCard(st);
   liveStream.value = st;
@@ -969,9 +1035,15 @@ export function renderStoredStep(s: Step, target?: ParentNode | null): HTMLEleme
   // The history paint names the turn its card joins (`messages/list.ts`).
   const merged = mergePlanStep((target as { turn?: Element | null } | null | undefined)?.turn, s);
   if (merged) return merged.card;
+  const delegation = delegationParent(s);
   const handle = buildStepCard(s, LAZY_BODY);
   if (s.step_id) stepRegistry()[String(s.step_id)] = handle;
   handle.card.dataset.ts = String(s.created_at || 0);
+  // As the stream nested it (SCI-22).
+  if (delegation) {
+    nestUnderDelegation(delegation, handle.card);
+    return handle.card;
+  }
   (target || (typeof document !== "undefined" ? document.getElementById("messages") : null))?.appendChild(
     handle.card,
   );

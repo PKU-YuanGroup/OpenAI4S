@@ -443,6 +443,73 @@ describe("sub-agents side by side (SCI-22)", () => {
   });
 });
 
+describe("a sub-agent's steps inside its delegation card (SCI-22)", () => {
+  const child = (id: string, kind: string, extra: Record<string, unknown> = {}) => ({
+    step_id: id,
+    kind,
+    title: kind === "read" ? "Reading placeholder" : "Loading skill",
+    input: {
+      path: "placeholder",
+      delegation: { delegation_child_id: "child-aaaa1111", child_name: "general", depth: 1, parent_step_id: "d-1" },
+    },
+    ...extra,
+  });
+  const delegation = {
+    step_id: "d-1",
+    kind: "delegate",
+    title: "Delegating to general",
+    input: { specialist: "general", request: "Compute the GC content of ATGCGC." },
+  };
+
+  /** Each card's id and the id of the card it sits in ("" = the conversation). */
+  const layout = (root: El): string[] =>
+    root.querySelectorAll(".step").map((card) => {
+      let up = card.parent;
+      while (up && !up.classes.has("step")) up = up.parent;
+      return `${card.dataset.stepId || card.querySelector(".s-lbl")!.textContent}<${up ? up.querySelector(".s-lbl")!.textContent : ""}`;
+    });
+
+  it("nests them under the card live, and a reload nests them the same way", () => {
+    addLiveStep({ ...delegation, status: "running" });
+    addLiveStep(child("c-1", "read", { status: "running" }));
+    updateLiveStep({ step_id: "c-1", status: "error", output: { error: "FileNotFoundError: placeholder" } });
+    addLiveStep(child("c-2", "skill", { status: "done" }));
+    // The parent's own step after the delegation stays in the conversation.
+    addLiveStep({ step_id: "s-x", kind: "read", title: "Reading plate.csv", status: "done" });
+    updateLiveStep({ step_id: "d-1", status: "done", summary: "completed", output: {} });
+    const live = layout(messages);
+    const card = messages.querySelectorAll(".step-delegate")[0]!;
+    expect(card.querySelector(".s-child-count")!.textContent).toBe("2 steps inside");
+    // Folded with the card: the sub-agent's probes do not fill the conversation.
+    expect(card.querySelector(".s-children")).not.toBeNull();
+    expect(card.classes.has("open")).toBe(false);
+
+    resetStoreFields();
+    const history = new El("div");
+    for (const row of [
+      { ...delegation, status: "done", summary: "completed", output: {}, created_at: 1 },
+      { ...child("c-1", "read"), status: "error", output: { error: "FileNotFoundError: placeholder" }, created_at: 2 },
+      { ...child("c-2", "skill"), status: "done", created_at: 3 },
+      { step_id: "s-x", kind: "read", title: "Reading plate.csv", status: "done", created_at: 4 },
+    ]) {
+      renderStoredStep(row, history as unknown as ParentNode);
+    }
+    expect(layout(history)).toEqual(live);
+    expect(live).toEqual([
+      "Sub-agent · Compute the GC content of ATGCGC.<",
+      "Reading placeholder<Sub-agent · Compute the GC content of ATGCGC.",
+      "Loading skill<Sub-agent · Compute the GC content of ATGCGC.",
+      "Reading plate.csv<",
+    ]);
+  });
+
+  it("leaves a step flat when its delegation card is not on screen", () => {
+    const history = new El("div");
+    renderStoredStep({ ...child("c-9", "read"), status: "done" }, history as unknown as ParentNode);
+    expect(history.children.map((node) => node.classes.has("step"))).toEqual([true]);
+  });
+});
+
 describe("plan steps (CHAT-8)", () => {
   it("a turn keeps one plan card, repainted by each plan update", () => {
     const plan = (id: string, todos: Array<{ content: string; status: string }>): Record<string, unknown> => ({

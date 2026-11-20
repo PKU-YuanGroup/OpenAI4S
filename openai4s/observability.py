@@ -91,6 +91,31 @@ def set_correlation_id(value: str) -> contextvars.Token:
     return _correlation_id.set(str(value or ""))
 
 
+# SCI-22: the step id of the `delegate` call this context is inside. The
+# children that call starts run with its context (`carry_context`), so each
+# step they relay into the parent session names the delegation card it belongs
+# to -- live and in the stored row a reload reads.
+_delegate_step: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "openai4s_delegate_step", default=""
+)
+
+
+def delegate_step() -> str:
+    return _delegate_step.get()
+
+
+def set_delegate_step(value: str) -> contextvars.Token:
+    return _delegate_step.set(str(value or ""))
+
+
+def reset_delegate_step(token: contextvars.Token) -> None:
+    try:
+        _delegate_step.reset(token)
+    except ValueError:
+        # Reset from another context: leave that context's value alone.
+        pass
+
+
 def carry_context(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap ``fn`` so a thread running it sees the *caller's* context.
 
