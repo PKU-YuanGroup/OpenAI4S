@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { t } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { copyLookup } from "../../i18n/copy";
 import { api, ApiError, apiErrorText } from "../../features/customize/api";
 import { isTeamMember } from "../../features/chrome/team-identity";
@@ -257,7 +257,7 @@ export function ComputeTab() {
           gpu.available
             ? asString(gpu.gpu_name) || t("cust.compute.gpuAvailable")
             : computeCopy("compute.gpuNone") +
-              (member ? "" : " " + computeCopy("compute.gpuNoneSetup"))
+              (member ? "" : (LANG === "en" ? " " : "") + computeCopy("compute.gpuNoneSetup"))
         }
       />
       {remote ? (
