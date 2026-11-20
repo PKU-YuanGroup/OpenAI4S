@@ -175,6 +175,18 @@ def test_a_direct_answer_is_one_paragraph_not_a_report():
     assert "plain-language labels" in str(finalize_response_tool_spec())
 
 
+def test_the_web_prompt_says_to_run_code_as_a_cell_not_a_scratch_script():
+    # M-15: qc_run_cell.py (`exec(open(...).read())`), qc_audit2.py, qc_audit.py
+    # and qc_deep.py were written one by one, each became a project file, and
+    # the Notebook stayed empty for four minutes.
+    assert "Run code AS a cell." in _GATEWAY_PROMPT_EXTRA
+    assert (
+        "Do not write a .py / .R file in order to exec() or source() it from a "
+        "later cell" in _GATEWAY_PROMPT_EXTRA
+    )
+    assert "every file you write appears in the user's files" in _GATEWAY_PROMPT_EXTRA
+
+
 def test_the_web_prompt_says_to_run_a_users_cell_as_written():
     # SYNC-15: "Immediately run exactly this one Python cell" was refused as
     # "no deliverable" and the model went back to reading a CSV.

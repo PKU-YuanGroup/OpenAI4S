@@ -2706,6 +2706,9 @@ not a user-facing analysis.
 skill load, one download, one figure, one edit. The timeline then reads as a clean \
 sequence of steps, exactly like the reference. A leading `# gerund comment` on a \
 pure-compute cell titles that card.
+- Run code AS a cell. Do not write a .py / .R file in order to exec() or source() \
+it from a later cell: every file you write appears in the user's files, and nothing \
+runs until a cell runs it. Write files for deliverables (reports, tables, figures).
 - Produce real result FILES for anything worth keeping (save plots with matplotlib \
 `savefig`, tables with `df.to_csv`, reports via `host.write_file`). Every file you \
 create in the working directory is AUTOMATICALLY captured as an artifact the user can \
