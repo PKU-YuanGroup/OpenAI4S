@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLang } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
-import { _replayGap, _seqSeen, _streamEpoch, permCards, stream } from "../../stores/stream";
+import { _replayGap, _seqSeen, _streamEpoch, permCards, running, stream } from "../../stores/stream";
 import { installSend } from "../send";
 import { resetSendHandlers } from "../send/handlers";
 import { newRequestId } from "../send/send";
@@ -33,7 +33,10 @@ import { cancelFrame } from "./raf";
 import { flushScrollNow, unbindMessageScroll, updateJumpPill } from "./scroll";
 import type { LiveStream } from "./stream";
 import { turnTextKey } from "./turnGroup";
+import { bindTurnStatus, notePassingHint, resetTurnStatus } from "./turnStatus";
 import { turnDone } from "../send/turn";
+import { t } from "../../i18n/runtime";
+import { _liveCell } from "../../stores/notebook";
 import { _messagesFollow } from "../../stores/ui";
 
 // --------------------------------------------------------------------------
@@ -137,6 +140,10 @@ class FakeEl {
   get lastElementChild(): FakeEl | null {
     const kids = this.children;
     return kids[kids.length - 1] || null;
+  }
+  get nextSibling(): FakeNode | null {
+    const all = this.parentNode ? this.parentNode.childNodes : [];
+    return all[all.indexOf(this) + 1] || null;
   }
   get textContent(): string {
     return this.childNodes.length ? this.childNodes.map((node) => node.textContent).join("") : this.text;
@@ -859,6 +866,124 @@ describe("a turn is one container, live and reopened", () => {
     expect(messages().querySelectorAll(".step")).toHaveLength(1);
     // Nothing from the first loaded question down was rebuilt.
     expect(messages().children[3]).toBe(below);
+  });
+});
+
+// --------------------------------------------------------------------------
+// TURN-4: the conversation says what the running turn is doing
+// --------------------------------------------------------------------------
+
+describe("the running turn's status row", () => {
+  const row = (): HTMLElement | null => messages().querySelector(".turn-status");
+  const label = (): string => row()?.querySelector(".ts-label")?.textContent || "";
+  const detail = (): string => row()?.querySelector(".ts-detail")?.textContent || "";
+  const hintLine = (): string => document.getElementById("composer-hint")?.textContent || "";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(async () => json({}, 404)));
+    vi.stubGlobal("hint", (text: string) => {
+      (document.getElementById("composer-hint") as HTMLElement).textContent = text || "";
+    });
+    bindTurnStatus();
+  });
+
+  afterEach(() => {
+    resetTurnStatus();
+    vi.useRealTimers();
+  });
+
+  it("follows the turn through its phases and is gone when the turn ends", () => {
+    const started: unknown[] = [];
+    const cleared: unknown[] = [];
+    const realSet = globalThis.setInterval;
+    const realClear = globalThis.clearInterval;
+    vi.stubGlobal("setInterval", (...args: Parameters<typeof setInterval>) => {
+      const id = realSet(...args);
+      started.push(id);
+      return id;
+    });
+    vi.stubGlobal("clearInterval", (id: Parameters<typeof clearInterval>[0]) => {
+      cleared.push(id);
+      realClear(id);
+    });
+    expect(row()).toBeNull();
+    renderStored({ role: "user", content: "Fold change?", message_id: "m-1" });
+    running.value = true;
+    // Before the turn's first event: under the question.
+    expect(label()).toBe("Thinking");
+    expect(messages().lastElementChild).toBe(row());
+    expect(row()?.getAttribute("aria-live")).toBe("polite");
+
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    const wrap = messages().querySelector(":scope > .msg.assistant") as HTMLElement;
+    expect(wrap.nextSibling).toBe(row());
+
+    _liveCell.value = { draft: true, status: "drafting", source: "import numpy as np\nx = 1\nprint(x)" };
+    expect(label()).toBe("Writing a cell");
+    expect(detail()).toContain("3 lines so far");
+    _liveCell.value = { status: "running", source: "print(1)" };
+    expect(label()).toBe("Running the cell");
+    _liveCell.value = null;
+    expect(label()).toBe("Thinking");
+
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "fetch", title: "Fetching", status: "running" });
+    expect(label()).toBe("Waiting for the tool");
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-1", status: "done" });
+    expect(label()).toBe("Thinking");
+
+    onEvent({ type: "await_permission", root_frame_id: "f-1", frame_id: "f-1", decision_id: "perm-s", tool: "bash", title: "Run" });
+    expect(label()).toBe("Waiting for your approval");
+    onEvent({ type: "permission_resolved", root_frame_id: "f-1", decision_id: "perm-s", allow: true, scope: "once" });
+    expect(label()).toBe("Thinking");
+    // Still the row after the live turn, whatever the turn appended.
+    expect(wrap.nextSibling).toBe(row());
+
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    expect(row()).toBeNull();
+    // Every ticker it started is stopped (a leaked one has failed CI before).
+    expect(started.length).toBeGreaterThan(0);
+    expect(started.every((id) => cleared.includes(id))).toBe(true);
+  });
+
+  it("counts the phase's time where a screen reader is not told every second", () => {
+    running.value = true;
+    vi.advanceTimersByTime(45_000);
+    expect(detail()).toBe("45 s");
+    expect(row()?.querySelector(".ts-detail")?.getAttribute("aria-hidden")).toBe("true");
+    expect(label()).toBe("Thinking");
+    // A new phase starts its own count.
+    _liveCell.value = { status: "running", source: "x" };
+    vi.advanceTimersByTime(3_000);
+    expect(detail()).toBe("3 s");
+    vi.advanceTimersByTime(62_000);
+    expect(detail()).toBe("1 min 5 s");
+  });
+
+  it("replaces a status line that described one moment once the turn moves on", () => {
+    const say = (text: string): void => (globalThis as unknown as { hint: (t: string) => void }).hint(text);
+    running.value = true;
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    say("Now running your queued message: “fit again”");
+    notePassingHint();
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-9", kind: "fetch", title: "Fetching", status: "running" });
+    expect(hintLine()).toBe(t("toast.running"));
+
+    // With no new phase it is stale after a few seconds anyway.
+    say("This session is still running in the background; resuming…");
+    notePassingHint();
+    vi.advanceTimersByTime(7_000);
+    expect(hintLine()).toContain("resuming");
+    vi.advanceTimersByTime(2_000);
+    expect(hintLine()).toBe(t("toast.running"));
+
+    // A line something else put there since is not its to replace.
+    say("Now running your queued message: “x”");
+    notePassingHint();
+    say("Stopping…");
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-9", status: "done" });
+    vi.advanceTimersByTime(20_000);
+    expect(hintLine()).toBe("Stopping…");
   });
 });
 

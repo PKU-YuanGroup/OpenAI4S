@@ -82,6 +82,7 @@ import { callLane, setCancelHidden } from "./host";
 import { iconEl } from "./icon";
 import { bindBackgroundCells } from "./background";
 import { bindTurnProgress } from "./progress";
+import { bindTurnStatus } from "../messages/turnStatus";
 import {
   acceptTurnTicket,
   openTurnTicket,
@@ -836,6 +837,8 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
   }
   // The turn clock beside Stop and the session's token chip.
   bindTurnProgress();
+  // What the running turn is doing, in the conversation itself.
+  bindTurnStatus();
   // Background cells still running, above the composer, each stoppable.
   bindBackgroundCells();
   // Delegated on the document root, not on the node: a re-created #composer
