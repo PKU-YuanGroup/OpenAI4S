@@ -86,5 +86,7 @@ describe("a Skill's readiness in words", () => {
     )!;
     expect(note.text).toContain("需要 NVIDIA GPU，本机没有。");
     expect(note.text).toContain("「计算」");
+    // Chinese sentences run on: no space after 。
+    expect(note.text).not.toContain("。 ");
   });
 });

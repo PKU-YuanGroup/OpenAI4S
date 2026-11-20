@@ -3,7 +3,7 @@
  * 7795-7835 / 11653-11658.
  */
 import { publicText } from "../scrub/scrub";
-import { t } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { copyLookup } from "../../i18n/copy";
 
 /**
@@ -121,7 +121,8 @@ export function skillReadinessNote(s: unknown): SkillReadinessNote | null {
     } else lines.push(readyT("ready.unknown", need));
   }
   if (!lines.length) return null;
-  return { text: lines.join(" "), compute };
+  // Chinese sentences run on without a space.
+  return { text: lines.join(LANG === "en" ? " " : ""), compute };
 }
 
 export function skillReadinessNoteText(s: unknown): string | null {
