@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+from pathlib import Path
 from typing import Any, Iterable
 
 from openai4s.agent.actions import (
@@ -157,12 +158,42 @@ def action_narration(
     )
 
 
+def narration_paths(workspace: Any, data_dir: Any) -> tuple[tuple[str, str], ...]:
+    """The session workspace (shown as ``.``) and the data directory (shown
+    as ``<data_dir>``), in each spelling a cell may print, longest first.
+
+    The labels are the session package's own (`_redact_local_paths`).
+    """
+    pairs: list[tuple[str, str]] = []
+    for root, label in ((workspace, "."), (data_dir, "<data_dir>")):
+        if not root:
+            continue
+        path = Path(root).expanduser()
+        for spelling in {str(path), str(path.resolve())}:
+            if len(Path(spelling).parts) > 1:
+                pairs.append((spelling, label))
+    return tuple(sorted(pairs, key=lambda pair: len(pair[0]), reverse=True))
+
+
+def _relabel_local_paths(text: str, local_paths: Iterable[tuple[str, str]]) -> str:
+    labels = dict(local_paths)
+    if not labels or not text:
+        return text
+    pattern = re.compile(
+        r"(?<![\w.-])(?:"
+        + "|".join(re.escape(prefix) for prefix in labels)
+        + r")(?=[/\\\s\"'),;:\]}]|$)"
+    )
+    return pattern.sub(lambda match: labels[match.group(0)], text)
+
+
 def outcome_narration(
     action: Action | None,
     outcome: Any,
     language: str = "en",
     *,
     had_public_prose: bool = False,
+    local_paths: Iterable[tuple[str, str]] = (),
 ) -> str:
     """Project a real execution outcome without exposing code or reasoning.
 
@@ -170,13 +201,18 @@ def outcome_narration(
     successful code turn always gets a short deterministic post-execution
     notice unless that Cell itself completed the task.  Pre-action model prose
     can only describe intent; it is never evidence that the Cell succeeded.
+
+    ``local_paths`` (from `narration_paths`) shortens this machine's absolute
+    paths before anything is cut or quoted; the Notebook keeps the real output.
     """
     if not isinstance(action, CodeCell):
         return ""
     if getattr(outcome, "stop_reason", None) == "cancelled":
         return ""
 
-    observation = str(getattr(outcome, "observation", "") or "")
+    observation = _relabel_local_paths(
+        str(getattr(outcome, "observation", "") or ""), local_paths
+    )
     error = _error_headline(observation)
     zh = language == "zh"
     refusal = _host_refusal(error) if error else None
@@ -192,9 +228,14 @@ def outcome_narration(
         return ""
 
     # A cell that only keeps the session's books (plan, task list, runtime
-    # environment) used to be narrated as "output:" plus its raw return dict,
-    # interpreter path included. One plain line says what it did (CHAT-4).
-    bookkeeping = bookkeeping_calls(action.code) if action.language == "python" else ()
+    # environment) or registers a file it wrote used to be narrated as
+    # "output:" plus its raw return dict, an absolute path included. One plain
+    # line says what it did (CHAT-4).
+    bookkeeping = (
+        _only_host_calls(action.code, _NARRATED_CALLS)
+        if action.language == "python"
+        else ()
+    )
     if bookkeeping:
         return _bookkeeping_narration(
             bookkeeping, _section_body(observation, "stdout:"), zh
@@ -328,6 +369,10 @@ _BOOKKEEPING_CALLS = frozenset(
         "env.create",
     }
 )
+#: ``host`` calls that register a file the cell already wrote. Narrated like
+#: bookkeeping; not bookkeeping for the notebook export, which keeps the cell.
+_ARTIFACT_CALLS = frozenset({"save_artifact"})
+_NARRATED_CALLS = _BOOKKEEPING_CALLS | _ARTIFACT_CALLS
 
 
 def _host_call(node: ast.AST) -> str | None:
@@ -353,6 +398,10 @@ def bookkeeping_calls(code: str) -> tuple[str, ...]:
     printed, or assigned to a name that is then echoed.
     """
 
+    return _only_host_calls(code, _BOOKKEEPING_CALLS)
+
+
+def _only_host_calls(code: str, allowed: frozenset[str]) -> tuple[str, ...]:
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError):
@@ -364,7 +413,7 @@ def bookkeeping_calls(code: str) -> tuple[str, ...]:
             isinstance(statement, ast.Assign)
             and len(statement.targets) == 1
             and isinstance(statement.targets[0], ast.Name)
-            and _host_call(statement.value) in _BOOKKEEPING_CALLS
+            and _host_call(statement.value) in allowed
         ):
             held.add(statement.targets[0].id)
             calls.append(str(_host_call(statement.value)))
@@ -383,7 +432,7 @@ def bookkeeping_calls(code: str) -> tuple[str, ...]:
         if isinstance(value, ast.Name) and value.id in held:
             continue
         name = _host_call(value)
-        if name not in _BOOKKEEPING_CALLS:
+        if name not in allowed:
             return ()
         calls.append(str(name))
     return tuple(calls)
@@ -424,7 +473,21 @@ def _package_labels(names: Any, log: str) -> str:
     return ", ".join(shown)
 
 
+#: A file name the chat repeats: one path segment, no markup.
+_SHOWN_FILENAME = re.compile(r"[\w() +-][\w.() +-]{0,119}")
+
+
 def _bookkeeping_line(name: str, result: dict, zh: bool) -> str:
+    if name == "save_artifact":
+        # Only the name: the result's `path` is this machine's snapshot.
+        filename = str(result.get("filename") or "")
+        if _SHOWN_FILENAME.fullmatch(filename):
+            return (
+                f"已登记产物 {filename}。"
+                if zh
+                else f"Registered the artifact {filename}."
+            )
+        return "已登记产物。" if zh else "Registered an artifact."
     if name == "todo_write":
         todos = result.get("todos")
         if isinstance(todos, list):
@@ -499,7 +562,8 @@ _BOOKKEEPING_SENTENCE = (
     r"(?:更新了计划(?:（\d+ 步，完成 \d+ 步）)?。|更新了计划进度。|查看了当前计划。"
     r"|列出了 \d+ 个环境。|列出了可用环境。|已切换到 \S+ 环境，下一个单元起生效。"
     r"|已切换运行环境。|已安装 [A-Za-z0-9_.+, -]+。|未能安装 [A-Za-z0-9_.+, -]+。|安装步骤已结束。"
-    r"|安装没有完成，详情见 Notebook。"
+    r"|安装没有完成，详情见 Notebook。|已登记产物(?: [\w() +-][\w.() +-]*)?。"
+    r"|Registered the artifact [\w() +-][\w.() +-]*\.|Registered an artifact\."
     r"|Updated the plan(?: \(\d+ steps, \d+ done\))?\.|Updated the plan's progress\."
     r"|Checked the current plan\.|Listed \d+ environments\."
     r"|Listed the available environments\."
@@ -936,6 +1000,7 @@ __all__ = [
     "cancellation_marker",
     "completion_message",
     "is_progress_narration",
+    "narration_paths",
     "outcome_narration",
     "response_language",
 ]

@@ -2051,6 +2051,53 @@ def test_web_turn_withholds_tools_after_two_ignored_cell_notes(monkeypatch, tmp_
     assert choices == [(None, True), (None, True), ("none", True)]
 
 
+def test_post_cell_status_shows_the_sessions_paths_relative(monkeypatch, tmp_path):
+    """CHAT-4 follow-up: a cell that printed `host.save_artifact(...)`'s result
+    put the snapshot's absolute path into the conversation. The Web turn hands
+    the narration this session's workspace and data directory."""
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, _hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+    replies = iter(
+        [
+            "```python\nart = host.save_artifact('out.txt')\nprint(art)\nprint(1)\n```",
+            "```python\nhost.submit_output({'summary': 'done'}, ['done'])\n```",
+        ]
+    )
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg, on_delta, kwargs
+        return {"content": next(replies), "usage": {}}
+
+    def fake_execute(state, code, origin, emit, stream=True, language="python"):
+        del origin, emit, stream, language
+        if "submit_output" in code:
+            state.dispatcher.last_output = {
+                "output": {"summary": "done"},
+                "completion_bullets": ["done"],
+            }
+            return {"result": {"stdout": "", "stderr": "", "error": None}}
+        stdout = (
+            f"{{'filename': 'out.txt', 'path': '{tmp_path}/artifacts/v-1__out.txt'}}\n"
+            f"wrote {state.workspace}/out.txt"
+        )
+        return {"result": {"stdout": stdout, "stderr": "", "error": None}}
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+
+    result = runner.run_message(frame_id, "default", "Save it")
+
+    assert result["status"] == "completed"
+    [status] = [
+        message["content"]
+        for message in runner.store.list_messages(frame_id)
+        if "The cell finished" in str(message.get("content"))
+    ]
+    assert "'path': '<data_dir>/artifacts/v-1__out.txt'" in status
+    assert "wrote ./out.txt" in status
+    assert str(tmp_path) not in status
+
+
 def test_cancel_after_llm_reply_prevents_returned_cell(monkeypatch, tmp_path):
     dispatcher = SimpleNamespace(last_output=None)
     runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)

@@ -753,6 +753,10 @@ def probe_science_hosts(
     get: the same network switch, egress allowlist, SSRF guard and trust
     store. Any HTTP status counts as reachable -- a 404 for `/` still proves
     DNS, TCP and the TLS handshake -- and only "no status at all" does not.
+
+    A timeout gets one retry: a slow host is not a missing one (one answered
+    in 7.6 s on one try and missed 10 s on three others). Each host is still
+    bounded at two attempts, and the hosts run in parallel.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -761,9 +765,11 @@ def probe_science_hosts(
 
         probe = webtools.web_probe
 
-    def one(host: str) -> dict[str, Any]:
+    def attempt(host: str) -> dict[str, Any]:
         try:
             answer = probe(f"https://{host}/", timeout=_PROBE_TIMEOUT_S)
+        except TimeoutError as e:
+            return {"host": host, "reachable": False, "error": str(e) or "timed out"}
         except Exception as e:  # noqa: BLE001 - a refusal is the finding
             return {"host": host, "reachable": False, "error": str(e)}
         status = int(answer.get("status") or 0)
@@ -772,6 +778,22 @@ def probe_science_hosts(
             result["http_status"] = status
         else:
             result["error"] = str(answer.get("error") or "no response")
+        return result
+
+    def timed_out(result: dict[str, Any]) -> bool:
+        return not result["reachable"] and "timed out" in result["error"].lower()
+
+    def one(host: str) -> dict[str, Any]:
+        result = attempt(host)
+        if not timed_out(result):
+            return result
+        result = attempt(host)
+        result["attempts"] = 2
+        if timed_out(result):
+            result["timed_out"] = True
+            result["error"] = (
+                f"timed out: no answer within {_PROBE_TIMEOUT_S:g} s, on 2 tries"
+            )
         return result
 
     with ThreadPoolExecutor(max_workers=len(SCIENCE_HOSTS)) as pool:
@@ -1164,11 +1186,12 @@ def render(result: dict[str, Any]) -> str:
         if check["remedy"] and check["status"] != OK:
             lines.append(f"              -> {check['remedy']}")
         for database, answer in (check["facts"].get("reachability") or {}).items():
-            outcome = (
-                f"ok    HTTP {answer['http_status']}"
-                if answer["reachable"]
-                else f"FAIL  {answer['error']}"
-            )
+            if answer["reachable"]:
+                outcome = f"ok    HTTP {answer['http_status']}"
+                if answer.get("attempts", 1) > 1:
+                    outcome += " (after one timeout)"
+            else:
+                outcome = f"FAIL  {answer['error']}"
             lines.append(f"              {database:<10} {answer['host']:<26} {outcome}")
     lines.append("")
     if result["status"] == OK:
