@@ -28,7 +28,7 @@ import { publicText } from "../scrub/scrub";
 import { appendLiveOutput } from "../stream/cap";
 import { API } from "../ws/connect";
 import type { WsMessage } from "../ws/types";
-import { nbRender } from "./scroll";
+import { nbRender, setNotebookBottomHook } from "./scroll";
 import type { NotebookCell, NotebookOutputArtifact } from "./types";
 
 export function asCells(value: unknown): NotebookCell[] {
@@ -503,6 +503,29 @@ export function notebookDisplayEntries(): NotebookCell[] {
   const combined = live.length ? saved.concat(live) : saved.slice();
   return projectNotebookCells(combined);
 }
+
+/**
+ * NB-2: the cells that were on screen the last time the view was at the
+ * bottom. During a turn the list holds still for a reader who scrolled up,
+ * and a growing output pushes the view away from the bottom by itself; either
+ * way new cells arrived unannounced. What is not in this set is new.
+ */
+const seenKeys = signal<ReadonlySet<string>>(new Set());
+
+export function markNotebookSeen(): void {
+  const keys = notebookDisplayEntries().map(nbCellKey);
+  const seen = seenKeys.value;
+  if (keys.length === seen.size && keys.every((key) => seen.has(key))) return;
+  seenKeys.value = new Set(keys);
+}
+
+/** How many cells arrived since the reader last saw the bottom of the Notebook. */
+export function unseenNotebookCells(): number {
+  const seen = seenKeys.value;
+  return notebookDisplayEntries().filter((cell) => !seen.has(nbCellKey(cell))).length;
+}
+
+setNotebookBottomHook(markNotebookSeen);
 
 let painted: { frameId: string | null; entries: NotebookCell[] } | null = null;
 

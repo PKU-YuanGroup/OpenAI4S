@@ -2476,6 +2476,7 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .nb-owners{gap:6px;margin:4px 0 0}
 .nb-owner-chip{padding:2px 10px;border:1px solid var(--border);border-radius:999px;color:var(--text-400);font-size:12px}
 .nb-owner-chip.active{border-color:var(--text-000);background:var(--bg-200);color:var(--text-000)}
+.nb-new-cells{position:sticky;bottom:10px;z-index:2;display:block;margin:8px auto 0;height:28px;padding:0 12px;border:1px solid var(--border);border-radius:999px;background:var(--bg-000);color:var(--text-000);font-size:12px;font-weight:500;cursor:pointer;box-shadow:var(--shadow-soft)}
 .nb-repl{margin:20px -20px 0;padding:14px 20px 0;border:0;border-top:1px solid var(--line-soft);border-radius:0;background:transparent;box-shadow:none}
 .nb-repl-head{gap:10px;margin-bottom:10px;font-size:13px;color:var(--text-200)}
 .nb-kernel-title{font:500 13px/1.4 var(--sans);color:var(--text-000)}

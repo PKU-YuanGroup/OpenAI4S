@@ -18,10 +18,11 @@ import {
   kernelFilter,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
+import { running } from "../../stores/stream";
 import { executionQueue } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { publicText } from "../scrub/scrub";
-import { cellOutput, nbCellKey, notebookViewEntries, paintStreamedText } from "./cells";
+import { cellOutput, markNotebookSeen, nbCellKey, notebookViewEntries, paintStreamedText, unseenNotebookCells } from "./cells";
 import {
   notebookArtifactState,
   el,
@@ -64,6 +65,7 @@ import {
 import {
   bindNotebookScroll,
   followLiveOutput,
+  onNotebookScroll,
   measureNotebookFollow,
   nbRender,
   setNotebookRenderImpl,
@@ -995,6 +997,31 @@ function KernelSync({ envs }: { envs: boolean }) {
   return null;
 }
 
+/**
+ * NB-2: the conversation's jump-to-latest, for the Notebook. It reads the
+ * cell stores itself, so it appears while the list below is being held.
+ */
+export function NewCellsPill() {
+  const count = running.value ? unseenNotebookCells() : 0;
+  if (!count) return null;
+  return (
+    <button
+      type="button"
+      class="nb-new-cells"
+      onClick={() => {
+        const nb = document.getElementById("dock-notebook");
+        const body = nb ? (nb.parentElement as unknown as ScrollBox | null) : null;
+        if (!body) return;
+        body.scrollTop = body.scrollHeight;
+        // Resumes the held list now, without waiting for the scroll event.
+        onNotebookScroll(body);
+      }}
+    >
+      {nbT(count === 1 ? "nb.newCells.one" : "nb.newCells", count)}
+    </button>
+  );
+}
+
 export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   const repl = replEnabled.value;
@@ -1009,6 +1036,7 @@ export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
           <CellList entries={entries} />
           <OwnerChips />
           {repl ? <ReplPanel /> : <StatusStrip />}
+          <NewCellsPill />
         </>
       )}
     </>
@@ -1028,6 +1056,8 @@ export function renderNotebook(): void {
   const follow = measureNotebookFollow(body);
   bindNotebookScroll(body);
   render(<NotebookDock entries={notebookViewEntries()} />, nb);
+  // Following, or idle: everything painted is something the reader can see.
+  if (follow || !running.value) markNotebookSeen();
   followLiveOutput(body, follow);
 }
 
