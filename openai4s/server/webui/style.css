@@ -1070,6 +1070,7 @@ body.has-key-banner #sidebar,body.has-key-banner #main,body.has-key-banner #righ
 .step .s-net-head{color:var(--text-400);font-size:12px}
 .step .s-net-doms{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
 .step .s-net-dom{font-family:var(--mono);font-size:11.5px;padding:1px 6px;border-radius:6px;background:var(--bg-000);border:.5px solid var(--border);color:var(--text-300)}
+.step .s-net-next{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
 /* search results */
 .step .s-res{display:flex;flex-direction:column;gap:1px;padding:5px 0;border-top:1px solid var(--border,rgba(18,18,18,.05))}
 .step .s-res:first-child{border-top:none}

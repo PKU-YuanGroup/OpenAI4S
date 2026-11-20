@@ -116,9 +116,16 @@ def test_loading_a_host_only_skill_puts_the_limit_on_the_timeline_once(tmp_path)
     assert load_end[0]["summary"] == (
         f"loaded · network limited to {len(domains)} domains"
     )
+    # SCI-14: and which built-in connectors that takes away. literature-review
+    # declares no UniProt, PDB or EBI host, so a protein lookup is gone.
+    lost = loaded["session_network"]["unavailable_connectors"]
+    assert {"UniProtKB", "RCSB Protein Data Bank", "ChEMBL"} <= set(lost)
+    assert "OpenAlex" not in lost and "arXiv" not in lost
+    assert notice["output"]["unavailable_connectors"] == lost
     assert loaded["session_network"] == {
         "skills": ["literature-review"],
         "domains": sorted(domains),
+        "unavailable_connectors": lost,
     }
 
     # A second load binds the same manifest again and announces nothing new.
@@ -394,3 +401,30 @@ def test_the_refused_search_card_is_marked_blocked(tmp_path, monkeypatch):
         "search": True,
     }
     disp.store.close()
+
+
+def test_every_connector_names_the_hosts_its_requests_go_to():
+    """SCI-14: the load card's "connectors this session loses" is computed
+    from `REQUEST_HOSTS`, so a connector missing from it, or a host the
+    connector never calls, would make the card wrong without failing."""
+    from pathlib import Path
+
+    from openai4s.host import science
+    from openai4s.server.skill_network_admission import unavailable_connectors
+
+    assert set(science.REQUEST_HOSTS) == {db.id for db in science.DATABASES}
+    sources = "".join(
+        (Path(science.__file__).parent / name).read_text(encoding="utf-8")
+        for name in ("science.py", "zenodo.py")
+    )
+    for connector, hosts in science.REQUEST_HOSTS.items():
+        assert hosts, connector
+        for host in hosts:
+            assert f"https://{host}/" in sources, (connector, host)
+    # A limit that declares every host loses nothing; one that declares none
+    # loses every connector.
+    every = [host for hosts in science.REQUEST_HOSTS.values() for host in hosts]
+    assert unavailable_connectors(every) == []
+    assert unavailable_connectors(["example.org"]) == [
+        db.label for db in science.DATABASES
+    ]

@@ -10,6 +10,7 @@ vi.mock("../artifacts/ui", async (importOriginal) => ({
 import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
 import { startStream } from "../messages/stream";
+import { continueInNewSession } from "./skill-network";
 import { addLiveStep, buildStepCard, renderStoredStep, updateLiveStep } from "./step";
 
 /** Just enough DOM for step cards (no jsdom here). */
@@ -349,6 +350,33 @@ describe("a loaded Skill's network limit", () => {
     expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
   });
 
+  it("the load card names the built-in connectors the limit takes away (SCI-14)", async () => {
+    await setLang("en");
+    const card = buildStepCard({
+      step_id: "l-2",
+      kind: "skill",
+      title: "Loading literature-review skill guidance",
+      status: "done",
+      summary: "loaded · network limited to 3 domains",
+      input: { name: "literature-review" },
+      output: {
+        name: "literature-review",
+        content: "# Literature review",
+        session_network: {
+          skills: ["literature-review"],
+          domains: DOMAINS,
+          unavailable_connectors: ["UniProtKB", "RCSB Protein Data Bank"],
+        },
+      },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-net-lost")!.textContent).toBe(
+      "This session can no longer use these built-in connectors: UniProtKB, RCSB Protein Data Bank.",
+    );
+    // An older step with no list says nothing rather than "none".
+    const old = buildStepCard({ ...NOTICE }).card as unknown as El;
+    expect(old.querySelector(".s-net-lost")).toBeNull();
+  });
+
   it("a shell command the limit refused says so instead of a bare failure", async () => {
     await setLang("zh");
     const reason =
@@ -378,6 +406,36 @@ describe("a loaded Skill's network limit", () => {
     expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
     // The server's own words stay available below the explanation.
     expect(card.querySelector(".s-net-blocked")!.querySelector("pre")!.textContent).toBe(reason);
+    // SCI-14: and what to do now, with the way out as a button.
+    expect(card.querySelector(".s-net-next")!.querySelector(".s-net-text")!.textContent).toContain("请在新会话中继续");
+    expect(card.querySelector(".s-net-new")!.textContent).toBe("在新会话中继续");
+  });
+
+  it("Continue in a new session opens one and carries the last request over (SCI-14)", async () => {
+    const composer = { value: "", focus: vi.fn(), dispatchEvent: vi.fn() };
+    const bubbles = [{ textContent: "find 2 papers" }, { textContent: " re-check crambin on rest.uniprot.org " }];
+    const order: string[] = [];
+    vi.stubGlobal("Event", class { constructor(readonly type: string) {} });
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => new El(tag),
+      getElementById: (id: string) => (id === "composer" ? composer : null),
+      querySelectorAll: (sel: string) => (sel === "#messages .msg.user .bubble" ? bubbles : []),
+    });
+    vi.stubGlobal("newSession", async () => {
+      // The draft is read before the new session replaces the transcript.
+      order.push("new");
+      bubbles.length = 0;
+    });
+    await continueInNewSession();
+    expect(order).toEqual(["new"]);
+    expect(composer.value).toBe("re-check crambin on rest.uniprot.org");
+    expect(composer.focus).toHaveBeenCalled();
+
+    // Something already typed there is the user's, and stays.
+    composer.value = "my own words";
+    bubbles.push({ textContent: "older request" });
+    await continueInNewSession();
+    expect(composer.value).toBe("my own words");
   });
 
   it("a search the limit refused reads as blocked, not as 0 results", async () => {

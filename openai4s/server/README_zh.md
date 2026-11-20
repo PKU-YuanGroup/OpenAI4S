@@ -125,7 +125,7 @@ gateway.py
 | [`package_runtime.py`](package_runtime.py) | 把会话包的运行时证据收集为可选的 `runtime/*.json`：导出进程与安全姿态、会话实际解析出的模型配置（端点只给类别与指纹，绝不给 URL；以及 `chat()` 实际采用的能力）、带各自账本与 Cell 归属的委派子代理、全部活动卡片、host 调用、不含 payload 的权限请求、不含原始切片的压缩记录。也负责生成失败回合终止事件里不含内容的失败细节。收集永远不会让导出失败：读不出来的部分记为 unavailable。 |
 | [`session_recovery.py`](session_recovery.py) | 启动时协调过期的运行时状态，并在 activity 与恢复阻塞条件的约束下确定性地回收空闲内核。旧 daemon 遗留下来的活 generation 会被标成 `abandoned` 并保持可审计；这里没有任何代码反序列化对象，也不声称内存还活着。 |
 | [`session_runtime.py`](session_runtime.py) | 保存会话的控制平面对象，例如 dispatcher、委派树和动态 capability，让语言 worker 可以启动、替换或停止，而不丢掉这些状态。 |
-| [`skill_network_admission.py`](skill_network_admission.py) | 把已加载 Skill 的网络 manifest 绑到会话，并在两个执行 sink 上准入：下一格 Python/R Cell，以及 shell capability 签发。求交 manifest × 实测 sandbox posture × Host egress × 调用方绑定。manifest 永不授权。 |
+| [`skill_network_admission.py`](skill_network_admission.py) | 把已加载 Skill 的网络 manifest 绑到会话，并在两个执行 sink 上准入：下一格 Python/R Cell，以及 shell capability 签发。求交 manifest × 实测 sandbox posture × Host egress × 调用方绑定。manifest 永不授权。收窄摘要与提示还会列出这一限制拿走的内置科学连接器（`unavailable_connectors`，依据 `host/science.py` 的 `REQUEST_HOSTS`；SCI-14）。 |
 | [`skill_sidecars.py`](skill_sidecars.py) | 消费 worker 的私有 Skill 加载诊断，但不会把与不可信 Cell 共用解释器的声明当作恢复证据。它用 compare-and-swap 把对应 generation 的 sidecar 捕获标为失败，让恢复停止，而不是重放未经独立证明的 sidecar。Host 进程从不导入或执行 sidecar。 |
 | [`share_projection.py`](share_projection.py) | 把一个会话构建成一份冻结、扁平化的 `ShareProjection`（单一 synthetic root、无 checkpoint、无 memories/策略），再分两路序列化：一个 `import_bytes` 兼容的 bundle 和一份脱敏的查看器文档。复用会话包的失败即拒 secret 闸门。 |
 | [`share_router.py`](share_router.py) | 单个分享的只读公网请求处理器：仅 GET/HEAD、有且仅有两个读取根（内存查看器资产 + 当前 lease 的快照）、严格 CSP、单段 Range，以及统一 404。它绝不触碰内核、dispatcher 或任何 gateway 路由。 |
