@@ -4198,3 +4198,179 @@ def test_download_names_are_human_and_survive_non_ascii_titles():
     assert download_content_disposition('a"/../evil.zip').startswith(
         'attachment; filename="evil.zip"'
     )
+
+
+# --- TEAM-19: what verify-package passes, the importer admits ------------------
+#
+# A file written by a background task named that task (`exec-...`) as its
+# producer, and the task was not a Notebook Cell. The exporter wrote the id as
+# it was, the importer refused it as an unknown identity, and `verify-package`
+# -- which only hashed -- had already said the package was fine.
+
+_BACKGROUND_TASK = "exec-a1e3fc96632d"
+
+
+def _add_produced(store, root, project, workspace_dir, filename, producer):
+    target = workspace_dir / filename
+    target.write_bytes(b"\x89PNG\r\n\x1a\nfigure from a background task")
+    return store.save_artifact(
+        path=str(target),
+        filename=filename,
+        content_type="image/png",
+        size_bytes=target.stat().st_size,
+        checksum=hashlib.sha256(target.read_bytes()).hexdigest(),
+        producing_cell_id=producer,
+        frame_id=root,
+        root_frame_id=root,
+        project_id=project["project_id"],
+    )
+
+
+def _versions_by_filename(files):
+    return {
+        version["filename"]: version
+        for artifact in json.loads(files["artifacts.json"])["artifacts"]
+        for version in artifact["versions"]
+    }
+
+
+def _verify(tmp_path, data: bytes) -> dict:
+    from openai4s.evidence import verify_package
+
+    package = tmp_path / "under-test.openai4s-session.zip"
+    package.write_bytes(data)
+    return verify_package(package)
+
+
+def test_an_artifact_from_an_unrecorded_background_task_imports_back(tmp_path):
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    try:
+        _add_produced(
+            store, root, project, workspace(root, root), "scatter.png", _BACKGROUND_TASK
+        )
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+        versions = _versions_by_filename(files)
+        # No Cell in the package answers to the task id, so none is named.
+        assert versions["scatter.png"]["producing_cell_id"] is None
+        assert versions["prediction.csv"]["producing_cell_id"] == "cell-source"
+        notes = files["REPRODUCE.md"].decode("utf-8")
+        assert "`1` artifact version(s) have no producing" in notes
+        assert "the `1` recorded cell(s), in order" in notes
+
+        report = _verify(tmp_path, exported["data"])
+        assert report["ok"] is True, report["problems"]
+        assert report["importable"] is True
+
+        imported = domain.session_import(exported["data"])
+        names = {
+            item["filename"]
+            for item in store.list_artifacts(
+                {"root_frame_id": imported["root_frame_id"]}
+            )
+        }
+        assert {"scatter.png", "prediction.csv"} <= names
+    finally:
+        store.close()
+
+
+def test_a_package_written_before_the_fix_still_imports(tmp_path):
+    """Built the way the old exporter wrote it: the task id kept as producer."""
+
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    try:
+        _add_produced(
+            store, root, project, workspace(root, root), "scatter.png", _BACKGROUND_TASK
+        )
+        files = _unpack(domain.session_export(root)["data"])
+        manifest = json.loads(files["artifacts.json"])
+        for artifact in manifest["artifacts"]:
+            if artifact["filename"] == "scatter.png":
+                for version in artifact["versions"]:
+                    version["producing_cell_id"] = _BACKGROUND_TASK
+        files["artifacts.json"] = _canonical(manifest)
+        old_package = _repack(files)
+
+        assert _verify(tmp_path, old_package)["ok"] is True
+        imported = domain.session_import(old_package)
+        figure = next(
+            item
+            for item in store.list_artifacts(
+                {"root_frame_id": imported["root_frame_id"]}
+            )
+            if item["filename"] == "scatter.png"
+        )
+        # Made outside any Cell: imported, with no producing Cell claimed.
+        version = store.version_meta(figure["latest_version_id"])
+        assert version["producing_cell_id"] is None
+    finally:
+        store.close()
+
+
+def test_a_producer_that_is_no_cell_and_no_background_task_is_refused_by_both(
+    tmp_path,
+):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        manifest = json.loads(files["artifacts.json"])
+        manifest["artifacts"][0]["versions"][0]["producing_cell_id"] = "c-not-packaged"
+        files["artifacts.json"] = _canonical(manifest)
+        dangling = _repack(files)
+
+        with pytest.raises(
+            SessionPackageError,
+            match="artifact version references an unknown identity",
+        ):
+            domain.session_import(dangling)
+        # The verifier runs the importer's own check: the hashes all match,
+        # and it still says no -- with the importer's reason.
+        report = _verify(tmp_path, dangling)
+        assert report["ok"] is False
+        assert report["importable"] is False
+        assert report["problems"] == [
+            "the importer would refuse this package: "
+            "artifact version references an unknown identity"
+        ]
+    finally:
+        store.close()
+
+
+def test_an_attempt_that_ended_before_its_cell_ran_does_not_strand_the_package(
+    tmp_path,
+):
+    """An R Cell on a machine without R: an attempt, and never a Cell row."""
+
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        group = store.append_action_group(
+            root_frame_id=root,
+            turn_id="turn-r-cell",
+            kind="cell",
+            assistant_content="Trying an R cell",
+        )
+        attempt = store.allocate_execution_attempt(
+            group_id=group["group_id"],
+            producing_cell_id="c-never-recorded",
+            state_revision=2,
+            allocated_at=20,
+        )
+        store.finish_execution_attempt(
+            attempt["attempt_id"], terminal_state="prepare_failed", finished_at=21
+        )
+
+        exported = domain.session_export(root)
+        ledger = json.loads(_unpack(exported["data"])["ledger.json"])
+        # The failed attempt stays in the ledger: it is what a diagnosis reads.
+        assert "c-never-recorded" in {
+            item["producing_cell_id"] for item in ledger["execution_attempts"]
+        }
+        report = _verify(tmp_path, exported["data"])
+        assert report["ok"] is True, report["problems"]
+        domain.session_import(exported["data"])  # must not raise
+    finally:
+        store.close()

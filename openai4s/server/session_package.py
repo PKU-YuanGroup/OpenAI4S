@@ -128,6 +128,21 @@ _PRIVATE_KEY_BLOCK = re.compile(
     re.DOTALL,
 )
 _REDACTED = "[REDACTED]"
+#: How a background task is named where it is not a recorded Cell: the id
+#: `host.exec_background` returns, or the capture lifetime's unbound default.
+_BACKGROUND_PRODUCER = re.compile(r"exec-[0-9a-f]{12}|background")
+#: Attempt states reached before the Cell's row is written (server/cell_run.py);
+#: the empty one is an attempt still in flight when the package was made.
+_ATTEMPT_STATES_WITHOUT_A_CELL = frozenset(
+    {
+        "",
+        "abandoned",
+        "prepare_failed",
+        "projection_failed",
+        "capture_failed",
+        "record_failed",
+    }
+)
 IMPORT_QUARANTINE_SETTING_PREFIX = "session:import-quarantine:"
 _DELIVERY_IMPORT_PENDING_CONTENT = (
     "Completion delivery is pending package verification."
@@ -332,6 +347,8 @@ def _reproduce_notes(
     environment: Any,
     artifacts: Any,
     lineage_edges: Any,
+    cell_count: int | None = None,
+    produced_outside_a_cell: int = 0,
 ) -> bytes:
     """The page a recipient reads first.
 
@@ -375,9 +392,10 @@ def _reproduce_notes(
         "and no configuration, so a recipient can run it before deciding",
         "whether to trust the sender's installation at all.",
         "",
-        "It confirms three things: every file listed in `manifest.json` matches",
-        "its recorded SHA-256, the manifest matches its own digest, and the",
-        "archive contains no file the manifest does not list.",
+        "It confirms four things: every file listed in `manifest.json` matches",
+        "its recorded SHA-256, the manifest matches its own digest, the",
+        "archive contains no file the manifest does not list, and the records",
+        "pass the same checks the importer runs before it writes anything.",
         "",
         "**It does not establish who produced the package.** Anyone able to",
         "rewrite a payload can recompute the hashes that describe it; only a",
@@ -407,7 +425,19 @@ def _reproduce_notes(
         "  `artifacts.json`",
         f"- `{len(edges)}` lineage edge(s) in `lineage.json`, each linking an",
         "  input version to the output derived from it",
-        "- `notebook.json` — every cell that ran, in order",
+        (
+            "- `notebook.json` — every cell that ran, in order"
+            if cell_count is None
+            else f"- `notebook.json` — the `{cell_count}` recorded cell(s), in order"
+        ),
+    ]
+    if produced_outside_a_cell:
+        lines += [
+            f"- `{produced_outside_a_cell}` artifact version(s) have no producing",
+            "  cell in `notebook.json`: the code that made them (for example a",
+            "  background task from an older release) was not recorded as a cell",
+        ]
+    lines += [
         "- `ledger.json` — the action ledger, including attempts that failed",
         "- `DIAGNOSTICS.md` and `runtime/` — how the runtime behaved: stops,",
         "  failures, delegated children, activity, host calls (when present;",
@@ -1068,6 +1098,18 @@ class SessionPackageService:
             for cell in cells
             if cell.get("producing_cell_id")
         }
+        # A version may name a producer that is not a packaged Cell: a
+        # background task from before those were recorded as Cells, or a Cell
+        # whose row was never written. The importer refuses a reference it
+        # cannot resolve, so the package says "no producing Cell" instead of
+        # naming an id nothing in it answers to.
+        produced_outside_a_cell = 0
+        for item in artifact_projection.get("artifacts") or []:
+            for version in item.get("versions") or []:
+                producer = version.get("producing_cell_id")
+                if producer and str(producer) not in safe_cell_ids:
+                    version["producing_cell_id"] = None
+                    produced_outside_a_cell += 1
         raw_auto_mode = _export_auto_mode_for_publication(self.store, root_frame_id)
         auto_trust_state = (
             raw_auto_mode.get("trust_state", "local")
@@ -1134,6 +1176,10 @@ class SessionPackageService:
         lineage_edges = self._bounded_records(
             "lineage_edges", self._export_lineage(artifact_projection)
         )
+        for edge in lineage_edges:
+            producer = edge.get("producing_cell_id")
+            if producer and str(producer) not in safe_cell_ids:
+                edge["producing_cell_id"] = None
         plans = self._bounded_records(
             "plans",
             self.store.list_plans(root_frame_id, limit=_RECORD_LIMITS["plans"] + 1),
@@ -1271,6 +1317,8 @@ class SessionPackageService:
             environment=environment,
             artifacts=artifact_projection,
             lineage_edges=lineage_edges,
+            cell_count=len(cells),
+            produced_outside_a_cell=produced_outside_a_cell,
         )
         files.update(
             self._runtime_files(
@@ -2157,8 +2205,19 @@ class SessionPackageService:
         finally:
             self._import_lock.release()
 
-    def _import_bytes(self, data: bytes) -> dict[str, Any]:
-        self._injection_flags = 0
+    def _preflight(self, data: bytes) -> tuple[
+        dict[str, bytes],
+        dict[str, Any],
+        dict[str, dict[str, Any]],
+        list[dict[str, Any]] | None,
+    ]:
+        """Everything an import checks before it writes anything.
+
+        The one validator: `import_bytes` runs it, and `import_refusal` runs
+        it for `openai4s verify-package`, so a package the verifier passes is
+        one the importer admits.
+        """
+
         files, manifest = self._read_untrusted(data)
         for name, payload in files.items():
             if name != "manifest.json" and self._contains_secret_bytes(payload):
@@ -2174,6 +2233,11 @@ class SessionPackageService:
         activity_steps = self._read_activity_steps(
             files, str(documents["session.json"]["source"]["root_frame_id"])
         )
+        return files, manifest, documents, activity_steps
+
+    def _import_bytes(self, data: bytes) -> dict[str, Any]:
+        self._injection_flags = 0
+        files, manifest, documents, activity_steps = self._preflight(data)
         package_sha256 = _sha256(data)
         new_project_id: str | None = None
         import_root: Path | None = None
@@ -2716,6 +2780,25 @@ class SessionPackageService:
                 raise SessionPackageError(f"{label} identity is missing")
             reference(value, allowed, label)
 
+        def producing_cell(record: Any, label: str) -> None:
+            """A packaged Cell, or a background task that never was one.
+
+            Packages written before background tasks were recorded as Cells
+            name the task (``exec-...``) as a version's producer. That is a
+            file made outside any Cell, not a corrupt reference: it is imported
+            with no producing Cell. Any other unknown id is still refused.
+            """
+
+            value = record.get("producing_cell_id")
+            if (
+                isinstance(value, str)
+                and value not in cell_ids
+                and _BACKGROUND_PRODUCER.fullmatch(value)
+            ):
+                record["producing_cell_id"] = None
+                return
+            reference(value, cell_ids, label)
+
         session = documents["session.json"]
         if session.get("schema_version") != PACKAGE_SCHEMA_VERSION:
             raise SessionPackageError("session document schema version mismatch")
@@ -2881,9 +2964,19 @@ class SessionPackageService:
         del attempt_ids
         for attempt in attempts:
             required_reference(attempt.get("group_id"), group_ids, "execution attempt")
-            required_reference(
-                attempt.get("producing_cell_id"), cell_ids, "execution attempt"
-            )
+            # An attempt names the Cell it was allocated for whether or not
+            # that Cell ever recorded a row: one that ended before it ran (R
+            # was not installed, the daemon restarted) has none, and
+            # `_import_attempts` skips it. Only an attempt that says its Cell
+            # ran must find that Cell in the Notebook.
+            attempt_cell = attempt.get("producing_cell_id")
+            if not isinstance(attempt_cell, str) or not attempt_cell:
+                raise SessionPackageError("execution attempt identity is missing")
+            if (
+                str(attempt.get("terminal_state") or "")
+                not in _ATTEMPT_STATES_WITHOUT_A_CELL
+            ):
+                reference(attempt_cell, cell_ids, "execution attempt")
             reference(
                 attempt.get("replayed_from_cell_id"), cell_ids, "execution attempt"
             )
@@ -2939,9 +3032,7 @@ class SessionPackageService:
                     raise SessionPackageError(
                         "artifact version filename is inconsistent"
                     )
-                reference(
-                    version.get("producing_cell_id"), cell_ids, "artifact version"
-                )
+                producing_cell(version, "artifact version")
                 reference(version.get("env_snapshot_id"), env_ids, "artifact version")
                 digest = version.get("snapshot_sha256")
                 if version.get("available"):
@@ -3154,7 +3245,7 @@ class SessionPackageService:
             required_reference(
                 edge.get("output_version_id"), version_ids, "lineage edge"
             )
-            reference(edge.get("producing_cell_id"), cell_ids, "lineage edge")
+            producing_cell(edge, "lineage edge")
         for plan in plans:
             reference(plan.get("artifact_id"), artifact_ids, "plan")
         for annotation in annotations:
@@ -4947,10 +5038,66 @@ class SessionPackageService:
         path.rmdir()
 
 
+class _ArchiveOnlyStore:
+    """What the import preflight asks of a Store, answered with no Store.
+
+    No setting is configured, so only credential-shaped text and this
+    process's own environment secrets count as secret material. The
+    checkpoint-state check is the repository's pure one, over a throwaway
+    in-memory connection.
+    """
+
+    def get_setting(self, _key: str) -> None:
+        return None
+
+    def get_secret_setting(self, _key: str) -> None:
+        return None
+
+    def validate_checkpoint_state_import(
+        self, source: dict, *, include_state: bool = False
+    ) -> dict:
+        from openai4s.storage.checkpoint_state import CheckpointStateRepository
+
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        try:
+            return CheckpointStateRepository(
+                connection, threading.RLock(), clock_ms=lambda: 0
+            ).validate_checkpoint_state_import(source, include_state=include_state)
+        finally:
+            connection.close()
+
+
+def import_refusal(data: bytes) -> str | None:
+    """Why the importer would refuse ``data``, judged from the archive alone.
+
+    Runs the preflight `import_bytes` runs before it writes anything, with no
+    Store, data directory or network, and returns its refusal -- or None when
+    the package would be admitted. An installation can still refuse for
+    reasons the archive cannot show: a file containing one of *its* configured
+    secrets, or its own storage failing.
+    """
+
+    service = SessionPackageService(
+        _ArchiveOnlyStore(),
+        data_dir=Path("."),
+        workspace=lambda _root, _branch: Path("."),
+        cas=None,  # type: ignore[arg-type] - the preflight never reads the CAS
+    )
+    try:
+        service._preflight(data)
+    except SessionPackageError as error:
+        return str(error)
+    except (AttributeError, KeyError, OverflowError, TypeError, ValueError):
+        return "session package records are inconsistent"
+    return None
+
+
 __all__ = [
     "MAX_ARCHIVE_BYTES",
     "PACKAGE_FORMAT",
     "PACKAGE_SCHEMA_VERSION",
     "SessionPackageError",
     "SessionPackageService",
+    "import_refusal",
 ]

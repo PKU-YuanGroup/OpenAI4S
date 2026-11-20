@@ -1079,6 +1079,8 @@ def cmd_verify_package(args) -> int:
     if report["ok"]:
         print("  OK — every listed file matches its recorded hash, and the")
         print("       manifest matches its own digest.")
+        if report.get("importable"):
+            print("       Its records pass the importer's checks.")
         print(f"  note: {report['verifies']}")
         return 0
     print(f"  FAILED — {len(report['problems'])} problem(s):")
