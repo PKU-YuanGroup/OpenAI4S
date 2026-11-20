@@ -79,3 +79,121 @@ describe("reportFailure", () => {
     expect(shown).toEqual([errorPrefix(LANG) + actionFailedCopy("module refused")]);
   });
 });
+
+describe("context menu keyboard (SYNC-9, SYNC-10)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  class Node {
+    children: Node[] = [];
+    parent: Node | null = null;
+    attrs: Record<string, string> = {};
+    className = "";
+    textContent = "";
+    innerHTML = "";
+    type = "";
+    disabled = false;
+    style: Record<string, string> = {};
+    classList = { add: (name: string) => (this.className += " " + name) };
+    onclick: ((e: { stopPropagation: () => void }) => void) | null = null;
+    offsetHeight = 100;
+    offsetWidth = 100;
+    isConnected = true;
+    constructor(readonly tagName: string, readonly doc: FakeDoc) {}
+    setAttribute(name: string, value: string) { this.attrs[name] = value; }
+    appendChild(child: Node) { child.parent = this; this.children.push(child); return child; }
+    remove() {
+      if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
+      this.parent = null;
+      this.isConnected = false;
+    }
+    walk(): Node[] { return this.children.flatMap((c) => [c, ...c.walk()]); }
+    contains(node: unknown) { return node === this || this.walk().includes(node as Node); }
+    querySelector(sel: string) { return sel === "button" ? this.walk().find((n) => n.tagName === "button") ?? null : null; }
+    querySelectorAll(sel: string) { return sel === '[role="menuitem"]' ? this.walk().filter((n) => n.attrs.role === "menuitem") : []; }
+    focus() { this.doc.activeElement = this; }
+    getBoundingClientRect() { return { top: 10, bottom: 30, left: 10 }; }
+  }
+  class FakeDoc {
+    activeElement: unknown = null;
+    listeners: Record<string, Array<(e: unknown) => void>> = {};
+    body = new Node("body", this);
+    createElement = (tag: string) => new Node(tag, this);
+    addEventListener(type: string, fn: (e: unknown) => void) { (this.listeners[type] ||= []).push(fn); }
+    removeEventListener(type: string, fn: (e: unknown) => void) {
+      this.listeners[type] = (this.listeners[type] || []).filter((f) => f !== fn);
+    }
+    key(key: string) {
+      const event = { key, defaultPrevented: false, preventDefault() { event.defaultPrevented = true; } };
+      for (const fn of [...(this.listeners.keydown || [])]) fn(event);
+      return event;
+    }
+  }
+
+  async function open() {
+    vi.useFakeTimers();
+    const doc = new FakeDoc();
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("window", { innerHeight: 800, innerWidth: 1200 });
+    vi.stubGlobal("HTMLElement", Node);
+    const anchor = new Node("button", doc);
+    doc.body.appendChild(anchor);
+    anchor.focus();
+    const chosen: string[] = [];
+    const { openMenu } = await import("./chrome");
+    const pick = (label: string) => () =>
+      void chosen.push(label + " with focus on " + (doc.activeElement === anchor ? "anchor" : "other"));
+    openMenu(anchor as unknown as Element, [
+      { label: "Rename", onClick: pick("Rename") },
+      { label: "Export", onClick: pick("Export") },
+      { sep: true },
+      { label: "Delete", onClick: pick("Delete") },
+    ]);
+    vi.runAllTimers();
+    const menu = doc.body.children.find((n) => n.attrs.role === "menu")!;
+    const items = menu.children.filter((n) => n.attrs.role === "menuitem");
+    const label = () => (doc.activeElement as Node | null)?.children.map((c) => c.textContent).join("") ?? "";
+    return { doc, anchor, menu, items, label, chosen };
+  }
+
+  it("arrow keys, Home and End move between the items and wrap", async () => {
+    const { doc, label } = await open();
+    expect(label()).toBe("Rename");
+    expect(doc.key("ArrowDown").defaultPrevented).toBe(true);
+    expect(label()).toBe("Export");
+    doc.key("ArrowDown");
+    expect(label()).toBe("Delete");
+    doc.key("ArrowDown");
+    expect(label()).toBe("Rename");
+    doc.key("ArrowUp");
+    expect(label()).toBe("Delete");
+    doc.key("Home");
+    expect(label()).toBe("Rename");
+    doc.key("End");
+    expect(label()).toBe("Delete");
+  });
+
+  it("Escape closes the menu and gives focus back to the button that opened it", async () => {
+    const { doc, anchor, menu } = await open();
+    doc.key("ArrowDown");
+    doc.key("Escape");
+    expect(menu.isConnected).toBe(false);
+    expect(doc.activeElement).toBe(anchor);
+  });
+
+  it("a chosen item runs with focus back on the opener, so a dialog it opens returns there", async () => {
+    const { items, chosen, menu } = await open();
+    items[1]!.onclick!({ stopPropagation() {} });
+    expect(menu.isConnected).toBe(false);
+    expect(chosen).toEqual(["Export with focus on anchor"]);
+  });
+
+  it("arrow keys do nothing once focus has left the menu", async () => {
+    const { doc, anchor } = await open();
+    anchor.focus();
+    expect(doc.key("ArrowDown").defaultPrevented).toBe(false);
+    expect(doc.activeElement).toBe(anchor);
+  });
+});
