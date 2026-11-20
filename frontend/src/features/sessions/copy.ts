@@ -183,19 +183,37 @@ export function displayProjectName(
 }
 
 /** Feature-owned copy; the frozen legacy dictionaries remain generated. */
-export function sessionCopy(key: "sessionsError" | "foldersError" | "retry" | "exportWebPage"): string {
+export function sessionCopy(
+  key:
+    | "sessionsError"
+    | "foldersError"
+    | "retry"
+    | "exportWebPage"
+    | "exported"
+    | "exportedPathsLeft"
+    | "exportFailed",
+  value?: string | number,
+): string {
   const copy = LANG === "en" ? {
     sessionsError: "Could not load sessions. Retry reading the list.",
     foldersError: "Could not load folders.",
     retry: "Retry reading",
     exportWebPage: "Export read-only web page",
+    exported: "Session package exported.",
+    exportedPathsLeft:
+      "Session package exported. Messages and cell output still contain {0} path(s) of this computer (they are kept exactly as written so the package verifies); check before you share it.",
+    exportFailed: "Could not export the session package: {0}",
   } : {
     sessionsError: "无法读取会话列表，可重试读取。",
     foldersError: "无法读取文件夹。",
     retry: "重试读取",
     exportWebPage: "导出只读网页",
+    exported: "会话包已导出。",
+    exportedPathsLeft:
+      "会话包已导出。消息和单元输出里还留有 {0} 处本机路径（这些内容按原样保留，包才能通过校验），分享前请检查。",
+    exportFailed: "无法导出会话包：{0}",
   };
-  return copy[key];
+  return copy[key].replace("{0}", value == null ? "" : String(value));
 }
 
 /** The composer menus' context-usage card and their review and on/off hints. */

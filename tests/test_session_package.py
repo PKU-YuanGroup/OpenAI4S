@@ -4307,6 +4307,57 @@ def test_no_member_of_an_exported_package_carries_a_local_path(tmp_path, monkeyp
         store.close()
 
 
+def test_an_export_counts_the_local_paths_it_leaves_and_says_so(tmp_path, monkeypatch):
+    """EXP-1, owner's choice: text a digest covers (here a message that quotes
+    a home-directory path) is not rewritten, so the export counts what it left,
+    notes it in the package without repeating the paths, and still verifies."""
+    from openai4s.evidence import verify_package
+
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        clean = domain.session_export(root)
+        assert clean["local_paths_left"] == 0
+        clean_files = _unpack(clean["data"])
+        assert not any(
+            b"Local paths left as written" in payload
+            for payload in clean_files.values()
+        )
+
+        quoted = f"{home}/data/plate3.xlsx"
+        store.add_message(
+            root_frame_id=root,
+            frame_id=root,
+            role="user",
+            content=f"The raw file is {quoted}",
+        )
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+
+        assert exported["local_paths_left"] >= 1
+        # Left as written: it is the user's message.
+        assert quoted.encode() in files["session.json"]
+        notes = [
+            payload.decode("utf-8")
+            for payload in files.values()
+            if b"Local paths left as written" in payload
+        ]
+        assert len(notes) == 1
+        assert "`session.json`" in notes[0]
+        assert str(home) not in notes[0]
+
+        package = tmp_path / "left.openai4s-session.zip"
+        package.write_bytes(exported["data"])
+        report = verify_package(package)
+        assert report["ok"], report["problems"]
+    finally:
+        store.close()
+
+
 def test_a_moved_data_directory_does_not_ship_its_old_location(tmp_path, monkeypatch):
     """EXP-1. The prefix rules know this machine's data directory and home, so
     a record written before the data directory was moved -- another machine,

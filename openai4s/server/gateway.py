@@ -19592,6 +19592,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         ),
                         "X-Content-SHA256": exported["sha256"],
                         "X-OpenAI4S-Session-Schema": str(exported["schema_version"]),
+                        # How many local paths redaction left in text it keeps
+                        # byte-exact; the page says so after the download.
+                        "X-OpenAI4S-Local-Paths-Left": str(
+                            int(exported.get("local_paths_left") or 0)
+                        ),
                     },
                 )
                 return

@@ -351,7 +351,7 @@ export function sessionMenu(anchor: Element, fid: string): void {
     },
     // EXP-3: the same read-only view as one self-contained file, no relay.
     { label: sessionCopy("exportWebPage"), icon: "download", onClick: () => exportSessionWebPage(fid, frame) },
-    { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
+    { label: t("sessionPackage.export"), icon: "archive", onClick: () => void exportSessionPackage(fid, frame) },
     {
       label: t("sessionMenu.downloadArtifacts"),
       icon: "files",
@@ -391,11 +391,37 @@ export function sessionMenu(anchor: Element, fid: string): void {
   openMenu(anchor, items);
 }
 
-export function exportSessionPackage(fid: string, frame: SessionLike = {}): void {
+/**
+ * Downloads through `fetch`, not a bare link, so the page can read how many
+ * local paths the export left as written (message text and cell output are
+ * kept byte-exact) and say so before the file is shared, and so a refused
+ * export shows its reason instead of saving an error page as a .zip.
+ */
+export async function exportSessionPackage(fid: string, frame: SessionLike = {}): Promise<void> {
   const label = frame.name || frame.task_summary || "session";
-  downloadArtifactBundle(
-    `${API}/frames/${encodeURIComponent(fid)}/session/export`,
-    label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip",
+  let response: Response;
+  try {
+    response = await fetch(`${API}/frames/${encodeURIComponent(fid)}/session/export`, {
+      credentials: "same-origin",
+    });
+  } catch (error) {
+    hint(sessionCopy("exportFailed", apiErrorText(error)), true);
+    return;
+  }
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    hint(sessionCopy("exportFailed", publicText(body.error || String(response.status), 160)), true);
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  downloadArtifactBundle(url, label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip");
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  const left = Number(response.headers.get("X-OpenAI4S-Local-Paths-Left") || 0);
+  hint(
+    Number.isSafeInteger(left) && left > 0
+      ? sessionCopy("exportedPathsLeft", left)
+      : sessionCopy("exported"),
   );
 }
 
