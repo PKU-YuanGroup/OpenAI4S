@@ -1,7 +1,8 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { LANG, t } from "../../i18n";
 import { copyLookup } from "../../i18n/copy";
 import { rankSkillItems, skillToAcItem, type AcItem } from "../../features/autocomplete/rank";
+import { renderMd } from "../../features/md/render";
 import { api, apiErrorText } from "../../features/customize/api";
 import { closeCust, custTab, refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
@@ -15,6 +16,7 @@ import {
   insertSkillMention,
 } from "../../features/customize/host";
 import { useOptimisticToggle, useTabRead } from "./hooks";
+import { Icon } from "./icons";
 import { ActionStatus, Empty, Hdr, IconGhost, Pill, Toggle, type ActionNote } from "./ui";
 
 type Skill = Record<string, unknown>;
@@ -31,6 +33,16 @@ const st = copyLookup({
       "加载这个技能后，本会话余下的联网只能访问：{0}。访问其他网站的请求会被拒绝，批准也无法放宽；要访问其他网站，请新开一个会话。",
     "skills.netOffTip":
       "加载这个技能后，本会话余下的时间里不能再联网：网页检索、网页读取、下载以及 host.bash 命令里的网址都会被拒绝，批准也无法放开。要再联网，请新开一个会话。",
+    "skills.expand": "展开完整说明",
+    "skills.collapse": "收起",
+    "skills.needs": "需要：{0}",
+    "skills.needsNothing": "需要：除内核外没有声明其他要求",
+    "skills.req.gpu": "NVIDIA GPU",
+    "skills.req.science": "科学计算 Python 包",
+    "skills.network": "联网：{0}",
+    "skills.doc": "SKILL.md 全文",
+    "skills.docLoading": "正在读取 SKILL.md…",
+    "skills.docFailed": "无法读取 SKILL.md：{0}",
   },
   en: {
     "skills.search": "Search skills: name, a word from the description, or a Chinese keyword",
@@ -42,6 +54,16 @@ const st = copyLookup({
       "Loading this Skill limits network access for the rest of this session to: {0}. Requests to other sites are refused, and approving one cannot widen the limit; start a new session to reach them.",
     "skills.netOffTip":
       "Loading this Skill turns network access off for the rest of this session: web search, web fetch, downloads and URLs in host.bash commands are refused, and approving one cannot lift it. Start a new session to use the network again.",
+    "skills.expand": "Show the full description",
+    "skills.collapse": "Hide",
+    "skills.needs": "Needs: {0}",
+    "skills.needsNothing": "Needs: nothing declared beyond the kernel",
+    "skills.req.gpu": "an NVIDIA GPU",
+    "skills.req.science": "scientific Python packages",
+    "skills.network": "Network: {0}",
+    "skills.doc": "SKILL.md",
+    "skills.docLoading": "Reading SKILL.md…",
+    "skills.docFailed": "Could not read SKILL.md: {0}",
   },
 });
 
@@ -67,6 +89,81 @@ export function skillNetworkCopy(domains: string[]): { summary: string; detail: 
     summary: st("skills.net", count),
     detail: st("skills.netTip", domains.join(LANG === "en" ? ", " : "、")),
   };
+}
+
+/**
+ * SCI-06: what a Skill's expanded row states besides its recipe -- the whole
+ * description (the catalog's is cut at 200 characters, usually before "use
+ * this skill when"), what it needs in words, and its network mode. `doc` is
+ * `GET /skills/{name}` once it has answered.
+ */
+export function skillDetailFacts(
+  s: Skill,
+  doc: Skill | null,
+): { description: string; needs: string; network: string | null } {
+  const description =
+    asString(doc?.full_description) || asString(doc?.description) || asString(s.description);
+  const needs = asList(s.requirements)
+    .map((item) => String(item).toLowerCase())
+    .map((item) =>
+      item === "gpu" ? st("skills.req.gpu") : item === "science" ? st("skills.req.science") : item,
+    );
+  const caps = s.capabilities && typeof s.capabilities === "object" ? (s.capabilities as Skill) : {};
+  const net = caps.network && typeof caps.network === "object" ? (caps.network as Skill) : {};
+  const ui = net.ui && typeof net.ui === "object" ? (net.ui as Skill) : {};
+  const label = asString(LANG === "en" ? ui.label_en : ui.label_zh);
+  return {
+    description,
+    needs: needs.length ? st("skills.needs", needs.join(LANG === "en" ? ", " : "、")) : st("skills.needsNothing"),
+    network: label ? st("skills.network", label) : null,
+  };
+}
+
+/** The expanded half of a Skill row: the full description, its needs, and SKILL.md. */
+function SkillDetail({ s, scope }: { s: Skill; scope: string }) {
+  const [doc, setDoc] = useState<Skill | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const name = asString(s.name);
+  // A project Skill has no document route outside its project; its row says
+  // what the catalog knows.
+  const readable = scope !== "project";
+  useEffect(() => {
+    if (!readable) return undefined;
+    let live = true;
+    api(`/skills/${encodeURIComponent(name)}`).then(
+      (read) => {
+        if (live) setDoc(read);
+      },
+      (error) => {
+        if (live) setFailed(apiErrorText(error));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [name, readable]);
+  const facts = skillDetailFacts(s, doc);
+  const body = doc ? asString(doc.body) : "";
+  return (
+    <div class="skill-detail">
+      <div class="skill-detail-desc">{facts.description}</div>
+      <div class="skill-detail-fact">{facts.needs}</div>
+      {facts.network ? <div class="skill-detail-fact">{facts.network}</div> : null}
+      {!readable ? null : failed ? (
+        <div class="skill-detail-fact prof-warn">{st("skills.docFailed", failed)}</div>
+      ) : !doc ? (
+        <div class="skill-detail-fact">{st("skills.docLoading")}</div>
+      ) : body.trim() ? (
+        <>
+          <div class="skill-detail-head">{st("skills.doc")}</div>
+          <div
+            class="md skill-doc"
+            dangerouslySetInnerHTML={{ __html: renderMd(body, { resources: "none" }) }}
+          />
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 function skillScope(s: Skill): "project" | "bundled" | "personal" {
@@ -110,13 +207,33 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
   );
   // SCI-04: a failed delete is said in the row, not behind the dialog.
   const [actionNote, setActionNote] = useState<ActionNote>(null);
+  // SCI-06: the name opens the whole description, the needs and SKILL.md.
+  const [open, setOpen] = useState(false);
+  const toggleOpen = () => setOpen(!open);
   return (
-    <div class="cust-row">
+    <div class={"cust-row" + (open ? " skill-open" : "")}>
       <div class="info">
         <div class="nm">
-          <span>{name}</span> <Pill>{t(`skill.scope.${scope}`)}</Pill>
+          <button
+            type="button"
+            class="skill-name"
+            data-skill-expand=""
+            aria-expanded={open ? "true" : "false"}
+            title={st(open ? "skills.collapse" : "skills.expand")}
+            onClick={toggleOpen}
+          >
+            <Icon name={open ? "chevron-down" : "chevron-right"} size={14} />
+            <span>{name}</span>
+          </button>{" "}
+          <Pill>{t(`skill.scope.${scope}`)}</Pill>
         </div>
-        <div class="ds">{asString(s.description)}</div>
+        {open ? (
+          <SkillDetail s={s} scope={scope} />
+        ) : (
+          <div class="ds skill-desc" onClick={toggleOpen}>
+            {asString(s.description)}
+          </div>
+        )}
         {note ? (
           <div class="ds prof-warn skill-ready">
             <span>{note.text}</span>
@@ -135,14 +252,17 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
         ) : null}
         <ActionStatus note={actionNote} />
       </div>
-      <IconGhost
-        name="message-square"
-        title={t("skill.useInChat")}
+      <button
+        type="button"
+        class="outline-btn small skill-use"
         onClick={() => {
           closeCust();
           insertSkillMention(asString(s.name));
         }}
-      />
+      >
+        <Icon name="message-square" size={14} />
+        <span>{t("skill.useInChat")}</span>
+      </button>
       {s.versioned ? (
         <IconGhost
           name="clock"

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { setLang } from "../../i18n/runtime";
-import { searchSkills, skillNetworkCopy, skillNetworkDomains } from "./SkillsTab";
+import { searchSkills, skillDetailFacts, skillNetworkCopy, skillNetworkDomains } from "./SkillsTab";
 
 // Customize → Skills lists 612 skills; 561 of them sit inside one collection.
 
@@ -40,6 +40,46 @@ describe("searching the skills tab", () => {
 
   it("finds nothing for a miss", () => {
     expect(names("zzzz-no-such-skill")).toEqual([]);
+  });
+});
+
+// SCI-06: a row showed ~200 characters of the description and nothing opened.
+describe("a skill's expanded row", () => {
+  const ALPHAFOLD = {
+    name: "alphafold2",
+    description: "Predict protein structure with AlphaFold2. Reach for this sk...",
+    requirements: ["gpu"],
+    capabilities: {
+      network: {
+        mode: "raw_required",
+        domains: [],
+        ui: { label_en: "raw network required and currently blocked", label_zh: "需要 raw 网络且当前被阻止" },
+      },
+    },
+  };
+
+  it("shows the whole description once the document has answered, the catalog line until then", async () => {
+    await setLang("en");
+    expect(skillDetailFacts(ALPHAFOLD, null).description).toBe(ALPHAFOLD.description);
+    const whole = "Predict protein structure with AlphaFold2. Reach for this skill when: (1) a monomer …";
+    expect(
+      skillDetailFacts(ALPHAFOLD, { description: ALPHAFOLD.description, full_description: whole, body: "# AF2" })
+        .description,
+    ).toBe(whole);
+  });
+
+  it("says what the skill needs and its network mode in words", async () => {
+    await setLang("en");
+    const facts = skillDetailFacts(ALPHAFOLD, null);
+    expect(facts.needs).toBe("Needs: an NVIDIA GPU");
+    expect(facts.network).toBe("Network: raw network required and currently blocked");
+    expect(skillDetailFacts(FIGURE, null).needs).toBe("Needs: nothing declared beyond the kernel");
+    expect(skillDetailFacts(FIGURE, null).network).toBeNull();
+
+    await setLang("zh");
+    expect(skillDetailFacts(ALPHAFOLD, null).needs).toBe("需要：NVIDIA GPU");
+    expect(skillDetailFacts(ALPHAFOLD, null).network).toBe("联网：需要 raw 网络且当前被阻止");
+    await setLang("en");
   });
 });
 

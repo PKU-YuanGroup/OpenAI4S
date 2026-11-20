@@ -231,6 +231,58 @@
 #cust .skill-net .ds {
   overflow-wrap: anywhere;
 }
+/* SCI-06: a skill's name opens its full description, needs and SKILL.md. */
+#cust .skill-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+#cust .skill-name:hover span {
+  text-decoration: underline;
+}
+#cust .skill-desc {
+  cursor: pointer;
+}
+#cust .skill-detail {
+  margin-top: 6px;
+  font-size: 14px;
+  color: var(--text-200);
+  overflow-wrap: anywhere;
+}
+#cust .skill-detail-fact {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-400);
+}
+#cust .skill-detail-head {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-000);
+}
+#cust .skill-doc {
+  max-height: 420px;
+  overflow: auto;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius, 8px);
+  font-size: 13px;
+}
+#cust .skill-use {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 #cust .cust-input {
   min-height: 40px;
   padding: 8px 14px;
