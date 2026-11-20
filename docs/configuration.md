@@ -493,7 +493,7 @@ openai4s status    # is it up? (plain URL, never the access token; --json for sc
 openai4s stop      # stop the daemon; waits up to --timeout (default 30s), --force to SIGKILL
 
 # work without the web UI
-openai4s run "…"   # one Code-as-Action task in-process, no daemon
+openai4s run "…"   # one task in this terminal, no daemon; stored as a session the web UI shows
 openai4s cluster submit|list|cancel|logs|profiles   # batch jobs through the daemon
 openai4s share create|update|list|revoke|enable|disable|status|import
                    # read-only session shares through a relay (docs/webshare.md)
