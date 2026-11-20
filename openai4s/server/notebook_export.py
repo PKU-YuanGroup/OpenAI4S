@@ -12,7 +12,11 @@ import zipfile
 from typing import Any, Callable, Mapping, Protocol
 
 from openai4s.agent.actions import is_completion_only_cell
-from openai4s.server.completions import is_progress_narration, response_language
+from openai4s.server.completions import (
+    bookkeeping_calls,
+    is_progress_narration,
+    response_language,
+)
 from openai4s.storage.branch_projection import project_branch_records
 
 
@@ -174,8 +178,11 @@ def _is_diagnostic_cell(code: str) -> bool:
     Imports alone are setup and stay. A cell is diagnostic when everything
     besides imports is a probe -- a version or package listing, a machine
     inspection through ``host.bash``, or a ``host`` call that looks at the
-    session (``view_image``, skill listings) -- and at least one probe ran.
+    session (``view_image``, skill listings) or keeps its books (the plan,
+    the task list, the runtime environment) -- and at least one probe ran.
     """
+    if bookkeeping_calls(code):
+        return True
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError):
@@ -185,8 +192,13 @@ def _is_diagnostic_cell(code: str) -> bool:
         if isinstance(statement, (ast.Import, ast.ImportFrom, ast.Pass)):
             continue
         segment = ast.get_source_segment(code, statement) or ""
-        if _PROBE_SOURCE.search(segment) or (
-            isinstance(statement, ast.Expr) and _is_probe_expression(statement.value)
+        if (
+            _PROBE_SOURCE.search(segment)
+            or (
+                isinstance(statement, ast.Expr)
+                and _is_probe_expression(statement.value)
+            )
+            or bookkeeping_calls(segment)
         ):
             probed = True
             continue
