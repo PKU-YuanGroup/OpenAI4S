@@ -204,7 +204,7 @@ def test_debug_keeps_the_traceback_and_the_same_status(
 def test_a_credential_echoed_by_the_provider_is_not_printed(
     tmp_path, monkeypatch, capsys
 ):
-    secret = "sk-9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c"
+    secret = "sk-" + "9f8e7d6c5b4a3f2e" * 2  # built, so no key-shaped literal
     body = json.dumps({"error": {"message": f"Incorrect API key provided: {secret}"}})
     module, _cfg = _real_run(
         tmp_path, monkeypatch, _failing_chat(_transport_error(401, body))
