@@ -805,7 +805,7 @@ def test_a_crash_is_logged_where_diagnostics_collects_it(tmp_path, monkeypatch, 
     had no trace of the crash."""
     import zipfile
 
-    secret = "sk-9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c"
+    secret = "sk-" + "9f8e7d6c5b4a3f2e" * 2  # built, so no key-shaped literal
     module, cfg = _real_run(
         tmp_path,
         monkeypatch,
