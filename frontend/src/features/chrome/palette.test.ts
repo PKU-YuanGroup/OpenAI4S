@@ -283,6 +283,81 @@ describe("F-20 command palette", () => {
     expect(PAL.open).toBe(false);
   });
 
+  // EXP-2: a word inside an answer, a cell or its output finds the session;
+  // the row shows where, with the match marked and everything set as text.
+  it("splits a snippet around every match without building markup", async () => {
+    const { matchSegments } = await import("./palette");
+    expect(matchSegments("B1 OVRFLW event; ovrflw again", "ovrflw")).toEqual([
+      { text: "B1 ", hit: false },
+      { text: "OVRFLW", hit: true },
+      { text: " event; ", hit: false },
+      { text: "ovrflw", hit: true },
+      { text: " again", hit: false },
+    ]);
+    expect(matchSegments("<img src=x onerror=alert(1)> 判定污染", "污染")).toEqual([
+      { text: "<img src=x onerror=alert(1)> 判定", hit: false },
+      { text: "污染", hit: true },
+    ]);
+    expect(matchSegments("no match here", "zzz")).toEqual([{ text: "no match here", hit: false }]);
+    expect(matchSegments("abc", " ")).toEqual([{ text: "abc", hit: false }]);
+  });
+
+  it("renders a content hit's snippet as text nodes with the match marked", async () => {
+    resetStoreFields();
+    skillsCatalog.value = [];
+    type FakeNode = { tagName: string; className: string; textContent: string; kids: FakeNode[] } & Record<string, unknown>;
+    const made: FakeNode[] = [];
+    const make = (tag: string): FakeNode => {
+      const node: FakeNode = {
+        tagName: tag.toUpperCase(),
+        className: "",
+        textContent: "",
+        innerHTML: "",
+        style: {},
+        kids: [],
+        appendChild: (kid: FakeNode) => node.kids.push(kid),
+        setAttribute: vi.fn(),
+        addEventListener: vi.fn(),
+        querySelectorAll: () => [],
+      };
+      made.push(node);
+      return node;
+    };
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("document", { createElement: make, body: { appendChild: vi.fn() } });
+    const hostile = "…B1 22.0 OVRFLW <b onclick=x>event</b>";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            sessions: [
+              { id: "f-1", name: "growth curves", match: "output", snippet: hostile },
+              { id: "f-2", name: "OVRFLW notes", match: "title", snippet: null },
+            ],
+            artifacts: [],
+            datapro: [],
+          }),
+      })),
+    );
+    const { PAL, palSearch } = await import("./palette");
+    PAL.listEl = make("div") as unknown as HTMLElement;
+    await palSearch("ovrflw");
+
+    const hit = PAL.items.find((it) => it.label === "growth curves")!;
+    expect(hit.sub).toBe("Cell output · " + hostile);
+    expect(PAL.items.find((it) => it.label === "OVRFLW notes")!.sub).toBeUndefined();
+    const sub = made.filter((node) => node.className === "pi-sub").pop()!;
+    expect(sub.kids.map((kid) => [kid.tagName, kid.textContent])).toEqual([
+      ["SPAN", "Cell output · …B1 22.0 "],
+      ["MARK", "OVRFLW"],
+      ["SPAN", " <b onclick=x>event</b>"],
+    ]);
+    // Nothing from the snippet was ever assigned as HTML.
+    expect(made.some((node) => String(node.innerHTML).includes("onclick"))).toBe(false);
+  });
+
   it("source gates later-lane names with isReady and never imports window-exports", () => {
     const src = readFileSync(join(here, "palette.ts"), "utf8");
     expect(src).toContain("isReady");
