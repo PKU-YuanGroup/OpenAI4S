@@ -39,7 +39,7 @@
       "tests": "tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "d8761d8b8aa825698e6a6c66c435e36542d303048e258f5f9be06228cac14fdd"
+      "evidence_digest": "b695dee774416f97abc46e096f27171f72e3984c6c14ba289289ee7112922c0b"
     },
     {
       "source": "R1",
@@ -53,7 +53,7 @@
       "tests": "tests/test_queued_followups.py",
       "browser_evidence": "tests/browser_admission_fault.mjs",
       "external_evidence": "",
-      "evidence_digest": "4ef7588a74a8384ce55c65e324796982a63335b120c92e490a7af8bd8f11e977"
+      "evidence_digest": "c9c17525091de987617aec4162514b75f28357b1c6dde50b0cbe83a9db931e57"
     },
     {
       "source": "R1",
@@ -67,7 +67,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_delegation_persistence.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "576a9ef32d0ffc4f3fc9522a8c954fabf3126685e5ce4edde34caabbc61d6ad4"
+      "evidence_digest": "54d55a265180222a940087a502fd7790a967209265fd8c7f915a782d2a4f2201"
     },
     {
       "source": "R1",
@@ -176,7 +176,7 @@
       "tests": "tests/test_memory_scope_and_budgets.py,tests/test_memory_edit_and_expiry_quota.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "f076f753493e5c5a6ac2e53b8077622857860145e0e6eda08e3aa6f702eea38a"
+      "evidence_digest": "821088b8417874cd91f1728ca39a001b8b561d242f2219631e290b4a58c30ca7"
     },
     {
       "source": "R2",
@@ -190,7 +190,7 @@
       "tests": "tests/test_session_and_message_paging.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "4930f19b489d7fdeec461de4a2b33ef4044049676ce28273548ebeb684a95f6e"
+      "evidence_digest": "ff9f8019993050989f6b8725d7e852eb70d3f989cf513a01f07eb95e71721f43"
     },
     {
       "source": "R2",
@@ -300,7 +300,7 @@
       "tests": "tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "d8761d8b8aa825698e6a6c66c435e36542d303048e258f5f9be06228cac14fdd"
+      "evidence_digest": "b695dee774416f97abc46e096f27171f72e3984c6c14ba289289ee7112922c0b"
     },
     {
       "source": "R3",
@@ -397,7 +397,7 @@
       "tests": "tests/test_materialisation_atomicity.py,tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "331c09f143bde96b808c1c282b3cbd6b8fe42599df80d1f2802f979e49cc7f3e"
+      "evidence_digest": "dcafe554b26ea43c113960a1fee9c7a00aee424d3bb6a468a92f929f0c920248"
     },
     {
       "source": "R4",
@@ -495,7 +495,7 @@
       "tests": "tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "d8761d8b8aa825698e6a6c66c435e36542d303048e258f5f9be06228cac14fdd"
+      "evidence_digest": "b695dee774416f97abc46e096f27171f72e3984c6c14ba289289ee7112922c0b"
     },
     {
       "source": "R5",
@@ -523,7 +523,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "744f32267cc9b65f8c84ae3d29d11259ea6febadc9be162b5e14e22f4637f371"
+      "evidence_digest": "fb11fd69bc27db963129c0088d4104a93eea05ae5d72335c4e68a1fe0fddfe3e"
     },
     {
       "source": "R5",
@@ -537,7 +537,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_revision_binding.py,tests/test_model_binding_recovery.py,tests/test_model_catalog.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "c5a6c399c11868c61211733ec80963960c62b5ab69242a9b13eb3bd42cb32037"
+      "evidence_digest": "ef1efe9fe5663b56768de1e2ebc8dbd20d9fc3d6950fb607ea34232bd85ab9ca"
     },
     {
       "source": "R5",
@@ -634,7 +634,7 @@
       "tests": "tests/test_materialisation_atomicity.py,tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "331c09f143bde96b808c1c282b3cbd6b8fe42599df80d1f2802f979e49cc7f3e"
+      "evidence_digest": "dcafe554b26ea43c113960a1fee9c7a00aee424d3bb6a468a92f929f0c920248"
     },
     {
       "source": "R6",
@@ -648,7 +648,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_queued_followups.py,tests/test_specialist_connector_allowlist.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "028c90c2d65744692e0d89c4d7ed3c0f6110f769164f8ae69bf62d854dc7dd62"
+      "evidence_digest": "c91b890030f3e76fe1a437a7eb06070668702d3baee0b8684cae090e4de70d5d"
     },
     {
       "source": "R6",
@@ -717,7 +717,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "744f32267cc9b65f8c84ae3d29d11259ea6febadc9be162b5e14e22f4637f371"
+      "evidence_digest": "fb11fd69bc27db963129c0088d4104a93eea05ae5d72335c4e68a1fe0fddfe3e"
     },
     {
       "source": "R7",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "13a04b3886625334c619659af86e9a7d75d973ef03be431217759bfe9ab9beb0"
+      "evidence_digest": "1e98aa90e4a09f812a1f8890330ceac47898d150c350ba555e32c7c2f40b408e"
     },
     {
       "source": "R7",

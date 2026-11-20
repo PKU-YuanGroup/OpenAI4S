@@ -363,6 +363,30 @@
         404
       ]
     },
+    "/auth/me/password": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
+    "/auth/me/replays": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/auth/redeem-invite": {
       "content_types": [
         "application/json"
@@ -1202,6 +1226,17 @@
         404
       ]
     },
+    "/frames/([^/]+)/execution-queue/resume": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/execution-sources": {
       "content_types": [
         "application/json"
@@ -1368,7 +1403,6 @@
         "json"
       ],
       "statuses": [
-        200,
         202,
         404
       ]
@@ -1576,8 +1610,8 @@
       ],
       "statuses": [
         200,
-        403,
-        404
+        404,
+        409
       ]
     },
     "/frames/([^/]+)/status": {
@@ -1648,8 +1682,8 @@
       ],
       "statuses": [
         200,
-        403,
-        404
+        404,
+        409
       ]
     },
     "/kernel/environment": {
@@ -2763,6 +2797,17 @@
       ]
     },
     "/team/users/([^/]+)/disable": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/users/([^/]+)/enable": {
       "content_types": [
         "application/json"
       ],
