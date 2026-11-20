@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from typing import Any, Iterable
@@ -72,8 +73,15 @@ def cancellation_marker(reason: str, language: str = "en") -> str:
     return "_已由用户停止。_" if zh else "_Stopped by user._"
 
 
-def action_narration(action: Action | None, language: str = "en") -> str:
-    """Describe an action without inventing reasoning or scientific results."""
+def action_narration(
+    action: Action | None, language: str = "en", *, opening: bool = True
+) -> str:
+    """Describe an action without inventing reasoning or scientific results.
+
+    ``opening`` is whether this is the first action of the run. "I am ...
+    first, then ..." only reads right there; repeated mid-task it looked as
+    if the analysis had started over (CHAT-4).
+    """
     zh = language == "zh"
     if isinstance(action, CodeCell):
         # This is explicitly an in-progress status, never a result claim.  It
@@ -85,7 +93,7 @@ def action_narration(action: Action | None, language: str = "en") -> str:
             return ""
         label = "R" if action.language == "r" else "Python"
         return (
-            f"我已经准备好一个 {label} Cell，正在执行；真实输出会持续记录到 Notebook。"
+            f"我已经准备好一个 {label} 单元，正在执行；真实输出会持续记录到 Notebook。"
             if zh
             else f"I have prepared a {label} cell and am running it now; its actual output will be recorded in the Notebook."
         )
@@ -101,6 +109,8 @@ def action_narration(action: Action | None, language: str = "en") -> str:
         )
     name = action.calls[0].name
     if name == "web_search":
+        if not opening:
+            return "我正在检索相关来源。" if zh else "I am searching relevant sources."
         return (
             "我先检索相关来源，随后会说明检索结果如何影响下一步分析。"
             if zh
@@ -119,11 +129,19 @@ def action_narration(action: Action | None, language: str = "en") -> str:
             else "I am saving the current results; written files will be added to Artifacts."
         )
     if names & {"read_text_file", "list_dir", "glob_files", "content_search"}:
+        if not opening:
+            return (
+                "我正在查看相关文件和数据。"
+                if zh
+                else "I am looking at the relevant files and data."
+            )
         return (
             "我先检查相关文件和数据，再根据实际内容继续分析。"
             if zh
             else "I am inspecting the relevant files and data before continuing from their actual contents."
         )
+    if names & {"write_todos", "update_plan_step"}:
+        return "我正在更新计划。" if zh else "I am updating the plan."
     if names & {"env_list", "env_use", "env_create"}:
         return (
             "我正在准备适合这一步分析的运行环境。"
@@ -164,12 +182,21 @@ def outcome_narration(
         return _refusal_narration(refusal, zh)
     if error:
         return (
-            f"这个 Cell 执行失败：`{error}`。下一轮会依据真实 traceback 修复。"
+            f"这个单元运行出错：`{error}`。智能体会根据这条报错修正后重试。"
             if zh
-            else f"This cell failed: `{error}`. The next step will repair it from the actual traceback."
+            else f"This cell failed: `{error}`. The agent will correct it from this error and try again."
         )
     if getattr(outcome, "completion", None) is not None:
         return ""
+
+    # A cell that only keeps the session's books (plan, task list, runtime
+    # environment) used to be narrated as "output:" plus its raw return dict,
+    # interpreter path included. One plain line says what it did (CHAT-4).
+    bookkeeping = bookkeeping_calls(action.code) if action.language == "python" else ()
+    if bookkeeping:
+        return _bookkeeping_narration(
+            bookkeeping, _section_body(observation, "stdout:"), zh
+        )
 
     # "No exception" is not "success": a cell whose subprocess exited 1 used
     # to be narrated as "completed successfully", and the narration carried
@@ -192,9 +219,9 @@ def outcome_narration(
             shown = -1  # never "the whole output" when the model saw a cut
         if zh:
             parts.append(
-                "Cell 已运行结束，输出："
+                "单元已运行结束，输出："
                 if shown == stdout_lines
-                else "Cell 已运行结束，输出的前几行："
+                else "单元已运行结束，输出的前几行："
             )
         else:
             parts.append(
@@ -217,10 +244,10 @@ def outcome_narration(
                 else f"({stdout_lines} lines in total; the full output is in the Notebook.)"
             )
     elif stderr_lines:
-        parts.append("Cell 已运行结束。" if zh else "The cell finished.")
+        parts.append("单元已运行结束。" if zh else "The cell finished.")
     else:
         parts.append(
-            "Cell 已运行结束，没有输出。" if zh else "The cell finished with no output."
+            "单元已运行结束，没有输出。" if zh else "The cell finished with no output."
         )
     if stderr_lines:
         parts.append(
@@ -246,7 +273,7 @@ _HOST_REFUSAL = re.compile(
     r"(?P<reason>.*?)(?:;\s*command was not executed)?\s*$"
 )
 _REFUSAL_PREFIXES = (
-    "这个 Cell 里需要批准的操作",
+    "这个单元里需要批准的操作",
     "An action in this cell that needed approval",
 )
 
@@ -266,23 +293,222 @@ def _refusal_narration(reason: str, zh: bool) -> str:
         return ""
     if reason == "approval timed out":
         return (
-            "这个 Cell 里需要批准的操作等待批准超时，没有执行。"
+            "这个单元里需要批准的操作等待批准超时，没有执行。"
             if zh
             else "An action in this cell that needed approval timed out waiting for it and did not run."
         )
     if not reason or reason == "denied by user":
         return (
-            "这个 Cell 里需要批准的操作被你拒绝了，没有执行。智能体会据此调整下一步。"
+            "这个单元里需要批准的操作被你拒绝了，没有执行。智能体会据此调整下一步。"
             if zh
             else "An action in this cell that needed approval was declined by you and did not run. "
             "The agent will adjust its next step."
         )
     return (
-        f"这个 Cell 里需要批准的操作未获批准，没有执行（原因：{reason}）。智能体会据此调整下一步。"
+        f"这个单元里需要批准的操作未获批准，没有执行（原因：{reason}）。智能体会据此调整下一步。"
         if zh
         else f"An action in this cell that needed approval was not approved and did not run "
         f"(reason: {reason}). The agent will adjust its next step."
     )
+
+
+#: ``host`` calls that keep the session's books -- the task list, the plan,
+#: the runtime environment -- rather than analyse anything.
+_BOOKKEEPING_CALLS = frozenset(
+    {
+        "todo_write",
+        "todo_read",
+        "plan_update",
+        "plan_read",
+        "env.list",
+        "env.list_dependencies",
+        "env.use",
+        "env.create",
+    }
+)
+
+
+def _host_call(node: ast.AST) -> str | None:
+    """``env.list`` for ``host.env.list(...)``; None for anything else."""
+
+    if not isinstance(node, ast.Call):
+        return None
+    parts: list[str] = []
+    target = node.func
+    while isinstance(target, ast.Attribute):
+        parts.append(target.attr)
+        target = target.value
+    if isinstance(target, ast.Name) and target.id == "host" and parts:
+        return ".".join(reversed(parts))
+    return None
+
+
+def bookkeeping_calls(code: str) -> tuple[str, ...]:
+    """The bookkeeping ``host`` calls of a Python cell that does nothing else.
+
+    Empty as soon as the cell computes or prints anything of its own: a cell
+    is bookkeeping only when every statement is one of these calls, bare,
+    printed, or assigned to a name that is then echoed.
+    """
+
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return ()
+    calls: list[str] = []
+    held: set[str] = set()
+    for statement in tree.body:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and _host_call(statement.value) in _BOOKKEEPING_CALLS
+        ):
+            held.add(statement.targets[0].id)
+            calls.append(str(_host_call(statement.value)))
+            continue
+        if not isinstance(statement, ast.Expr):
+            return ()
+        value = statement.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "print"
+            and len(value.args) == 1
+            and not value.keywords
+        ):
+            value = value.args[0]
+        if isinstance(value, ast.Name) and value.id in held:
+            continue
+        name = _host_call(value)
+        if name not in _BOOKKEEPING_CALLS:
+            return ()
+        calls.append(str(name))
+    return tuple(calls)
+
+
+_PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_MAX_NAMED_PACKAGES = 6
+
+
+def _echoed_result(stdout: str) -> dict:
+    """The dict a bookkeeping call returned, when the cell echoed exactly it."""
+
+    try:
+        value = ast.literal_eval(stdout.strip())
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _package_labels(names: Any, log: str) -> str:
+    """``statsmodels 0.15.0, patsy`` -- names, with the version the log shows."""
+
+    labels: list[str] = []
+    for item in names if isinstance(names, list) else []:
+        name = str(item.get("name") if isinstance(item, dict) else item)
+        if not _PACKAGE_NAME.fullmatch(name):
+            continue
+        version = re.search(
+            rf"(?im)^\s*\+ {re.escape(name)}==([0-9][\w.+!-]*)$"
+            rf"|\b{re.escape(name)}-([0-9][\w.+!]*)",
+            log,
+        )
+        found = (version.group(1) or version.group(2)) if version else ""
+        labels.append(f"{name} {found}".strip())
+    shown = labels[:_MAX_NAMED_PACKAGES]
+    if len(labels) > len(shown):
+        shown.append(f"+{len(labels) - len(shown)}")
+    return ", ".join(shown)
+
+
+def _bookkeeping_line(name: str, result: dict, zh: bool) -> str:
+    if name == "todo_write":
+        todos = result.get("todos")
+        if isinstance(todos, list):
+            done = sum(
+                1
+                for todo in todos
+                if isinstance(todo, dict) and todo.get("status") == "completed"
+            )
+            return (
+                f"更新了计划（{len(todos)} 步，完成 {done} 步）。"
+                if zh
+                else f"Updated the plan ({len(todos)} steps, {done} done)."
+            )
+        return "更新了计划。" if zh else "Updated the plan."
+    if name == "plan_update":
+        return "更新了计划进度。" if zh else "Updated the plan's progress."
+    if name in {"todo_read", "plan_read"}:
+        return "查看了当前计划。" if zh else "Checked the current plan."
+    if name in {"env.list", "env.list_dependencies"}:
+        environments = result.get("environments")
+        if isinstance(environments, list):
+            return (
+                f"列出了 {len(environments)} 个环境。"
+                if zh
+                else f"Listed {len(environments)} environments."
+            )
+        return "列出了可用环境。" if zh else "Listed the available environments."
+    if name == "env.use":
+        env = result.get("env")
+        label = str(env.get("name") or "") if isinstance(env, dict) else ""
+        if _PACKAGE_NAME.fullmatch(label):
+            return (
+                f"已切换到 {label} 环境，下一个单元起生效。"
+                if zh
+                else f"Switched to the {label} environment, from the next cell on."
+            )
+        return "已切换运行环境。" if zh else "Switched the runtime environment."
+    # env.create: an install into the kernel's environment. Only names and
+    # versions are repeated; the result's log and interpreter path are not.
+    log = str(result.get("log") or "")
+    installed = _package_labels(result.get("installed"), log)
+    failed = _package_labels(result.get("failed"), "")
+    parts: list[str] = []
+    if installed:
+        parts.append(f"已安装 {installed}。" if zh else f"Installed {installed}.")
+    if failed:
+        parts.append(f"未能安装 {failed}。" if zh else f"Could not install {failed}.")
+    if parts:
+        return ("" if zh else " ").join(parts)
+    if result.get("ok") is False:
+        return (
+            "安装没有完成，详情见 Notebook。"
+            if zh
+            else "The install did not complete; see the Notebook for details."
+        )
+    return "安装步骤已结束。" if zh else "The install step finished."
+
+
+def _bookkeeping_narration(calls: tuple[str, ...], stdout: str, zh: bool) -> str:
+    # Only the last value is echoed, so a result is matched to a call by its
+    # own keys and every other call gets its plain line.
+    result = _echoed_result(stdout)
+    lines: list[str] = []
+    for name in calls:
+        line = _bookkeeping_line(name, result, zh)
+        if line not in lines:
+            lines.append(line)
+    return ("" if zh else " ").join(lines)
+
+
+_BOOKKEEPING_SENTENCE = (
+    r"(?:更新了计划(?:（\d+ 步，完成 \d+ 步）)?。|更新了计划进度。|查看了当前计划。"
+    r"|列出了 \d+ 个环境。|列出了可用环境。|已切换到 \S+ 环境，下一个单元起生效。"
+    r"|已切换运行环境。|已安装 [A-Za-z0-9_.+, -]+。|未能安装 [A-Za-z0-9_.+, -]+。|安装步骤已结束。"
+    r"|安装没有完成，详情见 Notebook。"
+    r"|Updated the plan(?: \(\d+ steps, \d+ done\))?\.|Updated the plan's progress\."
+    r"|Checked the current plan\.|Listed \d+ environments\."
+    r"|Listed the available environments\."
+    r"|Switched to the \S+ environment, from the next cell on\."
+    r"|Switched the runtime environment\.|Installed [A-Za-z0-9_.+, -]+\."
+    r"|Could not install [A-Za-z0-9_.+, -]+\.|The install step finished\."
+    r"|The install did not complete; see the Notebook for details\.)"
+)
+_BOOKKEEPING_NARRATION = re.compile(
+    rf"{_BOOKKEEPING_SENTENCE}(?: ?{_BOOKKEEPING_SENTENCE})*"
+)
 
 
 #: How much of a cell's stdout the chat repeats after it runs.
@@ -603,13 +829,15 @@ def _normalized(value: str) -> str:
 _PROGRESS_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
-        r"我已经准备好一个 (?:R|Python) Cell，正在执行；真实输出会持续记录到 Notebook。",
+        r"我已经准备好一个 (?:R|Python) (?:单元|Cell)，正在执行；真实输出会持续记录到 Notebook。",
         r"I have prepared a (?:R|Python) cell and am running it now; its actual "
         r"output will be recorded in the Notebook\.",
         r"我正在执行 \d+ 个相关步骤，并会根据返回结果继续分析。",
         r"I am running \d+ related steps and will continue from their returned "
         r"results\.",
         r"我先检索相关来源，随后会说明检索结果如何影响下一步分析。",
+        r"我正在检索相关来源。",
+        r"I am searching relevant sources\.",
         r"I am searching relevant sources first, then I will explain how the "
         r"results affect the next analysis step\.",
         r"我正在读取并核对这个来源中的关键证据。",
@@ -618,6 +846,10 @@ _PROGRESS_PATTERNS = tuple(
         r"I am saving the current results; written files will be added to "
         r"Artifacts\.",
         r"我先检查相关文件和数据，再根据实际内容继续分析。",
+        r"我正在查看相关文件和数据。",
+        r"I am looking at the relevant files and data\.",
+        r"我正在更新计划。",
+        r"I am updating the plan\.",
         r"I am inspecting the relevant files and data before continuing from "
         r"their actual contents\.",
         r"我正在准备适合这一步分析的运行环境。",
@@ -632,13 +864,16 @@ _PROGRESS_PATTERNS = tuple(
 )
 _PROGRESS_PREFIXES = (
     "The cell finished",
-    "Cell 已运行结束",
+    "单元已运行结束",
     "This cell failed: `",
-    "这个 Cell 执行失败：`",
+    "这个单元运行出错：`",
     *_REFUSAL_PREFIXES,
     # Written by earlier versions; still in stored sessions.
     "This cell completed successfully",
     "这个 Cell 已成功完成",
+    "Cell 已运行结束",
+    "这个 Cell 执行失败：`",
+    "这个 Cell 里需要批准的操作",
 )
 
 
@@ -650,12 +885,15 @@ def is_progress_narration(text: Any) -> bool:
         return False
     if value.startswith(_PROGRESS_PREFIXES):
         return True
+    if _BOOKKEEPING_NARRATION.fullmatch(value):
+        return True
     return any(pattern.fullmatch(value) for pattern in _PROGRESS_PATTERNS)
 
 
 __all__ = [
     "CANCEL_REASONS",
     "action_narration",
+    "bookkeeping_calls",
     "cancellation_marker",
     "completion_message",
     "is_progress_narration",

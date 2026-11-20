@@ -7,6 +7,7 @@ from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import ExecutionOutcome
 from openai4s.server.completions import (
     action_narration,
+    bookkeeping_calls,
     cancellation_marker,
     completion_message,
     is_progress_narration,
@@ -221,7 +222,7 @@ def test_a_refused_host_call_is_narrated_as_a_refusal_not_a_failure():
         "RuntimeError: bash: Permission denied: 不需要定义工具; command was not executed"
     )
     zh = outcome_narration(action, declined, "zh")
-    assert "执行失败" not in zh and "RuntimeError" not in zh
+    assert "运行出错" not in zh and "RuntimeError" not in zh
     assert "未获批准" in zh and "不需要定义工具" in zh
     en = outcome_narration(action, declined, "en")
     assert "failed" not in en.lower() and "Permission denied" not in en
@@ -245,7 +246,7 @@ def test_a_refused_host_call_is_narrated_as_a_refusal_not_a_failure():
 
     # An OS PermissionError is a real failure and is still narrated as one.
     os_error = outcome("PermissionError: [Errno 13] Permission denied: '/etc/shadow'")
-    assert "执行失败" in outcome_narration(action, os_error, "zh")
+    assert "运行出错" in outcome_narration(action, os_error, "zh")
 
     for line in (
         outcome_narration(action, declined, "zh"),
@@ -300,12 +301,12 @@ def test_post_cell_status_shows_output_and_never_calls_a_cell_successful():
 
     zh = outcome_narration(action, outcome, "zh")
     assert "成功" not in zh
-    assert zh.startswith("Cell 已运行结束，输出的前几行：")
+    assert zh.startswith("单元已运行结束，输出的前几行：")
     assert "（共 10 行，完整输出在 Notebook。）" in zh
     assert "另有 stderr 1 行" in zh
 
     quiet = ExecutionOutcome(observation="[Observation]\n(no output)")
-    assert outcome_narration(action, quiet, "zh") == "Cell 已运行结束，没有输出。"
+    assert outcome_narration(action, quiet, "zh") == "单元已运行结束，没有输出。"
 
     secret = ExecutionOutcome(
         observation="[Observation]\nstdout:\napi_key=sk-live-123\nok ``` fence"
@@ -405,11 +406,43 @@ def test_every_progress_line_this_module_writes_is_recognised():
             observation="[Observation]\nERROR (cell line 1):\nTraceback\nValueError: x"
         ),
     ]
+    bookkeeping = [
+        ("host.todo_write([])", "{'ok': True, 'count': 0, 'todos': []}"),
+        ("host.todo_write([])", "not a literal"),
+        ("host.plan_update('s1', 'completed')", "{'ok': True}"),
+        ("host.plan_read()", "{'plan': None}"),
+        ("host.env.list()", "{'environments': [{'name': 'base'}]}"),
+        ("host.env.list()", ""),
+        ("host.env.use('lab_env')", "{'ok': True, 'env': {'name': 'lab_env'}}"),
+        ("host.env.use('lab_env')", ""),
+        (
+            "host.env.create('work', ['statsmodels', 'nope'])",
+            "{'ok': False, 'installed': ['statsmodels'], 'failed': ['nope'], "
+            "'log': ' + statsmodels==0.15.0'}",
+        ),
+        ("host.env.create('work', ['x'])", "{'ok': False, 'installed': []}"),
+        ("host.env.create('work', [])", "{'ok': True, 'installed': []}"),
+        ("host.todo_write([])\nhost.env.list()", "{'environments': []}"),
+    ]
     for language in ("en", "zh"):
         lines = [action_narration(action, language) for action in actions]
         lines += [
+            action_narration(action, language, opening=False) for action in actions
+        ]
+        lines.append(
+            action_narration(NativeToolBatch(calls=(_call("write_todos"),)), language)
+        )
+        lines += [
             outcome_narration(CodeCell("python", "x"), outcome, language)
             for outcome in outcomes
+        ]
+        lines += [
+            outcome_narration(
+                CodeCell("python", code),
+                ExecutionOutcome(observation=f"[Observation]\nstdout:\n{echo}"),
+                language,
+            )
+            for code, echo in bookkeeping
         ]
         lines += [cancellation_marker(r, language) for r in ("user", "auto_budget")]
         for line in lines:
@@ -418,8 +451,105 @@ def test_every_progress_line_this_module_writes_is_recognised():
         "Ages are right-skewed (median 61).",
         "I am running a sensitivity analysis next because the effect is small.",
         "我先看一下缺失值的分布。",
+        "更新了计划：先做 QC，再拟合生长模型。",
+        "Installed packages are enough; the fit converged for every well.",
     ):
         assert not is_progress_narration(prose), prose
+    # Lines earlier versions wrote are still in stored sessions.
+    for stored in (
+        "Cell 已运行结束，没有输出。",
+        "这个 Cell 执行失败：`ValueError: x`。下一轮会依据真实 traceback 修复。",
+        "这个 Cell 里需要批准的操作被你拒绝了，没有执行。智能体会据此调整下一步。",
+        "我已经准备好一个 Python Cell，正在执行；真实输出会持续记录到 Notebook。",
+    ):
+        assert is_progress_narration(stored), stored
+
+
+def test_bookkeeping_cells_get_one_plain_line_not_their_raw_return_value():
+    """CHAT-4: plan updates, environment listings and installs were narrated as
+    "Cell 已运行结束，输出：" plus the call's raw return dict -- for an install,
+    the interpreter's absolute path included."""
+
+    def narrate(code: str, echo: str, language: str = "zh") -> str:
+        outcome = ExecutionOutcome(
+            observation=f"[Observation]\nstdout:\n{echo}\n[usage wall=0.1s cpu=0.1s rss=1kb]"
+        )
+        return outcome_narration(CodeCell("python", code), outcome, language)
+
+    todos = (
+        "{'ok': True, 'count': 3, 'todos': ["
+        "{'id': 't1', 'content': 'QC', 'status': 'completed', 'priority': 'high'}, "
+        "{'id': 't2', 'content': 'fit', 'status': 'completed', 'priority': 'high'}, "
+        "{'id': 't3', 'content': 'report', 'status': 'in_progress', 'priority': 'low'}]}"
+    )
+    plan = 'host.todo_write([{"content": "QC", "status": "completed"}])'
+    assert narrate(plan, todos) == "更新了计划（3 步，完成 2 步）。"
+    assert narrate(plan, todos, "en") == "Updated the plan (3 steps, 2 done)."
+
+    listing = (
+        "{'environments': [{'name': 'base', 'current': True}, {'name': 'lab_env'}, "
+        "{'name': 'struct'}, {'name': 'r'}], 'current': 'base', 'recommend': None}"
+    )
+    assert narrate('host.env.list(["openpyxl"])', listing) == "列出了 4 个环境。"
+    assert narrate("print(host.env.list())", listing, "en") == "Listed 4 environments."
+
+    install = (
+        "{'ok': True, 'installed': ['statsmodels'], 'failed': [], 'log': 'Using "
+        "Python 3.13 environment at: /home/someone/work/.venv\\nInstalled 2 "
+        "packages in 54ms\\n + patsy==1.0.3\\n + statsmodels==0.15.0\\n', "
+        "'interpreter': '/home/someone/work/.venv/bin/python', 'name': 'base'}"
+    )
+    for language, expected in (
+        ("zh", "已安装 statsmodels 0.15.0。"),
+        ("en", "Installed statsmodels 0.15.0."),
+    ):
+        text = narrate('host.env.create("base", ["statsmodels"])', install, language)
+        assert text == expected
+        assert "/home/someone" not in text and "interpreter" not in text
+
+    # An echo that cannot be read back (cut by the output budget) still gets
+    # a plain line, never the raw text.
+    cut = "{'ok': True, 'count': 6, 'todos': [{'id': 't1', 'content': '…"
+    assert narrate(plan, cut) == "更新了计划。"
+    # Assigned and echoed is the same cell; anything else is real output.
+    assert bookkeeping_calls("r = host.env.list()\nr") == ("env.list",)
+    assert bookkeeping_calls("r = host.env.list()\nprint(r)") == ("env.list",)
+    assert bookkeeping_calls("host.todo_write(todos)\nprint(df.head())") == ()
+    assert bookkeeping_calls("host.web_fetch('https://example.org')") == ()
+    assert bookkeeping_calls("not python (") == ()
+    mixed = narrate("host.todo_write(todos)\nprint(len(df))", "48")
+    assert mixed == "单元已运行结束，输出：\n```text\n48\n```"
+    # A bookkeeping call that raised is still a failure, said as one.
+    failed = ExecutionOutcome(
+        observation="[Observation]\nERROR (cell line 1):\nTraceback (most recent call "
+        "last):\nRuntimeError: host.plan_update error: no active plan for this session"
+    )
+    assert "运行出错" in outcome_narration(CodeCell("python", plan), failed, "zh")
+
+
+def test_mid_task_narration_does_not_read_like_starting_over():
+    """CHAT-4: "我先检查相关文件和数据，再…" reappeared mid-task as if the
+    analysis had started again, and a failure promised a fix "from the real
+    traceback"."""
+    read = NativeToolBatch((_call("read_text_file"),))
+    search = NativeToolBatch((_call("web_search"),))
+    for language, first in (("zh", "先"), ("en", "first")):
+        assert first in action_narration(search, language)
+        assert first not in action_narration(search, language, opening=False)
+    assert "先" in action_narration(read, "zh")
+    assert action_narration(read, "zh", opening=False) == "我正在查看相关文件和数据。"
+    assert (
+        action_narration(read, "en", opening=False)
+        == "I am looking at the relevant files and data."
+    )
+
+    failed = ExecutionOutcome(
+        observation="[Observation]\nERROR (cell line 1):\nTraceback\nValueError: x"
+    )
+    for language in ("zh", "en"):
+        text = outcome_narration(CodeCell("python", "x"), failed, language)
+        assert "traceback" not in text.lower() and "下一轮" not in text
+        assert "`ValueError: x`" in text
 
 
 def test_a_truncated_output_reports_its_real_size_not_the_preview_lines():
