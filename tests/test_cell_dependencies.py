@@ -220,3 +220,103 @@ def test_reimporting_the_same_module_supersedes_nothing():
     projection = compute_stale_cells(rebound)
     assert projection[1]["stale"] is True
     assert "'np' was superseded" in projection[1]["stale_reasons"][0]
+
+
+def test_staleness_travels_only_along_the_variable_the_consumer_read():
+    """NB-1: overwriting one product of a cell staled every reader of that cell."""
+    cells = _rows(
+        ("load", "data = [1, 2]\ntmp = 0"),
+        ("use", "total = sum(data)"),
+        ("scratch", "tmp = 1"),
+    )
+    assert [item["stale"] for item in compute_stale_cells(cells)] == [False] * 3
+
+    superseded = _rows(
+        ("load", "data = [1, 2]\ntmp = 0"),
+        ("use", "total = sum(data)"),
+        ("report", "print(total)"),
+        ("reload", "data = [3]"),
+    )
+    projection = compute_stale_cells(superseded)
+    assert [item["stale"] for item in projection] == [False, True, True, False]
+    assert projection[1]["stale_reasons"] == [
+        "variable 'data' was superseded by reload (S4)"
+    ]
+    # `report` never read `data`: its reason names the stale cell it read from.
+    assert projection[2]["stale_reasons"] == [
+        "depends on use (S2): variable 'data' was superseded by reload (S4)"
+    ]
+
+
+def test_loop_targets_and_underscore_temporaries_carry_no_staleness():
+    """NB-1: `i`, `f` and `_seq` were blamed for most of a 47-cell Notebook."""
+    cells = _rows(
+        ("first", "rows = [1, 2]\nfor i in rows:\n    last = i\n_seq = 'a'"),
+        ("peek", "print(i, _seq)"),
+        ("again", "for i in range(3):\n    pass\n_seq = 'b'"),
+        ("handle", "with open('demo.csv') as f:\n    text = f.read()"),
+        ("later", "print(f.closed)"),
+        ("reopen", "with open('demo.csv') as f:\n    pass"),
+    )
+    assert [item["stale"] for item in compute_stale_cells(cells)] == [False] * 6
+
+    # A name the cell also assigns outright is a result, not scratch.
+    assigned = _rows(
+        ("first", "i = 5"),
+        ("use", "double = i * 2"),
+        ("loop", "for i in range(3):\n    pass"),
+        ("rebind", "i = 7"),
+    )
+    assert [item["stale"] for item in compute_stale_cells(assigned)] == [
+        False,
+        True,
+        False,
+        False,
+    ]
+
+
+def test_a_nested_comprehension_reads_its_own_earlier_target():
+    """NB-1: `for b in rows[i + 1:]` recorded a read of a kernel-level `i`."""
+    metadata = analyze_code(
+        "pairs = [(a, b) for i, a in enumerate(rows) for b in rows[i + 1 :]]",
+        "python",
+    )
+    assert metadata.reads == ("enumerate", "rows")
+    # Only the first iterable is evaluated outside the comprehension.
+    assert analyze_code("out = [x for x in x]", "python").reads == ("x",)
+
+
+def test_an_unknown_mutation_the_agent_ran_in_order_does_not_stale_the_record():
+    """NB-1: two `model(...).fit()` cells staled all 46 cells before them."""
+    source = "model = build(data).fit()"
+    assert analyze_code(source, "python").uncertain is True
+
+    def record(origin):
+        extra = {"origin": origin} if origin else {}
+        return _rows(
+            ("load", "data = [1, 2]", "python", extra),
+            ("report", "print(data)", "python", extra),
+            ("fit", source, "python", extra),
+        )
+
+    for origin in ("agent", "delegate"):
+        assert [item["stale"] for item in compute_stale_cells(record(origin))] == [
+            False,
+            False,
+            False,
+        ]
+    # A manual cell, a replay, or a row of unknown origin stays conservative.
+    for origin in ("user", "recovery", None):
+        projection = compute_stale_cells(record(origin))
+        assert [item["stale"] for item in projection] == [True, True, False]
+        assert "unknown namespace state" in projection[0]["stale_reasons"][0]
+
+    # A manual cell after the agent's record still invalidates all of it.
+    mixed = record("agent") + _rows(("manual", "exec(payload)", "python"))
+    mixed[-1].update({"origin": "user", "state_revision": 4})
+    assert [item["stale"] for item in compute_stale_cells(mixed)] == [
+        True,
+        True,
+        True,
+        False,
+    ]

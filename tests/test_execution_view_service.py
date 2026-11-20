@@ -365,9 +365,12 @@ def test_stale_projection_invalidates_only_old_value_consumers_transitively():
     assert projected["producer-x"] == (False, [])
     assert projected["consumer-x"][0] is True
     assert projected["consumer-y"][0] is True
-    assert projected["consumer-x"][1] == projected["consumer-y"][1]
     assert "variable 'x'" in projected["consumer-x"][1][0]
     assert "replacement-x" in projected["consumer-x"][1][0]
+    # `consumer-y` never read `x`; its reason names the stale cell it read from.
+    assert projected["consumer-y"][1] == [
+        "depends on consumer-x (S2): " + projected["consumer-x"][1][0]
+    ]
     assert projected["independent"] == (False, [])
     assert projected["replacement-x"] == (False, [])
 
