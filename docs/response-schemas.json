@@ -928,6 +928,72 @@
         "type": "object"
       }
     },
+    "DELETE /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /auth/me/replays [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /auth/redeem-invite [error]": {
       "schema": {
         "properties": {
@@ -2968,6 +3034,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -7093,6 +7192,31 @@
         "type": "object"
       }
     },
+    "DELETE /team/users/([^/]+)/enable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /team/users/([^/]+)/reset-password [error]": {
       "schema": {
         "properties": {
@@ -8022,6 +8146,55 @@
             ],
             "type": "object"
           },
+          "download": {
+            "properties": {
+              "approval": {
+                "properties": {
+                  "how": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "how"
+                ],
+                "type": "object"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "downloaded_at": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              },
+              "tool": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "approval",
+              "content_type",
+              "downloaded_at",
+              "sha256",
+              "size_bytes",
+              "tool",
+              "url"
+            ],
+            "type": "object"
+          },
           "filename": {
             "type": [
               "null",
@@ -8084,7 +8257,10 @@
                 "type": "string"
               },
               "producing_cell_id": {
-                "type": "string"
+                "type": [
+                  "null",
+                  "string"
+                ]
               }
             },
             "required": [
@@ -9292,6 +9468,96 @@
         "type": "object"
       }
     },
+    "GET /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /auth/me/replays [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /auth/me/replays [ok]": {
+      "schema": {
+        "properties": {
+          "sessions": {
+            "items": {
+              "properties": {
+                "name": {
+                  "type": "null"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "session_id",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "type": "object"
+      }
+    },
     "GET /auth/redeem-invite [error]": {
       "schema": {
         "properties": {
@@ -9592,6 +9858,31 @@
         "type": "object"
       }
     },
+    "GET /compute/remote [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /compute/remote [ok]": {
       "schema": {
         "properties": {
@@ -9648,6 +9939,31 @@
           "error",
           "method",
           "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /compute/ssh-aliases [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
           "request_id",
           "status"
         ],
@@ -9972,6 +10288,9 @@
           "key_configured": {
             "type": "boolean"
           },
+          "model_key_available": {
+            "type": "boolean"
+          },
           "skill_enabled": {
             "type": "boolean"
           },
@@ -9984,6 +10303,7 @@
           "connector_enabled",
           "connector_id",
           "key_configured",
+          "model_key_available",
           "skill_enabled",
           "skill_name"
         ],
@@ -10199,6 +10519,9 @@
           "key_configured": {
             "type": "boolean"
           },
+          "model_key_available": {
+            "type": "boolean"
+          },
           "primary": {
             "type": "boolean"
           },
@@ -10209,6 +10532,7 @@
         "required": [
           "ark_key_reused",
           "key_configured",
+          "model_key_available",
           "primary",
           "provider"
         ],
@@ -11410,10 +11734,28 @@
         "type": "object"
       }
     },
-    "GET /frames/([^/]+) [ok]": {
+    "GET /frames/([^/]+) [error]": {
       "schema": {
-        "properties": {},
-        "required": [],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
         "type": "object"
       }
     },
@@ -11521,7 +11863,25 @@
             "type": "string"
           }
         },
-        "required": [],
+        "required": [
+          "conversation_type",
+          "created_at",
+          "folder_id",
+          "id",
+          "input_tokens",
+          "message_count",
+          "model",
+          "model_profile_id",
+          "model_profile_revision",
+          "name",
+          "output_tokens",
+          "parent_frame_id",
+          "project_id",
+          "root_frame_id",
+          "status",
+          "task_summary",
+          "updated_at"
+        ],
         "type": "object"
       }
     },
@@ -11649,7 +12009,10 @@
             "items": {
               "properties": {
                 "branch_id": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "cancel_reason": {
                   "type": "null"
@@ -11669,8 +12032,41 @@
                 "generation_id": {
                   "type": "null"
                 },
+                "held": {
+                  "type": "boolean"
+                },
                 "language": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "metadata": {
+                  "properties": {
+                    "model_profile_id": {
+                      "type": "string"
+                    },
+                    "model_profile_revision": {
+                      "type": "integer"
+                    },
+                    "preview": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "model_profile_id",
+                    "model_profile_revision",
+                    "preview",
+                    "reason",
+                    "request_id"
+                  ],
+                  "type": "object"
                 },
                 "owner": {
                   "properties": {
@@ -11694,6 +12090,9 @@
                   "type": "number"
                 },
                 "resource_keys": {
+                  "items": {
+                    "type": "string"
+                  },
                   "type": "array"
                 },
                 "root_frame_id": {
@@ -11717,6 +12116,7 @@
                 "execution_id",
                 "finished_at",
                 "generation_id",
+                "held",
                 "language",
                 "owner",
                 "queue_position",
@@ -15231,7 +15631,10 @@
             "type": "string"
           },
           "current_r": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "default": {
             "type": "string"
@@ -15513,7 +15916,10 @@
             "items": {
               "properties": {
                 "branch_id": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "cancel_reason": {
                   "type": "null"
@@ -15533,8 +15939,41 @@
                 "generation_id": {
                   "type": "null"
                 },
+                "held": {
+                  "type": "boolean"
+                },
                 "language": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "metadata": {
+                  "properties": {
+                    "model_profile_id": {
+                      "type": "string"
+                    },
+                    "model_profile_revision": {
+                      "type": "integer"
+                    },
+                    "preview": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "model_profile_id",
+                    "model_profile_revision",
+                    "preview",
+                    "reason",
+                    "request_id"
+                  ],
+                  "type": "object"
                 },
                 "owner": {
                   "properties": {
@@ -15558,6 +15997,9 @@
                   "type": "number"
                 },
                 "resource_keys": {
+                  "items": {
+                    "type": "string"
+                  },
                   "type": "array"
                 },
                 "root_frame_id": {
@@ -15581,6 +16023,7 @@
                 "execution_id",
                 "finished_at",
                 "generation_id",
+                "held",
                 "language",
                 "owner",
                 "queue_position",
@@ -15666,6 +16109,9 @@
                   },
                   "type": "array"
                 },
+                "finished_at": {
+                  "type": "integer"
+                },
                 "fork_checkpoint_id": {
                   "type": [
                     "null",
@@ -15746,6 +16192,9 @@
                 "stale_reasons": {
                   "type": "array"
                 },
+                "started_at": {
+                  "type": "integer"
+                },
                 "state_revision": {
                   "type": "integer"
                 },
@@ -15756,6 +16205,9 @@
                   "type": "string"
                 },
                 "stdout": {
+                  "type": "string"
+                },
+                "title": {
                   "type": "string"
                 },
                 "variable_deletes": {
@@ -15788,6 +16240,7 @@
                 "figures",
                 "files_read",
                 "files_written",
+                "finished_at",
                 "fork_checkpoint_id",
                 "generation_id",
                 "is_latest_attempt",
@@ -15804,10 +16257,12 @@
                 "source",
                 "stale",
                 "stale_reasons",
+                "started_at",
                 "state_revision",
                 "status",
                 "stderr",
                 "stdout",
+                "title",
                 "variable_deletes",
                 "variable_reads",
                 "variable_writes",
@@ -15955,7 +16410,10 @@
             "items": {
               "properties": {
                 "branch_id": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "cancel_reason": {
                   "type": "null"
@@ -15975,8 +16433,41 @@
                 "generation_id": {
                   "type": "null"
                 },
+                "held": {
+                  "type": "boolean"
+                },
                 "language": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "metadata": {
+                  "properties": {
+                    "model_profile_id": {
+                      "type": "string"
+                    },
+                    "model_profile_revision": {
+                      "type": "integer"
+                    },
+                    "preview": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "model_profile_id",
+                    "model_profile_revision",
+                    "preview",
+                    "reason",
+                    "request_id"
+                  ],
+                  "type": "object"
                 },
                 "owner": {
                   "properties": {
@@ -16000,6 +16491,9 @@
                   "type": "number"
                 },
                 "resource_keys": {
+                  "items": {
+                    "type": "string"
+                  },
                   "type": "array"
                 },
                 "root_frame_id": {
@@ -16023,6 +16517,7 @@
                 "execution_id",
                 "finished_at",
                 "generation_id",
+                "held",
                 "language",
                 "owner",
                 "queue_position",
@@ -16056,6 +16551,39 @@
           "queued_count",
           "root_frame_id",
           "session_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -16251,7 +16779,11 @@
       "schema": {
         "properties": {
           "feedback": {
-            "properties": {},
+            "properties": {
+              "m1": {
+                "type": "string"
+              }
+            },
             "required": [],
             "type": "object"
           }
@@ -16823,6 +17355,24 @@
                   },
                   "type": "array"
                 },
+                "attachments": {
+                  "items": {
+                    "properties": {
+                      "artifact_id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "artifact_id",
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
                 "cancelled": {
                   "properties": {
                     "execution_id": {
@@ -16868,6 +17418,28 @@
                     "null",
                     "string"
                   ]
+                },
+                "memories": {
+                  "items": {
+                    "properties": {
+                      "block": {
+                        "type": "string"
+                      },
+                      "memory_id": {
+                        "type": "string"
+                      },
+                      "preview": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "block",
+                      "memory_id",
+                      "preview"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
                 },
                 "message_id": {
                   "type": "string"
@@ -17728,7 +18300,10 @@
                     "environment",
                     "files"
                   ],
-                  "type": "object"
+                  "type": [
+                    "null",
+                    "object"
+                  ]
                 },
                 "kind": {
                   "type": "string"
@@ -17761,7 +18336,10 @@
                   "required": [
                     "artifacts"
                   ],
-                  "type": "object"
+                  "type": [
+                    "null",
+                    "object"
+                  ]
                 },
                 "seq": {
                   "type": "integer"
@@ -19167,6 +19745,9 @@
           "base_url": {
             "type": "string"
           },
+          "can_configure": {
+            "type": "boolean"
+          },
           "complete": {
             "type": "boolean"
           },
@@ -19603,6 +20184,7 @@
         "required": [
           "active_id",
           "base_url",
+          "can_configure",
           "complete",
           "contacted",
           "environment",
@@ -19658,6 +20240,72 @@
       "schema": {
         "properties": {
           "jobs": {
+            "items": {
+              "properties": {
+                "backend": {
+                  "type": "string"
+                },
+                "command": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "desired_state": {
+                  "type": "string"
+                },
+                "execution_epoch": {
+                  "type": "integer"
+                },
+                "exit_code": {
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "owner_user_id": {
+                  "type": "string"
+                },
+                "phase": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "null"
+                },
+                "reason": {
+                  "type": "null"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "backend",
+                "command",
+                "created_at",
+                "desired_state",
+                "execution_epoch",
+                "exit_code",
+                "id",
+                "kind",
+                "owner_user_id",
+                "phase",
+                "profile",
+                "project_id",
+                "reason",
+                "updated_at"
+              ],
+              "type": "object"
+            },
             "type": "array"
           }
         },
@@ -19766,6 +20414,9 @@
             "type": "string"
           },
           "execution_epoch": {
+            "type": "integer"
+          },
+          "exit_code": {
             "type": "integer"
           },
           "id": {
@@ -21847,6 +22498,9 @@
                 },
                 "task_summary": {
                   "type": "null"
+                },
+                "updated_at": {
+                  "type": "integer"
                 }
               },
               "required": [
@@ -21855,7 +22509,8 @@
                 "name",
                 "project_id",
                 "snippet",
-                "task_summary"
+                "task_summary",
+                "updated_at"
               ],
               "type": "object"
             },
@@ -22196,6 +22851,9 @@
                 "revoked_at": {
                   "type": "null"
                 },
+                "root_frame_id": {
+                  "type": "string"
+                },
                 "share_id": {
                   "type": "string"
                 },
@@ -22225,6 +22883,7 @@
                 "expires_at",
                 "projection_id",
                 "revoked_at",
+                "root_frame_id",
                 "share_id",
                 "size_bytes",
                 "snapshot_id",
@@ -22347,6 +23006,9 @@
           "editable": {
             "type": "boolean"
           },
+          "full_description": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -22358,6 +23020,7 @@
           "body",
           "description",
           "editable",
+          "full_description",
           "name",
           "origin"
         ],
@@ -23543,7 +24206,10 @@
                   "type": "boolean"
                 },
                 "display_name": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "id": {
                   "type": "string"
@@ -23575,6 +24241,31 @@
       }
     },
     "GET /team/users/([^/]+)/disable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /team/users/([^/]+)/enable [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -25122,6 +25813,72 @@
       }
     },
     "PATCH /auth/me/llm-key [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /auth/me/replays [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -27763,6 +28520,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -31949,6 +32739,31 @@
         "type": "object"
       }
     },
+    "PATCH /team/users/([^/]+)/enable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /team/users/([^/]+)/reset-password [error]": {
       "schema": {
         "properties": {
@@ -33610,6 +34425,64 @@
         "type": "object"
       }
     },
+    "POST /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /auth/me/replays [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /auth/redeem-invite [error]": {
       "schema": {
         "properties": {
@@ -34307,6 +35180,9 @@
           "key_configured": {
             "type": "boolean"
           },
+          "model_key_available": {
+            "type": "boolean"
+          },
           "ok": {
             "type": "boolean"
           },
@@ -34322,6 +35198,7 @@
           "connector_enabled",
           "connector_id",
           "key_configured",
+          "model_key_available",
           "ok",
           "skill_enabled",
           "skill_name"
@@ -34495,6 +35372,9 @@
           "key_configured": {
             "type": "boolean"
           },
+          "model_key_available": {
+            "type": "boolean"
+          },
           "ok": {
             "type": "boolean"
           },
@@ -34508,6 +35388,7 @@
         "required": [
           "ark_key_reused",
           "key_configured",
+          "model_key_available",
           "ok",
           "primary",
           "provider"
@@ -38319,6 +39200,32 @@
                     "type": "boolean"
                   },
                   "issues": {
+                    "items": {
+                      "properties": {
+                        "language": {
+                          "type": "string"
+                        },
+                        "names": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "step_id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "type": "object"
+                    },
                     "type": "array"
                   },
                   "status": {
@@ -38438,7 +39345,110 @@
             "type": "string"
           },
           "recovery": {
-            "type": "null"
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "branch_id": {
+                "type": "string"
+              },
+              "checkpoint_id": {
+                "type": "string"
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "recovery_id": {
+                "type": "string"
+              },
+              "results": {
+                "items": {
+                  "properties": {
+                    "candidate_generation_id": {
+                      "type": "string"
+                    },
+                    "issues": {
+                      "items": {
+                        "properties": {
+                          "language": {
+                            "type": "string"
+                          },
+                          "names": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "step_id": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "manifest_id": {
+                      "type": "string"
+                    },
+                    "replayed_steps": {
+                      "type": "array"
+                    },
+                    "skipped_steps": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "source_generation_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "candidate_generation_id",
+                    "issues",
+                    "manifest_id",
+                    "replayed_steps",
+                    "skipped_steps",
+                    "source_generation_id",
+                    "status"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "branch_id",
+              "checkpoint_id",
+              "ok",
+              "recovery_id",
+              "results",
+              "root_frame_id",
+              "status"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
           },
           "root_frame_id": {
             "type": "string"
@@ -39172,6 +40182,31 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/execution-sources [error]": {
       "schema": {
         "properties": {
@@ -39284,11 +40319,32 @@
     "POST /frames/([^/]+)/kernel/env [ok]": {
       "schema": {
         "properties": {
+          "env": {
+            "type": "null"
+          },
           "error": {
+            "type": "string"
+          },
+          "frame_id": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "generation_id": {
+            "type": "null"
+          },
+          "language": {
             "type": "string"
           },
           "ok": {
             "type": "boolean"
+          },
+          "python_version": {
+            "type": "null"
+          },
+          "state": {
+            "type": "string"
           }
         },
         "required": [],
@@ -39593,6 +40649,31 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/message [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/message [ok]": {
       "schema": {
         "properties": {
@@ -39650,6 +40731,9 @@
           "queue_position": {
             "type": "integer"
           },
+          "reason": {
+            "type": "string"
+          },
           "request_id": {
             "type": "string"
           },
@@ -39662,7 +40746,6 @@
           "frame_id",
           "job_id",
           "owner",
-          "request_id",
           "status"
         ],
         "type": "object"
@@ -41726,7 +42809,10 @@
             "type": "string"
           },
           "checkpoint_id": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "code": {
             "type": "string"
@@ -41773,12 +42859,26 @@
                       "error": {
                         "type": "string"
                       },
+                      "language": {
+                        "type": "string"
+                      },
+                      "names": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "step_id": {
+                        "type": "string"
+                      },
                       "type": {
                         "type": "string"
                       }
                     },
                     "required": [
-                      "error",
                       "type"
                     ],
                     "type": "object"
@@ -41792,6 +42892,9 @@
                   "type": "array"
                 },
                 "skipped_steps": {
+                  "items": {
+                    "type": "string"
+                  },
                   "type": "array"
                 },
                 "source_generation_id": {
@@ -43269,6 +44372,9 @@
           "base_url": {
             "type": "string"
           },
+          "can_configure": {
+            "type": "boolean"
+          },
           "complete": {
             "type": "boolean"
           },
@@ -43602,6 +44708,7 @@
         "required": [
           "active_id",
           "base_url",
+          "can_configure",
           "complete",
           "contacted",
           "environment",
@@ -46552,10 +47659,16 @@
     "POST /team/users [ok]": {
       "schema": {
         "properties": {
+          "password": {
+            "type": "string"
+          },
           "user": {
             "properties": {
               "display_name": {
-                "type": "null"
+                "type": [
+                  "null",
+                  "string"
+                ]
               },
               "id": {
                 "type": "string"
@@ -46610,11 +47723,17 @@
     "POST /team/users/([^/]+)/disable [ok]": {
       "schema": {
         "properties": {
+          "llm_keys_cleared": {
+            "type": "integer"
+          },
           "ok": {
             "type": "boolean"
           },
           "user": {
             "properties": {
+              "disabled": {
+                "type": "boolean"
+              },
               "display_name": {
                 "type": "null"
               },
@@ -46629,6 +47748,74 @@
               }
             },
             "required": [
+              "disabled",
+              "display_name",
+              "id",
+              "role",
+              "username"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "llm_keys_cleared",
+          "ok",
+          "user"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /team/users/([^/]+)/enable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /team/users/([^/]+)/enable [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "user": {
+            "properties": {
+              "disabled": {
+                "type": "boolean"
+              },
+              "display_name": {
+                "type": "null"
+              },
+              "id": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "username": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "disabled",
               "display_name",
               "id",
               "role",
@@ -48129,6 +49316,72 @@
           "configured",
           "ok",
           "provider"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /auth/me/replays [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -50523,6 +51776,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -53944,6 +55230,38 @@
         "type": "object"
       }
     },
+    "PUT /share/settings [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "missing",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /share/settings [ok]": {
       "schema": {
         "properties": {
@@ -54599,6 +55917,31 @@
       }
     },
     "PUT /team/users/([^/]+)/disable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /team/users/([^/]+)/enable [error]": {
       "schema": {
         "properties": {
           "code": {
