@@ -2970,6 +2970,9 @@ class SessionRunner:
                     job_id, root_frame_id
                 ),
                 busy_error=lambda code, message: GatewayError(code, message),
+                refusal_error=lambda code, message, error_code: GatewayError(
+                    code, message, error_code
+                ),
                 run_reviewer=lambda *args, **kwargs: self._run_reviewer(
                     *args, **kwargs
                 ),

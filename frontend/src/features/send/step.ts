@@ -36,6 +36,7 @@ import {
   stepNetworkLabel,
   stepNetworkMeta,
 } from "./skill-network";
+import { reviewFailureText } from "./review-copy";
 import { stepSummaryText, stepTitleText } from "./step-title";
 
 export type Step = {
@@ -398,6 +399,13 @@ export function stepBody(step: Step): HTMLElement {
     box.appendChild(el("div", "s-note", declinedMeta(declined)));
     const reason = declinedReason(declined);
     if (reason) box.appendChild(el("div", "s-note", reason));
+    return box;
+  }
+  // M-75: a review that ended without a verdict says why and what to do,
+  // in the UI language, above the provider's own words.
+  if (k === "review" && out.verdict === "unavailable") {
+    box.appendChild(el("div", "review-detail", reviewFailureText(out.reason)));
+    if (out.error) box.appendChild(clipPre(out.error, "d-del"));
     return box;
   }
   if (out.error) {

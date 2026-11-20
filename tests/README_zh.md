@@ -365,8 +365,8 @@ streams，验证真实 RPC worker 重启后原结果恢复且不重放 action。
 | [`test_retrosynthesis_scenario_protocols.py`](test_retrosynthesis_scenario_protocols.py) | Scenario 2–6 及外部模型环境边界的可执行协议回归：AND/OR 库存闭合、AiZynthFinder 路线转换、原子映射保密与对称性、正向预测立体诊断、完整 Parrot beam 元组、不裁剪预测的 worst-group 收率评测，以及锁定环境计划、产物快照和绑定 manifest 的 worker 握手。 |
 | [`test_retrosynthesis_scoring_regressions.py`](test_retrosynthesis_scoring_regressions.py) | 路线打分与渲染，麻烦的 bug 都藏在这儿。重排之后，标注不能还指着它原来描述的那条路线。库存标志里的字符串 `"false"` 永远不算“有货”。归一化后的决策权重要精确加到 100。已解出但没有反应步骤的路线，不该因为根本用不上的证据被扣分。 |
 | [`test_revert_projection.py`](test_revert_projection.py) | 关于 Revert 与 Undo 历史的三个测试：它只追加、且扛得过重启；兄弟分支之间的消息从不混在一起；遗留数据会被回填到规范的根分支。 |
-| [`test_review.py`](test_review.py) | 经由网关走完整链路的 Reviewer。它的结论是受约束的：schema 不合法时报为“不可用”，而不是被硬掰成通过；provider 出错也不致命——一次失败的评审不该让被评审的那一轮跟着失败。 |
-| [`test_review_service.py`](test_review_service.py) | 同一个 Reviewer，但作为网关之外的服务，这里的实质是并发。被取消的 provider 调用仍然会在自己的线程上跑完，同时挡住重复提交；线程启动失败时，它会把先前已经占下的预留清理掉。 |
+| [`test_review.py`](test_review.py) | 经由网关走完整链路的 Reviewer。它的结论是受约束的：schema 不合法时报为“不可用”，而不是被硬掰成通过；provider 出错也不致命——一次失败的评审不该让被评审的那一轮跟着失败。M-75：对空会话 `POST /frames/{id}/review` 经真实路由得到 409 `review_nothing_to_review`，不建步骤、也没有在途调用；不可用的步骤带有 `reason`。 |
+| [`test_review_service.py`](test_review_service.py) | 同一个 Reviewer，但作为网关之外的服务，这里的实质是并发。被取消的 provider 调用仍然会在自己的线程上跑完，同时挡住重复提交；线程启动失败时，它会把先前已经占下的预留清理掉。M-75：空会话在建任务、占预留、起线程之前就被拒绝；开始后没有得出结论的每种情形都映射到对应的 `reason`。 |
 | [`test_science_connectors.py`](test_science_connectors.py) | 每一个科学数据库 connector，全部跑在离线 HTTP fake 上。它们共用同一份记录 schema；从不用用户输入拼出任意 URL；上游返回 204、或返回一个从未承诺过的 schema 时，得到的是有界的 connector 错误，而不是崩溃。 |
 | [`test_zenodo_datasets.py`](test_zenodo_datasets.py) | 离线 Zenodo/PaRoutes fixture 与只读元数据检索：记录 DOI 与 concept DOI 分开，未知值保持未知（包括受限记录被隐藏的文件列表），cursor 绑定查询并在上游结果窗口处停止，模型视图里的大文件清单被显式标注为省略、返回数据保持完整，每个科学检索观测都显示 cursor 与回执，且从不下载数据集。 |
 | [`test_stage10_connectors.py`](test_stage10_connectors.py) | Stage 10 的 ClinVar/PubMed/ClinicalTrials：flag 关闭时目录仍是原来的七个；fixture 返回 accession/URL/时间和版本化 Artifact；空结果、429、schema drift 都是诚实错误。Artifact 发布全程固定 parent directory，并核验私有 staging file 的 inode；workspace 路径交换无法重定向写入，hardlink 替换会 fail closed，既不发布也不留下别名。 |

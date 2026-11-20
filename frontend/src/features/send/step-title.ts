@@ -15,6 +15,7 @@ type Rule = [RegExp, string];
 
 /** Most specific first: the first match wins. */
 const TITLE_ZH: Rule[] = [
+  [/^Reviewer$/, "审阅"],
   [/^Searching the web$/, "搜索网页"],
   [/^Reading project file (.+)$/, "读取项目文件 $1"],
   [/^Reading history for (.+)$/, "读取 $1 的历史"],
@@ -89,6 +90,10 @@ export function stepSummaryText(summary: string): string {
   if (LANG === "en" || !summary) return summary;
   if (summary === "no match") return "没有匹配";
   if (summary === "failed") return "失败";
+  // M-75: the Reviewer card's own states.
+  if (summary === "Review unavailable") return "审阅未完成";
+  if (summary === "No issues found") return "未发现问题";
+  if (summary === "Review cancelled") return "审阅已取消";
   const failed = /^failed: ([\s\S]+)$/.exec(summary);
   if (failed) return "失败：" + failed[1];
   const exit = /^exit (-?\d+)(?: · ([\d,]+) file changes?)?$/.exec(summary);

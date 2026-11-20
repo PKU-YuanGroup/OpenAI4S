@@ -10,6 +10,7 @@ vi.mock("../artifacts/ui", async (importOriginal) => ({
 import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
 import { startStream } from "../messages/stream";
+import { reviewFailureText, reviewRefusalText } from "./review-copy";
 import { continueInNewSession } from "./skill-network";
 import { addLiveStep, buildStepCard, renderStoredStep, updateLiveStep } from "./step";
 
@@ -409,6 +410,36 @@ describe("a loaded Skill's network limit", () => {
     // SCI-14: and what to do now, with the way out as a button.
     expect(card.querySelector(".s-net-next")!.querySelector(".s-net-text")!.textContent).toContain("请在新会话中继续");
     expect(card.querySelector(".s-net-new")!.textContent).toBe("在新会话中继续");
+  });
+
+  it("an unavailable review says why and what to do, not an empty card (M-75)", async () => {
+    await setLang("zh");
+    const card = buildStepCard({
+      step_id: "r-1",
+      kind: "review",
+      title: "Reviewer",
+      status: "error",
+      summary: "Review unavailable",
+      input: { mode: "manual" },
+      output: { verdict: "unavailable", reason: "model_unreachable", error: "LLM request timed out after 45s" },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-lbl")!.textContent).toBe("审阅");
+    expect(card.querySelector(".s-meta")!.textContent).toBe("审阅未完成");
+    expect(card.querySelector(".review-detail")!.textContent).toBe(reviewFailureText("model_unreachable"));
+    expect(card.querySelector(".review-detail")!.textContent).toContain("审阅模型没有及时回应");
+    expect(card.querySelector("pre")!.textContent).toContain("timed out after 45s");
+  });
+
+  it("a refused review request is worded in the UI language (M-75)", async () => {
+    await setLang("en");
+    expect(reviewRefusalText({ code: "review_nothing_to_review", message: "there is nothing to review yet" })).toBe(
+      "Nothing to review yet: this session has no message, code or file. Ask the agent something first.",
+    );
+    expect(reviewRefusalText(new Error("a previous review call is still finishing"))).toBe(
+      "a previous review call is still finishing",
+    );
+    // An unknown reason still explains itself rather than staying silent.
+    expect(reviewFailureText("something new")).toBe(reviewFailureText("internal"));
   });
 
   it("Continue in a new session opens one and carries the last request over (SCI-14)", async () => {

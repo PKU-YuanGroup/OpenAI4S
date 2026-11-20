@@ -486,6 +486,8 @@ def test_run_reviewer_error_is_nonfatal_and_marks_step_unavailable(
     assert step["output"] == {
         "error": "review provider unavailable",
         "verdict": "unavailable",
+        # M-75: why, as a code the card explains in the UI language.
+        "reason": "internal",
     }
     frame = store.get_frame(fid)
     assert (frame.get("input_tokens") or 0) == 0
@@ -535,6 +537,8 @@ def test_manual_review_reserves_operation_and_honors_pre_state_cancel(
     monkeypatch, tmp_path
 ):
     _cfg_obj, _hub, runner, store, fid, _st = _review_context(tmp_path)
+    # M-75: a session with nothing in it is refused before any work.
+    store.add_message(root_frame_id=fid, role="user", content="request")
     # Remove the helper-created state so cancel() must rely on the synchronous
     # operation reservation rather than an already-existing SessionState.
     runner._sessions.pop(fid, None)
@@ -696,6 +700,8 @@ def test_submit_manual_review_preserves_frame_status_and_joins_assistant_blocks(
 
 def test_submit_manual_review_repairs_stale_processing_status(monkeypatch, tmp_path):
     _cfg_obj, hub, runner, store, fid, _st = _review_context(tmp_path)
+    # M-75: a session with nothing in it is refused before any work.
+    store.add_message(root_frame_id=fid, role="user", content="request")
     store.update_frame(fid, status="processing")
     monkeypatch.setattr(
         runner, "_run_reviewer", lambda *_args, **_kwargs: {"verdict": "pass"}
@@ -713,6 +719,8 @@ def test_submit_manual_review_repairs_stale_processing_status(monkeypatch, tmp_p
 
 def test_submit_manual_review_reads_tail_of_long_conversation(monkeypatch, tmp_path):
     _cfg_obj, _hub, runner, store, fid, _st = _review_context(tmp_path)
+    # M-75: a session with nothing in it is refused before any work.
+    store.add_message(root_frame_id=fid, role="user", content="request")
     list_call: dict = {}
 
     def tail_messages(_fid, *, branch_id, limit):
@@ -950,3 +958,34 @@ def test_project_artifact_zip_contains_current_files_and_deduplicates_names(tmp_
             "first report",
             "second report",
         }
+
+
+def test_requesting_a_review_of_an_empty_session_is_a_409_that_says_why(tmp_path):
+    """M-75 through the real route: refused with a code the client words in
+    its own language, before a job, a step or a provider call exists."""
+    from openai4s.server import local_auth
+
+    cfg_obj, _hub, runner, store, fid, _st = _review_context(tmp_path)
+    handler = object.__new__(gateway_mod.make_handler(cfg_obj, _Hub(), runner))
+    handler._correlation_id = "req-1"
+    sent: dict = {}
+
+    def _send(code, payload, ctype, extra=None):
+        sent["code"] = code
+        sent["body"] = json.loads(payload.decode("utf-8"))
+
+    handler._send = _send
+    handler.command = "POST"
+    handler.path = f"/api/v1/frames/{fid}/review"
+    handler.headers = {
+        "Content-Length": "0",
+        local_auth.TOKEN_HEADER: local_auth.load_or_mint(cfg_obj.data_dir),
+    }
+    handler._body = lambda: {}
+    handler._route("POST")
+
+    assert sent["code"] == 409, sent
+    assert sent["body"]["code"] == "review_nothing_to_review"
+    assert "nothing to review" in sent["body"]["error"]
+    assert not [step for step in store.list_steps(fid) if step["kind"] == "review"]
+    assert runner.review_call_inflight(fid) is False

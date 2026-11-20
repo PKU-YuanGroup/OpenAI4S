@@ -20,6 +20,11 @@ describe("step titles and summaries in the UI language (I18N-1)", () => {
     expect(stepSummaryText("1 artifact")).toBe("1 个产物");
     expect(stepSummaryText("exit 0 · 3 file changes")).toBe("退出码 0 · 3 个文件变更");
     expect(stepSummaryText("failed: timeout")).toBe("失败：timeout");
+    // M-75: the Reviewer card was English in the Chinese UI.
+    expect(stepTitleText("Reviewer")).toBe("审阅");
+    expect(stepSummaryText("Review unavailable")).toBe("审阅未完成");
+    expect(stepSummaryText("No issues found")).toBe("未发现问题");
+    expect(stepSummaryText("Review cancelled")).toBe("审阅已取消");
   });
 
   it("leaves English, unknown titles and a cell's own title alone", async () => {

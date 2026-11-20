@@ -23,6 +23,7 @@ import { openConversation, resumeWatch } from "./conversation";
 // hoisted function declaration, so the sessions<->send cycle resolves at call time.
 import { noteForStop, turnDone } from "../send/turn";
 import { sendCopy } from "../send/copy";
+import { reviewRefusalText, reviewT } from "../send/review-copy";
 import { backgroundStoppedHint, refreshBackgroundCells } from "../send/background";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { queueT } from "../timeline/copy";
@@ -63,7 +64,13 @@ export function addToMessageMenu(anchor: Element): void {
         callLane("setActiveTab", "files");
       },
     },
-    { label: t("composer.menu.requestReview"), icon: "eye-context", onClick: () => void requestReview() },
+    // M-75: say what it does and what it costs before it starts.
+    {
+      label: t("composer.menu.requestReview"),
+      desc: reviewT("review.menuDesc"),
+      icon: "eye-context",
+      onClick: () => void requestReview(),
+    },
     { label: t("composer.menu.saveAsSkill"), icon: "book", onClick: () => void saveCurrentAsSkill() },
     { sep: true },
     { label: t("composer.menu.contextUsage"), icon: "circle-dot", onClick: () => void showContextUsage() },
@@ -177,7 +184,8 @@ export async function requestReview(): Promise<void> {
     resumeWatch(currentId.value, _openGen.value);
   } catch (e) {
     turnDone("failed");
-    hint((e as Error).message, true);
+    // M-75: a refusal says why in the UI language, not the server's English.
+    hint(reviewRefusalText(e), true);
   }
 }
 
