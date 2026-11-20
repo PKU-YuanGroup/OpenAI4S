@@ -8937,6 +8937,7 @@ class SessionRunner:
         task_mode: str | None = None,
         on_admitted: Callable[[MessageJob], None] | None = None,
         mentions: list[dict] | None = None,
+        attachments: list[dict] | None = None,
     ) -> MessageJob:
         """Start a user turn in a background thread.
 
@@ -9094,6 +9095,7 @@ class SessionRunner:
                             # Only when there are any: a turn without pins
                             # calls `run_message` exactly as it always has.
                             **({"mentions": mentions} if mentions else {}),
+                            **({"attachments": attachments} if attachments else {}),
                         )
                         result.setdefault("job_id", job.job_id)
                         result.setdefault("execution_id", ticket.execution_id)
@@ -10995,6 +10997,7 @@ class SessionRunner:
         frozen_binding: tuple[str, int] | None = None,
         task_mode: str | None = None,
         mentions: list[dict] | None = None,
+        attachments: list[dict] | None = None,
     ) -> dict:
         st = self._state(root_frame_id, project_id)
         if frozen_binding:
@@ -11112,6 +11115,8 @@ class SessionRunner:
                 role="user",
                 content=user_text,
                 frame_id=root_frame_id,
+                # M-10: written with the row, so the chip cannot outlive it.
+                metadata=({"attachments": attachments} if attachments else None),
             )
             # This is the exact branch point for an alternative answer: the
             # user message is durable, while no later model action or Cell has
@@ -11203,6 +11208,7 @@ class SessionRunner:
                         if annos
                         else {}
                     ),
+                    **({"attachments": attachments} if attachments else {}),
                     # SYNC-5: the branch point a reload shows as "Branch from
                     # this question"; the live bubble offers it as well.
                     **(
@@ -18265,6 +18271,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 if _message_annotations(mm)
                                 else {}
                             ),
+                            # The uploads it was sent with (M-10), absent when
+                            # there were none.
+                            **(
+                                {"attachments": artifact_refs.message_attachments(mm)}
+                                if artifact_refs.message_attachments(mm)
+                                else {}
+                            ),
                             **_message_candidate_identity(mm),
                         }
                         for mm in msgs
@@ -18383,6 +18396,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     mentions = artifact_refs.parse_mentions(b.get("mentions"))
                 except ValueError as error:
                     raise GatewayError(400, str(error), "invalid_mentions") from error
+                # The uploads the composer showed as going with this message
+                # (M-10), kept on the user row so its chip survives a reload.
+                try:
+                    attachments = artifact_refs.parse_attachments(b.get("attachments"))
+                except ValueError as error:
+                    raise GatewayError(
+                        400, str(error), "invalid_attachments"
+                    ) from error
                 # A session that does not exist -- deleted in another tab, or
                 # a stale link -- takes no message. `submit_message` builds an
                 # ephemeral state for an unknown id (in-process callers rely on
@@ -18507,6 +18528,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         task_mode=b.get("task_mode"),
                         on_admitted=_persist_correlation,
                         **({"mentions": mentions} if mentions else {}),
+                        **({"attachments": attachments} if attachments else {}),
                     )
                 except BaseException:
                     # Every synchronous refusal lands here -- the 413 on an

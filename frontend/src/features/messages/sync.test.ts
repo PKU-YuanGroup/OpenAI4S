@@ -452,6 +452,31 @@ describe("the user's message reaches every tab", () => {
     );
   });
 
+  it("shows the files a question was sent with, in another tab and after a reload (M-10)", () => {
+    const files = [{ artifact_id: "a-1", name: "cohort.csv" }];
+    onEvent({
+      type: "user_message",
+      root_frame_id: "f-1",
+      message_id: "m-7",
+      content: "Summarise it",
+      request_id: "web-other-tab",
+      seq: 2,
+      attachments: files,
+    });
+    const chips = (row: HTMLElement) =>
+      (Array.from(row.querySelectorAll(".msg-refs .msg-ref-chip.sent")) as HTMLElement[]).map((chip) => [
+        chip.dataset.artifactId,
+        chip.textContent,
+      ]);
+    const live = messages().querySelector(".msg.user") as HTMLElement;
+    expect(chips(live)).toEqual([["a-1", "cohort.csv"]]);
+    const stored = renderStored({ role: "user", content: "Summarise it", message_id: "m-8", attachments: files }) as HTMLElement;
+    expect(chips(stored)).toEqual(chips(live));
+    // A question sent without files has none.
+    const plain = renderStored({ role: "user", content: "no files", message_id: "m-9" }) as HTMLElement;
+    expect(plain.querySelector(".msg-ref-chip.sent")).toBeNull();
+  });
+
   it("keeps the row a reload already rendered from REST", () => {
     renderStored({ role: "user", content: "Stored question", message_id: "m-3" });
     onEvent({
