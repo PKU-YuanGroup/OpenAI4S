@@ -1019,7 +1019,7 @@ describe("signal writes publish new objects", () => {
 
 describe("delegation evidence panel", () => {
   const scope =
-    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子代理。若记录了生产 Cell，则要求该 Cell 成功；没有 Cell 回执的版本仍可能通过。核对发生在子代理完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
+    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子代理。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子代理完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
 
   it("renders both verdicts, truncation, unavailable, and the scope note once", async () => {
     mountDocument();
@@ -1097,7 +1097,7 @@ describe("delegation evidence panel", () => {
       expect(text).toContain("版本与归属已核对 1 · 证据不足 1");
       expect(text).toContain("仅显示前 2 项 / 共 13 项");
       expect(text).toContain("复用已有版本");
-      expect(text).toContain("Cell 成功");
+      expect(text).toContain("单元成功");
       expect(panel.querySelector(".delegation-evidence-list")?.getAttribute("data-details-key")).toBe(
         "delegation-evidence:c-checked",
       );
@@ -1111,7 +1111,7 @@ describe("delegation evidence panel", () => {
       expect(text).toContain("版本与归属已核对");
       expect(text).toContain("证据不足");
       expect(text).toContain("无 sha256 记录");
-      expect(text).toContain("无 Cell 回执");
+      expect(text).toContain("无单元回执");
       expect(text).not.toContain("原生写入");
       const unavailable = panel.querySelectorAll(".delegation-evidence")[1];
       expect(unavailable?.textContent).toContain("证据不可用");

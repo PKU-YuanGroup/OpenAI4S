@@ -22202,9 +22202,9 @@ def _format_annotations_block(annos: list) -> str:
         "请先看图、对照红圈确认每条标注指的是哪个元素。",
         "标注若是提问（例如问某个点或某条线是什么），直接回答，不要修改或覆盖图像。",
         "标注若是修改意见，再按下面的步骤改图：",
-        "1) 先定位生成下述图像的代码——查看本会话此前的代码单元与工作区文件；"
+        "1) 先定位生成下述图像的代码——查看本会话此前的单元与工作区文件；"
         "若不确定，用 host.glob/host.grep 按文件名或绘图关键字（savefig/plt/matplotlib）搜索。"
-        "自动截图名形如 figure_cellN_*.png，其中 N 是生成它的代码单元序号。",
+        "自动截图名形如 figure_cellN_*.png，其中 N 是生成它的单元序号。",
         "2) 逐条应用标注意见。以随附图上的红圈为准定位对应的子图/柱子/标签/元素；"
         "文字里的百分比坐标 (x 向右, y 向下) 仅作辅助。",
         "3) 重新运行绘图代码，写回同名图像文件（不要改文件名，旧版本会保留在版本历史里），"
@@ -22213,7 +22213,7 @@ def _format_annotations_block(annos: list) -> str:
     ]
     for (art_id, name), items in by_art.items():
         mm = re.search(r"figure_cell(\d+)_", str(name or ""))
-        cell = f"（由本会话第 {mm.group(1)} 个代码单元生成）" if mm else ""
+        cell = f"（由本会话第 {mm.group(1)} 个单元生成）" if mm else ""
         lines.append(f"• {name}{cell}")
         for a in sorted(items, key=lambda r: r.get("number") or 0):
             x = float(a.get("rel_x") or 0)
