@@ -23174,7 +23174,11 @@ try:
             pdb_text = _raw
             struct_source = 'RCSB PDB entry %s (live download)' % pdb_id
 except Exception as _exc:
-    struct_source = 'unavailable (RCSB API unreachable: %s)' % _exc
+    # The report is for people: the reason in words, the exception here.
+    print('RCSB PDB request failed:', _exc)
+    struct_source = 'not fetched this run (the RCSB PDB API %s)' % (
+        "server's certificate could not be verified on this machine"
+        if 'CERTIFICATE' in str(_exc).upper() else 'could not be reached')
 
 if pdb_text:
     open('nif3_structure.pdb', 'w').write(pdb_text)

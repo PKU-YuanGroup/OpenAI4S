@@ -666,6 +666,50 @@ def test_the_example_biochemistry_cell_runs_without_biopython(tmp_path, monkeypa
     assert "Biopython (ProtParam" not in report
 
 
+@pytest.mark.parametrize(
+    "error, reason",
+    [
+        (
+            "web_fetch: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate "
+            "verify failed: unable to get local issuer certificate (_ssl.c:1032)>",
+            "server's certificate could not be verified on this machine",
+        ),
+        ("web_fetch: <urlopen error timed out>", "could not be reached"),
+    ],
+)
+def test_the_example_report_says_why_the_structure_is_missing_in_words(
+    tmp_path, monkeypatch, capsys, error, reason
+):
+    """SCI-01: the RCSB step failed and the raw urlopen/SSL exception string
+    was written into nif3_report.md's "Data sources". The report says why in
+    words; the exception stays in the cell's output."""
+    pytest.importorskip("pandas")
+    monkeypatch.setitem(sys.modules, "Bio", None)
+    monkeypatch.chdir(tmp_path)
+
+    class _Host:
+        def web_fetch(self, *_args, **_kwargs):
+            raise RuntimeError(error)
+
+    ns: dict = {"__name__": "__kernel__"}
+    exec(compile(gateway_mod._DEMO_UNIPROT, "<cell1>", "exec"), ns)
+    exec(compile(gateway_mod._DEMO_CSV, "<cell4>", "exec"), ns)
+    ns["host"] = _Host()
+    exec(compile(gateway_mod._DEMO_PDB, "<cell5>", "exec"), ns)
+    exec(compile(gateway_mod._DEMO_MD, "<cell6>", "exec"), ns)
+
+    report = (tmp_path / "nif3_report.md").read_text()
+    assert (
+        "- Representative 3D structure: not fetched this run (the RCSB PDB API "
+        + reason
+        + ")"
+    ) in report
+    for raw in ("urlopen", "_ssl.c", "web_fetch", "Traceback"):
+        assert raw not in report
+    assert not (tmp_path / "nif3_structure.pdb").exists()
+    assert error in capsys.readouterr().out
+
+
 def test_the_example_seed_counts_interrupted_cells_as_failures(tmp_path, monkeypatch):
     """Cancelled/interrupted cells carry ``error`` None and must not read as
     successes: doing so reopened the all-green "Done — every value is real"
