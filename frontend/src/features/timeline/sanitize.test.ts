@@ -173,16 +173,19 @@ describe("sanitizeActionTimeline", () => {
     const safe = sanitizeActionTimeline({
       groups: [
         group("sk-abcdefghijk", 1, {
-          usage: { input_tokens: -1, output_tokens: 1.5, total_tokens: 9 },
+          usage: { input_tokens: -1, output_tokens: 1.5, total_tokens: 9, cache_read: 7, reasoning_tokens: "3" },
           cost: "nope",
         }),
       ],
     });
     expect(safe.groups[0]?.group_id).toBe("[redacted]");
+    // TURN-7: the cache and reasoning counters are kept, under the same coercion.
     expect(safe.groups[0]?.usage).toEqual({
       input_tokens: 0,
       output_tokens: 0,
       total_tokens: 9,
+      cache_read: 7,
+      reasoning_tokens: 0,
     });
     expect(safe.groups[0]?.cost).toBeNull();
   });
