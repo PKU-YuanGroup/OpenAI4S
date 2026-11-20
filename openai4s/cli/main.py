@@ -2599,6 +2599,20 @@ def cmd_user(args) -> int:
             if user is None:
                 print(f"error: no such user {args.username!r}", file=sys.stderr)
                 return 2
+            # A mistyped name signs somebody out everywhere and deletes their
+            # personal LLM keys, so a person at a terminal is asked first. A
+            # script (no TTY) and `--yes` are not.
+            if not getattr(args, "yes", False) and sys.stdin.isatty():
+                answer = input(
+                    f"Disable {user['username']} ({user['role']})? This signs "
+                    "them out everywhere and deletes their personal LLM "
+                    "key(s). [y/N] "
+                )
+                if answer.strip().lower() not in ("y", "yes"):
+                    print("aborted; nothing changed")
+                    return 1
+            # Raises LastAdminError (a ValueError, reported below) rather
+            # than leave the instance with nobody who can manage it.
             store.team.set_disabled(user["id"], True)
             # What the HTTP route does, on the path an operator uses when the
             # daemon is down. Leaving the row behind made the credential
@@ -2615,8 +2629,35 @@ def cmd_user(args) -> int:
                 user_id=user["id"],
                 target=args.username,
             )
-            keys = f", {cleared} LLM key(s) cleared" if cleared else ""
-            print(f"disabled {args.username} (live sessions revoked{keys})")
+            # The key deletion is deliberate (a credential must not outlive
+            # the account that watches it), so say that it is not undone.
+            keys = (
+                f", {cleared} personal LLM key(s) deleted and not restored "
+                "by `user enable`"
+                if cleared
+                else ""
+            )
+            print(f"disabled {user['username']} (live sessions revoked{keys})")
+            print(f"undo with: openai4s user enable {user['username']}")
+        elif action == "enable":
+            user = store.team.get_user_by_username(args.username)
+            if user is None:
+                print(f"error: no such user {args.username!r}", file=sys.stderr)
+                return 2
+            if not user["disabled"]:
+                print(f"{user['username']} is already enabled")
+                return 0
+            store.team.set_disabled(user["id"], False)
+            store.team.audit(
+                actor="cli",
+                action="user_enable",
+                user_id=user["id"],
+                target=user["username"],
+            )
+            print(
+                f"enabled {user['username']}; they can sign in again with "
+                "their existing password"
+            )
         elif action == "reset-password":
             user = store.team.get_user_by_username(args.username)
             if user is None:
@@ -2637,6 +2678,13 @@ def cmd_user(args) -> int:
             print(f"password reset for {args.username} (live sessions revoked)")
             if generated is not None:
                 print(f"new password: {generated}")
+            if user["disabled"]:
+                # A new password does not lift a disable, and the login page
+                # would keep refusing with no hint why.
+                print(
+                    f"note: {user['username']} is disabled and still cannot "
+                    f"sign in; run: openai4s user enable {user['username']}"
+                )
         else:  # pragma: no cover - argparse enforces choices
             return 2
     except ValueError as e:
@@ -3008,10 +3056,21 @@ def build_parser() -> argparse.ArgumentParser:
     ul.add_argument("--json", action="store_true")
     ul.set_defaults(fn=cmd_user)
     ud = usub.add_parser(
-        "disable", help="disable an account and revoke its live sessions"
+        "disable",
+        help="disable an account, revoke its live sessions and delete its "
+        "personal LLM keys (undo with `user enable`; the keys are not restored)",
     )
     ud.add_argument("username")
+    ud.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="do not ask for confirmation (a terminal is asked; a script is not)",
+    )
     ud.set_defaults(fn=cmd_user)
+    ue = usub.add_parser("enable", help="re-enable a disabled account")
+    ue.add_argument("username")
+    ue.set_defaults(fn=cmd_user)
     ur = usub.add_parser(
         "reset-password", help="set a new password and revoke live sessions"
     )

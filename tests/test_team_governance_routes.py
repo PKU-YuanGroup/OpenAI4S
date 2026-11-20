@@ -144,6 +144,79 @@ def test_admin_user_management_routes(daemon):
     assert {"user_add", "user_disable", "user_reset_password"} <= set(actions)
 
 
+def test_enable_route_undoes_a_disable_and_is_admin_only(daemon):
+    """CLI-15: disable had no inverse anywhere -- not in the CLI, not over
+    HTTP -- so one mistyped name was a permanent lockout."""
+    root = _login(daemon, "root", "fake-pw-r")
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob_id = _uid(daemon, "bob")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    status, raw = _post(
+        daemon.port, f"/api/v1/team/users/{bob_id}/disable", {}, cookie=root
+    )
+    assert status == 200, raw[:200]
+    assert _body(raw)["user"]["disabled"] is True
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=bob)[0] == 401
+
+    enable = f"/api/v1/team/users/{bob_id}/enable"
+    # a member, the disabled account's dead cookie, and nobody at all
+    status, raw = _post(daemon.port, enable, {}, cookie=alice)
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "admin_only"
+    assert _post(daemon.port, enable, {}, cookie=bob)[0] == 401
+    assert _post(daemon.port, enable, {})[0] == 401
+    assert daemon.store.team.get_user(bob_id)["disabled"] is True
+
+    status, raw = _post(daemon.port, enable, {}, cookie=root)
+    assert status == 200, raw[:200]
+    assert _body(raw)["user"] == {
+        "id": bob_id,
+        "username": "bob",
+        "display_name": None,
+        "role": "member",
+        "disabled": False,
+    }
+    assert daemon.store.team.get_user(bob_id)["disabled"] is False
+    # the old cookie stays dead; the password works again
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=bob)[0] == 401
+    _login(daemon, "bob", "fake-pw-b")
+    assert "user_enable" in [x["action"] for x in daemon.store.team.list_audit()]
+
+    status, raw = _post(
+        daemon.port, "/api/v1/team/users/user_nope/enable", {}, cookie=root
+    )
+    assert status == 404, raw[:200]
+
+
+def test_the_last_enabled_admin_cannot_be_disabled(daemon):
+    """With no admin left nobody can open the panel that would undo it."""
+    root = _login(daemon, "root", "fake-pw-r")
+    root_id = _uid(daemon, "root")
+    status, raw = _post(
+        daemon.port, f"/api/v1/team/users/{root_id}/disable", {}, cookie=root
+    )
+    assert status == 409, raw[:200]
+    assert _body(raw).get("code") == "last_admin"
+    assert daemon.store.team.get_user(root_id)["disabled"] is False
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=root)[0] == 200
+    assert "user_disable" not in [x["action"] for x in daemon.store.team.list_audit()]
+
+    # A second admin makes the first one replaceable.
+    daemon.seed_user("erika", "fake-pw-e", role="admin")
+    status, raw = _post(
+        daemon.port, f"/api/v1/team/users/{root_id}/disable", {}, cookie=root
+    )
+    assert status == 200, raw[:200]
+    erika = _login(daemon, "erika", "fake-pw-e")
+    status, raw = _post(
+        daemon.port,
+        f"/api/v1/team/users/{_uid(daemon, 'erika')}/disable",
+        {},
+        cookie=erika,
+    )
+    assert status == 409, raw[:200]
+
+
 # -- D4 visibility matrix -----------------------------------------------------
 
 

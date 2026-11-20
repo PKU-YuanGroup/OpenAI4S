@@ -30,6 +30,14 @@ The loopback CLI is admin-equivalent by decision D2 — whoever can read
 the access-token file on the host owns the box anyway — and its actions
 are audited as `cli` rather than impersonating a human account.
 
+`openai4s user disable <name>` signs the account out everywhere (a
+terminal is asked to confirm; `--yes` skips that) and `openai4s user
+enable <name>` undoes it (`POST /api/v1/team/users/{id}/disable` and
+`/enable` over HTTP). The last enabled admin cannot be disabled.
+Disabling also deletes the account's personal LLM keys — a credential
+must not outlive the account that watches it — so after `enable` their
+owner enters them again.
+
 **The bind address is still the security boundary.** Team mode adds
 accounts; it does not make the daemon safe to expose. Put it behind a
 reverse proxy that terminates TLS, or reach it over SSH — see

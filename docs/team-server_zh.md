@@ -21,6 +21,8 @@ openai4s user add alice --role admin
 
 loopback CLI 按决策 D2 等同管理员——能读到宿主上 access-token 文件的人本来就拥有这台机器——它的动作以 `cli` 记账，而不是冒充某个真人账号。
 
+`openai4s user disable <name>` 会让该账号在所有地方下线（在终端里会先确认；`--yes` 跳过确认），`openai4s user enable <name>` 撤销停用（HTTP 上是 `POST /api/v1/team/users/{id}/disable` 与 `/enable`）。最后一个启用中的管理员不能被停用。停用还会删除该账号的个人 LLM key——凭据不应比看管它的账号活得更久——所以 `enable` 之后需要由本人重新填写。
+
 **绑定地址仍然是安全边界。** 团队模式加的是账号，不是"可以暴露"。放在终结 TLS 的反向代理后面，或者走 SSH——见 [`security.md`](security.md)。明文 HTTP 上的口令，就是这张网上的口令。
 
 ## 2. 项目、可见性与配额

@@ -170,6 +170,10 @@ def _username_key(username: str) -> str:
     return unicodedata.normalize("NFKC", username).casefold()
 
 
+class LastAdminError(ValueError):
+    """Disabling this account would leave the instance with no enabled admin."""
+
+
 class TeamRepository:
     """Accounts, login sessions, and the team audit log."""
 
@@ -318,8 +322,30 @@ class TeamRepository:
 
     def set_disabled(self, user_id: str, disabled: bool) -> bool:
         """Disable also revokes every live login session — a disabled account
-        must not keep riding an already-issued cookie."""
+        must not keep riding an already-issued cookie.
+
+        Disabling the last enabled admin is refused with
+        :class:`LastAdminError`. With no admin left nobody can sign in to
+        manage the instance, and the way back is the host's CLI. The check
+        and the write share one lock, so two admins disabling each other at
+        the same moment cannot both pass it.
+        """
         with self._lock:
+            if disabled:
+                target = self._connection.execute(
+                    "SELECT role, disabled FROM users WHERE id=?", (user_id,)
+                ).fetchone()
+                if target and str(target[0]) == "admin" and not target[1]:
+                    others = self._connection.execute(
+                        "SELECT COUNT(*) FROM users WHERE role='admin'"
+                        " AND disabled=0 AND id<>?",
+                        (user_id,),
+                    ).fetchone()[0]
+                    if not others:
+                        raise LastAdminError(
+                            "refusing to disable the last enabled admin; "
+                            "create or enable another admin first"
+                        )
             cur = self._connection.execute(
                 "UPDATE users SET disabled=? WHERE id=?",
                 (1 if disabled else 0, user_id),
@@ -625,6 +651,7 @@ class TeamRepository:
 
 
 __all__ = [
+    "LastAdminError",
     "PBKDF2_ITERATIONS",
     "SESSION_TTL_S",
     "TeamRepository",
