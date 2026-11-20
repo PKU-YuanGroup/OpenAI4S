@@ -390,3 +390,88 @@ def test_a_state_command_refuses_a_data_dir_that_is_a_file(
     assert out.err.startswith(f"error: the data directory {afile} is not a directory")
     assert "Traceback" not in out.err
     assert out.out == ""
+
+
+# --------------------------------------------------------------------------
+# `serve`, `diagnostics`, `env`: one `error:` line instead of a traceback
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["serve", "--no-open"], ["diagnostics"], ["env", "plan", "python"]],
+)
+def test_a_data_dir_that_cannot_be_prepared_is_one_error_line(
+    tmp_path, monkeypatch, capsys, argv
+):
+    """CLI-12. `OPENAI4S_DATA_DIR=<a file> openai4s serve` ended in a 20-line
+    traceback whose last line was mkdir's; `doctor` said the same thing in
+    words and pointed at OPENAI4S_DATA_DIR."""
+    afile = tmp_path / "afile"
+    afile.write_text("", encoding="utf-8")
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(afile))
+    monkeypatch.chdir(tmp_path)
+
+    rc = _cli().main(argv)
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.startswith(
+        f"error: cannot use the data directory {afile} (it is not a directory)"
+    )
+    assert "OPENAI4S_DATA_DIR" in err and "openai4s doctor" in err
+    assert "Traceback" not in err
+
+
+def test_diagnostics_into_a_directory_asks_for_a_file_name(
+    tmp_path, monkeypatch, capsys
+):
+    """CLI-12. `openai4s diagnostics -o <existing dir>` was an
+    IsADirectoryError traceback from zipfile."""
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "data"))
+    folder = tmp_path / "out"
+    folder.mkdir()
+
+    rc = _cli().main(["diagnostics", "-o", str(folder)])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.startswith(f"error: {folder} is a directory")
+    assert str(folder / "openai4s-diagnostics.zip") in err
+    assert list(folder.iterdir()) == []
+
+
+def test_diagnostics_to_a_place_it_cannot_write_is_one_error_line(
+    tmp_path, monkeypatch, capsys
+):
+    """CLI-12. `-o /nonexistent-dir/x.zip` was an OSError traceback."""
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "data"))
+    blocker = tmp_path / "afile"
+    blocker.write_text("", encoding="utf-8")
+    target = blocker / "x.zip"
+
+    rc = _cli().main(["diagnostics", "-o", str(target)])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.startswith(f"error: cannot write {target} (")
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize("action", ["plan", "apply"])
+def test_env_names_an_unknown_environment_and_lists_the_real_ones(
+    tmp_path, monkeypatch, capsys, action
+):
+    """CLI-12. `openai4s env plan nosuch` was two chained tracebacks ending
+    in `EnvironmentError_: cannot read the spec for 'nosuch'`, and never said
+    which names exist."""
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "data"))
+
+    rc = _cli().main(["env", action, "nosuch"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.startswith("error: no environment named 'nosuch'; choose from: ")
+    for name in ("python", "r", "phylo", "struct"):
+        assert name in err
+    assert not (tmp_path / "data").exists()

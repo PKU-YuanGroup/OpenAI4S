@@ -911,6 +911,33 @@ def _detached_startup_refusal(
     return None
 
 
+def _prepared_config():
+    """``get_config()``, or None after one ``error:`` line about the data dir.
+
+    ``get_config()`` creates the data directory. When ``OPENAI4S_DATA_DIR``
+    names a file, or a place this user cannot create or write, that ``mkdir``
+    was the last line of a traceback; ``doctor`` already said the same thing
+    in words, so this says it the way doctor does and points at it.
+    """
+    try:
+        return get_config()
+    except OSError as exc:
+        target = Path(get_config(initialize_dirs=False).data_dir)
+        if target.exists() and not target.is_dir():
+            reason = "it is not a directory"
+        else:
+            reason = exc.strerror or str(exc)
+            if exc.filename:
+                reason += f": {exc.filename}"
+        print(
+            f"error: cannot use the data directory {target} ({reason}); point "
+            "OPENAI4S_DATA_DIR at a directory this user can write to "
+            "(`openai4s doctor` checks it)",
+            file=sys.stderr,
+        )
+        return None
+
+
 def cmd_serve(args) -> int:
     from openai4s.server import build_server, run_server
 
@@ -919,7 +946,9 @@ def cmd_serve(args) -> int:
     except FutureSchemaError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    cfg = get_config()
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
     _apply_serve_overrides(args, cfg)
     if getattr(args, "detached", False):
         # The parent never claims the singleton: the detached child re-runs
@@ -1168,11 +1197,27 @@ def cmd_diagnostics(args) -> int:
     """Write a redacted diagnostic bundle for a bug report."""
     from openai4s.diagnostics import build_bundle
 
-    cfg = get_config()
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
     target = (
         Path(args.output) if args.output else Path.cwd() / "openai4s-diagnostics.zip"
     )
-    result = build_bundle(cfg, target)
+    if target.is_dir():
+        print(
+            f"error: {target} is a directory; give the bundle a file name, "
+            f"e.g. -o {target / 'openai4s-diagnostics.zip'}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        result = build_bundle(cfg, target)
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        if exc.filename and str(exc.filename) != str(target):
+            reason += f": {exc.filename}"
+        print(f"error: cannot write {target} ({reason})", file=sys.stderr)
+        return 1
     print(f"wrote {result['path']}")
     print(f"  included: {', '.join(result['included']) or 'nothing'}")
     for item in result["excluded"]:
@@ -2129,19 +2174,48 @@ def _env_verify(prefix: Path, *, name: str | None = None) -> tuple[str, list[str
     return probe_interpreter(prefix)
 
 
+def _unknown_env_names(names) -> str | None:
+    """The `error:` line for names with no spec in envs/, else None.
+
+    A name without ``envs/<name>.yml`` was two chained tracebacks ending in
+    ``EnvironmentError_: cannot read the spec``, and never said which names
+    there are.
+    """
+    unknown = [name for name in names if not _env_spec(name).is_file()]
+    if not unknown:
+        return None
+    known = [name for name in _DEFAULT_ENVS if _env_spec(name).is_file()]
+    return (
+        f"error: no environment named {', '.join(repr(n) for n in unknown)}; "
+        f"choose from: {', '.join(known)} (the specs in {_envs_dir()})"
+    )
+
+
 def cmd_env_plan(args) -> int:
-    cfg = get_config()
+    from openai4s.kernel.env_generations import EnvironmentError_
+
+    refusal = _unknown_env_names(args.names)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
     tool = _find_conda_tool() or "conda"
     store = _env_store(cfg)
-    plans = [
-        store.plan(
-            name,
-            _env_spec(name),
-            tool=tool,
-            force_replace=bool(getattr(args, "repair", False)),
-        )
-        for name in args.names
-    ]
+    try:
+        plans = [
+            store.plan(
+                name,
+                _env_spec(name),
+                tool=tool,
+                force_replace=bool(getattr(args, "repair", False)),
+            )
+            for name in args.names
+        ]
+    except EnvironmentError_ as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps([p.public() for p in plans], indent=2, sort_keys=True))
     else:
@@ -2153,7 +2227,13 @@ def cmd_env_plan(args) -> int:
 def cmd_env_apply(args) -> int:
     from openai4s.kernel.env_generations import EnvironmentError_
 
-    cfg = get_config()
+    refusal = _unknown_env_names(args.names)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
     tool = _find_conda_tool()
     if not tool:
         print("error: no conda/mamba/micromamba found on PATH.", file=sys.stderr)
@@ -2162,12 +2242,17 @@ def cmd_env_apply(args) -> int:
     failed = 0
     for name in args.names:
         spec = _env_spec(name)
-        plan = store.plan(
-            name,
-            spec,
-            tool=tool,
-            force_replace=bool(getattr(args, "repair", False)),
-        )
+        try:
+            plan = store.plan(
+                name,
+                spec,
+                tool=tool,
+                force_replace=bool(getattr(args, "repair", False)),
+            )
+        except EnvironmentError_ as e:
+            failed += 1
+            print(f"  [{name}] FAILED: {e}", file=sys.stderr)
+            continue
         if args.dry_run:
             if plan.changes:
                 print(f"  [{name}] would {plan.action}: {plan.reason}")
@@ -2233,7 +2318,10 @@ def _stderr_tail_lines(tail: str, limit: int = 20) -> list[str]:
 
 
 def cmd_env_list(args) -> int:
-    store = _env_store(get_config())
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
+    store = _env_store(cfg)
     names = args.names or store.environments()
     payload = {
         name: {
@@ -2260,7 +2348,10 @@ def cmd_env_list(args) -> int:
 def cmd_env_rollback(args) -> int:
     from openai4s.kernel.env_generations import EnvironmentError_
 
-    store = _env_store(get_config())
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
+    store = _env_store(cfg)
     try:
         result = store.rollback(args.name, args.generation)
     except EnvironmentError_ as e:
@@ -2271,7 +2362,10 @@ def cmd_env_rollback(args) -> int:
 
 
 def cmd_env_recover(args) -> int:
-    store = _env_store(get_config())
+    cfg = _prepared_config()
+    if cfg is None:
+        return 1
+    store = _env_store(cfg)
     names = args.names or store.environments()
     report = {name: store.recover(name) for name in names}
     if args.json:
