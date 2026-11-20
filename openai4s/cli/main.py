@@ -2980,7 +2980,14 @@ def cmd_cluster(args) -> int:
                 f"gpus={profile['gpus']} walltime={profile['walltime_s']}s"
             )
         if not (rec or {}).get("configured"):
-            print("(no cluster.toml configured; local backend only)")
+            # Where the file goes, and what works until it exists: the bare
+            # "not configured" left both to a search of the docs.
+            print(
+                "(no cluster.toml configured; local backend only, with the "
+                "default 'cpu-interactive' profile. To add a cluster, describe "
+                f"it in {Path(cfg.data_dir) / 'cluster.toml'} -- see "
+                "docs/team-server.md -- and restart the daemon.)"
+            )
     else:
         print(json.dumps(rec))
     return 0 if 200 <= int(status) < 300 else 2
@@ -3446,8 +3453,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="the command to run, as separate arguments (never one string: "
         "splitting a command line is where quoting bugs become injection)",
     )
-    cls.add_argument("--profile", default="cpu-interactive")
-    cls.add_argument("--backend", help="local | cluster (default: local)")
+    cls.add_argument(
+        "--profile",
+        default="cpu-interactive",
+        help="a profile from <data_dir>/cluster.toml (`cluster profiles` lists "
+        "them); without one, only the default cpu-interactive exists",
+    )
+    cls.add_argument(
+        "--backend",
+        help="local | cluster (cluster needs <data_dir>/cluster.toml; default: "
+        "cluster when it is configured, else local)",
+    )
     cls.add_argument("--workdir")
     cls.add_argument("--json", action="store_true")
     cls.set_defaults(fn=cmd_cluster)

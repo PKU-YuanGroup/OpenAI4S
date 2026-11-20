@@ -55,6 +55,14 @@ ROUTES = contract.validate_routes((_CANCEL, _LOGS, _JOB, _JOBS, _SUBMIT, _PROFIL
 
 _PATH_PREFIX = "/orchestration"
 
+#: The profile a submission gets when it names none -- and, until
+#: cluster.toml defines profiles, the only one there is.
+DEFAULT_PROFILE = "cpu-interactive"
+
+#: Where an operator describes the site; named in refusals because "unknown"
+#: alone sent people looking for a typo in a name that could never work.
+_CLUSTER_TOML_HINT = "<data_dir>/cluster.toml (see docs/team-server.md)"
+
 #: How much of a log file the tail route will return. A batch job can write
 #: gigabytes; a browser asking "how is it going" wants the end.
 MAX_LOG_TAIL_BYTES = 64 * 1024
@@ -308,7 +316,7 @@ def handle(
             self._json({"error": "command is required", "code": "invalid_command"}, 400)
             return True
 
-        profile_name = str(body.get("profile") or "cpu-interactive")
+        profile_name = str(body.get("profile") or DEFAULT_PROFILE)
         cluster = getattr(runner, "cluster_config", None)
         profile: ResourceProfile | None = None
         if cluster is not None and cluster.configured:
@@ -318,6 +326,22 @@ def handle(
                 self._json({"error": str(exc), "code": "unknown_profile"}, 400)
                 return True
         if profile is None:
+            if profile_name != DEFAULT_PROFILE:
+                # Accepted, this ran on the local backend and was recorded
+                # under a profile that exists nowhere.
+                self._json(
+                    {
+                        "error": (
+                            f"unknown profile {profile_name!r}: no usable "
+                            f"cluster.toml is configured, so the only profile is "
+                            f"{DEFAULT_PROFILE!r}; define profiles in "
+                            f"{_CLUSTER_TOML_HINT}"
+                        ),
+                        "code": "unknown_profile",
+                    },
+                    400,
+                )
+                return True
             profile = ResourceProfile(name=profile_name)
 
         try:
@@ -339,7 +363,13 @@ def handle(
         if available and backend not in available:
             self._json(
                 {
-                    "error": f"unknown backend {backend!r}",
+                    "error": (
+                        "the cluster backend is not configured: describe the "
+                        f"site in {_CLUSTER_TOML_HINT}; until then jobs run "
+                        "on the local backend"
+                        if backend == "cluster"
+                        else f"unknown backend {backend!r}"
+                    ),
                     "code": "unknown_backend",
                     "available": sorted(available),
                 },

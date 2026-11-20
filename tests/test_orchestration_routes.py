@@ -368,6 +368,34 @@ def test_an_unknown_backend_is_refused_with_the_available_ones(daemon):
     assert "local" in payload["available"]
 
 
+def test_an_unknown_profile_is_refused_when_no_cluster_is_configured(daemon):
+    """`--profile nosuch` ran on the local backend anyway and was recorded
+    under a profile that exists nowhere."""
+    cookie = _login(daemon, "root", "fake-pw-r")
+    status, raw = _submit(
+        daemon, cookie, [sys.executable, "-c", "pass"], profile="nosuch"
+    )
+    assert status == 400
+    payload = _body(raw)
+    assert payload["code"] == "unknown_profile"
+    assert "'nosuch'" in payload["error"] and "cluster.toml" in payload["error"]
+    assert daemon.store.workloads.list_workloads(limit=50) == []
+
+
+def test_the_cluster_backend_without_cluster_toml_says_where_it_goes(daemon):
+    """`--backend cluster` (a value the help lists) answered "unknown backend
+    'cluster'", as if it were a typo."""
+    cookie = _login(daemon, "root", "fake-pw-r")
+    status, raw = _submit(
+        daemon, cookie, [sys.executable, "-c", "pass"], backend="cluster"
+    )
+    assert status == 400
+    payload = _body(raw)
+    assert payload["code"] == "unknown_backend"
+    assert "not configured" in payload["error"]
+    assert "cluster.toml" in payload["error"]
+
+
 def test_profiles_route_reports_no_cluster_when_unconfigured(daemon):
     cookie = _login(daemon, "alice", "fake-pw-a")
     status, raw = _get(daemon.port, "/api/v1/orchestration/profiles", cookie=cookie)

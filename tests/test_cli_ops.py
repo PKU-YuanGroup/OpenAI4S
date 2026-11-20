@@ -140,3 +140,40 @@ def test_cluster_logs_with_no_output_says_so(monkeypatch, capsys):
     assert status == 0
     assert captured.out == ""
     assert captured.err.strip() == "(no output)"
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-18: profiles and the cluster backend name the file that configures them
+# --------------------------------------------------------------------------- #
+
+
+def test_cluster_profiles_without_a_cluster_says_where_the_file_goes(
+    tmp_path, monkeypatch, capsys
+):
+    module = _cli_module()
+    _stub_daemon(
+        monkeypatch,
+        module,
+        (200, {"cluster": "", "configured": False, "profiles": []}),
+    )
+    monkeypatch.setattr(
+        module, "get_config", lambda: SimpleNamespace(data_dir=tmp_path)
+    )
+
+    status = module.cmd_cluster(_cluster_args("profiles"))
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert status == 0
+    assert str(tmp_path / "cluster.toml") in out
+    assert "docs/team-server.md" in out
+    assert "cpu-interactive" in out
+
+
+def test_cluster_submit_help_says_what_the_backend_and_profile_need(capsys):
+    module = _cli_module()
+    with pytest.raises(SystemExit):
+        module.main(["cluster", "submit", "--help"])
+    # argparse may wrap at the hyphen of `cpu-interactive`.
+    text = " ".join(capsys.readouterr().out.split()).replace("cpu- ", "cpu-")
+    assert "cluster needs <data_dir>/cluster.toml" in text
+    assert "only the default cpu-interactive exists" in text
