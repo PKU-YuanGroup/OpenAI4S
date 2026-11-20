@@ -41,7 +41,7 @@ from openai4s.host.endpoints import probe_ready as _probe_ready
 from openai4s.host.files import WorkspaceFileService
 from openai4s.host.files import is_secret_path as _is_secret_path
 from openai4s.host.llm import LLMService
-from openai4s.host.mcp import MCPService
+from openai4s.host.mcp import MCPService, call_step_output, call_step_request
 from openai4s.host.progress import PLAN_STEP_STATUSES, ProgressService
 from openai4s.host.remote_capabilities import (
     RemoteCapabilityService,
@@ -548,6 +548,7 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
                 "server": a.get("server"),
                 "tool": a.get("tool"),
                 "args": a.get("args", {}),
+                "request": call_step_request(a),
             },
         )
     if method == "mhs_emergency_stop":
@@ -1246,6 +1247,8 @@ def _step_end(
             "saved",
         )
     if kind == "mcp":
+        if method == "mcp_call":
+            return call_step_output(result)
         return ({"result": _short(result, 2000)}, "done")
     if kind == "fold":
         n_plddt = len((r.get("plddt_csv") or "").splitlines())

@@ -404,7 +404,8 @@ function exampleSeedCta(): HTMLElement {
   btn.onclick = () => {
     btn.disabled = true;
     btn.textContent = t("dash.example.running");
-    api("/example/session", { method: "POST", body: JSON.stringify({ confirm: true }) })
+    // `lang`: the example's own prompt and summary follow the UI language.
+    api("/example/session", { method: "POST", body: JSON.stringify({ confirm: true, lang: LANG }) })
       .then((st) => {
         if (live()) beginExampleRun(st as ExampleStatus);
       })
