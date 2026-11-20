@@ -1556,6 +1556,17 @@
         404
       ]
     },
+    "/frames/([^/]+)/session/export-html": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/shares": {
       "content_types": [
         "application/json"

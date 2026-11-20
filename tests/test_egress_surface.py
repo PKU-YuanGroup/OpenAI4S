@@ -454,6 +454,12 @@ _WEBUI_NAMED_HOSTS = {
     "an Ark plan; it is never fetched by the client",
     "console.volcengine.com": "opened in a new tab only when the user asks to "
     "manage an Ark API key or endpoint; it is never fetched by the client",
+    # FR-2: the first-run wizard's "get a key" pointer for the providers
+    # docs/startup-guide.md names. A link the user opens; nothing is fetched.
+    "console.anthropic.com": "the first-run wizard's link to where a Claude "
+    "API key is created, opened only by the user's click; never fetched",
+    "aistudio.google.com": "the first-run wizard's link to where a Gemini API "
+    "key is created, opened only by the user's click; never fetched",
 }
 
 #: Constructs that turn a URL into a request. An absolute URL on the same line
