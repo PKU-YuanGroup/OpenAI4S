@@ -20,11 +20,13 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`conversation.ts`](conversation.ts) | `newSession`、`routeInitialView`。`openConversation`（F-10）与 `resumeWatch`（F-11）改为 re-export，不再保留本车道的副本。 |
 | [`conversation.identity.test.ts`](conversation.identity.test.ts) | 断言这些 re-export 与拥有车道装上的是同一个函数对象。 |
 | [`conversation.newsession.test.ts`](conversation.newsession.test.ts) | `newSession` 在发布新 id 之前先释放上一个对话（取消订阅、Notebook 缓存）；共享路径只在对话真正打开后才 resolve；只有 `reuseEmpty` 请求才会让服务器复用未使用的会话。 |
-| [`actions.menu.test.ts`](actions.menu.test.ts) | 菜单项都接到真实实现：「存为技能」以当前对话为种子打开设置里的技能编辑器，「运行位置」打开运行位置对话框，项目研究视图的时间线把各会话的动作组画成卡片，上下文用量卡片用当前语言标注。「另存为技能」读取执行日志，用真正跑过的单元（跳过失败的尝试）生成 Procedure，并附上其中函数的 kernel.py 草稿（M-84）。 |
+| [`actions.menu.test.ts`](actions.menu.test.ts) | M-9：「+」菜单只负责附加或选择文件；请求审核、另存为技能、上下文用量在当前会话的会话菜单里。菜单项都接到真实实现：「存为技能」以当前对话为种子打开设置里的技能编辑器，「运行位置」打开运行位置对话框，项目研究视图的时间线把各会话的动作组画成卡片，上下文用量卡片用当前语言标注。「另存为技能」读取执行日志，用真正跑过的单元（跳过失败的尝试）生成 Procedure，并附上其中函数的 kernel.py 草稿（M-84）。 |
 | [`actions.directory.test.ts`](actions.directory.test.ts) | 会话菜单操作让侧栏目录保持真实：「新建文件夹并移入」建的文件夹会被列出，而不是被缓存的文件夹列表挡掉；删除当前会话后即使随后的列表刷新失败，也不会重新打开被删的会话。 |
 | [`actions.cancel.test.ts`](actions.cancel.test.ts) | 取消回执只有在它命名的执行仍是本客户端正在运行的那个时，才切换到「正在停止…」。 |
 | [`dashboard.ts`](dashboard.ts) | 首页列表、项目搜索 / 加载更多 / 重试、示例 CTA 轮询绑视图生命周期，以及仪表盘唯一的 4 秒轮询，其他功能经 `onDashPoll` 搭载。 每个会话只列一次：等你决定的只在「需要处理」里，运行中的只在「运行中」卡片里，其余在「最近会话」（其他会话都在上方时会说明，而不是显示「还没有会话」）；运行中卡片的副标题是项目名，任务摘要只在比标题多说了内容时才显示。示例分析会保留一条状态提示（运行中，之后是已完成或「6 个单元中有 N 个没有完成」，来自 `/example/session` 的 `result`），带打开会话的按钮；示例按钮是有样式的主按钮。 |
 | [`dashboard.sessions.test.ts`](dashboard.sessions.test.ts) | 仪表盘轮询用一个定时器驱动「运行中」卡片和所有搭载者，启动时立即读取一次。仪表盘的会话列表与示例 CTA：`/frames` 读取失败时如实提示并提供重试，保留上次读到的行，而不是显示没有会话并推荐示例；无论有多少次重绘与它的首次状态读取竞争，CTA 的状态轮询都只跑一份，离开仪表盘之后也不会再启动。 等待审批的会话只出现在「需要处理」，运行中的只出现在「运行中」；「最近会话」会说明会话都在上方，而不是提供示例；运行中卡片的副标题不重复标题；示例分析的状态提示跟随运行，并说明有几个单元没有完成。 种子示例项目的名称和标签跟随界面语言。 |
+| [`doc-title.ts`](doc-title.ts) | SYNC-18：打开会话时 `document.title` 为 `<会话> · <项目> — OpenAI4S`，回合运行中前面加 `⏳ `（等待批准时沿用 `messages/approval.ts` 的「（待批准）」前缀），其他时候为 `OpenAI4S`。 |
+| [`doc-title.test.ts`](doc-title.test.ts) | 各状态下的标题：首页、会话加项目、改名、运行中、待批准。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer 辅助；`FRAME_ROUTE` / `PROJECT_ROUTE` / `routesToWorkspace` 由 `routeInitialView` 与 Shell 首帧共用。`setTitle` 从静态 `data-i18n-val` 标签手中接管 `#conv-title`。 `ago` 使用共享的、随界面语言变化的相对时间（`chrome/dom.ts`）。 |
 | [`icon.ts`](icon.ts) | 本车道菜单、行和 `[data-icon]` 标记用的 `icon` / `iconEl` / `paintIcons`。图形路径取自共享的 `icons/paths.ts` 表。 |
 | [`imported.ts`](imported.ts) | M-66：当打开的会话是被隔离的导入副本（读 `/kernel` 状态，再跟随 Recovery 动作）时，在对话上方显示“只读副本”横幅，并可打开 Recovery 面板里需确认的「全新重启」；输入框被禁用并说明原因，切到其他会话时恢复。由 `boot.ts` 安装。 |
@@ -47,7 +49,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`paging.test.ts`](paging.test.ts) | 分页常量、会话排序、走页/去重、仪表盘过滤。 |
 | [`paging.ts`](paging.ts) | `MESSAGE_PAGE_SIZE=300`、`SESSION_MAX_PAGES=50`、排序/走页/过滤。 |
 | [`navigation.ts`](navigation.ts) | 视图代际与同步的目录清理。刻意不承担列表读取归属：列表读取以所属项目为界。 |
-| [`copy.ts`](copy.ts) | 目录读取失败与重试、操作失败提示、输入框菜单标签（上下文用量、审阅中、开/关）、分享对话框、本地项目文件夹和本地历史标签的双语文案。 `dashCopy` 存放首页示例分析状态提示和「会话都在上方」这一行。 `displayProjectName`：种子示例项目在保持原名「Example project」时按界面语言显示。 |
+| [`copy.ts`](copy.ts) | 目录读取失败与重试、操作失败提示、输入框菜单标签（上下文用量、审阅中、开/关）、分享对话框、本地项目文件夹和本地历史标签，以及项目活动记录视图（`projectActivityCopy`）的双语文案。 `dashCopy` 存放首页示例分析状态提示和「会话都在上方」这一行。 `displayProjectName`：种子示例项目在保持原名「Example project」时按界面语言显示。 |
 | [`load.navigation.test.ts`](load.navigation.test.ts) | 会话/文件夹/分页乱序、按项目划分的读取归属、读取失败及自动打开归属。 |
 | [`actions.export.test.ts`](actions.export.test.ts) | Markdown 导出要求读取成功及结构有效，并固定会话标题。 |
 | [`projects.navigation.test.ts`](projects.navigation.test.ts) | 已过期的项目导航不能覆盖当前会话及会话/文件夹列表；菜单筛选会取消待处理的项目打开（包含 A→B→A 重复筛选），该次打开随即把视图交还——重新加载被它在入口处退役了读取的那个会话；若工作区已显示而没有会话，则打开菜单所选的项目；当前导航将所有权交给其会话。列表读取以所属项目为界，而不是视图代际：同一项目的刷新即使被打开会话或回到 Home 抢先，也照样生效。没有列出任何会话的项目会请求复用未使用的会话。 |
@@ -56,7 +58,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`skill-draft.test.ts`](skill-draft.test.ts) | 步骤说明、哪些尝试算数、函数提取（含装饰器，后定义的覆盖先定义的）、按保留步骤生成的正文、一步不留时的通用回退，以及代码里含有围栏的情形。 |
 | [`skill-draft.ts`](skill-draft.ts) | M-84：用会话执行过的单元「另存为技能」。每个单元最新一次成功的尝试成为 Procedure 的一步（一句说明取自第一行注释，否则取它写出的文件，再附上代码）；保留步骤中的顶层 Python 函数放进 SKILL.md 的「kernel.py (draft)」一节——网页编辑器只保存 SKILL.md，不写任何可执行文件。`buildSkillBody` 按用户保留的步骤重建正文。 |
 | [`rejections.test.ts`](rejections.test.ts) | 「发起即不管」的操作失败时会提示，而不是留下未处理的 rejection：会话行菜单、项目菜单的导入与下载项，以及会话刷新触发的仪表盘重载。 |
-| [`projects.ts`](projects.ts) | 项目菜单/模态/研究视图（其时间线卡片：`projectTimelineCard`）、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。打开没有列出任何会话的项目时进入其最新的未使用会话（`reuseEmpty`），而不是每次进入都再建一个空会话。 |
+| [`projects.ts`](projects.ts) | 项目菜单/模态与项目活动记录视图（M-48：「项目活动记录」，活动 / 文件两个页签，经 `projectFiles` 每个文件一行并标出版本数；活动卡片：`projectTimelineCard`）、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。打开没有列出任何会话的项目时进入其最新的未使用会话（`reuseEmpty`），而不是每次进入都再建一个空会话。 |
 | [`project-files.ts`](project-files.ts) | 本地源文件夹选择器与只读项目文件浏览器：子文件夹浏览、“显示隐藏文件夹”开关、限长文本预览、重试，以及避免过期读取覆盖界面的请求序号。`projectFolderErrorText` 按错误码把被拒绝的文件夹（保存或选择器）以界面语言说明。项目文件弹窗有自己的带内边距的面板，可直接在某个文件夹或文件处打开（UP-5）。 |
 | [`project-history.ts`](project-history.ts) | 本地 `.openai4s/` 保存状态、立即保存、历史对话与版本、纯文本对话/代码/设置视图、文件版本下载和遗漏文件提示。继续对话前重新检查当前数据库归属，不恢复内核内存。 |
 | [`project-history.test.ts`](project-history.test.ts) | 真实保存状态与失败、重试、仅有存档的对话、继续前重新检查、版本切换、安全文本/下载链接，以及过期或已关闭视图的响应。 |

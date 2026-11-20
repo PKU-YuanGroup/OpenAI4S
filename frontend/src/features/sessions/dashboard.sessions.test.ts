@@ -259,18 +259,23 @@ describe("one place per session on the home page", () => {
       { id: "f-ok", name: "Finished fit", status: "done", message_count: 2, updated_at: "2026-11-18T07:00:00Z" },
       { id: "f-bad", name: "Broken fit", status: "failed", message_count: 2, updated_at: "2026-11-18T06:00:00Z" },
       { id: "f-new", name: "Paused fit", status: "paused", message_count: 2, updated_at: "2026-11-18T05:00:00Z" },
+      { id: "f-stop", name: "Stopped fit", status: "cancelled", message_count: 2, updated_at: "2026-11-18T04:00:00Z" },
     ]);
-    const rows = dom["#dash-sessions"]!.children as unknown as Array<{
-      children: Array<{ cls: string; title?: string; textContent: string }>;
-    }>;
+    type Node = { cls: string; title?: string; textContent: string; children?: Node[] };
+    const rows = dom["#dash-sessions"]!.children as unknown as Array<{ children: Node[] }>;
     const dot = (index: number) => rows[index]!.children[0]!;
     expect(dot(0).cls).toBe("d-dot done");
     expect(dot(0).title).toBe(dashCopy("dash.status.done"));
     expect(dot(1).cls).toBe("d-dot failed");
     expect(dot(2).cls).toBe("d-dot");
-    const labels = (index: number) => rows[index]!.children.map((node) => node.textContent);
+    // The tag is an icon plus its words (SYNC-28), so read the words under it.
+    const text = (node: Node): string => node.textContent + (node.children || []).map(text).join("");
+    const labels = (index: number) => rows[index]!.children.map(text);
     expect(labels(1)).toContain(dashCopy("dash.status.failed"));
     expect(labels(0)).not.toContain(dashCopy("dash.status.failed"));
+    // SYNC-28: a stopped turn says so too; a paused or finished one does not.
+    expect(labels(3)).toContain(dashCopy("dash.status.cancelled"));
+    expect(labels(2)).not.toContain(dashCopy("dash.status.cancelled"));
   });
 
   it("does not repeat the session's name under a Running card's title", () => {

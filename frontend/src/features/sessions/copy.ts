@@ -145,6 +145,11 @@ export const dashCopy = copyLookup({
     "dash.sessions.allAbove": "Running sessions and the ones waiting for you are listed above.",
     "dash.status.done": "Finished",
     "dash.status.failed": "Failed",
+    "dash.status.cancelled": "Stopped",
+    "dash.status.blocked_by_guardian": "Blocked",
+    "dash.status.failed.tip": "The last turn failed",
+    "dash.status.cancelled.tip": "The last turn was stopped before it finished",
+    "dash.status.blocked_by_guardian.tip": "The last turn was blocked by a safety check",
     "dash.example.project": "Example project",
     "dash.example.tag": "Example",
   },
@@ -159,6 +164,11 @@ export const dashCopy = copyLookup({
     "dash.sessions.allAbove": "正在运行和等你处理的会话显示在上方。",
     "dash.status.done": "已完成",
     "dash.status.failed": "失败",
+    "dash.status.cancelled": "已停止",
+    "dash.status.blocked_by_guardian": "已拦截",
+    "dash.status.failed.tip": "上一轮失败了",
+    "dash.status.cancelled.tip": "上一轮在完成前被停止",
+    "dash.status.blocked_by_guardian.tip": "上一轮被安全检查拦截",
     "dash.example.project": "示例项目",
     "dash.example.tag": "示例",
   },
@@ -216,7 +226,18 @@ export function composerCopy(key: "usage" | "reviewing" | "on" | "off", ...args:
 
 /** Group headings and distinguishing lines for the composer's session-options menu. */
 export function optionsMenuCopy(
-  key: "groupModes" | "groupReview" | "groupSession" | "groupSettings" | "runtimeDesc" | "computeDesc",
+  key:
+    | "groupModes"
+    | "groupReview"
+    | "groupSession"
+    | "groupSettings"
+    | "runtimeDesc"
+    | "computeDesc"
+    | "delegationDesc"
+    | "autoReviewDesc"
+    | "reviewerModelDesc"
+    | "memoryDesc"
+    | "specialistDesc",
 ): string {
   const copy = LANG === "en" ? {
     groupModes: "How the agent works",
@@ -225,6 +246,12 @@ export function optionsMenuCopy(
     groupSettings: "Open Settings",
     runtimeDesc: "Pick the Python / R environment this session's code runs in",
     computeDesc: "Settings → Compute: environment status, installed packages, remote GPU, background jobs",
+    // SCI-34: every row says what it does, not only the two modes.
+    delegationDesc: "Hands parts of a task to sub-agents in parallel",
+    autoReviewDesc: "A second model checks each answer",
+    reviewerModelDesc: "The model that does that check",
+    memoryDesc: "What the agent keeps between sessions",
+    specialistDesc: "Roles the agent can hand work to",
   } : {
     groupModes: "工作方式",
     groupReview: "审阅",
@@ -232,6 +259,11 @@ export function optionsMenuCopy(
     groupSettings: "打开设置",
     runtimeDesc: "选择这个会话的代码在哪个 Python / R 环境里运行",
     computeDesc: "设置 → 计算：环境状态、已装的包、远程 GPU、后台任务",
+    delegationDesc: "把任务的一部分交给并行的子智能体",
+    autoReviewDesc: "由另一个模型检查每次回答",
+    reviewerModelDesc: "做这次检查的模型",
+    memoryDesc: "智能体在会话之间记住的内容",
+    specialistDesc: "智能体可以把工作交给的角色",
   };
   return copy[key];
 }
@@ -279,4 +311,54 @@ export function shareCopy(
     setupDocs: "完整步骤见 OpenAI4S 仓库里的 docs/webshare.md。",
   };
   return copy[key];
+}
+
+/**
+ * M-48: the project's activity record. It was called a "research map" and
+ * opened on raw tabs named Timeline / Lineage in every language, while it is
+ * a list, not a graph.
+ */
+export const projectActivityCopy = copyLookup({
+  en: {
+    menu: "Project activity",
+    title: "{0} · Project activity",
+    activity: "Activity",
+    files: "Files",
+    activitySummary: "{0} sessions · {1} actions",
+    filesSummary: "{0} files · {1} versions · {2} links",
+    versions: "{0} versions",
+    latest: "latest",
+    noFiles: "No files in this project yet.",
+    links: "Where each file came from ({0})",
+  },
+  zh: {
+    menu: "项目活动记录",
+    title: "{0} · 项目活动记录",
+    activity: "活动",
+    files: "文件",
+    activitySummary: "{0} 个会话 · {1} 个操作",
+    filesSummary: "{0} 个文件 · {1} 个版本 · {2} 条关联",
+    versions: "{0} 个版本",
+    latest: "最新",
+    noFiles: "这个项目还没有文件。",
+    links: "文件的来源（{0}）",
+  },
+});
+
+/**
+ * SCI-17 / SYNC-28: how a session's last turn ended, when it did not simply
+ * finish -- as words and an icon, never a colour alone. `null` for a finished,
+ * running or new session. Shared by the sidebar row and the home list.
+ */
+export function lastTurnOutcome(
+  status: string | null | undefined,
+): { kind: "failed" | "cancelled" | "blocked_by_guardian"; label: string; tip: string; icon: string } | null {
+  const icons = { failed: "alert-triangle", cancelled: "stop-square", blocked_by_guardian: "lock" } as const;
+  if (status !== "failed" && status !== "cancelled" && status !== "blocked_by_guardian") return null;
+  return {
+    kind: status,
+    label: dashCopy("dash.status." + status),
+    tip: dashCopy("dash.status." + status + ".tip"),
+    icon: icons[status],
+  };
 }

@@ -5565,12 +5565,29 @@ class Store:
                 (q, q, *frame_params, limit),
             ).fetchall()
             arts = self._conn.execute(
-                "SELECT artifact_id,filename,content_type,root_frame_id,project_id "
+                "SELECT artifact_id,filename,content_type,root_frame_id,project_id,"
+                "updated_at "
                 f"FROM artifacts WHERE filename LIKE ?{artifact_scope} "
                 "ORDER BY created_at DESC "
                 "LIMIT ?",
                 (q, *artifact_params, limit),
             ).fetchall()
+            # M-47: an artifact hit names its session, so two copies of one
+            # file in two projects' sessions are told apart.
+            roots = sorted({r["root_frame_id"] for r in arts if r["root_frame_id"]})
+            session_names = {
+                r["frame_id"]: r["name"] or r["task_summary"]
+                for r in (
+                    self._conn.execute(
+                        "SELECT frame_id,name,task_summary FROM frames WHERE frame_id IN ("
+                        + ",".join("?" * len(roots))
+                        + ")",
+                        tuple(roots),
+                    ).fetchall()
+                    if roots
+                    else []
+                )
+            }
         # EXP-2: a word in a final answer, a cell or its output finds the
         # session too, with the text around it. Title matches stay first.
         sessions = {
@@ -5581,6 +5598,8 @@ class Store:
                 "task_summary": r["task_summary"],
                 "match": "title",
                 "snippet": None,
+                # M-47: when the session was last active, for the result row.
+                "updated_at": r["updated_at"],
             }
             for r in frames
         }
@@ -5602,6 +5621,8 @@ class Store:
                     "content_type": r["content_type"],
                     "root_frame_id": r["root_frame_id"],
                     "project_id": r["project_id"],
+                    "session_name": session_names.get(r["root_frame_id"]),
+                    "updated_at": r["updated_at"],
                 }
                 for r in arts
             ],

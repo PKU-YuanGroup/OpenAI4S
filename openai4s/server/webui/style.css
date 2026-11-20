@@ -130,6 +130,9 @@ button{font:inherit;cursor:pointer}
 .d-dot.failed{border-color:var(--danger);background:var(--danger)}
 .d-row .d-status{font-size:11px;font-weight:600;border-radius:10px;padding:2px 8px;white-space:nowrap}
 .d-row .d-status.failed{color:var(--danger);background:var(--danger-bg)}
+.d-row .d-status{display:inline-flex;align-items:center;gap:4px}
+.d-row .d-status.blocked_by_guardian{color:var(--danger);background:var(--danger-bg)}
+.d-row .d-status.cancelled{color:var(--text-200);background:var(--bg-200)}
 .d-dot.live{border-color:var(--success);background:var(--success);box-shadow:0 0 0 3px var(--success-bg);animation:os-pulse 1.4s ease-in-out infinite}
 .d-run{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:var(--success-text);background:var(--success-bg);border-radius:10px;padding:1px 8px;white-space:nowrap;flex:none}
 .d-run .d-run-dot{width:6px;height:6px;border-radius:50%;background:var(--success);animation:os-pulse 1.4s ease-in-out infinite}
@@ -156,13 +159,15 @@ body.sidebar-collapsed .workspace{grid-template-columns:0 minmax(0,1fr) auto}
 /* keep #sidebar in the grid (width 0) so #main / #rightdock stay in their
    columns — display:none would shift the remaining items left and collapse main */
 body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;border:0}
-#sidebar{background:var(--bg);border-right:.5px solid var(--border);display:flex;flex-direction:column;padding:12px 12px;min-width:0;height:100vh;overflow:hidden}
+#sidebar{position:relative;background:var(--bg);border-right:.5px solid var(--border);display:flex;flex-direction:column;padding:12px 12px;min-width:0;height:100vh;overflow:hidden}
 .side-top{display:flex;align-items:center;gap:2px;margin-bottom:10px}
 .proj-name{flex:1;min-width:0;display:flex;align-items:center;gap:6px;text-align:left;background:transparent;border:0;font-weight:600;font-size:14px;color:var(--text-000);white-space:nowrap;overflow:hidden;padding:4px 6px;border-radius:var(--radius)}
 .proj-name #proj-current{overflow:hidden;text-overflow:ellipsis}
 .proj-name:hover{background:var(--bg-200)}
 .chev{color:var(--text-400);display:inline-flex;flex:none}
 .proj-menu{background:var(--bg-000);border:.5px solid var(--border-btn);border-radius:var(--radius-card);margin-bottom:8px;overflow:hidden;box-shadow:var(--shadow-pop);padding:6px}
+/* M-41: a dropdown over the sidebar, not a block that pushes its content down. */
+.proj-menu{position:absolute;top:56px;left:12px;right:12px;z-index:60;max-height:calc(100% - 96px);overflow:auto}
 .proj-item{padding:6px 8px;border-radius:8px;font-size:14px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--text-000)}
 .proj-item:hover{background:var(--bg-200)}
 .proj-item .del{opacity:0;color:var(--text-400);display:inline-flex}.proj-item:hover .del{opacity:1}
@@ -201,6 +206,10 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .tab .t-close{display:inline-flex;color:var(--text-400);opacity:0}
 .tab.active .t-close{opacity:.7}.tab .t-close:hover{opacity:1;color:var(--text-000)}
 .tab .conv-title{width:auto;min-width:40px;background:transparent;border:0;padding:0;font:inherit;font-size:14px;color:inherit}
+/* M-41: the session's name as a title, not a tab. */
+.conv-title-wrap{display:flex;align-items:center;min-width:0;max-width:520px}
+.conv-title-wrap .conv-title{font-weight:500}
+.conv-title-wrap .conv-title:hover{border-color:var(--border)}
 .conv-title{flex:1;min-width:0;background:transparent;border:1px solid transparent;border-radius:8px;padding:5px 8px;font:inherit;font-size:14px;font-weight:400;color:var(--text-000)}
 .conv-head-actions{display:flex;align-items:center;gap:2px;flex:none}
 .messages{flex:1;overflow:auto;padding:0 24px 20px;position:relative}
@@ -1584,9 +1593,9 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .context-history>summary{cursor:pointer;color:var(--text-300);font-size:11px}
 .context-history-row{display:flex;align-items:center;gap:5px;padding:5px 0;border-top:var(--hair);font-size:10px}
 .context-history-id{flex:1;min-width:0;color:var(--text-200);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.project-research-tabs{display:flex;gap:4px;margin-bottom:10px}
+.project-research-tabs{display:flex;gap:4px;margin-bottom:10px;padding:14px 20px 0}
 .project-research-tabs .seg-btn.active{background:var(--text-100);color:var(--surface-0)}
-.project-research-content{display:flex;flex-direction:column;gap:8px}
+.project-research-content{display:flex;flex-direction:column;gap:8px;padding:0 20px 20px}
 .project-research-summary{color:var(--text-300);font-size:12px}
 .project-timeline-entry{display:flex;flex-direction:column;gap:3px}
 .project-session-label{color:var(--text-400);font:10px var(--mono)}
@@ -2111,6 +2120,11 @@ html[data-theme="dark"] .toggle:disabled{background:var(--bg-300)}
 /* a turn blocked on an approval request: not a spinner, a call to act */
 .session.awaiting .s-dot{border:0;background:var(--warn);animation:none}
 .s-badge.run.approval{background:var(--warn-bg);color:var(--warn-text);font-weight:600}
+/* SCI-17 / SYNC-28: how the last turn ended, in words with an icon. */
+.s-badge.outcome{display:inline-flex;align-items:center;gap:3px;font-weight:500}
+.s-badge.outcome+.s-badge.live{margin-left:6px}
+.s-badge.outcome.failed,.s-badge.outcome.blocked_by_guardian{background:var(--danger-bg);color:var(--danger)}
+.s-badge.outcome.cancelled{background:var(--bg-200);color:var(--text-200)}
 .jump-pill.approval{border-color:var(--warn);background:var(--warn-bg);color:var(--warn-text)}
 .jump-pill.approval:hover{background:var(--warn-bg);color:var(--warn-text)}
 .folder-head{height:36px;padding:0 12px;border-radius:var(--radius);font-size:14px;font-weight:500;color:var(--text-000)}

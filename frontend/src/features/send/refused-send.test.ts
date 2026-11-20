@@ -21,6 +21,8 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
 import { clearMentions, composerMentions, rememberMention } from "../autocomplete/mentions";
 import { UPLOAD_STATE, type UploadBatch, type UploadResult } from "../chrome/upload";
+import { _resetAttachments, addAttachment, composerAttachments, settleAttachment } from "../chrome/attachments";
+import { draftFor, saveDraft } from "../chrome/drafts";
 import { chooseComposerModel, modelT, resetSessionModelState, sessionModelPin } from "../customize/models";
 import { rebindConfirmText, rebindDoneText, send } from "./send";
 import { closeTurnTicket } from "./ticket";
@@ -202,6 +204,24 @@ describe("send(): a message the server refuses before admission", () => {
     expect(nodes.composer!.value).toBe("@cohort.csv rows?");
     expect(composerMentions(nodes.composer!.value).map((m) => m.version_id)).toEqual(["v-9f5c06efc35e"]);
     clearMentions();
+  });
+
+  it("M-10/SYNC-24: an accepted message takes the files and the draft its composer showed; a refused one puts the files back", async () => {
+    _resetAttachments();
+    const attached = addAttachment({ name: "cohort.csv", size: 10 }, "frame_1", "proj_1");
+    settleAttachment(attached, { ok: true, frameId: "frame_1", artifactId: "a-1", created: true });
+    routes["/frames/frame_1/message"] = refusal("model_profile_needs_key", NEEDS_KEY);
+    await send("hello");
+    expect(composerAttachments()).toEqual([attached]);
+
+    routes["/frames/frame_1/message"] = { status: 202, body: { request_id: "r2" } };
+    closeTurnTicket();
+    running.value = false;
+    saveDraft("frame_1", "hello");
+    await send("hello");
+    expect(composerAttachments()).toEqual([]);
+    // SYNC-24: the sent text is no longer the session's draft.
+    expect(draftFor("frame_1")).toBe("");
   });
 
   it("keeps the text when the rebind prompt for model_revision_unavailable is dismissed", async () => {

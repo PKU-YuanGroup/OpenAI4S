@@ -246,8 +246,12 @@ export function Shell() {
                 data-icon-size="20"
                 type="button"
               />
+              {/* M-41: the open session's name, renamable in place. This bar
+                  never held more than one session, so it is no longer drawn
+                  as tabs: no "New session" pseudo-tab beside it (New is in
+                  the sidebar) and no × that only went Home. */}
               <div class="tabbar" id="tabbar">
-                <div class="tab active" id="tab-session">
+                <div class="conv-title-wrap" id="tab-session">
                   <input
                     id="conv-title"
                     class="conv-title"
@@ -258,28 +262,7 @@ export function Shell() {
                     data-i18n-title="conv.title.rename"
                     title="重命名会话（回车保存）"
                   />
-                  <button
-                    class="t-close"
-                    id="tab-close"
-                    type="button"
-                    data-i18n-title="common.close"
-                    title="关闭"
-                    data-icon="x"
-                    data-icon-size="14"
-                    aria-label="Close"
-                  />
                 </div>
-                <button
-                  class="tab"
-                  id="tab-new"
-                  type="button"
-                  data-i18n-title="palette.action.newSession"
-                  title="新建会话"
-                >
-                  <span class="t-name" data-i18n="palette.action.newSession">
-                    New session
-                  </span>
-                </button>
               </div>
               <div class="conv-head-actions">
                 {/* The session's token use so far (send/progress.ts); opens the
@@ -341,6 +324,9 @@ export function Shell() {
                       not this node exists, so without it they were sent with
                       nothing on screen saying so and no way to discard them. */}
                   <div id="annot-bar" class="annot-bar hidden" />
+                  {/* Files chosen with + / paste / drop, until the message
+                      they go with is sent (chrome/attachments.ts, M-10). */}
+                  <div id="composer-attachments" class="composer-attach hidden" />
                   <textarea
                     id="composer"
                     rows={1}

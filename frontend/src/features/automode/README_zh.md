@@ -15,7 +15,7 @@
 | [`copy.ts`](copy.ts) | 功能本地中英文案（`autoModeT`），不改动生成的 `i18n/en.ts` / `zh.ts`。 |
 | [`present.ts`](present.ts) | 三行文案、预算区块（接近/已到上限、令牌上限未冻结、熔断）与审计行的纯文本。 |
 | [`status.ts`](status.ts) | 状态存储：上下文重新键控、读取排序、失败映射。 |
-| [`menu.ts`](menu.ts) | 会话选项菜单里显示的区块，打开期间原地重绘。 |
+| [`menu.ts`](menu.ts) | 会话选项菜单里显示的区块，打开期间原地重绘。展开前只占一行（“自动模式状态 · 关闭”，SCI-34）；读者的选择记在 `localStorage` 的 `os-automode-open`；有接近或达到上限的计量、耗尽列表或熔断时直接展开。 |
 | [`audits.ts`](audits.ts) | 审计弹窗：类型筛选、`before` 游标分页、契约规定的错误码、按提示刷新。 |
 | [`hints.ts`](hints.ts) | 把规范事件当作刷新提示，以及重连与重新打开的监听。 |
 | [`index.ts`](index.ts) | 对外导出与 `installAutoMode()`（由 `main.tsx` 调用）。 |
@@ -24,6 +24,6 @@
 | [`sanitize.test.ts`](sanitize.test.ts) | 白名单、封闭词表、可用性一致性、未知用量、`has_more` 必须伴随游标、凭据清洗。 |
 | [`present.test.ts`](present.test.ts) | 两种语言下每一行与每种来源的文案、示例场景、计量规则，以及任何地方都不出现 “On” / “已开启”。 |
 | [`status.test.ts`](status.test.ts) | 乱序读取、游标不变时的选择刷新、回退、会话与分支变化、失败映射、只发 GET。 |
-| [`menu.test.ts`](menu.test.ts) | 真实 `sessionOptionsMenu` 中的区块：位置、“自动审核”一行不变、重试、审计入口、事件提示。 |
+| [`menu.test.ts`](menu.test.ts) | 真实 `sessionOptionsMenu` 中的区块：位置、“自动审核”一行不变、重试、审计入口、事件提示、单行折叠及其记住的选择、每个选项行都有说明。 |
 | [`audits.test.ts`](audits.test.ts) | 分页、筛选、被取代的响应、脱敏、错误码、刷新与重新打开、只发 GET。 |
 | [`hints.test.ts`](hints.test.ts) | 与 send 模块在注册表上的组合、重连与重新打开触发的读取。 |

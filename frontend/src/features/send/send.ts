@@ -46,6 +46,8 @@ import {
   type UploadCreation,
   type UploadResult,
 } from "../chrome/upload";
+import { restoreAttachments, takeAttachments, type ComposerAttachment } from "../chrome/attachments";
+import { clearDraft } from "../chrome/drafts";
 import { loadSkillsCatalog } from "../autocomplete/catalog";
 import { acHoldSend, acPending } from "../autocomplete/composer";
 import {
@@ -481,9 +483,14 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   // what this call sends: a programmatic send (a permission's Continue, a plan
   // approval) carries its own text, and the user's unrelated draft is theirs.
   const composer = $("#composer") as HTMLTextAreaElement | null;
+  // The files the composer showed as going with this message leave its tray
+  // with it (M-10), and come back with the text if the message is refused.
+  let sentAttachments: ComposerAttachment[] = [];
   if (composer && composer.value === composerDraft && composerDraft.trim() === text) {
     composer.value = "";
     clearMentions();
+    sentAttachments = takeAttachments(dispatchFrameId);
+    clearDraft(dispatchFrameId);
   }
   grow();
   renderComposerRefChips();
@@ -550,6 +557,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     }
   } catch (e) {
     const refused = !!(e && Number.isInteger((e as { status?: number }).status) && (e as { status: number }).status >= 400);
+    if (refused && (e as { status: number }).status < 500) restoreAttachments(sentAttachments);
     // The refusal belongs to the session this message was sent from, and the
     // composer, the hint line and Customize are shared by every session. Once
     // the user has opened another one, putting this draft back or asking about

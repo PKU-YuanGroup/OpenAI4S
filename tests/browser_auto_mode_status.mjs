@@ -421,6 +421,9 @@ async function openStatus(handle, phase = /^(ready|failed)$/) {
   const status = block(page);
   await status.waitFor({ state: "attached", timeout: 15000 });
   await waitUntil("status block phase", async () => phase.test((await status.getAttribute("data-phase")) || ""), 15000);
+  // SCI-34: the block is one line until opened; the page keeps that choice.
+  const fold = status.locator(":scope > details.am-collapse");
+  if ((await fold.getAttribute("open")) === null) await fold.locator(":scope > summary").click();
   return status;
 }
 

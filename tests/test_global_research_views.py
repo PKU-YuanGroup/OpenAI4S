@@ -91,3 +91,62 @@ def test_global_lineage_connects_artifact_versions_and_cells(tmp_path):
         "kind": "produced",
     } in view["edges"]
     store.close()
+
+
+def test_search_hits_say_which_project_session_and_time_they_belong_to(tmp_path):
+    """M-47: two hits for one file in two projects looked identical in ⌘K."""
+    store = Store(tmp_path / "global.db")
+    original = store.new_frame(project_id="science", name="KM analysis")
+    imported = store.new_frame(project_id="science-copy", name="KM analysis (copy)")
+    for root, project in ((original, "science"), (imported, "science-copy")):
+        store.save_artifact(
+            path=str(tmp_path / f"{project}-KM_arm.png"),
+            filename="KM_arm.png",
+            content_type="image/png",
+            size_bytes=3,
+            checksum="c" * 64,
+            frame_id=root,
+            root_frame_id=root,
+            project_id=project,
+        )
+
+    found = store.search("KM_arm")
+
+    rows = {a["project_id"]: a for a in found["artifacts"]}
+    assert rows["science"]["session_name"] == "KM analysis"
+    assert rows["science-copy"]["session_name"] == "KM analysis (copy)"
+    assert all(
+        isinstance(a["updated_at"], int) and a["updated_at"] > 0 for a in rows.values()
+    )
+    titles = store.search("KM analysis")["sessions"]
+    assert {s["id"] for s in titles} == {original, imported}
+    assert all(isinstance(s["updated_at"], int) and s["updated_at"] > 0 for s in titles)
+    store.close()
+
+
+def test_project_lineage_leaves_out_the_platforms_own_files(tmp_path):
+    """M-48: a context spill file sat in the project's file list and count."""
+    store = Store(tmp_path / "global.db")
+    root = store.new_frame(project_id="science")
+    for name in ("result.csv", "context-output-0123456789abcdef.json"):
+        store.save_artifact(
+            path=str(tmp_path / name),
+            filename=name,
+            content_type="text/plain",
+            size_bytes=3,
+            checksum="d" * 64,
+            frame_id=root,
+            root_frame_id=root,
+            project_id="science",
+        )
+
+    view = GlobalResearchViewService(store, ActionTimelineService(store)).lineage_view(
+        "science"
+    )
+
+    names = [
+        n.get("filename") for n in view["nodes"] if n["kind"] == "artifact_version"
+    ]
+    assert names == ["result.csv"]
+    assert view["artifact_count"] == 1 and view["version_count"] == 1
+    store.close()

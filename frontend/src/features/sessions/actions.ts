@@ -68,6 +68,11 @@ export async function commitTitle(): Promise<void> {
   }
 }
 
+/**
+ * "+ Add to message": only what adds to the message. Request review, Save as
+ * skill and Context usage act on the session, not on the message being
+ * written, and live in the session menu (M-9).
+ */
 export function addToMessageMenu(anchor: Element): void {
   openMenu(anchor, [
     { label: t("composer.menu.attachFiles"), icon: "plus", onClick: () => $("#file-input")?.click() },
@@ -78,16 +83,6 @@ export function addToMessageMenu(anchor: Element): void {
         callLane("setActiveTab", "files");
       },
     },
-    // M-75: say what it does and what it costs before it starts.
-    {
-      label: t("composer.menu.requestReview"),
-      desc: reviewT("review.menuDesc"),
-      icon: "eye-context",
-      onClick: () => void requestReview(),
-    },
-    { label: t("composer.menu.saveAsSkill"), icon: "book", onClick: () => void saveCurrentAsSkill() },
-    { sep: true },
-    { label: t("composer.menu.contextUsage"), icon: "circle-dot", onClick: () => void showContextUsage() },
   ]);
 }
 
@@ -241,6 +236,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     heading("groupModes"),
     {
       label: checked(review.delegation_enabled !== false) + t("composer.option.delegation"),
+      desc: optionsMenuCopy("delegationDesc"),
       icon: "users",
       onClick: async () => {
         const on = review.delegation_enabled === false;
@@ -274,6 +270,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     heading("groupReview"),
     {
       label: checked(!!review.auto_review) + t("composer.option.autoReview"),
+      desc: optionsMenuCopy("autoReviewDesc"),
       icon: "eye-context",
       onClick: async () => {
         try {
@@ -289,6 +286,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     },
     {
       label: t("composer.option.reviewerModel") + (review.reviewer_model ? ` · ${review.reviewer_model}` : ""),
+      desc: optionsMenuCopy("reviewerModelDesc"),
       icon: "sliders",
       onClick: () => reviewerModelMenu(anchor, review.reviewer_model),
     },
@@ -305,8 +303,18 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     },
     { sep: true },
     heading("groupSettings"),
-    { label: t("composer.option.memory"), icon: "book", onClick: () => callLane("openCust", "memory") },
-    { label: t("composer.option.specialist"), icon: "users", onClick: () => callLane("openCust", "specialists") },
+    {
+      label: t("composer.option.memory"),
+      desc: optionsMenuCopy("memoryDesc"),
+      icon: "book",
+      onClick: () => callLane("openCust", "memory"),
+    },
+    {
+      label: t("composer.option.specialist"),
+      desc: optionsMenuCopy("specialistDesc"),
+      icon: "users",
+      onClick: () => callLane("openCust", "specialists"),
+    },
     {
       label: t("composer.option.compute"),
       desc: optionsMenuCopy("computeDesc"),
@@ -394,6 +402,21 @@ export function sessionMenu(anchor: Element, fid: string): void {
         callLane("setActiveTab", "notebook");
       },
     },
+    // M-9: these act on the open conversation (they read `currentId`), so a
+    // sidebar row of another session does not offer them.
+    ...(fid === currentId.value
+      ? [
+          // M-75: say what it does and what it costs before it starts.
+          {
+            label: t("composer.menu.requestReview"),
+            desc: reviewT("review.menuDesc"),
+            icon: "eye-context",
+            onClick: () => void requestReview(),
+          },
+          { label: t("composer.menu.saveAsSkill"), icon: "book", onClick: () => void saveCurrentAsSkill() },
+          { label: t("composer.menu.contextUsage"), icon: "circle-dot", onClick: () => void showContextUsage() },
+        ]
+      : []),
     {
       label: t("compute.menu.runLocation"),
       icon: "server",

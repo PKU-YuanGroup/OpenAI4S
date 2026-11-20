@@ -38,7 +38,7 @@ import { binds } from "./binds";
 import { ensureActivateKeys, hint, openMenu, reportFailure } from "./chrome";
 import { $, el, setTitle } from "./dom";
 import { icon, iconEl } from "./icon";
-import { sessionCopy } from "./copy";
+import { lastTurnOutcome, sessionCopy } from "./copy";
 import { resetSessionDirectory } from "./navigation";
 import {
   DATE_BUCKET_KEYS,
@@ -471,10 +471,22 @@ export function sessionRow(f: SessionLike): HTMLElement {
     const b = el("span", "s-badge run", t("dash.badge.running"));
     b.title = t("session.badge.runningTip");
     d.appendChild(b);
-  } else if (f.kernel_alive) {
-    const b = el("span", "s-badge live");
-    b.title = t("session.badge.liveTip");
-    d.appendChild(b);
+  } else {
+    // SCI-17 / SYNC-28: a stopped or failed last turn says so on the row,
+    // apart from the kernel dot (which is about the kernel, not the turn).
+    const outcome = lastTurnOutcome(f.status);
+    if (outcome) {
+      const b = el("span", "s-badge outcome " + outcome.kind);
+      b.appendChild(iconEl(outcome.icon, 11));
+      b.appendChild(el("span", null, outcome.label));
+      b.title = outcome.tip;
+      d.appendChild(b);
+    }
+    if (f.kernel_alive) {
+      const b = el("span", "s-badge live");
+      b.title = t("session.badge.liveTip");
+      d.appendChild(b);
+    }
   }
   const menu = el("button", "s-menu");
   menu.type = "button";

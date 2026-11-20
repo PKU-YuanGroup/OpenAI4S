@@ -22,12 +22,12 @@ import { customizeOpen, customizeTab, nestedEditor } from "../customize/state";
 import { _titleName, currentId, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { nbT } from "../notebook/copy";
-import { saveCurrentAsSkill, sessionMenu, sessionOptionsMenu, showContextUsage } from "./actions";
+import { addToMessageMenu, saveCurrentAsSkill, sessionMenu, sessionOptionsMenu, showContextUsage } from "./actions";
 import { openMenu, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
 import { optionsMenuCopy, shareCopy } from "./copy";
 import { primeShareStatus, resetShareStatus } from "./share";
-import { openProjectResearchView } from "./projects";
+import { openProjectResearchView, projectFiles, sanitizeProjectLineage } from "./projects";
 import { actionTimelineCard } from "../timeline/island";
 
 class FakeNode {
@@ -202,6 +202,43 @@ describe("the project research Timeline", () => {
     }
   });
 
+  it("M-48: is called the project's activity, with tabs named in the language on screen", async () => {
+    const previous = LANG;
+    await setLang("zh");
+    const body = new FakeNode();
+    const title = new FakeNode();
+    const nodes: Record<string, FakeNode> = { "#modal-body": body, "#modal-title": title, "#modal-download": new FakeNode(), "#modal": new FakeNode() };
+    vi.stubGlobal("document", { createElement: () => new FakeNode(), querySelector: (sel: string) => nodes[sel] ?? null });
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ session_count: 0, total_count: 0, groups: [] })));
+    try {
+      project.value = "P";
+      await openProjectResearchView("timeline");
+      expect(String(title.textContent)).toContain("项目活动记录");
+      await vi.waitFor(() => expect(body.texts()).toContain("0 个会话 · 0 个操作"));
+      expect(body.texts()).toEqual(expect.arrayContaining(["活动", "文件"]));
+      expect(body.texts()).not.toContain("Timeline");
+      expect(body.texts()).not.toContain("Lineage");
+    } finally {
+      vi.unstubAllGlobals();
+      await setLang(previous);
+    }
+  });
+
+  it("M-48: lists one row per file, with its version count, not one row per version", () => {
+    const data = sanitizeProjectLineage({
+      nodes: [
+        { id: "v1", kind: "artifact_version", artifact_id: "a", version_id: "v1", filename: "fit.csv", latest: false },
+        { id: "v2", kind: "artifact_version", artifact_id: "a", version_id: "v2", filename: "fit.csv", latest: true, cell_id: "cell-9" },
+        { id: "v3", kind: "artifact_version", artifact_id: "b", version_id: "v3", filename: "plot.png", latest: true },
+      ],
+      edges: [],
+    });
+    expect(projectFiles(data.nodes)).toEqual([
+      { id: "a", name: "fit.csv", versions: 2, cell: "cell-9" },
+      { id: "b", name: "plot.png", versions: 1, cell: "" },
+    ]);
+  });
+
   it("renders each action group as a card with its details", () => {
     vi.stubGlobal("document", { createElement: () => new FakeNode() });
     try {
@@ -219,6 +256,28 @@ describe("the project research Timeline", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("M-9: the + menu only adds to the message", () => {
+  it("offers attaching and picking files, nothing that acts on the session", () => {
+    vi.mocked(openMenu).mockClear();
+    addToMessageMenu({} as Element);
+    const items = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
+    expect(items.map((item) => item.label)).toEqual([t("composer.menu.attachFiles"), t("composer.menu.yourFiles")]);
+  });
+
+  it("puts review, save-as-skill and context usage in the open session's menu only", () => {
+    sessions.value = [{ id: "f", project_id: "P" }, { id: "g", project_id: "P" }];
+    currentId.value = "f";
+    const labels = (fid: string) => {
+      vi.mocked(openMenu).mockClear();
+      sessionMenu({} as Element, fid);
+      return (vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[]).map((item) => item.label);
+    };
+    const moved = [t("composer.menu.requestReview"), t("composer.menu.saveAsSkill"), t("composer.menu.contextUsage")];
+    expect(labels("f")).toEqual(expect.arrayContaining(moved));
+    expect(labels("g").filter((label) => moved.includes(String(label)))).toEqual([]);
   });
 });
 
