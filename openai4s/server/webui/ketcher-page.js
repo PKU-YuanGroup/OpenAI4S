@@ -39,7 +39,22 @@
     const text = await response.text();
     const editor = ketcher();
     if (editor && editor.setMolecule) await editor.setMolecule(text);
-    status.textContent = "loaded " + artifactId;
+    // The file's name, which the person knows, rather than its internal id.
+    status.textContent = "loaded " + (shownName(response) || artifactId);
+  }
+
+  function shownName(response) {
+    const header = response.headers.get("content-disposition") || "";
+    const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header);
+    if (encoded) {
+      try {
+        return decodeURIComponent(encoded[1]);
+      } catch (error) {
+        /* fall back to the plain parameter */
+      }
+    }
+    const plain = /filename="([^"]*)"/i.exec(header);
+    return plain ? plain[1] : "";
   }
 
   window.addEventListener("message", (event) => {

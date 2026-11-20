@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { artifactWorkbench } from "../../stores/notebook";
 import { rendererDescriptors } from "../../stores/artifacts";
+import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   bytes,
@@ -1291,6 +1292,44 @@ describe("every preview entry fails visibly and retries (A1)", () => {
     expect((frame as unknown as { hidden?: boolean }).hidden).toBe(false);
     expect(String((frame as unknown as { src?: string }).src)).toMatch(/^blob:.*#page=3$/);
     expect(walk(root)).toContain(sibling);
+  });
+
+  it("offers Edit in Ketcher without the Notebook having read the flag first (SCI-31)", async () => {
+    // Nothing has read the kernel status: the Notebook panel was never shown.
+    currentId.value = "f-1";
+    expect(artifactWorkbench.value).toBe(false);
+    const reads: string[] = [];
+    setArtifactsFetch(async (url) => {
+      reads.push(String(url));
+      if (String(url).endsWith("/frames/f-1/kernel")) {
+        return new Response(JSON.stringify({ state: "none", artifact_workbench: true }));
+      }
+      return new Response("C\n");
+    });
+    const root = mount("chemistry-2d");
+    await flush();
+    const bar = walk(root).find((node) => node.className === "wb-ketcher-bar");
+    expect(bar).toBeTruthy();
+    expect(walk(bar!).some((node) => node.textContent === translate("wb.ketcher.edit"))).toBe(true);
+    // First in the content, above the drawing that arrived before the answer.
+    expect(bar!.parent!.children[0]).toBe(bar);
+    expect(reads.filter((url) => url.endsWith("/kernel"))).toHaveLength(1);
+    // The answer is kept: the next structure needs no second read.
+    mount("chemistry-2d");
+    await flush();
+    expect(reads.filter((url) => url.endsWith("/kernel"))).toHaveLength(1);
+  });
+
+  it("offers no editor when the server has it switched off", async () => {
+    currentId.value = "f-2";
+    setArtifactsFetch(async (url) =>
+      String(url).endsWith("/kernel")
+        ? new Response(JSON.stringify({ state: "none", artifact_workbench: false }))
+        : new Response("C\n"),
+    );
+    const root = mount("chemistry-2d");
+    await flush();
+    expect(walk(root).some((node) => node.className === "wb-ketcher-bar")).toBe(false);
   });
 });
 

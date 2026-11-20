@@ -5,7 +5,7 @@ import { renderMd } from "../md/render";
 import { noteEncodingIn } from "./encoding-note";
 import { resolveRelativeImages } from "./markdown-assets";
 import { publicText } from "../scrub/scrub";
-import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
+import { renderTableArtifact as renderTableArtifactM04, withWorkbenchFlag } from "../table";
 import { applyPdfFrame } from "../../islands/frames";
 import { molTeardown } from "../../islands/mol";
 import {
@@ -512,15 +512,17 @@ function molecule2dSvg(model: MolfileModel | null | undefined): SVGElement | nul
 }
 
 export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: string): void {
-  if (readWorkbenchFlag()) {
+  // SCI-31: whether or not the Notebook has read the flag yet, and first in
+  // the container even when the answer arrives after the drawing.
+  withWorkbenchFlag(container, () => {
     const bar = el("div", "wb-ketcher-bar");
     const open = el("button", "solid-btn small", translate("wb.ketcher.edit"));
     open.onclick = () => {
       callWindow("openKetcher", a);
     };
     bar.appendChild(open);
-    container.appendChild(bar);
-  }
+    container.insertBefore(bar, container.firstChild);
+  });
   fetchArtifactText(url, { signal: previewReadSignal(container) })
     .then((text) => {
       if (!container.isConnected) return;
@@ -686,12 +688,12 @@ function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void 
       });
   };
   load();
-  if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "pdf", frame);
+  withWorkbenchFlag(content, () => callWindow("renderLocatorComments", content, a, "pdf", frame));
 }
 
 function renderHtmlPreviewGlue(content: HTMLElement, a: ArtifactRow): void {
   renderHtmlPreview(content, a);
-  if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "html");
+  withWorkbenchFlag(content, () => callWindow("renderLocatorComments", content, a, "html"));
 }
 
 function renderMolecule3dGlue(content: HTMLElement, a: ArtifactRow, url: string, nm: string): void {

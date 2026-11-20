@@ -16,7 +16,7 @@ import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
 import { loadArtifacts } from "../features/artifacts/load";
 import { renderArtifactBody } from "../features/artifacts/renderers";
-import { readWorkbenchFlag } from "../features/table/workbench";
+import { loadWorkbenchFlag, readWorkbenchFlag } from "../features/table/workbench";
 import { scienceSourceStatus } from "../features/artifacts/science-results";
 import { publicText } from "../features/scrub/scrub";
 import { viewerVersionState } from "../features/artifacts/state";
@@ -430,7 +430,12 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
     const owner = shown;
     let d: { versions?: VersionRow[] } | null = null;
     try {
-      d = (await api(`/artifacts/${a.id}/versions`)) as { versions?: VersionRow[] };
+      // The diff button below needs the workbench flag, which only the
+      // Notebook used to read (SCI-31); read it alongside the versions.
+      [d] = (await Promise.all([api(`/artifacts/${a.id}/versions`), loadWorkbenchFlag()])) as [
+        { versions?: VersionRow[] },
+        boolean,
+      ];
     } catch (e) {
       if (!owner.isConnected) return;
       body.textContent = translate("versions.load.err", (e as { message?: string }).message || String(e));
