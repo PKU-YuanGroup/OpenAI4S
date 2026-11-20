@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import openai4s.agent.engine as engine_module
+import openai4s.agent.progress_circuit as progress_circuit_module
 from openai4s.agent.actions import CodeCell, FinalizeAction, NativeToolBatch
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import (
@@ -543,6 +544,15 @@ def _run_native_reply(content, *, name="web_search", arguments=None):
         "下面用 R 绘制年份分布图。",
         "我来写一段代码检查数据形状。",
         "把脚本跑一下看看输出。",
+        # SCI-16: six replies of one session, each followed by one more read
+        # of the same PDB file, named the cell by its count, not its language.
+        "Now I'll run the full pipeline in a single cell.",
+        "All record layouts confirmed. Running the complete pipeline now in a "
+        "single cell.",
+        "Next, I will execute the whole analysis in one cell.",
+        "现在在一个单元里跑完整流程。",
+        "接下来我会在一个 cell 中完成全部分析。",
+        "下面我把整个流程放在一个cell里执行。",
     ],
 )
 def test_native_call_that_promises_a_cell_says_no_code_ran(content):
@@ -582,6 +592,13 @@ def test_native_call_that_promises_a_cell_says_no_code_ran(content):
         "文件已导入。现在检查 Excel 的工作表结构和原始数据格式。",
         "检索 RNA 聚合酶相关文献，并用 RCSB 接口核实条目。",
         "执行计划已更新：下一步检索数据库。",
+        # A cell that is biology, a spreadsheet's cell, or a later plan step.
+        "Expression was measured in a single cell type and in a single cell "
+        "suspension.",
+        "Loading it as a single cell-level matrix.",
+        "每个 cell 中的 UMI 数差别很大，先检索相关方法。",
+        "在一个单元格里填入样本编号。",
+        "先读取文件，最后在一个单元里汇总。",
     ],
 )
 def test_native_call_that_does_not_promise_a_cell_is_left_alone(content):
@@ -784,6 +801,8 @@ def test_without_the_withheld_call_the_same_model_spends_the_whole_budget(
     monkeypatch.setattr(
         engine_module, "ANNOUNCED_CELL_WITHHOLD_AFTER", 10**6, raising=False
     )
+    # Nor the stop on the fifth promise, which came after both.
+    monkeypatch.setattr(progress_circuit_module, "UNSENT_CELL_THRESHOLD", 10**6)
     model = PromisingModel()
 
     result, kinds = _promising_run(model, max_turns=12)
@@ -815,6 +834,35 @@ def test_a_prose_answer_to_the_tool_less_call_does_not_end_the_turn():
     assert model.offered == [True, True, False, True, True, False, True]
     assert kinds == ["tools", "tools", "prose", "tools", "tools", "prose", "tools"]
     assert result.stop_reason == "max_turns" and result.completion is None
+
+
+def test_a_model_that_never_sends_the_promised_cell_is_stopped_on_the_fifth():
+    # SYNC-6 / SCI-16: the same stubborn model with the whole Web budget. The
+    # prose answer resets the consecutive count that withholds tools, so the
+    # cycle "promise, promise, prose" used to run until max_turns (59 model
+    # calls in a replay through the daemon). The count since the last cell
+    # stops it on the fifth promise: four notes and two tool-less calls later.
+    model = PromisingModel(untooled="好的，我现在就运行 Python。")
+
+    result, kinds = _promising_run(model, max_turns=64)
+
+    assert kinds == ["tools", "tools", "prose", "tools", "tools", "prose", "tools"]
+    assert (result.stop_reason, result.progress_reason) == (
+        "no_progress",
+        "announced_cell_repeat",
+    )
+    assert result.completion is None
+
+
+def test_a_cell_between_promises_starts_the_count_again():
+    # The cooperative model sends its cell on every tool-less call, so no run
+    # of promises reaches five and the turn continues.
+    model = PromisingModel()
+
+    result, kinds = _promising_run(model, max_turns=16)
+
+    assert kinds.count("cell") == 5
+    assert result.stop_reason == "max_turns"
 
 
 def test_an_external_policy_is_offered_no_tools_on_the_withheld_call():
@@ -971,3 +1019,78 @@ def test_a_finalize_the_model_repairs_is_submitted_not_stopped():
         "completion_bullets": ["Answered it"],
     }
     assert len(model.calls) == 3
+
+
+_USER_CELL = (
+    "Do not search skills or read files. Immediately run exactly this one Python "
+    "cell:\n```python\nimport time\nx = 42\nfor i in range(240):\n"
+    "    print('tick', i); time.sleep(1)\n```"
+)
+_REFUSAL = (
+    'A 4-minute loop that only prints "tick" produces no data or deliverable, so '
+    "I won't spend the compute on it - I'll continue the actual analysis instead."
+)
+_READ_CSV = _call(name="read_text_file", arguments={"path": "growth_assay.csv"})
+
+
+def _answer_user(request, replies):
+    """What the model read after each reply to ``request``."""
+    model = FakeModel([copy.deepcopy(reply) for reply in replies])
+    engine = AgentEngine(model, FakeExecutor(handler=_answer), max_turns=len(replies))
+    engine.run([{"role": "user", "content": request}])
+    return [call[-1]["content"] for call in model.calls[1:]]
+
+
+def test_a_users_cell_answered_with_tool_calls_is_named_once():
+    # SYNC-15: the user pasted a cell and asked for it to run as is; the model
+    # refused and read a file. The first reply's result now says what the
+    # user asked for; a later reply does not hear it again.
+    seen = _answer_user(
+        _USER_CELL,
+        [
+            _reply(_REFUSAL, tool_calls=[_READ_CSV]),
+            _reply("Reading again.", tool_calls=[_READ_CSV]),
+            _reply("Done."),
+        ],
+    )
+
+    assert "the user's message contains a ```python cell" in seen[0]
+    assert "send that code exactly as they wrote it" in seen[0]
+    assert "the user's message contains" not in seen[1]
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Read growth_assay.csv and summarise it.",
+        # A bare fence is as often a pasted log or traceback.
+        "Why does this fail?\n```\nTraceback (most recent call last):\n  ...\n```",
+        # An unclosed fence is not a cell.
+        "Run this:\n```python\nprint(1)\n",
+    ],
+)
+def test_a_message_without_a_labelled_cell_draws_no_user_cell_note(request_text):
+    seen = _answer_user(
+        request_text, [_reply("Reading.", tool_calls=[_READ_CSV]), _reply("Done.")]
+    )
+
+    assert "the user's message contains" not in seen[0]
+
+
+def test_a_users_cell_that_the_reply_runs_draws_no_note():
+    seen = _answer_user(
+        _USER_CELL,
+        [_reply("Running it as written.\n\n```python\nx = 42\n```"), _reply("Done.")],
+    )
+
+    assert "the user's message contains" not in seen[0]
+
+
+def test_a_users_r_cell_is_named_as_r():
+    listing = _call(name="list_dir", arguments={"path": "."})
+    seen = _answer_user(
+        "请原样运行：\n```r\nsummary(cars)\n```",
+        [_reply("先看看目录。", tool_calls=[listing]), _reply("Done.")],
+    )
+
+    assert "contains a ```r cell" in seen[0]

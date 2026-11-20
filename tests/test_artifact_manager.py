@@ -1521,6 +1521,49 @@ def test_figure_capture_still_saves_and_closes_a_pyplot_figure(tmp_path):
     assert open_figures["stdout"].strip() == "[]"
 
 
+def test_an_auto_captured_figure_is_named_after_its_title(tmp_path):
+    """SCI-28: auto-captured figures were all `figure_cellN_k.png`, so a report
+    that cited "the hydropathy profile" could not be matched to its file. The
+    suptitle, else the first axes title, is appended; an untitled figure keeps
+    the plain name, and the `figure_cellN_` prefix stays for annotations."""
+    _require_matplotlib_in_the_kernel()
+    harness = ArtifactHarness(tmp_path)
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        before = harness.manager.snapshot(harness.workspace)
+        plotted = kernel.execute(
+            "import matplotlib\nmatplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "fig, ax = plt.subplots()\nax.plot([1, 2])\n"
+            "ax.set_title('Kyte-Doolittle hydropathy (window 9)')\n"
+            "fig2, (a, b) = plt.subplots(1, 2)\na.plot([1])\n"
+            "a.set_title('left')\nfig2.suptitle('OD600 vs dose / by strain')\n"
+            "fig3, c = plt.subplots()\nc.plot([3])\n"
+            "fig4, d = plt.subplots()\nd.plot([4])\nd.set_title('生长曲线')\n",
+            cell_id="cell-titled",
+        )
+        captured = harness.manager.capture(
+            harness.session,
+            3,
+            "cell-titled",
+            before,
+            lambda event: None,
+            language="python",
+            run_system_cell=kernel.execute,
+        )
+
+    assert plotted["error"] is None
+    assert captured.figures == [
+        "figure_cell3_1_Kyte_Doolittle_hydropathy_window_9.png",
+        "figure_cell3_2_OD600_vs_dose_by_strain.png",
+        "figure_cell3_3.png",
+        "figure_cell3_4_生长曲线.png",
+    ]
+    for name in captured.figures:
+        assert (harness.workspace / name).is_file()
+
+
 def test_figure_capture_skips_saved_figures_and_failed_cells(tmp_path):
     """ART-7: a figure the Cell saved itself was saved again as
     figure_cellN_k.png, and a Cell that failed mid-plot left its half-drawn
@@ -1572,7 +1615,8 @@ def test_figure_capture_skips_saved_figures_and_failed_cells(tmp_path):
             3,
             "plt.plot([5, 6])\nplt.savefig('fig3.png')\nplt.title('later')\n",
         )
-        assert changed.figures == ["figure_cell3_1.png"]
+        # Named after its title (SCI-28).
+        assert changed.figures == ["figure_cell3_1_later.png"]
 
         # Saved only into a buffer (an inline display): still captured.
         _result, buffered = run(
@@ -1657,7 +1701,7 @@ def test_a_figure_saved_with_fig_savefig_is_not_captured_again(tmp_path):
             "fig, ax = plt.subplots()\nax.plot([5, 6])\n"
             "fig.savefig('Fig3.png')\nax.set_title('later')\n",
         )
-        assert changed.figures == ["figure_cell3_1.png"]
+        assert changed.figures == ["figure_cell3_1_later.png"]
 
         # Never saved to a file: captured.
         unsaved = run(kernel, 4, "fig, ax = plt.subplots()\nax.plot([7, 8])\n")

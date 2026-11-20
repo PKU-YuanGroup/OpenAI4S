@@ -13,6 +13,7 @@ from openai4s.server.completions import (
     is_progress_narration,
     outcome_narration,
     response_language,
+    unfinished_turns_since,
 )
 from openai4s.server.contract import API_ROOT
 from openai4s.server.gateway import _GATEWAY_PROMPT_EXTRA
@@ -172,6 +173,71 @@ def test_a_direct_answer_is_one_paragraph_not_a_report():
     assert "would only repeat that answer" in _GATEWAY_PROMPT_EXTRA
     assert "plain-language labels" in _GATEWAY_PROMPT_EXTRA
     assert "plain-language labels" in str(finalize_response_tool_spec())
+
+
+def test_the_web_prompt_says_to_run_code_as_a_cell_not_a_scratch_script():
+    # M-15: qc_run_cell.py (`exec(open(...).read())`), qc_audit2.py, qc_audit.py
+    # and qc_deep.py were written one by one, each became a project file, and
+    # the Notebook stayed empty for four minutes.
+    assert "Run code AS a cell." in _GATEWAY_PROMPT_EXTRA
+    assert (
+        "Do not write a .py / .R file in order to exec() or source() it from a "
+        "later cell" in _GATEWAY_PROMPT_EXTRA
+    )
+    assert "every file you write appears in the user's files" in _GATEWAY_PROMPT_EXTRA
+
+
+def test_the_web_prompt_says_to_run_a_users_cell_as_written():
+    # SYNC-15: "Immediately run exactly this one Python cell" was refused as
+    # "no deliverable" and the model went back to reading a CSV.
+    assert "THE USER'S OWN CODE" in _GATEWAY_PROMPT_EXTRA
+    assert "runs exactly that code, unchanged, as its only action" in (
+        _GATEWAY_PROMPT_EXTRA
+    )
+    assert "a deliverable (they may be testing the workbench)" in _GATEWAY_PROMPT_EXTRA
+    assert "say why instead of doing something else" in _GATEWAY_PROMPT_EXTRA
+
+
+def test_a_cell_that_lacks_a_package_says_what_to_install_and_how():
+    """SCI-32: `No module named 'Bio'` and R's `there is no package called
+    'Seurat'` were shown with no next step, and nothing said that Bio is
+    installed as biopython."""
+
+    def failed(language, error):
+        return outcome_narration(
+            CodeCell(language, "x"),
+            ExecutionOutcome(
+                observation=f"[Observation]\nERROR (cell line 1):\nTraceback...\n{error}"
+            ),
+            "en",
+        ), outcome_narration(
+            CodeCell(language, "x"),
+            ExecutionOutcome(
+                observation=f"[Observation]\nERROR (cell line 1):\nTraceback...\n{error}"
+            ),
+            "zh",
+        )
+
+    en, zh = failed("python", "ModuleNotFoundError: No module named 'Bio.SeqUtils'")
+    assert "`Bio` is installed as the `biopython` package" in en
+    assert "The agent asks before installing it" in en
+    assert "Settings → Compute" in en
+    assert "will correct it from this error" not in en
+    assert "`Bio` 由 `biopython` 包提供" in zh and "设置 → 计算" in zh
+
+    en, _ = failed("python", "ModuleNotFoundError: No module named 'statsmodels'")
+    assert "This environment does not have the `statsmodels` package." in en
+
+    en, zh = failed(
+        "r", "Error in library(Seurat) : there is no package called \u2018Seurat\u2019"
+    )
+    assert "This R environment does not have the `Seurat` package." in en
+    assert "`openai4s setup`" in en and "cannot be installed from a session" in en
+    assert "Settings → Compute" not in en  # decision 12: no R installer
+    assert "当前 R 环境没有 `Seurat` 包" in zh
+
+    other, _ = failed("python", "ValueError: bad input")
+    assert "will correct it from this error" in other
 
 
 def test_code_outcome_narration_uses_real_error_and_redacts_secrets():
@@ -643,7 +709,7 @@ def test_the_summary_separates_deliverables_and_reads_metrics_plainly():
     assert "survival_lib.py" not in deliverables
     assert "Working files (scripts, logs, input copies; 2):" in text
     assert "[survival_lib.py](" in text and "[project-inputs/cohort.csv](" in text
-    assert "- cox tmb HR low: 0.4271" in text
+    assert "- cox tmb HR low: 0.427123" in text
     assert "- n: 120" in text
 
     zh = completion_message(
@@ -651,6 +717,136 @@ def test_the_summary_separates_deliverables_and_reads_metrics_plainly():
     )
     assert "产物：" not in zh
     assert "过程文件（脚本、日志、输入副本，2 个）：" in zh
+
+
+def test_metrics_show_the_values_the_agent_submitted():
+    """SCI-24: four significant figures turned 1019.14 Da into 1019 beside a
+    findings line that said 1019.14, and t = -4.6602 into -4.66."""
+    metrics = {
+        "peptide_avg_MW_Da": 1019.14,
+        "welch_t": -4.6602,
+        "welch_df": 7.6113,
+        "ci95_low": -1.8591,
+        "p_value": 0.001853,
+        "tiny": 1.853e-07,
+        # Float noise and an unrounded statistic lose only the tail.
+        "noise": 0.30000000000000004,
+        "unrounded": -4.660219384712,
+        "n": 9,
+    }
+    text = completion_message(
+        {"output": {"summary": "Done.", "metrics": metrics}}, language="en"
+    )
+    body = text.split("Metrics:\n", 1)[1]
+
+    for shown in (
+        # The unit is set apart from the name.
+        "- peptide avg MW (Da): 1019.14",
+        "welch t: -4.6602",
+        "welch df: 7.6113",
+        "ci95 low: -1.8591",
+        "p value: 0.001853",
+        "tiny: 1.853e-07",
+        "noise: 0.3\n",
+        "unrounded: -4.660219\n",
+        "- n: 9",
+    ):
+        assert shown in body, shown
+    readable = completion_message(
+        {
+            "output": {
+                "summary": "Done.",
+                "metrics": {"dose_uM": 5, "width_um": 2, "yield_pct": 41.5},
+            }
+        }
+    )
+    assert "- dose (µM): 5" in readable
+    assert "- width (µm): 2" in readable
+    assert "- yield (%): 41.5" in readable
+
+
+def test_unfinished_turns_are_counted_back_to_the_last_finished_one():
+    def row(seq, role, at, metadata=None):
+        return {"seq": seq, "role": role, "created_at": at, "metadata": metadata}
+
+    failed = '{"failure": {"code": "max_turns"}}'
+    stopped = {"cancelled": {"reason": "user"}}
+    rows = [
+        row(0, "user", 100),
+        row(1, "assistant", 110),  # finished
+        row(2, "user", 200),
+        row(3, "assistant", 210, failed),
+        row(4, "user", 300),
+        row(5, "assistant", 305),
+        row(6, "assistant", 310, stopped),
+    ]
+    assert unfinished_turns_since(rows) == 200
+    # Newest-first input, as the gateway reads it, gives the same answer.
+    assert unfinished_turns_since(list(reversed(rows))) == 200
+    # The last turn finished: nothing carries over.
+    assert unfinished_turns_since(rows[:2]) is None
+    # A turn nothing answered (the daemon died in it) did not finish either.
+    assert unfinished_turns_since([*rows[:2], row(2, "user", 200)]) == 200
+    assert unfinished_turns_since([]) is None
+
+
+def test_completed_work_leaves_out_what_the_summary_and_findings_said():
+    """SCI-15: "Keep it short" came back as a summary, five findings and a
+    "Completed work" list that named the same identifiers a third time."""
+    output = {
+        "summary": (
+            "Loaded the literature-review skill and grounded every identifier in "
+            "live database records. Crambin: UniProt accession P01542; one PDB "
+            "ID: 1CRN, verified in NCBI's structure database. Two real crambin "
+            "crystal-structure papers, each with PMID and DOI verified in PubMed. "
+            "Sequence length re-confirmed as 46 amino acids."
+        ),
+        "findings": [
+            "UniProt: P01542 - Crambin, entry name CRAM_CRAAB, length 46 aa.",
+            "Length re-check: the NCBI protein record for UniProt P01542 states "
+            "46 aa, matching the UniProt search result.",
+        ],
+    }
+    bullets = [
+        "Verified UniProt P01542 (crambin, 46 aa) and PDB entry 1CRN from live "
+        "database records",
+        "Verified two crambin crystal-structure papers with PMID and DOI",
+        "Re-confirmed the 46-aa sequence length via the NCBI record of the "
+        "UniProt entry",
+        # Something the message has not said yet stays.
+        "Used the skill's retrieve-first approach for every identifier",
+    ]
+    text = completion_message(
+        {"output": output, "completion_bullets": bullets}, language="en"
+    )
+
+    done = text.split("Completed work:\n", 1)[1]
+    assert done.strip() == (
+        "- Used the skill's retrieve-first approach for every identifier"
+    )
+
+    # Nothing left to add: no heading at all.
+    covered = completion_message(
+        {"output": output, "completion_bullets": bullets[:3]}, language="en"
+    )
+    assert "Completed work:" not in covered
+
+    # Chinese bullets are compared by character pairs.
+    zh = completion_message(
+        {
+            "output": {
+                "summary": "已核实 UniProt 编号 P01542 与 PDB 结构 1CRN。",
+                "findings": ["两条记录的序列长度一致"],
+            },
+            "completion_bullets": [
+                "核实了 UniProt 编号 P01542 与 PDB 结构 1CRN",
+                "导出了比对表",
+            ],
+        },
+        language="zh",
+    )
+    assert "完成内容：\n- 导出了比对表" in zh
+    assert "- 核实了" not in zh
 
 
 def test_the_summary_groups_deliverables_by_kind():

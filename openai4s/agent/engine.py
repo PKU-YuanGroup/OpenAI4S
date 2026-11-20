@@ -12,6 +12,7 @@ from .actions import (
     route_action,
     tool_only_streak_note,
     unexecuted_cell_note,
+    user_cell_note,
 )
 from .events import (
     ActionRouted,
@@ -291,6 +292,8 @@ class AgentEngine:
                 or announced_cell_note(
                     reply.content, action, circuit.announced_cell_streak
                 )
+                # A cell the user wrote and the reply answered with tools.
+                or user_cell_note(action, state.messages)
             )
             # The circuit's first stage: what repeated, before it stops the
             # turn for it.

@@ -153,6 +153,21 @@ def test_read_file_preserves_text_window_and_binary_shapes(tmp_path):
     }
 
 
+@pytest.mark.parametrize("path", [".", "./"])
+def test_reading_the_workspace_folder_says_it_is_a_folder(tmp_path, path):
+    """M-44: reading "." failed with "workspace file path must name a file",
+    which the step card showed as it was."""
+    dispatcher = _dispatcher(tmp_path)
+
+    with pytest.raises(ValueError) as caught:
+        dispatcher("read_file", [{"path": path}])
+
+    message = str(caught.value)
+    assert "is the workspace folder, not a file" in message
+    assert "list_dir shows what is there" in message
+    assert "must name a file" not in message
+
+
 def test_edit_file_keeps_single_key_errors_and_replace_all_behavior(tmp_path):
     dispatcher = _dispatcher(tmp_path)
     target = dispatcher._workspace() / "notes.txt"

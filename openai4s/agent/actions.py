@@ -326,6 +326,14 @@ _ZH_NOW = (
 _ZH_CLAUSE = r"[^。；;，,\n]"
 _ANNOUNCED_CELL = re.compile(
     r"\b(?:python|code|foreground|r)\s+cell\b"
+    # "Running the complete pipeline now in a single cell": six replies said
+    # this and re-read one file each time. The cell is still code here, so a
+    # cell type, line or count ("in a single cell type") is left alone.
+    r"|\b(?:in|into|inside|within|as)\s+(?:a|one|the\s+same)\s+"
+    r"(?:single\s+|new\s+|final\s+)?cell\b(?![-\w])"
+    r"(?!\s+(?:types?|lines?|populations?|cycles?|states?|counts?|cultures?|"
+    r"suspensions?|levels?|lineages?|walls?|membranes?|surfaces?|fate|death|"
+    r"division|resolution|sequencing)\b)"
     r"|\b(?:in|into|inside|via|using|through|within|to)\s+(?:the\s+|a\s+)?"
     r"(?:python\s+|r\s+)?(?:kernel|runtime)\b"
     r"|\b(?:enter|entering|execute|executing|run|running|switch|switching|"
@@ -340,6 +348,8 @@ _ANNOUNCED_CELL = re.compile(
     rf"{_ZH_CLAUSE}{{0,6}}?(?:运行|执行|跑)"
     # 用 Python 读取… / 在 R 中…
     rf"|{_ZH_NOW}(?:用|使用|在)\s*(?:python|r(?![a-z0-9_²-]))"
+    # 在一个单元里跑完整流程 / 放在一个 cell 里执行 (单元格 is a spreadsheet's)
+    rf"|{_ZH_NOW}(?:用|在)\s*(?:同一个|一个|单个)\s*(?:cell(?![a-z_-])|单元(?!格))"
     # 写一段代码检查…
     rf"|{_ZH_NOW}(?:写|编写){_ZH_CLAUSE}{{0,8}}?(?:代码|单元)",
     re.IGNORECASE,
@@ -419,3 +429,76 @@ def tool_only_streak_note(action: Action | None, streak: int) -> str:
     if not isinstance(action, NativeToolBatch) or streak != TOOL_ONLY_STREAK_TURNS:
         return ""
     return TOOL_ONLY_STREAK_NOTE.format(count=streak)
+
+
+# Appended to the native results of the first reply to a user message that
+# carries a labelled ```python or ```r cell. A user asked "Immediately run
+# exactly this one Python cell" and the model answered "a loop that only prints
+# produces no deliverable, so I won't spend the compute on it", then read the
+# same CSV until the circuit stopped the turn. The note is conditional because
+# a cell in a message is also how code is shown for review or debugging.
+USER_CELL_NOTE = (
+    "\n[system] NOTE: the user's message contains a ```{language} cell. If they "
+    "asked you to run it, send that code exactly as they wrote it as the ONLY "
+    "action of your next reply, with no tool calls: tool calls cannot run it, "
+    "and whether its output is worth keeping is the user's call. If it cannot "
+    "run here, say why instead of doing something else."
+)
+
+
+def user_cell_note(action: Action | None, messages: Iterable[Mapping[str, Any]]) -> str:
+    """The note for a first reply that answered a user's cell with tool calls.
+
+    ``messages`` is the history with this reply last. Only the first reply to
+    the latest user message draws it, so it is sent once per message.
+    """
+    if not isinstance(action, NativeToolBatch):
+        return ""
+    if any(call.name in CODE_RUNNING_TOOLS for call in action.calls):
+        return ""
+    replies = 0
+    for message in reversed(list(messages)):
+        role = message.get("role")
+        if role == "assistant":
+            replies += 1
+            if replies > 1:
+                return ""
+            continue
+        if role != "user":
+            continue
+        text = _message_text(message.get("content"))
+        if text.lstrip().startswith("[system]"):
+            # An Engine nudge: the user's message is further back, and the
+            # model has already answered it once.
+            return ""
+        language = _labelled_cell_language(text)
+        return USER_CELL_NOTE.format(language=language) if language else ""
+    return ""
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+        )
+    return ""
+
+
+def _labelled_cell_language(text: str) -> str:
+    """``python`` or ``r`` for the first closed, labelled cell; else ``""``.
+
+    A bare fence is left out: in a user's message it is as often a log or a
+    traceback pasted for reading as it is code.
+    """
+    for block in scan_fenced_blocks(text):
+        if not (block.closed and block.fence_char == "`"):
+            continue
+        if block.info in ("python", "py"):
+            return "python"
+        if block.info in R_INFOS:
+            return "r"
+    return ""

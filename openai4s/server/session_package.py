@@ -29,7 +29,7 @@ import zipfile
 import zlib
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from openai4s import package_diagnosis
 from openai4s.server import package_runtime
@@ -274,6 +274,51 @@ def _canonical_json(value: Any) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+#: The key under which a kernel generation records the directory its code ran
+#: in (``sandbox.workspace`` repeats it). A bare ``workspace`` key is not read:
+#: other records use it for a file path.
+_WORKING_DIRECTORY_KEYS = frozenset({"working_directory"})
+
+
+def _recorded_working_directories(files: Mapping[str, bytes]) -> set[str]:
+    """Absolute working directories the session's kernel generations name.
+
+    A top-level directory such as ``/tmp`` is left out: like the shared temp
+    root, it identifies nobody, and rewriting it would edit every path below.
+    """
+
+    found: set[str] = set()
+
+    def walk(value: Any, key: str = "") -> None:
+        if isinstance(value, Mapping):
+            for name, item in value.items():
+                walk(item, str(name))
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, key)
+        elif (
+            isinstance(value, str)
+            and key in _WORKING_DIRECTORY_KEYS
+            and os.path.isabs(value)
+            and len(Path(value).parts) > 2
+        ):
+            found.add(value.rstrip("/\\") or value)
+            try:
+                found.add(str(Path(value).resolve()))
+            except (OSError, RuntimeError):
+                pass
+
+    for name in ("environment.json", "snapshots.json"):
+        payload = files.get(name)
+        if payload is None:
+            continue
+        try:
+            walk(json.loads(payload))
+        except ValueError:
+            continue
+    return found
 
 
 def _remap_delivery_urls(content: str, replacements: Mapping[str, str]) -> str:
@@ -1407,7 +1452,9 @@ class SessionPackageService:
         "environment.json": None,
         "snapshots.json": None,
         "notebook.json": frozenset({"stdout", "stderr", "error", "traceback"}),
-        "ledger.json": frozenset({"observation"}),
+        # ``messages`` are a result's tool-message copies of the observation
+        # (CLI-28: a cell's printout of its working directory shipped there).
+        "ledger.json": frozenset({"observation", "messages"}),
     }
     #: Subtrees kept byte-exact inside a document that is otherwise rewritten
     #: whole. ``checkpoint_states[].state`` is covered by ``state_sha256`` and
@@ -1471,6 +1518,12 @@ class SessionPackageService:
                 continue
             for spelling in {str(path), str(path.resolve())}:
                 prefixes.append((spelling, "."))
+        # CLI-28: `openai4s run` works in the directory it was started from,
+        # not in the session workspace above. Outside the home and data
+        # directories (an HPC scratch, an external disk) that path shipped
+        # whole, account name included. The kernel generations record it.
+        for spelling in _recorded_working_directories(files):
+            prefixes.append((spelling, "."))
         prefixes.extend(self._machine_path_prefixes())
         patterns = [
             (re.compile(re.escape(prefix) + r"(?=[/\\\s\"'),;:]|$)"), label)
@@ -1519,7 +1572,9 @@ class SessionPackageService:
             output[name] = _canonical_json(walk(document, keys, False, keep))
         return output
 
-    def _runtime_scrubber(self) -> Callable[[Any], Any]:
+    def _runtime_scrubber(
+        self, working_directories: Iterable[str] = ()
+    ) -> Callable[[Any], Any]:
         """Redaction for runtime evidence, which must never fail an export.
 
         The required documents fail closed: a secret that survives
@@ -1537,8 +1592,11 @@ class SessionPackageService:
             if value.decode("utf-8", "ignore")
         ]
         replacements: list[tuple[re.Pattern[str], str]] = []
+        # CLI-28: the directory a run worked in, as in the package documents.
+        prefixes = [(path, ".") for path in working_directories]
+        prefixes.extend(self._machine_path_prefixes())
         for prefix, label in sorted(
-            self._machine_path_prefixes(), key=lambda item: len(item[0]), reverse=True
+            prefixes, key=lambda item: len(item[0]), reverse=True
         ):
             if len(prefix) > 1 and prefix != "/":
                 replacements.append(
@@ -1593,7 +1651,7 @@ class SessionPackageService:
         dropped and the drop is recorded, instead of failing the export.
         """
 
-        scrub = self._runtime_scrubber()
+        scrub = self._runtime_scrubber(_recorded_working_directories(files))
         workspaces: set[str] = set()
         for branch_id in dict.fromkeys(branches):
             try:

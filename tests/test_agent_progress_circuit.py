@@ -27,6 +27,7 @@ from openai4s.agent.progress_circuit import (
     PROGRESS_REASON_SAME_ACTION,
     PROGRESS_REASON_SAME_TARGET,
     PROGRESS_REASON_TOOL_ERROR,
+    PROGRESS_REASON_UNSENT_CELL,
     SAME_ACTION_GRACE,
     SAME_ACTION_THRESHOLD,
     SAME_TARGET_GRACE,
@@ -707,6 +708,39 @@ def test_the_tool_less_call_survives_a_restart_and_is_not_made_twice(tmp_path):
     store.close()
 
 
+def test_the_unsent_cell_count_survives_a_restart_and_stops_the_fifth(tmp_path):
+    """SYNC-6 / SCI-16: promises are counted since the last cell, the prose
+    answers to the tool-less calls in between included, and the count is
+    rebuilt from the recorded notes like the consecutive one."""
+    store = Store(tmp_path / "unsent.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-unsent")
+    user = {"role": "user", "content": "分析 demo.xlsx"}
+    ledger.append_user(user)
+    prose = "好的，我现在就运行 Python。"
+    state = RunState([user], max_turns=4)
+    first = _PromisingModel(prose)
+    AgentEngine(first, CountingExecutor(), event_sink=ledger).run(state)
+    assert first.offered == [True, True, False, True]
+
+    restored = restore_progress_circuit(store, root)
+    assert restored == circuit_from_state(state)
+    assert (restored.announced_cell_streak, restored.unsent_cell_count) == (1, 3)
+    assert not restored.tripped
+
+    resumed = RunState([user], max_turns=20)
+    attach_progress_circuit(resumed, restored)
+    model = _PromisingModel(prose, start=4)
+    result = AgentEngine(model, CountingExecutor(), event_sink=ledger).run(resumed)
+
+    assert model.offered == [True, False, True]
+    assert result.progress_reason == PROGRESS_REASON_UNSENT_CELL
+    rebuilt = restore_progress_circuit(store, root)
+    assert rebuilt == circuit_from_state(resumed)
+    assert rebuilt.trip_reason == PROGRESS_REASON_UNSENT_CELL
+    store.close()
+
+
 def test_a_cell_or_a_code_running_tool_ends_the_tool_only_streak():
     circuit = ProgressCircuit()
     listing = NativeToolBatch(
@@ -1316,6 +1350,39 @@ def test_a_stop_without_a_recorded_cause_keeps_the_plain_notice(language):
         "连续 2 次返回空回复" in no_progress_notice(empty, language)
     )
     assert no_progress_step(empty, language) is None
+
+
+def test_an_unsent_cell_stop_says_what_was_promised_in_both_languages():
+    from openai4s.agent.recovery import (
+        no_progress_notice,
+        no_progress_step,
+        progress_stop_detail,
+        recovery_message,
+    )
+
+    circuit = ProgressCircuit(unsent_cell_count=5)
+    circuit.trip_reason = PROGRESS_REASON_UNSENT_CELL
+    detail = progress_stop_detail(PROGRESS_REASON_UNSENT_CELL, circuit, ["list_dir"])
+
+    # The calls sent instead differ each time and have their own cards.
+    assert detail == {
+        "reason": PROGRESS_REASON_UNSENT_CELL,
+        "count": 5,
+        "tools": [],
+        "target": "",
+    }
+    assert no_progress_step(detail, "en") is None
+    assert (
+        "Stopped repeating actions: the model said 5 times that it would run a "
+        "code cell, but sent only tool calls and no code ran."
+        in no_progress_notice(detail, "en")
+    )
+    assert "模型 5 次说要运行单元，却每次都只发了工具调用" in no_progress_notice(
+        detail, "zh"
+    )
+    note = recovery_message("no_progress", progress_reason=PROGRESS_REASON_UNSENT_CELL)
+    assert note is not None
+    assert "kept saying a code cell would run but sent tool calls" in note["content"]
 
 
 def test_a_stop_detail_carries_no_arguments_or_unsafe_names():

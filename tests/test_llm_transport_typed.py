@@ -1481,6 +1481,24 @@ def test_failures_that_are_not_fixed_in_settings_get_no_setup_message():
     assert llm_setup_message(LLMError("bad json"), zh=True) is None
 
 
+def test_a_lost_connection_says_to_try_again_before_the_settings():
+    """M-37: a passing network drop was answered with a pointer to the base
+    URL (earlier, to OPENAI4S_LLM_BASE_URL and a Network switch). Sending
+    again comes first; the settings are for a failure that keeps happening."""
+    from openai4s.llm.models import llm_setup_message
+
+    english = llm_setup_message(_kinded(None), zh=False)
+    chinese = llm_setup_message(_kinded(None), zh=True)
+
+    assert english.index("send the message again") < english.index("base URL")
+    assert "If it keeps failing" in english
+    assert chinese.index("稍后重新发送") < chinese.index("设置 → 模型")
+    for text in (english, chinese):
+        assert (
+            "OPENAI4S_" not in text and "Network" not in text and "网络开关" not in text
+        )
+
+
 def test_a_tls_failure_behind_the_connection_error_is_named():
     import ssl
 
@@ -1501,3 +1519,6 @@ def test_a_tls_failure_behind_the_connection_error_is_named():
     assert "self-signed certificate in certificate chain" in english
     assert "SSL_CERT_FILE" in english and "SSL_CERT_FILE" in chinese
     assert "opaque" not in english
+    # A certificate does not get better by sending again.
+    assert "passing network problem" not in english
+    assert "重新发送" not in chinese

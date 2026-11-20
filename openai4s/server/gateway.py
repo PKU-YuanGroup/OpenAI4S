@@ -176,6 +176,7 @@ from openai4s.server.completions import (
     cancellation_marker,
     completion_message,
     response_language,
+    unfinished_turns_since,
 )
 from openai4s.server.delivery import (
     CompletionDeliveryService,
@@ -2638,6 +2639,12 @@ card. Only for a genuinely long campaign (≳4 distinct stages) may you drop a \
 `host.todo_write` progress tracker — AFTER the work is visibly underway — and \
 keep its statuses current as you go.
 
+THE USER'S OWN CODE. When the user gives you a ```python or ```r cell and asks you \
+to run it, your next reply runs exactly that code, unchanged, as its only action — \
+no search, no file read, no rewrite first, and no refusal because its output is not \
+a deliverable (they may be testing the workbench). If it cannot run here (a missing \
+package, a command the sandbox blocks), say why instead of doing something else.
+
 Recommended workflow for a real analysis task (mirror this — it is what the user \
 expects to SEE happen, each as its own card):
 1. SEARCH — MANDATORY whenever the task touches external facts, datasets, accession \
@@ -2699,6 +2706,9 @@ not a user-facing analysis.
 skill load, one download, one figure, one edit. The timeline then reads as a clean \
 sequence of steps, exactly like the reference. A leading `# gerund comment` on a \
 pure-compute cell titles that card.
+- Run code AS a cell. Do not write a .py / .R file in order to exec() or source() \
+it from a later cell: every file you write appears in the user's files, and nothing \
+runs until a cell runs it. Write files for deliverables (reports, tables, figures).
 - Produce real result FILES for anything worth keeping (save plots with matplotlib \
 `savefig`, tables with `df.to_csv`, reports via `host.write_file`). Every file you \
 create in the working directory is AUTOMATICALLY captured as an artifact the user can \
@@ -11288,6 +11298,17 @@ class SessionRunner:
                 for a in self.store.list_artifacts({"root_frame_id": root_frame_id})
                 if (a.get("artifact_id") or a.get("id"))
             }
+            # M-59: after turns that failed or were stopped, the summary that
+            # finally completes the task also lists what those turns produced.
+            unfinished_since = unfinished_turns_since(
+                self.store.list_messages(
+                    root_frame_id,
+                    branch_id=st.branch_id,
+                    before_seq=stored_user_message.get("seq"),
+                    newest_first=True,
+                    limit=400,
+                )
+            )
             capture_observation_cursor = (
                 self.store.artifact_capture_observation_cursor(
                     root_frame_id=root_frame_id,
@@ -11538,10 +11559,19 @@ class SessionRunner:
                 produced_artifacts = [
                     artifact
                     for artifact in current_artifacts
-                    if artifact_versions_before.get(
-                        artifact.get("artifact_id") or artifact.get("id")
+                    if (
+                        artifact_versions_before.get(
+                            artifact.get("artifact_id") or artifact.get("id")
+                        )
+                        != artifact.get("latest_version_id")
+                        or (
+                            # A file those turns created; one they only
+                            # rewrote is not told apart from an older head.
+                            unfinished_since is not None
+                            and not artifact.get("is_user_upload")
+                            and int(artifact.get("created_at") or 0) >= unfinished_since
+                        )
                     )
-                    != artifact.get("latest_version_id")
                     # Hidden rows (internal context spills, files the user
                     # hid) are not this turn's deliverables.
                     and int(artifact.get("priority") or 0) >= 0
@@ -23221,7 +23251,11 @@ try:
             pdb_text = _raw
             struct_source = 'RCSB PDB entry %s (live download)' % pdb_id
 except Exception as _exc:
-    struct_source = 'unavailable (RCSB API unreachable: %s)' % _exc
+    # The report is for people: the reason in words, the exception here.
+    print('RCSB PDB request failed:', _exc)
+    struct_source = 'not fetched this run (the RCSB PDB API %s)' % (
+        "server's certificate could not be verified on this machine"
+        if 'CERTIFICATE' in str(_exc).upper() else 'could not be reached')
 
 if pdb_text:
     open('nif3_structure.pdb', 'w').write(pdb_text)

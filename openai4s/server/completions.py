@@ -213,6 +213,13 @@ def outcome_narration(
     if refusal is not None:
         return _refusal_narration(refusal, zh)
     if error:
+        missing = _missing_package_hint(error, zh)
+        if missing:
+            return (
+                f"这个单元运行出错：`{error}`。{missing}"
+                if zh
+                else f"This cell failed: `{error}`. {missing}"
+            )
         return (
             f"这个单元运行出错：`{error}`。智能体会根据这条报错修正后重试。"
             if zh
@@ -289,6 +296,70 @@ def outcome_narration(
             "warnings or errors; see the Notebook."
         )
     return "\n".join(parts)
+
+
+_MISSING_MODULE = re.compile(r"No module named '(?P<module>[A-Za-z_][\w.]*)'")
+_MISSING_R_PACKAGE = re.compile(
+    r"there is no package called [‘'`\"](?P<package>[A-Za-z][\w.]*)[’'`\"]"
+)
+#: Import names whose package is called something else ("Bio" is installed as
+#: biopython): a newcomer cannot guess these from the error.
+_PACKAGE_OF_MODULE = {
+    "Bio": "biopython",
+    "sklearn": "scikit-learn",
+    "skimage": "scikit-image",
+    "PIL": "pillow",
+    "cv2": "opencv-python",
+    "yaml": "pyyaml",
+    "bs4": "beautifulsoup4",
+    "dateutil": "python-dateutil",
+    "Crypto": "pycryptodome",
+    "docx": "python-docx",
+    "pptx": "python-pptx",
+}
+
+
+def _missing_package_hint(error: str, zh: bool) -> str:
+    """The next step for a cell that failed on a package it does not have.
+
+    SCI-32: ``No module named 'Bio'`` and R's ``there is no package called
+    'Seurat'`` were shown with no way forward, and nothing said that ``Bio``
+    is installed as ``biopython``. Installing stays the agent's to ask for
+    (owner decision 1); R has no installer in a session (decision 12).
+    """
+    match = _MISSING_MODULE.search(error)
+    if match:
+        module = match.group("module").split(".")[0]
+        package = _PACKAGE_OF_MODULE.get(module, module)
+        if zh:
+            what = (
+                f"`{module}` 由 `{package}` 包提供，当前环境没有安装。"
+                if package != module
+                else f"当前环境没有安装 `{package}` 包。"
+            )
+            return what + "智能体安装前会先询问你；也可以在 设置 → 计算 里安装。"
+        what = (
+            f"`{module}` is installed as the `{package}` package, which this "
+            "environment does not have."
+            if package != module
+            else f"This environment does not have the `{package}` package."
+        )
+        return (
+            what + " The agent asks before installing it; you can also install it "
+            "in Settings → Compute."
+        )
+    match = _MISSING_R_PACKAGE.search(error)
+    if match:
+        package = match.group("package")
+        return (
+            f"当前 R 环境没有 `{package}` 包。会话里不能安装 R 包：运行 `openai4s setup` "
+            "构建托管的 R 环境，或在本机 R 里安装后选用它。"
+            if zh
+            else f"This R environment does not have the `{package}` package. R packages "
+            "cannot be installed from a session: run `openai4s setup` to build the "
+            "managed R environment, or install it in your own R and select that."
+        )
+    return ""
 
 
 #: The omission marker ``agent.runtime._budgeted`` puts into a long section.
@@ -599,10 +670,16 @@ def completion_message(
         if fallback and _normalized(fallback) not in previous:
             parts.append(fallback)
 
+    # SCI-15: "Completed work" was the third telling of the same identifiers,
+    # after the summary and the findings. A bullet whose words those already
+    # carry is left out; one that says something new stays.
+    said = _content_tokens(" ".join([previous_text, *parts]))
     fresh_bullets = [
         str(item).strip()
         for item in bullets
-        if str(item).strip() and _normalized(str(item)) not in previous
+        if str(item).strip()
+        and _normalized(str(item)) not in previous
+        and not _already_said(str(item), said)
     ]
     bullets_at = len(parts)  # the list goes here, once the artifacts are known
 
@@ -661,6 +738,79 @@ def completion_message(
     if not parts and require_fallback:
         return "任务已完成。" if zh else "The task is complete."
     return "\n\n".join(parts)
+
+
+_WORD = re.compile(r"[a-z0-9][a-z0-9._'-]*")
+_CJK_RUN = re.compile(r"[㐀-䶿一-鿿]+")
+_FILLER_WORDS = frozenset(
+    "the and with from into for its their this that was were are has have had "
+    "via all each both".split()
+)
+#: The share of a bullet's words the message must already carry to drop it.
+_ALREADY_SAID = 0.7
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Words of three or more characters, and Chinese character pairs."""
+    lowered = str(text or "").lower()
+    tokens = {
+        word.strip("._'-")
+        for word in _WORD.findall(lowered)
+        if len(word.strip("._'-")) >= 3 and word.strip("._'-") not in _FILLER_WORDS
+    }
+    for run in _CJK_RUN.findall(lowered):
+        tokens.update(run[index : index + 2] for index in range(max(1, len(run) - 1)))
+    return tokens
+
+
+def _already_said(bullet: str, said: set[str]) -> bool:
+    tokens = _content_tokens(bullet)
+    return bool(tokens) and len(tokens & said) >= _ALREADY_SAID * len(tokens)
+
+
+def unfinished_turns_since(messages: Iterable[dict]) -> int | None:
+    """When the trailing run of turns that did not finish began, else ``None``.
+
+    ``messages`` are a session's stored rows from before the current turn's
+    user message. A turn is a user row and the assistant rows after it; it did
+    not finish when one of them carries ``failure`` or ``cancelled`` metadata,
+    or when nothing answered it at all. The answer is the ``created_at`` of the
+    first user row of the trailing unfinished turns.
+
+    M-59: a task cut into three turns by two failures ended with a summary
+    whose artifact list held only the third turn's files; the survival curve
+    the user had asked for came from the second. The completion's artifact
+    delta starts there instead.
+    """
+    rows = sorted(
+        (row for row in messages if isinstance(row, dict)),
+        key=lambda row: int(row.get("seq") or 0),
+    )
+    turns: list[list[Any]] = []  # [user created_at, answered, unfinished]
+    for row in rows:
+        if row.get("role") == "user":
+            turns.append([row.get("created_at"), False, False])
+            continue
+        if not turns or row.get("role") != "assistant":
+            continue
+        turns[-1][1] = True
+        metadata = row.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except ValueError:
+                metadata = None
+        if isinstance(metadata, dict) and (
+            metadata.get("failure") or metadata.get("cancelled")
+        ):
+            turns[-1][2] = True
+    since: int | None = None
+    for created_at, answered, unfinished in reversed(turns):
+        if answered and not unfinished:
+            break
+        if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
+            since = int(created_at)
+    return since
 
 
 def _summary_text(output: Any) -> str:
@@ -722,17 +872,75 @@ def _structured_body(value: Any) -> str:
 _SNAKE_KEY = re.compile(r"[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+")
 
 
-def _readable_key(key: str) -> str:
-    """``cox_tmb_HR_low`` reads as "cox tmb HR low" (ART-8); prose keys stay."""
+#: A unit a snake_case metric key ends in, as written there (case matters:
+#: ``uM`` is a concentration, ``um`` a length) -> as a reader writes it.
+#: Single letters are left out: ``_s``, ``_h`` or ``_C`` name groups as often.
+_KEY_UNITS = {
+    "Da": "Da",
+    "kDa": "kDa",
+    "bp": "bp",
+    "kb": "kb",
+    "Mb": "Mb",
+    "nm": "nm",
+    "um": "µm",
+    "mm": "mm",
+    "cm": "cm",
+    "ms": "ms",
+    "sec": "s",
+    "min": "min",
+    "days": "days",
+    "mg": "mg",
+    "ug": "µg",
+    "ng": "ng",
+    "kg": "kg",
+    "mL": "mL",
+    "ml": "mL",
+    "uL": "µL",
+    "ul": "µL",
+    "nM": "nM",
+    "uM": "µM",
+    "mM": "mM",
+    "pM": "pM",
+    "degC": "°C",
+    "Hz": "Hz",
+    "kHz": "kHz",
+    "ppm": "ppm",
+    "pct": "%",
+    "percent": "%",
+    "rpm": "rpm",
+}
 
-    return key.replace("_", " ") if _SNAKE_KEY.fullmatch(key) else key
+
+def _readable_key(key: str) -> str:
+    """``cox_tmb_HR_low`` reads as "cox tmb HR low" (ART-8); prose keys stay.
+
+    A trailing unit is set apart (SCI-24): ``peptide_avg_MW_Da`` reads as
+    "peptide avg MW (Da)", not as if Da were part of the name.
+    """
+
+    if not _SNAKE_KEY.fullmatch(key):
+        return key
+    head, _, last = key.rpartition("_")
+    unit = _KEY_UNITS.get(last)
+    if unit:
+        return f"{head.replace('_', ' ')} ({unit})"
+    return key.replace("_", " ")
 
 
 def _compact_value(value: Any) -> str:
     if isinstance(value, float) and not isinstance(value, bool):
-        # 0.42712345 -> 0.4271; exponent forms stay as repr, which is clearer.
-        short = format(value, ".4g")
-        return short if "e" not in short else repr(value)
+        # SCI-24: the value as the agent submitted it. Four significant figures
+        # turned 1019.14 Da into 1019 beside prose that said 1019.14. Only a
+        # tail past six decimals (float noise such as 0.30000000000000004, or
+        # an unrounded statistic) is cut; exponent forms stay as repr.
+        text = repr(value)
+        if "e" in text or "n" in text:  # 1e-07, inf, nan
+            return text
+        if len(text.partition(".")[2]) <= 6:
+            return text
+        if abs(value) >= 1:
+            return f"{value:.6f}".rstrip("0").rstrip(".")
+        return format(value, ".6g")
     if isinstance(value, str):
         return value.strip()[:500]
     if isinstance(value, (dict, list, tuple)):
