@@ -24,8 +24,10 @@ added), registers the connectors. Agent commands follow the ordinary host permis
 Already cloned without `--recursive`? Run `git submodule update --init third_party/OpenMHS`.
 Installed OpenAI4S with `pip`? `openai4s lab setup` downloads the same pinned
 OpenMHS release into `~/.openai4s/openmhs` (or the Lab panel's **Set up OpenMHS**
-button does it). In the workbench everything else is one click: Lab tab →
-**Device market** → **Install**.
+button does it): about 35 MB to download, about 150 MB on disk. No other `lab`
+command downloads it silently: `search`, `show`, `add` and `up` ask first on a
+terminal, refuse in a script, and download only with `--yes`. In the workbench
+everything else is one click: Lab tab → **Device market** → **Install**.
 
 ## The device market: 746 devices
 

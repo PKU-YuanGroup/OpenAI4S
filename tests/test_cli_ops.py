@@ -177,3 +177,101 @@ def test_cluster_submit_help_says_what_the_backend_and_profile_need(capsys):
     text = " ".join(capsys.readouterr().out.split()).replace("cpu- ", "cpu-")
     assert "cluster needs <data_dir>/cluster.toml" in text
     assert "only the default cpu-interactive exists" in text
+
+
+# --------------------------------------------------------------------------- #
+#  CLI-31: a lab query never downloads OpenMHS without consent
+# --------------------------------------------------------------------------- #
+
+
+class _Stdin:
+    def __init__(self, tty: bool, answer: str = ""):
+        self._tty = tty
+        self._answer = answer
+        self.asked = False
+
+    def isatty(self):
+        return self._tty
+
+    def readline(self):
+        self.asked = True
+        return self._answer
+
+
+@pytest.fixture()
+def no_openmhs(tmp_path, monkeypatch):
+    """OpenMHS absent, and a `fetch` that records instead of cloning."""
+    from openai4s.mhs_lab import openmhs
+
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(openmhs, "find_checkout", lambda: None)
+    fetched: list = []
+
+    def fetch(*_args, **_kwargs):
+        fetched.append(True)
+        raise RuntimeError("download stub reached")
+
+    monkeypatch.setattr(openmhs, "fetch", fetch)
+    return fetched
+
+
+def _lab(argv):
+    from openai4s.mhs_lab import cli
+
+    return cli.main(argv)
+
+
+@pytest.mark.parametrize("argv", [["search", "julabo"], ["show", "julabo"]])
+def test_a_lab_query_in_a_script_refuses_instead_of_downloading(
+    no_openmhs, monkeypatch, capsys, argv
+):
+    """`lab search julabo` cloned OpenMHS from GitHub (145 MB on disk) without
+    asking, while `lab status` refused and pointed at `lab setup`."""
+    monkeypatch.setattr("sys.stdin", _Stdin(tty=False))
+
+    status = _lab(argv)
+
+    err = capsys.readouterr().err
+    assert status == 2
+    assert no_openmhs == []
+    assert "nothing was downloaded" in err
+    assert "openai4s lab setup" in err and "--yes" in err
+
+
+def test_a_lab_query_on_a_terminal_asks_first(no_openmhs, monkeypatch, capsys):
+    stdin = _Stdin(tty=True, answer="n\n")
+    monkeypatch.setattr("sys.stdin", stdin)
+
+    status = _lab(["search", "julabo"])
+
+    err = capsys.readouterr().err
+    assert stdin.asked
+    assert "Download OpenMHS" in err and "150 MB on disk" in err
+    assert status == 2 and no_openmhs == []
+
+    monkeypatch.setattr("sys.stdin", _Stdin(tty=True, answer="y\n"))
+    _lab(["search", "julabo"])
+    assert no_openmhs == [True]
+
+
+@pytest.mark.parametrize(
+    "argv", [["search", "--yes", "julabo"], ["setup"], ["add", "-y", "julabo"]]
+)
+def test_yes_and_setup_download_without_asking(no_openmhs, monkeypatch, argv):
+    stdin = _Stdin(tty=True, answer="n\n")
+    monkeypatch.setattr("sys.stdin", stdin)
+
+    _lab(argv)
+
+    assert no_openmhs == [True]
+    assert not stdin.asked
+
+
+def test_a_json_query_never_prompts(no_openmhs, monkeypatch, capsys):
+    stdin = _Stdin(tty=True, answer="y\n")
+    monkeypatch.setattr("sys.stdin", stdin)
+
+    status = _lab(["search", "--json", "julabo"])
+
+    assert status == 2
+    assert not stdin.asked and no_openmhs == []

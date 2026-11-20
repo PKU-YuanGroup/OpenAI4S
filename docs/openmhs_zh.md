@@ -21,8 +21,10 @@ openai4s serve                               # 打开 Notebook 旁边的“实�
 
 已经不带 `--recursive` 克隆过？运行 `git submodule update --init third_party/OpenMHS`。
 用 `pip` 安装的 OpenAI4S？`openai4s lab setup` 会把同一个固定版本的 OpenMHS 下载到
-`~/.openai4s/openmhs`（实验室面板里的 **一键准备 OpenMHS** 按钮也一样）。在工作台里，
-其余都是一次点击：实验室标签页 → **设备市场** → **安装**。
+`~/.openai4s/openmhs`（实验室面板里的 **一键准备 OpenMHS** 按钮也一样）：下载约 35 MB，
+落盘约 150 MB。其他 `lab` 命令不会悄悄下载：`search`、`show`、`add` 和 `up` 在终端里先询问，
+在脚本里直接拒绝，只有加 `--yes` 才下载。在工作台里，其余都是一次点击：实验室标签页 →
+**设备市场** → **安装**。
 
 ## 设备市场：746 台设备
 
