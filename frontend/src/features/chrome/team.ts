@@ -377,7 +377,7 @@ function renderTeamFiles(res: { ok: boolean; body: TeamFilesBody }): void {
     list.appendChild(row);
   });
   if (!(res.body.entries || []).length) {
-    const empty = el("div", "team-files-row", "(empty)");
+    const empty = el("div", "team-files-row", teamT("team.files.empty"));
     list.appendChild(empty);
   }
 }

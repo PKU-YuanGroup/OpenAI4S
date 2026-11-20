@@ -28,7 +28,7 @@ import { sendCopy } from "../send/copy";
 import { reviewRefusalText, reviewT } from "../send/review-copy";
 import { backgroundStoppedHint, refreshBackgroundCells } from "../send/background";
 import { scopedExecutionRequest } from "../timeline/execution-request";
-import { queueT } from "../timeline/copy";
+import { queueT, timelineT } from "../timeline/copy";
 import { queuedFollowUpCount } from "../timeline/queue";
 import { $, clearConversationChrome, el, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
@@ -126,7 +126,7 @@ export async function showContextUsage(): Promise<void> {
   card.className = "prov-card";
   const h = document.createElement("div");
   h.className = "prov-h";
-  h.textContent = t("context.tokens", (input + output).toLocaleString());
+  h.textContent = timelineT("context.tokens", (input + output).toLocaleString());
   card.appendChild(h);
   const meta = document.createElement("div");
   meta.className = "prov-meta";

@@ -176,7 +176,7 @@ describe("Context usage", () => {
     try {
       currentId.value = "f";
       await showContextUsage();
-      expect(body.texts()).toEqual([t("context.tokens", "150"), "输入 120 · 输出 30 · 审阅 42"]);
+      expect(body.texts()).toEqual(["150 个 token", "输入 120 · 输出 30 · 审阅 42"]);
     } finally {
       vi.unstubAllGlobals();
       await setLang(previous);

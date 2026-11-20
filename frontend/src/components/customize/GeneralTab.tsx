@@ -74,7 +74,7 @@ export function GeneralTab() {
           options={[
             ["light", t("theme.light")],
             ["dark", t("theme.dark")],
-            ["system", t("theme.system")],
+            ["system", COPY[LANG === "en" ? "en" : "zh"].langSystem],
           ]}
           onPick={(val) => {
             setTheme(val as ThemeMode);

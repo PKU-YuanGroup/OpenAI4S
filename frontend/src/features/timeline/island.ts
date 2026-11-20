@@ -67,7 +67,7 @@ import { S } from "./s";
 import { ago, localDateTime } from "../chrome/dom";
 import { askConfirm, askText } from "../chrome/dialog";
 import { nbLabelT } from "../notebook/copy";
-import { computeRecordsT, timelineT, workbenchT } from "./copy";
+import { computeRecordsT, timelineT, workbenchT, workbenchWord } from "./copy";
 
 /**
  * The island's lookup: the dictionary, except where the Timeline's own table
@@ -2908,7 +2908,7 @@ function recoveryTimelineCard(state: any, actionsState: any): HTMLElement {
   kind.appendChild(iconEl("refresh", 14));
   kind.appendChild(el("span", null, t("recovery.title")));
   head.appendChild(kind);
-  head.appendChild(el("span", "timeline-status", status));
+  head.appendChild(el("span", "timeline-status", workbenchWord("wb.recovery.", status)));
   card.appendChild(head);
   if (state.message) card.appendChild(el("div", "timeline-card-title", state.message));
   // M-64: the checkpoint's internal id is a tooltip, not a line of the card.
@@ -3484,10 +3484,13 @@ export function renderContextPanel(): HTMLElement {
   panel.appendChild(summary);
   state.layers.forEach((layer: any) => {
     const row = el("div", "context-layer");
-    row.appendChild(el("span", "context-layer-name", layer.name || layer.kind || "context"));
+    const layerName = layer.kind ? workbenchWord("wb.layer.", String(layer.kind)) : "";
+    row.appendChild(
+      el("span", "context-layer-name", layerName && layerName !== layer.kind ? layerName : layer.name || layer.kind || "context"),
+    );
     if (layer.token_count != null)
       row.appendChild(el("span", "context-layer-tokens", t("context.tokens", layer.token_count)));
-    if (layer.status) row.appendChild(el("span", "timeline-pill", layer.status));
+    if (layer.status) row.appendChild(el("span", "timeline-pill", workbenchWord("wb.status.", String(layer.status))));
     panel.appendChild(row);
   });
   (state.omitted || []).forEach((item: any) => {

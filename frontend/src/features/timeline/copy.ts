@@ -132,6 +132,24 @@ const WORKBENCH: CopyTable = {
     "wb.technical.hint": "运行状态 · 内核恢复 · 分支与检查点 · 子代理 · 远程计算 · 诊断 · 沙盒",
     "wb.diagnostics": "诊断：模型上下文",
     "wb.diagnosticsHint": "这一轮发给模型的内容由哪些部分组成、各占多少 token。排查问题时才需要看。",
+    // SYNC-21: the context layers and statuses were the server's English words.
+    "wb.layer.system_prompt": "系统提示词",
+    "wb.layer.text": "对话文本",
+    "wb.layer.images": "图片",
+    "wb.layer.tool_schemas": "工具定义",
+    "wb.layer.tool_calls": "工具调用",
+    "wb.layer.tool_results": "工具结果",
+    "wb.layer.artifact_refs": "产物引用",
+    "wb.layer.wire_state": "协议状态",
+    "wb.status.active": "有内容",
+    "wb.status.empty": "空",
+    "wb.recovery.active": "可用",
+    "wb.recovery.none": "无",
+    "wb.recovery.not_started": "未开始",
+    "wb.recovery.partial": "部分恢复",
+    "wb.recovery.failed": "失败",
+    "wb.recovery.restored": "已恢复",
+    "wb.recovery.recovering": "恢复中",
   },
   en: {
     "wb.security.title": "Sandbox and permissions",
@@ -156,10 +174,25 @@ const WORKBENCH: CopyTable = {
     "wb.technical.hint": "runtime · kernel recovery · branches and checkpoints · sub-agents · remote compute · diagnostics · sandbox",
     "wb.diagnostics": "Diagnostics: model context",
     "wb.diagnosticsHint": "What this turn sent to the model, part by part, with token counts. Only needed when troubleshooting.",
+    "wb.layer.system_prompt": "System prompt",
+    "wb.layer.text": "Text",
+    "wb.layer.images": "Images",
+    "wb.layer.tool_schemas": "Tool schemas",
+    "wb.layer.tool_calls": "Tool calls",
+    "wb.layer.tool_results": "Tool results",
+    "wb.layer.artifact_refs": "Artifact references",
+    "wb.layer.wire_state": "Wire state",
   },
 };
 
 export const workbenchT = copyLookup(WORKBENCH);
+
+/** A server enum in the UI language when the table has it, else as sent. */
+export function workbenchWord(prefix: string, value: string): string {
+  const key = prefix + value;
+  const word = workbenchT(key);
+  return word === key ? value : word;
+}
 
 /**
  * I18N-1: the Timeline's words where the generated zh dictionary is English
@@ -182,6 +215,8 @@ const TIMELINE_OVERRIDES: CopyTable = {
     "timeline.replay": "重放",
     "timeline.tokens": "Token 用量",
     "timeline.turnBoundary": "回合",
+    "timeline.turn.collapse": "收起回合 {0}，{1} 条当前可见记录，总耗时 {2}",
+    "timeline.turn.expand": "展开回合 {0}，{1} 条当前可见记录，总耗时 {2}",
     "timeline.turn.summary": "回合 · 当前可见 {0} 条记录",
     "timeline.search.scope": "只搜索已加载的 {0} 条记录，更早的记录不在结果中。搜索时会暂时展开折叠的回合，清空后恢复。",
     "timeline.kind.native_tool": "工具调用",

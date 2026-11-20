@@ -33,13 +33,13 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
   },
   zh: {
     clockTitle: "本回合已运行 {0}",
-    usageTitle: "本会话累计用量：输入 {0} · 输出 {1} tokens。点击查看明细。",
+    usageTitle: "本会话累计用量：输入 {0} · 输出 {1} token。点击查看明细。",
     usageParts:
-      "本会话累计用量：新输入 {0} · 缓存输入 {1} · 输出 {2}{3} tokens。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
+      "本会话累计用量：新输入 {0} · 缓存输入 {1} · 输出 {2}{3} token。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
     usageReasoning: "（其中推理 {0}）",
     turnParts: "最近一轮：新输入 {0} · 缓存输入 {1} · 输出 {2}。",
-    tokens: "{0} tokens",
-    tokensTurn: "{0} tokens · 本轮 +{1}",
+    tokens: "{0} token",
+    tokensTurn: "{0} token · 本轮 +{1}",
     minutes: "{0} 分 {1} 秒",
     seconds: "{0} 秒",
   },
