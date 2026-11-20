@@ -439,6 +439,45 @@ def test_login_rate_limit_answers_429(daemon):
     assert "login_rate_limited" in actions
 
 
+def test_login_matches_the_username_in_any_case(daemon):
+    """TEAM-8: `bob` exists, so `BOB` (a phone keyboard's capital) is bob."""
+    daemon.seed_user("bob", "fake-pw-bob")
+    for typed in ("BOB", " Bob", "\uff42\uff4f\uff42"):
+        status, raw = _post(
+            daemon.port,
+            "/api/v1/auth/login",
+            {"username": typed, "password": "fake-pw-bob"},
+        )
+        assert status == 200, (typed, raw[:300])
+        assert _body_json(raw)["user"]["username"] == "bob"
+    status, _ = _post(
+        daemon.port,
+        "/api/v1/auth/login",
+        {"username": "BOB", "password": "wrong"},
+    )
+    assert status == 401
+
+
+def test_login_rate_limit_is_per_account_not_per_spelling(daemon):
+    """Once any spelling signs in, every spelling must share one bucket --
+    otherwise each case/width variant of a name is five more guesses."""
+    daemon.seed_user("mallory", "fake-pw-real")
+    for _ in range(5):
+        status, _ = _post(
+            daemon.port,
+            "/api/v1/auth/login",
+            {"username": "mallory", "password": "guess"},
+        )
+        assert status == 401
+    for typed in ("MALLORY", "\uff4d\uff41\uff4c\uff4c\uff4f\uff52\uff59"):
+        status, raw = _post(
+            daemon.port,
+            "/api/v1/auth/login",
+            {"username": typed, "password": "guess"},
+        )
+        assert status == 429, (typed, raw[:300])
+
+
 # -- the CLI service path -----------------------------------------------------
 
 

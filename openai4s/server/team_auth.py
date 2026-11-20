@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from openai4s.storage.team import SESSION_TTL_S
+from openai4s.storage.team import SESSION_TTL_S, username_key
 
 #: The browser login cookie. Distinct from the daemon's ``os_token`` access
 #: cookie: one says "this browser may talk to the daemon", the other says
@@ -83,13 +83,16 @@ class TeamAuthService:
         # false by default so the supported direct-loopback HTTP workflow works.
         self._secure_cookie = bool(secure_cookie)
         self._lock = threading.Lock()
-        # (username.lower(), ip) -> (tokens, last_refill_ts)
+        # (username_key(username), ip) -> (tokens, last_refill_ts)
         self._buckets: dict[tuple[str, str], tuple[float, float]] = {}
 
     # --- rate limiting ---------------------------------------------------
 
     def _take_login_token(self, username: str, ip: str) -> bool:
-        key = (username.strip().lower(), ip or "")
+        # The account's key, not the spelling: login matches `BOB` to `bob`,
+        # so a per-spelling bucket would hand a guesser five attempts per
+        # case variant of the name.
+        key = (username_key(username), ip or "")
         now = self._clock()
         rate = LOGIN_ATTEMPTS_PER_MINUTE / 60.0
         with self._lock:

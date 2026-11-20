@@ -71,6 +71,24 @@ def test_compatibility_equivalent_usernames_are_refused(store):
         store.team.create_user(username="K", password="other-fake-password")
 
 
+def test_lookups_match_the_username_key_like_creation_does(store):
+    """TEAM-8: creation refused `BOB` beside `bob`, while login and by-name
+    lookups compared the exact spelling, so `BOB` and a correct password
+    were told the password was wrong."""
+    user = store.team.create_user(username="bob", password="test-password-not-real")
+    for typed in ("BOB", "Bob", " bob ", "\uff42\uff4f\uff42"):  # fullwidth, NFKC
+        assert store.team.get_user_by_username(typed)["id"] == user["id"]
+        ok = store.team.verify_password(typed, "test-password-not-real")
+        assert ok is not None and ok["username"] == "bob"
+    assert store.team.verify_password("BOB", "wrong-password") is None
+    assert store.team.get_user_by_username("bobby") is None
+    assert store.team.get_user_by_username("") is None
+    # the stored spelling is what is shown, whatever was typed
+    mixed = store.team.create_user(username="Carol", password="test-password-not-real")
+    assert store.team.get_user_by_username("carol") == mixed
+    assert team_mod.username_key(" Carol ") == team_mod.username_key("CAROL")
+
+
 def test_an_upgraded_database_with_portable_username_collisions_fails_closed(
     store,
 ):

@@ -170,6 +170,20 @@ def _username_key(username: str) -> str:
     return unicodedata.normalize("NFKC", username).casefold()
 
 
+def username_key(username: str) -> str:
+    """The one identity a typed username names: stripped, NFKC, casefolded.
+
+    Creation refuses a second account with the same key, so the key is also
+    what a login and every by-name lookup match on -- `BOB` (a phone's
+    auto-capitalized first letter) signs in as `bob` rather than being told
+    the password is wrong. Anything keyed by "which account is this attempt
+    against", such as the login rate limiter, must use it too, or each
+    spelling would get a bucket of its own.
+    """
+
+    return _username_key(username.strip())
+
+
 class LastAdminError(ValueError):
     """Disabling this account would leave the instance with no enabled admin."""
 
@@ -299,12 +313,40 @@ class TeamRepository:
             ).fetchone()
         return _user_row(row) if row else None
 
+    def _user_id_by_name(self, username: str) -> str | None:
+        """The id of the account `username` names, matched on
+        :func:`username_key`. The caller holds the lock.
+
+        The exact spelling is tried first (the common case, one indexed
+        read); otherwise every row is compared by key -- SQLite's NOCASE is
+        ASCII-only, and a lab instance has tens of accounts, not millions.
+        Creation keeps keys unique, so at most one row can match.
+        """
+        name = username.strip()
+        row = self._connection.execute(
+            "SELECT id FROM users WHERE username=?", (name,)
+        ).fetchone()
+        if row is not None:
+            return str(row[0])
+        key = _username_key(name)
+        for user_id, stored in self._connection.execute(
+            "SELECT id, username FROM users"
+        ).fetchall():
+            if _username_key(str(stored)) == key:
+                return str(user_id)
+        return None
+
     def get_user_by_username(self, username: str) -> dict | None:
+        """The account `username` names, in any case or compatibility form."""
         with self._lock:
-            row = self._connection.execute(
-                f"SELECT {_USER_COLS} FROM users WHERE username=?",
-                (username.strip(),),
-            ).fetchone()
+            user_id = self._user_id_by_name(username)
+            row = (
+                self._connection.execute(
+                    f"SELECT {_USER_COLS} FROM users WHERE id=?", (user_id,)
+                ).fetchone()
+                if user_id is not None
+                else None
+            )
         return _user_row(row) if row else None
 
     def list_users(self) -> list[dict]:
@@ -380,11 +422,16 @@ class TeamRepository:
         """The user row on success; None for wrong password, unknown user, or
         a disabled account — indistinguishably, and in constant-ish time."""
         with self._lock:
-            row = self._connection.execute(
-                "SELECT id, password_hash, password_salt, iterations, disabled"
-                " FROM users WHERE username=?",
-                (username.strip(),),
-            ).fetchone()
+            user_id = self._user_id_by_name(username)
+            row = (
+                self._connection.execute(
+                    "SELECT id, password_hash, password_salt, iterations, disabled"
+                    " FROM users WHERE id=?",
+                    (user_id,),
+                ).fetchone()
+                if user_id is not None
+                else None
+            )
         if row is None:
             # Burn the same PBKDF2 work an existing user costs, so "no such
             # user" and "wrong password" have the same timing profile.
@@ -658,5 +705,6 @@ __all__ = [
     "create_team_schema",
     "hash_password",
     "token_digest",
+    "username_key",
     "validate_username",
 ]

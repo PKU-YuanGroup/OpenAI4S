@@ -198,6 +198,20 @@ def test_reset_password_on_a_disabled_account_says_it_stays_disabled(capsys):
     assert "bob is disabled" in out and "openai4s user enable bob" in out
 
 
+def test_user_commands_find_the_account_in_any_case(capsys):
+    """TEAM-8: one rule for the username everywhere -- `user add` refused
+    `BOB` beside `bob`, so `user disable BOB` means bob too."""
+    main(["user", "add", "bob"])
+    capsys.readouterr()
+    assert main(["user", "disable", "BOB", "--yes"]) == 0
+    assert "disabled bob" in capsys.readouterr().out
+    assert _store().team.get_user_by_username("bob")["disabled"] is True
+    assert main(["user", "enable", "Bob"]) == 0
+    assert "enabled bob" in capsys.readouterr().out
+    assert main(["user", "reset-password", "BOB"]) == 0
+    assert "password reset for bob" in capsys.readouterr().out
+
+
 def test_reset_password_rotates(capsys, monkeypatch):
     main(["user", "add", "alice"])
     capsys.readouterr()

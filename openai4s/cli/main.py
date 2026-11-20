@@ -2675,7 +2675,7 @@ def cmd_user(args) -> int:
                 user_id=user["id"],
                 target=args.username,
             )
-            print(f"password reset for {args.username} (live sessions revoked)")
+            print(f"password reset for {user['username']} (live sessions revoked)")
             if generated is not None:
                 print(f"new password: {generated}")
             if user["disabled"]:
