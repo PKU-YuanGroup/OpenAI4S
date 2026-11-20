@@ -1116,6 +1116,30 @@ def cmd_doctor(args) -> int:
     return {doctor.OK: 0, doctor.WARN: 1, doctor.FAIL: 2}[result["status"]]
 
 
+def _diagnostics_bundle_note(path) -> str | None:
+    """What to say when a package command is handed a diagnostics bundle.
+
+    Both are zips the CLI writes, and "has no manifest.json; it is not an
+    OpenAI4S package" (the bundle has MANIFEST.json) did not say which command
+    the file belongs to.
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return None
+    if {"report.json", "MANIFEST.json"} <= names and "manifest.json" not in names:
+        return (
+            f"{Path(path).name} is a diagnostics bundle from `openai4s "
+            "diagnostics`, not an exported session: read its report.json "
+            "directly. verify-package and inspect-package read session packages "
+            "exported from the workbench (.openai4s-session.zip)."
+        )
+    return None
+
+
 def cmd_verify_package(args) -> int:
     """Verify an exported session/evidence package in a clean environment."""
     from openai4s.evidence import EvidenceError, verify_package
@@ -1123,7 +1147,7 @@ def cmd_verify_package(args) -> int:
     try:
         report = verify_package(args.package)
     except EvidenceError as e:
-        print(f"cannot verify: {e}")
+        print(f"cannot verify: {_diagnostics_bundle_note(args.package) or e}")
         return 2
     print(f"package: {report['path']}")
     print(f"  format: {report['format']} (schema {report['schema_version']})")
@@ -1162,7 +1186,7 @@ def cmd_inspect_package(args) -> int:
         report = verify_package(args.package)
         diagnosis = diagnose(read_package(args.package))
     except (EvidenceError, PackageReadError) as e:
-        print(f"cannot inspect: {e}")
+        print(f"cannot inspect: {_diagnostics_bundle_note(args.package) or e}")
         return 2
     if args.json:
         print(
@@ -1210,8 +1234,13 @@ def cmd_diagnostics(args) -> int:
             file=sys.stderr,
         )
         return 1
+    from openai4s import doctor
+
+    # Doctor's verdicts go in (offline: no request to the model provider), so
+    # the bundle says whether the sandbox, runtime and model setup held, not
+    # only which knobs were set.
     try:
-        result = build_bundle(cfg, target)
+        result = build_bundle(cfg, target, doctor_report=doctor.report(cfg))
     except OSError as exc:
         reason = exc.strerror or str(exc)
         if exc.filename and str(exc.filename) != str(target):
@@ -3086,7 +3115,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pinspect.set_defaults(fn=cmd_inspect_package)
     pd = sub.add_parser(
-        "diagnostics", help="write a redacted diagnostic bundle for a bug report"
+        "diagnostics",
+        help="write a redacted diagnostic bundle for a bug report (its "
+        "report.json is the summary; not a session package)",
     )
     pd.add_argument(
         "-o", "--output", help="destination zip (default ./openai4s-diagnostics.zip)"

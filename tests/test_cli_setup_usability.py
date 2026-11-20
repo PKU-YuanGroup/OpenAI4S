@@ -766,3 +766,103 @@ def test_jupyter_install_warns_when_the_kernels_it_wrote_cannot_start(
         assert out.err.startswith("warning: ipykernel is not installed in this ")
         assert "fail to start" in out.err
         assert "'ipykernel>=7,<8'" in out.err
+
+
+# --------------------------------------------------------------------------
+# `diagnostics`: a bundle that says what went wrong
+# --------------------------------------------------------------------------
+
+
+def _bundle_report(path) -> dict:
+    import json
+    import zipfile
+
+    with zipfile.ZipFile(path) as archive:
+        return json.loads(archive.read("report.json"))
+
+
+def test_diagnostics_reports_failed_and_cancelled_runs(tmp_path, monkeypatch, capsys):
+    """CLI-33. Three `run`s that failed on a 401 and one Ctrl-C left no
+    ledger terminal, so the bundle said `"reasons": {"submitted": 2}` and
+    nothing about the crash it was exported for."""
+    from openai4s.store import get_store
+
+    data = tmp_path / "data"
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(data))
+    cfg = Config(data_dir=data)
+    cfg.ensure_dirs()
+    store = get_store(cfg.db_path)
+    for status in ("failed", "failed", "cancelled", "done"):
+        store.update_frame(store.new_frame(), status=status)
+    store.close()
+    monkeypatch.setattr(
+        "openai4s.doctor.report", lambda _cfg, **_k: {"status": "ok", "checks": []}
+    )
+    target = tmp_path / "diag.zip"
+
+    assert _cli().main(["diagnostics", "-o", str(target)]) == 0
+
+    frames = _bundle_report(target)["agent_turns"]["frames"]
+    assert frames == {"cancelled": 1, "done": 1, "failed": 2}
+
+
+def test_diagnostics_carries_doctor_verdicts_and_migrations_as_counts(
+    tmp_path, monkeypatch, capsys
+):
+    """CLI-33. The bundle had no doctor result (`kernel_sandbox: "(default)"`
+    did not say whether the sandbox held), and 43 migration rows of
+    `<redacted:…>` made up most of report.json."""
+    from openai4s.storage.migrations import SCHEMA_VERSION
+    from openai4s.store import get_store
+
+    data = tmp_path / "data"
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(data))
+    cfg = Config(data_dir=data)
+    cfg.ensure_dirs()
+    get_store(cfg.db_path).close()
+    verdicts = {
+        "status": "warn",
+        "checks": [
+            {"name": "isolation", "status": "warn", "detail": "private detail text"},
+            {"name": "model", "status": "ok", "detail": "model 'x'"},
+            {"name": "not-a-doctor-check", "status": "ok", "detail": ""},
+        ],
+    }
+    monkeypatch.setattr("openai4s.doctor.report", lambda _cfg, **_k: verdicts)
+    target = tmp_path / "diag.zip"
+
+    assert _cli().main(["diagnostics", "-o", str(target)]) == 0
+
+    report = _bundle_report(target)
+    assert report["doctor"]["status"] == "warn"
+    assert report["doctor"]["checks"]["isolation"] == "warn"
+    assert report["doctor"]["checks"]["model"] == "ok"
+    assert "not-a-doctor-check" not in report["doctor"]["checks"]
+    applied = report["security"]["schema"]["applied"]
+    assert applied["count"] == SCHEMA_VERSION
+    assert applied["first"] == 1 and applied["last"] == SCHEMA_VERSION
+    assert applied["missing"] == 0 and applied["checksum_mismatches"] == 0
+    assert "redacted" not in str(report["security"]["schema"])
+    assert "private detail text" not in str(report)
+
+
+@pytest.mark.parametrize("command", ["inspect-package", "verify-package"])
+def test_a_package_command_recognises_a_diagnostics_bundle(
+    tmp_path, monkeypatch, capsys, command
+):
+    """CLI-33. `inspect-package openai4s-diagnostics.zip` said "has no
+    manifest.json; it is not an OpenAI4S package" -- two zips, two commands,
+    and nothing said which goes with which."""
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        "openai4s.doctor.report", lambda _cfg, **_k: {"status": "ok", "checks": []}
+    )
+    bundle = tmp_path / "openai4s-diagnostics.zip"
+    assert _cli().main(["diagnostics", "-o", str(bundle)]) == 0
+    capsys.readouterr()
+
+    assert _cli().main([command, str(bundle)]) == 2
+
+    out = capsys.readouterr().out
+    assert "is a diagnostics bundle from `openai4s diagnostics`" in out
+    assert "read its report.json" in out
