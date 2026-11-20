@@ -227,3 +227,35 @@ def test_generic_web_download_stops_on_the_bound_execution_cancel(
     assert set(result) == {"error"}
     assert "cancelled" in result["error"]
     assert not (tmp_path / "workspace" / "inputs").exists()
+
+
+def test_a_download_step_is_counted_in_bytes_not_characters():
+    # PERM-1: the card of a finished binary download read "0 chars".
+    from openai4s.host_dispatch import _step_end
+
+    result = {
+        "url": "https://files.example.org/download/demo.cif.gz",
+        "path": "/somewhere/local/workspace/demo.cif.gz",
+        "bytes": 5312345,
+    }
+    output, summary = _step_end("web_download", "fetch", result, True)
+    assert summary == "5,312,345 bytes"
+    # The resolved local path stays out of the stored step.
+    assert output == {"bytes": 5312345, "url": result["url"]}
+    # A page read is still counted in characters.
+    assert _step_end("web_fetch", "fetch", {"content": "abc"}, True)[1] == "3 chars"
+
+
+def test_a_download_approval_carries_the_address_the_target_and_the_cap():
+    from openai4s.host_dispatch import _step_begin
+    from openai4s.tools.web_download import DEFAULT_MAX_BYTES
+
+    url = "https://files.example.org/download/demo.cif.gz"
+    view = _step_begin("web_download", [{"url": url, "path": "structures/demo.cif.gz"}])
+    assert view == (
+        "fetch",
+        "Downloading from files.example.org",
+        {"url": url, "path": "structures/demo.cif.gz", "max_bytes": DEFAULT_MAX_BYTES},
+    )
+    capped = _step_begin("web_download", [{"url": url, "path": "a", "max_bytes": 1024}])
+    assert capped is not None and capped[2]["max_bytes"] == 1024
