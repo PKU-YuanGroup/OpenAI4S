@@ -12,6 +12,7 @@ import type { MenuItem } from "../sessions/chrome";
 import { API } from "./api";
 import { byId, el } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
+import { openChangePassword, openMyKeys } from "./team-account";
 import { teamRoleLabel, teamT } from "./team-copy";
 import { teamFilesAvailable, teamUser, type TeamUser } from "./team-identity";
 
@@ -189,7 +190,9 @@ export function signOut(): void {
 
 /**
  * The user menu, as data. Who is signed in (never a button), then what that
- * account may open; `Team admin` exists for an admin only.
+ * account may open: `Team admin` for an admin only, the account's own
+ * password and model keys for a person (not the CLI identity, which has
+ * neither, nor a replay-only guest, whose API is closed to both).
  */
 export function teamMenuItems(user: TeamUser): MenuItem[] {
   const head = el("div", "team-menu-head");
@@ -200,6 +203,10 @@ export function teamMenuItems(user: TeamUser): MenuItem[] {
   const own: MenuItem[] = [];
   if (user.role === "admin" || user.kind === "service") {
     own.push({ label: teamT("team.menu.admin"), icon: "users", onClick: () => openAdmin() });
+  }
+  if (user.kind !== "service" && user.role !== "guest") {
+    own.push({ label: teamT("team.menu.password"), icon: "lock", onClick: () => openChangePassword() });
+    own.push({ label: teamT("team.menu.keys"), icon: "sparkles", onClick: () => openMyKeys() });
   }
   return [
     { node: head },

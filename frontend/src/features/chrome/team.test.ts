@@ -318,7 +318,12 @@ describe("F-20 team surface", () => {
     const side = chipNodes("side").find((node) => node.props?.id === "team-user-side");
     expect(side, "sidebar chip").toBeTruthy();
     expect(String(side?.props?.["aria-label"])).toContain("erika");
-    expect(menuLabels({ username: "erika", role: "admin" })).toEqual(["Team admin", "Sign out"]);
+    expect(menuLabels({ username: "erika", role: "admin" })).toEqual([
+      "Team admin",
+      "Change password",
+      "My model keys",
+      "Sign out",
+    ]);
     await runtime.setLang("system");
   });
 
@@ -327,7 +332,18 @@ describe("F-20 team surface", () => {
     await runtime.setLang("en");
     await signedIn({ username: "mallory", role: "member", kind: "user" });
     expect(chipNodes("dash").some((node) => node.props?.id === "team-user")).toBe(true);
-    expect(menuLabels({ username: "mallory", role: "member" })).toEqual(["Sign out"]);
+    // TEAM-22: a member's own password and model keys, beside Sign out.
+    expect(menuLabels({ username: "mallory", role: "member" })).toEqual([
+      "Change password",
+      "My model keys",
+      "Sign out",
+    ]);
+    // neither for a replay-only guest, nor for the CLI's service identity
+    expect(menuLabels({ username: "visitor", role: "guest" })).toEqual(["Sign out"]);
+    expect(menuLabels({ username: "cli", role: "admin", kind: "service" })).toEqual([
+      "Team admin",
+      "Sign out",
+    ]);
     await runtime.setLang("system");
   });
 
@@ -397,6 +413,106 @@ describe("F-20 team surface", () => {
     expect(modal._modalFocus.stack.some((e) => (e.el as unknown) === files)).toBe(true);
     doc.getElementById("team-files-close")?.onclick?.();
     expect(files?.classList.contains("hidden")).toBe(true);
+  });
+
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 8; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const submit = (form: MiniEl | null | undefined): void =>
+    (form as unknown as { onsubmit: (e: { preventDefault: () => void }) => void }).onsubmit({
+      preventDefault: () => undefined,
+    });
+
+  it("Change password sends the current and the new password, and says how it went (TEAM-22)", async () => {
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("en");
+    const account = await import("./team-account");
+    const fetchSpy = vi.fn().mockResolvedValue({ status: 200, ok: true, json: async () => ({ ok: true }) });
+    vi.stubGlobal("fetch", fetchSpy);
+    account.openChangePassword();
+    const dialog = doc.getElementById("team-password-modal");
+    expect(dialog?.classList.contains("hidden")).toBe(false);
+    // a real close control, with an icon and a name
+    const close = doc.getElementById("team-password-modal-close");
+    expect(close?.getAttribute("aria-label")).toBe("Close");
+    expect(close?.children.length).toBe(1);
+    const set = (id: string, value: string) => {
+      (doc.getElementById(id) as MiniEl).value = value;
+    };
+    const line = () => dialog?.querySelector(".team-form-status")?.textContent;
+
+    set("team-password-current", "old-password-1");
+    set("team-password-new", "new-password-2");
+    set("team-password-again", "new-password-3");
+    submit(dialog?.querySelector("form"));
+    expect(line()).toBe("The two new passwords do not match.");
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    set("team-password-again", "new-password-2");
+    submit(dialog?.querySelector("form"));
+    await settle();
+    expect(fetchSpy).toHaveBeenCalledWith("/api/v1/auth/me/password", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ current_password: "old-password-1", new_password: "new-password-2" }),
+    });
+    expect(line()).toBe("Password changed.");
+
+    fetchSpy.mockResolvedValue({ status: 403, ok: false, json: async () => ({ code: "wrong_password" }) });
+    set("team-password-current", "nope");
+    set("team-password-new", "new-password-4");
+    set("team-password-again", "new-password-4");
+    submit(dialog?.querySelector("form"));
+    await settle();
+    expect(line()).toBe("The current password is not right.");
+    expect(account.passwordFailure("weak_password", 400)).toBe("The new password needs at least 8 characters.");
+    expect(account.passwordFailure("", 429)).toBe("Too many attempts. Wait a minute, then try again.");
+    await runtime.setLang("system");
+  });
+
+  it("My model keys lists, saves and removes the user's own keys, never reading one back (TEAM-22)", async () => {
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("en");
+    const account = await import("./team-account");
+    let keys = [{ provider: "deepseek", updated_at: 1700000000000 }];
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string, init?: { method?: string; body?: string }) => {
+        calls.push({ url, method: init?.method || "GET", body: init?.body });
+        if (url === "/api/v1/models") {
+          return { status: 200, ok: true, json: async () => ({ models: { default: [{ provider: "claude" }, { provider: "deepseek" }] } }) };
+        }
+        if (init?.method === "PUT") keys = [...keys, { provider: "claude", updated_at: 1700000000001 }];
+        if (init?.method === "DELETE") keys = keys.filter((k) => k.provider !== "deepseek");
+        return { status: 200, ok: true, json: async () => ({ keys }) };
+      }),
+    );
+    account.openMyKeys();
+    await settle();
+    const dialog = doc.getElementById("team-keys-modal");
+    const rows = () => (dialog?.querySelectorAll(".team-keys-provider") || []).map((n) => n.textContent);
+    expect(rows()).toEqual(["deepseek"]);
+    expect((doc.getElementById("team-keys-providers")?.children || []).map((o) => o.value)).toEqual(["claude", "deepseek"]);
+
+    (doc.getElementById("team-keys-provider") as MiniEl).value = " Claude ";
+    (doc.getElementById("team-keys-value") as MiniEl).value = "fake-key-not-real";
+    submit(dialog?.querySelector("form"));
+    await settle();
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/api/v1/auth/me/llm-key");
+    expect(JSON.parse(put?.body || "{}")).toEqual({ provider: "claude", api_key: "fake-key-not-real" });
+    expect((doc.getElementById("team-keys-value") as MiniEl).value).toBe("");
+    expect(rows()).toEqual(["deepseek", "claude"]);
+    expect(dialog?.textContent).not.toContain("fake-key-not-real");
+
+    const remove = dialog?.querySelectorAll("button").find((b) => b.textContent === "Remove");
+    remove?.onclick?.();
+    await settle();
+    const del = calls.find((c) => c.method === "DELETE");
+    expect(JSON.parse(del?.body || "{}")).toEqual({ provider: "deepseek" });
+    expect(rows()).toEqual(["claude"]);
+    await runtime.setLang("system");
   });
 
   it("loadAdmin renders the five governance sections and .team-admin-table", async () => {

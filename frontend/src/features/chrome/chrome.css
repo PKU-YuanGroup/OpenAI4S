@@ -50,6 +50,20 @@ body.sidebar-collapsed .col-resizer-side{display:none}
 .team-admin-table th{font-weight:600;text-align:left;border-bottom:.5px solid var(--border);padding:5px 8px}
 .team-admin-table td{border-bottom:.5px solid var(--border);padding:5px 8px;font-family:var(--mono);font-size:12px}
 .team-admin-empty{color:var(--text-300);font-size:12px;padding:4px 8px}
+/* The account dialogs from the user menu (team-account.ts). */
+.team-form{padding:14px 18px 18px}
+.team-field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;font-size:12.5px;font-weight:500;color:var(--text-200)}
+.team-field .cust-input{width:100%;min-width:0;font-size:14px;font-weight:400}
+.team-form-note{margin:0 0 12px;font-size:12.5px;line-height:1.5;color:var(--text-300)}
+.team-form-status{min-height:1.4em;margin:2px 0 10px;font-size:13px;color:var(--text-300)}
+.team-form-status.err{color:var(--danger)}
+.team-form-status.ok{color:var(--success-text)}
+.team-form-actions{display:flex;justify-content:flex-end;gap:8px}
+.team-keys-list{margin-bottom:14px;border-top:.5px solid var(--border)}
+.team-keys-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:.5px solid var(--border);font-size:13px}
+.team-keys-provider{font-weight:600;color:var(--text-000)}
+.team-keys-when{flex:1;color:var(--text-300);font-size:12px}
+.team-keys-empty{padding:8px 0;font-size:13px;color:var(--text-300)}
 
 /* UP-3: same-name upload prompt. Each choice is a two-line option button. */
 .upload-conflict-body{margin:0 0 6px;font-size:14px;line-height:1.5;overflow-wrap:anywhere}

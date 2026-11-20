@@ -728,6 +728,110 @@ def test_ws_upgrade_succeeds_with_a_login_cookie(daemon):
 # -- team mode off (INV-1) ----------------------------------------------------
 
 
+def _token_post(port: int, token: str, path: str, body: dict):
+    payload = json.dumps(body).encode("utf-8")
+    head = (
+        f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        f"{local_auth.TOKEN_HEADER}: {token}\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(payload)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode("ascii")
+    return _speak(port, head + payload)
+
+
+_CHANGE = "/api/v1/auth/me/password"
+
+
+@pytest.mark.parametrize("role", ["admin", "member"])
+def test_a_signed_in_user_changes_their_own_password(daemon, role):
+    """TEAM-22: a member could only keep the CLI-generated password or ask an
+    admin at the host. The change needs the current password, revokes every
+    other session, and keeps this browser signed in on a fresh cookie."""
+    daemon.seed_user("bob", "fake-pw-bob-1", role=role)
+    here = _login(daemon, "bob", "fake-pw-bob-1")
+    elsewhere = _login(daemon, "bob", "fake-pw-bob-1")
+
+    status, raw = _post(
+        daemon.port,
+        _CHANGE,
+        {"current_password": "fake-pw-bob-1", "new_password": "fake-pw-bob-2"},
+        cookie=here,
+    )
+    assert status == 200, raw[:300]
+    fresh = _set_cookie(raw)
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=fresh)[0] == 200
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=here)[0] == 401
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=elsewhere)[0] == 401
+    assert daemon.store.team.verify_password("bob", "fake-pw-bob-1") is None
+    assert daemon.store.team.verify_password("bob", "fake-pw-bob-2") is not None
+    assert "password_change" in [r["action"] for r in daemon.store.team.list_audit()]
+
+
+def test_a_password_change_needs_the_current_password_and_the_policy(daemon):
+    daemon.seed_user("bob", "fake-pw-bob-1")
+    cookie = _login(daemon, "bob", "fake-pw-bob-1")
+    status, raw = _post(
+        daemon.port,
+        _CHANGE,
+        {"current_password": "not-it", "new_password": "fake-pw-bob-2"},
+        cookie=cookie,
+    )
+    assert status == 403, raw[:300]
+    assert _body_json(raw)["code"] == "wrong_password"
+    assert b"os_user=" not in raw
+    status, raw = _post(
+        daemon.port,
+        _CHANGE,
+        {"current_password": "fake-pw-bob-1", "new_password": "short"},
+        cookie=cookie,
+    )
+    assert status == 400, raw[:300]
+    assert _body_json(raw)["code"] == "weak_password"
+    # nothing changed, and the cookie still works
+    assert daemon.store.team.verify_password("bob", "fake-pw-bob-1") is not None
+    assert _get(daemon.port, "/api/v1/auth/me", cookie=cookie)[0] == 200
+    assert "password_change_failed" in [
+        r["action"] for r in daemon.store.team.list_audit()
+    ]
+
+
+def test_guessing_the_current_password_is_charged_to_the_login_bucket(daemon):
+    """A borrowed cookie must not become an unthrottled password oracle."""
+    daemon.seed_user("bob", "fake-pw-bob-1")
+    cookie = _login(daemon, "bob", "fake-pw-bob-1")  # one of the five
+    for _ in range(4):
+        status, _ = _post(
+            daemon.port,
+            _CHANGE,
+            {"current_password": "guess", "new_password": "fake-pw-bob-2"},
+            cookie=cookie,
+        )
+        assert status == 403
+    status, raw = _post(
+        daemon.port,
+        _CHANGE,
+        {"current_password": "fake-pw-bob-1", "new_password": "fake-pw-bob-2"},
+        cookie=cookie,
+    )
+    assert status == 429, raw[:300]
+    assert daemon.store.team.verify_password("bob", "fake-pw-bob-1") is not None
+
+
+def test_password_change_is_closed_to_guests_strangers_and_the_cli_identity(daemon):
+    daemon.seed_user("dave", "fake-pw-dave-1", role="guest")
+    guest = _login(daemon, "dave", "fake-pw-dave-1")
+    body = {"current_password": "fake-pw-dave-1", "new_password": "fake-pw-dave-2"}
+    status, raw = _post(daemon.port, _CHANGE, body, cookie=guest)
+    assert status == 403, raw[:300]
+    assert _body_json(raw)["code"] == "guest_readonly"
+    status, raw = _post(daemon.port, _CHANGE, body)
+    assert status == 401, raw[:300]
+    status, raw = _token_post(daemon.port, daemon.token, _CHANGE, body)
+    assert status == 400, raw[:300]
+    assert _body_json(raw)["code"] == "no_password"
+    assert daemon.store.team.verify_password("dave", "fake-pw-dave-1") is not None
+
+
 def test_team_mode_off_keeps_the_disabled_shapes(tmp_path):
     node = _TeamDaemon(tmp_path, team_mode=False)
     try:
@@ -748,6 +852,16 @@ def test_team_mode_off_keeps_the_disabled_shapes(tmp_path):
             ).encode("ascii"),
         )
         assert status == 403
+        assert _body_json(raw).get("code") == "team_off"
+    finally:
+        node.close()
+
+
+def test_the_password_route_answers_team_off_in_single_user_mode(tmp_path):
+    node = _TeamDaemon(tmp_path, team_mode=False)
+    try:
+        status, raw = _token_post(node.port, node.token, _CHANGE, {})
+        assert status == 403, raw[:300]
         assert _body_json(raw).get("code") == "team_off"
     finally:
         node.close()

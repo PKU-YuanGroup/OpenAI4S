@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from openai4s.storage.team import SESSION_TTL_S, username_key
+from openai4s.storage.team import SESSION_TTL_S, check_new_password, username_key
 
 #: The browser login cookie. Distinct from the daemon's ``os_token`` access
 #: cookie: one says "this browser may talk to the daemon", the other says
@@ -71,6 +71,10 @@ class AccountDisabled(Exception):
     could use; it tells the account's owner to ask an administrator rather
     than retry or ask for a reset, which does not lift a disable.
     """
+
+
+class WrongPassword(Exception):
+    """The current password given to a self-service change was not right."""
 
 
 class TeamAuthService:
@@ -168,6 +172,50 @@ class TeamAuthService:
         )
         return token, user
 
+    def change_password(
+        self, identity: "TeamIdentity", current: str, new: str, ip: str
+    ) -> str:
+        """Set a signed-in user's own password; returns a fresh cookie token.
+
+        The current password is required -- a borrowed or stolen cookie must
+        not be enough to take the account over -- and guessing it here is
+        charged to the same per-account bucket as the login, so this route is
+        not a second, unthrottled password oracle. The new password meets the
+        same rule as every other chosen one (`check_new_password`, raising
+        ValueError before any hashing). Like a reset, the change revokes every
+        live session of the account; the browser that made it gets a new one.
+        """
+        check_new_password(new)
+        if not self._take_login_token(identity.username, ip):
+            self._store.team.audit(
+                actor=identity.username,
+                action="password_change_rate_limited",
+                user_id=identity.user_id,
+                detail=f"ip={ip}",
+            )
+            raise RateLimited(
+                f"too many attempts; wait a minute (limit "
+                f"{LOGIN_ATTEMPTS_PER_MINUTE}/min per user+ip)"
+            )
+        outcome, user = self._store.team.authenticate(identity.username, current)
+        if outcome != "ok" or user is None or user["id"] != identity.user_id:
+            self._store.team.audit(
+                actor=identity.username,
+                action="password_change_failed",
+                user_id=identity.user_id,
+                detail=f"ip={ip}",
+            )
+            raise WrongPassword("the current password is not right")
+        self._store.team.set_password(identity.user_id, new)
+        token = self._store.team.create_auth_session(identity.user_id)
+        self._store.team.audit(
+            actor=identity.username,
+            action="password_change",
+            user_id=identity.user_id,
+            detail=f"ip={ip}",
+        )
+        return token
+
     def logout(self, token: str | None) -> bool:
         user = self._store.team.resolve_auth_session(token)
         revoked = self._store.team.revoke_auth_session(token)
@@ -255,6 +303,7 @@ __all__ = [
     "TEAM_COOKIE",
     "TeamAuthService",
     "TeamIdentity",
+    "WrongPassword",
     "login_location",
     "public_user",
     "safe_next_path",

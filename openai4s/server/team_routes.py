@@ -26,7 +26,13 @@ from typing import Any
 from openai4s.storage.team import check_new_password
 
 from . import contract
-from .team_auth import TEAM_COOKIE, AccountDisabled, RateLimited, public_user
+from .team_auth import (
+    TEAM_COOKIE,
+    AccountDisabled,
+    RateLimited,
+    WrongPassword,
+    public_user,
+)
 
 _LOGIN = contract.RouteSpec("auth.login", "POST", r"/auth/login", mutates=True)
 _LOGOUT = contract.RouteSpec("auth.logout", "POST", r"/auth/logout", mutates=True)
@@ -50,8 +56,25 @@ _CLEAR_MY_KEY = contract.RouteSpec(
     "auth.me.llm_key.clear", "DELETE", r"/auth/me/llm-key", mutates=True
 )
 
+#: A user's own password (TEAM-22): self-service, so under `/auth/me` like
+#: the key. A member could only use the CLI-generated password forever or ask
+#: an admin at the host. Not a guest path: the gateway's guest gate keeps a
+#: replay-only account to sign-in, sign-out and who-am-I.
+_MY_PASSWORD = contract.RouteSpec(
+    "auth.me.password", "POST", r"/auth/me/password", mutates=True
+)
+
 ROUTES = contract.validate_routes(
-    (_CLEAR_MY_KEY, _LOGIN, _LOGOUT, _ME, _MY_KEY, _REDEEM, _SET_MY_KEY)
+    (
+        _CLEAR_MY_KEY,
+        _LOGIN,
+        _LOGOUT,
+        _ME,
+        _MY_KEY,
+        _MY_PASSWORD,
+        _REDEEM,
+        _SET_MY_KEY,
+    )
 )
 
 _PATH_PREFIX = "/auth/"
@@ -139,6 +162,47 @@ def _audit_key_change(store: Any, identity: Any, provider: str, action: str) -> 
         pass
 
 
+def _client_ip(self) -> str:
+    try:
+        return str(self.client_address[0])
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _handle_my_password(self, team_auth: Any) -> bool:
+    """Change the signed-in user's own password (TEAM-22)."""
+    identity = getattr(self, "_team_identity", None)
+    if team_auth is None:
+        self._json({"error": "team mode is disabled", "code": "team_off"}, 403)
+        return True
+    if identity is None:
+        self._json({"error": "login required", "code": "login_required"}, 401)
+        return True
+    if identity.kind != "user":
+        # The loopback CLI's service identity has no account row; its
+        # credential is the access-token file.
+        self._json(
+            {"error": "this identity has no password", "code": "no_password"}, 400
+        )
+        return True
+    body = self._body() or {}
+    current = str(body.get("current_password") or "")
+    new = str(body.get("new_password") or "")
+    try:
+        token = team_auth.change_password(identity, current, new, _client_ip(self))
+    except ValueError as e:
+        self._json({"error": str(e), "code": "weak_password"}, 400)
+        return True
+    except RateLimited as e:
+        self._json({"error": str(e), "code": "rate_limited"}, 429)
+        return True
+    except WrongPassword as e:
+        self._json({"error": str(e), "code": "wrong_password"}, 403)
+        return True
+    _json_with_cookie(self, {"ok": True}, team_auth.cookie_header(token))
+    return True
+
+
 def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
     """Answer an auth route, or report that this group does not own it."""
     if not sub.startswith(_PATH_PREFIX):
@@ -186,6 +250,8 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
             team_auth.cookie_header(token),
         )
         return True
+    if _MY_PASSWORD.match(method, sub):
+        return _handle_my_password(self, team_auth)
     if _LOGOUT.match(method, sub):
         if team_auth is None:
             self._json({"error": "team mode is disabled", "code": "team_off"}, 403)

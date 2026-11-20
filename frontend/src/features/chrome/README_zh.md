@@ -24,8 +24,9 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`palette.ts`](palette.ts) | ⌘K palette。Artifact 命中先开会话再 exact version。查询的本地命令立即显示；回车不会作用于上一次查询的列表。 |
 | [`resizer.ts`](resizer.ts) | 侧栏 / dock 列宽拖拽。键 `os-side-w` / `os-dock-w`。拖拽柄的提示是静态 `data-i18n-title` 标签，字典加载后和切换语言时随之重绘。 |
 | [`resizer.i18n.test.ts`](resizer.i18n.test.ts) | 列宽拖拽柄的提示不会是裸键 `resizer.drag`，并随字典加载和语言切换更新。 |
+| [`team-account.ts`](team-account.ts) | 当前登录者自己的账号对话框，从用户菜单打开：修改密码（`POST /auth/me/password`，需要当前密码）与我的模型 key（`GET`/`PUT`/`DELETE /auth/me/llm-key`；保存后不再显示 key）。另有 `teamDialog`：带真实关闭图标的团队小模态。 |
 | [`team-chip.tsx`](team-chip.tsx) | `TeamChip`：当前登录者（点击打开用户菜单）与「团队文件」入口，由 Shell 渲染在首页顶栏和工作台侧栏底部。单用户模式且没有数据根目录时不渲染任何内容。 |
-| [`team-copy.ts`](team-copy.ts) | `teamT`：团队界面的中英文案（用户菜单、角色）。 |
+| [`team-copy.ts`](team-copy.ts) | `teamT`：团队界面的中英文案（用户菜单、角色、账号对话框、团队模式下的「会话不存在」说明）。 |
 | [`team-identity.ts`](team-identity.ts) | `teamUser` 信号（当前登录者，来自 `/auth/me`；单用户模式为 `null`）、`teamFilesAvailable`，以及 `isTeamAdmin()` / `isTeamMember()`，供「设置 → 计算」这类视图跳过成员必然被拒绝的请求。 |
 | [`team.test.ts`](team.test.ts) | 两处位置的用户芯片、按角色的用户菜单、退出登录不弹原生确认框、除模态外不向 `<body>` 追加任何节点、admin 面板、guest 重定向、团队模态走陷阱、审计时间按毫秒时间戳显示、晚到的目录读取不会覆盖较新的目录列表、admin 分节标题随界面语言显示。 |
 | [`team.ts`](team.ts) | `/auth/me` 探测（写入 `teamUser`）、用户菜单（`teamMenuItems`、`openUserMenu`、`signOut`），以及走焦点陷阱的 admin/files 模态。只有最新一次目录读取会渲染，也只有它会改变上传目标。 |
