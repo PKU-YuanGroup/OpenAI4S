@@ -1030,6 +1030,31 @@ def _reduce_action_groups_annotated(
             else:
                 detail = "[Observation]\nERROR:\nexecution was interrupted before an observation was recorded"
             observation_messages = [{"role": "user", "content": detail}]
+        raw_calls = message.get("tool_calls")
+        if (
+            kind == "code"
+            and isinstance(raw_calls, list)
+            and raw_calls
+            and isinstance(raw_calls[0], Mapping)
+            and not any(item.get("role") == "tool" for item in observation_messages)
+        ):
+            # A cell sent through ``run_cell``: the Engine records its
+            # observation as the call's result, so only a group that never got
+            # one (the daemon stopped mid-cell) reaches here. The wire still
+            # needs that call answered by a tool result, not a user message.
+            call = _call_from_mapping(raw_calls[0], 0)
+            observation_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "wire_id": call.wire_id,
+                    "name": call.name,
+                    "content": "\n\n".join(
+                        str(item.get("content") or "") for item in observation_messages
+                    ),
+                    "is_error": True,
+                }
+            ]
         history.extend((index, item) for item in (message, *observation_messages))
     return history
 

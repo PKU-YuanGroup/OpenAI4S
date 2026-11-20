@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import ast
 import copy
+import json
 from pathlib import Path
 
 import pytest
 
 import openai4s.agent.engine as engine_module
 from openai4s.agent.actions import CodeCell, FinalizeAction, NativeToolBatch
+from openai4s.agent.control import execute_native_batch
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import (
     ActionRouted,
@@ -686,9 +688,9 @@ def test_a_reply_that_named_the_cell_gets_that_note_not_the_generic_one():
 
 
 _PROMISE = "现在用 Python 读取 Excel。"
-_CELL = (
-    "```python\nimport pandas as pd\nprint(pd.ExcelFile('demo.xlsx').sheet_names)\n```"
-)
+_CODE = "import pandas as pd\nprint(pd.ExcelFile('demo.xlsx').sheet_names)"
+_CELL = f"```python\n{_CODE}\n```"
+_OBSERVATION = "[Observation] ['Layout', 'Data']"
 # The filler tools the reviewed session sent, one different call per reply.
 _FILLERS = (
     "glob_files",
@@ -700,39 +702,69 @@ _FILLERS = (
 )
 
 
-class PromisingModel:
-    """Promises a cell and sends a filler tool whenever tools are on offer.
+def _run_cell(call_id, arguments=None):
+    arguments = (
+        {"language": "python", "code": _CODE} if arguments is None else arguments
+    )
+    call = _call(call_id, "run_cell", arguments)
+    call["raw_arguments"] = json.dumps(arguments)
+    return call
 
-    ``offered`` records, per call, whether native tools were offered. With
-    none on offer the reply is ``untooled`` -- by default the cell it keeps
-    promising. ``contents`` overrides the text of the tooled reply by index.
+
+def _tool_reply(content, calls):
+    message = {"role": "assistant", "content": content, "tool_calls": list(calls)}
+    return _reply(content, tool_calls=calls, assistant_message=message)
+
+
+class PromisingModel:
+    """Answers only with function calls, as the reviewed model did.
+
+    While the catalogue is on offer it promises a cell and sends a filler
+    tool. ``offered`` records, per call, ``None`` for the catalogue or the
+    names of the tools offered instead, and ``seen`` the messages it was
+    sent. On a call that offers something else it answers with ``fallback``:
+    by default a ``run_cell`` call; a dict is that call's arguments, a list
+    is the whole batch of calls, a string is sent as text with no call.
+    ``contents`` overrides the text of a catalogue reply by index, and
+    ``first`` replaces the first reply's calls.
     """
 
-    def __init__(self, *, untooled=_CELL, contents=None):
-        self.untooled = untooled
+    def __init__(self, *, fallback=None, contents=None, first=None):
+        self.fallback = fallback
         self.contents = dict(contents or {})
+        self.first = first
         self.offered = []
+        self.seen = []
 
-    def complete(self, messages, on_delta, *, offer_tools=True):
+    def complete(self, messages, on_delta, *, only_tools=None):
         index = len(self.offered)
-        self.offered.append(offer_tools)
-        if not offer_tools:
-            return _reply(self.untooled)
+        self.offered.append(
+            None if only_tools is None else [tool["name"] for tool in only_tools]
+        )
+        self.seen.append(copy.deepcopy(list(messages)))
+        if only_tools is not None:
+            if isinstance(self.fallback, str):
+                return _reply(self.fallback)
+            if isinstance(self.fallback, list):
+                return _tool_reply(_PROMISE, self.fallback)
+            return _tool_reply(_PROMISE, [_run_cell(f"call_{index}", self.fallback)])
+        if index == 0 and self.first is not None:
+            return _tool_reply(_PROMISE, self.first)
         name = _FILLERS[index % len(_FILLERS)]
         call = _call(f"call_{index}", name, {"path": f"work/{index}"})
-        return _reply(self.contents.get(index, _PROMISE), tool_calls=[call])
+        return _tool_reply(self.contents.get(index, _PROMISE), [call])
 
 
 def _answer(action, reply, state):
+    """Each action answered as the real executors answer it."""
     if isinstance(action, NativeToolBatch):
-        return ExecutionOutcome(
-            history_messages=tuple(
-                {"role": "tool", "tool_call_id": call.id, "content": f"{call.name} ok"}
-                for call in action.calls
-            )
+        return execute_native_batch(
+            action,
+            lambda call: (f"{call.name} ok", True),
+            validate=lambda name, arguments: None,
         )
     if isinstance(action, CodeCell):
-        observation = "[Observation] ['Layout', 'Data']"
+        observation = _OBSERVATION
     else:
         observation = "[system] No executable action found."
     return ExecutionOutcome(
@@ -741,54 +773,79 @@ def _answer(action, reply, state):
     )
 
 
+def _kind(action):
+    if isinstance(action, NativeToolBatch):
+        return "tools"
+    return "cell" if isinstance(action, CodeCell) else "prose"
+
+
 def _promising_run(model, max_turns):
     executor = FakeExecutor(handler=_answer)
     engine = AgentEngine(model, executor, max_turns=max_turns)
     result = engine.run([{"role": "user", "content": "分析 demo.xlsx 的 Layout 表"}])
-    kinds = [
-        (
-            "tools"
-            if isinstance(call["action"], NativeToolBatch)
-            else "cell" if isinstance(call["action"], CodeCell) else "prose"
-        )
-        for call in executor.calls
-    ]
-    return result, kinds
+    return result, executor, [_kind(call["action"]) for call in executor.calls]
 
 
-def test_a_model_that_keeps_promising_a_cell_gets_one_call_without_tools():
-    # The reviewed run: twelve replies in a row promised Python, each drew the
-    # announced-cell note, and each sent a different filler tool. The note
-    # works; a model with tools on offer kept taking the tool.
+_CATALOGUE = None
+_RUN_CELL_ONLY = ["run_cell"]
+
+
+def test_a_model_that_only_calls_functions_runs_its_cell_through_run_cell():
+    # The reviewed run: reply after reply promised Python and sent a filler
+    # tool. Offered no tools at all, the same model answered in prose or
+    # invented a host.bash call: it runs code by calling a function. So the
+    # call after the second note in a row offers run_cell and nothing else.
     model = PromisingModel()
 
-    result, kinds = _promising_run(model, max_turns=7)
+    result, executor, kinds = _promising_run(model, max_turns=4)
 
-    assert model.offered == [True, True, False, True, True, False, True]
-    assert kinds == ["tools", "tools", "cell", "tools", "tools", "cell", "tools"]
+    assert model.offered == [_CATALOGUE, _CATALOGUE, _RUN_CELL_ONLY, _CATALOGUE]
+    assert kinds == ["tools", "tools", "cell", "tools"]
+    # The executor gets the very action a fenced cell produces.
+    cell = executor.calls[2]["action"]
+    assert cell == CodeCell("python", _CODE)
+    assert cell.tool_call is not None and cell.tool_call.id == "call_2"
+    # The fourth call answers run_cell's id with the observation, as a tool
+    # result right after the call; the observation is not a user message.
+    history = model.seen[3]
+    position = next(
+        index
+        for index, message in enumerate(history)
+        if [call["id"] for call in message.get("tool_calls") or ()] == ["call_2"]
+    )
+    answer = history[position + 1]
+    assert (answer["role"], answer["tool_call_id"], answer["name"]) == (
+        "tool",
+        "call_2",
+        "run_cell",
+    )
+    assert answer["content"] == _OBSERVATION and answer["is_error"] is False
+    assert not any(
+        message.get("role") == "user" and message.get("content") == _OBSERVATION
+        for message in history
+    )
+    # Only the second note in a row says what the next call offers.
+    notes = [m["content"] for m in history if m.get("role") == "tool"][:2]
+    offered = ["the only tool offered for it is run_cell" in n for n in notes]
+    assert offered == [False, True]
     assert result.stop_reason == "max_turns"
-    tool_results = [m["content"] for m in result.messages if m.get("role") == "tool"]
-    # The second note in a row says what the next call will be; the first
-    # does not, and neither does the first one after a cell ran.
-    withheld = ["Tools are withheld for your next reply" in t for t in tool_results]
-    assert withheld == [False, True, False, True, False]
-    assert all("carried no ```python cell" in text for text in tool_results)
 
 
-def test_without_the_withheld_call_the_same_model_spends_the_whole_budget(
+def test_without_the_run_cell_call_the_same_model_spends_the_whole_budget(
     monkeypatch,
 ):
-    # The control for the test above: the scripted model never sends its cell
-    # while tools are on offer, which is what the live run looked like. It
-    # describes the Engine before the switch, so it holds without it too.
+    # The control for the test above: the scripted model never sends a cell
+    # while the catalogue is on offer, which is what the live run looked
+    # like. It describes the Engine before the fallback, so it holds without
+    # it too.
     monkeypatch.setattr(
         engine_module, "ANNOUNCED_CELL_WITHHOLD_AFTER", 10**6, raising=False
     )
     model = PromisingModel()
 
-    result, kinds = _promising_run(model, max_turns=12)
+    result, _, kinds = _promising_run(model, max_turns=12)
 
-    assert model.offered == [True] * 12
+    assert model.offered == [_CATALOGUE] * 12
     assert kinds == ["tools"] * 12
     assert result.stop_reason == "max_turns"
 
@@ -798,26 +855,97 @@ def test_a_note_free_batch_between_two_notes_resets_the_count():
     # around it are not in a row.
     model = PromisingModel(contents={1: "检索 RNA 聚合酶相关文献。"})
 
-    _, kinds = _promising_run(model, max_turns=5)
+    _, _, kinds = _promising_run(model, max_turns=5)
 
-    assert model.offered == [True, True, True, True, False]
+    assert model.offered == [_CATALOGUE] * 4 + [_RUN_CELL_ONLY]
     assert kinds == ["tools", "tools", "tools", "tools", "cell"]
 
 
-def test_a_prose_answer_to_the_tool_less_call_does_not_end_the_turn():
-    # finalize_response is a native tool, so it is not on offer either. Prose
-    # gets the ordinary no-action nudge, tools come back on the next call, and
-    # two more notes in a row earn the next tool-less call.
-    model = PromisingModel(untooled="好的，我现在就运行 Python。")
+def test_a_fenced_cell_answering_the_run_cell_call_runs_as_a_fenced_cell():
+    model = PromisingModel(fallback=_CELL)
 
-    result, kinds = _promising_run(model, max_turns=7)
+    _, executor, kinds = _promising_run(model, max_turns=4)
 
-    assert model.offered == [True, True, False, True, True, False, True]
+    assert model.offered == [_CATALOGUE, _CATALOGUE, _RUN_CELL_ONLY, _CATALOGUE]
+    assert kinds == ["tools", "tools", "cell", "tools"]
+    cell = executor.calls[2]["action"]
+    assert cell == CodeCell("python", _CODE + "\n") and cell.tool_call is None
+    # No call to answer: the observation follows as the ordinary user message.
+    assert model.seen[3][-1] == {"role": "user", "content": _OBSERVATION}
+
+
+def test_a_prose_answer_to_the_run_cell_call_does_not_end_the_turn():
+    # finalize_response is not on offer either. Prose gets the ordinary
+    # no-action nudge, the catalogue comes back on the next call, and two
+    # more notes in a row earn the next run_cell call.
+    model = PromisingModel(fallback="好的，我现在就运行 Python。")
+
+    result, _, kinds = _promising_run(model, max_turns=7)
+
+    assert model.offered == [
+        _CATALOGUE,
+        _CATALOGUE,
+        _RUN_CELL_ONLY,
+        _CATALOGUE,
+        _CATALOGUE,
+        _RUN_CELL_ONLY,
+        _CATALOGUE,
+    ]
     assert kinds == ["tools", "tools", "prose", "tools", "tools", "prose", "tools"]
     assert result.stop_reason == "max_turns" and result.completion is None
 
 
-def test_an_external_policy_is_offered_no_tools_on_the_withheld_call():
+@pytest.mark.parametrize(
+    "fallback, problem",
+    [
+        ({"language": "julia", "code": "1 + 1"}, 'language must be "python" or "r"'),
+        ({"language": "python", "code": "  "}, "code must be a non-empty string"),
+        (
+            [_run_cell("call_2"), _call("call_3", "list_dir", {"path": "work"})],
+            "a reply may carry only one call when it calls run_cell",
+        ),
+    ],
+)
+def test_a_run_cell_call_that_cannot_run_is_malformed_and_runs_nothing(
+    fallback, problem
+):
+    model = PromisingModel(fallback=fallback)
+
+    _, executor, kinds = _promising_run(model, max_turns=4)
+
+    assert kinds == ["tools", "tools", "tools", "tools"]
+    batch = executor.calls[2]["action"]
+    assert all(call.parse_error for call in batch.calls)
+    answers = [m["content"] for m in model.seen[3] if m.get("role") == "tool"]
+    answers = answers[-len(batch.calls) :]
+    for call, answer in zip(batch.calls, answers):
+        assert answer.startswith(f"[Tool error] {call.name}: {problem}")
+        assert "Nothing in this reply ran" in answer
+        assert "send exactly one run_cell call" in answer
+        assert "fenced ```python" in answer
+    # Nothing ran: the filler tool in the mixed batch was not invoked either.
+    assert not any(" ok" in answer for answer in answers)
+
+
+def test_a_run_cell_call_that_was_not_offered_is_an_unknown_tool():
+    # A model that remembers run_cell from an earlier reply: on a call that
+    # offers the catalogue it is not a tool, and the error points at fences.
+    model = PromisingModel(first=[_run_cell("call_0")])
+
+    result, executor, kinds = _promising_run(model, max_turns=1)
+
+    assert kinds == ["tools"]
+    (call,) = executor.calls[0]["action"].calls
+    assert call.name == "run_cell" and call.parse_error
+    answer = result.messages[-1]
+    assert answer["tool_call_id"] == "call_0"
+    assert answer["content"].startswith(
+        "[Tool error] run_cell: unknown tool: 'run_cell'"
+    )
+    assert "send one fenced ```python" in answer["content"]
+
+
+def test_an_external_policy_is_offered_only_run_cell_on_the_withheld_call():
     engine = AgentEngine(
         PromisingModel(),
         FakeExecutor(handler=_answer),
@@ -829,10 +957,26 @@ def test_an_external_policy_is_offered_no_tools_on_the_withheld_call():
 
     offered = []
     for _ in range(4):
-        offered.append(bool(engine.prepare_tools(state)))
+        offered.append([tool["name"] for tool in engine.prepare_tools(state)])
         engine.step(state)
 
-    assert offered == [True, True, False, True]
+    assert offered == [["list_dir"], ["list_dir"], ["run_cell"], ["list_dir"]]
+
+
+def test_a_sampled_run_cell_reply_is_routed_as_the_cell():
+    # The RL boundary: a policy sampled against prepare_tools() hands its
+    # reply to step(); it is routed against what that decision offered.
+    executor = FakeExecutor(handler=_answer)
+    engine = AgentEngine(PromisingModel(), executor)
+    state = RunState([{"role": "user", "content": "分析 demo.xlsx"}], max_turns=4)
+    engine.step(state)
+    engine.step(state)
+
+    engine.step(state, _tool_reply(_PROMISE, [_run_cell("sampled")]))
+
+    cell = executor.calls[-1]["action"]
+    assert cell == CodeCell("python", _CODE) and cell.tool_call.id == "sampled"
+    assert state.messages[-1]["tool_call_id"] == "sampled"
 
 
 def test_a_tool_only_note_does_not_hide_an_identical_call_from_the_circuit():

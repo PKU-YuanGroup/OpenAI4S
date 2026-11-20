@@ -61,15 +61,7 @@ def _chat_openai(
             payload, [] if tool_choice == "none" else tools or [], None, None
         )
     else:
-        # A call that may use no tool sends none, as for Ollama: servers on
-        # this wire differ on `tool_choice`, while a history of tool calls
-        # with no declarations is what the Web plan mode already sends.
-        _apply_chat_tools(
-            payload,
-            [] if tool_choice == "none" else tools or [],
-            tool_choice,
-            parallel_tool_calls,
-        )
+        _apply_chat_tools(payload, tools or [], tool_choice, parallel_tool_calls)
     headers = {
         "Content-Type": "application/json",
         "User-Agent": os.environ.get("OPENAI4S_LLM_USER_AGENT", _BROWSER_UA),

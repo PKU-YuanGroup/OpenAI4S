@@ -2006,10 +2006,14 @@ def test_web_native_schema_history_and_cell_only_completion(monkeypatch, tmp_pat
     ]
 
 
-def test_web_turn_withholds_tools_after_two_ignored_cell_notes(monkeypatch, tmp_path):
-    """The Web composition of the same Engine: two replies promise Python and
-    send a filler tool instead, so the third call forbids tool calls and the
-    cell it answers with runs and completes the turn."""
+def test_web_turn_offers_only_run_cell_after_two_ignored_cell_notes(
+    monkeypatch, tmp_path
+):
+    """The Web composition of the same Engine, with a model that only answers
+    with function calls: two replies promise Python and send a filler tool,
+    the third call offers run_cell alone, and the call runs through the
+    session's own cell path. The fourth call has the catalogue back and the
+    cell's output as the tool result for run_cell's id."""
 
     class Dispatcher:
         last_output = None
@@ -2020,27 +2024,43 @@ def test_web_turn_withholds_tools_after_two_ignored_cell_notes(monkeypatch, tmp_
     runner, _hub, frame_id = _prepare_message_runner(
         monkeypatch, tmp_path, Dispatcher()
     )
-    choices: list[tuple[object, bool]] = []
+    runner.cfg.max_turns = 4
+    offered: list[tuple[list[str], object]] = []
+    sent: list[list[dict]] = []
+    executed: list[tuple[str, str]] = []
 
     def fake_chat(messages, cfg, on_delta=None, **kwargs):
-        del messages, cfg, on_delta
-        index = len(choices)
-        choices.append((kwargs.get("tool_choice"), bool(kwargs.get("tools"))))
-        if kwargs.get("tool_choice") == "none":
+        del cfg, on_delta
+        index = len(offered)
+        names = [
+            getattr(tool, "name", None) or tool["name"] for tool in kwargs["tools"]
+        ]
+        offered.append((names, kwargs.get("tool_choice")))
+        sent.append([dict(message) for message in messages])
+        if names == ["run_cell"]:
+            code = "print('sheets', 2)"
+            call = _native_call(
+                f"call-{index}", "run_cell", {"language": "python", "code": code}
+            )
+        elif index == 3:
             return {
                 "content": "```python\nhost.submit_output({'sheets': 2}, ['read'])\n```",
                 "usage": {},
             }
-        call = _native_call(f"call-{index}", "list_dir", {"path": f"dir{index}"})
+        else:
+            call = _native_call(f"call-{index}", "list_dir", {"path": f"dir{index}"})
         return _native_reply("现在用 Python 读取 Excel。", [call])[0]
 
     def fake_execute(state, code, origin, emit, stream=True, language="python"):
-        del code, origin, emit, stream, language
-        state.dispatcher.last_output = {
-            "output": {"sheets": 2},
-            "completion_bullets": ["read"],
-        }
-        return {"result": {"stdout": "", "stderr": "", "error": None}}
+        del origin, emit, stream
+        executed.append((language, code))
+        if "submit_output" in code:
+            state.dispatcher.last_output = {
+                "output": {"sheets": 2},
+                "completion_bullets": ["read"],
+            }
+            return {"result": {"stdout": "", "stderr": "", "error": None}}
+        return {"result": {"stdout": "sheets 2\n", "stderr": "", "error": None}}
 
     monkeypatch.setattr(gateway_mod, "chat", fake_chat)
     monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
@@ -2048,7 +2068,23 @@ def test_web_turn_withholds_tools_after_two_ignored_cell_notes(monkeypatch, tmp_
     result = runner.run_message(frame_id, "default", "读取 demo.xlsx")
 
     assert result["status"] == "completed"
-    assert choices == [(None, True), (None, True), ("none", True)]
+    assert [names == ["run_cell"] for names, _ in offered] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert "run_cell" not in offered[0][0] and "list_dir" in offered[3][0]
+    assert {choice for _, choice in offered} == {None}
+    # The run_cell code went through the same cell path as the fenced cell.
+    assert executed[0] == ("python", "print('sheets', 2)")
+    answer = next(
+        message for message in sent[3] if message.get("tool_call_id") == "call-2"
+    )
+    assert answer["role"] == "tool" and "sheets 2" in answer["content"]
+    groups = runner.store.list_action_groups(frame_id)
+    kinds = [group["kind"] for group in groups if group["kind"] != "user"]
+    assert kinds == ["native_tools", "native_tools", "code", "code", "terminal"]
 
 
 def test_post_cell_status_shows_the_sessions_paths_relative(monkeypatch, tmp_path):
