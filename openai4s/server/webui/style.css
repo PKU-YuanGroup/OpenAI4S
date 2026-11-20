@@ -2365,6 +2365,8 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .nb-card{gap:12px;padding:16px 12px 10px 18px;border:1px solid var(--border);border-radius:var(--radius-card);background:var(--bg);box-shadow:none}
 .nb-card:focus-within{border-color:#d9d0c5}
 html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
+/* SYNC-8: focus in the composer shows on its card, as on the home search box. */
+.nb-card:has(#composer:focus),html[data-theme="dark"] .nb-card:has(#composer:focus){border-color:var(--accent-fill);box-shadow:var(--focus-ring)}
 #composer{min-height:26px;padding:0;font-size:16px;line-height:1.55}
 .nb-left{gap:6px}
 .nb-right{gap:8px}
