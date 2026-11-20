@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import openai4s.agent.engine as engine_module
+import openai4s.agent.progress_circuit as progress_circuit_module
 from openai4s.agent.actions import CodeCell, FinalizeAction, NativeToolBatch
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import (
@@ -800,6 +801,8 @@ def test_without_the_withheld_call_the_same_model_spends_the_whole_budget(
     monkeypatch.setattr(
         engine_module, "ANNOUNCED_CELL_WITHHOLD_AFTER", 10**6, raising=False
     )
+    # Nor the stop on the fifth promise, which came after both.
+    monkeypatch.setattr(progress_circuit_module, "UNSENT_CELL_THRESHOLD", 10**6)
     model = PromisingModel()
 
     result, kinds = _promising_run(model, max_turns=12)
@@ -831,6 +834,35 @@ def test_a_prose_answer_to_the_tool_less_call_does_not_end_the_turn():
     assert model.offered == [True, True, False, True, True, False, True]
     assert kinds == ["tools", "tools", "prose", "tools", "tools", "prose", "tools"]
     assert result.stop_reason == "max_turns" and result.completion is None
+
+
+def test_a_model_that_never_sends_the_promised_cell_is_stopped_on_the_fifth():
+    # SYNC-6 / SCI-16: the same stubborn model with the whole Web budget. The
+    # prose answer resets the consecutive count that withholds tools, so the
+    # cycle "promise, promise, prose" used to run until max_turns (59 model
+    # calls in a replay through the daemon). The count since the last cell
+    # stops it on the fifth promise: four notes and two tool-less calls later.
+    model = PromisingModel(untooled="好的，我现在就运行 Python。")
+
+    result, kinds = _promising_run(model, max_turns=64)
+
+    assert kinds == ["tools", "tools", "prose", "tools", "tools", "prose", "tools"]
+    assert (result.stop_reason, result.progress_reason) == (
+        "no_progress",
+        "announced_cell_repeat",
+    )
+    assert result.completion is None
+
+
+def test_a_cell_between_promises_starts_the_count_again():
+    # The cooperative model sends its cell on every tool-less call, so no run
+    # of promises reaches five and the turn continues.
+    model = PromisingModel()
+
+    result, kinds = _promising_run(model, max_turns=16)
+
+    assert kinds.count("cell") == 5
+    assert result.stop_reason == "max_turns"
 
 
 def test_an_external_policy_is_offered_no_tools_on_the_withheld_call():

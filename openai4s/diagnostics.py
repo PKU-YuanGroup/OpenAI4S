@@ -342,6 +342,7 @@ _PROGRESS_REASONS = frozenset(
         "similar_tool_error",
         "long_text_repeat",
         "empty_reply_repeat",
+        "announced_cell_repeat",
         "other",
     }
 )
