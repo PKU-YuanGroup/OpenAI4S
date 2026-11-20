@@ -17,6 +17,7 @@ import { api, apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { callLane } from "./host";
 import { iconEl } from "./icon";
+import { foldDownloadDecision } from "./step";
 import { stepTitleText } from "./step-title";
 
 const PERM_SCOPE_KEYS: Record<string, string> = {
@@ -65,6 +66,8 @@ type PermHandle = {
   relabel?: () => void;
   /** Re-say the title, which is composed from the request (`permTitle`). */
   retitle?: () => void;
+  /** What was asked: an allowed download folds into its download card (SCI-11). */
+  request?: PermEvent;
 };
 
 function rec(value: unknown): Record<string, unknown> {
@@ -190,6 +193,8 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     downloadTo: "Saves to the workspace as: {0}",
     downloadSize: "Size: {0}",
     downloadLimit: "Size is not known before the download; it stops at {0}.",
+    downloadWhy:
+      "A download asks first because it writes a file into this project; reading a web page writes nothing and does not ask.",
     installInto: "Installs into: {0}",
     installKeep:
       "Packages already in this environment keep their versions; an install that would change one is refused.",
@@ -211,6 +216,7 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     downloadTo: "保存到工作区：{0}",
     downloadSize: "大小：{0}",
     downloadLimit: "下载前无法得知大小；超过 {0} 会中止。",
+    downloadWhy: "下载会把文件写进这个项目，所以要先询问；读取网页不写文件，不需要询问。",
     installInto: "安装到：{0}",
     installKeep: "这个环境里已安装的包保持原版本；需要改动它们的安装会被拒绝。",
     localEnv:
@@ -262,6 +268,8 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
     const limit = Number(inp.max_bytes);
     if (Number.isFinite(size) && size > 0) lines.push(ctx("downloadSize", bytes(size)));
     else if (Number.isFinite(limit) && limit > 0) lines.push(ctx("downloadLimit", bytes(limit)));
+    // SCI-11: reading a page went through, a download of the same site asked.
+    lines.push(ctx("downloadWhy"));
   } else if (m.tool === "env_setup") {
     const env = String(inp.environment || "");
     if (env) {
@@ -513,6 +521,8 @@ export function markPermCard(
     };
     h.card.appendChild(cont);
   }
+  // SCI-11: an allowed download is shown once, as its download card.
+  if (allowed && h.card.isConnected && h.request) foldDownloadDecision(h.card, h.request);
   // Not while a reopen paints history off-DOM: that registry is not the one
   // on screen until the paint swaps it in (messages/open.ts syncs then).
   if (h.card.isConnected) syncPendingApproval();
@@ -578,6 +588,8 @@ export function renderStoredPermission(
   registry()[id] = handle;
   const state = String(stored.state || "pending");
   if (state !== "pending") markPermCard(id, state === "allowed", stored.scope || null, stored);
+  // As the live card folded (SCI-11): its download was painted just before it.
+  if (state === "allowed" && foldDownloadDecision(handle.card, stored)) return handle.card;
   const host = target || (typeof document !== "undefined" ? document.getElementById("messages") : null);
   host?.appendChild(handle.card);
   return handle.card;
@@ -767,7 +779,7 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   btns.appendChild(allow);
   btns.appendChild(deny);
   card.appendChild(btns);
-  return { card, allow, deny, resolved: false, relabel: paintRule, retitle: paintTitle };
+  return { card, allow, deny, resolved: false, relabel: paintRule, retitle: paintTitle, request: m };
 }
 
 export function resolvePermissionCard(m: PermEvent): void {

@@ -510,6 +510,75 @@ describe("a sub-agent's steps inside its delegation card (SCI-22)", () => {
   });
 });
 
+describe("one download, one row (SCI-11)", () => {
+  const url = "https://files.rcsb.org/download/1CRN.pdb";
+  const download = {
+    step_id: "dl-1",
+    kind: "fetch",
+    title: "Downloading from files.rcsb.org",
+    input: { url, path: "1crn.pdb", max_bytes: 67108864 },
+  };
+  const saving = { step_id: "sv-1", kind: "artifact", title: "Saving 1crn.pdb", input: { files: ["1crn.pdb"] } };
+  const ask = {
+    decision_id: "perm-1",
+    frame_id: "f-1",
+    tool: "web_download",
+    title: "Downloading from files.rcsb.org",
+    target: "files.rcsb.org",
+    input: { url, path: "1crn.pdb", max_bytes: 67108864 },
+  };
+
+  /** Each card (step or approval) and the step card it sits in ("" = the conversation). */
+  const rows = (root: El): string[] => {
+    const out: string[] = [];
+    const walk = (node: El, inside: string): void => {
+      for (const kid of node.children) {
+        const kind = kid.classes.has("perm-card") ? "approval" : kid.classes.has("step") ? [...kid.classes].find((c) => c.startsWith("step-"))! : "";
+        if (kind) out.push(`${kind}<${inside}`);
+        walk(kid, kid.classes.has("step") ? [...kid.classes].find((c) => c.startsWith("step-"))! : inside);
+      }
+    };
+    walk(root, "");
+    return out;
+  };
+
+  it("folds the allowed approval and the saved file into the download's card, live and after a reload", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const { markPermCard, renderPermissionCard, renderStoredPermission } = await import("./permission");
+    addLiveStep({ ...download, status: "running" });
+    renderPermissionCard(ask);
+    // Waiting on the user: the card is in the conversation.
+    expect(rows(messages)).toContain("approval<");
+    // As seen live: the download and its Saving step can stream in before
+    // this page's own decision request returns.
+    updateLiveStep({ step_id: "dl-1", status: "done", summary: "49,152 bytes", output: {} });
+    addLiveStep({ ...saving, status: "done" });
+    updateLiveStep({ step_id: "sv-1", status: "done", summary: "1 artifact", output: {} });
+    markPermCard("perm-1", true, "once", {});
+    const live = rows(messages);
+    expect(live).toEqual(["step-fetch<", "approval<step-fetch", "step-artifact<step-fetch"]);
+
+    resetStoreFields();
+    const history = messages.appendChild(new El("div"));
+    renderStoredStep({ ...download, status: "done", summary: "49,152 bytes", output: {}, created_at: 1 }, history as unknown as ParentNode);
+    renderStoredPermission({ ...ask, state: "allowed", scope: "once", created_at: "2026-11-20T00:00:02Z" }, history as unknown as ParentNode);
+    renderStoredStep({ ...saving, status: "done", summary: "1 artifact", output: {}, created_at: 3 }, history as unknown as ParentNode);
+    expect(rows(history)).toEqual(live);
+  });
+
+  it("leaves a denied download's card, and a file the download did not write, where they are", async () => {
+    const { renderStoredPermission } = await import("./permission");
+    const history = messages.appendChild(new El("div"));
+    renderStoredStep({ ...download, status: "error", output: { error: "denied" }, created_at: 1 }, history as unknown as ParentNode);
+    renderStoredPermission({ ...ask, state: "denied", created_at: "2026-11-20T00:00:02Z" }, history as unknown as ParentNode);
+    renderStoredStep(
+      { ...saving, step_id: "sv-2", title: "Saving notes.md", input: { files: ["notes.md"] }, status: "done", created_at: 3 },
+      history as unknown as ParentNode,
+    );
+    expect(rows(history)).toEqual(["step-fetch<", "approval<", "step-artifact<"]);
+  });
+});
+
 describe("plan steps (CHAT-8)", () => {
   it("a turn keeps one plan card, repainted by each plan update", () => {
     const plan = (id: string, todos: Array<{ content: string; status: string }>): Record<string, unknown> => ({

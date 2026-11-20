@@ -906,6 +906,44 @@ function nestInStep(parent: StepHandle, card: HTMLElement): void {
   box.appendChild(card);
 }
 
+/**
+ * SCI-11: one download left three rows -- the download, its approval ("✓
+ * Allowed") and "Saving 1crn.pdb · 1 artifact". The file it saved is shown
+ * inside the download's card when that download is the step just before the
+ * Saving step and wrote that file; anything else is left as it was.
+ */
+function downloadThatSaved(step: Step): StepHandle | null {
+  if (step.kind !== "artifact") return null;
+  const files = rec(step.input).files;
+  if (!Array.isArray(files) || !files.length) return null;
+  const previous = Object.values(stepRegistry()).pop();
+  if (!previous || previous.step.kind !== "fetch") return null;
+  const saved = baseName(String(rec(previous.step.input).path || ""));
+  return saved && files.map(String).includes(saved) ? previous : null;
+}
+
+/**
+ * SCI-11: an allowed download's approval card goes inside the card of the
+ * download it allowed (same address), so the decision stays one click away
+ * and the conversation shows the download once. False when no such card is
+ * on screen: the approval stays where it is.
+ */
+export function foldDownloadDecision(card: HTMLElement, request: { tool?: unknown; input?: unknown }): boolean {
+  if (request.tool !== "web_download") return false;
+  const url = rec(request.input).url;
+  if (typeof url !== "string" || !url) return false;
+  const download = Object.values(stepRegistry())
+    .reverse()
+    .find((handle) => handle.step.kind === "fetch" && rec(handle.step.input).url === url);
+  if (!download) return false;
+  nestInStep(download, card);
+  // The decision came before what the download saved, whichever event this
+  // page saw first: a reload paints them in that order too.
+  const box = card.parentElement;
+  if (box) for (const kid of Array.from(box.children) as HTMLElement[]) if (kid !== card) box.appendChild(kid);
+  return true;
+}
+
 function ownChild(node: HTMLElement, cls: string): HTMLElement | undefined {
   return (Array.from(node.children) as HTMLElement[]).find((kid) => kid.classList.contains(cls));
 }
@@ -1004,11 +1042,14 @@ export function addLiveStep(m: Record<string, unknown>): void {
     down();
     return;
   }
+  // Read before this step is registered: "the step just before" is not itself.
   const delegation = delegationParent(step);
+  const download = delegation ? null : downloadThatSaved(step);
   const handle = buildStepCard(step, LAZY_BODY);
   if (m.step_id) stepRegistry()[String(m.step_id)] = handle;
-  if (delegation) {
-    nestUnderDelegation(delegation, handle.card);
+  if (delegation || download) {
+    if (delegation) nestUnderDelegation(delegation, handle.card);
+    else if (download) nestInStep(download, handle.card);
     liveStream.value = st;
     down();
     return;
@@ -1036,12 +1077,17 @@ export function renderStoredStep(s: Step, target?: ParentNode | null): HTMLEleme
   const merged = mergePlanStep((target as { turn?: Element | null } | null | undefined)?.turn, s);
   if (merged) return merged.card;
   const delegation = delegationParent(s);
+  const download = delegation ? null : downloadThatSaved(s);
   const handle = buildStepCard(s, LAZY_BODY);
   if (s.step_id) stepRegistry()[String(s.step_id)] = handle;
   handle.card.dataset.ts = String(s.created_at || 0);
-  // As the stream nested it (SCI-22).
+  // As the stream nested it (SCI-22, SCI-11).
   if (delegation) {
     nestUnderDelegation(delegation, handle.card);
+    return handle.card;
+  }
+  if (download) {
+    nestInStep(download, handle.card);
     return handle.card;
   }
   (target || (typeof document !== "undefined" ? document.getElementById("messages") : null))?.appendChild(

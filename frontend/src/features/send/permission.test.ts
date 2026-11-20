@@ -424,6 +424,8 @@ describe("what a card says before the user decides", () => {
     expect(permContext(card).lines).toEqual([
       "保存到工作区：structures/demo.cif.gz",
       "下载前无法得知大小；超过 64.0 MB 会中止。",
+      // SCI-11: why a download asks when reading the same site did not.
+      "下载会把文件写进这个项目，所以要先询问；读取网页不写文件，不需要询问。",
     ]);
     expect(permContext({ ...card, input: { ...card.input, size_bytes: 2048 } }).lines[1]).toBe("大小：2.0 KB");
     // Never a local directory: an absolute or escaping path is shown by its file name.
