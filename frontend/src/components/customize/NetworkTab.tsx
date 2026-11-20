@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { copyLookup } from "../../i18n/copy";
 import { api } from "../../features/customize/api";
+import { copyFailedText, copyText } from "../../features/chrome/clipboard";
 import { asList, asString, hint } from "../../features/customize/host";
 import {
   createTelemetryDrain,
@@ -36,6 +37,11 @@ const nt = copyLookup({
       "另外，加载带联网清单的技能（如 literature-review）会把那个会话进一步限定到技能声明的域名，可在「技能」页查看。",
     "allowlist.granted": "已批准的域名：{0}",
     "allowlist.more": "还有 {0} 个",
+    "allowlist.restart":
+      "开关白名单要用 OPENAI4S_EGRESS 重新启动服务器（这里没有运行时开关）：复制下面的命令，在运行 OpenAI4S 的那台机器的终端里执行。",
+    "allowlist.member": "开关白名单需要重新启动服务器，只有管理员可以操作。",
+    "allowlist.copy": "复制启动命令",
+    "allowlist.copied": "已复制启动命令",
     "group.Scientific databases": "科学数据库",
     "group.Literature & preprints": "文献与预印本",
     "group.Package indexes": "软件包索引",
@@ -58,6 +64,11 @@ const nt = copyLookup({
       "A Skill with a network manifest (such as literature-review) further limits the session that loads it to the domains it declares; see the Skills tab.",
     "allowlist.granted": "Approved domains: {0}",
     "allowlist.more": "{0} more",
+    "allowlist.restart":
+      "Turning the allowlist on or off means restarting the server with OPENAI4S_EGRESS (there is no switch while it runs): copy the command below and run it in a terminal on the machine OpenAI4S runs on.",
+    "allowlist.member": "Turning the allowlist on or off restarts the server; only an administrator can do that.",
+    "allowlist.copy": "Copy start command",
+    "allowlist.copied": "Start command copied",
   },
 });
 
@@ -69,6 +80,50 @@ export function allowlistGroupName(name: string): string {
 }
 
 const GROUP_PILLS = 12;
+
+/**
+ * The command that restarts the daemon with the other egress mode. The mode is
+ * read once at start (M-26, lead decision: no runtime switch), so the page
+ * hands over the exact command instead of a variable name to look up.
+ */
+export function egressRestartCommand(mode: string): string {
+  const next = mode === "allowlist" ? "off" : "allowlist";
+  return `openai4s stop && OPENAI4S_EGRESS=${next} openai4s serve`;
+}
+
+function EgressRestart({ mode, readOnly }: { mode: string; readOnly: boolean }) {
+  const [copied, setCopied] = useState(false);
+  if (readOnly) {
+    return (
+      <div class="ds" data-egress-restart="member">
+        {nt("allowlist.member")}
+      </div>
+    );
+  }
+  const command = egressRestartCommand(mode);
+  return (
+    <div class="egress-restart" data-egress-restart="">
+      <div class="ds">{nt("allowlist.restart")}</div>
+      <div class="job-submit">
+        <code class="egress-restart-cmd">{command}</code>
+        <button
+          type="button"
+          class="outline-btn small"
+          onClick={async () => {
+            if (await copyText(command)) {
+              setCopied(true);
+              hint(nt("allowlist.copied"));
+            } else {
+              hint(copyFailedText(), true);
+            }
+          }}
+        >
+          {copied ? nt("allowlist.copied") : nt("allowlist.copy")}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function NetworkTab() {
   const alive = useAlive();
@@ -182,6 +237,7 @@ export function NetworkTab() {
           <div class="ds">
             {nt(allow.mode === "allowlist" ? "allowlist.on" : "allowlist.off")}
           </div>
+          <EgressRestart mode={allow.mode} readOnly={readOnly} />
           <div class="ds">{nt("allowlist.skills")}</div>
           {allow.granted.length ? (
             <div class="ds">{nt("allowlist.granted", allow.granted.join(", "))}</div>

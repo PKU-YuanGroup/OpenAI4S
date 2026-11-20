@@ -130,6 +130,17 @@
   line-height: 1.5;
   color: var(--text-400);
 }
+/* M-26: the exact command that restarts the daemon with the other egress mode. */
+#cust .egress-restart-cmd {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: 8px;
+  background: var(--bg-100, #f5f0e8);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 #cust .search-engines-head {
   padding: 20px 0 6px;
 }

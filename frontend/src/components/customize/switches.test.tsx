@@ -63,7 +63,7 @@ vi.mock("../../features/notebook", () => ({ notebookOnTurnDone: mocks.notebookRe
 import { teamUser } from "../../features/chrome/team-identity";
 import { ConnectorRow } from "./ConnectorsTab";
 import { MemoryTab } from "./MemoryTab";
-import { NetworkTab } from "./NetworkTab";
+import { NetworkTab, egressRestartCommand } from "./NetworkTab";
 import { NotebookReplSetting } from "./NotebookReplSetting";
 import { SkillRow } from "./SkillsTab";
 import { BuiltinRow } from "./SpecialistsTab";
@@ -293,5 +293,40 @@ describe("server-wide switches for a team member", () => {
     render(MemoryTab);
     await settle();
     expect(firstSwitch(render(MemoryTab)).props!.disabled).toBe(false);
+  });
+});
+
+// M-26 (lead decision: no runtime switch): the page names the egress state and
+// hands over the exact restart command; a team member gets the admin wording.
+describe("egress allowlist restart command", () => {
+  afterEach(() => {
+    teamUser.value = null;
+  });
+  const text = (node: unknown): string => {
+    if (Array.isArray(node)) return node.map(text).join("");
+    if (node == null || typeof node === "boolean") return "";
+    if (typeof node !== "object") return String(node);
+    const current = node as Node;
+    if (typeof current.type === "function") return text((current.type as (p: unknown) => unknown)(current.props));
+    return text(current.props?.children);
+  };
+  const groups = [{ name: "Web search", domains: ["example.org"] }];
+
+  it("names the command that switches to the other mode", () => {
+    expect(egressRestartCommand("off")).toBe("openai4s stop && OPENAI4S_EGRESS=allowlist openai4s serve");
+    expect(egressRestartCommand("allowlist")).toBe("openai4s stop && OPENAI4S_EGRESS=off openai4s serve");
+  });
+
+  it("offers the command with a copy button, and only the reason to a member", async () => {
+    routes({ "GET /preferences/builtin-allowlist": ok({ enabled: true, groups, egress_mode: "off" }) });
+    render(NetworkTab);
+    await settle();
+    let page = text(render(NetworkTab));
+    expect(page).toContain("OPENAI4S_EGRESS=allowlist openai4s serve");
+    expect(page).toContain("Copy start command");
+    teamUser.value = { username: "bob", role: "member" };
+    page = text(render(NetworkTab));
+    expect(page).not.toContain("openai4s serve");
+    expect(page).toContain("only an administrator");
   });
 });
