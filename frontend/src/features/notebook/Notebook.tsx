@@ -30,6 +30,7 @@ import {
   highlightTraceback,
   looksBinary,
   notebookExportLink,
+  notebookLanguages,
   renderTableInto,
   stripAnsi,
 } from "./chrome";
@@ -704,7 +705,7 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
         <span class="ld" />
         <span>{badgeText}</span>
       </div>
-      {currentId.value ? <ExportMount frameId={currentId.value} /> : null}
+      {currentId.value ? <ExportMount frameId={currentId.value} languages={notebookLanguages(kernels)} /> : null}
       {currentId.value ? (
         <button class={"kchip nb-exec-toggle" + (execOpen ? " on" : "")} onClick={toggleExecutedCodeLocal}>
           {t("nb.exec.toggle")}
@@ -714,14 +715,14 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
   );
 }
 
-function ExportMount({ frameId }: { frameId: string }) {
+function ExportMount({ frameId, languages }: { frameId: string; languages: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const host = ref.current;
     if (!host) return;
     host.replaceChildren();
-    host.appendChild(notebookExportLink(frameId));
-  }, [frameId]);
+    host.appendChild(notebookExportLink(frameId, languages));
+  }, [frameId, languages]);
   return <span ref={ref} />;
 }
 

@@ -205,7 +205,8 @@ export async function saveExport(
     const href = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = href;
-    link.download = filename;
+    // An empty name keeps the server's (Content-Disposition), as a plain link would.
+    if (filename) link.download = filename;
     document.body.appendChild(link);
     link.click();
     link.remove();
