@@ -4,7 +4,7 @@ import { getTheme, setTheme, type ThemeMode } from "../../features/theme/theme";
 import { getLayout, setLayout, type LayoutName } from "../../features/customize/layout";
 import { markCustomizeLoaded } from "../../features/customize/load";
 import { NotebookReplSetting } from "./NotebookReplSetting";
-import { CustRow, Hdr, Seg, Toggle } from "./ui";
+import { CustRow, Hdr, Seg, Subhead, Toggle } from "./ui";
 import { labCopy, labTabHidden, setLabTabHidden } from "../../features/lab";
 
 /**
@@ -31,8 +31,16 @@ export function LabTabSetting() {
  * the legacy dictionary and are byte-checked.
  */
 const COPY = {
-  en: { langSystem: "System" },
-  zh: { langSystem: "跟随系统" },
+  en: {
+    langSystem: "System",
+    serverHead: "This server",
+    serverDesc: "Applies to every window and every user of this server, not only this browser.",
+  },
+  zh: {
+    langSystem: "跟随系统",
+    serverHead: "这台服务器",
+    serverDesc: "对这台服务器上的所有窗口和所有用户生效，不只是这个浏览器。",
+  },
 } as const;
 
 /**
@@ -102,7 +110,13 @@ export function GeneralTab() {
         />
       </CustRow>
       <LabTabSetting />
-      <NotebookReplSetting />
+      {/* SYNC-27: the switch below is the daemon's, under a page that says
+          "saved in this browser". */}
+      <div data-server-settings="">
+        <Subhead>{(LANG === "zh" ? COPY.zh : COPY.en).serverHead}</Subhead>
+        <div class="cust-sub">{(LANG === "zh" ? COPY.zh : COPY.en).serverDesc}</div>
+        <NotebookReplSetting />
+      </div>
     </div>
   );
 }

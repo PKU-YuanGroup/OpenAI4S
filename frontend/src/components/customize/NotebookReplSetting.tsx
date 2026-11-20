@@ -3,6 +3,7 @@ import { copyLookup } from "../../i18n/copy";
 import { api, apiErrorText } from "../../features/customize/api";
 import { hint } from "../../features/customize/host";
 import { notebookOnTurnDone } from "../../features/notebook";
+import { announceNotebookSwitch } from "../../features/customize/notebook-sync";
 import { useAlive } from "./use-timer-lease";
 import { useOptimisticToggle } from "./hooks";
 import { Toggle } from "./ui";
@@ -61,8 +62,10 @@ export function NotebookReplSetting() {
     {
       done: (on) => {
         hint(notebookReplCopy(on ? "turnedOn" : "turnedOff"));
-        // The open Notebook reads the switch from its kernel status.
+        // The open Notebook reads the switch from its kernel status; this
+        // browser's other windows are told at once (SYNC-27).
         notebookOnTurnDone();
+        announceNotebookSwitch();
       },
       failed: (error) => hint(notebookReplCopy("failed", apiErrorText(error)), true),
     },
