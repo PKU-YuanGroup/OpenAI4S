@@ -898,7 +898,7 @@ function ReplPanel() {
         <textarea
           class="nb-repl-input"
           ref={inputRef}
-          rows={7}
+          rows={3}
           spellcheck={false}
           placeholder={t("nb.repl.inputPlaceholder")}
           disabled={!sid || busy}
@@ -962,7 +962,12 @@ function ReplPanel() {
       if (box) box.value = "";
       history.current.reset();
     }
-    requestAnimationFrame(() => box && box.focus());
+    requestAnimationFrame(() => {
+      if (box) box.focus();
+      // The new cell is the last one: bring it up against the input.
+      const dockBody = document.getElementById("dock-notebook")?.parentElement;
+      if (ok && dockBody) dockBody.scrollTop = dockBody.scrollHeight;
+    });
   }
 }
 
@@ -1035,8 +1040,18 @@ export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
         <>
           <CellList entries={entries} />
           <OwnerChips />
-          {repl ? <ReplPanel /> : <StatusStrip />}
-          <NewCellsPill />
+          {repl ? (
+            // NB-3: the input used to be the last thing in a 35,000 px panel.
+            <div class="nb-foot">
+              <NewCellsPill />
+              <ReplPanel />
+            </div>
+          ) : (
+            <>
+              <StatusStrip />
+              <NewCellsPill />
+            </>
+          )}
         </>
       )}
     </>

@@ -56,6 +56,9 @@ const COPY: CopyTable = {
     "nb.cell.stateRevision": "状态 {0}",
     "nb.cell.stateRevisionTip": "会话状态的版本号。它通常等于单元编号；在分支或重放后，同一个单元可能对应另一个状态版本。",
     "nb.newCells": "有 {0} 个新单元 ↓",
+    "nb.variables.showCode": "显示模块、函数和类（{0}）",
+    "nb.variables.hideCode": "只显示数据变量",
+    "nb.variables.onlyCode": "还没有数据变量。",
     "nb.newCells.one": "有 1 个新单元 ↓",
   },
   en: {
@@ -110,6 +113,9 @@ const COPY: CopyTable = {
     "nb.cell.stateRevision": "state {0}",
     "nb.cell.stateRevisionTip": "The session state's version number. It usually equals the cell number; after a branch or a replay one cell can map to another state version.",
     "nb.newCells": "{0} new cells ↓",
+    "nb.variables.showCode": "Show modules, functions and classes ({0})",
+    "nb.variables.hideCode": "Data variables only",
+    "nb.variables.onlyCode": "No data variables yet.",
     "nb.newCells.one": "1 new cell ↓",
   },
 };
