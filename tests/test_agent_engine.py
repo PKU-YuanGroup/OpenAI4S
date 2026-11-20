@@ -573,6 +573,11 @@ def test_native_call_that_promises_a_cell_says_no_code_ran(content):
         "已用 Python 完成解析，现在把报告写入文件。",
         "运行完成后我会汇总结果。",
         "本次运行时间约 3 秒，接下来检索文献。",
+        # A later item of a stated plan is not a promise about this reply: the
+        # reviewed literature session opened with this and three searches.
+        "我来完成这个任务：先检索文献和结构，再下载结构做链统计、用 R 画图，"
+        "最后写中文综述。先并行检索文献数据库。",
+        "先把脚本写入文件，然后运行脚本检查输出。",
         # Neither is a step that names no code at all.
         "文件已导入。现在检查 Excel 的工作表结构和原始数据格式。",
         "检索 RNA 聚合酶相关文献，并用 RCSB 接口核实条目。",

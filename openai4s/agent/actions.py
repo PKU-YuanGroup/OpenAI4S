@@ -300,7 +300,13 @@ ANNOUNCED_CELL_NOTE = (
 # of them. A verb of running, using or writing next to Python, R, code, a
 # script or a cell is the promise; the same verb marked as finished (已运行,
 # 运行完毕, 运行结果) is a report of work that did run, and is left alone.
-_ZH_NOT_DONE = r"(?<!已)(?<!已经)(?<!曾)(?<!刚才)(?<!之前)(?<!上次)"
+# So is a later item of a stated plan ("先检索文献，再下载结构、用 R 画图，
+# 最后写综述"): that reply promises a search now, and telling it no code ran
+# pushes a model to run a cell before it has anything to run it on.
+_ZH_NOW = (
+    r"(?<!已)(?<!已经)(?<!曾)(?<!刚才)(?<!之前)(?<!上次)"
+    r"(?<!再)(?<!、)(?<!然后)(?<!最后)(?<!之后)(?<!随后)(?<!稍后)"
+)
 _ZH_CLAUSE = r"[^。；;，,\n]"
 _ANNOUNCED_CELL = re.compile(
     r"\b(?:python|code|foreground|r)\s+cell\b"
@@ -310,16 +316,16 @@ _ANNOUNCED_CELL = re.compile(
     r"move|moving|go|going)\b[^.\n]{0,60}\b(?:python|kernel|runtime)\b"
     r"|代码单元|python\s*单元|在内核|内核中|运行时(?!间)"
     # 运行 Python / 运行代码 / 运行检查脚本 / 执行 R 脚本
-    rf"|{_ZH_NOT_DONE}(?:运行|执行|跑)"
+    rf"|{_ZH_NOW}(?:运行|执行|跑)"
     r"(?![完了过毕后时]|结束|成功|失败|结果|出错|报错|环境)"
     rf"{_ZH_CLAUSE}{{0,12}}?(?:python|代码|脚本|程序|单元|r(?![a-z0-9_²-]))"
     # 把脚本跑一下
-    rf"|{_ZH_NOT_DONE}把{_ZH_CLAUSE}{{0,10}}?(?:代码|脚本|程序|单元)"
+    rf"|{_ZH_NOW}把{_ZH_CLAUSE}{{0,10}}?(?:代码|脚本|程序|单元)"
     rf"{_ZH_CLAUSE}{{0,6}}?(?:运行|执行|跑)"
     # 用 Python 读取… / 在 R 中…
-    rf"|{_ZH_NOT_DONE}(?:用|使用|在)\s*(?:python|r(?![a-z0-9_²-]))"
+    rf"|{_ZH_NOW}(?:用|使用|在)\s*(?:python|r(?![a-z0-9_²-]))"
     # 写一段代码检查…
-    rf"|{_ZH_NOT_DONE}(?:写|编写){_ZH_CLAUSE}{{0,8}}?(?:代码|单元)",
+    rf"|{_ZH_NOW}(?:写|编写){_ZH_CLAUSE}{{0,8}}?(?:代码|单元)",
     re.IGNORECASE,
 )
 
