@@ -615,53 +615,45 @@ export function stepBody(step: Step): HTMLElement {
         : arts.map((a) => a.filename)
     ).filter((fn) => !!fn && !shown.has(fn)) as unknown[];
     const env = inp.environment || "python";
-    const kvRow = (label: string, text: unknown): HTMLElement => {
-      const r = el("div", "s-kv");
-      r.appendChild(el("span", "s-k", label));
-      r.appendChild(el("div", "s-v", text == null ? "" : String(text)));
-      return r;
-    };
-    const kvNodeRow = (label: string, node: HTMLElement): HTMLElement => {
-      const r = el("div", "s-kv");
-      r.appendChild(el("span", "s-k", label));
-      const v = el("div", "s-v");
-      v.appendChild(node);
-      r.appendChild(v);
-      return r;
-    };
-    const fl = el("div", "s-files");
-    fl.appendChild(el("span", "s-brk", "["));
-    files.forEach((fn, i) => {
-      const meta = arts.find((a) => a.filename === fn);
-      const line = el("div", "s-frow");
-      const nm = el(
-        "span",
-        "s-fn" + (meta && meta.artifact_id ? " clk" : ""),
-        '"' + String(fn) + '"',
-      );
-      if (meta && meta.artifact_id) {
-        nm.title = t("step.artifact.openArtifact");
-        nm.onclick = () => openArt(meta);
-      }
-      line.appendChild(nm);
-      if (i < files.length - 1) line.appendChild(el("span", "s-comma", ","));
-      fl.appendChild(line);
-    });
-    fl.appendChild(el("span", "s-brk", "]"));
-    if (files.length) box.appendChild(kvNodeRow("files", fl));
-    box.appendChild(kvRow("environment", env));
+    // M-50: the files by name and size, each opening its viewer. The card
+    // used to read as a data dump -- `files ["a", "b"]`, `environment python`
+    // and the raw save receipt -- and the receipt named the file's absolute
+    // path on this computer.
+    const sizeOf = (meta: Record<string, unknown> | undefined): string =>
+      meta && typeof meta.size_bytes === "number" ? " · " + bytes(meta.size_bytes) : "";
+    if (files.length) {
+      const fl = el("div", "s-files");
+      files.forEach((fn) => {
+        const meta = arts.find((a) => a.filename === fn);
+        const line = el("div", "s-frow");
+        const nm = el("span", "s-fn" + (meta && meta.artifact_id ? " clk" : ""), String(fn));
+        if (meta && meta.artifact_id) {
+          nm.title = t("step.artifact.openArtifact");
+          nm.onclick = () => openArt(meta);
+        }
+        line.appendChild(nm);
+        const size = sizeOf(meta);
+        if (size) line.appendChild(el("span", "s-fsize", size));
+        fl.appendChild(line);
+      });
+      box.appendChild(fl);
+    }
     if (arts.length && (arts[0]?.artifact_id || arts[0]?.checksum)) {
+      // The receipt for whoever needs it, behind its own toggle; never the
+      // local storage path.
+      const receipt = arts.map((a) => {
+        const { storage_path: _local, ...rest } = a;
+        return rest;
+      });
       const wrap = el("div", "s-out");
-      const tgl = el("button", "s-out-tgl", t("step.artifact.showOutput"));
+      const tgl = el("button", "s-out-tgl", sendCopy("technicalDetails"));
       const json = el("div", "s-json");
-      json.textContent = JSON.stringify({ artifacts: arts }, null, 2);
+      json.textContent = JSON.stringify({ environment: env, artifacts: receipt }, null, 2);
       json.style.display = "none";
       tgl.onclick = () => {
         const show = json.style.display === "none";
         json.style.display = show ? "block" : "none";
-        tgl.textContent = show
-          ? t("step.artifact.hideOutput")
-          : t("step.artifact.showOutput");
+        tgl.textContent = sendCopy(show ? "hideTechnicalDetails" : "technicalDetails");
       };
       wrap.appendChild(tgl);
       wrap.appendChild(json);
@@ -684,6 +676,7 @@ export function stepBody(step: Step): HTMLElement {
         im.loading = "lazy";
         fig.appendChild(im);
         if (a.filename) fig.appendChild(el("figcaption", "s-fig-cap", String(a.filename)));
+        if (typeof a.size_bytes === "number") fig.title += " · " + bytes(a.size_bytes);
         fig.onclick = () => openArt(a);
         figs.appendChild(fig);
       });
@@ -711,6 +704,34 @@ function paintStepBody(handle: StepHandle): void {
   handle.bodyStale = false;
 }
 
+/**
+ * The step's one-line summary. A Saving step stored before its summary was
+ * (SYNC-14) gets the count the live card showed, from the files it saved.
+ */
+function stepSummary(step: Step): string {
+  if (step.summary != null) return String(step.summary);
+  const saved = rec(step.output).artifacts;
+  if (step.kind !== "artifact" || !Array.isArray(saved) || !saved.length) return "";
+  return saved.length + (saved.length === 1 ? " artifact" : " artifacts");
+}
+
+/**
+ * SCI-22: a delegation is titled by its task ("Sub-agent · GC content of
+ * ATGC…"). Two parallel sub-agents of one kind were both "Delegating to
+ * GENERAL", and only expanding them told them apart.
+ */
+function delegateTitle(step: Step): string {
+  const request = rec(step.input).request;
+  if (step.kind !== "delegate" || typeof request !== "string" || !request.trim()) return "";
+  const flat = request.replace(/\s+/g, " ").trim();
+  const end = flat.search(/[.!?。！？](?:\s|$)/);
+  return sendCopy("subagentTask", publicText(end > 0 ? flat.slice(0, end + 1) : flat, 80));
+}
+
+function stepLabel(step: Step): string {
+  return delegateTitle(step) || stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+}
+
 function stepOutcome(step: Step) {
   const status = step.status || "running";
   // Refused by a loaded Skill's network limit: not a crash, and not "0 results".
@@ -736,11 +757,11 @@ function paintStepWords(handle: StepHandle): void {
         : ""
       : stepNetworkMeta(step) ||
         (declined ? declinedMeta(declined) : "") ||
-        (step.summary != null ? stepSummaryText(String(step.summary)) : "") ||
+        (stepSummary(step) ? stepSummaryText(stepSummary(step)) : "") ||
         (step.output && rec(step.output).error ? t("step.status.failed") : "");
   const label = card.querySelector(".s-lbl");
   // A loaded Skill's network limit: the server words these in English.
-  if (label) label.textContent = stepNetworkLabel(step) || stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+  if (label) label.textContent = stepNetworkLabel(step) || stepLabel(step);
 }
 
 /** Every step card on screen, in the language just applied. */
@@ -759,9 +780,13 @@ export function relabelStepCards(): void {
 export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
   const { card, ic, step } = handle;
   const { status, blocked, declined } = stepOutcome(step);
+  // SCI-22: a sub-agent's own failed attempt (a probe of a path that is not
+  // there) is amber, not the red of a failed turn: the sub-agent carried on,
+  // and its delegation card says how it ended.
+  const childSlip = status === "error" && !blocked && !declined && card.classList.contains("step-child");
   card.classList.toggle("running", status === "running");
-  card.classList.toggle("err", status === "error" && !blocked && !declined);
-  card.classList.toggle("warn", status === "warning" || blocked);
+  card.classList.toggle("err", status === "error" && !blocked && !declined && !childSlip);
+  card.classList.toggle("warn", status === "warning" || blocked || childSlip);
   card.classList.toggle("declined", !!declined);
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
@@ -774,7 +799,9 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
             ? "stop"
             : "lock"
           : status === "error"
-            ? "x"
+            ? childSlip
+              ? "alert-triangle"
+              : "x"
             : status === "warning"
               ? "alert-triangle"
               : stepIcon(step.kind),
@@ -784,7 +811,9 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
   // I18N-1: the host words titles in English; an update can retitle a card.
   paintStepWords(handle);
   card.classList.toggle("s-net-limited", marksNetworkLimit(step));
-  if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") {
+  // A Saving step stays collapsed (M-50): its title and "N artifacts" say what
+  // happened; the files, sizes and figures are one click away.
+  if (step.kind === "plan" && status !== "running") {
     card.classList.add("open");
   }
   if (step.kind === "review") {
@@ -820,13 +849,10 @@ export function buildStepCard(step: Step, paint: StepPaint = {}): StepHandle {
   const ic = el("span", "s-ic");
   h.appendChild(ic);
   if (hasDlg && Object.keys(dlg).length) {
-    h.appendChild(
-      el(
-        "span",
-        "s-child-tag",
-        publicText(dlg.child_name || shortRuntime(dlg.delegation_child_id), 60),
-      ),
-    );
+    // Which sub-agent: two of one kind ran side by side under one name.
+    const id = dlg.delegation_child_id ? shortRuntime(dlg.delegation_child_id) : "";
+    const name = dlg.child_name ? publicText(dlg.child_name, 60) : "";
+    h.appendChild(el("span", "s-child-tag", name && id ? name + " · " + id : name || id));
   }
   // `applyStepState` below writes its words (`paintStepWords`).
   h.appendChild(el("span", "s-lbl", ""));

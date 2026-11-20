@@ -131,7 +131,8 @@ def test_web_event_sink_streams_visible_prose_records_usage_and_visible_block():
     sink.emit(ReplyReceived(reply, turn=0))
 
     assert [event["chunk"] for event in sent if event["type"] == "text_chunk"] == [
-        "Visible.\n"
+        "Visible.\n",
+        "\n",
     ]
     drafts = [event for event in sent if event["type"] == "notebook_cell_draft"]
     assert drafts[-1]["source"] == "print('hidden')\n"
@@ -162,7 +163,7 @@ def test_web_event_sink_falls_back_when_provider_emits_no_deltas():
             "type": "text_chunk",
             "frame_id": "frame-1",
             "block_type": "text",
-            "chunk": "Blocking reply.\n",
+            "chunk": "Blocking reply.\n\n",
         }
     ]
     assert [block["text"] for block in visible] == ["Blocking reply."]
@@ -299,7 +300,7 @@ def test_web_event_sink_does_not_duplicate_real_prose_at_action_boundary():
     sink.emit(ReplyReceived(ModelReply(content="I will compute it."), turn=0))
     sink.emit(ActionRouted(action, turn=0))
 
-    assert [event["chunk"] for event in sent] == ["I will compute it.\n"]
+    assert [event["chunk"] for event in sent] == ["I will compute it.\n\n"]
     assert [block["text"] for block in visible] == ["I will compute it."]
 
 
@@ -322,9 +323,47 @@ def test_web_event_sink_adds_real_post_cell_status_after_intent_prose():
     assert [block["text"] for block in visible][0] == "I will compute it."
     assert "```text\n42\n```" in visible[-1]["text"]
     assert [event["chunk"] for event in sent if event["type"] == "text_chunk"] == [
-        "I will compute it.\n",
-        "The cell finished. Output:\n```text\n42\n```\n",
+        "I will compute it.\n\n",
+        "The cell finished. Output:\n```text\n42\n```\n\n",
     ]
+
+
+def test_each_stored_row_is_its_own_paragraph_live():
+    """SYNC-13: the client appends text chunks to one markdown block, and a
+    reply's prose often ends without a newline, so live showed "...in a Python
+    cell.Now I'll run the audit..." as one paragraph where a reload showed the
+    two stored rows as two."""
+    sent = []
+    visible = []
+    sink = _event_sink(send=sent, visible=visible)
+
+    sink.emit(TurnStarted(turn=0))
+    sink.emit(TextDelta("Now I'll run the structural audit in a Python cell.", turn=0))
+    sink.emit(
+        ReplyReceived(
+            ModelReply(content="Now I'll run the structural audit in a Python cell."),
+            turn=0,
+        )
+    )
+    sink.emit(TurnStarted(turn=1))
+    reply = "Now I'll run the audit as a Python cell.\n```python\nprint(1)\n```"
+    sink.emit(TextDelta(reply, turn=1))
+    sink.emit(ReplyReceived(ModelReply(content=reply), turn=1))
+    sink.emit(ActionRouted(CodeCell("python", "print(1)\n"), turn=1))
+    sink.emit(
+        OutcomeProduced(
+            ExecutionOutcome(observation="[Observation]\nstdout:\n1"), turn=1
+        )
+    )
+
+    live = "".join(e["chunk"] for e in sent if e["type"] == "text_chunk")
+    rows = [block["text"] for block in visible]
+    assert len(rows) == 3
+    # Every row the reload renders as a paragraph is one live: the text before
+    # the next row ends in a blank line.
+    for row in rows[:-1]:
+        assert row + "\n\n" in live, (row, live)
+    assert "cell.Now" not in live
 
 
 def test_web_event_sink_says_a_status_line_once_and_opens_only_once():

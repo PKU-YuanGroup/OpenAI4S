@@ -11107,7 +11107,7 @@ class SessionRunner:
             # user message is durable, while no later model action or Cell has
             # touched the workspace yet. Snapshot failure is separately audited
             # and never changes the successful message write above.
-            self._capture_cursor_checkpoint_best_effort(
+            branch_point = self._capture_cursor_checkpoint_best_effort(
                 root_frame_id,
                 source_kind="message",
                 source_id=stored_user_message["message_id"],
@@ -11191,6 +11191,14 @@ class SessionRunner:
                             )
                         }
                         if annos
+                        else {}
+                    ),
+                    # SYNC-5: the branch point a reload shows as "Branch from
+                    # this question"; the live bubble offers it as well.
+                    **(
+                        {"fork_checkpoint_id": branch_point["checkpoint_id"]}
+                        if isinstance(branch_point, Mapping)
+                        and isinstance(branch_point.get("checkpoint_id"), str)
                         else {}
                     ),
                 }
@@ -13283,7 +13291,9 @@ class SessionRunner:
                 input=step_input,
                 status="done",
             )
-            self.store.update_step(sid, output=step_output)
+            # SYNC-14: the summary the live card shows ("2 artifacts") is
+            # stored too, or a reload drew the same card without it.
+            self.store.update_step(sid, output=step_output, summary=summary)
         except Exception:  # noqa: BLE001 — telemetry must never break a turn
             pass
         # Emit begin+end back-to-back: the step is already complete, but sending
@@ -18908,7 +18918,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "POST":
                 fid = m.group(1)
                 b = self._body()
-                store.set_feedback(fid, str(b.get("key") or "0"), b.get("rating"))
+                # M-72: a 👎 may say why; kept with the rating, on this computer.
+                reason = b.get("reason")
+                store.set_feedback(
+                    fid,
+                    str(b.get("key") or "0"),
+                    b.get("rating"),
+                    reason.strip()[:2000] if isinstance(reason, str) else None,
+                )
                 self._json({"ok": True})
                 return
             m = re.fullmatch(r"/frames/([^/]+)/feedback", sub)
@@ -23000,6 +23017,10 @@ ax.set_xlabel('residue position')
 ax.set_ylabel('mean hydropathy')
 ax.legend(loc='upper right', fontsize=8)
 plt.tight_layout()
+# Saved under a name that says what it is (SCI-02: the summary called it the
+# hydropathy figure while the file was the auto-captured figure_cell3_1.png).
+fig.savefig('hydropathy_profile.png', dpi=150)
+plt.close(fig)
 print('rendered hydropathy profile for %s (%d residues) via %s'
       % (ref['accession'], len(_seq), api_source))
 """

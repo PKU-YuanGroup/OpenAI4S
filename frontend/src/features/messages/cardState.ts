@@ -100,10 +100,13 @@ function settle(card: HTMLElement, state: string, icon: string): void {
 function paintElapsed(card: HTMLElement, now: number = Date.now()): void {
   const started = Number(card.dataset.startedAt || 0);
   if (!started) return;
+  paintDuration(card, Math.max(0, now - started));
+}
+
+function paintDuration(card: HTMLElement, ms: number): void {
   const head = card.querySelector(".a-head") as HTMLElement | null;
   if (!head) return;
   let label = head.querySelector(".a-time") as HTMLElement | null;
-  const ms = Math.max(0, now - started);
   if (ms < 2000) return;
   if (!label) {
     label = document.createElement("span");
@@ -212,15 +215,44 @@ export function settleLiveCellCard(event: WsMessage | null | undefined): void {
     (index && running.find((c) => !c.dataset.cellId && c.dataset.cellIndex === index)) ||
     null;
   if (!card) return;
-  const status = String(event.status || (event.error ? "error" : "ok"));
+  applyCellOutcome(card, String(event.status || (event.error ? "error" : "ok")), event.error);
+}
+
+function applyCellOutcome(card: HTMLElement, status: string, error: unknown): void {
   // A cell that raised because its Host call was refused, or cancelled by a
   // Stop while it waited for approval, did not fail.
-  const declined = status === "error" ? declinedCell(event.error) : null;
+  const declined = status === "error" ? declinedCell(error) : null;
   if (declined && declined.kind === "stopped") markCardStopped(card);
   else if (declined) markCardDeclined(card, declined);
   else if (status === "error") markCardFailed(card);
   else if (status === "interrupted") markCardStopped(card);
   else if (status === "ok") markCardSucceeded(card);
+}
+
+/**
+ * A reopened Cell's card (`cellCard.ts`): the identity, outcome and duration
+ * its execution-log record names, painted as the live card ended up -- the
+ * same glyph, "Failed · N output lines" meta and "Analysis · cell N" title.
+ */
+export function settleStoredCellCard(
+  card: HTMLElement,
+  cell: {
+    producing_cell_id?: unknown;
+    cell_index?: unknown;
+    status?: unknown;
+    error?: unknown;
+    started_at?: unknown;
+    finished_at?: unknown;
+  },
+): void {
+  if (typeof cell.producing_cell_id === "string") card.dataset.cellId = cell.producing_cell_id.slice(0, 128);
+  if (cell.cell_index != null) card.dataset.cellIndex = String(cell.cell_index).slice(0, 32);
+  const started = Number(cell.started_at) || 0;
+  const finished = Number(cell.finished_at) || 0;
+  if (started && finished >= started) paintDuration(card, finished - started);
+  applyCellOutcome(card, String(cell.status || (cell.error ? "error" : "ok")), cell.error);
+  // A record whose outcome none of the above names claims nothing.
+  if (!cardSettled(card)) markCardEnded(card);
 }
 
 /** Terminal fallback: no card on screen outlives its turn as "running". */

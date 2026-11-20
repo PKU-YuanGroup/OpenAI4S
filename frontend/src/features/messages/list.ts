@@ -44,6 +44,7 @@ import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { planModeRequestText, planSeed, planSeedMarker } from "./planPrompt";
 import { cancelledIdentity, stoppedMarker } from "./stopped";
+import { cellCardOnScreen, chatCells, renderStoredCell, type StoredCell } from "./cellCard";
 import { dropEmptyProse, openTurnGroup, placeCardInTurn, turnTextKey, type TurnGroup } from "./turnGroup";
 
 export const INITIAL_RENDER_BATCH = 40;
@@ -51,7 +52,7 @@ export const INITIAL_RENDER_BATCH = 40;
 export type HistoryItem = {
   t: number;
   seq: number;
-  kind: "msg" | "step" | "perm";
+  kind: "msg" | "step" | "perm" | "cell";
   v: unknown;
 };
 
@@ -137,22 +138,53 @@ function feedbackBag(): Record<string, unknown> {
   return next;
 }
 
-function sendFeedback(key: string, rating: string | null): void {
+/**
+ * Store a rating (and a 👎's optional reason) with the session. It is kept in
+ * this daemon's database and nowhere else (M-72): the line says so instead of
+ * a bare "Recorded".
+ */
+function sendFeedback(key: string, rating: string | null, reason?: string): void {
   if (!currentId.value) return;
   const bag = feedbackBag();
   if (rating) bag[key] = rating;
   else delete bag[key];
   api("/frames/" + currentId.value + "/feedback", {
     method: "POST",
-    body: JSON.stringify({ key, rating }),
+    body: JSON.stringify(reason ? { key, rating, reason } : { key, rating }),
   }).catch(() => {});
   hint(
-    rating === "up"
-      ? t("toast.feedbackUp")
-      : rating === "down"
-        ? t("toast.feedbackDown")
-        : t("toast.feedbackCancelled"),
+    historyT(
+      reason
+        ? "history.feedback.reasonSaved"
+        : rating === "up"
+          ? "history.feedback.up"
+          : rating === "down"
+            ? "history.feedback.down"
+            : "history.feedback.cleared",
+    ),
   );
+}
+
+/** After a 👎: what went wrong, if the user wants to say (M-72). */
+function feedbackReasonBox(key: string, done: () => void): HTMLElement {
+  const box = el("div", "msg-feedback");
+  const label = el("label", "mf-label", historyT("history.feedback.reasonLabel"));
+  const area = el("textarea", "mf-reason") as HTMLTextAreaElement;
+  area.rows = 2;
+  area.maxLength = 2000;
+  area.placeholder = historyT("history.feedback.reasonPlaceholder");
+  label.appendChild(area);
+  box.appendChild(label);
+  const save = el("button", "outline-btn", historyT("history.feedback.reasonSave")) as HTMLButtonElement;
+  save.type = "button";
+  save.onclick = () => {
+    const reason = area.value.trim();
+    if (reason) sendFeedback(key, "down", reason);
+    done();
+  };
+  box.appendChild(save);
+  box.appendChild(el("div", "mf-note", historyT("history.feedback.where")));
+  return box;
 }
 
 /**
@@ -190,33 +222,45 @@ export function addMsgActions(wrap: HTMLElement, text: string): void {
   (tdn as HTMLButtonElement).type = "button";
   tdn.title = t("msgAction.thumbsDown");
   paintIcon(tdn, "thumbs-down");
+  // SYNC-26: an icon button is named, and a rating says whether it is on.
+  copy.setAttribute("aria-label", copy.title);
+  tup.setAttribute("aria-label", tup.title);
+  tdn.setAttribute("aria-label", tdn.title);
+  const pressed = (): void => {
+    tup.setAttribute("aria-pressed", String(tup.classList.contains("on")));
+    tdn.setAttribute("aria-pressed", String(tdn.classList.contains("on")));
+  };
+  pressed();
+  let reasonBox: HTMLElement | null = null;
+  const closeReason = (): void => {
+    reasonBox?.remove();
+    reasonBox = null;
+  };
   tup.onclick = () => {
     const on = !tup.classList.contains("on");
     tup.classList.toggle("on", on);
     tdn.classList.remove("on");
+    pressed();
+    closeReason();
     sendFeedback(key, on ? "up" : null);
   };
   tdn.onclick = () => {
     const on = !tdn.classList.contains("on");
     tdn.classList.toggle("on", on);
     tup.classList.remove("on");
+    pressed();
+    closeReason();
     sendFeedback(key, on ? "down" : null);
+    if (on) {
+      reasonBox = feedbackReasonBox(key, closeReason);
+      row.parentNode?.insertBefore(reasonBox, row.nextSibling ?? null);
+    }
   };
-  const edit = el("button");
-  (edit as HTMLButtonElement).type = "button";
-  edit.title = t("common.edit");
-  paintIcon(edit, "pencil");
-  edit.onclick = () => {
-    const c = document.getElementById("composer") as HTMLTextAreaElement | null;
-    if (!c) return;
-    c.value = text || "";
-    grow();
-    c.focus();
-  };
+  // M-71 / SYNC-26: no "Edit" on an answer. It poured the turn's raw Markdown
+  // into the composer, overwriting the draft, with nothing to say why.
   row.appendChild(copy);
   row.appendChild(tup);
   row.appendChild(tdn);
-  row.appendChild(edit);
   wrap.appendChild(row);
 }
 
@@ -609,9 +653,19 @@ export function historyTurns(): HistoryTurns {
     }) as unknown as ParentNode;
 
   const add = (item: HistoryItem, target: ParentNode): void => {
+    if (item.kind === "cell") {
+      renderStoredCell(item.v as StoredCell, cardSink(target, item.t));
+      return;
+    }
     if (item.kind !== "msg") {
       const render = item.kind === "perm" ? renderStoredPermissionImpl : renderStoredStepImpl;
       if (render) render(item.v, cardSink(target, item.t));
+      // As live: a step after a Cell's card makes that card its quieter head
+      // (`send/step.ts` `demoteToolCard`).
+      if (item.kind === "step" && group) {
+        const cells = group.wrap.querySelectorAll(":scope > .activity");
+        cells[cells.length - 1]?.classList.add("has-steps");
+      }
       return;
     }
     const m = item.v as StoredMessage;
@@ -677,7 +731,12 @@ function historyNode(node: Element): boolean {
 export function prependHistory(
   host: HTMLElement,
   older: StoredMessage[],
-  held: { messages: StoredMessage[]; steps: Array<Record<string, unknown>>; approvals?: Array<Record<string, unknown>> },
+  held: {
+    messages: StoredMessage[];
+    steps: Array<Record<string, unknown>>;
+    approvals?: Array<Record<string, unknown>>;
+    cells?: StoredCell[];
+  },
 ): void {
   const live = (liveStream.value as { wrap?: HTMLElement } | null)?.wrap || null;
   const kids = Array.from(host.children) as HTMLElement[];
@@ -692,13 +751,22 @@ export function prependHistory(
   const firstUser = held.messages.find((m) => m.role === "user" && messageText(m).trim());
   const inLive = (item: HistoryItem): boolean => {
     if (!live || item.kind === "msg") return false;
+    if (item.kind === "cell") {
+      const card = cellCardOnScreen((item.v as StoredCell).producing_cell_id);
+      return !!card && live.contains(card);
+    }
     const row = item.v as { step_id?: unknown; decision_id?: unknown };
     const registry = (item.kind === "perm" ? permCards.value : stepEls.value) as Record<string, { card?: Node } | undefined>;
     const card = registry[String(item.kind === "perm" ? row.decision_id : row.step_id)]?.card;
     return !!card && live.contains(card);
   };
   const items: HistoryItem[] = [];
-  for (const item of interleaveHistory([...older, ...held.messages], held.steps.filter(chatStep), held.approvals)) {
+  for (const item of interleaveHistory(
+    [...older, ...held.messages],
+    held.steps.filter(chatStep),
+    held.approvals,
+    held.cells,
+  )) {
     if (firstUser && item.v === firstUser) break;
     if (!inLive(item)) items.push(item);
   }
@@ -860,8 +928,14 @@ export function interleaveHistory(
   msgs: StoredMessage[],
   steps: Array<{ created_at?: number; seq?: number; [key: string]: unknown }>,
   approvals: Array<{ created_at?: unknown; [key: string]: unknown }> = [],
+  cells: StoredCell[] = [],
 ): HistoryItem[] {
   const items: HistoryItem[] = [];
+  // A Cell's card appears when it starts: before the steps it makes (a tie
+  // with one of them goes to the Cell) and after the prose that announced it.
+  for (const cell of chatCells(cells)) {
+    items.push({ t: Number(cell.started_at), seq: -1, kind: "cell", v: cell });
+  }
   for (const mm of msgs) {
     items.push({
       t: new Date(String(mm.created_at || "")).getTime() || 0,
@@ -918,10 +992,15 @@ export function showLiveUserMessage(
     !row.dataset.messageId &&
     ((requestId && row.dataset.requestId === requestId) ||
       (executionId && row.dataset.executionId === executionId)));
+  const fork = typeof m.fork_checkpoint_id === "string" ? m.fork_checkpoint_id : null;
   if (own) {
     if (id) own.dataset.messageId = id;
     // Its turn is running now; it is no longer waiting in the queue.
     own.classList.remove("queued");
+    // SYNC-5: the branch point a reload shows under the question, live too.
+    if (canForkFromMessage({ message_id: id, fork_checkpoint_id: fork }) && !own.querySelector(".msg-fork")) {
+      own.appendChild(forkMessageControl(id));
+    }
     return own;
   }
   (host as ParentNode).querySelector?.(":scope > .empty-session")?.remove();
@@ -931,6 +1010,7 @@ export function showLiveUserMessage(
       content: m.content,
       created_at: m.created_at,
       message_id: id || undefined,
+      fork_checkpoint_id: fork,
       artifact_refs: m.artifact_refs,
       annotations: m.annotations,
     },

@@ -125,6 +125,10 @@ def test_a_turn_broadcasts_the_user_message_it_stored(monkeypatch, tmp_path):
     assert event["frame_id"] == frame_id
     assert event["created_at"].endswith("Z")
     assert event["request_id"]
+    # SYNC-5: the branch point a reload offers ("Branch from this question")
+    # reaches the live bubble too.
+    assert stored[0]["fork_checkpoint_id"]
+    assert event["fork_checkpoint_id"] == stored[0]["fork_checkpoint_id"]
     # Before the answer starts: a tab that renders events in arrival order
     # shows the question above the narration.
     order = [e.get("type") for e in hub.events]
@@ -662,5 +666,28 @@ def test_a_notebook_cells_saving_step_is_marked_out_of_the_chat(monkeypatch, tmp
         assert [e["step_id"] for e in hub.events if e.get("type") == "step"] == [
             steps[1]["step_id"]
         ]
+    finally:
+        runner.close()
+
+
+def test_a_saving_step_keeps_its_count_on_reload(tmp_path):
+    """SYNC-14: the live card's "2 artifacts" came from the stream only; the
+    stored row had no summary, so a reload drew the same card without it."""
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub, start_idle_sweeper=False)
+    try:
+        fid = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+        state = runner._state(fid, "default")
+        runner._emit_artifact_step(
+            state,
+            "Load data",
+            [{"filename": "a.csv"}, {"filename": "b.md"}],
+            hub.emitter(fid),
+            "python",
+        )
+        (live,) = [e for e in hub.events if e.get("type") == "step_update"]
+        (stored,) = runner.store.list_steps(fid)
+        assert live["summary"] == "2 artifacts"
+        assert stored["summary"] == live["summary"]
     finally:
         runner.close()

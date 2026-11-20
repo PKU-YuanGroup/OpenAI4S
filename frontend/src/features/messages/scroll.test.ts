@@ -164,7 +164,7 @@ describe("following through content that grows by itself", () => {
       querySelector: (sel: string) => (sel === "#messages" ? grown : sel === "#jump-pill" ? pill : null),
     });
     bindMessageScroll(grown as unknown as HTMLElement);
-    expect(observed).toEqual([row]);
+    expect(observed).toEqual([grown, row]);
 
     // Following at the bottom; a figure in the row loads and it grows.
     grown.scrollHeight = 1600;
@@ -180,6 +180,36 @@ describe("following through content that grows by itself", () => {
     onResize!();
     flushScrollNow();
     expect(grown.scrollTop).toBe(300);
+  });
+
+  it("a transcript box that gets shorter keeps a following view at the bottom (M-12)", () => {
+    unbindMessageScroll();
+    const observed: unknown[] = [];
+    let onResize: (() => void) | null = null;
+    class FakeResizeObserver {
+      constructor(cb: () => void) {
+        onResize = cb;
+      }
+      observe(node: unknown) {
+        observed.push(node);
+      }
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const box = Object.assign(fakeHost(500), { children: [] });
+    vi.stubGlobal("document", {
+      querySelector: (sel: string) => (sel === "#messages" ? box : sel === "#jump-pill" ? pill : null),
+    });
+    bindMessageScroll(box as unknown as HTMLElement);
+    expect(observed).toContain(box);
+    // The composer grows by three lines: the view is 60px shorter, the
+    // content is not, and no scroll event fires.
+    box.clientHeight = 440;
+    onResize!();
+    flushScrollNow();
+    expect(box.scrollHeight - box.scrollTop - box.clientHeight).toBeLessThanOrEqual(0);
+    expect(pill.hidden).toBe(true);
   });
 });
 

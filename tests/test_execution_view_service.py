@@ -81,6 +81,9 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
             "files_read": ["input.csv"],
             "cpu_s": 1.25,
             "peak_rss_kb": 4096,
+            "created_at": 1_795_000_000_900,
+            "started_at": 1_795_000_000_100,
+            "finished_at": 1_795_000_000_800,
         },
         {"cell_index": 3, "kernel_id": None, "code": "pass"},
         {
@@ -128,6 +131,9 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
         "files_read",
         "cpu_seconds",
         "peak_rss_kb",
+        "title",
+        "started_at",
+        "finished_at",
         "attempt_group_id",
         "attempt",
         "revision_of",
@@ -164,6 +170,9 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
         "files_read": [],
         "cpu_seconds": None,
         "peak_rss_kb": None,
+        "title": "Running analysis · cell 2",
+        "started_at": None,
+        "finished_at": None,
         "attempt_group_id": "legacy-cell-2",
         "attempt": 1,
         "revision_of": None,
@@ -171,6 +180,9 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
         "attempt_count": 1,
     }
     assert second["source"] == "mean(x)"
+    # M-69: the conversation puts a reopened Cell's card where it ran.
+    assert second["started_at"] == 1_795_000_000_100
+    assert second["finished_at"] == 1_795_000_000_800
     assert second["cpu_seconds"] == 1.25
     assert second["peak_rss_kb"] == 4096
     assert interrupted["status"] == "interrupted"

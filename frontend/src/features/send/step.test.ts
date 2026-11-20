@@ -235,12 +235,12 @@ describe("a collapsed step card builds its body on first expand", () => {
 
   it("a card that opens itself builds at once, and the window contract stays eager", () => {
     const host = new El("div");
-    const artifact = renderStoredStep(
-      { step_id: "h-3", kind: "artifact", status: "done", output: { artifacts: [{ filename: "a.csv" }] } },
+    const plan = renderStoredStep(
+      { step_id: "h-3", kind: "plan", status: "done", output: { todos: [{ content: "Load", status: "completed" }] } },
       host as never,
     ) as unknown as El;
-    expect(artifact.classes.has("open")).toBe(true);
-    expect(artifact.querySelector(".s-body")!.children).toHaveLength(1);
+    expect(plan.classes.has("open")).toBe(true);
+    expect(plan.querySelector(".s-body")!.children).toHaveLength(1);
     // tests/browser_p1_controls.mjs reads a fresh buildStepCard's body unopened.
     const eager = buildStepCard({ step_id: "w-1", status: "done", ...CODE });
     expect((eager.body as unknown as El).children).toHaveLength(1);
@@ -331,7 +331,7 @@ describe("artifact step card", () => {
       },
     });
     const card = handle.card as unknown as El;
-    expect(card.querySelectorAll(".s-fn").map((node) => node.textContent)).toEqual(['"table.csv"']);
+    expect(card.querySelectorAll(".s-fn").map((node) => node.textContent)).toEqual(["table.csv"]);
     expect(card.querySelectorAll(".s-fig-cap").map((node) => node.textContent)).toEqual(["fit.png", "fit.svg"]);
     // Figures only: no empty "files [ ]" row.
     const figures = buildStepCard({
@@ -342,6 +342,104 @@ describe("artifact step card", () => {
     }).card as unknown as El;
     expect(figures.querySelectorAll(".s-files")).toEqual([]);
     expect(figures.querySelectorAll(".s-fig-cap")).toHaveLength(1);
+  });
+
+  it("a Saving step is collapsed, lists files by name and size, and never shows the local path (M-50)", () => {
+    const host = new El("div");
+    const step = {
+      step_id: "s-6",
+      kind: "artifact",
+      title: "Load data",
+      status: "done",
+      summary: "2 artifacts",
+      input: { files: ["summary.csv", "notes.md"], environment: "python" },
+      output: {
+        artifacts: [
+          { filename: "summary.csv", artifact_id: "a-1", version_id: "v-1", size_bytes: 96, storage_path: "/home/alice/work/summary.csv" },
+          { filename: "notes.md", artifact_id: "a-2", version_id: "v-2", size_bytes: 17, storage_path: "/home/alice/work/notes.md" },
+        ],
+      },
+    };
+    const card = renderStoredStep(step, host as never) as unknown as El;
+    expect(card.classes.has("open")).toBe(false);
+    open({ card: card as unknown as HTMLElement });
+    expect(card.querySelectorAll(".s-frow").map((row) => row.textContent)).toEqual(["summary.csv · 96 B", "notes.md · 17 B"]);
+    const details = card.querySelector(".s-out-tgl")!;
+    expect(details.textContent).toBe("Technical details");
+    expect(card.querySelector(".s-json")!.style.display).toBe("none");
+    expect(card.textContent).not.toContain("/home/alice");
+    expect(card.textContent).not.toContain("storage_path");
+    details.onclick!();
+    expect(details.textContent).toBe("Hide technical details");
+    expect(card.querySelector(".s-json")!.textContent).toContain('"version_id": "v-1"');
+  });
+
+  it("a Saving step stored without its summary still shows the count (SYNC-14)", async () => {
+    const stored = {
+      step_id: "s-5",
+      kind: "artifact",
+      title: "Load data",
+      status: "done",
+      summary: null as unknown as string,
+      output: { artifacts: [{ filename: "a.csv", artifact_id: "a-1" }, { filename: "b.md", artifact_id: "a-2" }] },
+    };
+    const meta = (step: typeof stored): string =>
+      ((buildStepCard(step).card as unknown as El).querySelector(".s-meta")?.textContent || "");
+    expect(meta(stored)).toBe("2 artifacts");
+    expect(meta({ ...stored, output: { artifacts: [stored.output.artifacts[0]!] } })).toBe("1 artifact");
+    await setLang("zh");
+    expect(meta(stored)).toBe("2 个产物");
+    await setLang("en");
+  });
+});
+
+describe("sub-agents side by side (SCI-22)", () => {
+  it("a delegation is titled by its task, a child step names its sub-agent, and a child's slip is amber", async () => {
+    const delegate = (id: string, request: string) =>
+      buildStepCard({
+        step_id: id,
+        kind: "delegate",
+        title: "Delegating to general",
+        input: { specialist: "general", request },
+        status: "running",
+      }).card as unknown as El;
+    const gc = delegate("d-1", "Compute the GC content of ATGCGC. Report it as a percentage.");
+    const mw = delegate("d-2", "Estimate the peptide MW of MKTAYIAK");
+    expect(gc.querySelector(".s-lbl")!.textContent).toBe("Sub-agent · Compute the GC content of ATGCGC.");
+    expect(mw.querySelector(".s-lbl")!.textContent).toBe("Sub-agent · Estimate the peptide MW of MKTAYIAK");
+
+    const child = (childId: string, status: string) =>
+      buildStepCard({
+        step_id: "c-" + childId + status,
+        kind: "read",
+        title: "Reading placeholder",
+        input: { path: "placeholder", delegation: { delegation_child_id: childId, child_name: "general", depth: 1 } },
+        status,
+        output: status === "error" ? { error: "FileNotFoundError: placeholder" } : {},
+      }).card as unknown as El;
+    const a = child("child-aaaa1111", "error");
+    const b = child("child-bbbb2222", "done");
+    const tagA = a.querySelector(".s-child-tag")!.textContent;
+    const tagB = b.querySelector(".s-child-tag")!.textContent;
+    expect(tagA).toContain("general");
+    expect(tagA).not.toBe(tagB);
+    // The sub-agent's probe failed and it carried on: amber, not a red failure.
+    expect(a.classes.has("err")).toBe(false);
+    expect(a.classes.has("warn")).toBe(true);
+    // A failure of the delegation itself stays red.
+    const failed = buildStepCard({
+      step_id: "d-3",
+      kind: "delegate",
+      title: "Delegating to general",
+      input: { specialist: "general", request: "x" },
+      status: "error",
+      output: { error: "RuntimeError: kernel died" },
+    }).card as unknown as El;
+    expect(failed.classes.has("err")).toBe(true);
+
+    await setLang("zh");
+    expect(delegate("d-4", "计算 ATGC 的 GC 含量。").querySelector(".s-lbl")!.textContent).toBe("子代理 · 计算 ATGC 的 GC 含量。");
+    await setLang("en");
   });
 });
 
