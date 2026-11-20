@@ -1,3 +1,4 @@
+import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { LANG, t } from "../../i18n";
 import { copyLookup } from "../../i18n/copy";
@@ -124,7 +125,7 @@ export function skillDetailFacts(
 }
 
 /** The expanded half of a Skill row: the full description, its needs, and SKILL.md. */
-function SkillDetail({ s, scope }: { s: Skill; scope: string }) {
+function SkillDetail({ s, scope, children }: { s: Skill; scope: string; children?: ComponentChildren }) {
   const [doc, setDoc] = useState<Skill | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const name = asString(s.name);
@@ -151,6 +152,7 @@ function SkillDetail({ s, scope }: { s: Skill; scope: string }) {
   return (
     <div class="skill-detail">
       <div class="skill-detail-desc">{facts.description}</div>
+      {children}
       <div class="skill-detail-fact">{facts.needs}</div>
       {facts.network ? <div class="skill-detail-fact">{facts.network}</div> : null}
       {!readable ? null : failed ? (
@@ -306,6 +308,28 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
   // SCI-06: the name opens the whole description, the needs and SKILL.md.
   const [open, setOpen] = useState(false);
   const toggleOpen = () => setOpen(!open);
+  // Why it cannot run here and what loading it does to the network: right
+  // under the description, open or not, never below a long SKILL.md.
+  const limits = (
+    <>
+      {note ? (
+        <div class="ds prof-warn skill-ready">
+          <span>{note.text}</span>
+          {note.compute ? (
+            <button type="button" class="outline-btn small skill-ready-go" onClick={() => custTab("compute")}>
+              {skillReadinessT("ready.openCompute")}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {network ? (
+        <details class="skill-net">
+          <summary>{network.summary}</summary>
+          <div class="ds">{network.detail}</div>
+        </details>
+      ) : null}
+    </>
+  );
   return (
     <div class={"cust-row" + (open ? " skill-open" : "")}>
       <div class="info">
@@ -324,28 +348,17 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
           <Pill>{t(`skill.scope.${scope}`)}</Pill>
         </div>
         {open ? (
-          <SkillDetail s={s} scope={scope} />
+          <SkillDetail s={s} scope={scope}>
+            {limits}
+          </SkillDetail>
         ) : (
-          <div class="ds skill-desc" onClick={toggleOpen}>
-            {asString(s.description)}
-          </div>
+          <>
+            <div class="ds skill-desc" onClick={toggleOpen}>
+              {asString(s.description)}
+            </div>
+            {limits}
+          </>
         )}
-        {note ? (
-          <div class="ds prof-warn skill-ready">
-            <span>{note.text}</span>
-            {note.compute ? (
-              <button type="button" class="outline-btn small skill-ready-go" onClick={() => custTab("compute")}>
-                {skillReadinessT("ready.openCompute")}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-        {network ? (
-          <details class="skill-net">
-            <summary>{network.summary}</summary>
-            <div class="ds">{network.detail}</div>
-          </details>
-        ) : null}
         <ActionStatus note={actionNote} />
       </div>
       <button
