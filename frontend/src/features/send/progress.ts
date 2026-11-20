@@ -11,7 +11,7 @@
  */
 
 import { effect, untracked } from "@preact/signals";
-import { LANG } from "../../i18n/runtime";
+import { LANG, onLanguageChange } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { actionTimeline } from "../../stores/timeline";
@@ -278,6 +278,12 @@ export function bindTurnProgress(onUsageClick?: () => void): void {
   effect(() => {
     void actionTimeline.value;
     untracked(() => followTimeline());
+  });
+  // SYNC-20: the chip and the clock are painted text, not data-i18n; a
+  // language switch says them again (no request: the totals have not moved).
+  onLanguageChange(() => {
+    paintUsageTitle();
+    paintTurnClock();
   });
 }
 

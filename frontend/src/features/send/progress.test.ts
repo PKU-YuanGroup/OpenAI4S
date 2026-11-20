@@ -219,6 +219,26 @@ describe("turn progress", () => {
     expect(usage.classList.contains("heavy")).toBe(false);
   });
 
+  it("says the chip again in the new language after a switch (SYNC-20)", async () => {
+    currentId.value = "f-l";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "f-l", input_tokens: 300, output_tokens: 60 }),
+      })),
+    );
+    const row = { turn_id: "turn-1", kind: "code", usage: { input_tokens: 300, output_tokens: 60 } };
+    actionTimeline.value = { root_frame_id: "f-l", has_earlier: false, groups: [{ turn_id: "turn-1", kind: "user" }, row] };
+    bindTurnProgress();
+    await refreshSessionUsage();
+    expect(usage.textContent).toContain("本轮");
+    await setLang("en");
+    expect(usage.textContent).toContain("this turn");
+    expect(usage.textContent).not.toContain("本轮");
+  });
+
   it("re-reads the totals for a timeline change only while a turn runs (M-18)", async () => {
     // An idle timeline change -- the session opened, the timeline searched,
     // folded or paged -- is not a model call: the browser gate holds those
