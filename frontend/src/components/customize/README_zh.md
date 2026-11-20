@@ -8,9 +8,9 @@ F-19 Customize 模态。九个 tab 组件、嵌套编辑层，以及 `vendors/` 
 
 | 文件 | 职责 |
 | --- | --- |
-| [`ComputeTab.tsx`](ComputeTab.tsx) | Compute、远程 GPU、jobs。显示当前会话（没有会话时为默认）的 Python 和 R 实际运行在哪里：环境名、来源（内置 / 托管 / 本机）和版本，以及 R 的关键包能否加载，数据来自环境列表接口的 `runtimes`。常用包一行列出已安装的版本和缺少的包。安装结果留在页面上：装上的版本、装到哪个环境、运行中的内核需要做什么。Job 轮询只有一条链，1500ms 绑在租约上；新的读取取代旧的。就绪卡片用 onboarding 的 `EnvironmentCard`；状态来自 send 的 `refreshEnvironmentStatus`。 |
+| [`ComputeTab.tsx`](ComputeTab.tsx) | Compute、远程 GPU、jobs。显示当前会话（没有会话时为默认）的 Python 和 R 实际运行在哪里：环境名、来源（内置 / 托管 / 本机）和版本，以及 R 的关键包能否加载，数据来自环境列表接口的 `runtimes`。常用包一行列出已安装的版本和缺少的包。安装结果留在页面上：装上的版本、装到哪个环境、运行中的内核需要做什么。添加或移除远程主机、提交或取消作业的结果显示在各自的表单下，不再打到弹窗后面的状态行（SCI-04）。Job 轮询只有一条链，1500ms 绑在租约上；新的读取取代旧的。就绪卡片用 onboarding 的 `EnvironmentCard`；状态来自 send 的 `refreshEnvironmentStatus`。 |
 | [`ComputeTab.test.tsx`](ComputeTab.test.tsx) | Python 和 R 两行给出环境名、来源和版本，并说明哪些 R 包可用；常用包一行带版本；安装结果（含版本）和安装失败的原因留在页面上。提交和取消任务都会重读任务列表，但不会再开第二条轮询链；晚到的旧读取结果被丢弃。 |
-| [`ConnectorsTab.tsx`](ConnectorsTab.tsx) | Connector 列表；DataPro 卡隔离在 `vendors/`。 |
+| [`ConnectorsTab.tsx`](ConnectorsTab.tsx) | Connector 列表；DataPro 卡隔离在 `vendors/`。测试连接器、删除、从目录添加与添加自定义服务器的结果都显示在控件旁（`ActionStatus`）；两个输入框都填好之前，自定义「添加」保持禁用（SCI-04）。 |
 | [`Customize.tsx`](Customize.tsx) | `#cust` 外壳、tablist、Esc / 背景关闭。 |
 | [`Customize.test.tsx`](Customize.test.tsx) | 在输入框里拖选文字、到 Customize 或嵌套编辑器的遮罩上才松开，弹窗保持打开；在遮罩上按下仍会关闭。加载状态变化或嵌套编辑器开关不会让模态重新渲染；Skills 与 Memory tab 只在项目变化时重新渲染，不随每次会话列表更新重新渲染。 |
 | [`NotebookReplSetting.tsx`](NotebookReplSetting.tsx) | 「通用」页上的「Notebook 手动单元」开关（`GET`/`PUT /notebook/settings`）：默认关闭；`OPENAI4S_NOTEBOOK_REPL` 强制开启时、或团队模式下非管理员时锁定；改动后让已打开的 Notebook 重新读取。 |
@@ -36,12 +36,12 @@ F-19 Customize 模态。九个 tab 组件、嵌套编辑层，以及 `vendors/` 
 | [`SkillsTab.test.tsx`](SkillsTab.test.tsx) | 技能页搜索能按名称、说明里的词、中文关键词或声明的域名找到技能，能找到合集成员，未命中时为空；只有 `host_only` 技能带联网限制标记。 |
 | [`SpecialistsTab.tsx`](SpecialistsTab.tsx) | 自定义 specialist 与内置角色。 |
 | [`switches.test.tsx`](switches.test.tsx) | Notebook 手动单元开关写入 `repl_enabled`，被环境变量强制开启或对团队成员时锁定。网络出站与记忆开关在第一次读取落地前保持禁用；写入进行中再次点击不生效；写入失败时回到服务端确认过的值。Skill、specialist 与连接器行上的开关显示之后读取带来的值，服务端已接受的写入不会被更早的读取覆盖。 |
-| [`customize.css`](customize.css) | 车道本地模态样式，直到 F-21 移植 `style.css`。嵌套编辑框滚动时保存按钮固定在底部可见，以及「另存为技能」的步骤列表（M-84）。 |
+| [`customize.css`](customize.css) | 车道本地模态样式，直到 F-21 移植 `style.css`。嵌套编辑框滚动时保存按钮固定在底部可见，以及「另存为技能」的步骤列表（M-84）。`.cust-action-status`：操作结果显示在控件旁（SCI-04）。 |
 | [`icons.tsx`](icons.tsx) | `Icon`：只从共享的 `features/icons/paths.ts` 表取图形，自己不再保留任何图形。 |
 | [`icons.test.tsx`](icons.test.tsx) | 模态用到的每个图标名都能画出；共享表里有的名字取自共享表；未知名字不画任何东西。 |
 | [`hooks.ts`](hooks.ts) | `useTabRead`：tab 的读取，挂载时读一次，写入后经 `refreshCustTab` 原地重读；只有最新一次读取生效，第一次读取结算面板的加载状态。`useOptimistic` / `useOptimisticToggle`：绑定某项服务端设置的控件，在 tab 第一次读取落地前（`null`）保持禁用；点击后立即变化，同一时间只允许一次写入，写入失败时回到服务端确认过的值。 |
 | [`index.ts`](index.ts) | 再导出 `Customize`。 |
-| [`ui.tsx`](ui.tsx) | 共用的 `Hdr` / `CustRow` / `Seg` / `Toggle` / `Pill`。 |
+| [`ui.tsx`](ui.tsx) | 共用的 `Hdr` / `CustRow` / `Seg` / `Toggle` / `Pill`，以及 `ActionStatus`：始终挂载的 live region，把操作结果显示在控件旁，而不是弹窗后面的会话状态行（SCI-04）。 |
 | [`use-timer-lease.ts`](use-timer-lease.ts) | 绑 unmount 的 `useTimerLease` / `useAlive`。 |
 | [`ExperimentsTab.tsx`](ExperimentsTab.tsx) | General 上的实验性语义判断区块：披露确认、能力开关、TypeSafe key、连接测试。 |
 | [`ExperimentsTab.test.tsx`](ExperimentsTab.test.tsx) | 未确认披露不能打开；`env_off` 置灰开关；key 不回显；连接测试覆盖 ok / unavailable / disabled。 |

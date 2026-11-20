@@ -181,6 +181,25 @@
   font-size: 14px;
   color: var(--text-400);
 }
+/* SCI-04: an action's outcome, under the control that started it. */
+#cust .cust-action-status {
+  flex-basis: 100%;
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+/* Empty but still rendered: a live region that appears with its text is not
+   reliably announced. */
+#cust .cust-action-status:empty {
+  margin-top: 0;
+}
+#cust .cust-action-status.ok {
+  color: var(--success-text);
+}
+#cust .cust-action-status.err {
+  color: var(--danger);
+}
 #cust .skill-lbl {
   margin-top: 10px;
   font-size: 14px;

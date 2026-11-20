@@ -116,6 +116,27 @@ export function Note({ children }: { children: ComponentChildren }) {
   return <div class="cust-note">{children}</div>;
 }
 
+/** What an action in a Settings tab answered, said beside its control. */
+export type ActionNote = { text: string; err?: boolean } | null;
+
+/**
+ * SCI-04: an action's outcome beside the control that started it. Settings
+ * used to report installs, connector tests and saves on the session status
+ * line, under the dialog's scrim. The live region is always mounted, so a
+ * screen reader announces the first message too.
+ */
+export function ActionStatus({ note }: { note: ActionNote }) {
+  return (
+    <div
+      class={"cust-action-status" + (note ? (note.err ? " err" : " ok") : "")}
+      role="status"
+      aria-live="polite"
+    >
+      {note ? note.text : ""}
+    </div>
+  );
+}
+
 export function Subhead({ children }: { children: ComponentChildren }) {
   return <div class="cust-subhead">{children}</div>;
 }

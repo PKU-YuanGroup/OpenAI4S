@@ -10,7 +10,6 @@ import {
   asString,
   confirmAction,
   dropEnvSnapshots,
-  hint,
 } from "../../features/customize/host";
 import { currentId } from "../../stores/session";
 import { standardProfileReadiness } from "../../stores/customize";
@@ -30,7 +29,7 @@ import { useAlive, useTimerLease } from "./use-timer-lease";
 import { useTabRead } from "./hooks";
 import { markCustomizeLoaded } from "../../features/customize/load";
 import { EnvironmentCard } from "../onboarding/ReadinessPanel";
-import { CustRow, Hdr, InfoRow } from "./ui";
+import { ActionStatus, CustRow, Hdr, InfoRow, type ActionNote } from "./ui";
 
 /** Feature-local: the generated `i18n/en.ts` / `zh.ts` are byte-checked extracts. */
 const computeCopy = copyLookup({
@@ -64,6 +63,10 @@ export function ComputeTab() {
   const [jobCmd, setJobCmd] = useState("");
   const [jobBusy, setJobBusy] = useState(false);
   const [alias, setAlias] = useState("");
+  // SCI-04: what adding/removing a host and submitting/cancelling a job
+  // answered, beside those controls rather than on the session status line.
+  const [remoteNote, setRemoteNote] = useState<ActionNote>(null);
+  const [jobNote, setJobNote] = useState<ActionNote>(null);
   // Team mode: the SSH host list, remote registration, package installs and
   // daemon jobs are the operator's (403 `admin_only`). A member's tab is the
   // local facts, and it does not ask for what it will be refused.
@@ -259,9 +262,10 @@ export function ComputeTab() {
                     await api("/compute/remote/" + encodeURIComponent(asString(h.alias)), {
                       method: "DELETE",
                     });
+                    setRemoteNote(null);
                     refreshCustTab("compute");
                   } catch (e) {
-                    hint((e as Error).message, true);
+                    setRemoteNote({ text: apiErrorText(e), err: true });
                   }
                 }}
               >
@@ -297,21 +301,23 @@ export function ComputeTab() {
                         method: "POST",
                         body: JSON.stringify({ alias }),
                       });
-                      hint(
-                        r.reachable
+                      setRemoteNote({
+                        text: r.reachable
                           ? t("cust.remote.added", alias, r.gpus || "")
                           : t("cust.remote.addedUnreachable", alias),
-                      );
+                        err: !r.reachable,
+                      });
                       setAlias("");
                       refreshCustTab("compute");
                     } catch (e) {
-                      hint((e as Error).message, true);
+                      setRemoteNote({ text: apiErrorText(e), err: true });
                     }
                   }}
                 >
                   {t("common.add")}
                 </button>
               </div>
+              <ActionStatus note={remoteNote} />
             </div>
           </div>
         </>
@@ -424,7 +430,6 @@ export function ComputeTab() {
                     fallbackError: t("toast.compute.installSeeLogs"),
                   });
                   if (alive()) setInstalled(outcome);
-                  hint(outcome.lines[0]!, !outcome.ok);
                   if (r.ok) {
                     dropEnvSnapshots();
                     setPkg("");
@@ -433,7 +438,6 @@ export function ComputeTab() {
                 } catch (e) {
                   const message = runtimeT("rt.install.failed", apiErrorText(e));
                   if (alive()) setInstalled({ ok: false, lines: [message] });
-                  hint(message, true);
                 }
                 setInstalling(false);
               }}
@@ -477,6 +481,7 @@ export function ComputeTab() {
                 const command = jobCmd.trim();
                 if (!command) return;
                 setJobBusy(true);
+                setJobNote(null);
                 try {
                   await api("/compute/jobs", {
                     method: "POST",
@@ -485,7 +490,7 @@ export function ComputeTab() {
                   setJobCmd("");
                   await loadJobs();
                 } catch (e) {
-                  hint(t("toast.submitFailed", apiErrorText(e)), true);
+                  setJobNote({ text: t("toast.submitFailed", apiErrorText(e)), err: true });
                 }
                 setJobBusy(false);
               }}
@@ -493,6 +498,7 @@ export function ComputeTab() {
               {t("cust.jobs.runBtn")}
             </button>
           </div>
+          <ActionStatus note={jobNote} />
         </div>
       </div>
       <div class="job-list">
@@ -533,10 +539,11 @@ export function ComputeTab() {
                     // A failed cancel is a non-2xx now (404 gone, 500 still
                     // running): say so, and re-read either way so the row
                     // shows the job's real state rather than a stale Cancel.
+                    setJobNote(null);
                     try {
                       await api(`/compute/jobs/${j.id}/cancel`, { method: "POST" });
                     } catch (e) {
-                      hint(t("toast.failed", apiErrorText(e)), true);
+                      setJobNote({ text: t("toast.failed", apiErrorText(e)), err: true });
                     }
                     await loadJobs();
                   }}

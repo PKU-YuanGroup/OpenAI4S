@@ -11,10 +11,10 @@ import {
 import {
   asString,
   dropSkillsCatalog,
-  hint,
   openViewer,
 } from "../../../features/customize/host";
 import { useOptimisticToggle } from "../hooks";
+import { ActionStatus, type ActionNote } from "../ui";
 import { useVendorKey } from "./use-vendor-key";
 
 const connectorPath = `/connectors/${encodeURIComponent(DATAPRO_CONNECTOR_ID)}/enabled`;
@@ -28,12 +28,15 @@ export function DataProCard({
   configError: unknown;
 }) {
   const vendorKey = useVendorKey("cust.datapro", "/datapro/config", config, configError);
+  // SCI-04: the connector switch and the Skill button answer in the card.
+  const [cardNote, setCardNote] = useState<ActionNote>(null);
   const connector = useOptimisticToggle(
     config ? !!config.connector_enabled : null,
     (on) => api(connectorPath, { method: "PUT", body: JSON.stringify({ enabled: on }) }),
     {
-      done: (on) => hint(on ? t("cust.datapro.connectorOn") : t("cust.datapro.connectorOff")),
-      failed: (error) => hint(t("toast.failed", apiErrorText(error)), true),
+      done: (on) =>
+        setCardNote({ text: on ? t("cust.datapro.connectorOn") : t("cust.datapro.connectorOff") }),
+      failed: (error) => setCardNote({ text: t("toast.failed", apiErrorText(error)), err: true }),
     },
   );
   // The config read the skill was enabled for; a newer read speaks for itself.
@@ -52,7 +55,8 @@ export function DataProCard({
   const runSearch = async () => {
     const text = query.trim();
     if (!text) {
-      hint(t("cust.datapro.queryRequired"), true);
+      setStatus(t("cust.datapro.queryRequired"));
+      setStatusClass("datapro-status bad");
       return;
     }
     setSearching(true);
@@ -131,9 +135,9 @@ export function DataProCard({
               connector.confirm(true);
               setSkillEnabledFor(config);
               dropSkillsCatalog();
-              hint(t("cust.datapro.skillEnabledToast"));
+              setCardNote({ text: t("cust.datapro.skillEnabledToast") });
             } catch (error) {
-              hint(t("toast.failed", apiErrorText(error)), true);
+              setCardNote({ text: t("toast.failed", apiErrorText(error)), err: true });
               setSkillBusy(false);
               return;
             }
@@ -155,6 +159,7 @@ export function DataProCard({
           onClick={connector.toggle}
         />
       </div>
+      <ActionStatus note={cardNote} />
       <div class="datapro-field">
         <label class="skill-lbl">{t("cust.datapro.keyLabel")}</label>
         <div class="datapro-input-row">
@@ -185,7 +190,11 @@ export function DataProCard({
             {t("cust.datapro.saveKey")}
           </button>
         </div>
-        <div class={"datapro-credential-state" + (vendorKey.keyBad ? " bad" : "")}>
+        <div
+          class={"datapro-credential-state" + (vendorKey.keyBad ? " bad" : "")}
+          role="status"
+          aria-live="polite"
+        >
           {vendorKey.keyState}
         </div>
       </div>

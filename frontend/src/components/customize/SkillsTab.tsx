@@ -12,11 +12,10 @@ import {
   confirmAction,
   customizeProject,
   dropSkillsCatalog,
-  hint,
   insertSkillMention,
 } from "../../features/customize/host";
 import { useOptimisticToggle, useTabRead } from "./hooks";
-import { Empty, Hdr, IconGhost, Pill, Toggle } from "./ui";
+import { ActionStatus, Empty, Hdr, IconGhost, Pill, Toggle, type ActionNote } from "./ui";
 
 type Skill = Record<string, unknown>;
 
@@ -84,6 +83,8 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
       body: JSON.stringify({ enabled: on }),
     }),
   );
+  // SCI-04: a failed delete is said in the row, not behind the dialog.
+  const [actionNote, setActionNote] = useState<ActionNote>(null);
   return (
     <div class="cust-row">
       <div class="info">
@@ -100,6 +101,7 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
             </div>
           </details>
         ) : null}
+        <ActionStatus note={actionNote} />
       </div>
       <IconGhost
         name="message-square"
@@ -144,7 +146,7 @@ export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
                 dropSkillsCatalog();
                 refreshCustTab("skills");
               } catch (e) {
-                hint(t("toast.deleteFailed", apiErrorText(e)), true);
+                setActionNote({ text: t("toast.deleteFailed", apiErrorText(e)), err: true });
               }
             }}
           />

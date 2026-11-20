@@ -213,7 +213,7 @@ describe("Compute runtime environments", () => {
     await button("cust.compute.installBtn").props!.onClick!();
     await flush();
 
-    const status = find(expanded(render()), (node) => node.props?.role === "status")!;
+    const status = find(expanded(render()), (node) => node.props?.role === "status" && text(node) !== "")!;
     expect(text(status)).toContain("Installed into the built-in environment (base): openpyxl 3.1.5.");
     expect(text(status)).toContain("must be restarted to see them");
     expect(status.props!.class).toContain("ok");
@@ -227,9 +227,11 @@ describe("Compute runtime environments", () => {
     await button("cust.compute.installBtn").props!.onClick!();
     await flush();
 
-    const status = find(expanded(render()), (node) => node.props?.role === "status")!;
+    const status = find(expanded(render()), (node) => node.props?.role === "status" && text(node) !== "")!;
     expect(text(status)).toBe("Install failed: no matching distribution");
     expect(status.props!.class).toContain("err");
+    // SCI-04: only there. The status line sits behind the dialog's scrim.
+    expect(mocks.hint).not.toHaveBeenCalled();
   });
 });
 
@@ -273,7 +275,11 @@ describe("Compute job polling", () => {
 
     await button("common.cancel").props!.onClick!();
     await flush();
-    expect(mocks.hint).toHaveBeenCalledWith("toast.failed the job is still running: killed", true);
+    // SCI-04: said under the job form, not on the status line behind the dialog.
+    const status = find(expanded(render()), (node) => node.props?.role === "status" && text(node) !== "")!;
+    expect(text(status)).toBe("toast.failed the job is still running: killed");
+    expect(status.props!.class).toContain("err");
+    expect(mocks.hint).not.toHaveBeenCalled();
     expect(jobReads()).toBe(2);
   });
 
