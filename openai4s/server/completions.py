@@ -730,9 +730,18 @@ def _readable_key(key: str) -> str:
 
 def _compact_value(value: Any) -> str:
     if isinstance(value, float) and not isinstance(value, bool):
-        # 0.42712345 -> 0.4271; exponent forms stay as repr, which is clearer.
-        short = format(value, ".4g")
-        return short if "e" not in short else repr(value)
+        # SCI-24: the value as the agent submitted it. Four significant figures
+        # turned 1019.14 Da into 1019 beside prose that said 1019.14. Only a
+        # tail past six decimals (float noise such as 0.30000000000000004, or
+        # an unrounded statistic) is cut; exponent forms stay as repr.
+        text = repr(value)
+        if "e" in text or "n" in text:  # 1e-07, inf, nan
+            return text
+        if len(text.partition(".")[2]) <= 6:
+            return text
+        if abs(value) >= 1:
+            return f"{value:.6f}".rstrip("0").rstrip(".")
+        return format(value, ".6g")
     if isinstance(value, str):
         return value.strip()[:500]
     if isinstance(value, (dict, list, tuple)):

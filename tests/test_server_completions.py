@@ -654,7 +654,7 @@ def test_the_summary_separates_deliverables_and_reads_metrics_plainly():
     assert "survival_lib.py" not in deliverables
     assert "Working files (scripts, logs, input copies; 2):" in text
     assert "[survival_lib.py](" in text and "[project-inputs/cohort.csv](" in text
-    assert "- cox tmb HR low: 0.4271" in text
+    assert "- cox tmb HR low: 0.427123" in text
     assert "- n: 120" in text
 
     zh = completion_message(
@@ -662,6 +662,40 @@ def test_the_summary_separates_deliverables_and_reads_metrics_plainly():
     )
     assert "产物：" not in zh
     assert "过程文件（脚本、日志、输入副本，2 个）：" in zh
+
+
+def test_metrics_show_the_values_the_agent_submitted():
+    """SCI-24: four significant figures turned 1019.14 Da into 1019 beside a
+    findings line that said 1019.14, and t = -4.6602 into -4.66."""
+    metrics = {
+        "peptide_avg_MW_Da": 1019.14,
+        "welch_t": -4.6602,
+        "welch_df": 7.6113,
+        "ci95_low": -1.8591,
+        "p_value": 0.001853,
+        "tiny": 1.853e-07,
+        # Float noise and an unrounded statistic lose only the tail.
+        "noise": 0.30000000000000004,
+        "unrounded": -4.660219384712,
+        "n": 9,
+    }
+    text = completion_message(
+        {"output": {"summary": "Done.", "metrics": metrics}}, language="en"
+    )
+    body = text.split("Metrics:\n", 1)[1]
+
+    for shown in (
+        ": 1019.14",
+        "welch t: -4.6602",
+        "welch df: 7.6113",
+        "ci95 low: -1.8591",
+        "p value: 0.001853",
+        "tiny: 1.853e-07",
+        "noise: 0.3\n",
+        "unrounded: -4.660219\n",
+        "- n: 9",
+    ):
+        assert shown in body, shown
 
 
 def test_the_summary_groups_deliverables_by_kind():
