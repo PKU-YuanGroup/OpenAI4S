@@ -133,6 +133,29 @@ def test_a_run_cell_call_offers_only_that_tool_with_the_default_choice():
     assert calls[1]["tools"] == (spec,) and "tool_choice" not in calls[1]
 
 
+def test_run_cell_on_offer_is_added_beside_the_catalogue_never_alone():
+    # A session that has used run_cell: it rides beside the catalogue with
+    # the default choice. A call that offers no tools (Web plan mode, whose
+    # plan is the reply's text) stays tool-less.
+    spec = ToolSpec("lookup", "Look up a fact.", {"type": "object"})
+    run_cell = {"name": "run_cell", "description": "Run.", "input_schema": {}}
+    calls = []
+
+    def fake_chat(messages, received_cfg, **kwargs):
+        calls.append(kwargs)
+        return {"content": "done"}
+
+    ChatModel(object(), fake_chat, tools=lambda messages: [spec]).complete(
+        [], lambda _delta: None, extra_tools=(run_cell,)
+    )
+    ChatModel(object(), fake_chat, tools=()).complete(
+        [], lambda _delta: None, extra_tools=(run_cell,)
+    )
+
+    assert calls[0]["tools"] == (spec, run_cell) and "tool_choice" not in calls[0]
+    assert calls[1]["tools"] == ()
+
+
 def test_chat_model_call_state_carries_the_configured_retry_policy():
     """The turn's CallState is built here, and ``client.chat`` prefers it over
     its own, so this is the one place the retry policy reaches an Agent turn."""

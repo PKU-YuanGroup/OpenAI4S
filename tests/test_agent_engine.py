@@ -725,22 +725,28 @@ class PromisingModel:
     sent. On a call that offers something else it answers with ``fallback``:
     by default a ``run_cell`` call; a dict is that call's arguments, a list
     is the whole batch of calls, a string is sent as text with no call.
+    Offered ``run_cell`` beside the catalogue it calls it straight away, or
+    sends ``sticky``: a list is the batch, ``_FILLER`` the usual filler.
     ``contents`` overrides the text of a catalogue reply by index, and
     ``first`` replaces the first reply's calls.
     """
 
-    def __init__(self, *, fallback=None, contents=None, first=None):
+    def __init__(self, *, fallback=None, contents=None, first=None, sticky=None):
         self.fallback = fallback
         self.contents = dict(contents or {})
         self.first = first
+        self.sticky = sticky
         self.offered = []
         self.seen = []
 
-    def complete(self, messages, on_delta, *, only_tools=None):
+    def complete(self, messages, on_delta, *, only_tools=None, extra_tools=None):
         index = len(self.offered)
-        self.offered.append(
-            None if only_tools is None else [tool["name"] for tool in only_tools]
-        )
+        if only_tools is not None:
+            self.offered.append([tool["name"] for tool in only_tools])
+        elif extra_tools is not None:
+            self.offered.append([_CATALOGUE_NAME, *(t["name"] for t in extra_tools)])
+        else:
+            self.offered.append(None)
         self.seen.append(copy.deepcopy(list(messages)))
         if only_tools is not None:
             if isinstance(self.fallback, str):
@@ -748,6 +754,10 @@ class PromisingModel:
             if isinstance(self.fallback, list):
                 return _tool_reply(_PROMISE, self.fallback)
             return _tool_reply(_PROMISE, [_run_cell(f"call_{index}", self.fallback)])
+        if extra_tools is not None and self.sticky is None:
+            return _tool_reply(_PROMISE, [_run_cell(f"call_{index}")])
+        if extra_tools is not None and isinstance(self.sticky, list):
+            return _tool_reply(_PROMISE, self.sticky)
         if index == 0 and self.first is not None:
             return _tool_reply(_PROMISE, self.first)
         name = _FILLERS[index % len(_FILLERS)]
@@ -788,6 +798,10 @@ def _promising_run(model, max_turns):
 
 _CATALOGUE = None
 _RUN_CELL_ONLY = ["run_cell"]
+# The port's own catalogue, with run_cell offered beside it.
+_CATALOGUE_NAME = "<catalogue>"
+_STICKY = [_CATALOGUE_NAME, "run_cell"]
+_FILLER = "filler"
 
 
 def test_a_model_that_only_calls_functions_runs_its_cell_through_run_cell():
@@ -799,8 +813,8 @@ def test_a_model_that_only_calls_functions_runs_its_cell_through_run_cell():
 
     result, executor, kinds = _promising_run(model, max_turns=4)
 
-    assert model.offered == [_CATALOGUE, _CATALOGUE, _RUN_CELL_ONLY, _CATALOGUE]
-    assert kinds == ["tools", "tools", "cell", "tools"]
+    assert model.offered == [_CATALOGUE, _CATALOGUE, _RUN_CELL_ONLY, _STICKY]
+    assert kinds == ["tools", "tools", "cell", "cell"]
     # The executor gets the very action a fenced cell produces.
     cell = executor.calls[2]["action"]
     assert cell == CodeCell("python", _CODE)
@@ -960,7 +974,13 @@ def test_an_external_policy_is_offered_only_run_cell_on_the_withheld_call():
         offered.append([tool["name"] for tool in engine.prepare_tools(state)])
         engine.step(state)
 
-    assert offered == [["list_dir"], ["list_dir"], ["run_cell"], ["list_dir"]]
+    # Once the policy has used run_cell, it stays beside the catalogue.
+    assert offered == [
+        ["list_dir"],
+        ["list_dir"],
+        ["run_cell"],
+        ["list_dir", "run_cell"],
+    ]
 
 
 def test_a_sampled_run_cell_reply_is_routed_as_the_cell():
@@ -977,6 +997,114 @@ def test_a_sampled_run_cell_reply_is_routed_as_the_cell():
     cell = executor.calls[-1]["action"]
     assert cell == CodeCell("python", _CODE) and cell.tool_call.id == "sampled"
     assert state.messages[-1]["tool_call_id"] == "sampled"
+
+
+def test_once_a_session_used_run_cell_every_later_call_offers_it_too():
+    # The live run after the run_cell fix: the model learned to send filler
+    # calls until the withheld call came round, 3-6 between every two cells.
+    # Once it has called run_cell, every later call offers it beside the
+    # catalogue, and the model sends its next cell with no filler before it.
+    model = PromisingModel()
+
+    _, executor, kinds = _promising_run(model, max_turns=6)
+
+    assert model.offered == [
+        _CATALOGUE,
+        _CATALOGUE,
+        _RUN_CELL_ONLY,
+        _STICKY,
+        _STICKY,
+        _STICKY,
+    ]
+    assert kinds == ["tools", "tools", "cell", "cell", "cell", "cell"]
+    cells = [call["action"] for call in executor.calls[2:]]
+    assert all(cell == CodeCell("python", _CODE) for cell in cells)
+    assert [cell.tool_call.id for cell in cells] == [
+        "call_2",
+        "call_3",
+        "call_4",
+        "call_5",
+    ]
+    # A sticky call's run_cell is answered like the withheld one's.
+    answer = model.seen[4][-1]
+    assert (answer["role"], answer["tool_call_id"], answer["name"]) == (
+        "tool",
+        "call_3",
+        "run_cell",
+    )
+    assert answer["content"] == _OBSERVATION
+
+
+def test_a_sticky_session_keeps_the_withheld_call_and_its_note_names_run_cell():
+    # Offered run_cell beside the catalogue, this model still sends filler.
+    # The note on a sticky session says it may call run_cell; two notes in a
+    # row still earn the run_cell-only call, as on any session.
+    model = PromisingModel(sticky=_FILLER)
+
+    result, _, kinds = _promising_run(model, max_turns=7)
+
+    assert model.offered == [
+        _CATALOGUE,
+        _CATALOGUE,
+        _RUN_CELL_ONLY,
+        _STICKY,
+        _STICKY,
+        _RUN_CELL_ONLY,
+        _STICKY,
+    ]
+    assert kinds == ["tools", "tools", "cell", "tools", "tools", "cell", "tools"]
+    notes = [
+        message["content"]
+        for message in result.messages
+        if message.get("role") == "tool" and message.get("name") != "run_cell"
+    ]
+    on_offer = ["Or call run_cell(language, code)" in note for note in notes]
+    withheld = ["the only tool offered for it is run_cell" in note for note in notes]
+    assert on_offer == [False, False, True, False, True]
+    assert withheld == [False, True, False, True, False]
+
+
+@pytest.mark.parametrize(
+    "batch, problem",
+    [
+        (
+            [_run_cell("call_s"), _call("call_t", "list_dir", {"path": "work"})],
+            "a reply may carry only one call when it calls run_cell",
+        ),
+        (
+            [_run_cell("call_s", {"language": "julia", "code": "1"})],
+            'language must be "python" or "r"',
+        ),
+    ],
+)
+def test_a_run_cell_call_that_cannot_run_on_a_sticky_call_is_malformed(batch, problem):
+    model = PromisingModel(sticky=batch)
+
+    _, executor, kinds = _promising_run(model, max_turns=4)
+
+    assert model.offered[3] == _STICKY
+    assert kinds == ["tools", "tools", "cell", "tools"]
+    malformed = executor.calls[3]["action"]
+    assert all(call.parse_error.startswith(problem) for call in malformed.calls)
+
+
+def test_a_session_that_never_used_run_cell_never_sees_it_beside_the_tools():
+    # It answered the withheld call with a fenced cell: run_cell was offered
+    # but not used, so every other call offers the catalogue alone.
+    model = PromisingModel(fallback=_CELL)
+
+    _, _, kinds = _promising_run(model, max_turns=7)
+
+    assert model.offered == [
+        _CATALOGUE,
+        _CATALOGUE,
+        _RUN_CELL_ONLY,
+        _CATALOGUE,
+        _CATALOGUE,
+        _RUN_CELL_ONLY,
+        _CATALOGUE,
+    ]
+    assert kinds == ["tools", "tools", "cell", "tools", "tools", "cell", "tools"]
 
 
 def test_a_tool_only_note_does_not_hide_an_identical_call_from_the_circuit():

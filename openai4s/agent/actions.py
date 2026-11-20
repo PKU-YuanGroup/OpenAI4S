@@ -11,9 +11,10 @@ for that decision (CoreCoder-style: one small core, two thin loop bodies):
   ``route_action`` so the control plane cannot race scientific execution;
 - the engine-owned ``finalize_response`` call is routed as a distinct terminal
   action only when it is the sole native call in a reply;
-- the engine-owned ``run_cell`` call, offered only on the one call where the
-  Engine withholds every other tool, is routed as the same ``CodeCell`` a
-  fenced cell produces;
+- the engine-owned ``run_cell`` call, offered alone on the one call where the
+  Engine withholds every other tool and beside them on every call of a
+  session that has used it, is routed as the same ``CodeCell`` a fenced cell
+  produces;
 - replies without native calls keep the existing fence extractor, so a quoted
   ```` ```tool ```` inside a cell can never hijack a turn;
 - the one-cell-per-step counter and the no-action nudge text live here so the
@@ -48,8 +49,9 @@ R_INFOS = ("r",)
 FINALIZE_RESPONSE_NAME = "finalize_response"
 
 # Another engine protocol name, and deliberately not a control ``Tool`` either:
-# a function-shaped way to send one cell, offered only on the call where the
-# Engine withholds every other tool (see ``ANNOUNCED_CELL_WITHHOLD_AFTER``).
+# a function-shaped way to send one cell, offered alone on the call where the
+# Engine withholds every other tool (see ``ANNOUNCED_CELL_WITHHOLD_AFTER``),
+# and beside the other tools on every later call once the session used it.
 RUN_CELL_NAME = "run_cell"
 
 
@@ -264,7 +266,8 @@ def _run_cell_problem(call: NativeToolCall) -> str | None:
 
 
 def run_cell_tool_spec() -> ToolSpec:
-    """The one declaration offered on the call where every other tool is withheld.
+    """The declaration offered alone on the call where every other tool is
+    withheld, and beside them once a session has called it.
 
     Engine-owned like ``finalize_response``: it is never registered in the
     control-tool registry, and ``route_action`` turns a valid call into a
@@ -415,6 +418,13 @@ RUN_CELL_OFFERED_NOTE = (
     "Call run_cell with your code, or send the fenced ```python (or ```r) cell "
     "as your whole reply. The other tools come back on the reply after it."
 )
+# A model that has called run_cell once is offered it on every later call (it
+# had learned to send filler tools until the withheld call came round), so the
+# note names it too.
+RUN_CELL_ON_OFFER_NOTE = (
+    " Or call run_cell(language, code) as the only call of your next reply: it "
+    "runs the code as a cell."
+)
 
 # The tool error for a batch holding a run_cell call that cannot run: nothing
 # in the batch ran.
@@ -515,7 +525,13 @@ def unexecuted_cell_note(content: str, action: Action | None) -> str:
     return UNEXECUTED_CELL_NOTE.format(language=cell.language)
 
 
-def announced_cell_note(content: str, action: Action | None, streak: int = 0) -> str:
+def announced_cell_note(
+    content: str,
+    action: Action | None,
+    streak: int = 0,
+    *,
+    run_cell_on_offer: bool = False,
+) -> str:
     """The note for a native batch whose reply promised a cell it never sent.
 
     The counterpart of :func:`unexecuted_cell_note`: that one fires when a
@@ -524,7 +540,8 @@ def announced_cell_note(content: str, action: Action | None, streak: int = 0) ->
 
     ``streak`` is how many replies in a row before this one drew the note.
     The reply that brings it to ``ANNOUNCED_CELL_WITHHOLD_AFTER`` is also told
-    that its next call offers ``run_cell`` and nothing else.
+    that its next call offers ``run_cell`` and nothing else; otherwise
+    ``run_cell_on_offer`` (the session has used it) adds that it may call it.
     """
     if not isinstance(action, NativeToolBatch):
         return ""
@@ -535,6 +552,8 @@ def announced_cell_note(content: str, action: Action | None, streak: int = 0) ->
         return ""
     if streak + 1 == ANNOUNCED_CELL_WITHHOLD_AFTER:
         return ANNOUNCED_CELL_NOTE + RUN_CELL_OFFERED_NOTE
+    if run_cell_on_offer:
+        return ANNOUNCED_CELL_NOTE + RUN_CELL_ON_OFFER_NOTE
     return ANNOUNCED_CELL_NOTE
 
 

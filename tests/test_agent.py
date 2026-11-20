@@ -766,6 +766,80 @@ def test_a_cli_run_offers_only_run_cell_after_two_ignored_cell_notes(
     assert answer["role"] == "tool" and "sheets 42" in answer["content"]
 
 
+def test_a_cli_session_keeps_run_cell_on_offer_once_it_has_used_it(
+    monkeypatch, tmp_path
+):
+    """A model that calls run_cell whenever it is offered and otherwise sends
+    filler: after its first run_cell every request declares the catalogue
+    with run_cell beside it, the next cell comes with no filler call before
+    it, and the Agent's next run (its circuit rebuilt from the ledger) still
+    offers it on its first request."""
+
+    offered = []
+
+    def chat(messages, cfg, **kwargs):
+        del messages, cfg
+        index = len(offered)
+        names = [
+            getattr(tool, "name", None) or tool["name"] for tool in kwargs["tools"]
+        ]
+        offered.append(names)
+        if "run_cell" in names:
+            name = "run_cell"
+            arguments = {"language": "python", "code": f"print('cell', {index})"}
+        else:
+            name, arguments = "list_dir", {"path": f"dir{index}"}
+        call = {
+            "id": f"call-{index}",
+            "wire_id": f"call-{index}",
+            "name": name,
+            "ordinal": 0,
+            "raw_arguments": json.dumps(arguments),
+            "arguments": arguments,
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        content = "现在用 Python 读取 Excel。"
+        return {
+            "content": content,
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [call],
+            },
+        }
+
+    monkeypatch.setattr(loop_mod, "chat", chat)
+    agent = Agent(
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=5,
+        workspace=tmp_path,
+        record_cells=True,
+    )
+    agent.run("read demo.xlsx")
+
+    assert offered[2] == ["run_cell"]
+    for names in (offered[0], offered[1]):
+        assert "list_dir" in names and "run_cell" not in names
+    for names in (offered[3], offered[4]):
+        assert "list_dir" in names and names[-1] == "run_cell"
+    groups = agent.dispatcher.store.list_action_groups(agent.frame_id)
+    kinds = [group["kind"] for group in groups if group["kind"] != "user"]
+    assert kinds == ["native_tools", "native_tools", "code", "code", "code", "terminal"]
+    cells = agent.dispatcher.store.list_cells(agent.frame_id)
+    assert [cell["code"] for cell in cells] == [
+        "print('cell', 2)",
+        "print('cell', 3)",
+        "print('cell', 4)",
+    ]
+
+    agent.max_turns = 1
+    agent.run("now plot it")
+    assert "list_dir" in offered[5] and offered[5][-1] == "run_cell"
+
+
 # ---- R execution channel (```r) -------------------------------------------
 
 

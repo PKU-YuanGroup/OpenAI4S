@@ -152,8 +152,10 @@ class AgentEngine:
         ``policy_tools(messages)`` method on their executor.  The returned
         declarations are copied so a sampler cannot mutate a live catalog.
         It is ``run_cell`` alone for a decision the Engine makes with every
-        other tool withheld (see :meth:`_tools_withheld`), so an external
-        policy samples it as the built-in model does.
+        other tool withheld (see :meth:`_tools_withheld`), and the declarations
+        plus ``run_cell`` once the session has used it (see
+        :meth:`_run_cell_sticky`), so an external policy samples it as the
+        built-in model does.
         """
 
         if self._tools_withheld(state):
@@ -166,7 +168,12 @@ class AgentEngine:
             if not callable(fallback):
                 return ()
             raw = fallback(tuple(dict(message) for message in state.messages))
-        return tuple(_detach_tool_spec(spec) for spec in (raw or ()))
+        tools = tuple(_detach_tool_spec(spec) for spec in (raw or ()))
+        if tools and self._run_cell_sticky(state):
+            # Beside a catalogue, never in place of none (Web plan mode), as
+            # ``ChatModel`` adds it.
+            return (*tools, _detach_tool_spec(run_cell_tool_spec()))
+        return tools
 
     def step(
         self,
@@ -251,20 +258,24 @@ class AgentEngine:
 
         # Decided once, before the call: the reply is routed against what
         # that call offered.
-        run_cell_offered = self._tools_withheld(state)
+        run_cell_withheld = self._tools_withheld(state)
+        run_cell_sticky = self._run_cell_sticky(state)
+        run_cell_offered = run_cell_withheld or run_cell_sticky
         raw_reply = sampled_reply
         if raw_reply is None:
-            raw_reply = (
-                # Passed only when withheld, so a port written before the
-                # switch keeps its two-argument call everywhere else.
-                self.model.complete(
-                    state.messages,
-                    on_delta,
-                    only_tools=(_detach_tool_spec(run_cell_tool_spec()),),
+            # Each passed only when set, so a port written before the switch
+            # keeps its two-argument call everywhere else.
+            run_cell = (_detach_tool_spec(run_cell_tool_spec()),)
+            if run_cell_withheld:
+                raw_reply = self.model.complete(
+                    state.messages, on_delta, only_tools=run_cell
                 )
-                if run_cell_offered
-                else self.model.complete(state.messages, on_delta)
-            )
+            elif run_cell_sticky:
+                raw_reply = self.model.complete(
+                    state.messages, on_delta, extra_tools=run_cell
+                )
+            else:
+                raw_reply = self.model.complete(state.messages, on_delta)
         reply = self._reply(raw_reply)
         if reply.finish_reason == "cancelled":
             return EngineStep(turn, prepared, None, None, None, stop_reason="cancelled")
@@ -304,7 +315,10 @@ class AgentEngine:
             (
                 unexecuted_cell_note(reply.content, action)
                 or announced_cell_note(
-                    reply.content, action, circuit.announced_cell_streak
+                    reply.content,
+                    action,
+                    circuit.announced_cell_streak,
+                    run_cell_on_offer=circuit.run_cell_used,
                 )
             )
             # The circuit's first stage: what repeated, before it stops the
@@ -443,10 +457,24 @@ class AgentEngine:
         ``ANNOUNCED_CELL_WITHHOLD_AFTER`` replies in a row (see
         ``RUN_CELL_OFFERED_NOTE``). The reply to that call resets or moves the
         count past the threshold, so the other tools come back on the call
-        after it, and ``run_cell`` goes away again.
+        after it, and ``run_cell`` goes away again unless the session has
+        used it (see :meth:`_run_cell_sticky`).
         """
         streak = self._circuit(state).announced_cell_streak
         return bool(streak == ANNOUNCED_CELL_WITHHOLD_AFTER)
+
+    def _run_cell_sticky(self, state: RunState) -> bool:
+        """Whether the next model call offers ``run_cell`` beside the tools.
+
+        True once the session has sent a cell through ``run_cell``: a model
+        that needed it once learned to send filler tools until the withheld
+        call came round, so it keeps it. The circuit's ``run_cell_used`` is
+        restored from the whole branch, so this survives a restart, a resumed
+        run and compaction. A withheld call still offers ``run_cell`` alone.
+        """
+        if self._tools_withheld(state):
+            return False
+        return bool(self._circuit(state).run_cell_used)
 
     def _circuit(self, state: RunState) -> ProgressCircuit:
         existing = circuit_from_state(state)

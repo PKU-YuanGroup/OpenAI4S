@@ -263,14 +263,18 @@ _LOOKUP = {
 def _run_cell_requests():
     """The third and fourth requests of an Engine run whose model promises
     Python with a lookup twice, then answers the run_cell-only call with a
-    run_cell call: what each wire is handed, built by the real Engine."""
+    run_cell call: what each wire is handed, built by the real Engine. The
+    fourth offers the catalogue with run_cell beside it, so the tools it
+    declares are returned with it."""
 
     requests = []
+    beside = []
 
     class Model:
-        def complete(self, messages, on_delta, *, only_tools=None):
+        def complete(self, messages, on_delta, *, only_tools=None, extra_tools=None):
             index = len(requests)
             requests.append((copy.deepcopy(list(messages)), only_tools))
+            beside.append(extra_tools)
             if only_tools is not None:
                 name, arguments = "run_cell", {"language": "python", "code": "print(2)"}
             else:
@@ -314,7 +318,8 @@ def _run_cell_requests():
     )
     (third, offered), (fourth, again) = requests[2], requests[3]
     assert [tool["name"] for tool in offered] == ["run_cell"] and again is None
-    return third, offered, fourth
+    assert beside[2] is None and [tool["name"] for tool in beside[3]] == ["run_cell"]
+    return third, offered, (fourth, [_LOOKUP, *beside[3]])
 
 
 def _no_forced_choice(provider, payload):
@@ -331,9 +336,9 @@ def _no_forced_choice(provider, payload):
 @pytest.mark.parametrize("provider", ["ark", "chatgpt", "claude", "gemini"])
 def test_the_run_cell_call_and_its_answer_are_well_formed_on_every_wire(cap, provider):
     """The Agent's fallback call offers run_cell alone, with the default tool
-    choice; the next call offers the catalogue again and answers run_cell's
-    call id with the cell's observation as a tool result."""
-    third, offered, fourth = _run_cell_requests()
+    choice; the next call offers the catalogue with run_cell beside it and
+    answers run_cell's call id with the cell's observation as a tool result."""
+    third, offered, (fourth, declared) = _run_cell_requests()
 
     llm.chat(third, _cfg(provider), tools=offered)
     payload = cap.payload
@@ -346,8 +351,16 @@ def test_the_run_cell_call_and_its_answer_are_well_formed_on_every_wire(cap, pro
         names = [tool["name"] for tool in payload["tools"][0]["functionDeclarations"]]
     assert names == ["run_cell"]
 
-    llm.chat(fourth, _cfg(provider), tools=[_LOOKUP])
+    llm.chat(fourth, _cfg(provider), tools=declared)
     payload = cap.payload
+    _no_forced_choice(provider, payload)
+    if provider in ("ark", "chatgpt"):
+        names = [tool["function"]["name"] for tool in payload["tools"]]
+    elif provider == "claude":
+        names = [tool["name"] for tool in payload["tools"]]
+    else:
+        names = [tool["name"] for tool in payload["tools"][0]["functionDeclarations"]]
+    assert names == ["lookup", "run_cell"]
     if provider in ("ark", "chatgpt"):
         call, answer = payload["messages"][-2:]
         assert call["tool_calls"][0]["function"]["name"] == "run_cell"
@@ -391,13 +404,15 @@ def test_the_run_cell_call_and_its_answer_are_well_formed_on_responses(monkeypat
         )
 
     monkeypatch.setattr(llm.transport, "post_sse", post_sse)
-    third, offered, fourth = _run_cell_requests()
+    third, offered, (fourth, declared) = _run_cell_requests()
     llm.chat(third, _cfg("openai_responses"), tools=offered)
-    llm.chat(fourth, _cfg("openai_responses"), tools=[_LOOKUP])
+    llm.chat(fourth, _cfg("openai_responses"), tools=declared)
 
     first, second = sent
     _no_forced_choice("openai_responses", first)
     assert [tool["name"] for tool in first["tools"]] == ["run_cell"]
+    _no_forced_choice("openai_responses", second)
+    assert [tool["name"] for tool in second["tools"]] == ["lookup", "run_cell"]
     call, answer = second["input"][-2:]
     assert (call["type"], call["name"], call["call_id"]) == (
         "function_call",

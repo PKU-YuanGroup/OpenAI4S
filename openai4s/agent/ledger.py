@@ -1150,6 +1150,7 @@ def branch_action_groups(
     root_frame_id: str,
     *,
     branch_id: str | None = None,
+    **filters: Any,
 ) -> list[dict[str, Any]]:
     """Return one branch's inherited prefix plus its local append-only groups.
 
@@ -1157,6 +1158,7 @@ def branch_action_groups(
     instead freezes the parent branch's local ``action_cursor``.  Recursively
     reducing that prefix and then the child-local groups restores exactly the
     context visible at the fork without admitting later parent actions.
+    ``filters`` (``kind``, ``include_events``) narrow every local read.
     """
 
     get_branch = getattr(store, "get_session_branch", None)
@@ -1164,7 +1166,9 @@ def branch_action_groups(
     if not callable(get_branch) or not callable(get_checkpoint):
         if (branch_id or root_frame_id) != root_frame_id:
             raise ValueError("branch history requires checkpoint repository access")
-        return store.list_action_groups(root_frame_id, branch_id=root_frame_id)
+        return store.list_action_groups(
+            root_frame_id, branch_id=root_frame_id, **filters
+        )
     return project_branch_records(
         store,
         root_frame_id,
@@ -1172,6 +1176,7 @@ def branch_action_groups(
         list_local=lambda selected: store.list_action_groups(
             root_frame_id,
             branch_id=selected,
+            **filters,
         ),
         record_position=lambda group: int(group.get("ordinal") or 0),
         cursor_key="action_cursor",
@@ -1212,7 +1217,56 @@ def restore_progress_circuit(
     definition. A store that cannot answer the probes (or a branch with no
     local user group, whose epoch may start in an inherited prefix) takes
     the full, fork-aware path.
+
+    ``run_cell_used`` is the one fact that is not the epoch's: it says the
+    session has sent a cell through ``run_cell``, in any earlier turn, so it
+    is read from the whole branch (see :func:`_branch_used_run_cell`).
     """
+
+    circuit = _restore_epoch_circuit(store, root_frame_id, branch_id=branch_id)
+    if not circuit.run_cell_used:
+        circuit.run_cell_used = _branch_used_run_cell(
+            store, root_frame_id, branch_id=branch_id
+        )
+    return circuit
+
+
+def _branch_used_run_cell(
+    store: LedgerStore,
+    root_frame_id: str,
+    *,
+    branch_id: str | None = None,
+) -> bool:
+    """Whether a ``code`` group on this branch's history came from ``run_cell``.
+
+    It reads the branch projection, so a fork inherits its prefix's answer and
+    a revert drops a cell it abandoned. Compaction never hides one: it changes
+    what the provider history shows, not which groups the ledger holds. Only
+    the ``code`` groups are read, without their events.
+    """
+
+    from .progress_circuit import sent_through_run_cell
+
+    try:
+        groups = branch_action_groups(
+            store,
+            root_frame_id,
+            branch_id=branch_id,
+            kind="code",
+            include_events=False,
+        )
+    except Exception:  # noqa: BLE001 — a store that cannot answer means no
+        return False
+    return any(sent_through_run_cell(group) for group in groups)
+
+
+def _restore_epoch_circuit(
+    store: LedgerStore,
+    root_frame_id: str,
+    *,
+    branch_id: str | None = None,
+) -> Any:
+    """The circuit rebuilt from the groups after the latest ``user`` group."""
 
     from .progress_circuit import reconstruct_progress_circuit
 
