@@ -4307,6 +4307,78 @@ def test_no_member_of_an_exported_package_carries_a_local_path(tmp_path, monkeyp
         store.close()
 
 
+def test_a_moved_data_directory_does_not_ship_its_old_location(tmp_path, monkeypatch):
+    """EXP-1. The prefix rules know this machine's data directory and home, so
+    a record written before the data directory was moved -- another machine,
+    another account -- shipped the previous location: a checkpoint's
+    workspace keys, a cell's printout, the runtime evidence. A path through a
+    data-directory folder is re-rooted whatever precedes it."""
+    from openai4s.evidence import verify_package
+
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    store, domain, project, root, _artifact, _checkpoint, _workspace = _source(tmp_path)
+    old_home = tmp_path / "previous-machine" / "Users" / "bob"
+    old_workspace = str(old_home / ".openai4s" / "agent-workspaces" / root)
+    try:
+        environment = {
+            "runtime": "python",
+            "working_directory": old_workspace,
+            "sandbox": {"backend": "seatbelt", "workspace": old_workspace},
+        }
+        generation = store.create_kernel_generation(
+            root_frame_id=root,
+            branch_id=root,
+            language="python",
+            environment=environment,
+            bootstrap={"working_directory": old_workspace, "status": "ready"},
+            state="active",
+        )
+        store.log_cell(
+            frame_id=root,
+            root_frame_id=root,
+            project_id=project["project_id"],
+            code="import os\nprint(os.getcwd())",
+            result={"id": "cell-cwd", "stdout": f"{old_workspace}\n", "stderr": ""},
+            cell_index=2,
+            state_revision=2,
+            generation_id=generation["generation_id"],
+        )
+        store.log_host_call(
+            method="write_file",
+            args=[{"path": f"{old_workspace}/fig.png"}],
+            ok=True,
+            frame_id=root,
+        )
+        domain.create_checkpoint(root, metadata={"label": "after the move"})
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+        leaks = sorted(
+            name for name, payload in files.items() if str(old_home).encode() in payload
+        )
+        assert leaks == []
+        checkpoints = json.loads(files["snapshots.json"])["checkpoints"]
+        (python,) = [
+            checkpoint["generation_refs"]["python"]
+            for checkpoint in checkpoints
+            if "python" in checkpoint["generation_refs"]
+        ]
+        # The label a path recorded under this data directory gets.
+        assert python["bootstrap"]["working_directory"] == (
+            f"<data_dir>/agent-workspaces/{root}"
+        )
+        assert f"<data_dir>/agent-workspaces/{root}/fig.png" in (
+            files["runtime/host_calls.json"].decode()
+        )
+        package = tmp_path / "moved.openai4s-session.zip"
+        package.write_bytes(exported["data"])
+        assert verify_package(str(package))["ok"]
+        assert domain.session_import(exported["data"])["root_frame_id"] != root
+    finally:
+        store.close()
+
+
 def test_a_redacted_package_still_verifies_inspects_and_imports(tmp_path, monkeypatch):
     from openai4s.evidence import verify_package
     from openai4s.package_diagnosis import diagnose, read_package

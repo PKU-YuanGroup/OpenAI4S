@@ -129,6 +129,22 @@ _PRIVATE_KEY_BLOCK = re.compile(
     re.DOTALL,
 )
 _REDACTED = "[REDACTED]"
+#: Folders only a daemon data directory has (EXP-1). Whatever precedes one in
+#: a recorded absolute path was *a* data directory: this one, or the one the
+#: data was moved from -- on a migrated machine, the previous user's home.
+#: Generic names (`artifacts`, `logs`) are left out: a project has those too.
+_DATA_DIR_SEGMENTS = (
+    "agent-workspaces",
+    "artifact-versions",
+    "workspace-cas",
+    "tool-results",
+    "session-imports",
+)
+_DATA_DIR_PATH = re.compile(
+    r"(?<![\w.~<>/\\:-])(?:[A-Za-z]:)?[/\\][^\s\"'(),;:]*?(?=[/\\](?:"
+    + "|".join(re.escape(segment) for segment in _DATA_DIR_SEGMENTS)
+    + r")(?:[/\\]|$))"
+)
 IMPORT_QUARANTINE_SETTING_PREFIX = "session:import-quarantine:"
 _DELIVERY_IMPORT_PENDING_CONTENT = (
     "Completion delivery is pending package verification."
@@ -1370,6 +1386,18 @@ class SessionPackageService:
                 prefixes.append((spelling, "<tmp>"))
         return prefixes
 
+    def _as_this_data_dir(self, value: str) -> str:
+        """Re-root a path through a data-directory folder under this one.
+
+        The prefix rules know this machine's directories, so a record written
+        before the data directory was moved shipped its old location. Run
+        first, so the prefix rules then give it the label a path recorded
+        here gets (``.``, ``<data_dir>``).
+        """
+
+        data_dir = str(self.data_dir)
+        return _DATA_DIR_PATH.sub(lambda _match: data_dir, value)
+
     def _redact_local_paths(
         self,
         files: dict[str, bytes],
@@ -1405,6 +1433,7 @@ class SessionPackageService:
         ]
 
         def text(value: str) -> str:
+            value = self._as_this_data_dir(value)
             for pattern, label in patterns:
                 value = pattern.sub(label, value)
             return value
@@ -1473,6 +1502,7 @@ class SessionPackageService:
             for secret in secrets:
                 if secret in value:
                     value = value.replace(secret, _REDACTED)
+            value = self._as_this_data_dir(value)
             for pattern, label in replacements:
                 value = pattern.sub(label, value)
             return value
