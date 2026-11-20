@@ -1650,6 +1650,31 @@ def _provider_error_detail(error) -> str:
     return detail[:300] + ("…" if len(detail) > 300 else "")
 
 
+def _run_config_with_saved_model(cfg):
+    """`run` calls the model that `openai4s init` and Settings → Models saved.
+
+    Those live in the data dir's store, which the daemon and `doctor` read
+    through `resolve_llm_config`. `run` read only the environment, so after
+    `init` it called the provider's default model (or found no key) while
+    `doctor --network` had verified the saved one. A store that does not exist
+    or cannot be opened leaves the environment's answer, as before.
+    """
+    import dataclasses
+
+    from openai4s.llm.resolve import resolve_llm_config
+
+    if not Path(cfg.db_path).is_file():
+        return cfg
+    try:
+        from openai4s.store import get_store
+
+        store = get_store(cfg.db_path)
+    except Exception:  # noqa: BLE001 - no readable settings, no override
+        return cfg
+    llm = resolve_llm_config(cfg.llm, store)
+    return cfg if llm is cfg.llm else dataclasses.replace(cfg, llm=llm)
+
+
 def _run_llm_failure(error, cfg) -> dict:
     """What failed in a model call and what to check, as `error` + `code`.
 
@@ -1672,22 +1697,24 @@ def _run_llm_failure(error, cfg) -> dict:
     if isinstance(error, MissingCredentialError):
         code = "llm_not_configured"
         message = (
-            f"no API key is configured for provider {provider!r}. `openai4s "
-            f"run` reads the model from the environment: set {key_vars} in "
-            "the shell or in a .env file (see .env.example), then run it "
-            "again."
+            f"no API key is configured for provider {provider!r}. Run "
+            "`openai4s init` (or add the model under Settings → Models), or "
+            f"set {key_vars} in the shell or in a .env file (see "
+            ".env.example), then run it again."
         )
     elif status in (401, 403):
         code = "llm_auth_failed"
         message = (
             f"the model provider rejected the API key for provider "
-            f"{provider!r} (HTTP {status}). Check {key_vars}."
+            f"{provider!r} (HTTP {status}). Check the key saved by `openai4s "
+            f"init` (Settings → Models) or {key_vars}."
         )
     elif status == 404:
         code = "llm_model_not_found"
         message = (
             f"the model provider has no model {model!r} at {base_url} (HTTP "
-            "404). Check OPENAI4S_LLM_MODEL and OPENAI4S_LLM_BASE_URL."
+            "404). Choose a model with `openai4s init --model <id>`, or check "
+            "OPENAI4S_LLM_MODEL and OPENAI4S_LLM_BASE_URL."
         )
     elif code in ("llm_rate_limited", "llm_request_burst", "llm_upstream_overloaded"):
         message = (
@@ -2082,7 +2109,7 @@ def cmd_run(args) -> int:
     if getattr(args, "auto", False):
         # Before get_config(), which reads these at construction.
         auto_applied = enable_auto_run_environment()
-    cfg = get_config()
+    cfg = _run_config_with_saved_model(get_config())
     agent_options: dict = {}
     if allowed_tests:
         agent_options["allowed_test_commands"] = tuple(allowed_tests)

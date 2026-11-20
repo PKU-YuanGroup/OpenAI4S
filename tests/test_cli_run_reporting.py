@@ -163,8 +163,8 @@ def test_each_model_failure_gets_its_own_code_and_next_step(
 def test_the_missing_key_message_says_where_run_reads_its_key(
     tmp_path, monkeypatch, capsys
 ):
-    """`run` reads the environment only, so the next step it names must be
-    one that works for `run`."""
+    """The next step it names must be one that works for `run`: the saved
+    model (`openai4s init`) or the environment."""
 
     module, _cfg = _real_run(
         tmp_path, monkeypatch, _failing_chat(_missing_credential())
@@ -177,6 +177,32 @@ def test_the_missing_key_message_says_where_run_reads_its_key(
     assert "Traceback" not in err
     assert "OPENAI4S_DEEPSEEK_API_KEY (or OPENAI4S_LLM_API_KEY)" in err
     assert ".env" in err
+    assert "openai4s init" in err
+
+
+def test_run_calls_the_model_init_saved(tmp_path, monkeypatch, capsys):
+    """`openai4s init` and Settings -> Models save the provider, model and key
+    in the data dir's store; the daemon and `doctor` read them. `run` read only
+    the environment, so after `init` it called another model (or found no key)
+    than the one `doctor --network` had just verified."""
+    from openai4s.store import get_store
+
+    seen = []
+
+    def chat(messages, llm, **kwargs):
+        del messages, kwargs
+        seen.append((llm.model, llm.api_key))
+        raise _transport_error(401)
+
+    module, cfg = _real_run(tmp_path, monkeypatch, chat)
+    cfg.ensure_dirs()
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_model", "saved-model")
+    store.set_secret_setting("llm_api_key", "saved-key", scope="llm")
+
+    assert module.main(["run", "Compute 1+1 and submit it."]) == 4
+    capsys.readouterr()
+    assert seen and seen[0] == ("saved-model", "saved-key")
 
 
 @pytest.mark.parametrize("how", ["flag", "environment"])
