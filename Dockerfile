@@ -55,7 +55,8 @@ RUN python -m pip wheel --no-cache-dir --no-deps --no-build-isolation \
 # --- runtime stage -----------------------------------------------------------
 FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS runtime
 
-# `science` installs numpy/pandas/matplotlib/scikit-learn so agent cells can do
+# `science` installs numpy/pandas/matplotlib/scikit-learn plus
+# openpyxl/statsmodels/seaborn so agent cells can do
 # actual work. Pass `--build-arg OPENAI4S_EXTRAS=` for the stdlib-only control
 # plane (a much smaller image that can still run the agent, the tools and the
 # web UI, but whose Python cells have no scientific stack).

@@ -78,6 +78,10 @@ cycler==0.12.1 ; python_full_version >= '3.11' \
     --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30 \
     --hash=sha256:88bb128f02ba341da8ef447245a9e138fae777f6a23943da4540077d3601eb1c
     # via matplotlib
+et-xmlfile==2.0.0 \
+    --hash=sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa \
+    --hash=sha256:dab3f4764309081ce75662649be815c4c9081e88f0837825f90fd28317d4da54
+    # via openpyxl
 fonttools==4.63.0 ; python_full_version >= '3.11' \
     --hash=sha256:032038247a96c1690f9f31e377c389383c902531b085aa4e4dabd6f57f870e69 \
     --hash=sha256:063e08bd17bd5a90127a14123de0d6a952dbc847695fd98b63c043d58057f90c \
@@ -300,7 +304,9 @@ matplotlib==3.11.0 ; python_full_version >= '3.11' \
     --hash=sha256:dfabef0230d0697aa0d717385194dd41162e00207a68bf4abf94c2bf4c27dca0 \
     --hash=sha256:e6b3e64dea5062c570f04358e2711859f3531b459f29516274fbad889079e4f3 \
     --hash=sha256:f857524b442f0f36e641868ce2171aafa88cb0bc0644f4e1d8a5df9b32649fef
-    # via openai4s
+    # via
+    #   openai4s
+    #   seaborn
 narwhals==2.24.0 ; python_full_version >= '3.11' \
     --hash=sha256:42fdedf44e5b2ca7505630d45b4ac3058f38d8485cba9fe1652ca23152df7489 \
     --hash=sha256:b5c0f684ccd9d7475b564111e319a4964abcf2baf79d3cf6b1003d06ac9b828d
@@ -364,8 +370,10 @@ numpy==2.2.6 ; python_full_version < '3.11' \
     # via
     #   openai4s
     #   pandas
+    #   patsy
     #   scikit-learn
     #   scipy
+    #   statsmodels
 numpy==2.4.6 ; python_full_version == '3.11.*' \
     --hash=sha256:001fbb8e08d942dd57599e781f2472269ee7f2755fae407b4f67b2f0b17da3f1 \
     --hash=sha256:0280e0356c0829a18d9de1cb7eee50ec22ca639878d7240307ca0943d73cd2c4 \
@@ -444,8 +452,11 @@ numpy==2.4.6 ; python_full_version == '3.11.*' \
     #   matplotlib
     #   openai4s
     #   pandas
+    #   patsy
     #   scikit-learn
     #   scipy
+    #   seaborn
+    #   statsmodels
 numpy==2.5.0 ; python_full_version >= '3.12' \
     --hash=sha256:016623417bb330d719d579daf2d6b9a01ddc52e41a9ed61a47f39fde46dcd865 \
     --hash=sha256:0b525be4744b60bb0557ac872d53ef07d085b5f39622bc579c98d3809d05b988 \
@@ -496,12 +507,21 @@ numpy==2.5.0 ; python_full_version >= '3.12' \
     #   matplotlib
     #   openai4s
     #   pandas
+    #   patsy
     #   scikit-learn
     #   scipy
-packaging==26.3 ; python_full_version >= '3.11' \
+    #   seaborn
+    #   statsmodels
+openpyxl==3.1.5 \
+    --hash=sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2 \
+    --hash=sha256:cf0e3cf56142039133628b5acffe8ef0c12bc902d2aadd3e0fe5878dc08d1050
+    # via openai4s
+packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
-    # via matplotlib
+    # via
+    #   matplotlib
+    #   statsmodels
 pandas==2.3.3 ; python_full_version < '3.12' \
     --hash=sha256:0242fe9a49aa8b4d78a4fa03acb397a58833ef6199e9aa40a95f027bb3a1b6e7 \
     --hash=sha256:1611aedd912e1ff81ff41c745822980c49ce4a7907537be8692c8dbc31924593 \
@@ -551,7 +571,10 @@ pandas==2.3.3 ; python_full_version < '3.12' \
     --hash=sha256:ee67acbbf05014ea6c763beb097e03cd629961c8a632075eeb34247120abcb4b \
     --hash=sha256:f086f6fe114e19d92014a1966f43a3e62285109afe874f067f5abbdcbb10e59c \
     --hash=sha256:f8bfc0e12dc78f777f323f55c58649591b2cd0c43534e8355c51d3fede5f4dee
-    # via openai4s
+    # via
+    #   openai4s
+    #   seaborn
+    #   statsmodels
 pandas==3.0.3 ; python_full_version >= '3.12' \
     --hash=sha256:0383c72c75cdcca61a9e116e611143902dbfd08bff356829c2f6d1cf40a9ca8c \
     --hash=sha256:05f1f1752b8533ea03f7f39a9c15b1a058d067bb48f4748948e7a8691e0510f2 \
@@ -601,7 +624,14 @@ pandas==3.0.3 ; python_full_version >= '3.12' \
     --hash=sha256:e3a2ec42c98ffa2565a67e08e218d06d72576d758d90facb7c00805194d8f360 \
     --hash=sha256:f8894dc474d648fe7b6ff0ca9b0bd73950d19952bc1a6534540762c5d79d305c \
     --hash=sha256:fed2ff7fd9779120e388e285fc029bd5cf9490cdd2e4166a9ee22c0e49a9ab09
-    # via openai4s
+    # via
+    #   openai4s
+    #   seaborn
+    #   statsmodels
+patsy==1.0.2 \
+    --hash=sha256:37bfddbc58fcf0362febb5f54f10743f8b21dd2aa73dec7e7ef59d1b02ae668a \
+    --hash=sha256:cdc995455f6233e90e22de72c37fcadb344e7586fb83f06696f54d92f8ce74c0
+    # via statsmodels
 pillow==13.0.0 ; python_full_version >= '3.11' \
     --hash=sha256:02464da86f561f410e13b061ec37c3068a9cb557a095494157742d07b3c24a27 \
     --hash=sha256:04a63720f79e22fd54d897c233a68314c50ca0603360f54ce2bd5db8f0f43782 \
@@ -814,7 +844,9 @@ scipy==1.15.3 ; python_full_version < '3.11' \
     --hash=sha256:eae3cf522bc7df64b42cad3925c876e1b0b6c35c1337c93e12c0f366f55b0eaf \
     --hash=sha256:ed7284b21a7a0c8f1b6e5977ac05396c0d008b89e05498c8b7e8f4a1423bba0e \
     --hash=sha256:f77f853d584e72e874d87357ad70f44b437331507d1c311457bed8ed2b956126
-    # via scikit-learn
+    # via
+    #   scikit-learn
+    #   statsmodels
 scipy==1.17.1 ; python_full_version == '3.11.*' \
     --hash=sha256:010f4333c96c9bb1a4516269e33cb5917b08ef2166d5556ca2fd9f082a9e6ea0 \
     --hash=sha256:02ae3b274fde71c5e92ac4d54bc06c42d80e399fec704383dcd99b301df37458 \
@@ -877,7 +909,9 @@ scipy==1.17.1 ; python_full_version == '3.11.*' \
     --hash=sha256:f590cd684941912d10becc07325a3eeb77886fe981415660d9265c4c418d0bea \
     --hash=sha256:f8885db0bc2bffa59d5c1b72fad7a6a92d3e80e7257f967dd81abb553a90d293 \
     --hash=sha256:fcb310ddb270a06114bb64bbe53c94926b943f5b7f0842194d585c65eb4edd76
-    # via scikit-learn
+    # via
+    #   scikit-learn
+    #   statsmodels
 scipy==1.18.0 ; python_full_version >= '3.12' \
     --hash=sha256:09143f676d157d9f546d663504ef9c1becb819824f1afc018814176411942446 \
     --hash=sha256:0d13bca67c096d89fb95ced0d8921807300fce0275643aef9533cc63a0773468 \
@@ -920,11 +954,50 @@ scipy==1.18.0 ; python_full_version >= '3.12' \
     --hash=sha256:e40baea28ae7f5475c779741e2d90b1247c78531207b49c7030e698ff81cee3f \
     --hash=sha256:f2a6af57bd9e4a75d70e4117e78a1bbee84f79ae3fbb6d0111005d6ebcc4cb8d \
     --hash=sha256:f351e0dd702687d12a402b867a1b4146a256923e1c38317cbc472f6372b94707
-    # via scikit-learn
+    # via
+    #   scikit-learn
+    #   statsmodels
+seaborn==0.13.2 ; python_full_version >= '3.11' \
+    --hash=sha256:636f8336facf092165e27924f223d3c62ca560b1f2bb5dff7ab7fad265361987 \
+    --hash=sha256:93e60a40988f4d65e9f4885df477e2fdaff6b73a9ded434c1ab356dd57eefff7
+    # via openai4s
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
     --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81
     # via python-dateutil
+statsmodels==0.14.6 \
+    --hash=sha256:00781869991f8f02ad3610da6627fd26ebe262210287beb59761982a8fa88cae \
+    --hash=sha256:0444e88557df735eda7db330806fe09d51c9f888bb1f5906cb3a61fb1a3ed4a8 \
+    --hash=sha256:06eec42d682fdb09fe5d70a05930857efb141754ec5a5056a03304c1b5e32fd9 \
+    --hash=sha256:109012088b3e370080846ab053c76d125268631410142daad2f8c10770e8e8d9 \
+    --hash=sha256:151b73e29f01fe619dbce7f66d61a356e9d1fe5e906529b78807df9189c37721 \
+    --hash=sha256:19b58cf7474aa9e7e3b0771a66537148b2df9b5884fbf156096c0e6c1ff0469d \
+    --hash=sha256:26d4f0ed3b31f3c86f83a92f5c1f5cbe63fc992cd8915daf28ca49be14463a1c \
+    --hash=sha256:2738a00fca51196f5a7d44b06970ace6b8b30289839e4808d656f8a98e35faa7 \
+    --hash=sha256:3414e40c073d725007a6603a18247ab7af3467e1af4a5e5a24e4c27bc26673b4 \
+    --hash=sha256:341fa68a7403e10a95c7b6e41134b0da3a7b835ecff1eb266294408535a06eb6 \
+    --hash=sha256:47ee7af083623d2091954fa71c7549b8443168f41b7c5dce66510274c50fd73e \
+    --hash=sha256:4d17873d3e607d398b85126cd4ed7aad89e4e9d89fc744cdab1af3189a996c2a \
+    --hash=sha256:6ad5c2810fc6c684254a7792bf1cbaf1606cdee2a253f8bd259c43135d87cfb4 \
+    --hash=sha256:730f3297b26749b216a06e4327fe0be59b8d05f7d594fb6caff4287b69654589 \
+    --hash=sha256:73f305fbf31607b35ce919fae636ab8b80d175328ed38fdc6f354e813b86ee37 \
+    --hash=sha256:8021271a79f35b842c02a1794465a651a9d06ec2080f76ebc3b7adce77d08233 \
+    --hash=sha256:81e7dcc5e9587f2567e52deaff5220b175bf2f648951549eae5fc9383b62bc37 \
+    --hash=sha256:89ee7d595f5939cc20bf946faedcb5137d975f03ae080f300ebb4398f16a5bd4 \
+    --hash=sha256:9e8d2e519852adb1b420e018f5ac6e6684b2b877478adf7fda2cfdb58f5acb5d \
+    --hash=sha256:a3764ba8195c9baf0925a96da0743ff218067a269f01d155ca3558deed2658ca \
+    --hash=sha256:a518d3f9889ef920116f9fa56d0338069e110f823926356946dae83bc9e33e19 \
+    --hash=sha256:aa60d82e29fcd0a736e86feb63a11d2380322d77a9369a54be8b0965a3985f71 \
+    --hash=sha256:b5eb07acd115aa6208b4058211138393a7e6c2cf12b6f213ede10f658f6a714f \
+    --hash=sha256:bdf1dfe2a3ca56f5529118baf33a13efed2783c528f4a36409b46bbd2d9d48eb \
+    --hash=sha256:d8c00a42863e4f4733ac9d078bbfad816249c01451740e6f5053ecc7db6d6368 \
+    --hash=sha256:e443e7077a6e2d3faeea72f5a92c9f12c63722686eb80bb40a0f04e4a7e267ad \
+    --hash=sha256:e83a9abe653835da3b37fb6ae04b45480c1de11b3134bd40b09717192a1456ea \
+    --hash=sha256:e93bd5d220f3cb6fc5fc1bffd5b094966cab8ee99f6c57c02e95710513d6ac3f \
+    --hash=sha256:f1c08befa85e93acc992b72a390ddb7bd876190f1360e61d10cf43833463bc9c \
+    --hash=sha256:f4ff0649a2df674c7ffb6fa1a06bffdb82a6adf09a48e90e000a15a6aaa734b0 \
+    --hash=sha256:fe76140ae7adc5ff0e60a3f0d56f4fffef484efa803c3efebf2fcd734d72ecb5
+    # via openai4s
 threadpoolctl==3.6.0 \
     --hash=sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb \
     --hash=sha256:8ab8b4aa3491d812b623328249fab5302a68d2d71745c8a4c719a2fcaba9f44e
