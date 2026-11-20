@@ -262,6 +262,66 @@ def test_unauthenticated_browser_get_redirects_to_login(daemon):
     assert b"location: /login" in raw.lower()
 
 
+def test_the_login_redirect_carries_the_deep_link_back(daemon):
+    """TEAM-9: a colleague's session link opened signed-out landed on the
+    home page after the login, because the 303 dropped where it was going."""
+    status, raw = _get(daemon.port, "/projects/p1/frames/f-abc?x=1", accept="text/html")
+    assert status == 303, raw[:300]
+    assert (
+        b"location: /login?next=%2fprojects%2fp1%2fframes%2ff-abc%3fx%3d1"
+        in raw.lower()
+    )
+    # A target that is not a page of this origin is not carried.
+    status, raw = _get(daemon.port, "/login/x", accept="text/html")
+    assert status == 303 and b"location: /login\r\n" in raw.lower()
+    # an API caller still gets a 401, not a redirect
+    assert _get(daemon.port, "/projects/p1")[0] == 401
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/projects/p1/frames/f-abc?x=1",
+        "/replay#f-1",
+        "/projects/p1/frames/%E4%B8%AD",
+    ],
+)
+def test_safe_next_path_keeps_same_origin_pages(target):
+    from openai4s.server.team_auth import safe_next_path
+
+    assert safe_next_path(target) == target
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        None,
+        "",
+        "/",
+        "/?token=abc",
+        "//evil.example/x",
+        "/\\evil.example",
+        "/x\\y",
+        "/\t/evil.example",
+        "/x\r\nSet-Cookie: a=b",
+        "/x y",
+        "/projects/中",
+        "https://evil.example/",
+        "javascript:alert(1)",
+        "evil.example",
+        "/login",
+        "/login?next=/x",
+        "/api/v1/frames",
+        "/" + "a" * 2048,
+    ],
+)
+def test_safe_next_path_refuses_anything_that_could_leave_the_origin(target):
+    from openai4s.server.team_auth import login_location, safe_next_path
+
+    assert safe_next_path(target) is None
+    assert login_location(target) == "/login"
+
+
 def test_login_page_and_assets_are_reachable_anonymously(daemon):
     assert _get(daemon.port, "/login")[0] == 200
     assert _get(daemon.port, "/static/login.js")[0] == 200

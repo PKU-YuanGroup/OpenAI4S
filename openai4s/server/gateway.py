@@ -14904,6 +14904,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     from openai4s.server.team_auth import SERVICE_IDENTITY as _TEAM_SERVICE_IDENTITY
     from openai4s.server.team_auth import TEAM_COOKIE as _TEAM_COOKIE
     from openai4s.server.team_auth import TeamAuthService as _TeamAuthService
+    from openai4s.server.team_auth import login_location as _team_login_location
 
     # A TLS proxy terminates encryption before this loopback HTTP server, so
     # transport state here cannot prove whether the browser used HTTPS.  The
@@ -15547,10 +15548,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self.close_connection = True
             if method == "GET" and _wants_html(self.headers):
                 # A person in a browser: send them to the login page rather
-                # than a JSON refusal they cannot act on.
+                # than a JSON refusal they cannot act on -- carrying the page
+                # they asked for, so a colleague's session link still lands
+                # on that session after the login (TEAM-9).
                 self._last_status = 303
                 self.send_response(303)
-                self.send_header("Location", "/login")
+                self.send_header("Location", _team_login_location(self.path))
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return False

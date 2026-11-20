@@ -65,9 +65,20 @@ export function teamFilesPath(): string {
   return tfState.path;
 }
 
-function pageLocation(): { pathname: string; replace: (url: string) => void } {
+function pageLocation(): { pathname: string; search?: string; replace: (url: string) => void } {
   if (typeof location !== "undefined") return location;
   return { pathname: "/", replace: () => undefined };
+}
+
+/**
+ * The login page, carrying this page as `?next=` so a session that expires
+ * under an open workbench comes back to where it was (TEAM-9). The login
+ * page decides whether `next` is a safe same-origin path before it goes there.
+ */
+export function loginUrl(): string {
+  const loc = pageLocation();
+  const here = (loc.pathname || "/") + (loc.search || "");
+  return here === "/" ? "/login" : "/login?next=" + encodeURIComponent(here);
 }
 
 /**
@@ -218,7 +229,7 @@ export async function probeTeamAuth(): Promise<void> {
   try {
     const r = await fetch(API + "/auth/me");
     if (r.status === 401) {
-      pageLocation().replace("/login");
+      pageLocation().replace(loginUrl());
       return;
     }
     const me = r.ok ? ((await r.json()) as AuthMe) : null;

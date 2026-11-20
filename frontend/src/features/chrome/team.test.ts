@@ -259,6 +259,15 @@ describe("F-20 team surface", () => {
     expect(loc.replace).toHaveBeenCalledWith("/login");
   });
 
+  it("401 on a deep link sends the page along as ?next= (TEAM-9)", async () => {
+    vi.stubGlobal("location", { ...loc, pathname: "/projects/p1/frames/f-abc", search: "?x=1" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 401, ok: false }));
+    await team.probeTeamAuth();
+    expect(loc.replace).toHaveBeenCalledWith(
+      "/login?next=" + encodeURIComponent("/projects/p1/frames/f-abc?x=1"),
+    );
+  });
+
   const signedIn = async (user: Record<string, unknown>): Promise<void> => {
     vi.stubGlobal(
       "fetch",

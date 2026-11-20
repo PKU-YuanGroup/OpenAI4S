@@ -5,11 +5,31 @@
   "use strict";
   var API = "/api/v1";
 
-  // Already signed in, or team mode off? Go home.
+  // Where to go once signed in: the page the team guard sent us from
+  // (`?next=`, TEAM-9) when it is a path of this origin, otherwise home.
+  // The same rule as the server's `team_auth.safe_next_path`, applied again
+  // here because anybody can hand out a `/login?next=` link: one leading
+  // "/" (never "//" or "/\"), printable ASCII only (browsers drop tabs and
+  // newlines, which turns "/<TAB>/host" into "//host"), no backslash.
+  function nextPath() {
+    var raw = null;
+    try { raw = new URLSearchParams(location.search).get("next"); } catch (e) { return "/"; }
+    if (!raw || raw.length > 2048) return "/";
+    if (!/^\/(?![\/\\])[!-~]*$/.test(raw) || raw.indexOf("\\") !== -1) return "/";
+    var path = raw.split("?")[0].split("#")[0];
+    if (path === "/login" || path.indexOf("/login/") === 0 ||
+        path === "/api" || path.indexOf("/api/") === 0) return "/";
+    try {
+      if (new URL(raw, location.origin).origin !== location.origin) return "/";
+    } catch (e) { return "/"; }
+    return raw;
+  }
+
+  // Already signed in, or team mode off? Go on.
   fetch(API + "/auth/me")
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (me) {
-      if (me && (me.team_mode === false || me.user)) location.replace("/");
+      if (me && (me.team_mode === false || me.user)) location.replace(nextPath());
     })
     .catch(function () {});
 
@@ -29,7 +49,7 @@
       }),
     })
       .then(function (r) {
-        if (r.ok) { location.replace("/"); return null; }
+        if (r.ok) { location.replace(nextPath()); return null; }
         return r.json().then(function (body) {
           err.textContent = (body && body.error) || ("sign-in failed (" + r.status + ")");
         });

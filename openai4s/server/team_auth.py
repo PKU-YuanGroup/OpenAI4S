@@ -199,6 +199,44 @@ class TeamAuthService:
         return header + ("; Secure" if self._secure_cookie else "")
 
 
+#: The longest deep link a login carries back. Far past any workbench URL;
+#: the bound only keeps an absurd request target out of a Location header.
+_NEXT_MAX = 2048
+
+
+def safe_next_path(target: str | None) -> str | None:
+    """``target`` if it is a page of *this* origin to return to after login.
+
+    The login page navigates to it, so anything that could leave the origin
+    is refused rather than repaired: it must start with exactly one ``/``
+    (``//host`` and ``/\\host`` are scheme-relative links to another site),
+    and every character must be printable ASCII other than a backslash --
+    browsers drop tabs and newlines from a URL, which turns ``/<TAB>/host``
+    back into ``//host``. ``/``, the login page itself and the API are not
+    worth carrying. The client applies the same rule before it navigates
+    (login.js), so a hand-written ``/login?next=`` is held to it too.
+    """
+    if not target or len(target) > _NEXT_MAX:
+        return None
+    if not target.startswith("/") or target[1:2] in ("/", "\\"):
+        return None
+    if any(ch == "\\" or not ("!" <= ch <= "~") for ch in target):
+        return None
+    path = target.split("?", 1)[0].split("#", 1)[0]
+    if path in ("/", "/login", "/api") or path.startswith(("/login/", "/api/")):
+        return None
+    return target
+
+
+def login_location(target: str | None) -> str:
+    """Where the team guard sends a signed-out browser: the login page,
+    carrying the page it asked for when that is safe to come back to."""
+    from urllib.parse import quote
+
+    nxt = safe_next_path(target)
+    return "/login" if nxt is None else "/login?next=" + quote(nxt, safe="")
+
+
 def public_user(user: dict) -> dict:
     """The wire shape of a user row: no hash material, ever."""
     return {
@@ -217,5 +255,7 @@ __all__ = [
     "TEAM_COOKIE",
     "TeamAuthService",
     "TeamIdentity",
+    "login_location",
     "public_user",
+    "safe_next_path",
 ]

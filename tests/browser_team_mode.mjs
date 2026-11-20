@@ -130,6 +130,31 @@ const created = await member.evaluate(async () => {
 });
 check(!!created.fid, "member created a session");
 
+// -- 3b. a session link opened signed-out comes back after the login ---------
+// TEAM-9: the 303 used to drop the target and every login landed on "/".
+console.log("3b. deep link through the login");
+const linkCtx = await browser.newContext();
+const linkPage = await linkCtx.newPage();
+const deepLink = `/projects/${encodeURIComponent(created.pid)}/frames/${encodeURIComponent(created.fid)}`;
+await linkPage.goto(BASE + deepLink, { waitUntil: "domcontentloaded" });
+await linkPage.waitForURL("**/login?next=**", { timeout: 10000 });
+await linkPage.fill("#u", MEMBER.u);
+await linkPage.fill("#p", MEMBER.p);
+await linkPage.click("#b");
+await linkPage.waitForURL(BASE + deepLink, { timeout: 10000 });
+check(true, "login returns to the session link it was opened from");
+// A hand-written next= that leaves the origin is ignored, not followed.
+await linkPage.evaluate(() => fetch("/api/v1/auth/logout", { method: "POST" }));
+await linkPage.goto(BASE + "/login?next=" + encodeURIComponent("//example.invalid/x"), {
+  waitUntil: "domcontentloaded",
+});
+await linkPage.fill("#u", MEMBER.u);
+await linkPage.fill("#p", MEMBER.p);
+await linkPage.click("#b");
+await linkPage.waitForURL(BASE + "/", { timeout: 10000 });
+check(true, "an off-origin next= lands on the home page instead");
+await linkCtx.close();
+
 // -- 4. governance is admin-only --------------------------------------------
 console.log("4. governance is admin-only");
 const memberAdminStatus = await member.evaluate(
