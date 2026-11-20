@@ -469,6 +469,36 @@ describe("the user's message reaches every tab", () => {
     onEvent({ type: "user_message", root_frame_id: "f-2", message_id: "m-9", content: "x", seq: 1 });
     expect(userBubbles()).toEqual([]);
   });
+
+  it("puts the whole message in place of a bubble drawn from the queue's preview (M-21)", () => {
+    renderStored({ role: "user", content: "First question", message_id: "m-1" });
+    const preview = bubble("Plot the survival curve by EGFR gro…", "msg user queued");
+    preview.dataset.executionId = "exec-q";
+    preview.dataset.queuePreview = "1";
+    messages().appendChild(preview);
+    const strip = document.createElement("div");
+    strip.className = "generated";
+    messages().appendChild(strip);
+    onEvent({
+      type: "user_message",
+      root_frame_id: "f-1",
+      message_id: "m-2",
+      content: "Plot the survival curve by EGFR group, split at the median",
+      request_id: "web-other-tab",
+      execution_id: "exec-q",
+      seq: 4,
+    });
+    expect(userBubbles()).toEqual([
+      "First question",
+      "Plot the survival curve by EGFR group, split at the median",
+    ]);
+    // Where the preview was, not after the file strip; still that execution's bubble.
+    const rows = Array.from(messages().children) as HTMLElement[];
+    expect(rows[1]?.dataset.messageId).toBe("m-2");
+    expect(rows[1]?.dataset.executionId).toBe("exec-q");
+    expect(rows[1]?.classList.contains("queued")).toBe(false);
+    expect(rows[2]).toBe(strip);
+  });
 });
 
 describe("approval decisions are history", () => {

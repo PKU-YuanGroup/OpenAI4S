@@ -279,7 +279,7 @@ describe("sanitizeExecutionQueue", () => {
         owner: {
           execution_id: "ex-1",
           owner: { kind: "agent", id: "o1" },
-          metadata: { preview: "hi", model_profile_id: "mp", model_profile_revision: 3 },
+          metadata: { preview: "hi", request_id: "web-1", model_profile_id: "mp", model_profile_revision: 3 },
         },
         queue: Array.from({ length: 120 }, (_, i) => ({
           execution_id: `q${i}`,
@@ -291,6 +291,7 @@ describe("sanitizeExecutionQueue", () => {
     expect(safe.owner?.execution_id).toBe("ex-1");
     expect(safe.owner?.metadata).toEqual({
       preview: "hi",
+      request_id: "web-1",
       model_profile_id: "mp",
       model_profile_revision: 3,
     });
@@ -479,6 +480,7 @@ describe("queueMetadata", () => {
   it("drops non-positive revisions", () => {
     expect(queueMetadata({ model_profile_revision: 0, preview: "p" })).toEqual({
       preview: "p",
+      request_id: "",
       model_profile_id: "",
       model_profile_revision: null,
     });

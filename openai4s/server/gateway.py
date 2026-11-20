@@ -8995,6 +8995,11 @@ class SessionRunner:
             metadata={
                 # Display text: a text-form `@name#v-<id>` previews as `@name`.
                 "preview": queue_preview(artifact_refs.display_text(text)),
+                # The sender's `X-Request-Id` (its `user_message` carries it
+                # too): the sending tab knows its own bubble by it before the
+                # 202 has named the execution, so the bubble every tab draws
+                # for a queued item is not drawn there a second time.
+                "request_id": job.request_id,
                 "model_profile_id": job.model_profile_id,
                 "model_profile_revision": job.model_profile_revision,
             },

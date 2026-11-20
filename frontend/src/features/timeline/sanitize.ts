@@ -320,6 +320,7 @@ export function queueMetadata(raw: unknown): QueueMetadata {
   const rev = +((m.model_profile_revision as number | string) ?? NaN);
   return {
     preview: publicText(m.preview, 160),
+    request_id: publicText(m.request_id, 96),
     model_profile_id: publicText(m.model_profile_id, 96),
     model_profile_revision: Number.isFinite(rev) && rev > 0 ? rev : null,
   };

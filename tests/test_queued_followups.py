@@ -202,6 +202,26 @@ def test_a_queued_follow_up_carries_its_id_preview_and_position(client):
         finish()
 
 
+def test_a_queued_item_names_the_request_its_sender_sent(client):
+    """Every tab draws a queued item's bubble; the sender must not draw it twice.
+
+    The sending tab has its own bubble from before the POST, keyed by the
+    `X-Request-Id` it sent, and the queue event can reach it before the 202
+    names the execution. The request id in the queue is what lets that tab
+    recognise its own message (M-21).
+    """
+    _held, finish = _hold_the_head(client)
+    try:
+        accepted = _queue_three(client)
+        queue = client.queue()["queue"]
+        assert [item["metadata"]["request_id"] for item in queue] == [
+            body["request_id"] for body in accepted
+        ]
+        assert all(body["request_id"] for body in accepted)
+    finally:
+        finish()
+
+
 def test_a_queued_item_reports_the_profile_it_was_admitted_under(client):
     """Not the frame's pin. `POST /frames/{id}/model-binding` rewrites that
     while an item waits -- it is the documented answer to a dangling pin -- so a

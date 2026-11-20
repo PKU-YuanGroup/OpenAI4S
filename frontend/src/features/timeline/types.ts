@@ -85,6 +85,8 @@ export type ActionTimeline = {
 
 export type QueueMetadata = {
   preview: string;
+  /** The sender's `X-Request-Id`: its own bubble before the 202 names the execution. */
+  request_id: string;
   model_profile_id: string;
   model_profile_revision: number | null;
 };

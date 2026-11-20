@@ -993,7 +993,32 @@ export function showLiveUserMessage(
     ((requestId && row.dataset.requestId === requestId) ||
       (executionId && row.dataset.executionId === executionId)));
   const fork = typeof m.fork_checkpoint_id === "string" ? m.fork_checkpoint_id : null;
+  if (own && own.dataset.queuePreview) {
+    // Drawn from the queue's 160-character preview (timeline/queue.ts): its
+    // turn started, so the whole message takes its place, as a reload shows it.
+    const full = renderStored(
+      {
+        role: "user",
+        content: m.content,
+        created_at: m.created_at,
+        message_id: id || undefined,
+        fork_checkpoint_id: fork,
+        artifact_refs: m.artifact_refs,
+        annotations: m.annotations,
+      },
+      host,
+    );
+    if (full && own.parentNode) {
+      // Still the bubble of that execution, for "now running your queued message".
+      if (executionId) full.dataset.executionId = executionId;
+      own.parentNode.insertBefore(full, own);
+      own.remove();
+    }
+    return full;
+  }
   if (own) {
+    // Its turn started, so it was not dropped either (a late queue event can say so).
+    own.classList.remove("cancelled");
     if (id) own.dataset.messageId = id;
     // Its turn is running now; it is no longer waiting in the queue.
     own.classList.remove("queued");

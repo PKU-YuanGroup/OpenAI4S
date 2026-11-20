@@ -62,7 +62,7 @@ import {
   timelineOverviewXToTime,
   timelineTokenTotal,
 } from "./model";
-import { renderQueueStrip } from "./queue";
+import { noteExecutionStarted, renderQueueStrip } from "./queue";
 import { S } from "./s";
 import { ago, localDateTime } from "../chrome/dom";
 import { nbLabelT } from "../notebook/copy";
@@ -163,6 +163,9 @@ export function rememberExecutionState(event: any): void {
           },
         }
       : null;
+  // A queued bubble whose execution started is not a dropped one (queue.ts).
+  if (identity && ["running", "finalizing", "completed", "failed"].includes(status))
+    noteExecutionStarted(identity.execution_id);
   if (identity && ["running", "finalizing"].includes(status)) S.executionIdentity = identity;
   else if (identity && status === "queued" && !S.executionIdentity)
     S.executionIdentity = identity;

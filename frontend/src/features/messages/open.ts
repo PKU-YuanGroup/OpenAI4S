@@ -399,11 +399,15 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
         // tile strips, plan cards and other transcript-hosted UI keep their
         // nodes: the GET-only paths (turn end, replay gap, Retry) never
         // repaint them, unlike a full openConversation.
-        const keep = (host.children ? Array.from(host.children) : []).filter((node) =>
+        // A message still waiting in the queue is not stored yet, so no
+        // history read can draw it again (timeline/queue.ts draws it).
+        const waiting = (node: Element): boolean =>
+          !!node.classList?.contains("queued") && !node.classList?.contains("cancelled");
+        const keep = (host.children ? Array.from(host.children) : []).filter((node) => waiting(node) || (
           !node.classList?.contains("msg") && !node.classList?.contains("step") &&
           !node.classList?.contains("perm-card") &&
           node.id !== "msgs-earlier" && !node.classList?.contains("empty-session") &&
-          node !== (streamAtRead as LiveStream | null)?.wrap);
+          node !== (streamAtRead as LiveStream | null)?.wrap));
         host.replaceChildren(stage, ...keep);
       }
       stepEls.value = stagedSteps;
