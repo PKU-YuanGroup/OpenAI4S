@@ -1,7 +1,6 @@
 import { useState } from "preact/hooks";
 import { t } from "../../../i18n";
 import { api, apiErrorText } from "../../../features/customize/api";
-import { hint } from "../../../features/customize/host";
 
 type KeyResult = {
   /** The config read this result answered; a newer read replaces it. */
@@ -9,6 +8,8 @@ type KeyResult = {
   configured: boolean;
   arkReused: boolean;
   error: string | null;
+  /** This save stored the key: say so where the key state is shown. */
+  saved?: boolean;
 };
 
 /**
@@ -21,6 +22,9 @@ type KeyResult = {
  * based on that. The key state is now derived from the `config` prop on every
  * render (`null` until it has been read, and nothing can be saved until then);
  * a save's answer is kept only for the config it answered.
+ *
+ * SCI-04: a save's outcome (saved, refused, or nothing typed) is the key
+ * state line under the field, not the session status line behind the dialog.
  */
 export function useVendorKey(
   prefix: "cust.datapro" | "cust.doubao",
@@ -45,11 +49,13 @@ export function useVendorKey(
     ? t("common.loading")
     : failure
       ? failure
-      : arkKeyReused
-        ? t(`${prefix}.keyArkReused`)
-        : keyConfigured
-          ? t(`${prefix}.keyConfigured`)
-          : t(`${prefix}.keyMissing`);
+      : own?.saved
+        ? t(`${prefix}.keySaved`)
+        : arkKeyReused
+          ? t(`${prefix}.keyArkReused`)
+          : keyConfigured
+            ? t(`${prefix}.keyConfigured`)
+            : t(`${prefix}.keyMissing`);
   const keyBad = loaded && (!!failure || (!keyConfigured && !arkKeyReused));
   /** Read, no failure, and no key the outbound resolver would send. */
   const missing = loaded && !failure && !keyConfigured && !arkKeyReused;
@@ -64,7 +70,12 @@ export function useVendorKey(
     const secret = key.trim();
     setKey("");
     if (!secret) {
-      hint(t(`${prefix}.keyRequired`), true);
+      setResult({
+        source: config,
+        configured: keyConfigured,
+        arkReused: arkKeyReused,
+        error: t(`${prefix}.keyRequired`),
+      });
       return;
     }
     setSavingKey(true);
@@ -79,8 +90,8 @@ export function useVendorKey(
         configured: !!saved.key_configured,
         arkReused: !!saved.ark_key_reused,
         error: null,
+        saved: true,
       });
-      hint(t(`${prefix}.keySaved`));
     } catch (error) {
       setResult({
         source: config,

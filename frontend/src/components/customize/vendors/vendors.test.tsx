@@ -51,7 +51,7 @@ vi.mock("preact/hooks", () => ({
   useEffect: hooks.useEffect,
 }));
 
-const mocks = vi.hoisted(() => ({ fetch: vi.fn(), alive: (): boolean => true }));
+const mocks = vi.hoisted(() => ({ fetch: vi.fn(), hint: vi.fn(), alive: (): boolean => true }));
 vi.mock("../../../i18n", () => ({
   LANG: "en",
   t: (key: string, ...args: unknown[]) => [key, ...args].join(" "),
@@ -59,12 +59,18 @@ vi.mock("../../../i18n", () => ({
   onLanguageChange: () => () => undefined,
 }));
 vi.mock("../use-timer-lease", () => ({ useAlive: () => mocks.alive, useTimerLease: () => ({}) }));
+// The session status line, which the Settings dialog covers (SCI-04).
+vi.mock("../../../features/customize/host", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../features/customize/host")>()),
+  hint: mocks.hint,
+}));
 vi.mock("../../../features/customize/actions", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../features/customize/actions")>()),
   custTab: vi.fn(),
 }));
 
-import { ConnectorsTab } from "../ConnectorsTab";
+import { ConnectorRow, ConnectorsTab } from "../ConnectorsTab";
+import { ActionStatus } from "../ui";
 import { NetworkTab } from "../NetworkTab";
 import { DataProCard } from "./datapro";
 import { DoubaoSearchCard } from "./doubao";
@@ -137,6 +143,7 @@ const writes = () =>
 beforeEach(() => {
   hooks.reset();
   mocks.fetch.mockReset();
+  mocks.hint.mockReset();
   vi.stubGlobal("fetch", mocks.fetch);
 });
 afterEach(() => {
@@ -187,6 +194,74 @@ describe("DataPro card on Connectors", () => {
     expect(find(card, (node) => node.props?.["data-action"] === "datapro-enable-skill")!.props!.disabled).toBe(true);
     expect(find(card, (node) => node.props?.["data-action"] === "datapro-save-key")!.props!.disabled).toBe(true);
     expect(writes()).toEqual([]);
+  });
+});
+
+// SCI-04: these answers used to land on the session status line, under the
+// dialog's scrim and below its bottom edge.
+describe("Connectors actions answer beside their control", () => {
+  const noteOf = (tree: Node) => find(tree, (node) => node.type === ActionStatus)!.props!.note;
+  const testButton = (tree: Node) =>
+    find(tree, (node) => node.type === "button" && text(node) === "cust.connectors.test")!.props!
+      .onClick as () => Promise<void>;
+
+  it("a key saved with nothing typed says so under the field", async () => {
+    routes({
+      "GET /connectors": () => Promise.resolve(response({ connectors: [] })),
+      "GET /datapro/config": () => Promise.resolve(response({ key_configured: false })),
+    });
+    renderCard(ConnectorsTab, DataProCard);
+    await settle();
+    const card = renderCard(ConnectorsTab, DataProCard);
+    find(card, (node) => node.props?.["data-action"] === "datapro-save-key")!.props!.onClick!();
+    await settle();
+    const after = renderCard(ConnectorsTab, DataProCard);
+    expect(text(credential(after))).toBe("cust.datapro.keyRequired");
+    expect(credential(after).props!.class).toContain("bad");
+    expect(credential(after).props!["aria-live"]).toBe("polite");
+    expect(mocks.hint).not.toHaveBeenCalled();
+    expect(writes()).toEqual([]);
+  });
+
+  it("a saved key is confirmed under the field", async () => {
+    routes({
+      "GET /connectors": () => Promise.resolve(response({ connectors: [] })),
+      "GET /datapro/config": () => Promise.resolve(response({ key_configured: false })),
+      "POST /datapro/config": () => Promise.resolve(response({ key_configured: true })),
+    });
+    renderCard(ConnectorsTab, DataProCard);
+    await settle();
+    const card = renderCard(ConnectorsTab, DataProCard);
+    (find(card, (node) => node.props?.id === "datapro-plan-key")!.props!.onInput as (e: unknown) => void)({
+      target: { value: "synthetic-plan-key" },
+    });
+    const save = find(renderCard(ConnectorsTab, DataProCard), (node) => node.props?.["data-action"] === "datapro-save-key")!;
+    save.props!.onClick!();
+    await settle();
+    const after = renderCard(ConnectorsTab, DataProCard);
+    expect(text(credential(after))).toBe("cust.datapro.keySaved");
+    expect(credential(after).props!.class).not.toContain("bad");
+    expect(mocks.hint).not.toHaveBeenCalled();
+  });
+
+  it("a connector test lists the tools it found, or why it failed, in the connector's row", async () => {
+    const k = { connector_id: "example", name: "Example", enabled: true };
+    const row = () => {
+      hooks.begin("row");
+      return ConnectorRow({ k }) as Node;
+    };
+    routes({
+      "POST /connectors/example/probe": () =>
+        Promise.resolve(response({ ok: true, tools: [{ name: "echo" }, { name: "now" }] })),
+    });
+    expect(noteOf(row())).toBeNull();
+    await testButton(row())();
+    expect(noteOf(row())).toEqual({ text: "toast.connectors.probeOk echo、now" });
+
+    routes({ "POST /connectors/example/probe": () => Promise.resolve(response({ error: "spawn failed" }, 500)) });
+    await testButton(row())();
+    expect(noteOf(row())).toEqual({ text: "toast.connectors.testFailed spawn failed", err: true });
+    expect(mocks.hint).not.toHaveBeenCalled();
   });
 });
 

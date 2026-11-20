@@ -181,6 +181,25 @@
   font-size: 14px;
   color: var(--text-400);
 }
+/* SCI-04: an action's outcome, under the control that started it. */
+#cust .cust-action-status {
+  flex-basis: 100%;
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+/* Empty but still rendered: a live region that appears with its text is not
+   reliably announced. */
+#cust .cust-action-status:empty {
+  margin-top: 0;
+}
+#cust .cust-action-status.ok {
+  color: var(--success-text);
+}
+#cust .cust-action-status.err {
+  color: var(--danger);
+}
 #cust .skill-lbl {
   margin-top: 10px;
   font-size: 14px;
@@ -211,6 +230,81 @@
 }
 #cust .skill-net .ds {
   overflow-wrap: anywhere;
+}
+/* SCI-06: a skill's name opens its full description, needs and SKILL.md. */
+#cust .skill-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+#cust .skill-name:hover span {
+  text-decoration: underline;
+}
+#cust .skill-desc {
+  cursor: pointer;
+}
+#cust .skill-detail {
+  margin-top: 6px;
+  font-size: 14px;
+  color: var(--text-200);
+  overflow-wrap: anywhere;
+}
+#cust .skill-detail-fact {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-400);
+}
+#cust .skill-detail-head {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-000);
+}
+#cust .skill-doc {
+  max-height: 420px;
+  overflow: auto;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius, 8px);
+  font-size: 13px;
+}
+/* A recipe preview, not a page: headings stay near body size. */
+#cust .skill-doc h1,
+#cust .skill-doc h2 {
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1.3;
+  margin: 0.9em 0 0.4em;
+}
+#cust .skill-doc h3,
+#cust .skill-doc h4 {
+  font-size: 14px;
+  margin: 0.8em 0 0.3em;
+}
+#cust .skill-doc > :first-child {
+  margin-top: 0;
+}
+#cust .skill-use {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* At phone width the label would squeeze the description into a sliver; the
+   button keeps its name through aria-label. */
+@media (max-width: 560px) {
+  #cust .skill-use span {
+    display: none;
+  }
 }
 #cust .cust-input {
   min-height: 40px;

@@ -373,12 +373,18 @@ class SkillCustomizationService:
     def get(self, name: str) -> dict:
         skill = self._find_skill(name)
         if skill is not None:
-            _metadata, body = self.parse_document(
+            metadata, body = self.parse_document(
                 (skill.root / "SKILL.md").read_text("utf-8")
             )
+            # SCI-06: `description` is the catalog line, cut at 200 characters,
+            # and the cut-off half is usually the "use this skill when" part.
+            # The editor keeps reading `description`; the Skills tab's detail
+            # view reads the whole one.
+            full_description = " ".join(str(metadata.get("description") or "").split())
             return {
                 "name": skill.name,
                 "description": skill.description,
+                "full_description": full_description or skill.description,
                 "body": body,
                 "origin": skill.origin,
                 "editable": not skill.read_only,
