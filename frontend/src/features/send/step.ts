@@ -703,21 +703,60 @@ function paintStepBody(handle: StepHandle): void {
   handle.bodyStale = false;
 }
 
-export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
-  const { card, meta, ic, step } = handle;
+function stepOutcome(step: Step) {
   const status = step.status || "running";
   // Refused by a loaded Skill's network limit: not a crash, and not "0 results".
   const blocked = status !== "running" && !!blockedView(step);
   // Denied by the user, refused by a rule, or cancelled by a Stop while it
   // waited for approval: a refusal, shown neutrally, never as a failure.
   const declined = status === "error" && !blocked ? declinedStep(step.output) : null;
+  return { status, blocked, declined };
+}
+
+/**
+ * The card head's words: its title and status line. The host words both in
+ * English and they are translated here (I18N-1), so a language switch has to
+ * say them again (`relabelStepCards`); the static repaint cannot reach them.
+ */
+function paintStepWords(handle: StepHandle): void {
+  const { card, meta, step } = handle;
+  const { status, declined } = stepOutcome(step);
+  meta.textContent =
+    status === "running"
+      ? step.kind === "review"
+        ? sendCopy("reviewing")
+        : ""
+      : stepNetworkMeta(step) ||
+        (declined ? declinedMeta(declined) : "") ||
+        (step.summary != null ? stepSummaryText(String(step.summary)) : "") ||
+        (step.output && rec(step.output).error ? t("step.status.failed") : "");
+  const label = card.querySelector(".s-lbl");
+  // A loaded Skill's network limit: the server words these in English.
+  if (label) label.textContent = stepNetworkLabel(step) || stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+}
+
+/** Every step card on screen, in the language just applied. */
+export function relabelStepCards(): void {
+  const registry = stepEls.value as Record<string, StepHandle> | null;
+  if (!registry) return;
+  for (const handle of Object.values(registry)) {
+    if (!handle.card.isConnected) continue;
+    paintStepWords(handle);
+    // An open body is redrawn now; a closed one when it is next opened.
+    if (handle.card.classList.contains("open")) paintStepBody(handle);
+    else handle.bodyStale = true;
+  }
+}
+
+export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
+  const { card, ic, step } = handle;
+  const { status, blocked, declined } = stepOutcome(step);
   card.classList.toggle("running", status === "running");
   card.classList.toggle("err", status === "error" && !blocked && !declined);
   card.classList.toggle("warn", status === "warning" || blocked);
   card.classList.toggle("declined", !!declined);
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
-    meta.textContent = step.kind === "review" ? sendCopy("reviewing") : "";
   } else {
     ic.innerHTML = icon(
       blocked
@@ -733,23 +772,9 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
               : stepIcon(step.kind),
       14,
     );
-    meta.textContent =
-      stepNetworkMeta(step) ||
-      (declined ? declinedMeta(declined) : "") ||
-      (step.summary != null ? stepSummaryText(String(step.summary)) : "") ||
-      (step.output && rec(step.output).error ? t("step.status.failed") : "");
   }
   // I18N-1: the host words titles in English; an update can retitle a card.
-  if (step.title) {
-    const label = card.querySelector(".s-lbl");
-    if (label) label.textContent = stepTitleText(String(step.title));
-  }
-  // A loaded Skill's network limit: the server words these in English.
-  const netLabel = stepNetworkLabel(step);
-  if (netLabel) {
-    const label = card.querySelector(".s-lbl");
-    if (label) label.textContent = netLabel;
-  }
+  paintStepWords(handle);
   card.classList.toggle("s-net-limited", marksNetworkLimit(step));
   if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") {
     card.classList.add("open");
@@ -795,7 +820,8 @@ export function buildStepCard(step: Step, paint: StepPaint = {}): StepHandle {
       ),
     );
   }
-  h.appendChild(el("span", "s-lbl", stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")))));
+  // `applyStepState` below writes its words (`paintStepWords`).
+  h.appendChild(el("span", "s-lbl", ""));
   const meta = el("span", "s-meta", "");
   h.appendChild(meta);
   const chev = el("span", "s-chev");

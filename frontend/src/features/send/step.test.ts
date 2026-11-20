@@ -10,7 +10,7 @@ vi.mock("../artifacts/ui", async (importOriginal) => ({
 import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
 import { startStream } from "../messages/stream";
-import { addLiveStep, buildStepCard, renderStoredStep, updateLiveStep } from "./step";
+import { addLiveStep, buildStepCard, relabelStepCards, renderStoredStep, updateLiveStep } from "./step";
 
 /** Just enough DOM for step cards (no jsdom here). */
 class El {
@@ -177,6 +177,28 @@ describe("step card copy follows the UI language", () => {
       }),
     );
     expect(finding.querySelector(".review-issue-head")!.querySelector("strong")!.textContent).toBe("审阅发现");
+  });
+
+  it("cards already on screen say their title and status again after a language switch (I18N-1)", async () => {
+    await setLang("zh");
+    const read = renderStoredStep({
+      step_id: "l-1",
+      kind: "read",
+      status: "done",
+      title: "Reading project file cohort.csv",
+      summary: "12 results",
+    }) as unknown as El;
+    const call = renderStoredStep({ step_id: "l-2", kind: "mcp", status: "running", title: "Calling calc via example" }) as unknown as El;
+    const words = (card: El) => [card.querySelector(".s-lbl")!.textContent, card.querySelector(".s-meta")!.textContent];
+    expect(words(read)).toEqual(["读取项目文件 cohort.csv", "12 条结果"]);
+    expect(words(call)).toEqual(["通过 example 调用 calc", ""]);
+    await setLang("en");
+    relabelStepCards();
+    expect(words(read)).toEqual(["Reading project file cohort.csv", "12 results"]);
+    expect(words(call)).toEqual(["Calling calc via example", ""]);
+    await setLang("zh");
+    relabelStepCards();
+    expect(words(read)).toEqual(["读取项目文件 cohort.csv", "12 条结果"]);
   });
 });
 

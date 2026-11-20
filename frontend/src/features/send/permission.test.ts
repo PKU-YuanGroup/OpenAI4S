@@ -384,7 +384,8 @@ describe("what a card says before the user decides", () => {
     expect(permTitle({ tool: "env_use", input: { name: "r", local: false } })).toBe("切换到 r 环境");
     // Any other kind: the server's title through the step templates, else as it came.
     expect(permTitle({ tool: "bash", title: "Running python3" })).toBe("运行 python3");
-    expect(permTitle({ tool: "mcp_call", title: "Calling calc via example" })).toBe("Calling calc via example");
+    expect(permTitle({ tool: "mcp_call", title: "Calling calc via example" })).toBe("通过 example 调用 calc");
+    expect(permTitle({ tool: "mcp_call", title: "Fetching the catalog" })).toBe("Fetching the catalog");
     await setLang("en");
     expect(permTitle(download)).toBe("Download demo.cif.gz from files.example.org");
     expect(permTitle(install)).toBe("Install statsmodels, seaborn into base");

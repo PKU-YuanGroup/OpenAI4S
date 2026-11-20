@@ -50,6 +50,8 @@ const TITLE_ZH: Rule[] = [
   [/^Installing (.+)$/, "安装 $1"],
   [/^Rolling back(.*)$/, "回滚$1"],
   [/^Searching (.+)$/, "搜索 $1"],
+  // A connector (MCP) tool call: `host_dispatch` "Calling {tool} via {server}".
+  [/^Calling (.+) via (.+)$/, "通过 $2 调用 $1"],
   [/^Running shell command$/, "运行 shell 命令"],
   [/^Running (?!analysis · cell )(.+)$/, "运行 $1"],
 ];
