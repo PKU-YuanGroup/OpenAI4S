@@ -207,6 +207,16 @@ describe("FASTA in the sequence viewer (SCI-27)", () => {
     expect(residues(lines[0]!).map((residue) => residue.textContent).join("")).toBe(crambin);
   });
 
+  it("measures each record in its own unit when a file mixes protein and DNA", async () => {
+    serve(">prot\nTTCCPSIVARSNFNVCRLPG\n>gene\nATGGCCATTGTAATGGGCCGC\n");
+    const container = new FakeNode();
+    renderSequenceArtifact(host(container), { id: "m", filename: "mixed.fasta" }, "/api/v1/artifacts/m");
+    await settle();
+    await settle();
+    const heads = walk(container).filter((node) => node.className === "sequence-head");
+    expect(heads.map((head) => head.children[1]!.textContent)).toEqual(["20 aa", "21 nt"]);
+  });
+
   it("names a nucleotide sequence as such", async () => {
     serve(">gene\nATGGCCATTGTAATGGGCCGCTGAAAGGGTGCCCGATAG\n");
     const container = new FakeNode();

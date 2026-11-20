@@ -125,6 +125,14 @@ function appendResidues(
   return shown.length;
 }
 
+/** One record's alphabet, by the parser's own rule (`sequenceAlphabet`). */
+function recordAlphabet(sequence: string, fallback: string): string {
+  const letters = String(sequence || "").replace(/[-.*?~]/g, "");
+  if (!letters) return fallback;
+  if (/^[ACGTUN]+$/i.test(letters)) return /U/i.test(letters) && !/T/i.test(letters) ? "RNA" : "DNA";
+  return "protein";
+}
+
 /** Residues per line in the sequence viewer, the usual FASTA/GenBank width. */
 export const SEQUENCE_LINE_RESIDUES = 60;
 
@@ -312,11 +320,13 @@ export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, u
         const card = el("section", "sequence-record");
         const head = el("div", "sequence-head");
         head.appendChild(el("strong", null, record.name || "sequence"));
+        // Per record: a file can mix a protein with the gene that encodes it.
+        const alphabet = recordAlphabet(record.sequence, parsed.alphabet);
         head.appendChild(
           el(
             "span",
             null,
-            `${record.sequence.length.toLocaleString()} ${parsed.alphabet === "protein" ? "aa" : "nt"}`,
+            `${record.sequence.length.toLocaleString()} ${alphabet === "protein" ? "aa" : "nt"}`,
           ),
         );
         card.appendChild(head);
@@ -327,7 +337,7 @@ export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, u
         const used = appendSequenceLines(
           sequence,
           record.sequence,
-          parsed.alphabet,
+          alphabet,
           Math.min(remaining, 10000),
         );
         remaining -= used;
