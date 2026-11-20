@@ -224,6 +224,7 @@ from openai4s.server.security_headers import (
     ketcher_editor_security_headers,
     sandboxed_artifact_security_headers,
     security_headers,
+    workbench_security_headers,
 )
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
@@ -16143,10 +16144,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if _webui_legacy_enabled()
                 else WEBUI_DIR / "dist" / "index.html"
             )
+            # The workbench document is the one page that may use the
+            # microphone (voice input); everything else keeps the denial.
             self._serve_ui_file(
                 index,
                 "text/html; charset=utf-8",
-                security=_default_security(),
+                security=workbench_security_headers(frame_src=_app_origins()),
             )
 
         def _serve_static(self, path: str) -> bool:
