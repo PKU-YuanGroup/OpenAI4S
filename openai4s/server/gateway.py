@@ -107,6 +107,7 @@ from openai4s.server import (
     compute_tasks,
     contract,
     diagnostics_routes,
+    example_session,
     file_routes,
     governance_routes,
     kernel_routes,
@@ -23181,11 +23182,16 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
             "Done — every value in this session is computed from real data "
             "(no simulated or placeholder values)."
         )
-    store.add_message(
-        root_frame_id=fid,
-        role="assistant",
+    # CHAT-1: a step can fail inside a cell that carries on (an unreachable
+    # data source), so the cells alone do not say everything that went wrong.
+    step_failures = example_session.failed_steps(store, fid)
+    step_note = example_session.failed_steps_note(step_failures)
+    example_session.finish(
+        store=store,
+        emit=runner.hub.emitter(fid),
         frame_id=fid,
-        content=_header + "\n\n"
+        failed_cells=len(cell_failures),
+        summary=_header + "\n\n" + (step_note + "\n" if step_note else "") + ""
         "**Real inputs**\n"
         "- **UniProt REST API** — NIF3/DUF34 family records + sequences\n"
         "- **RCSB PDB API** — full-text search + coordinate download of a "
@@ -23197,5 +23203,8 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
         + "\nOpen the **Notebook** tab to replay the executed cells, or the "
         "**Files** panel to view each material.",
     )
-    store.update_frame(fid, status="done")
-    return {"cells": len(demo_plan), "failed": len(cell_failures)}
+    return {
+        "cells": len(demo_plan),
+        "failed": len(cell_failures),
+        "failed_steps": len(step_failures),
+    }

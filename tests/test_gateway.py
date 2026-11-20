@@ -402,7 +402,7 @@ def test_a_confirmed_seed_completes_without_an_attached_approver(tmp_path, monke
         runner.close()
 
 
-def _seed_with_fake_cells(tmp_path, monkeypatch, cell_behaviour):
+def _seed_with_fake_cells(tmp_path, monkeypatch, cell_behaviour, hub=None):
     """Run the real `_seed_demo_session` with `run_repl` replaced per cell.
 
     `cell_behaviour(index, register)` returns the kernel error string for that
@@ -411,7 +411,7 @@ def _seed_with_fake_cells(tmp_path, monkeypatch, cell_behaviour):
     cell would have written. Returns (store, final assistant message content).
     """
     cfg = _cfg(tmp_path)
-    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    runner = gateway_mod.SessionRunner(cfg, hub or _Hub())
     store = get_store(cfg.db_path)
     executed: list[str] = []
 
@@ -612,6 +612,88 @@ def test_the_example_seed_counts_interrupted_cells_as_failures(tmp_path, monkeyp
     assert "1 of 6 example cells did not complete" in content
     assert "cell 3/6: interrupted before completion" in content
     assert "_hydropathy figure_ — not produced this run" in content
+
+
+def _example_frame(store):
+    return next(
+        row
+        for row in store.browse_frames(project_id="proj_example", roots_only=True)
+        if (row.get("name") or "") == gateway_mod._DEMO_SESSION_NAME
+    )
+
+
+def test_the_example_summary_reaches_the_open_page_and_names_a_failed_step(
+    tmp_path, monkeypatch
+):
+    """CHAT-1: the summary was written to the store only, so a page watching
+    the example saw step cards and no conclusion until it reloaded; and a
+    fetch that failed inside a cell that carried on left "Done" and `done`."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    hub = _Hub()
+    seeded: dict = {}
+    real_seed = gateway_mod._seed_demo_session
+
+    def behaviour(index, register):
+        if index == 3:
+            register("figure_cell3_0001.png")
+        elif index == 4:
+            register("family_biochemistry.csv")
+        elif index == 5:
+            # The cell catches the failed fetch and finishes without an error.
+            store = get_store(_cfg(tmp_path).db_path)
+            fid = _example_frame(store)["frame_id"]
+            store.add_step(
+                step_id="s-rcsb",
+                frame_id=fid,
+                kind="fetch",
+                title="Reading search.rcsb.org",
+            )
+            store.update_step(
+                "s-rcsb",
+                status="error",
+                summary="failed: web_fetch: certificate verify failed",
+            )
+        elif index == 6:
+            register("nif3_report.md")
+        return None
+
+    def seed(cfg, runner):
+        seeded["result"] = real_seed(cfg, runner)
+        return seeded["result"]
+
+    monkeypatch.setattr(gateway_mod, "_seed_demo_session", seed)
+    store, content = _seed_with_fake_cells(tmp_path, monkeypatch, behaviour, hub=hub)
+
+    assert "1 step failed along the way" in content
+    assert "- Reading search.rcsb.org: web_fetch: certificate verify failed" in content
+    assert seeded["result"] == {"cells": 6, "failed": 0, "failed_steps": 1}
+    frame = _example_frame(store)
+    assert frame["status"] == "done"  # every cell completed
+    # The page that is watching gets the same text, then the terminal event.
+    fid = frame["frame_id"]
+    tail = [event for event in hub.events if event.get("frame_id") == fid][-2:]
+    assert [event["type"] for event in tail] == ["text_chunk", "frame_update"]
+    assert tail[0]["chunk"] == content + "\n" and tail[0]["block_type"] == "text"
+    assert tail[1]["status"] == "completed"
+
+
+def test_the_example_session_is_failed_when_a_cell_did_not_complete(
+    tmp_path, monkeypatch
+):
+    """CHAT-1: crashed cells used to leave the session `done`."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    hub = _Hub()
+
+    def behaviour(index, register):
+        return "Traceback\nValueError: boom" if index == 4 else None
+
+    store, content = _seed_with_fake_cells(tmp_path, monkeypatch, behaviour, hub=hub)
+
+    assert "1 of 6 example cells did not complete" in content
+    assert "step failed along the way" not in content
+    assert _example_frame(store)["status"] == "failed"
+    assert hub.events[-1]["type"] == "frame_update"
+    assert hub.events[-1]["status"] == "failed"
 
 
 def test_build_app_server_closes_runner_when_startup_raises_before_bind(
