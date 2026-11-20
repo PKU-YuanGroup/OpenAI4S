@@ -1394,6 +1394,13 @@ exit status:
      refusals still print their error line on stderr
   3  the run ended without completing: stop_reason max_turns, no_progress,
      cancelled, or any other value
+  4  the model call failed: no API key (llm_not_configured), a key the
+     provider rejected (llm_auth_failed), a model or endpoint it does not
+     have (llm_model_not_found), a rate limit (llm_rate_limited), an
+     endpoint that could not be reached (llm_unreachable), or another
+     llm_* code; one "error:" line on stderr says what failed and what to
+     check, --json prints the error and its code on stdout, and --debug
+     (or OPENAI4S_DEBUG=1) adds the Python traceback
 
 --json prints the full result, stop_reason included, for exit 0 and 3 alike.
 With --auto the status still follows stop_reason alone; read
@@ -1411,6 +1418,138 @@ def _run_refusal(args, payload: dict) -> int:
     return 2
 
 
+#: `openai4s run` exit status when the model call itself failed. Its own
+#: status so a wrapper can tell "fix the model configuration" from a refusal
+#: (2), a run that ended without completing (3) and a bug (1).
+RUN_LLM_FAILED_EXIT = 4
+
+
+def _provider_error_detail(error) -> str:
+    """The provider's own sentence about a failed call, bounded and redacted.
+
+    A terminal is where the reader needs it ("The API key format is
+    incorrect"), and a provider may echo part of a credential in it, so every
+    credential-shaped word is replaced before it is printed.
+    """
+    from openai4s.observability import redact_text
+
+    body = getattr(error, "body", None)
+    if not isinstance(body, str) or not body.strip():
+        return ""
+    detail = body
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        inner = parsed.get("error")
+        if isinstance(inner, dict):
+            parsed = inner
+        elif isinstance(inner, str):
+            detail = inner
+        if isinstance(parsed.get("message"), str):
+            detail = parsed["message"]
+    detail = " ".join(redact_text(detail).split())
+    return detail[:300] + ("…" if len(detail) > 300 else "")
+
+
+def _run_llm_failure(error, cfg) -> dict:
+    """What failed in a model call and what to check, as `error` + `code`.
+
+    Chosen from the exception's type and its `status` only, never by matching
+    its prose: those are the fields the transport sets deliberately.
+    """
+    from openai4s.llm.models import (
+        MissingCredentialError,
+        TransportError,
+        llm_failure_code,
+    )
+
+    llm = cfg.llm
+    provider = str(getattr(llm, "provider", "") or "")
+    model = str(getattr(llm, "model", "") or "") or "the provider's default"
+    base_url = str(getattr(llm, "base_url", "") or "") or "its default endpoint"
+    key_vars = f"OPENAI4S_{provider.upper()}_API_KEY (or OPENAI4S_LLM_API_KEY)"
+    status = getattr(error, "status", None)
+    code = llm_failure_code(error)
+    if isinstance(error, MissingCredentialError):
+        code = "llm_not_configured"
+        message = (
+            f"no API key is configured for provider {provider!r}. `openai4s "
+            f"run` reads the model from the environment: set {key_vars} in "
+            "the shell or in a .env file (see .env.example), then run it "
+            "again."
+        )
+    elif status in (401, 403):
+        code = "llm_auth_failed"
+        message = (
+            f"the model provider rejected the API key for provider "
+            f"{provider!r} (HTTP {status}). Check {key_vars}."
+        )
+    elif status == 404:
+        code = "llm_model_not_found"
+        message = (
+            f"the model provider has no model {model!r} at {base_url} (HTTP "
+            "404). Check OPENAI4S_LLM_MODEL and OPENAI4S_LLM_BASE_URL."
+        )
+    elif code in ("llm_rate_limited", "llm_request_burst", "llm_upstream_overloaded"):
+        message = (
+            "the model provider is rate-limiting or overloaded"
+            + (f" (HTTP {status})" if status else "")
+            + ". Try again later; OPENAI4S_LLM_MAX_RETRIES and "
+            "OPENAI4S_LLM_RETRY_BUDGET set how long one call keeps retrying."
+        )
+    elif code in ("llm_deadline_exceeded", "llm_stream_timeout"):
+        message = (
+            "the model call timed out. Try again, or raise "
+            "OPENAI4S_LLM_TIMEOUT / OPENAI4S_LLM_TOTAL_TIMEOUT."
+        )
+    elif code is None and isinstance(error, TransportError) and status is None:
+        # No HTTP status means the request never got an answer: a connect,
+        # DNS or read failure by construction.
+        code = "llm_unreachable"
+        message = (
+            f"could not reach the model provider at {base_url}. Check the "
+            "network and OPENAI4S_LLM_BASE_URL."
+        )
+    else:
+        code = code or "llm_error"
+        message = (
+            "the model call failed"
+            + (f" (HTTP {status})" if status else "")
+            + ". Check OPENAI4S_LLM_PROVIDER, OPENAI4S_LLM_MODEL and "
+            "OPENAI4S_LLM_BASE_URL, or try again."
+        )
+    payload: dict = {"error": message, "code": code, "provider": provider}
+    if status is not None:
+        payload["status"] = status
+    detail = _provider_error_detail(error)
+    if detail:
+        payload["detail"] = detail
+    return payload
+
+
+def _run_llm_failed(args, error, cfg, agent) -> int:
+    """Report a failed model call in one paragraph and exit 4, no traceback."""
+
+    if getattr(args, "debug", False) or os.environ.get("OPENAI4S_DEBUG", "").strip():
+        import traceback
+
+        traceback.print_exception(type(error), error, error.__traceback__)
+    payload = _run_llm_failure(error, cfg)
+    frame_id = getattr(agent, "frame_id", None)
+    if frame_id:
+        payload["frame_id"] = str(frame_id)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        line = f"error: {payload['error']}"
+        if payload.get("detail"):
+            line += f" The provider said: {payload['detail']}"
+        print(line, file=sys.stderr)
+    return RUN_LLM_FAILED_EXIT
+
+
 def cmd_run(args) -> int:
     from openai4s.agent import Agent
     from openai4s.agent.loop import (
@@ -1420,6 +1559,7 @@ def cmd_run(args) -> int:
     )
     from openai4s.host.code_evidence import EVIDENCE_REQUIRED_MODES
     from openai4s.kernel.readiness import EnvironmentReadinessError
+    from openai4s.llm.models import LLMError
 
     if not str(getattr(args, "task", "") or "").strip():
         # A blank task is a usage error, refused before any config, store or
@@ -1504,6 +1644,12 @@ def cmd_run(args) -> int:
         else:
             print(f"error: {payload['error']}", file=sys.stderr)
         return 2
+    except LLMError as error:
+        # The most common first failure -- no key, a wrong key, a model name
+        # the provider does not have -- used to surface as an 89-line
+        # traceback with the cause on its last line, and as nothing at all on
+        # stdout under --json.
+        return _run_llm_failed(args, error, cfg, agent)
     if getattr(args, "auto", False):
         # A machine-readable terminal is the point of --auto: CI needs to tell
         # "ran and was verified" from "ran and nobody checked".
@@ -2738,6 +2884,12 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("task", help="the task description")
     pr.add_argument("--json", action="store_true", help="emit full JSON result")
     pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
+    pr.add_argument(
+        "--debug",
+        action="store_true",
+        help="also print the Python traceback when the model call fails "
+        "(same as OPENAI4S_DEBUG=1)",
+    )
     from openai4s.agent.task_modes import TaskMode
 
     pr.add_argument(
