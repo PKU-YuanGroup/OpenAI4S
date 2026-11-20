@@ -188,7 +188,10 @@ _FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
         "metrics": {
             "type": "object",
             "additionalProperties": {"type": "number"},
-            "description": "Optional finite numeric metrics keyed by stable names.",
+            "description": (
+                "Optional finite numeric metrics a reader needs, keyed by short "
+                "plain-language labels rather than code identifiers."
+            ),
         },
         "artifacts": {
             "type": "array",

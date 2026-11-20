@@ -2665,7 +2665,10 @@ open. You do NOT need to call `host.save_artifact`; writing the file is enough.
 summary based only on already-observed results and name the deliverable files. Put a \
 PURE protocol-only submit cell last in that same reply; it is hidden from the \
 Notebook. The submitted output should normally contain `summary`, `findings`, \
-`metrics`, and `limitations` fields so the durable completion view remains useful.
+`metrics`, and `limitations` fields so the durable completion view remains useful. \
+A short follow-up or a direct question is the exception: answer it directly in \
+`summary` and leave out every field that would only repeat that answer. Key \
+`metrics` by short plain-language labels a reader understands, not code identifiers.
 
 Harness tools (an opencode-parity toolset, callable from any ```python cell as host.*):
 - `host.todo_write([{content,status}]) / host.todo_read()` — OPTIONAL progress \

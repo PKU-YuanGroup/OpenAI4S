@@ -550,6 +550,7 @@ def completion_message(
     if summary and not _summary_already_visible(output, summary, previous):
         parts.append(summary)
 
+    structured = False
     for heading_en, heading_zh, keys in (
         ("Key findings:", "关键发现：", _FINDING_KEYS),
         ("Metrics:", "指标：", _METRIC_KEYS),
@@ -557,6 +558,7 @@ def completion_message(
     ):
         value = _first_value(output, keys)
         body = _structured_body(value)
+        structured = structured or bool(body)
         if body and _normalized(body) not in previous:
             parts.append((heading_zh if zh else heading_en) + "\n" + body)
 
@@ -570,9 +572,7 @@ def completion_message(
         for item in bullets
         if str(item).strip() and _normalized(str(item)) not in previous
     ]
-    if fresh_bullets:
-        heading = "完成内容：" if zh else "Completed work:"
-        parts.append(heading + "\n" + "\n".join(f"- {item}" for item in fresh_bullets))
+    bullets_at = len(parts)  # the list goes here, once the artifacts are known
 
     artifact_lines = _artifact_lines(artifacts, trusted_delivery=trusted_delivery)
     # ART-8: scripts, logs and copies of inputs are how the result was made,
@@ -590,6 +590,22 @@ def completion_message(
             else f"Working files (scripts, logs, input copies; {len(process)}):"
         )
         parts.append(heading + " " + ("、" if zh else ", ").join(process))
+
+    # CHAT-5: a direct answer -- one paragraph, nothing structured, no files --
+    # is not followed by a "Completed work" list that only restates it. The
+    # list stays whenever it says more than the paragraph does.
+    direct = (
+        bool(summary)
+        and not structured
+        and not artifact_lines
+        and sum(len(item) for item in fresh_bullets) <= len(summary)
+    )
+    if fresh_bullets and not direct:
+        heading = "完成内容：" if zh else "Completed work:"
+        parts.insert(
+            bullets_at,
+            heading + "\n" + "\n".join(f"- {item}" for item in fresh_bullets),
+        )
 
     if not parts and previous:
         return ""

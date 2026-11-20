@@ -129,6 +129,51 @@ def test_completion_message_renders_scientific_public_fields_as_sections():
     assert '"findings"' not in rendered
 
 
+def test_a_direct_answer_is_one_paragraph_not_a_report():
+    """CHAT-5: "just tell me whether F and p agree" came back as five headed
+    sections. A summary with nothing structured and no files is the answer;
+    a "Completed work" list under it only restates it."""
+    answer = "交互项 F=50.29、p=0.000103，与手工计算完全一致。"
+    spec = {
+        "output": {"summary": answer},
+        "completion_bullets": ["用 statsmodels 复核了交互项"],
+    }
+    assert completion_message(spec, language="zh") == answer
+    english = {
+        "output": {"summary": "Yes: F and p agree with the manual ANOVA."},
+        "completion_bullets": ["Answered the question"],
+    }
+    assert completion_message(english) == "Yes: F and p agree with the manual ANOVA."
+
+    # A list that says more than the paragraph is not dropped.
+    terse = completion_message(
+        {
+            "output": {"summary": "Done."},
+            "completion_bullets": ["Recomputed the ANOVA with statsmodels"],
+        }
+    )
+    assert terse == "Done.\n\nCompleted work:\n- Recomputed the ANOVA with statsmodels"
+
+    # Files or structured sections make it a report again, in the same order.
+    with_file = completion_message(
+        spec, [{"artifact_id": "a-1", "filename": "fig3.png"}], language="zh"
+    )
+    assert with_file.index("完成内容：") < with_file.index("产物：")
+    with_findings = completion_message(
+        {**spec, "output": {"summary": answer, "findings": ["两种算法一致"]}},
+        language="zh",
+    )
+    assert with_findings.index("关键发现：") < with_findings.index("完成内容：")
+
+    # The model is told the same thing, and to label metrics for a reader.
+    from openai4s.agent.finalize import finalize_response_tool_spec
+
+    assert "answer it directly in `summary`" in _GATEWAY_PROMPT_EXTRA
+    assert "would only repeat that answer" in _GATEWAY_PROMPT_EXTRA
+    assert "plain-language labels" in _GATEWAY_PROMPT_EXTRA
+    assert "plain-language labels" in str(finalize_response_tool_spec())
+
+
 def test_code_outcome_narration_uses_real_error_and_redacts_secrets():
     action = CodeCell("python", "raise RuntimeError('hidden source')")
     failed = ExecutionOutcome(
