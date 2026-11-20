@@ -277,7 +277,8 @@ export function palActions(): PaletteItem[] {
     },
     {
       group: t("palette.group.commands"),
-      label: t("palette.action.customize"),
+      // M-35: the sidebar entry and the gear open one modal, called Settings.
+      label: t("common.settings"),
       icon: "sliders",
       run: () => {
         invokeHost(hostFn("openCust"));

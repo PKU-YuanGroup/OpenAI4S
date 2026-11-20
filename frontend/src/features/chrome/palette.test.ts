@@ -267,7 +267,7 @@ describe("F-20 command palette", () => {
 
     // The empty query lists "New session" first. Typing a command and
     // pressing Enter before /search answers must run that command.
-    type(t("palette.action.customize").toLowerCase());
+    type(t("common.settings").toLowerCase());
     enter();
     expect(openCust).toHaveBeenCalledTimes(1);
     expect(newSession).not.toHaveBeenCalled();

@@ -363,7 +363,8 @@ export function sessionMenu(anchor: Element, fid: string): void {
   const items: MenuItem[] = [{ label: t("folder.menu.rename"), icon: "pencil", onClick: () => void renameFrame(fid) }];
   if (frame.running || (fid === currentId.value && running.value)) {
     items.push({
-      label: t("sessionMenu.cancel"),
+      // M-35: the composer's button says Stop; this is the same action.
+      label: t("nb.kernel.stopLabel"),
       icon: "stop",
       onClick: async () => {
         try {
@@ -409,7 +410,7 @@ export function sessionMenu(anchor: Element, fid: string): void {
       ? [
           // M-75: say what it does and what it costs before it starts.
           {
-            label: t("composer.menu.requestReview"),
+            label: reviewT("review.menuLabel"),
             desc: reviewT("review.menuDesc"),
             icon: "eye-context",
             onClick: () => void requestReview(),

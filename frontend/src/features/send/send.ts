@@ -691,7 +691,7 @@ const REBIND_CONFIRM_COPY: Record<"en" | "zh", Record<RebindReason, string>> = {
     moved:
       "The model profile this session was pinned to now names a different provider or endpoint, so its key is not sent to the earlier configuration. Re-bind the session to the active configuration and continue?",
     keyless:
-      "The model profile this session was pinned to has no usable API key. Re-bind the session to the active configuration and continue? (Cancel to add the key in Customize → Models instead.)",
+      "The model profile this session was pinned to has no usable API key. Re-bind the session to the active configuration and continue? (Cancel to add the key in Settings → Models instead.)",
     unreadable:
       "The model configuration this session was pinned to could not be read. Re-bind it to the active configuration and continue?",
     ambiguous:
@@ -703,7 +703,7 @@ const REBIND_CONFIRM_COPY: Record<"en" | "zh", Record<RebindReason, string>> = {
     moved:
       "该会话固定的模型配置现在指向不同的提供商或端点，因此其密钥不会发往原先的配置。是否将该会话改绑到当前启用的配置以继续？",
     keyless:
-      "该会话固定的模型配置没有可用的 API 密钥。是否将该会话改绑到当前启用的配置以继续？（取消后可在 自定义 → 模型 中添加密钥。）",
+      "该会话固定的模型配置没有可用的 API 密钥。是否将该会话改绑到当前启用的配置以继续？（取消后可在 设置 → 模型 中添加密钥。）",
     unreadable: "无法读取该会话固定的模型配置。是否改绑到当前启用的配置以继续？",
     ambiguous:
       "有多个已保存的模型配置与该会话使用的模型匹配，无法确定它当时使用的是哪一个。是否改绑到当前启用的配置以继续？",

@@ -22,6 +22,7 @@ import { customizeOpen, customizeTab, nestedEditor } from "../customize/state";
 import { _titleName, currentId, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { nbT } from "../notebook/copy";
+import { reviewT } from "../send/review-copy";
 import { addToMessageMenu, saveCurrentAsSkill, sessionMenu, sessionOptionsMenu, showContextUsage } from "./actions";
 import { openMenu, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
@@ -275,7 +276,7 @@ describe("M-9: the + menu only adds to the message", () => {
       sessionMenu({} as Element, fid);
       return (vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[]).map((item) => item.label);
     };
-    const moved = [t("composer.menu.requestReview"), t("composer.menu.saveAsSkill"), t("composer.menu.contextUsage")];
+    const moved = [reviewT("review.menuLabel"), t("composer.menu.saveAsSkill"), t("composer.menu.contextUsage")];
     expect(labels("f")).toEqual(expect.arrayContaining(moved));
     expect(labels("g").filter((label) => moved.includes(String(label)))).toEqual([]);
   });

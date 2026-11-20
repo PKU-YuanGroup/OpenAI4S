@@ -195,7 +195,7 @@ export function Shell() {
             </button>
             <button id="customize-btn" class="side-nav-item" type="button">
               <span class="ic" data-icon="sliders" data-icon-size="16" />
-              <span data-i18n="palette.action.customize">Customize</span>
+              <span data-i18n="common.settings">Settings</span>
             </button>
             <button id="files-btn" class="side-nav-item" type="button">
               <span class="ic" data-icon="files" data-icon-size="16" />
