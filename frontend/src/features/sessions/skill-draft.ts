@@ -51,7 +51,10 @@ function oneLine(text: string, max = 120): string {
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
 
-/** A step's one-line description: its first comment, else what it wrote, else its kind. */
+/**
+ * A step's one-line description: its first comment, else what it wrote, else
+ * the functions it defines, else its kind.
+ */
 export function stepSummary(entry: Record<string, unknown>): string {
   const code = String(entry.source || "");
   for (const line of code.split("\n")) {
@@ -62,6 +65,8 @@ export function stepSummary(entry: Record<string, unknown>): string {
   }
   const written = Array.isArray(entry.files_written) ? entry.files_written.map(String).filter(Boolean) : [];
   if (written.length) return oneLine("Writes " + written.slice(0, 4).join(", ") + (written.length > 4 ? ", …" : ""));
+  const defined = [...code.matchAll(/^(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/gm)].map((match) => `${match[1]}()`);
+  if (defined.length) return oneLine("Defines " + defined.slice(0, 4).join(", ") + (defined.length > 4 ? ", …" : ""));
   const language = String(entry.language || "python");
   return language === "r" ? "Run an R cell" : "Run a Python cell";
 }

@@ -8,6 +8,7 @@ describe("Save as Skill from the executed cells (M-84)", () => {
     expect(stepSummary({ source: "#!/usr/bin/env python\nx = 1" })).toBe("Run a Python cell");
     expect(stepSummary({ source: "x = 1", files_written: ["a.csv", "b.png"] })).toBe("Writes a.csv, b.png");
     expect(stepSummary({ source: "x <- 1", language: "r" })).toBe("Run an R cell");
+    expect(stepSummary({ source: "def fit(x):\n    return x\n\ndef plot(y):\n    pass" })).toBe("Defines fit(), plot()");
   });
 
   it("keeps only the latest successful attempt of each cell, in order", () => {
