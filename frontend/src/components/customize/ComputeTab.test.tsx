@@ -55,6 +55,7 @@ vi.mock("../../features/customize/actions", async (importOriginal) => ({
 }));
 
 import { createTimerLease, pendingTimerCount, resetTimerLeases } from "../../features/customize/timers";
+import { teamUser } from "../../features/chrome/team-identity";
 import { ComputeTab } from "./ComputeTab";
 
 type Node = {
@@ -115,6 +116,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", mocks.fetch);
 });
 afterEach(() => {
+  teamUser.value = null;
   resetTimerLeases();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -190,5 +192,54 @@ describe("Compute job polling", () => {
     expect(listed).toContain("done");
     expect(listed).not.toContain("sleep 60");
     expect(pendingTimerCount()).toBe(0);
+  });
+});
+
+describe("Compute tab for a team member (TEAM-24)", () => {
+  const requested = () => mocks.fetch.mock.calls.map(([url]) => String(url));
+  const memberNote = () => find(render(), (node) => node.props?.["data-compute-member-note"] === "");
+  const jobSubmit = () =>
+    find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.jobs.cmdPlaceholder");
+
+  it("asks for neither the SSH hosts nor the daemon jobs, and shows the local facts only", async () => {
+    teamUser.value = { username: "bob", role: "member", kind: "user" };
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(requested()).toContain("/api/v1/compute/gpu");
+    expect(requested()).toContain("/api/v1/compute/local/hostinfo");
+    expect(requested()).not.toContain("/api/v1/compute/remote");
+    expect(requested()).not.toContain("/api/v1/compute/jobs");
+    expect(memberNote()).not.toBeNull();
+    expect(jobSubmit()).toBeNull();
+    expect(find(render(), (node) => node.type === "select")).toBeNull();
+  });
+
+  it("an admin still gets the remote hosts and the jobs", async () => {
+    teamUser.value = { username: "alice", role: "admin", kind: "user" };
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(requested()).toContain("/api/v1/compute/remote");
+    expect(jobReads()).toBe(1);
+    expect(memberNote()).toBeNull();
+    expect(jobSubmit()).not.toBeNull();
+  });
+
+  it("falls back to the member view when the server refuses the host list as admin-only", async () => {
+    // The identity probe has not answered yet: the server's refusal decides.
+    mocks.fetch.mockImplementation((url: string) => {
+      if (url === "/api/v1/compute/remote") {
+        const body = { error: "admin only", code: "admin_only", status: 403 };
+        return Promise.resolve({ ok: false, status: 403, text: () => Promise.resolve(JSON.stringify(body)) });
+      }
+      return reply(url === "/api/v1/compute/jobs" ? RUNNING : {});
+    });
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(jobReads()).toBe(0);
+    expect(memberNote()).not.toBeNull();
+    expect(jobSubmit()).toBeNull();
   });
 });

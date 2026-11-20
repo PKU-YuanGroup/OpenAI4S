@@ -163,6 +163,12 @@ operator's regardless of who is logged in:
 - the legacy compute-job runner (`/compute/jobs`), which executes
   `bash -c <command>` as the daemon's own uid — reads included, since a
   job's row is somebody's command line;
+- reading the daemon account's SSH hosts (`GET /compute/ssh-aliases`,
+  `GET /compute/remote`). Both answer from that account's `~/.ssh/config` —
+  every `Host` alias the operator keeps there, registered with OpenAI4S or
+  not — and the second also opens an SSH connection to each registered host
+  as the daemon. A member's Settings → Compute shows the local kernel
+  environment, read-only;
 - submitting a batch job to either built-in backend
   (`POST /orchestration/jobs`). `local` runs the argv as the daemon,
   outside the kernel sandbox; `cluster` invokes the scheduler with the

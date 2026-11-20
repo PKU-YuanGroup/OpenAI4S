@@ -1082,8 +1082,8 @@ the route index so the surface is discoverable from one place.
 | Method & path | Behavior |
 | --- | --- |
 | `GET /compute/gpu` | Local GPU detection report. |
-| `GET /compute/ssh-aliases` | `{"aliases":[…]}` from `~/.ssh/config`. |
-| `GET /compute/remote` | Registered remote-host info. |
+| `GET /compute/ssh-aliases` | `{"aliases":[…]}` from `~/.ssh/config`. Team mode: admin only (`403 admin_only`) — the file is the daemon account's. |
+| `GET /compute/remote` | Registered remote-host info, plus `available_aliases` from the same file. Team mode: admin only (`403 admin_only`). |
 | `POST /compute/remote` | Body `{alias,label?}`; alias must exist in `~/.ssh/config` (400 otherwise); probes GPUs over SSH → `{"ok":true,"alias",…,"info"}`. |
 | `DELETE /compute/remote/{alias}` | `{"ok":bool}`. |
 | `GET /compute/providers` | `{"providers":[…]}`. |

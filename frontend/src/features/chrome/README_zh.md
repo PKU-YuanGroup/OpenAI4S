@@ -24,6 +24,7 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`palette.ts`](palette.ts) | ⌘K palette。Artifact 命中先开会话再 exact version。查询的本地命令立即显示；回车不会作用于上一次查询的列表。 |
 | [`resizer.ts`](resizer.ts) | 侧栏 / dock 列宽拖拽。键 `os-side-w` / `os-dock-w`。拖拽柄的提示是静态 `data-i18n-title` 标签，字典加载后和切换语言时随之重绘。 |
 | [`resizer.i18n.test.ts`](resizer.i18n.test.ts) | 列宽拖拽柄的提示不会是裸键 `resizer.drag`，并随字典加载和语言切换更新。 |
+| [`team-identity.ts`](team-identity.ts) | `teamUser` 信号（当前登录者，来自 `/auth/me`；单用户模式为 `null`）以及 `isTeamAdmin()` / `isTeamMember()`，供「设置 → 计算」这类视图跳过成员必然被拒绝的请求。 |
 | [`team.test.ts`](team.test.ts) | 身份芯片、admin 面板、guest 重定向、团队模态走陷阱、审计时间按毫秒时间戳显示、晚到的目录读取不会覆盖较新的目录列表、admin 分节标题随界面语言显示。 |
 | [`team.ts`](team.ts) | 团队 IIFE。`/auth/me` 探测；admin/files 模态走陷阱。只有最新一次目录读取会渲染，也只有它会改变上传目标。admin 分节标题取自本地中英文案表。 |
 | [`upload.test.ts`](upload.test.ts) | 选择时刻锁定目的地、四条 batch 匹配、单飞、重试覆盖旧失败、失败集 64 上限；UP-3：每次上传先带 `if_exists: "error"`，保留两者 / 替换 / 取消分别重发或跳过，取消不算失败。 |

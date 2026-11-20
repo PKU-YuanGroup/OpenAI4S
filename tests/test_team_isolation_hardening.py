@@ -691,6 +691,53 @@ def test_a_member_cannot_run_commands_as_the_daemon(daemon):
     assert status == 200
 
 
+def test_only_an_admin_reads_the_daemon_accounts_ssh_hosts(
+    daemon, tmp_path, monkeypatch
+):
+    """TEAM-24: `GET /compute/ssh-aliases` and `GET /compute/remote` answer
+    from the daemon account's `~/.ssh/config`. Registering a remote host was
+    admin-only; the list it is chosen from was not, so Settings -> Compute
+    showed every member the operator's personal host aliases."""
+    home = tmp_path / "operator-home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "config").write_text(
+        "Host gpu-box\n  HostName 192.0.2.10\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    daemon.seed_user("visitor", "fake-pw-v", role="guest")
+    root = _login(daemon, "root", "fake-pw-r")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    visitor = _login(daemon, "visitor", "fake-pw-v")
+
+    for path in ("/api/v1/compute/ssh-aliases", "/api/v1/compute/remote"):
+        status, raw = _get(daemon.port, path, cookie=bob)
+        assert status == 403, f"{path}: {status} {raw[:160]}"
+        assert _body(raw).get("code") == "admin_only", path
+        assert b"gpu-box" not in raw, path
+
+        status, raw = _get(daemon.port, path, cookie=visitor)
+        assert status == 403, f"{path}: {status} {raw[:160]}"
+        assert b"gpu-box" not in raw, path
+
+        status, raw = _get(daemon.port, path)
+        assert status == 401, f"{path}: {status} {raw[:160]}"
+        assert b"gpu-box" not in raw, path
+
+        # the operator still picks from their own file
+        status, raw = _get(daemon.port, path, cookie=root)
+        assert status == 200, f"{path}: {status} {raw[:160]}"
+        assert b"gpu-box" in raw, path
+
+    # What a member's Compute page is built from stays readable.
+    for path in (
+        "/api/v1/compute/gpu",
+        "/api/v1/compute/local/hostinfo",
+        "/api/v1/environments/status",
+    ):
+        status, raw = _get(daemon.port, path, cookie=bob)
+        assert status == 200, f"{path}: {status} {raw[:160]}"
+
+
 def test_a_member_cannot_mutate_the_shared_instance(daemon):
     """Registering a remote compute provider, installing into the venv every
     kernel shares, configuring a connector that carries the group's

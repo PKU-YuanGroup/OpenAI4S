@@ -12,6 +12,7 @@ import { paintIcon } from "../icons/paths";
 import { API } from "./api";
 import { byId, el } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
+import { teamUser, type TeamUser } from "./team-identity";
 
 /**
  * Admin-panel section headings. A local table: the generated
@@ -37,14 +38,6 @@ const SECTION_COPY: Record<"zh" | "en", Record<string, string>> = {
 export function teamSectionTitle(key: string): string {
   return (SECTION_COPY[LANG] || SECTION_COPY.en)[key] || SECTION_COPY.en[key] || key;
 }
-
-type TeamUser = {
-  id?: string;
-  username?: string;
-  role?: string;
-  kind?: string;
-  disabled?: boolean;
-};
 
 type AuthMe = {
   team_mode?: boolean;
@@ -230,6 +223,7 @@ export async function probeTeamAuth(): Promise<void> {
       return;
     }
     const me = r.ok ? ((await r.json()) as AuthMe) : null;
+    teamUser.value = me && me.team_mode === true && me.user ? me.user : null;
     applyIdentity(me);
     applyGovernance(me);
   } catch {

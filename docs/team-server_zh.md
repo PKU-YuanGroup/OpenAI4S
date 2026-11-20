@@ -85,6 +85,7 @@ Seatbelt/bubblewrap 无法建立并通过自测，Cell 即使在
 
 - 写实例配置——LLM 提供方、它的端点与凭据、模型 profile、默认模型。改一下 `llm_base_url`，全员的流量就指向了写的人选的主机。选择**自己的**会话跑在管理员*已保存*的哪个 profile 上则不算实例配置：composer 的选择框会改绑当前打开的会话（`POST /frames/{id}/model-binding {model_id}`），会话所有者或管理员可以这样做，其他成员不行（`403 owner_only`）；同一个选择框的 `PUT /models/default` 仍只有管理员能做，所以成员的切换既不会改默认值，也不会动别人的会话；
 - 旧的 compute-job 运行器（`/compute/jobs`），它以 daemon 自己的 uid 执行 `bash -c <command>`——读也不给，因为一条作业行就是某个人敲下的命令；
+- 读取 daemon 所在账号的 SSH 主机（`GET /compute/ssh-aliases`、`GET /compute/remote`）。两者的答案都来自该账号的 `~/.ssh/config`——运维者写在里面的每一个 `Host` 别名，无论是否注册给了 OpenAI4S——后者还会以 daemon 身份逐个 SSH 探测已注册的主机。成员的「设置 → 计算」只显示本机内核环境的只读信息；
 - 向任一内置 backend 提交批处理作业（`POST /orchestration/jobs`）。`local` 以 daemon 身份、在 kernel 沙箱之外执行 argv；`cluster` 则用 daemon 的 Unix 身份和站点凭据调用调度器。OpenAI4S 没有经过鉴权的“浏览器成员 → 调度器账号”映射，因此两种 backend 都不能当作该成员自己的执行身份；
 - 为会话请求交互式集群放置（`POST /sessions/{id}/compute`），它调用的是同一套 daemon 管理的调度器身份。会话属主可以释放一份已有的分配，但只有管理员可以请求分配；
 - 注册远程算力、通过 `/kernel/install` 或 `/frames/{fid}/kernel/install` 往所有内核共用的 venv 里装包、配置携带组凭据的连接器、往每位成员的 agent 都会加载的目录里发布 skill、重置常设权限规则，以及创建**全局**权限规则（成员可以为自己的会话、或自己参与的项目建规则）。

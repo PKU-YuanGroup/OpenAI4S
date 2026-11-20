@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { t } from "../../i18n";
-import { api, apiErrorText } from "../../features/customize/api";
+import { copyLookup } from "../../i18n/copy";
+import { api, ApiError, apiErrorText } from "../../features/customize/api";
+import { isTeamMember } from "../../features/chrome/team-identity";
 import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import {
@@ -22,6 +24,18 @@ import { markCustomizeLoaded } from "../../features/customize/load";
 import { EnvironmentCard } from "../onboarding/ReadinessPanel";
 import { Hdr, InfoRow } from "./ui";
 
+/** Feature-local: the generated `i18n/en.ts` / `zh.ts` are byte-checked extracts. */
+const computeCopy = copyLookup({
+  zh: {
+    "compute.memberNote":
+      "远程算力、安装依赖包和后台作业由本服务器的管理员管理；这里显示的是本机环境的只读信息。",
+  },
+  en: {
+    "compute.memberNote":
+      "Remote compute, package installs and daemon jobs are managed by this server's administrator. This page shows the local environment, read-only.",
+  },
+});
+
 export function ComputeTab() {
   const alive = useAlive();
   const lease = useTimerLease();
@@ -37,6 +51,10 @@ export function ComputeTab() {
   const [jobCmd, setJobCmd] = useState("");
   const [jobBusy, setJobBusy] = useState(false);
   const [alias, setAlias] = useState("");
+  // Team mode: the SSH host list, remote registration, package installs and
+  // daemon jobs are the operator's (403 `admin_only`). A member's tab is the
+  // local facts, and it does not ask for what it will be refused.
+  const [operatorOnly, setOperatorOnly] = useState(false);
   // One poll chain: each read supersedes the one before it and owns the next
   // tick. Submit and Cancel read too, and every read used to arm a timer of
   // its own, so N chains polled at once and answered out of order.
@@ -90,11 +108,15 @@ export function ComputeTab() {
       setHost(h);
       setEnvs(asList(env && env.environments) as Record<string, unknown>[]);
       markCustomizeLoaded();
+      if (isTeamMember()) return;
       try {
         const info = await api("/compute/remote");
         if (current()) setRemote(info);
-      } catch {
-        /* original swallowed */
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 403 && e.code === "admin_only") {
+          if (current()) setOperatorOnly(true);
+          return;
+        }
       }
       if (current()) await loadJobs();
     },
@@ -109,6 +131,7 @@ export function ComputeTab() {
 
   if (err) return <div>{err}</div>;
 
+  const member = operatorOnly || isTeamMember();
   const readiness = standardProfileReadiness.value as StandardReadiness | null;
   const hosts = remote ? (asList(remote.hosts) as Record<string, unknown>[]) : [];
   const taken = new Set(hosts.map((h) => h.alias));
@@ -292,6 +315,15 @@ export function ComputeTab() {
           />
         );
       })}
+      {member ? (
+        <div class="cust-row" data-compute-member-note="">
+          <div class="info">
+            <div class="ds">{computeCopy("compute.memberNote")}</div>
+          </div>
+        </div>
+      ) : null}
+      {member ? null : (
+      <>
       <div class="cust-row">
         <div class="info">
           <div class="nm">{t("cust.compute.installExtraName")}</div>
@@ -448,6 +480,8 @@ export function ComputeTab() {
           ))
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }
