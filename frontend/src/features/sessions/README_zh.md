@@ -43,8 +43,8 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`load.navigation.test.ts`](load.navigation.test.ts) | 会话/文件夹/分页乱序、按项目划分的读取归属、读取失败及自动打开归属。 |
 | [`actions.export.test.ts`](actions.export.test.ts) | Markdown 导出要求读取成功及结构有效，并固定会话标题。 |
 | [`projects.navigation.test.ts`](projects.navigation.test.ts) | 已过期的项目导航不能覆盖当前会话及会话/文件夹列表；菜单筛选会取消待处理的项目打开（包含 A→B→A 重复筛选），该次打开随即把视图交还——重新加载被它在入口处退役了读取的那个会话；若工作区已显示而没有会话，则打开菜单所选的项目；当前导航将所有权交给其会话。列表读取以所属项目为界，而不是视图代际：同一项目的刷新即使被打开会话或回到 Home 抢先，也照样生效。没有列出任何会话的项目会请求复用未使用的会话。 |
-| [`share.test.ts`](share.test.ts) | 只有剪贴板确认写入后，复制才提示“已复制”；写入被拒绝时如实报告失败，并选中链接以便手动复制。 |
-| [`share.ts`](share.ts) | 分享对话框：创建、复制、更新或撤销会话的只读链接。app.js:7560-7697。 |
+| [`share.test.ts`](share.test.ts) | 只有剪贴板确认写入后，复制才提示“已复制”；写入被拒绝时如实报告失败，并选中链接以便手动复制。中转服务器未连接时，在链接上方（以及创建之前）说明并附最近的错误；毫秒时间戳的 `expires_at` 按日期显示；显示快照的条目数；撤销在对话框内确认，不用 `confirm()`。 |
+| [`share.ts`](share.ts) | 分享对话框：创建、复制、更新或撤销会话的只读链接。app.js:7560-7697。显示中转隧道是否连接（打开期间每 4 秒重读）、快照发布了什么，更新后对话框保持打开。 |
 | [`rejections.test.ts`](rejections.test.ts) | 「发起即不管」的操作失败时会提示，而不是留下未处理的 rejection：会话行菜单、项目菜单的导入与下载项，以及会话刷新触发的仪表盘重载。 |
 | [`projects.ts`](projects.ts) | 项目菜单/模态/研究视图（其时间线卡片：`projectTimelineCard`）、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。打开没有列出任何会话的项目时进入其最新的未使用会话（`reuseEmpty`），而不是每次进入都再建一个空会话。 |
 | [`project-files.ts`](project-files.ts) | 本地源文件夹选择器与只读项目文件浏览器：子文件夹浏览、“显示隐藏文件夹”开关、限长文本预览、重试，以及避免过期读取覆盖界面的请求序号。`projectFolderErrorText` 按错误码把被拒绝的文件夹（保存或选择器）以界面语言说明。项目文件弹窗有自己的带内边距的面板，可直接在某个文件夹或文件处打开（UP-5）。 |

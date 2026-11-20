@@ -11,7 +11,7 @@ vi.mock("./chrome", () => ({ hint: vi.fn() }));
 import { i18nReady, t } from "../../i18n";
 import { copyFailedText } from "../chrome/clipboard";
 import { hint } from "./chrome";
-import { openShareDialog } from "./share";
+import { openShareDialog, shareExpiry, snapshotText, tunnelDownText } from "./share";
 
 class FakeNode {
   tagName: string;
@@ -24,6 +24,7 @@ class FakeNode {
   htmlFor = "";
   value = "";
   readOnly = false;
+  hidden = false;
   tabIndex = 0;
   textContent = "";
   innerHTML = "";
@@ -43,6 +44,13 @@ class FakeNode {
   }
   remove(): void {
     if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
+    this.parent = null;
+  }
+  replaceWith(other: FakeNode): void {
+    const parent = this.parent;
+    if (!parent) return;
+    parent.children = parent.children.map((node) => (node === this ? other : node));
+    other.parent = parent;
     this.parent = null;
   }
   setAttribute(name: string, value: string): void {
@@ -153,5 +161,83 @@ describe("share dialog without a relay (EXP-2)", () => {
     const enable = body.find((node) => node.tagName === "BUTTON" && node.textContent === t("share.enable"));
     expect(enable).not.toBeNull();
     expect(body.find((node) => node.tagName === "OL")).toBeNull();
+  });
+});
+
+describe("share dialog state (TEAM-15, TEAM-16, TEAM-17)", () => {
+  const share = {
+    status: "ready",
+    url: "https://abc.share.example/",
+    share_id: "s1",
+    expires_at: 1795752280157,
+    updated_at: 1795147480157,
+    counts: { messages: 13, cells: 1, artifacts: 2, excluded: { secret_file: 1 } },
+  };
+  const calls: Array<{ method: string; path: string }> = [];
+  function serve(status: Record<string, unknown>, shares: unknown[] = [share]): void {
+    calls.length = 0;
+    vi.stubGlobal("fetch", async (input: unknown, init?: { method?: string }) => {
+      const path = String(input);
+      calls.push({ method: init?.method || "GET", path });
+      const reply = path.endsWith("/share/status") ? status : path.includes("/shares/") ? {} : { shares };
+      return new Response(JSON.stringify(reply));
+    });
+  }
+  const tunnel = () => body.find((node) => node.className === "share-tunnel");
+
+  it("reads a millisecond expires_at as a date, not as a date string", () => {
+    expect(shareExpiry(1795752280157)?.getTime()).toBe(1795752280157);
+    expect(shareExpiry("1795752280157")?.getTime()).toBe(1795752280157);
+    expect(shareExpiry(null)).toBeNull();
+  });
+
+  it("says the link does not open yet while the relay is not connected", async () => {
+    serve({ state: "connecting", configured: true, connected: false, last_error: "ConnectionRefusedError: [Errno 61] Connection refused" });
+    await openShareDialog("f");
+    const note = tunnel();
+    expect(note?.hidden).toBe(false);
+    expect(note?.textContent).toBe(tunnelDownText("ConnectionRefusedError: [Errno 61] Connection refused"));
+    expect(note?.textContent).toContain("Errno 61");
+    expect(body.find((node) => node.className === "share-status offline")).not.toBeNull();
+    const text = allText(body).join("\n");
+    expect(text).not.toContain("Invalid Date");
+  });
+
+  it("shows no warning once the relay is connected", async () => {
+    serve({ state: "connected", configured: true, connected: true });
+    await openShareDialog("f");
+    expect(tunnel()?.hidden).toBe(true);
+    expect(body.find((node) => node.className === "share-status")).not.toBeNull();
+  });
+
+  it("warns before a link is created on a relay that is down", async () => {
+    serve({ state: "connecting", configured: true, connected: false }, []);
+    await openShareDialog("f");
+    expect(tunnel()?.hidden).toBe(false);
+  });
+
+  it("shows what the snapshot publishes", async () => {
+    serve({ state: "connected", connected: true });
+    await openShareDialog("f");
+    expect(allText(body).join("\n")).toContain(snapshotText(share));
+    expect(snapshotText(share)).toMatch(/13 .*1 .*2 .*1 /);
+  });
+
+  it("asks inside the dialog before revoking, and revokes only on that answer", async () => {
+    const nativeConfirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", nativeConfirm);
+    serve({ state: "connected", connected: true });
+    await openShareDialog("f");
+    const revoke = body.find((node) => node.tagName === "BUTTON" && node.textContent === t("share.revoke"));
+    revoke!.onclick!();
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    const ask = body.find((node) => node.className === "share-row share-confirm");
+    expect(ask).not.toBeNull();
+    const yes = ask!.find((node) => node.tagName === "BUTTON" && node.textContent === t("share.revoke"));
+    await yes!.onclick!();
+    expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual([
+      expect.stringContaining("/shares/s1"),
+    ]);
   });
 });

@@ -2732,6 +2732,10 @@ html[data-theme="dark"] #dash-project-search{background-image:url("data:image/sv
 .share-title{margin:0;font:400 28px/1.2 var(--serif);letter-spacing:-.02em;color:var(--text-000)}
 .share-status{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text-200)}
 .share-status::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--success)}
+.share-status.offline::before{background:var(--danger)}
+.share-tunnel{margin:0;padding:12px 14px;border-radius:var(--radius);background:var(--warn-bg);color:var(--warn-text);font-size:14px;line-height:1.55}
+.share-tunnel[hidden]{display:none}
+.share-confirm .share-actions{flex:none}
 .share-close{position:absolute;top:28px;right:28px;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:1px solid var(--border);border-radius:999px;background:var(--bg);color:var(--text-000);cursor:pointer}
 .share-close:hover{background:var(--bg-100)}
 .share-text{margin:0;font-size:15px;line-height:1.6;color:var(--text-200)}
