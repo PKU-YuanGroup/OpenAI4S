@@ -117,6 +117,7 @@ import {
   cancelFramedRender,
   chatStep,
   interleaveHistory,
+  lastStoredTurnKey,
   renderEmptySession,
   renderMissingSession,
   scheduleFramedRender,
@@ -490,6 +491,30 @@ let idleRetries: { fid: string; gen: number; left: number } | null = null;
 const IDLE_RETRIES = 2;
 
 const idle = (): boolean => !liveStream.value && historyUnconfirmed.value === 0 && !running.value;
+
+/**
+ * SYNC-13: a turn whose live prose is not what was stored is shown as a reload
+ * would show it. Text streamed but never stored (a retry notice, a sentence cut
+ * by a Stop) stayed on screen until the next reload. At the turn's end the
+ * newest page is read, and only when the stored turn's prose differs from what
+ * streamed is the transcript re-read (one atomic swap, the reader's scroll
+ * position kept, as every GET-only re-read is). A turn that started meanwhile
+ * owns the screen, and nothing is repainted.
+ */
+export async function reconcileFinishedTurn(fid: string, gen: number, liveKey: string): Promise<boolean> {
+  if (!liveKey || !current(fid, gen) || !idle()) return false;
+  let page: Awaited<ReturnType<typeof fetchRecentMessages>>;
+  try {
+    page = await fetchRecentMessages(fid, MESSAGE_PAGE_SIZE);
+  } catch {
+    return false;
+  }
+  if (!current(fid, gen) || !idle()) return false;
+  const stored = lastStoredTurnKey(uniqueMessages(page.messages) as StoredMessage[]);
+  if (stored === null || stored === liveKey) return false;
+  await recoverConversation(fid, gen);
+  return true;
+}
 
 /** One terminal event can request one fresh read after an in-flight GET settles. */
 export function alignHistoryAfterTurn(fid: string, gen = _openGen.value): void {

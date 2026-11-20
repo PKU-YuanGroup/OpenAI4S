@@ -11,7 +11,7 @@ import { isReady } from "../../compat/stub";
 import "./messages.css";
 import { registerMessageHandlers } from "./handlers";
 import { insertMessageByTime, renderStored } from "./list";
-import { openConversation, recoverConversation, alignHistoryAfterTurn, bindTranscriptLanguage } from "./open";
+import { openConversation, recoverConversation, alignHistoryAfterTurn, bindTranscriptLanguage, reconcileFinishedTurn } from "./open";
 import { down, updateJumpPill } from "./scroll";
 import { feed, flushRender, startStream, _mdStableCut } from "./stream";
 
@@ -93,6 +93,7 @@ export function installMessages(
   target.openConversation = openConversation;
   target.recoverConversation = recoverConversation;
   target.alignHistoryAfterTurn = alignHistoryAfterTurn;
+  target.reconcileFinishedTurn = reconcileFinishedTurn;
   target.down = down;
   target.updateJumpPill = updateJumpPill;
   target.insertMessageByTime = insertMessageByTime;

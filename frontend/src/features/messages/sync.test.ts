@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLang } from "../../i18n/runtime";
-import { currentId } from "../../stores/session";
+import { _openGen, currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { _replayGap, _seqSeen, _streamEpoch, permCards, running, stream } from "../../stores/stream";
 import { installSend } from "../send";
@@ -23,6 +23,7 @@ import { onEvent, resetWsHandlers } from "../ws/registry";
 import { registerMessageHandlers } from "./handlers";
 import {
   interleaveHistory,
+  lastStoredTurnKey,
   prependHistory,
   renderMissingSession,
   renderStored,
@@ -35,6 +36,7 @@ import { flushScrollNow, unbindMessageScroll, updateJumpPill } from "./scroll";
 import type { LiveStream } from "./stream";
 import { turnTextKey } from "./turnGroup";
 import { bindTurnStatus, notePassingHint, noteResumingHint, resetTurnStatus } from "./turnStatus";
+import { reconcileFinishedTurn } from "./open";
 import { settleLiveCellCard } from "./cardState";
 import { turnDone } from "../send/turn";
 import { t } from "../../i18n/runtime";
@@ -1406,5 +1408,70 @@ describe("a missing session", () => {
     } finally {
       teamUser.value = null;
     }
+  });
+});
+
+// --------------------------------------------------------------------------
+// SYNC-13: a turn reads at its end as a reload shows it
+// --------------------------------------------------------------------------
+
+describe("a finished turn and its stored rows", () => {
+  it("keys the newest stored turn as a reload assembles it", () => {
+    const row = (role: string, content: string, extra: Record<string, unknown> = {}) => ({ role, content, ...extra });
+    expect(lastStoredTurnKey([row("user", "Fit it"), row("assistant", "Loading."), row("assistant", "Done:  fitted.")])).toBe(
+      "Loading. Done: fitted.",
+    );
+    // A stopped marker closes its turn; it is not prose.
+    expect(
+      lastStoredTurnKey([
+        row("user", "Fit it"),
+        row("assistant", "Loading."),
+        row("assistant", "Stopped by user", { cancelled: { reason: "user" } }),
+      ]),
+    ).toBe("Loading.");
+    // The page does not reach the turn's question: unknown, not "different".
+    expect(lastStoredTurnKey([row("assistant", "Loading.")])).toBeNull();
+  });
+
+  it("re-reads the transcript only when what streamed is not what was stored", async () => {
+    const urls: string[] = [];
+    const stored = {
+      messages: [
+        { role: "user", content: "Fit it", seq: 1, message_id: "m-1" },
+        { role: "assistant", content: "Done: fitted.", seq: 2, message_id: "m-2" },
+      ],
+      has_earlier: false,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(String(url));
+        return json(String(url).includes("/messages") ? stored : String(url).includes("/status") ? { running: false } : []);
+      }),
+    );
+    const gen = _openGen.value;
+    // The same prose: one read of the newest page, no repaint.
+    expect(await reconcileFinishedTurn("f-1", gen, "Done: fitted.")).toBe(false);
+    expect(urls.filter((url) => !url.includes("/messages"))).toEqual([]);
+    // A retry notice streamed live but never stored: the transcript is re-read.
+    urls.length = 0;
+    expect(await reconcileFinishedTurn("f-1", gen, "The model service is busy; retrying (attempt 2)… Done: fitted.")).toBe(true);
+    expect(urls.some((url) => !url.includes("/messages"))).toBe(true);
+    // Another session's turn, or a turn that started meanwhile, is left alone.
+    expect(await reconcileFinishedTurn("f-2", gen, "x")).toBe(false);
+    running.value = true;
+    expect(await reconcileFinishedTurn("f-1", gen, "x")).toBe(false);
+  });
+
+  it("is asked for at a turn's end with what streamed", async () => {
+    const asked: unknown[][] = [];
+    vi.stubGlobal("reconcileFinishedTurn", (...args: unknown[]) => asked.push(args));
+    renderStored({ role: "user", content: "Fit it", message_id: "m-1" });
+    running.value = true;
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent({ type: "text_chunk", root_frame_id: "f-1", block_type: "text", chunk: "Done:\n\n fitted." });
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    await Promise.resolve();
+    expect(asked).toEqual([["f-1", _openGen.value, "Done: fitted."]]);
   });
 });

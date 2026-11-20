@@ -707,6 +707,29 @@ export function historyTurns(): HistoryTurns {
 }
 
 /**
+ * The prose key a reload gives the newest turn of `rows` (oldest first), as
+ * `historyTurns` assembles it: the assistant rows after the last user row, up
+ * to a stopped marker that closes it. Null when the page does not reach that
+ * turn's question (its start is on an earlier page).
+ */
+export function lastStoredTurnKey(rows: StoredMessage[]): string | null {
+  const prose: string[] = [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const m = rows[i] as StoredMessage;
+    const text = messageText(m);
+    if (!text.trim()) continue;
+    if (m.role === "user") return turnTextKey(prose.join("\n\n"));
+    // A stopped marker ends its turn: rows after it are a turn of their own.
+    if (cancelledIdentity(m.cancelled)) {
+      if (prose.length) return turnTextKey(prose.join("\n\n"));
+      continue;
+    }
+    prose.unshift(text);
+  }
+  return null;
+}
+
+/**
  * A Notebook REPL cell's persisted step (`input.origin === "notebook"`). The
  * live chat never showed it -- a manual cell is not an agent turn -- so the
  * reopened transcript leaves it out too, rather than showing it alone above
