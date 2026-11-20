@@ -1278,7 +1278,10 @@ def cmd_status(args) -> int:
         return 1
     pid = _read_pid(cfg)
     if not pid or not _daemon_alive(cfg, pid):
-        print(_not_running_line(cfg))
+        if getattr(args, "json", False):
+            print(json.dumps({"running": False, "data_dir": str(cfg.data_dir)}))
+        else:
+            print(_not_running_line(cfg))
         return 1
     endpoint = _recorded_endpoint(cfg, pid)
     # confirm via /health
@@ -1304,6 +1307,9 @@ def cmd_status(args) -> int:
                 or recorded != pid
             ):
                 state = None
+            # Everything the text form says, so a script that wants the port
+            # does not have to parse the sentence. The plain origin, as there.
+            host, port = endpoint if endpoint is not None else (cfg.host, cfg.port)
             print(
                 json.dumps(
                     {
@@ -1311,6 +1317,11 @@ def cmd_status(args) -> int:
                         "pid": pid,
                         "version": (state or {}).get("version"),
                         "bundle_id": (state or {}).get("bundle_id"),
+                        "url": _url(cfg, with_token=False, endpoint=endpoint),
+                        "host": host,
+                        "port": port,
+                        "model": health.get("model"),
+                        "data_dir": str(cfg.data_dir),
                     }
                 )
             )
@@ -2956,7 +2967,10 @@ def build_parser() -> argparse.ArgumentParser:
     ps.set_defaults(fn=cmd_serve)
     pstatus = sub.add_parser("status", help="check daemon status")
     pstatus.add_argument(
-        "--json", action="store_true", help="machine-readable running build"
+        "--json",
+        action="store_true",
+        help="machine-readable: running, pid, version, url, host, port, model, "
+        "data_dir",
     )
     pstatus.set_defaults(fn=cmd_status)
     pdoc = sub.add_parser(

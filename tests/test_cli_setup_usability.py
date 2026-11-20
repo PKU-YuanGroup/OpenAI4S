@@ -554,3 +554,71 @@ def test_setup_dry_run_names_the_conda_env_and_where_it_goes(
         "directory: micromamba env create -f" in out
     )
     assert f"[r] conda env 'r' already exists at {existing_r}" in out
+
+
+# --------------------------------------------------------------------------
+# `status --json`: what the text form says, for scripts
+# --------------------------------------------------------------------------
+
+
+def test_status_json_carries_the_address_model_and_data_dir(
+    tmp_path, monkeypatch, capsys
+):
+    """CLI-14. The text form showed the URL, model and data dir; `--json`
+    had only running/pid/version/bundle_id, so a script that wanted the port
+    had to parse the sentence."""
+    import json
+
+    cli = _cli()
+    cfg = Config(data_dir=tmp_path, host="127.0.0.1", port=8760)
+
+    class _Health:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        @staticmethod
+        def read():
+            return b'{"status": "ok", "model": "demo-model"}'
+
+    monkeypatch.setattr(cli, "get_config", lambda **_: cfg)
+    monkeypatch.setattr(cli, "_read_pid", lambda _cfg: 4321)
+    monkeypatch.setattr(cli, "_daemon_alive", lambda _cfg, _pid: True)
+    monkeypatch.setattr(cli, "_recorded_endpoint", lambda _cfg, _pid: ("::1", 9222))
+    monkeypatch.setattr(
+        cli,
+        "_recorded_state",
+        lambda _cfg: {"pid": 4321, "version": "9.9", "bundle_id": "b"},
+    )
+    monkeypatch.setattr(cli, "_open_daemon", lambda *_a, **_k: _Health())
+
+    assert cli.cmd_status(type("A", (), {"json": True})()) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "running": True,
+        "pid": 4321,
+        "version": "9.9",
+        "bundle_id": "b",
+        "url": "http://[::1]:9222/",
+        "host": "::1",
+        "port": 9222,
+        "model": "demo-model",
+        "data_dir": str(tmp_path),
+    }
+
+
+def test_status_json_when_not_running_is_still_json(tmp_path, monkeypatch, capsys):
+    """CLI-14. `status --json` with no daemon printed the human sentence."""
+    import json
+
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path))
+
+    assert _cli().main(["status", "--json"]) == 1
+
+    assert json.loads(capsys.readouterr().out) == {
+        "running": False,
+        "data_dir": str(tmp_path),
+    }
