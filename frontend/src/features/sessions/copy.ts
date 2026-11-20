@@ -145,6 +145,11 @@ export const dashCopy = copyLookup({
     "dash.sessions.allAbove": "Running sessions and the ones waiting for you are listed above.",
     "dash.status.done": "Finished",
     "dash.status.failed": "Failed",
+    "dash.status.cancelled": "Stopped",
+    "dash.status.blocked_by_guardian": "Blocked",
+    "dash.status.failed.tip": "The last turn failed",
+    "dash.status.cancelled.tip": "The last turn was stopped before it finished",
+    "dash.status.blocked_by_guardian.tip": "The last turn was blocked by a safety check",
     "dash.example.project": "Example project",
     "dash.example.tag": "Example",
   },
@@ -159,6 +164,11 @@ export const dashCopy = copyLookup({
     "dash.sessions.allAbove": "正在运行和等你处理的会话显示在上方。",
     "dash.status.done": "已完成",
     "dash.status.failed": "失败",
+    "dash.status.cancelled": "已停止",
+    "dash.status.blocked_by_guardian": "已拦截",
+    "dash.status.failed.tip": "上一轮失败了",
+    "dash.status.cancelled.tip": "上一轮在完成前被停止",
+    "dash.status.blocked_by_guardian.tip": "上一轮被安全检查拦截",
     "dash.example.project": "示例项目",
     "dash.example.tag": "示例",
   },
@@ -334,3 +344,21 @@ export const projectActivityCopy = copyLookup({
     links: "文件的来源（{0}）",
   },
 });
+
+/**
+ * SCI-17 / SYNC-28: how a session's last turn ended, when it did not simply
+ * finish -- as words and an icon, never a colour alone. `null` for a finished,
+ * running or new session. Shared by the sidebar row and the home list.
+ */
+export function lastTurnOutcome(
+  status: string | null | undefined,
+): { kind: "failed" | "cancelled" | "blocked_by_guardian"; label: string; tip: string; icon: string } | null {
+  const icons = { failed: "alert-triangle", cancelled: "stop-square", blocked_by_guardian: "lock" } as const;
+  if (status !== "failed" && status !== "cancelled" && status !== "blocked_by_guardian") return null;
+  return {
+    kind: status,
+    label: dashCopy("dash.status." + status),
+    tip: dashCopy("dash.status." + status + ".tip"),
+    icon: icons[status],
+  };
+}

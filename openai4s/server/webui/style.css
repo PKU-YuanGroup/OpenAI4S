@@ -130,6 +130,9 @@ button{font:inherit;cursor:pointer}
 .d-dot.failed{border-color:var(--danger);background:var(--danger)}
 .d-row .d-status{font-size:11px;font-weight:600;border-radius:10px;padding:2px 8px;white-space:nowrap}
 .d-row .d-status.failed{color:var(--danger);background:var(--danger-bg)}
+.d-row .d-status{display:inline-flex;align-items:center;gap:4px}
+.d-row .d-status.blocked_by_guardian{color:var(--danger);background:var(--danger-bg)}
+.d-row .d-status.cancelled{color:var(--text-200);background:var(--bg-200)}
 .d-dot.live{border-color:var(--success);background:var(--success);box-shadow:0 0 0 3px var(--success-bg);animation:os-pulse 1.4s ease-in-out infinite}
 .d-run{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:var(--success-text);background:var(--success-bg);border-radius:10px;padding:1px 8px;white-space:nowrap;flex:none}
 .d-run .d-run-dot{width:6px;height:6px;border-radius:50%;background:var(--success);animation:os-pulse 1.4s ease-in-out infinite}
@@ -2113,6 +2116,11 @@ html[data-theme="dark"] .toggle:disabled{background:var(--bg-300)}
 /* a turn blocked on an approval request: not a spinner, a call to act */
 .session.awaiting .s-dot{border:0;background:var(--warn);animation:none}
 .s-badge.run.approval{background:var(--warn-bg);color:var(--warn-text);font-weight:600}
+/* SCI-17 / SYNC-28: how the last turn ended, in words with an icon. */
+.s-badge.outcome{display:inline-flex;align-items:center;gap:3px;font-weight:500}
+.s-badge.outcome+.s-badge.live{margin-left:6px}
+.s-badge.outcome.failed,.s-badge.outcome.blocked_by_guardian{background:var(--danger-bg);color:var(--danger)}
+.s-badge.outcome.cancelled{background:var(--bg-200);color:var(--text-200)}
 .jump-pill.approval{border-color:var(--warn);background:var(--warn-bg);color:var(--warn-text)}
 .jump-pill.approval:hover{background:var(--warn-bg);color:var(--warn-text)}
 .folder-head{height:36px;padding:0 12px;border-radius:var(--radius);font-size:14px;font-weight:500;color:var(--text-000)}
