@@ -14,7 +14,7 @@ describe("Markdown export requires confirmed reads", () => {
     resetStoreFields(); vi.mocked(hint).mockClear(); clicks.mockClear(); blobs.length = 0;
     messages.fetchAllMessages.mockReset().mockResolvedValue({ messages: [], complete: true });
     sessions.value = [{ id: "f", name: "Original session" }];
-    vi.stubGlobal("document", { createElement: () => ({ click: clicks }) });
+    vi.stubGlobal("document", { createElement: () => ({ click: clicks }), querySelector: () => null });
     vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => { blobs.push(blob as Blob); return "blob:export"; });
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     vi.useFakeTimers();
@@ -39,11 +39,13 @@ describe("Markdown export requires confirmed reads", () => {
   });
 
   it("freezes the export title before asynchronous reads", async () => {
-    let finish!: (response: Response) => void;
-    vi.stubGlobal("fetch", () => new Promise<Response>((resolve) => { finish = resolve; }));
+    // Artifacts and the execution log are both read (TEAM-12).
+    const pending: Array<(response: Response) => void> = [];
+    vi.stubGlobal("fetch", () => new Promise<Response>((resolve) => { pending.push(resolve); }));
     const exportDone = exportSession("f");
     sessions.value = [];
-    finish(new Response("[]")); await exportDone;
+    await vi.waitFor(() => expect(pending.length).toBe(2));
+    pending.forEach((finish) => finish(new Response("[]"))); await exportDone;
     expect(clicks).toHaveBeenCalledOnce();
     expect(await blobs[0]!.text()).toContain("# Original session");
   });

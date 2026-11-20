@@ -104,6 +104,7 @@ class _BackgroundJob:
         "_flush_timer",
         "turn_id",
         "stop_requested",
+        "origin",
     )
 
     def __init__(self, exec_id: str, code: str, *, persistent: bool = False):
@@ -134,6 +135,7 @@ class _BackgroundJob:
         # stop it too; None for a user/REPL launch, which no turn owns.
         self.turn_id: str | None = None
         self.stop_requested = False
+        self.origin = "agent"
 
     def _on_chunk(self, text: str) -> None:
         if not text:
@@ -253,6 +255,7 @@ class BackgroundExecutor:
         persistent = self.receipts is not None
         job = _BackgroundJob(exec_id, code, persistent=persistent)
         job.turn_id = str(turn_id) if turn_id else None
+        job.origin = str(origin or "agent")
         # Enter before claiming a process slot.  Foreground capture and this
         # increment are decided under the coordinator's one short lock, so a
         # background worker can never appear in the check/start gap.
@@ -405,6 +408,13 @@ class BackgroundExecutor:
                         terminal_status = "failed"
                         terminal_error = "background execution cleanup failed"
                 finally:
+                    self._note_outcome(
+                        job,
+                        status=terminal_status,
+                        error=terminal_error,
+                        interrupted=terminal_interrupted,
+                        result=terminal_result,
+                    )
                     try:
                         self._exit_lifetime(job)
                     except BaseException:
@@ -471,6 +481,44 @@ class BackgroundExecutor:
             "status": "running",
             "persistent": persistent,
         }
+
+    @staticmethod
+    def _note_outcome(
+        job: _BackgroundJob,
+        *,
+        status: str,
+        error: str | None,
+        interrupted: bool,
+        result: dict | None,
+    ) -> None:
+        """Hand the finished job to a lifetime that records it (TEAM-11).
+
+        The Web session's lifetime writes the job into the Notebook as a
+        background cell -- its source and what it printed -- so the code that
+        made a figure is in the Notebook, the .ipynb and the session package.
+        Called before the lifetime exits, which is where its capture runs. A
+        lifetime without the hook (CLI, tests) records nothing; a failure
+        never changes the job's outcome.
+        """
+
+        note = getattr(job._lifetime, "record_background_outcome", None)
+        if not callable(note):
+            return
+        usage = result.get("usage") if isinstance(result, dict) else None
+        try:
+            note(
+                {
+                    "code": job.code,
+                    "origin": job.origin,
+                    "status": status,
+                    "stdout": job.stdout_so_far(),
+                    "error": error,
+                    "interrupted": bool(interrupted),
+                    "usage": usage if isinstance(usage, dict) else {},
+                }
+            )
+        except Exception:  # noqa: BLE001 - recording is best effort
+            pass
 
     def _record_launch_failed(self, exec_id: str, error: str) -> None:
         receipts = self.receipts

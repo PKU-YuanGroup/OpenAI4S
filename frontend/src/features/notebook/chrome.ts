@@ -113,13 +113,13 @@ export type NotebookExportOption = {
 /** Export labels the generated i18n dictionaries do not carry. */
 const EXPORT_COPY = {
   en: {
-    clean: "Download notebook (.ipynb)",
+    clean: "Download notebook (.ipynb; .zip with Python and R)",
     raw: "Raw execution log (every cell, zip)",
     rawPython: "Raw Python execution log (.ipynb)",
     rawR: "Raw R execution log (.ipynb)",
   },
   zh: {
-    clean: "下载 Notebook (.ipynb)",
+    clean: "下载 Notebook（.ipynb；同时有 Python 和 R 时为 .zip）",
     raw: "原始执行日志（全部单元，打包 .zip）",
     rawPython: "原始 Python 执行日志 (.ipynb)",
     rawR: "原始 R 执行日志 (.ipynb)",

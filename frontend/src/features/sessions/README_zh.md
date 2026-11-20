@@ -27,6 +27,8 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`dashboard.sessions.test.ts`](dashboard.sessions.test.ts) | 仪表盘轮询用一个定时器驱动「运行中」卡片和所有搭载者，启动时立即读取一次。仪表盘的会话列表与示例 CTA：`/frames` 读取失败时如实提示并提供重试，保留上次读到的行，而不是显示没有会话并推荐示例；无论有多少次重绘与它的首次状态读取竞争，CTA 的状态轮询都只跑一份，离开仪表盘之后也不会再启动。 等待审批的会话只出现在「需要处理」，运行中的只出现在「运行中」；「最近会话」会说明会话都在上方，而不是提供示例；运行中卡片的副标题不重复标题；示例分析的状态提示跟随运行，并说明有几个单元没有完成。 种子示例项目的名称和标签跟随界面语言。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer 辅助；`FRAME_ROUTE` / `PROJECT_ROUTE` / `routesToWorkspace` 由 `routeInitialView` 与 Shell 首帧共用。`setTitle` 从静态 `data-i18n-val` 标签手中接管 `#conv-title`。 `ago` 使用共享的、随界面语言变化的相对时间（`chrome/dom.ts`）。 |
 | [`icon.ts`](icon.ts) | 本车道菜单、行和 `[data-icon]` 标记用的 `icon` / `iconEl` / `paintIcons`。图形路径取自共享的 `icons/paths.ts` 表。 |
+| [`imported.ts`](imported.ts) | M-66：当打开的会话是被隔离的导入副本（读 `/kernel` 状态，再跟随 Recovery 动作）时，在对话上方显示“只读副本”横幅，并可打开 Recovery 面板里需确认的「全新重启」；输入框被禁用并说明原因，切到其他会话时恢复。由 `boot.ts` 安装。 |
+| [`imported.test.ts`](imported.test.ts) | 隔离的副本显示横幅并禁用输入框；普通会话不受影响；切到下一个普通会话时恢复输入框；已不在打开状态的会话的迟到结果被忽略。 |
 | [`index.ts`](index.ts) | 对外 re-export；import 时挂 window 名字。 |
 | [`lane.ts`](lane.ts) | 用 `isReady` 包一层，调用后续车道的 window 名字。 |
 | [`load.ts`](load.ts) | `loadSessions` 游标走页；`loadProjects` keyset 分页（不发 `offset`），项目目录与仪表盘搜索各自分页；文件夹、`renderSessions`。 |
@@ -36,6 +38,10 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`load.replace.test.ts`](load.replace.test.ts) | 防抖搜索还在等回复时点击「加载更多」会被拒绝：此前它会拿到更新的代号却带着**旧**查询和旧游标发请求，搜索回复因此被当作过期丢弃，旧筛选的第二页落在了新输入的搜索框下面。 |
 | [`load.projects.test.ts`](load.projects.test.ts) | 项目列表查询串不含 `offset`；合并/去重；空态 / 重试 / 加载更多的视图状态。 |
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / 更早消息条。 |
+| [`package.ts`](package.ts) | 会话包导入对话框（文件、校验、校验结果、导入，然后打开会话或给出导入器拒绝的原因；TEAM-20），以及会话包 / 产物 zip 的导出：先取回字节，被拒绝时显示原因，完成时说明保存了什么（TEAM-13）。`flash` 是会自动消失的状态行。 |
+| [`package.test.ts`](package.test.ts) | 导入被拒绝时在对话框里显示（而不只写进隐藏的输入框提示），校验失败不会导入，校验通过则打开会话；导出会话包报告大小，409 会被报告而不是被下载。 |
+| [`markdown-export.ts`](markdown-export.ts) | “导出为 Markdown”（TEAM-12）：每个回合一节，按执行顺序附上每个单元的源码和截断后的输出，图片产物以 data URI 内嵌在产生它的单元下，站内链接只保留文字。 |
+| [`markdown-export.test.ts`](markdown-export.test.ts) | 每个回合一个标题、代码与输出按顺序且不含完成调用、图片内嵌在其单元下且不留 `/api/` 链接、长输出被截断、只在预算内内嵌图片。 |
 | [`paging.test.ts`](paging.test.ts) | 分页常量、会话排序、走页/去重、仪表盘过滤。 |
 | [`paging.ts`](paging.ts) | `MESSAGE_PAGE_SIZE=300`、`SESSION_MAX_PAGES=50`、排序/走页/过滤。 |
 | [`navigation.ts`](navigation.ts) | 视图代际与同步的目录清理。刻意不承担列表读取归属：列表读取以所属项目为界。 |
@@ -43,8 +49,8 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`load.navigation.test.ts`](load.navigation.test.ts) | 会话/文件夹/分页乱序、按项目划分的读取归属、读取失败及自动打开归属。 |
 | [`actions.export.test.ts`](actions.export.test.ts) | Markdown 导出要求读取成功及结构有效，并固定会话标题。 |
 | [`projects.navigation.test.ts`](projects.navigation.test.ts) | 已过期的项目导航不能覆盖当前会话及会话/文件夹列表；菜单筛选会取消待处理的项目打开（包含 A→B→A 重复筛选），该次打开随即把视图交还——重新加载被它在入口处退役了读取的那个会话；若工作区已显示而没有会话，则打开菜单所选的项目；当前导航将所有权交给其会话。列表读取以所属项目为界，而不是视图代际：同一项目的刷新即使被打开会话或回到 Home 抢先，也照样生效。没有列出任何会话的项目会请求复用未使用的会话。 |
-| [`share.test.ts`](share.test.ts) | 只有剪贴板确认写入后，复制才提示“已复制”；写入被拒绝时如实报告失败，并选中链接以便手动复制。 |
-| [`share.ts`](share.ts) | 分享对话框：创建、复制、更新或撤销会话的只读链接。app.js:7560-7697。 |
+| [`share.test.ts`](share.test.ts) | 只有剪贴板确认写入后，复制才提示“已复制”；写入被拒绝时如实报告失败，并选中链接以便手动复制。中转服务器未连接时，在链接上方（以及创建之前）说明并附最近的错误；毫秒时间戳的 `expires_at` 按日期显示；显示快照的条目数；撤销在对话框内确认，不用 `confirm()`。 |
+| [`share.ts`](share.ts) | 分享对话框：创建、复制、更新或撤销会话的只读链接。app.js:7560-7697。显示中转隧道是否连接（打开期间每 4 秒重读）、快照发布了什么，更新后对话框保持打开。 |
 | [`rejections.test.ts`](rejections.test.ts) | 「发起即不管」的操作失败时会提示，而不是留下未处理的 rejection：会话行菜单、项目菜单的导入与下载项，以及会话刷新触发的仪表盘重载。 |
 | [`projects.ts`](projects.ts) | 项目菜单/模态/研究视图（其时间线卡片：`projectTimelineCard`）、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。打开没有列出任何会话的项目时进入其最新的未使用会话（`reuseEmpty`），而不是每次进入都再建一个空会话。 |
 | [`project-files.ts`](project-files.ts) | 本地源文件夹选择器与只读项目文件浏览器：子文件夹浏览、“显示隐藏文件夹”开关、限长文本预览、重试，以及避免过期读取覆盖界面的请求序号。`projectFolderErrorText` 按错误码把被拒绝的文件夹（保存或选择器）以界面语言说明。项目文件弹窗有自己的带内边距的面板，可直接在某个文件夹或文件处打开（UP-5）。 |

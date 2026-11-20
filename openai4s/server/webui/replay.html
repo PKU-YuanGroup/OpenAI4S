@@ -4,53 +4,70 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenAI4S — session replay</title>
-<!-- Only for the document language (saved pick, else the browser's). -->
 <script src="/static/theme-bootstrap.js"></script>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 15px/1.6 -apple-system, system-ui, sans-serif; max-width: 46rem;
-         margin: 4vh auto 8vh; padding: 0 1.5rem; color: #222; }
-  h1 { font-size: 1.15rem; }
-  .bar { display: flex; gap: 8px; margin: 1em 0 1.6em; }
-  input { flex: 1; padding: .5em .7em; border: 1px solid #d4d4d8; border-radius: 6px;
-          font: inherit; background: transparent; color: inherit; }
-  button { padding: .5em 1em; border: 0; border-radius: 6px; background: #2563eb;
-           color: #fff; font: inherit; cursor: pointer; }
-  .msg { margin: 1em 0; padding: .8em 1em; border-radius: 8px; background: rgba(127,127,127,.08); }
-  .msg.user { border-left: 3px solid #2563eb; }
-  .msg .who { font-size: .75rem; font-weight: 700; text-transform: uppercase;
-              letter-spacing: .04em; color: #71717a; margin-bottom: .3em; }
-  pre { overflow-x: auto; background: rgba(127,127,127,.12); padding: .7em .9em;
-        border-radius: 6px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
-  .cell-out { color: #52525b; }
-  #err { color: #dc2626; }
-  .meta { font-size: .8rem; color: #71717a; }
+  :root { color-scheme: light dark; --fg: #1f1f1f; --muted: #6b6b6b; --line: #e3e1dc;
+          --panel: rgba(127,127,127,.07); --code: rgba(127,127,127,.12); --accent: #c96442;
+          --bg: #faf9f5; --danger: #b42318; }
+  [data-theme="dark"] { --fg: #e8e6e1; --muted: #a3a09a; --line: #3a3936;
+          --panel: rgba(255,255,255,.05); --code: rgba(255,255,255,.08); --bg: #1f1e1d;
+          --danger: #f97066; }
+  body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif; max-width: 48rem;
+         margin: 4vh auto 8vh; padding: 0 1.25rem; color: var(--fg); background: var(--bg); }
+  h1 { font-size: 1.15rem; margin: 0 0 .2em; }
+  h2 { font-size: 1rem; margin: 2em 0 .6em; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 1em 0 1.4em; }
+  input, select { flex: 1 1 14rem; min-width: 0; padding: .5em .7em; border: 1px solid var(--line);
+          border-radius: 8px; font: inherit; background: transparent; color: inherit; }
+  button { padding: .5em 1.1em; border: 1px solid var(--line); border-radius: 8px;
+           background: var(--fg); color: var(--bg); font: inherit; cursor: pointer; }
+  .msg { margin: 1em 0; padding: .7em 1em; border-radius: 10px; background: var(--panel); }
+  .msg.user { border-left: 3px solid var(--accent); }
+  .who { font-size: .75rem; font-weight: 600; letter-spacing: .03em; color: var(--muted);
+         margin-bottom: .3em; }
+  .msg p { margin: .45em 0; }
+  .msg ul, .msg ol { margin: .4em 0; padding-left: 1.4em; }
+  .msg h3, .msg h4 { font-size: 1em; margin: .8em 0 .3em; }
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code);
+         padding: .05em .3em; border-radius: 4px; }
+  pre { overflow-x: auto; background: var(--code); padding: .7em .9em; border-radius: 8px;
+        font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap; word-break: break-word; margin: .5em 0; }
+  pre code { background: none; padding: 0; }
+  .out { color: var(--muted); }
+  .err-out { color: var(--danger); }
+  figure { margin: .6em 0; }
+  figure img, .art img { max-width: 100%; border-radius: 6px; border: 1px solid var(--line); }
+  figcaption, .meta { font-size: .8rem; color: var(--muted); }
+  .arts { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 10px; }
+  .art { padding: .6em; border: 1px solid var(--line); border-radius: 10px; }
+  .art a { color: inherit; word-break: break-all; }
+  #err { color: var(--danger); }
   .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  #who { font-size: .85rem; color: #71717a; display: flex; align-items: center; gap: 10px; }
-  #who button { padding: .25em .7em; font-size: .8rem; background: transparent; color: inherit;
-                border: 1px solid #d4d4d8; }
+  #who { font-size: .85rem; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+  #who button { padding: .25em .7em; font-size: .8rem; background: transparent; color: inherit; }
   #list { margin: .4em 0 1.2em; }
   #list h2 { font-size: .95rem; margin: 0 0 .4em; }
-  #list a { display: block; padding: .45em .7em; margin: .2em 0; border-radius: 6px;
-            color: inherit; text-decoration: none; background: rgba(127,127,127,.08); }
-  #list a:hover { background: rgba(127,127,127,.16); }
-  #list .when { float: right; font-size: .75rem; color: #71717a; }
-  @media (prefers-color-scheme: dark) { body { background: #18181b; color: #e4e4e7; } }
+  #list a { display: block; padding: .45em .7em; margin: .2em 0; border-radius: 8px;
+            color: inherit; text-decoration: none; background: var(--panel); }
+  #list a:hover { background: var(--code); }
+  #list .when { float: right; font-size: .75rem; color: var(--muted); }
 </style>
 </head>
 <body>
 <div class="head">
-  <h1>OpenAI4S · Read-only session replay</h1>
+  <h1 id="heading">OpenAI4S · Read-only session replay</h1>
   <div id="who"></div>
 </div>
 <div id="list"></div>
-<div class="bar">
-  <input id="sid" placeholder="session id (f-…)" spellcheck="false">
-  <button id="go">Open</button>
-</div>
+<form class="bar" id="open-form">
+  <input id="sid" placeholder="session id (f-…)" spellcheck="false" autocomplete="off">
+  <button id="go" type="submit">Open</button>
+</form>
 <div id="err" role="alert"></div>
 <div id="meta" class="meta"></div>
 <div id="transcript"></div>
+<div id="artifacts"></div>
 <script src="/static/replay.js"></script>
 </body>
 </html>

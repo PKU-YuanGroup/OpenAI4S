@@ -31,8 +31,18 @@ def _canonical(payload) -> bytes:
     ).encode("utf-8")
 
 
-def _make_package(tmp_path: Path, files: dict[str, bytes] | None = None) -> Path:
-    """A package built the way the exporter builds one."""
+def _make_package(
+    tmp_path: Path,
+    files: dict[str, bytes] | None = None,
+    *,
+    package_format: str = "openai4s.sealed-archive",
+) -> Path:
+    """An archive sealed the way the exporter seals one.
+
+    Its default format is one no importer reads, so these tests see the hash
+    layer on its own; what the verifier adds for a session package is covered
+    at the end of this file.
+    """
     payload = (
         files
         if files is not None
@@ -42,7 +52,7 @@ def _make_package(tmp_path: Path, files: dict[str, bytes] | None = None) -> Path
         }
     )
     body = {
-        "format": "openai4s.session",
+        "format": package_format,
         "schema_version": 1,
         "files": [
             {"path": n, "size": len(d), "sha256": hashlib.sha256(d).hexdigest()}
@@ -280,3 +290,71 @@ def test_a_single_oversized_member_is_refused(tmp_path):
     with pytest.raises(EvidenceError) as error:
         verify_package(big)
     assert "too large" in str(error.value).lower()
+
+
+# --------------------------------------------------------------------------
+# a session package is also held to the importer's own checks
+# --------------------------------------------------------------------------
+
+
+def test_a_hash_clean_session_package_no_importer_accepts_does_not_verify(tmp_path):
+    """Every hash matches and the archive is still not a package anyone can
+    import. Saying "OK" to it is how a verified file came to be refused on
+    import; the verifier now asks the importer's preflight and repeats its
+    reason."""
+    report = verify_package(_make_package(tmp_path, package_format="openai4s.session"))
+    assert report["ok"] is False
+    assert report["importable"] is False
+    assert report["problems"] == [
+        "the importer would refuse this package: session package is incomplete: "
+        "capabilities.json, environment.json, ledger.json, lineage.json, "
+        "memory.json, permissions.json, plans.json, review.json, session.json, "
+        "snapshots.json"
+    ]
+
+
+def test_the_importer_is_not_asked_about_bytes_already_known_to_be_modified(tmp_path):
+    def mutate(files):
+        files["notebook.json"] = b'{"tampered": true}'
+
+    report = verify_package(
+        _rebuild(
+            _make_package(tmp_path, package_format="openai4s.session"),
+            tmp_path / "t.zip",
+            mutate,
+        )
+    )
+    assert report["importable"] is None
+    assert all("importer" not in problem for problem in report["problems"])
+
+
+def test_a_real_export_verifies_with_no_daemon_or_store(tmp_path):
+    """The importer's preflight is archive-only too: a real session package
+    verifies in a bare environment, and the report says the importer agreed."""
+    import subprocess
+    import sys
+
+    from tests.test_session_package import _source
+
+    store, domain, _project, root, *_rest = _source(tmp_path)
+    try:
+        package = tmp_path / "real.openai4s-session.zip"
+        package.write_bytes(domain.session_export(root)["data"])
+    finally:
+        store.close()
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json;"
+            "from openai4s.evidence import verify_package;"
+            f"report = verify_package({str(package)!r});"
+            "print(json.dumps([report['ok'], report['importable'],"
+            " report['problems']]))",
+        ],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path.cwd())},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == [True, True, []]

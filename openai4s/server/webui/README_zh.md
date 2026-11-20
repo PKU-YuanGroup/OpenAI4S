@@ -28,7 +28,7 @@
 | [`login.html`](login.html) | 团队模式登录页（`OPENAI4S_TEAM_MODE`）。加载 `theme-bootstrap.js` 与 `style.css`，因此与工作台同一套主题、字体和语言；自身的规则内联、只使用样式表里的变量，可执行代码在共享 CSP 下保持外链。两种模式下都在 `/login` 提供；守卫把未登录的浏览器 303 到这里，深链接通过 `?next=` 带上。 |
 | [`login.js`](login.js) | 登录页脚本：中英文案表，中文/EN 与浅色/深色切换（写入工作台自己的 `os-lang` / `os-theme`），POST `/api/v1/auth/login`，按 `code` 用当前语言说明拒绝原因；成功后跳到校验过的同源 `?next=`（否则首页）——已登录或团队模式关闭时也一样。 |
 | [`replay.html`](replay.html) | 只读回放查看页（M2-3）——guest 的全部界面，也是成员的快速一瞥。在登录守卫之后的 `/replay` 提供，网关也把 guest 打开工作台页面的请求送到这里（会话链接会直接打开那个会话）；只用内联样式，借 `theme-bootstrap.js` 取界面语言，脚本外链以过 CSP。 |
-| [`replay.js`](replay.js) | 显示当前登录者（带退出登录）和这个账号可以查看的会话（`GET /api/v1/auth/me/replays`），再拉取 `GET /api/v1/sessions/{id}/replay`（现场构建的脱敏 web-share view.json），把消息与科学 cell 渲染成朴素的转录稿。 |
+| [`replay.js`](replay.js) | 显示当前登录者（带退出登录）和这个账号可以查看的会话（团队模式下为 `GET /api/v1/auth/me/replays`，单用户模式为自己的会话），再拉取 `GET /api/v1/sessions/{id}/replay`（现场构建的脱敏 web-share view.json），按发生顺序渲染消息与科学单元：每个单元的源码和输出（后台任务会标出），助手的 Markdown 经一个只建 DOM 节点的小渲染器（会话文本从不当作 HTML 解析），以及读者可打开的图和产物。回车打开 id；中英文案。 |
 | [`favicon_anim_64.gif`](favicon_anim_64.gif) | 打包的 favicon 源文件：动画解码的帧来自它，静态回退图标也是它。 |
 | [`index.html`](index.html) | Dashboard、对话 Workspace、composer、右侧 dock、dialog 与设置的可访问 DOM 骨架。它在首屏绘制前应用主题，并引用静态脚本与样式。 |
 | [`scientific_renderers.js`](scientific_renderers.js) | 零依赖的 sequence/MSA、genome、Molfile/SMILES、LaTeX 解析与辅助函数，外加渲染器描述符校验。它们只产出普通数据、绝不产出 HTML，DOM 由查看器依据这些记录构建；一层薄薄的 UMD 包装让 Node 契约测试能直接导入同一个文件。现行 table/image/PDF/HTML/text 展示在 `frontend/` 中；旧版实现保留在 `app.js` 中。 |
