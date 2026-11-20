@@ -145,6 +145,64 @@ def test_code_outcome_narration_uses_real_error_and_redacts_secrets():
     assert "hidden source" not in text
 
 
+def test_the_failure_headline_is_the_exception_line_not_the_last_line():
+    """CHAT-3: the chat said "这个 Cell 执行失败：`^^^^^^^`" because a patsy
+    error ends with the formula and a caret line under its exception header."""
+    action = CodeCell("python", "smf.ols('lag_h ~ C(rpoS) * C(relA)', data=params)")
+    patsy = (
+        "Traceback (most recent call last):\n"
+        '  File "site-packages/patsy/compat.py", line 40, in call_and_wrap_exc\n'
+        "    return f(*args, **kwargs)\n"
+        '  File "<string>", line 1, in <module>\n'
+        "TypeError: 'Series' object is not callable\n"
+        "\n"
+        "The above exception was the direct cause of the following exception:\n"
+        "\n"
+        "Traceback (most recent call last):\n"
+        '  File "<kernel:47>", line 7, in <module>\n'
+        '    model = smf.ols("lag_h ~ C(rpoS) * C(relA)", data=sub).fit()\n'
+        "            ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+        '  File "site-packages/patsy/compat.py", line 43, in call_and_wrap_exc\n'
+        "    raise new_exc from e\n"
+        "patsy.PatsyError: Error evaluating factor: TypeError: 'Series' object "
+        "is not callable\n"
+        "    lag_h ~ C(rpoS) * C(relA)\n"
+        "            ^^^^^^^"
+    )
+
+    def narrate(error: str, language: str = "zh") -> str:
+        outcome = ExecutionOutcome(
+            observation=f"[Observation]\nERROR (cell line 7):\n{error}\n"
+            "[system] The cell stopped at the first exception."
+        )
+        return outcome_narration(action, outcome, language)
+
+    zh = narrate(patsy)
+    assert "^^^" not in zh and "lag_h ~" not in zh
+    assert (
+        "`patsy.PatsyError: Error evaluating factor: TypeError: 'Series' object "
+        "is not callable`" in zh
+    )
+    assert "`patsy.PatsyError: Error evaluating factor" in narrate(patsy, "en")
+
+    # No traceback header (a compile error): the last ``Name: message`` line.
+    syntax = '  File "<kernel:3>", line 1\n    x = = 1\n        ^\nSyntaxError: invalid syntax'
+    assert "`SyntaxError: invalid syntax`" in narrate(syntax)
+    # An exception with no message is still the headline.
+    bare = (
+        "Traceback (most recent call last):\n"
+        '  File "<kernel:3>", line 1, in <module>\n    assert ok\n           ^^\n'
+        "AssertionError"
+    )
+    assert "`AssertionError`" in narrate(bare)
+    # Nothing recognisable: the last line that is not a caret/underline line.
+    r_error = (
+        "Error in library(ggplot2) :\n  there is no package called 'ggplot2'\n  ^~~~"
+    )
+    assert "there is no package called" in narrate(r_error)
+    assert "^~~~" not in narrate(r_error)
+
+
 def test_a_refused_host_call_is_narrated_as_a_refusal_not_a_failure():
     # A denial used to read "这个 Cell 执行失败：RuntimeError: bash: host
     # authorization unavailable; command was not executed": the user's own

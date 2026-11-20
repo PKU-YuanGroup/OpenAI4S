@@ -462,14 +462,52 @@ def _error_headline(observation: str) -> str:
         "\n[system]"
     ):
         return ""
-    lines = [line.strip() for line in match.group("body").splitlines() if line.strip()]
-    if not lines:
+    headline = _exception_line(match.group("body"))
+    if not headline:
         return "execution error"
-    headline = lines[-1]
     headline = _BEARER.sub("Bearer <redacted>", headline)
     headline = _SECRET_ASSIGNMENT.sub(r"\1\2<redacted>", headline)
     headline = headline.replace("`", "'")
     return headline[:240]
+
+
+#: ``Name`` or ``Name: message`` at column 0, dotted names included
+#: (``patsy.PatsyError: ...``, ``KeyboardInterrupt``).
+_EXCEPTION_HEADER = re.compile(r"(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?::(?:\s.*)?)?")
+#: A traceback's caret/underline line, which points at code and says nothing.
+_MARKER_LINE = re.compile(r"[\s^~]+")
+_TRACEBACK_START = "Traceback (most recent call last):"
+
+
+def _exception_line(body: str) -> str:
+    """The line that names the exception, not whatever line came last.
+
+    A multi-line exception message ends with its own detail -- patsy prints
+    the formula and a caret line under ``PatsyError: ...`` -- so the last line
+    of a traceback can be ``^^^^^^^`` (CHAT-3). Python prints the exception
+    header as the first unindented line after the last traceback's frames;
+    without a traceback (a SyntaxError, an R error) it is the last unindented
+    ``Name: message`` line, and failing that the last line that is not a marker.
+    """
+    lines = [line.rstrip() for line in body.splitlines() if line.strip()]
+    start = max(
+        (index for index, line in enumerate(lines) if line == _TRACEBACK_START),
+        default=-1,
+    )
+    if start >= 0:
+        for line in lines[start + 1 :]:
+            if line[0].isspace():
+                continue
+            if _EXCEPTION_HEADER.fullmatch(line):
+                return line
+            break
+    for line in reversed(lines):
+        if not line[0].isspace() and ":" in line and _EXCEPTION_HEADER.fullmatch(line):
+            return line
+    for line in reversed(lines):
+        if not _MARKER_LINE.fullmatch(line):
+            return line.strip()
+    return ""
 
 
 def _section_body(observation: str, marker: str) -> str:
