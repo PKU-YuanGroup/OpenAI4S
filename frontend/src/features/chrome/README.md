@@ -17,7 +17,8 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 | [`index.ts`](index.ts) | `bootChrome()`: window assignments, keydown, binds, `bootTeam`. Each step is isolated, so one that throws cannot leave the rest unbound. |
 | [`layout.test.ts`](layout.test.ts) | `os-layout` persistence, compact/wide classes, column-width clamp, blocked site storage, and `bootChrome()` binding every later step after one throws while leaving `#files-btn` to artifacts. |
 | [`layout.ts`](layout.ts) | `applyLayout` / `setLayout`. Key `os-layout`. |
-| [`mic.ts`](mic.ts) | SpeechRecognition dictation onto `#composer`. |
+| [`mic.ts`](mic.ts) | SpeechRecognition dictation onto `#composer`. A recognition error is shown as what happened and what to do (`micErrorText`: a blocked microphone points at the site settings), never the raw code; the user's own stop (`aborted`) shows nothing. The workbench document is served with `microphone=(self)` for this. |
+| [`mic.test.ts`](mic.test.ts) | Error codes read as plain-language advice in both UI languages; `aborted` stays quiet. |
 | [`modal.test.ts`](modal.test.ts) | Trap stack, Tab cycle, Esc, focus restore, team fallback selectors, a drag that ends on the scrim not closing, and the deferred first focus leaving a control already focused inside the modal. |
 | [`modal.ts`](modal.ts) | Verbatim focus trap (stack / Tab / Esc / restore). The first focus waits a frame for the content and is skipped when focus already moved inside the modal. The scrim closes only when the press started on it too. |
 | [`palette.test.ts`](palette.test.ts) | M-03 Artifact hit, stub-safe `isReady`, out-of-order `PAL.gen`, a failed skills catalog retried rather than cached, a failed session open handled rather than left unhandled, Enter acting on the typed query while `/search` is in flight. |

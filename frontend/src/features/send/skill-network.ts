@@ -33,6 +33,9 @@ const COPY: CopyTable = {
     "net.blocked.reason": "原始原因",
     "net.blocked.search":
       "{0} 把本会话联网限定为 {1} 个域名，已启用的搜索引擎都不在其中，这次检索没有发出——这不是「网上没有结果」。",
+    "net.notice.lost": "本会话因此不能再使用这些内置连接器：{0}。",
+    "net.blocked.next": "本会话的这个限制无法解除。要访问其他网站，请在新会话中继续——新会话没有加载这个技能，你的上一条消息会放进输入框。",
+    "net.blocked.newSession": "在新会话中继续",
   },
   en: {
     "net.notice.title": "Loaded {0}: this session's network is limited to {1}",
@@ -49,6 +52,10 @@ const COPY: CopyTable = {
     "net.blocked.reason": "Original reason",
     "net.blocked.search":
       "{0} limits this session's network to {1}, and none of the enabled search engines is one of them, so the search was not sent. This is not \"no results\".",
+    "net.notice.lost": "This session can no longer use these built-in connectors: {0}.",
+    "net.blocked.next":
+      "This session's limit cannot be lifted. To reach other sites, continue in a new session: it has not loaded this Skill, and your last message is put in the message box.",
+    "net.blocked.newSession": "Continue in a new session",
   },
 };
 
@@ -67,6 +74,8 @@ export type SkillNetworkView = {
   skills: string[];
   /** The union the session is held to. */
   domains: string[];
+  /** Built-in connectors the limit takes away (SCI-14); empty when none or unknown. */
+  unavailable?: string[];
 };
 
 type StepLike = { kind?: string; output?: unknown; input?: unknown };
@@ -88,7 +97,12 @@ export function noticeView(step: StepLike): SkillNetworkView | null {
   const domains = strings(out.domains);
   const skills = strings(out.skills);
   const skill = String(out.skill || skills[skills.length - 1] || "");
-  return { skill, skills: skills.length ? skills : [skill], domains };
+  return {
+    skill,
+    skills: skills.length ? skills : [skill],
+    domains,
+    unavailable: strings(out.unavailable_connectors),
+  };
 }
 
 /** A Skill load card that narrowed the session, or null. */
@@ -100,7 +114,12 @@ export function loadView(step: StepLike): SkillNetworkView | null {
   if (!domains.length) return null;
   const skills = strings(session.skills);
   const skill = String(out.name || rec(step.input).name || skills[0] || "");
-  return { skill, skills: skills.length ? skills : [skill], domains };
+  return {
+    skill,
+    skills: skills.length ? skills : [skill],
+    domains,
+    unavailable: strings(session.unavailable_connectors),
+  };
 }
 
 export type BlockedView = SkillNetworkView & {
@@ -162,8 +181,39 @@ export function networkNoticeBody(view: SkillNetworkView): HTMLElement {
   if (view.skills.length > 1) {
     box.appendChild(el("div", "s-net-text", netT("net.notice.skills", view.skills.join(", "))));
   }
+  // SCI-14: what the limit takes away, before the first refused lookup says so.
+  if (view.unavailable && view.unavailable.length) {
+    box.appendChild(el("div", "s-net-text s-net-lost", netT("net.notice.lost", view.unavailable.join(", "))));
+  }
   box.appendChild(domainList(view.domains));
   return box;
+}
+
+/** The newest user message on screen, for the new session's message box. */
+function lastUserMessage(): string {
+  if (typeof document === "undefined") return "";
+  const bubbles = document.querySelectorAll("#messages .msg.user .bubble");
+  const last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+  return String((last && last.textContent) || "").trim();
+}
+
+/**
+ * SCI-14: the way out of a limit that cannot be lifted. A new session in the
+ * same project has no Skill bound, and the user's last request goes into its
+ * message box (unsent) unless the box already holds something.
+ */
+export async function continueInNewSession(): Promise<void> {
+  const draft = lastUserMessage();
+  const open = (globalThis as Record<string, unknown>).newSession;
+  if (typeof open !== "function") return;
+  await (open as () => Promise<void> | void)();
+  const composer = typeof document !== "undefined" ? (document.getElementById("composer") as HTMLTextAreaElement | null) : null;
+  if (!composer) return;
+  if (draft && !composer.value.trim()) {
+    composer.value = draft;
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  composer.focus();
 }
 
 /** What a refused request's card says, with the server's reason kept below. */
@@ -175,6 +225,18 @@ export function blockedBody(view: BlockedView, reason: string): HTMLElement {
     ? netT("net.blocked.search", who, count)
     : netT("net.blocked.explain", who, count, view.destination || "?");
   box.appendChild(el("div", "s-net-text", text));
+  // SCI-14: what to do now. The "why" above was clear; the way out was not.
+  const next = el("div", "s-net-next");
+  next.appendChild(el("div", "s-net-text", netT("net.blocked.next")));
+  const again = el("button", "outline-btn small s-net-new", netT("net.blocked.newSession")) as HTMLButtonElement;
+  again.type = "button";
+  again.onclick = (event) => {
+    // The card itself toggles open on click; this is not a toggle.
+    event.stopPropagation();
+    void continueInNewSession();
+  };
+  next.appendChild(again);
+  box.appendChild(next);
   if (view.domains.length) box.appendChild(domainList(view.domains));
   if (reason) {
     box.appendChild(el("div", "s-net-head", netT("net.blocked.reason")));

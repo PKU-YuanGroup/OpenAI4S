@@ -17,7 +17,8 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`index.ts`](index.ts) | `bootChrome()`：window 赋值、快捷键、绑定、`bootTeam`。每一步相互隔离，某一步抛错不会让其余绑定落空。 |
 | [`layout.test.ts`](layout.test.ts) | `os-layout` 持久化、compact/wide 类、列宽钳制、站点存储被禁用，以及某一步抛错后 `bootChrome()` 仍绑定其后各步，且不再重复绑定归 artifacts 所有的 `#files-btn`。 |
 | [`layout.ts`](layout.ts) | `applyLayout` / `setLayout`。键 `os-layout`。 |
-| [`mic.ts`](mic.ts) | SpeechRecognition 把口述写进 `#composer`。 |
+| [`mic.ts`](mic.ts) | SpeechRecognition 把口述写进 `#composer`。识别出错时显示发生了什么、该怎么办（`micErrorText`：麦克风被禁止时指向站点设置），不再直接显示原始错误码；用户自己停止（`aborted`）时不提示。为此工作台页面以 `microphone=(self)` 下发。 |
+| [`mic.test.ts`](mic.test.ts) | 错误码在两种界面语言下都翻成直白的提示；`aborted` 不提示。 |
 | [`modal.test.ts`](modal.test.ts) | 陷阱栈、Tab 循环、Esc、焦点恢复、团队 fallback 选择器、在遮罩上松开的拖选不会关闭弹窗，以及延后一帧的初始聚焦不会抢走弹窗内已获得焦点的控件。 |
 | [`modal.ts`](modal.ts) | 逐字焦点陷阱（栈 / Tab / Esc / 恢复）。初始聚焦延后一帧等内容渲染；若焦点在此之前已进入弹窗内部，则不再改动。只有按下也发生在遮罩上时，点击遮罩才会关闭。 |
 | [`palette.test.ts`](palette.test.ts) | M-03 Artifact 命中、stub 安全的 `isReady`、乱序 `PAL.gen`、技能目录读取失败时不缓存而是下次重试、会话打开失败被处理而不是留下未处理的 rejection、`/search` 未返回时回车作用于当前输入的查询。 |

@@ -11,7 +11,7 @@ async function openFiles(page, fid, pid) {
   await page.locator('.files-scope [data-scope="frame"]').click();
 }
 // ART-12: the type filter is a select of human kinds ("" = all, table, image,
-// report, code, other), no longer a MIME substring box.
+// report, code, structure, other), no longer a MIME substring box.
 async function filter(page, query = "", kind = "", origin = "all") {
   await page.locator(".files-search").fill(query);
   await page.locator(".files-filter-type").selectOption(kind);
@@ -21,7 +21,7 @@ async function filter(page, query = "", kind = "", origin = "all") {
 // `artifact-index?kind=` filter (one category table on both sides) rather
 // than re-implemented here.
 async function kindOf(api, pid, row) {
-  for (const kind of ["table", "image", "report", "code", "other"]) {
+  for (const kind of ["table", "image", "report", "code", "structure", "other"]) {
     const result = await api(`/projects/${pid}/artifact-index?q=${encodeURIComponent(row.filename)}&kind=${kind}&limit=50`);
     assert.equal(result.status, 200);
     if ((result.body.artifacts || []).some((a) => (a.artifact_id || a.id) === row.id)) return kind;

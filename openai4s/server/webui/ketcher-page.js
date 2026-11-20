@@ -37,9 +37,37 @@
       return;
     }
     const text = await response.text();
+    const name = shownName(response);
     const editor = ketcher();
-    if (editor && editor.setMolecule) await editor.setMolecule(text);
-    status.textContent = "loaded " + artifactId;
+    if (editor && editor.setMolecule) await editor.setMolecule(editorInput(text, name));
+    // The file's name, which the person knows, rather than its internal id.
+    status.textContent = "loaded " + (name || artifactId);
+  }
+
+  // A .smi file is one "SMILES name" record per line, which the editor does
+  // not read as such (SCI-26): it gets the SMILES alone, joined as one
+  // multi-fragment SMILES, so every record is drawn.
+  function editorInput(text, name) {
+    if (!/\.(smi|smiles)$/i.test(name || "")) return text;
+    const smiles = String(text)
+      .split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/)[0])
+      .filter((token) => token && token.charAt(0) !== "#");
+    return smiles.length ? smiles.join(".") : text;
+  }
+
+  function shownName(response) {
+    const header = response.headers.get("content-disposition") || "";
+    const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header);
+    if (encoded) {
+      try {
+        return decodeURIComponent(encoded[1]);
+      } catch (error) {
+        /* fall back to the plain parameter */
+      }
+    }
+    const plain = /filename="([^"]*)"/i.exec(header);
+    return plain ? plain[1] : "";
   }
 
   window.addEventListener("message", (event) => {

@@ -269,6 +269,36 @@
   font-size: 24px;
   pointer-events: auto;
 }
+/* M-84: the nested editor scrolls; its Save stays in view at the bottom
+   instead of half under the box's edge on a short window. */
+#cust .cust-nested-box .form-actions {
+  position: sticky;
+  bottom: -24px;
+  margin-bottom: -24px;
+  padding: 12px 0 24px;
+  background: var(--bg, #faf9f5);
+}
+/* "Save as Skill": the session's steps, each of which can be left out. */
+#cust .skill-steps {
+  margin: 4px 0 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+#cust .skill-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-200);
+}
+#cust .skill-step input {
+  margin-top: 3px;
+}
 .prof-cap[data-state="true"] {
   color: var(--success-text, inherit);
 }

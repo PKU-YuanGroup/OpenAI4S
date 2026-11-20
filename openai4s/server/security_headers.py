@@ -335,6 +335,22 @@ def security_headers(*, frame_src: Sequence[str] = ()) -> dict[str, str]:
     }
 
 
+def workbench_security_headers(*, frame_src: Sequence[str] = ()) -> dict[str, str]:
+    """The shell profile for the workbench document itself.
+
+    Identical to `security_headers` except that the document may use the
+    microphone: the composer's voice input (SpeechRecognition) is refused
+    `not-allowed` under `microphone=()` before the browser ever asks the user.
+    `(self)` is this origin only, so a frame from another origin -- the
+    artifact sandbox is served from the other loopback name on purpose --
+    still gets nothing. Satellite pages, previews and the API keep the
+    denial; camera and geolocation stay denied everywhere.
+    """
+    headers = security_headers(frame_src=frame_src)
+    headers["Permissions-Policy"] = "geolocation=(), microphone=(self), camera=()"
+    return headers
+
+
 __all__ = [
     "artifact_content_security_policy",
     "artifact_security_headers",
@@ -344,4 +360,5 @@ __all__ = [
     "sandboxed_artifact_content_security_policy",
     "sandboxed_artifact_security_headers",
     "security_headers",
+    "workbench_security_headers",
 ]

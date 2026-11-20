@@ -181,6 +181,10 @@ from openai4s.server.delivery import (
     CompletionDeliveryService,
     DeliveryValidationError,
 )
+from openai4s.server.download_provenance import (
+    DOWNLOAD_TOOL,
+    record_download_sources,
+)
 from openai4s.server.errors import (
     ERROR_CODES,
     INTERNAL_ERROR_MESSAGE,
@@ -238,6 +242,7 @@ from openai4s.server.security_headers import (
     ketcher_editor_security_headers,
     sandboxed_artifact_security_headers,
     security_headers,
+    workbench_security_headers,
 )
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
@@ -724,11 +729,22 @@ def _guess_ctype(name: str) -> str:
     # structure / science formats first (mimetypes mis-maps some, e.g. .pdb)
     if low.endswith((".pdb", ".cif", ".mmcif", ".ent")):
         return "chemical/x-pdb"
-    if low.endswith((".mol", ".mol2", ".sdf")):
+    # SCI-26: one type per format. `.mol` was typed as an SD file, and `.smi`
+    # fell through to mimetypes, which calls it SMIL multimedia.
+    if low.endswith(".sdf"):
         return "chemical/x-mdl-sdfile"
+    if low.endswith(".mol"):
+        return "chemical/x-mdl-molfile"
+    if low.endswith(".mol2"):
+        return "chemical/x-mol2"
+    if low.endswith((".smi", ".smiles")):
+        return "chemical/x-daylight-smiles"
     if low.endswith(".xyz"):
         return "chemical/x-xyz"
-    if low.endswith((".fasta", ".fa", ".nwk", ".treefile", ".log")):
+    # M-62: R and Julia sources are text; they were stored as octet-stream.
+    if low.endswith(
+        (".fasta", ".fa", ".nwk", ".treefile", ".log", ".r", ".rmd", ".jl")
+    ):
         return "text/plain; charset=utf-8"
     ctype, encoding = mimetypes.guess_type(name)
     if encoding:
@@ -2984,6 +3000,9 @@ class SessionRunner:
                     job_id, root_frame_id
                 ),
                 busy_error=lambda code, message: GatewayError(code, message),
+                refusal_error=lambda code, message, error_code: GatewayError(
+                    code, message, error_code
+                ),
                 run_reviewer=lambda *args, **kwargs: self._run_reviewer(
                     *args, **kwargs
                 ),
@@ -9431,11 +9450,11 @@ class SessionRunner:
             ),
         ):
             return self._invoke_writing_control_with_artifacts_bound(
-                st, emit, invoke, tool_name=str(name)
+                st, emit, invoke, tool_name=str(name), call=call
             )
 
     def _invoke_writing_control_with_artifacts_bound(
-        self, st, emit, invoke, *, tool_name: str
+        self, st, emit, invoke, *, tool_name: str, call: Any = None
     ):
         """Run one declared writing action inside its capture lease."""
 
@@ -9556,6 +9575,10 @@ class SessionRunner:
             try:
                 if not captured_holder:
                     capture_written_files()
+                if tool_name == DOWNLOAD_TOOL and captured_holder:
+                    # SCI-10: the URL, size, digest and approval behind a
+                    # downloaded file, for its Provenance view.
+                    self._record_download_provenance(st, call, captured_holder[-1])
             except Exception as capture_error:  # noqa: BLE001
                 if self.stage1_trusted_delivery:
                     # The tool already ran.  Returning its success would make
@@ -9571,6 +9594,24 @@ class SessionRunner:
             return result
         finally:
             self.recovery.touch(st)
+
+    def _record_download_provenance(self, st, call, captured) -> None:
+        """Best effort: a missing record must never fail the download."""
+
+        try:
+            read = call.get if isinstance(call, dict) else None
+            record_download_sources(
+                self.store,
+                root_frame_id=st.root_frame_id,
+                call_id=str((read("id") if read else getattr(call, "id", None)) or ""),
+                arguments=(
+                    read("arguments") if read else getattr(call, "arguments", None)
+                ),
+                artifacts=captured.artifacts,
+                now=self._clock,
+            )
+        except Exception as error:  # noqa: BLE001
+            record_diagnostic(error, surface="artifacts:download_provenance")
 
     @staticmethod
     def _remote_provenance_drain(st):
@@ -16244,10 +16285,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if _webui_legacy_enabled()
                 else WEBUI_DIR / "dist" / "index.html"
             )
+            # The workbench document is the one page that may use the
+            # microphone (voice input); everything else keeps the denial.
             self._serve_ui_file(
                 index,
                 "text/html; charset=utf-8",
-                security=_default_security(),
+                security=workbench_security_headers(frame_src=_app_origins()),
             )
 
         def _serve_static(self, path: str) -> bool:
@@ -18001,8 +18044,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m:
                 fid = m.group(1)
                 if method == "GET":
+                    # A 404, like the rename below. `{}` with a 200 read as a
+                    # session that exists and has no fields, so a tab still
+                    # showing a session deleted elsewhere had nothing to tell
+                    # it the session was gone.
                     f = store.get_frame(fid)
-                    self._json(_frame_json(f, store) if f else {})
+                    if f is None:
+                        raise GatewayError(404, "session not found")
+                    self._json(_frame_json(f, store))
                     return
                 if method == "PATCH":
                     # An UPDATE naming no row succeeds, and `_frame_json(None)`
@@ -18247,7 +18296,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     mentions = artifact_refs.parse_mentions(b.get("mentions"))
                 except ValueError as error:
                     raise GatewayError(400, str(error), "invalid_mentions") from error
-                f = store.get_frame(fid) or {}
+                # A session that does not exist -- deleted in another tab, or
+                # a stale link -- takes no message. `submit_message` builds an
+                # ephemeral state for an unknown id (in-process callers rely on
+                # that), so without this the turn really ran and wrote its
+                # messages and action groups under a root no `frames` row has.
+                f = store.get_frame(fid)
+                if f is None:
+                    raise GatewayError(404, "session not found")
                 pid = f.get("project_id") or "default"
                 # Fold pinned image annotations into the message so the remote
                 # agent receives the exact figure + pin location + comment and

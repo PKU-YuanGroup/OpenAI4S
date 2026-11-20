@@ -18,7 +18,7 @@ F-14 已用 `isReady` 门控 `toggleExecutedCode` / `buildExecutedCodeView`。F-
 | [`lineage.ts`](lineage.ts) | Provenance 链变换（cell / captures / 环境诚实性三态）。记录中的包列表从未读取（有 `packages_unavailable` 且无包）时，`envPackageCount` 返回 null。 |
 | [`exec.ts`](exec.ts) | `execSourcesState` / `toggleExecutedCode` / `buildExecutedCodeView`（app.js:10148-10229）。 |
 | [`inspector.ts`](inspector.ts) | 变量检查器（app.js:10265-10332）。 文案通过 Notebook 的 `nbLabelT` 获取（中文显示「变量查看器」）。 |
-| [`provenance.ts`](provenance.ts) | Provenance tab（app.js:10631-10833）。未读取的包列表显示为"Packages 未知"（非 Python kernel 为"不适用"），不显示"没有可报告的包"；原因仍作为警告说明保留。 |
+| [`provenance.ts`](provenance.ts) | Provenance tab（app.js:10631-10833）。未读取的包列表显示为"Packages 未知"（非 Python kernel 为"不适用"），不显示"没有可报告的包"；原因仍作为警告说明保留。下载工具保存的文件（lineage 的 `download`，SCI-10）在代码与审查页显示「由下载工具保存，未经过代码」，以及来源网址（仅 http/https 时是链接）、下载时间、大小、SHA-256 和批准方式，不再显示「未包含生产代码」和「non-Cell action」。 |
 | [`branch.ts`](branch.ts) | Fork / recovery REST 与 409 呈现。 |
 | [`boot.ts`](boot.ts) | window 名 + notebook/viewer 组合。 |
 | [`index.ts`](index.ts) | 对外再导出。 |
@@ -29,4 +29,4 @@ F-14 已用 `isReady` 门控 `toggleExecutedCode` / `buildExecutedCodeView`。F-
 
 - [`copy.ts`](copy.ts): 溯源读取状态与证据边界的双语文案。
 - [`validation.ts`](validation.ts): 溯源／环境网络响应严格校验，保留历史可空字段。
-- [`provenance.test.ts`](provenance.test.ts): 只读重试、乱序响应、产物归属与精确 Cell 跳转测试。
+- [`provenance.test.ts`](provenance.test.ts): 只读重试、乱序响应、产物归属与精确 Cell 跳转测试；下载文件的网址、大小、摘要与批准方式（SCI-10）。

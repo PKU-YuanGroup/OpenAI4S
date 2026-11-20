@@ -71,7 +71,7 @@ export type RendererDescriptor = {
 export type FilesOrigin = "" | "uploaded" | "generated";
 
 /** ART-12 human file categories; the server's `ARTIFACT_KINDS` uses the same table. */
-export type FilesKind = "" | "table" | "image" | "report" | "code" | "other";
+export type FilesKind = "" | "table" | "image" | "report" | "code" | "structure" | "other";
 
 /** ART-12 session-list order. */
 export type FilesSort = "newest" | "oldest" | "name";

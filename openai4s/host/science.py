@@ -136,6 +136,22 @@ DATABASES: tuple[ScienceDatabase, ...] = (
     ),
 )
 
+#: The hosts each connector's requests go to -- not the record links it
+#: returns. A loaded Skill's network limit is checked against these to say
+#: which built-in connectors the limit takes away from the session (SCI-14).
+REQUEST_HOSTS: Mapping[str, tuple[str, ...]] = {
+    "zenodo": ("zenodo.org",),
+    "uniprot": ("rest.uniprot.org",),
+    "pdb": ("search.rcsb.org",),
+    "ensembl": ("rest.ensembl.org",),
+    "chembl": ("www.ebi.ac.uk",),
+    "pubchem": ("pubchem.ncbi.nlm.nih.gov",),
+    "arxiv": ("export.arxiv.org",),
+    "openalex": ("api.openalex.org",),
+    "string": ("string-db.org",),
+    "bindingdb": ("www.bindingdb.org",),
+}
+
 _DOMAINS = frozenset({"all", "biology", "chemistry", "literature", "ml", "physics"})
 _FILTERS = frozenset(
     {

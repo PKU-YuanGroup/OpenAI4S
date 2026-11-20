@@ -79,6 +79,42 @@ describe("Save as skill", () => {
     expect((nestedEditor.value as unknown as { seed: { body: string } }).seed.body).toContain("The endpoint is at pH 7.2.");
   });
 
+  it("builds the Procedure from the cells the session ran (M-84)", async () => {
+    currentId.value = "f";
+    _titleName.value = "Buffer Titration";
+    messages.fetchRecentMessages.mockResolvedValue({
+      messages: [
+        { role: "user", content: "Titrate the phosphate buffer" },
+        { role: "assistant", content: "The endpoint is at pH 7.2." },
+      ],
+    });
+    const entries = [
+      { producing_cell_id: "c1", language: "python", status: "ok", is_latest_attempt: true, source: "# Load the titration data\nimport pandas as pd\ndf = pd.read_csv('titration.csv')" },
+      { producing_cell_id: "c2", language: "python", status: "error", is_latest_attempt: false, source: "broken(" },
+      { producing_cell_id: "c3", language: "python", status: "ok", is_latest_attempt: true, files_written: ["endpoint.png"], source: "def endpoint(df):\n    return df.ph.diff().idxmax()\n\nplot(endpoint(df))" },
+    ];
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify(String(url).endsWith("/frames/f/execution-log") ? { entries } : {}));
+    }));
+    try {
+      await saveCurrentAsSkill();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(urls.some((url) => url.endsWith("/frames/f/execution-log"))).toBe(true);
+    const seed = (nestedEditor.value as unknown as { seed: { body: string; draft: { steps: Array<{ summary: string }> } } }).seed;
+    // The failed attempt is not a step; each kept step has a line and its code.
+    expect(seed.draft.steps.map((step) => step.summary)).toEqual(["Load the titration data", "Writes endpoint.png"]);
+    expect(seed.body).toContain("1. Load the titration data\n\n```python\n# Load the titration data\nimport pandas as pd");
+    expect(seed.body).toContain("2. Writes endpoint.png");
+    expect(seed.body).not.toContain("broken(");
+    expect(seed.body).toContain("# kernel.py (draft)");
+    expect(seed.body).toContain("def endpoint(df):\n    return df.ph.diff().idxmax()\n```");
+    expect(seed.body).not.toContain("Reproduce the evidence-gathering");
+  });
+
   it("opens an empty skill editor when no session is open", async () => {
     await saveCurrentAsSkill();
     expect(customizeOpen.value).toBe(true);

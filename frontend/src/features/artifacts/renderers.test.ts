@@ -1,6 +1,8 @@
+import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { artifactWorkbench } from "../../stores/notebook";
 import { rendererDescriptors } from "../../stores/artifacts";
+import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   bytes,
@@ -112,6 +114,118 @@ describe("text artifacts that look binary (AUDIT A01)", () => {
     const source = walk(container).find((node) => node.className === "renderer-source");
     expect(source?.textContent).toBe(text);
     expect(walk(container).some((node) => node.className === "download-artifact")).toBe(false);
+  });
+});
+
+describe("source files are highlighted by extension (M-62)", () => {
+  class HtmlNode extends FakeNode {
+    html = "";
+    override get innerHTML(): string {
+      return this.html;
+    }
+    override set innerHTML(value: string) {
+      this.children = [];
+      this.html = value;
+    }
+  }
+  beforeEach(() => {
+    vi.stubGlobal("document", { createElement: (tag: string) => new HtmlNode(tag) });
+  });
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+  });
+  const unescape = (html: string) =>
+    html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+
+  it("colours an R script and keeps its text byte for byte", async () => {
+    const source = 'fit <- coxph(Surv(time, status) ~ age, data = df) # model\nif (x < 1) print("<b>")\n';
+    serve(source);
+    const container = new HtmlNode();
+    renderTextArtifact(host(container), { id: "r", filename: "cox_crosscheck.R" }, "/api/v1/artifacts/r");
+    await settle();
+    await settle();
+    const pre = walk(container).find((node) => node.tagName === "pre") as HtmlNode | undefined;
+    expect(pre?.className).toBe("renderer-source renderer-code");
+    expect(pre!.html).toContain('<span class="tok-kw">if</span>');
+    expect(pre!.html).toContain('<span class="tok-com"># model</span>');
+    // The file's own markup is text, never markup.
+    expect(pre!.html).not.toContain("<b>");
+    expect(unescape(pre!.html)).toBe(source);
+  });
+
+  it("leaves a file with no known language as plain text", async () => {
+    serve("if this were code\n");
+    const container = new HtmlNode();
+    renderTextArtifact(host(container), { id: "t", filename: "notes.txt" }, "/api/v1/artifacts/t");
+    await settle();
+    await settle();
+    const pre = walk(container).find((node) => node.tagName === "pre") as HtmlNode | undefined;
+    expect(pre?.className).toBe("renderer-source");
+    expect(pre?.textContent).toBe("if this were code\n");
+    expect(pre?.html).toBe("");
+  });
+});
+
+describe("FASTA in the sequence viewer (SCI-27)", () => {
+  // The real parser, not a stub: the record count, lengths and alphabet come
+  // from it, and they are what the summary promises.
+  const runtime = createRequire(import.meta.url)("../../../../openai4s/server/webui/scientific_renderers.js");
+
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => new FakeNode(tag),
+      createDocumentFragment: () => new FakeNode("#fragment"),
+    });
+    vi.stubGlobal("OpenAI4SScientificRenderers", runtime);
+  });
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+  });
+
+  it("summarises the records and numbers each line of 60 residues", async () => {
+    const crambin = "TTCCPSIVARSNFNVCRLPGTPEAICATYTGCIIIPGATCPGDYAN";
+    const longer = "MKT".repeat(25) + "A";
+    serve(`>1CRN_A crambin\n${crambin}\n>other\n${longer}\n`);
+    const container = new FakeNode();
+    renderSequenceArtifact(host(container), { id: "s", filename: "1crn.fasta" }, "/api/v1/artifacts/s");
+    await settle();
+    await settle();
+    const nodes = walk(container);
+    const summary = nodes.find((node) => node.className === "bio-summary");
+    expect(summary?.textContent).toBe(translate("viewer.sequence.summary", 2, (46 + 76).toLocaleString(), filesT("viewer.seq.alphabet.protein")));
+    const heads = nodes.filter((node) => node.className === "sequence-head");
+    expect(heads.map((head) => head.children.map((child) => child.textContent))).toEqual([
+      ["1CRN_A", "46 aa"],
+      ["other", "76 aa"],
+    ]);
+    const lines = nodes.filter((node) => node.className === "bio-seq-line");
+    // 46 residues: one line; 76: lines starting at 1 and 61.
+    expect(lines.map((line) => line.children[0]!.textContent)).toEqual(["1", "1", "61"]);
+    const residues = (line: FakeNode) => walk(line).filter((node) => node.className.startsWith("bio-residue"));
+    expect(lines.map((line) => residues(line).length)).toEqual([46, 60, 16]);
+    expect(residues(lines[0]!).map((residue) => residue.textContent).join("")).toBe(crambin);
+  });
+
+  it("measures each record in its own unit when a file mixes protein and DNA", async () => {
+    serve(">prot\nTTCCPSIVARSNFNVCRLPG\n>gene\nATGGCCATTGTAATGGGCCGC\n");
+    const container = new FakeNode();
+    renderSequenceArtifact(host(container), { id: "m", filename: "mixed.fasta" }, "/api/v1/artifacts/m");
+    await settle();
+    await settle();
+    const heads = walk(container).filter((node) => node.className === "sequence-head");
+    expect(heads.map((head) => head.children[1]!.textContent)).toEqual(["20 aa", "21 nt"]);
+  });
+
+  it("names a nucleotide sequence as such", async () => {
+    serve(">gene\nATGGCCATTGTAATGGGCCGCTGAAAGGGTGCCCGATAG\n");
+    const container = new FakeNode();
+    renderSequenceArtifact(host(container), { id: "g", filename: "gene.fa" }, "/api/v1/artifacts/g");
+    await settle();
+    await settle();
+    const summary = walk(container).find((node) => node.className === "bio-summary");
+    expect(summary?.textContent).toContain(filesT("viewer.seq.alphabet.DNA"));
   });
 });
 
@@ -1292,6 +1406,82 @@ describe("every preview entry fails visibly and retries (A1)", () => {
     expect((frame as unknown as { hidden?: boolean }).hidden).toBe(false);
     expect(String((frame as unknown as { src?: string }).src)).toMatch(/^blob:.*#page=3$/);
     expect(walk(root)).toContain(sibling);
+  });
+
+  it("offers Edit in Ketcher without the Notebook having read the flag first (SCI-31)", async () => {
+    // Nothing has read the kernel status: the Notebook panel was never shown.
+    currentId.value = "f-1";
+    expect(artifactWorkbench.value).toBe(false);
+    const reads: string[] = [];
+    setArtifactsFetch(async (url) => {
+      reads.push(String(url));
+      if (String(url).endsWith("/frames/f-1/kernel")) {
+        return new Response(JSON.stringify({ state: "none", artifact_workbench: true }));
+      }
+      return new Response("C\n");
+    });
+    const root = mount("chemistry-2d");
+    await flush();
+    const bar = walk(root).find((node) => node.className === "wb-ketcher-bar");
+    expect(bar).toBeTruthy();
+    expect(walk(bar!).some((node) => node.textContent === translate("wb.ketcher.edit"))).toBe(true);
+    // First in the content, above the drawing that arrived before the answer.
+    expect(bar!.parent!.children[0]).toBe(bar);
+    expect(reads.filter((url) => url.endsWith("/kernel"))).toHaveLength(1);
+    // The answer is kept: the next structure needs no second read.
+    mount("chemistry-2d");
+    await flush();
+    expect(reads.filter((url) => url.endsWith("/kernel"))).toHaveLength(1);
+  });
+
+  it("says why SMILES is not drawn and offers Ketcher instead (SCI-26)", async () => {
+    const runtime = (globalThis as Record<string, unknown>).OpenAI4SScientificRenderers as Record<string, unknown>;
+    vi.stubGlobal("OpenAI4SScientificRenderers", {
+      ...runtime,
+      smilesLines: () => [{ name: "aspirin", smiles: "CC(=O)OC1=CC=CC=C1C(=O)O" }],
+    });
+    const smi: ArtifactRow = { ...row, filename: "aspirin.smi" };
+    const open = async (workbench: boolean, frame: string): Promise<PreviewNode> => {
+      currentId.value = frame;
+      setArtifactsFetch(async (url) =>
+        String(url).endsWith("/kernel")
+          ? new Response(JSON.stringify({ artifact_workbench: workbench }))
+          : new Response("CC(=O)OC1=CC=CC=C1C(=O)O aspirin\n"),
+      );
+      const root = new PreviewNode("div");
+      root.page = true;
+      renderArtifactDescriptor(host(root), smi, descriptor("chemistry-2d"));
+      await flush();
+      return root;
+    };
+    const notes = (root: PreviewNode) => walk(root).filter((node) => node.className === "renderer-note");
+    const openButton = (root: PreviewNode) =>
+      walk(root).find((node) => node.tagName === "BUTTON" && node.textContent === filesT("viewer.chem.openKetcher"));
+
+    const on = await open(true, "f-3");
+    expect(notes(on).map((node) => node.textContent)).toEqual([filesT("viewer.chem.smilesNoDrawing")]);
+    expect(openButton(on)).toBeTruthy();
+    // One way in, not two: the "Edit" bar is for a drawing, and there is none.
+    expect(walk(on).some((node) => node.className === "wb-ketcher-bar")).toBe(false);
+    expect(walk(on).some((node) => node.className === "smiles-code")).toBe(true);
+
+    // A daemon with the editor off (the flag is deployment-wide, so start clean).
+    artifactWorkbench.value = false;
+    const off = await open(false, "f-4");
+    expect(notes(off).map((node) => node.textContent)).toEqual([filesT("viewer.chem.smilesNoDrawing")]);
+    expect(openButton(off)).toBeUndefined();
+  });
+
+  it("offers no editor when the server has it switched off", async () => {
+    currentId.value = "f-2";
+    setArtifactsFetch(async (url) =>
+      String(url).endsWith("/kernel")
+        ? new Response(JSON.stringify({ state: "none", artifact_workbench: false }))
+        : new Response("C\n"),
+    );
+    const root = mount("chemistry-2d");
+    await flush();
+    expect(walk(root).some((node) => node.className === "wb-ketcher-bar")).toBe(false);
   });
 });
 

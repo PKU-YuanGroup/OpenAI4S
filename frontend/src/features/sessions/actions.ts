@@ -12,6 +12,8 @@ import { _openGen, _titleName, currentId, folders, project, sessions } from "../
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
 import { API, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
+import { expectOwnDeletion, forgetOwnDeletion } from "./deleted";
+import { buildSkillBody, procedureSteps } from "./skill-draft";
 import { openRunLocationDialog } from "./compute";
 import { composerCopy, optionsMenuCopy, sessionCopy, shareCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
@@ -22,6 +24,7 @@ import { openConversation, resumeWatch } from "./conversation";
 // hoisted function declaration, so the sessions<->send cycle resolves at call time.
 import { noteForStop, turnDone } from "../send/turn";
 import { sendCopy } from "../send/copy";
+import { reviewRefusalText, reviewT } from "../send/review-copy";
 import { backgroundStoppedHint, refreshBackgroundCells } from "../send/background";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { queueT } from "../timeline/copy";
@@ -75,7 +78,13 @@ export function addToMessageMenu(anchor: Element): void {
         callLane("setActiveTab", "files");
       },
     },
-    { label: t("composer.menu.requestReview"), icon: "eye-context", onClick: () => void requestReview() },
+    // M-75: say what it does and what it costs before it starts.
+    {
+      label: t("composer.menu.requestReview"),
+      desc: reviewT("review.menuDesc"),
+      icon: "eye-context",
+      onClick: () => void requestReview(),
+    },
     { label: t("composer.menu.saveAsSkill"), icon: "book", onClick: () => void saveCurrentAsSkill() },
     { sep: true },
     { label: t("composer.menu.contextUsage"), icon: "circle-dot", onClick: () => void showContextUsage() },
@@ -154,13 +163,16 @@ export async function saveCurrentAsSkill(): Promise<void> {
     await openSkillEditor();
     return;
   }
+  const frameId = currentId.value;
   let messages: Array<{ role?: string; content?: unknown }> = [];
-  try {
-    const data = await fetchRecentMessages(currentId.value, 500);
-    messages = data.messages || [];
-  } catch {
-    messages = [];
-  }
+  // M-84: the code that actually ran, not only the question.
+  let entries: unknown[] = [];
+  const [read, log] = await Promise.allSettled([
+    fetchRecentMessages(frameId, 500),
+    api(`/frames/${encodeURIComponent(frameId)}/execution-log`),
+  ]);
+  if (read.status === "fulfilled") messages = read.value.messages || [];
+  if (log.status === "fulfilled") entries = ((log.value as { entries?: unknown[] }) || {}).entries || [];
   const latestUser = [...messages].reverse().find((m) => m.role === "user");
   const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const title =
@@ -171,10 +183,12 @@ export async function saveCurrentAsSkill(): Promise<void> {
       .slice(0, 48) || "research-workflow";
   const request = String((latestUser && latestUser.content) || "").trim();
   const result = String((latestAssistant && latestAssistant.content) || "").trim();
+  const draft = { purpose: request, outcome: result, steps: procedureSteps(entries) };
   await openSkillEditor({
     name: title,
     description: request.replace(/\s+/g, " ").slice(0, 180),
-    body: `# Purpose\n\n${request || "Describe when this workflow should be used."}\n\n# Procedure\n\n1. Reproduce the evidence-gathering and analysis workflow.\n2. Preserve data provenance, code, and generated artifacts.\n3. State uncertainty and do not overclaim beyond the evidence.\n\n# Example outcome\n\n${result.slice(0, 6000)}`,
+    body: buildSkillBody(draft, new Set(draft.steps.map((step) => step.id))),
+    draft,
   });
 }
 
@@ -189,7 +203,8 @@ export async function requestReview(): Promise<void> {
     resumeWatch(currentId.value, _openGen.value);
   } catch (e) {
     turnDone("failed");
-    hint((e as Error).message, true);
+    // M-75: a refusal says why in the UI language, not the server's English.
+    hint(reviewRefusalText(e), true);
   }
 }
 
@@ -517,9 +532,12 @@ export async function renameFrame(fid: string): Promise<void> {
 }
 
 export async function deleteSession(fid: string): Promise<void> {
+  // This tab moves on itself; its own deletion's event is not "deleted elsewhere".
+  expectOwnDeletion(fid);
   try {
     await api("/frames/" + fid, { method: "DELETE" });
   } catch (e) {
+    forgetOwnDeletion(fid);
     hint(t("toast.deleteFailed", apiErrorText(e)), true);
     return;
   }

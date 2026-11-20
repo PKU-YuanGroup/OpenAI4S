@@ -673,4 +673,13 @@ describe("Files order, kinds and hidden rows (ART-12)", () => {
     expect(artifactKind({ filename: "cohort.xlsx", content_type: null })).toBe("table");
     expect(artifactKind({ filename: "x", content_type: "image/svg+xml" })).toBe("image");
   });
+
+  it("files structures and sequences under their own kind, not Other (SCI-26)", () => {
+    for (const filename of ["1crn.pdb", "aspirin.smi", "ethanol.mol", "aspirin_2d.sdf", "1crn.fasta", "query.a2m"]) {
+      expect(artifactKind({ filename, content_type: null }), filename).toBe("structure");
+    }
+    // Typed by its content alone, as an older row may be.
+    expect(artifactKind({ filename: "ligand", content_type: "chemical/x-mdl-molfile" })).toBe("structure");
+    expect(artifactKind({ filename: "model.pt", content_type: null })).toBe("other");
+  });
 });
