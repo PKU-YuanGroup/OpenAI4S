@@ -14,6 +14,8 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`chrome.css`](chrome.css) | 本车道样式：palette / team / resizer / 输入框附件类名。 |
 | [`clipboard.test.ts`](clipboard.test.ts) | 异步 API 以方法形式调用；被拒时退回选区复制；两条路都不可用时返回 false。 |
 | [`clipboard.ts`](clipboard.ts) | `copyText()`：所有复制按钮共用的剪贴板写入，只有确认写入成功才返回 `true`。 |
+| [`drafts.ts`](drafts.ts) | SYNC-24 输入框草稿按会话保存：切换会话时保存当前草稿（连同 `@` 引用）并换上目标会话的草稿；刷新后从 `localStorage` 的 `os-composer-drafts` 恢复（最多 50 个会话、每条 20,000 字符，所有读写都在 try/catch 中）；发送后清除；从「尚无会话」的输入框新建的会话会带上草稿（`adoptCreatedFrame` 调用 `carryDraftTo`）。 |
+| [`drafts.test.ts`](drafts.test.ts) | 新建会话不带走 A 的草稿且回到 A 能找回、刷新恢复、发送后内存与存储都清除、草稿随新建会话迁移、`@` 引用跟随草稿、存储被禁用、长度上限。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `localDateTime` / `localClock` / `hint` / `grow`。`icon` 取自共享的 `icons/paths.ts` 表。 `ago` / `agoMs` 按界面语言给出相对时间（刚刚 / 3 分钟前，just now / 3m）。 |
 | [`host.ts`](host.ts) | 用 `isReady` 查 window 能力。不 import `window-exports`。 |
 | [`index.ts`](index.ts) | `bootChrome()`：window 赋值、快捷键、绑定、`bootTeam`。每一步相互隔离，某一步抛错不会让其余绑定落空。 |

@@ -14,6 +14,8 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 | [`chrome.css`](chrome.css) | Lane styles for palette / team / resizer / composer attachment class names. |
 | [`clipboard.test.ts`](clipboard.test.ts) | The async API is called as a method, a refusal falls back to a selection copy, and nothing available resolves false. |
 | [`clipboard.ts`](clipboard.ts) | `copyText()`: the one clipboard write behind every Copy control; resolves `true` only for a confirmed write. |
+| [`drafts.ts`](drafts.ts) | SYNC-24 per-session composer drafts: switching sessions saves the draft on screen (with its `@` pins) and shows the next session's, a reload restores it from `localStorage` `os-composer-drafts` (50 sessions, 20,000 characters each, every access in try/catch), Send clears it, and a session created from the composer of no session takes the draft along (`carryDraftTo`, called by `adoptCreatedFrame`). |
+| [`drafts.test.ts`](drafts.test.ts) | New not carrying A's draft and A getting it back, reload restore, Send clearing memory and storage, the carry into a created session, pins following their draft, blocked storage, the size bound. |
 | [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `localDateTime` / `localClock` / `hint` / `grow`. `icon` draws from the shared `icons/paths.ts` table. `ago` / `agoMs` say relative time in the UI language (刚刚 / 3 分钟前, just now / 3m). |
 | [`host.ts`](host.ts) | `isReady` window-capability lookups. Does not import `window-exports`. |
 | [`index.ts`](index.ts) | `bootChrome()`: window assignments, keydown, binds, `bootTeam`. Each step is isolated, so one that throws cannot leave the rest unbound. |

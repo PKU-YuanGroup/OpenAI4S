@@ -47,6 +47,7 @@ import {
   type UploadResult,
 } from "../chrome/upload";
 import { restoreAttachments, takeAttachments, type ComposerAttachment } from "../chrome/attachments";
+import { clearDraft } from "../chrome/drafts";
 import { loadSkillsCatalog } from "../autocomplete/catalog";
 import { acHoldSend, acPending } from "../autocomplete/composer";
 import {
@@ -489,6 +490,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     composer.value = "";
     clearMentions();
     sentAttachments = takeAttachments(dispatchFrameId);
+    clearDraft(dispatchFrameId);
   }
   grow();
   renderComposerRefChips();

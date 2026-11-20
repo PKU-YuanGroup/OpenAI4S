@@ -21,6 +21,7 @@ import { sub } from "../ws/connect";
 import { api, ApiError, apiErrorText } from "./api";
 import { addAttachment, bindAttachment, settleAttachment } from "./attachments";
 import { $, hint } from "./dom";
+import { carryDraftTo } from "./drafts";
 import { hostFn, isReady } from "./host";
 import { askUploadConflict, uploadT, type UploadConflictBatch } from "./upload-conflict";
 
@@ -184,6 +185,9 @@ export async function adoptCreatedFrame(
   } = {},
 ): Promise<void> {
   const navigationGen = _openGen.value;
+  // A session created from the composer of no session takes its draft along
+  // (SYNC-24); New from an open session starts empty.
+  if (!currentId.value) carryDraftTo(frameId);
   currentId.value = frameId;
   sub(frameId);
   const loadSessions = fns.loadSessions ?? hostFn("loadSessions");
