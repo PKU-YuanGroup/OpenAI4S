@@ -43,6 +43,31 @@ from openai4s.server.renderers import Renderer, RendererRegistry
             "content_type",
         ),
         ({"filename": "weights.unknown"}, "download", "fallback"),
+        # SCI-27: a generic type does not outrank the extension. A `.fasta` is
+        # served as text/plain, and that used to route it to the plain-text
+        # viewer instead of the sequence viewer.
+        (
+            {"filename": "1crn.fasta", "content_type": "text/plain; charset=utf-8"},
+            "sequence",
+            "extension",
+        ),
+        (
+            {"filename": "query.a2m", "content_type": "application/octet-stream"},
+            "msa",
+            "extension",
+        ),
+        # ...and still decides when the extension names nothing.
+        (
+            {"filename": "notes.unknown", "content_type": "text/plain"},
+            "text",
+            "content_type",
+        ),
+        # A specific type still wins over the extension, as before.
+        (
+            {"filename": "table.txt", "content_type": "text/csv"},
+            "table",
+            "content_type",
+        ),
     ],
 )
 def test_renderer_selection_is_deterministic(artifact, renderer_id, matched_by):

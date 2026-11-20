@@ -124,6 +124,25 @@ function appendResidues(
   return shown.length;
 }
 
+/** Residues per line in the sequence viewer, the usual FASTA/GenBank width. */
+export const SEQUENCE_LINE_RESIDUES = 60;
+
+/**
+ * SCI-27: residues in lines of 60, each led by the 1-based position of its
+ * first residue, so a position can be read off without counting. Text goes in
+ * through `el`'s textContent only; nothing from the file reaches innerHTML.
+ */
+function appendSequenceLines(container: HTMLElement, sequence: string, alphabet: string, limit: number): number {
+  const shown = String(sequence || "").slice(0, Math.max(0, limit));
+  for (let start = 0; start < shown.length; start += SEQUENCE_LINE_RESIDUES) {
+    const line = el("div", "bio-seq-line");
+    line.appendChild(el("span", "bio-seq-pos", String(start + 1)));
+    appendResidues(line, shown.slice(start, start + SEQUENCE_LINE_RESIDUES), alphabet, SEQUENCE_LINE_RESIDUES);
+    container.appendChild(line);
+  }
+  return shown.length;
+}
+
 export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
   fetchArtifactText(url, { signal: previewReadSignal(container), onEncoding: noteEncodingIn(container) })
     .then((text) => {
@@ -248,7 +267,9 @@ export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, u
           "viewer.sequence.summary",
           parsed.records.length,
           parsed.total_length.toLocaleString(),
-          parsed.alphabet,
+          // Protein or nucleotide, in the UI language (the parser says
+          // "protein" / "DNA" / "RNA" / "unknown").
+          filesT(`viewer.seq.alphabet.${parsed.alphabet}`),
         ),
       );
       container.appendChild(summary);
@@ -271,8 +292,8 @@ export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, u
         if (record.description) {
           card.appendChild(el("div", "sequence-description", record.description));
         }
-        const sequence = el("div", "bio-sequence");
-        const used = appendResidues(
+        const sequence = el("div", "bio-sequence bio-sequence-lines");
+        const used = appendSequenceLines(
           sequence,
           record.sequence,
           parsed.alphabet,

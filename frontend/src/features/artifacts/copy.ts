@@ -190,6 +190,10 @@ const COPY: CopyTable = {
     "ac.files.searching": "正在搜索项目文件…",
     "ac.files.failed": "项目文件搜索失败，仅显示本会话文件",
     "ac.files.recent": "显示最近的项目文件，输入文件名可搜索全部",
+    "viewer.seq.alphabet.protein": "蛋白质",
+    "viewer.seq.alphabet.DNA": "DNA（核酸）",
+    "viewer.seq.alphabet.RNA": "RNA（核酸）",
+    "viewer.seq.alphabet.unknown": "类型未知",
   },
   en: {
     "artifact.invalidMetadata": "The response does not contain valid artifact metadata. Export stopped.",
@@ -374,6 +378,10 @@ const COPY: CopyTable = {
     "ac.files.searching": "Searching project files…",
     "ac.files.failed": "Project file search failed. Showing only this session's files.",
     "ac.files.recent": "Showing the most recent project files. Type a filename to search all of them.",
+    "viewer.seq.alphabet.protein": "protein",
+    "viewer.seq.alphabet.DNA": "DNA (nucleotide)",
+    "viewer.seq.alphabet.RNA": "RNA (nucleotide)",
+    "viewer.seq.alphabet.unknown": "unknown type",
   },
 };
 

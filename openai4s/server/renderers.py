@@ -210,6 +210,10 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
 )
 
 
+#: Content types that name no format, only "text" or "bytes".
+_GENERIC_CONTENT_TYPES = frozenset({"text/plain", "application/octet-stream"})
+
+
 _WORKBENCH_TABLE_CAPABILITIES = (
     "view",
     "sort",
@@ -351,12 +355,22 @@ class RendererRegistry:
         for renderer in self._renderers:
             if kind and kind in renderer.kinds:
                 return renderer, "kind"
-        for renderer in self._renderers:
-            if content_type and content_type in renderer.content_types:
-                return renderer, "content_type"
+        # A generic type says "text" or "bytes", not which format; the
+        # extension says more. `.fasta` is served as `text/plain`, and that
+        # matched the plain-text renderer before the extension could pick the
+        # sequence viewer (SCI-27). A specific type still wins as before.
+        generic = content_type in _GENERIC_CONTENT_TYPES
+        if not generic:
+            for renderer in self._renderers:
+                if content_type and content_type in renderer.content_types:
+                    return renderer, "content_type"
         for renderer in self._renderers:
             if extension and extension in renderer.extensions:
                 return renderer, "extension"
+        if generic:
+            for renderer in self._renderers:
+                if content_type in renderer.content_types:
+                    return renderer, "content_type"
         fallback = next(
             item for item in self._renderers if item.renderer_id == "download"
         )

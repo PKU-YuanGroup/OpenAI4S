@@ -112,7 +112,7 @@ gateway.py
 | [`recovery_execution.py`](recovery_execution.py) | 在精确的执行所有权下执行一次恢复 mutation。所有语言候选内核跑在同一个 recovery id 下，遇到第一个未完成的候选就停，最后落一条持久的会话终止事件。 |
 | [`recovery_recipe.py`](recovery_recipe.py) | 把不可变的 Cell 事实、依赖闭包、环境需求、sidecar 和确定性检查编译成一份恢复 recipe。保守是有意为之：影响状态却过不了这些检查的 Cell 会以 `never` 重放步骤的形式留在 recipe 里，于是校验会报 Partial，而不是默默宣称旧命名空间还在。 |
 | [`recovery_runtime.py`](recovery_runtime.py) | 恢复流水线接上真实基础设施的地方。它为一个会话拉起候选的 Python 和 R 内核，探测环境，做 bootstrap，做验证，然后提交或回滚。 |
-| [`renderers.py`](renderers.py) | 从 Artifact kind、content-type 和扩展名到安全科学 renderer 的注册表，以及公开的 renderer 描述。它只有元数据：不导入任何科学库，也不执行 Artifact 的内容。 |
+| [`renderers.py`](renderers.py) | 从 Artifact kind、content-type 和扩展名到安全科学 renderer 的注册表，以及公开的 renderer 描述。它只有元数据：不导入任何科学库，也不执行 Artifact 的内容。通用的 content-type（`text/plain`、`application/octet-stream`）不再压过扩展名，于是以文本类型提供的 `.fasta` 会进入序列查看器（SCI-27）。 |
 | [`response_capture.py`](response_capture.py) | 观测各 route 真实返回了什么，并固化进 [`docs/response-schemas.json`](../../docs/response-schemas.json)。它从外面包住 `make_handler` 的 `_api`，而不是在 `_json` 里挂钩子：gateway 测试会把 `handler._json` 换成自己的收集器，钩在真正的 `_json` 里会漏掉几乎所有 route，却看起来在正常工作。这里没有任何代码跑在生产路径上。字段**类型**随宿主机变化的子树（内核的 `sandbox` 块：能强制 sandbox 时 `backend` 是字符串，不能时是 null）记为不透明而不予固化——固化它等于把捕获时那台机器钉进契约，然后判定其他每一台机器都是破坏性变更。这份清单只收「类型随宿主机变化」的子树，不是给形状不方便的 route 停车用的。`drive_process_config` 在 drive 期间把进程全局的 config 指向这次 drive 自己的数据目录：runner 拿到的是显式 `Config`，但 turn 仍会解析全局那份（task-mode shadow 的能力检查会打开 `get_store(get_config().db_path)`），而它原先会退回到开发者真实的 `~/.openai4s`。 |
 | [`response_schema.py`](response_schema.py) | 一套小而明确的形状代数（类型、必填键、元素形状），零依赖，因为 core 只用标准库。它回答的是「这个响应的形状变了吗」；它不是 JSON Schema draft-2020-12，也不假装是。 |
 | [`reviews.py`](reviews.py) | 先攒出一次科学审阅所依据的有界证据包，再把这次审阅推到结果。整个过程可取消，结果会落到持久化、用量记账和公开的审阅事件上。 |

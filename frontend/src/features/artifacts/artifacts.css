@@ -409,3 +409,23 @@ table.sheet th[data-sort="desc"]::after {
   color: inherit;
   cursor: pointer;
 }
+
+/* SCI-27: the sequence viewer's numbered lines of 60 residues. The position
+   column is not selectable, so a copied selection is residues only. */
+.bio-sequence-lines {
+  overflow-x: auto;
+}
+
+.bio-seq-line {
+  display: flex;
+  white-space: nowrap;
+}
+
+.bio-seq-pos {
+  flex: none;
+  min-width: 6ch;
+  padding-right: 1.5ch;
+  text-align: right;
+  color: var(--text-400);
+  user-select: none;
+}

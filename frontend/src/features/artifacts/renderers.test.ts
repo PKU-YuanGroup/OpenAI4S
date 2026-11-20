@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { artifactWorkbench } from "../../stores/notebook";
 import { rendererDescriptors } from "../../stores/artifacts";
@@ -112,6 +113,58 @@ describe("text artifacts that look binary (AUDIT A01)", () => {
     const source = walk(container).find((node) => node.className === "renderer-source");
     expect(source?.textContent).toBe(text);
     expect(walk(container).some((node) => node.className === "download-artifact")).toBe(false);
+  });
+});
+
+describe("FASTA in the sequence viewer (SCI-27)", () => {
+  // The real parser, not a stub: the record count, lengths and alphabet come
+  // from it, and they are what the summary promises.
+  const runtime = createRequire(import.meta.url)("../../../../openai4s/server/webui/scientific_renderers.js");
+
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => new FakeNode(tag),
+      createDocumentFragment: () => new FakeNode("#fragment"),
+    });
+    vi.stubGlobal("OpenAI4SScientificRenderers", runtime);
+  });
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+  });
+
+  it("summarises the records and numbers each line of 60 residues", async () => {
+    const crambin = "TTCCPSIVARSNFNVCRLPGTPEAICATYTGCIIIPGATCPGDYAN";
+    const longer = "MKT".repeat(25) + "A";
+    serve(`>1CRN_A crambin\n${crambin}\n>other\n${longer}\n`);
+    const container = new FakeNode();
+    renderSequenceArtifact(host(container), { id: "s", filename: "1crn.fasta" }, "/api/v1/artifacts/s");
+    await settle();
+    await settle();
+    const nodes = walk(container);
+    const summary = nodes.find((node) => node.className === "bio-summary");
+    expect(summary?.textContent).toBe(translate("viewer.sequence.summary", 2, (46 + 76).toLocaleString(), filesT("viewer.seq.alphabet.protein")));
+    const heads = nodes.filter((node) => node.className === "sequence-head");
+    expect(heads.map((head) => head.children.map((child) => child.textContent))).toEqual([
+      ["1CRN_A", "46 aa"],
+      ["other", "76 aa"],
+    ]);
+    const lines = nodes.filter((node) => node.className === "bio-seq-line");
+    // 46 residues: one line; 76: lines starting at 1 and 61.
+    expect(lines.map((line) => line.children[0]!.textContent)).toEqual(["1", "1", "61"]);
+    const residues = (line: FakeNode) => walk(line).filter((node) => node.className.startsWith("bio-residue"));
+    expect(lines.map((line) => residues(line).length)).toEqual([46, 60, 16]);
+    expect(residues(lines[0]!).map((residue) => residue.textContent).join("")).toBe(crambin);
+  });
+
+  it("names a nucleotide sequence as such", async () => {
+    serve(">gene\nATGGCCATTGTAATGGGCCGCTGAAAGGGTGCCCGATAG\n");
+    const container = new FakeNode();
+    renderSequenceArtifact(host(container), { id: "g", filename: "gene.fa" }, "/api/v1/artifacts/g");
+    await settle();
+    await settle();
+    const summary = walk(container).find((node) => node.className === "bio-summary");
+    expect(summary?.textContent).toContain(filesT("viewer.seq.alphabet.DNA"));
   });
 });
 
