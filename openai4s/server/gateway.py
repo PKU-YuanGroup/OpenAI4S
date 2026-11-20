@@ -176,6 +176,7 @@ from openai4s.server.completions import (
     cancellation_marker,
     completion_message,
     response_language,
+    unfinished_turns_since,
 )
 from openai4s.server.delivery import (
     CompletionDeliveryService,
@@ -11282,6 +11283,17 @@ class SessionRunner:
                 for a in self.store.list_artifacts({"root_frame_id": root_frame_id})
                 if (a.get("artifact_id") or a.get("id"))
             }
+            # M-59: after turns that failed or were stopped, the summary that
+            # finally completes the task also lists what those turns produced.
+            unfinished_since = unfinished_turns_since(
+                self.store.list_messages(
+                    root_frame_id,
+                    branch_id=st.branch_id,
+                    before_seq=stored_user_message.get("seq"),
+                    newest_first=True,
+                    limit=400,
+                )
+            )
             capture_observation_cursor = (
                 self.store.artifact_capture_observation_cursor(
                     root_frame_id=root_frame_id,
@@ -11532,10 +11544,19 @@ class SessionRunner:
                 produced_artifacts = [
                     artifact
                     for artifact in current_artifacts
-                    if artifact_versions_before.get(
-                        artifact.get("artifact_id") or artifact.get("id")
+                    if (
+                        artifact_versions_before.get(
+                            artifact.get("artifact_id") or artifact.get("id")
+                        )
+                        != artifact.get("latest_version_id")
+                        or (
+                            # A file those turns created; one they only
+                            # rewrote is not told apart from an older head.
+                            unfinished_since is not None
+                            and not artifact.get("is_user_upload")
+                            and int(artifact.get("created_at") or 0) >= unfinished_since
+                        )
                     )
-                    != artifact.get("latest_version_id")
                     # Hidden rows (internal context spills, files the user
                     # hid) are not this turn's deliverables.
                     and int(artifact.get("priority") or 0) >= 0

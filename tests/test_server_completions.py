@@ -13,6 +13,7 @@ from openai4s.server.completions import (
     is_progress_narration,
     outcome_narration,
     response_language,
+    unfinished_turns_since,
 )
 from openai4s.server.contract import API_ROOT
 from openai4s.server.gateway import _GATEWAY_PROMPT_EXTRA
@@ -708,6 +709,31 @@ def test_metrics_show_the_values_the_agent_submitted():
     assert "- dose (µM): 5" in readable
     assert "- width (µm): 2" in readable
     assert "- yield (%): 41.5" in readable
+
+
+def test_unfinished_turns_are_counted_back_to_the_last_finished_one():
+    def row(seq, role, at, metadata=None):
+        return {"seq": seq, "role": role, "created_at": at, "metadata": metadata}
+
+    failed = '{"failure": {"code": "max_turns"}}'
+    stopped = {"cancelled": {"reason": "user"}}
+    rows = [
+        row(0, "user", 100),
+        row(1, "assistant", 110),  # finished
+        row(2, "user", 200),
+        row(3, "assistant", 210, failed),
+        row(4, "user", 300),
+        row(5, "assistant", 305),
+        row(6, "assistant", 310, stopped),
+    ]
+    assert unfinished_turns_since(rows) == 200
+    # Newest-first input, as the gateway reads it, gives the same answer.
+    assert unfinished_turns_since(list(reversed(rows))) == 200
+    # The last turn finished: nothing carries over.
+    assert unfinished_turns_since(rows[:2]) is None
+    # A turn nothing answered (the daemon died in it) did not finish either.
+    assert unfinished_turns_since([*rows[:2], row(2, "user", 200)]) == 200
+    assert unfinished_turns_since([]) is None
 
 
 def test_the_summary_groups_deliverables_by_kind():

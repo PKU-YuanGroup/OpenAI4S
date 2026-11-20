@@ -2769,6 +2769,75 @@ def _install_artifact_submission(
     return captured
 
 
+@pytest.mark.stubbed_backend
+def test_the_summary_after_failed_turns_lists_what_they_produced(tmp_path, monkeypatch):
+    """M-59: a task cut into three turns by two failures ended with a summary
+    whose artifact list held only the last turn's files; the survival curve
+    the user had asked for came from an earlier, failed turn. A turn after a
+    completed one still lists only its own files."""
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    plan = iter(
+        [
+            ("km_new_drug_vs_control.png", "max_turns"),
+            ("cleaned_cohort.csv", "max_turns"),
+            ("report.md", "submitted"),
+            ("followup_table.csv", "submitted"),
+        ]
+    )
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def one_turn(state, emit, visible):
+        del visible
+        filename, reason = next(plan)
+        path = state.workspace / filename
+        path.write_bytes(b"x\n")
+        assert runner._register_file(state, path, f"cell-{filename}", emit)
+        if reason == "submitted":
+            state.dispatcher.last_output = {
+                "output": {"summary": "The analysis is complete."},
+                "completion_bullets": ["Wrote the report"],
+            }
+        state.last_model_prose = ""
+        return reason
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", one_turn)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+
+    def summary_after(request):
+        result = runner.run_message(frame_id, "default", request)
+        rows = runner.store.list_messages(frame_id, limit=None)
+        return result["status"], str(rows[-1]["content"])
+
+    try:
+        assert summary_after("Compare the arms")[0] == "failed"
+        assert summary_after("Continue")[0] == "failed"
+        status, final = summary_after("Continue")
+        assert status == "completed"
+        listed = final.split("Artifacts:", 1)[1]
+        for name in (
+            "km_new_drug_vs_control.png",
+            "cleaned_cohort.csv",
+            "report.md",
+        ):
+            assert f"[{name}](" in listed, name
+
+        status, later = summary_after("One more table")
+        assert status == "completed"
+        assert "[followup_table.csv](" in later
+        assert "report.md" not in later
+        assert "km_new_drug_vs_control.png" not in later
+    finally:
+        runner.close()
+
+
 def test_a_context_spill_is_not_listed_as_a_turn_deliverable(tmp_path, monkeypatch):
     """ART-10: the model's large-output spill (context-output-*.json) is an
     Artifact so it stays readable by version, but it was listed first in the

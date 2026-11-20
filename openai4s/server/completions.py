@@ -663,6 +663,51 @@ def completion_message(
     return "\n\n".join(parts)
 
 
+def unfinished_turns_since(messages: Iterable[dict]) -> int | None:
+    """When the trailing run of turns that did not finish began, else ``None``.
+
+    ``messages`` are a session's stored rows from before the current turn's
+    user message. A turn is a user row and the assistant rows after it; it did
+    not finish when one of them carries ``failure`` or ``cancelled`` metadata,
+    or when nothing answered it at all. The answer is the ``created_at`` of the
+    first user row of the trailing unfinished turns.
+
+    M-59: a task cut into three turns by two failures ended with a summary
+    whose artifact list held only the third turn's files; the survival curve
+    the user had asked for came from the second. The completion's artifact
+    delta starts there instead.
+    """
+    rows = sorted(
+        (row for row in messages if isinstance(row, dict)),
+        key=lambda row: int(row.get("seq") or 0),
+    )
+    turns: list[list[Any]] = []  # [user created_at, answered, unfinished]
+    for row in rows:
+        if row.get("role") == "user":
+            turns.append([row.get("created_at"), False, False])
+            continue
+        if not turns or row.get("role") != "assistant":
+            continue
+        turns[-1][1] = True
+        metadata = row.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except ValueError:
+                metadata = None
+        if isinstance(metadata, dict) and (
+            metadata.get("failure") or metadata.get("cancelled")
+        ):
+            turns[-1][2] = True
+    since: int | None = None
+    for created_at, answered, unfinished in reversed(turns):
+        if answered and not unfinished:
+            break
+        if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
+            since = int(created_at)
+    return since
+
+
 def _summary_text(output: Any) -> str:
     if isinstance(output, str):
         return output.strip()
