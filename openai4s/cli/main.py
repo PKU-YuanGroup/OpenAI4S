@@ -1055,7 +1055,10 @@ def cmd_doctor(args) -> int:
     """
     from openai4s import doctor
 
-    result = doctor.report(_doctor_config())
+    if getattr(args, "network", False):
+        result = doctor.report(_doctor_config(), network=True)
+    else:
+        result = doctor.report(_doctor_config())
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
@@ -2686,6 +2689,12 @@ def build_parser() -> argparse.ArgumentParser:
         "compute (no daemon needed)",
     )
     pdoc.add_argument("--json", action="store_true", help="machine-readable report")
+    pdoc.add_argument(
+        "--network",
+        action="store_true",
+        help="also contact the built-in science databases (one HEAD each) and "
+        "report reachability per host; without it nothing leaves this machine",
+    )
     pdoc.set_defaults(fn=cmd_doctor)
     pv = sub.add_parser(
         "verify-package",
