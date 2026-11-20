@@ -945,10 +945,15 @@ export function showLiveUserMessage(
     !row.dataset.messageId &&
     ((requestId && row.dataset.requestId === requestId) ||
       (executionId && row.dataset.executionId === executionId)));
+  const fork = typeof m.fork_checkpoint_id === "string" ? m.fork_checkpoint_id : null;
   if (own) {
     if (id) own.dataset.messageId = id;
     // Its turn is running now; it is no longer waiting in the queue.
     own.classList.remove("queued");
+    // SYNC-5: the branch point a reload shows under the question, live too.
+    if (canForkFromMessage({ message_id: id, fork_checkpoint_id: fork }) && !own.querySelector(".msg-fork")) {
+      own.appendChild(forkMessageControl(id));
+    }
     return own;
   }
   (host as ParentNode).querySelector?.(":scope > .empty-session")?.remove();
@@ -958,6 +963,7 @@ export function showLiveUserMessage(
       content: m.content,
       created_at: m.created_at,
       message_id: id || undefined,
+      fork_checkpoint_id: fork,
       artifact_refs: m.artifact_refs,
       annotations: m.annotations,
     },

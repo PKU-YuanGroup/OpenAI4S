@@ -125,6 +125,10 @@ def test_a_turn_broadcasts_the_user_message_it_stored(monkeypatch, tmp_path):
     assert event["frame_id"] == frame_id
     assert event["created_at"].endswith("Z")
     assert event["request_id"]
+    # SYNC-5: the branch point a reload offers ("Branch from this question")
+    # reaches the live bubble too.
+    assert stored[0]["fork_checkpoint_id"]
+    assert event["fork_checkpoint_id"] == stored[0]["fork_checkpoint_id"]
     # Before the answer starts: a tab that renders events in arrival order
     # shows the question above the narration.
     order = [e.get("type") for e in hub.events]

@@ -11060,7 +11060,7 @@ class SessionRunner:
             # user message is durable, while no later model action or Cell has
             # touched the workspace yet. Snapshot failure is separately audited
             # and never changes the successful message write above.
-            self._capture_cursor_checkpoint_best_effort(
+            branch_point = self._capture_cursor_checkpoint_best_effort(
                 root_frame_id,
                 source_kind="message",
                 source_id=stored_user_message["message_id"],
@@ -11144,6 +11144,14 @@ class SessionRunner:
                             )
                         }
                         if annos
+                        else {}
+                    ),
+                    # SYNC-5: the branch point a reload shows as "Branch from
+                    # this question"; the live bubble offers it as well.
+                    **(
+                        {"fork_checkpoint_id": branch_point["checkpoint_id"]}
+                        if isinstance(branch_point, Mapping)
+                        and isinstance(branch_point.get("checkpoint_id"), str)
                         else {}
                     ),
                 }

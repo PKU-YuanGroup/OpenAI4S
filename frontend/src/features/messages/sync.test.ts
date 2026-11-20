@@ -434,6 +434,24 @@ describe("the user's message reaches every tab", () => {
     expect(own.classList.contains("queued")).toBe(false);
   });
 
+  it("offers the branch point on the live bubble, as a reload does (SYNC-5)", () => {
+    const requestId = newRequestId();
+    const own = bubble("Fit it");
+    own.dataset.requestId = requestId;
+    messages().appendChild(own);
+    const event = { type: "user_message", root_frame_id: "f-1", content: "Fit it", fork_checkpoint_id: "cp-1" };
+    onEvent({ ...event, message_id: "m-5", request_id: requestId, seq: 3 });
+    // Another tab draws the question with it as well.
+    onEvent({ ...event, message_id: "m-6", request_id: "web-other", fork_checkpoint_id: "cp-2", seq: 4 });
+    const forks = Array.from(messages().querySelectorAll(".msg.user .msg-fork-btn")) as HTMLElement[];
+    expect(forks.map((button) => button.dataset.forkMessageId)).toEqual(["m-5", "m-6"]);
+    // The same bubble, as a reload renders it.
+    const stored = renderStored({ role: "user", content: "Fit it", message_id: "m-5", fork_checkpoint_id: "cp-1" }) as HTMLElement;
+    expect(Array.from(own.children).map((node) => (node as HTMLElement).className)).toEqual(
+      Array.from(stored.children).map((node) => (node as HTMLElement).className),
+    );
+  });
+
   it("keeps the row a reload already rendered from REST", () => {
     renderStored({ role: "user", content: "Stored question", message_id: "m-3" });
     onEvent({
