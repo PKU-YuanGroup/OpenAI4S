@@ -16989,7 +16989,32 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if method in ("PUT", "POST", "PATCH"):
                     body = self._body()
-                    self._json(runner.set_sharing_enabled(bool(body.get("enabled"))))
+                    enabled = bool(body.get("enabled"))
+                    if enabled and not cfg.share.configured:
+                        # Persisted, "on" made the next relay configuration
+                        # connect by itself with no Enable step, after an
+                        # answer that read as a failure. Refused, nothing kept.
+                        missing = [
+                            name
+                            for name, value in (
+                                ("OPENAI4S_SHARE_RELAY_URL", cfg.share.relay_url),
+                                ("OPENAI4S_SHARE_AUTH_TOKEN", cfg.share.auth_token),
+                            )
+                            if not value
+                        ]
+                        self._json(
+                            {
+                                "error": "sharing is not configured: set "
+                                + " and ".join(missing)
+                                + ", restart OpenAI4S, then enable sharing "
+                                "(docs/webshare.md)",
+                                "code": "sharing_unconfigured",
+                                "missing": missing,
+                            },
+                            409,
+                        )
+                        return
+                    self._json(runner.set_sharing_enabled(enabled))
                     return
             if sub == "/share/status" and method == "GET":
                 self._json(runner.share_status())
@@ -17018,15 +17043,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             share_create = re.fullmatch(r"/frames/([^/]+)/shares", sub)
             if share_create and method == "POST":
+                if not cfg.share.configured:
+                    # First: "enable it" is no advice while enabling is
+                    # refused for the same reason (no relay).
+                    raise GatewayError(
+                        409,
+                        "sharing is not configured: set OPENAI4S_SHARE_RELAY_URL "
+                        "and OPENAI4S_SHARE_AUTH_TOKEN, restart OpenAI4S, then "
+                        "enable sharing (docs/webshare.md)",
+                        "sharing_unconfigured",
+                    )
                 if not runner._share_enabled():
                     raise GatewayError(
                         403,
                         "sharing is disabled; enable it in the Share dialog "
                         "(session menu → Share) or with `openai4s share enable`",
-                    )
-                if not cfg.share.configured:
-                    raise GatewayError(
-                        409, "sharing is not configured (relay URL and token required)"
                     )
                 runner.ensure_share_tunnel()
                 body = self._body()

@@ -21,6 +21,7 @@ import dataclasses
 import math
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -1558,10 +1559,13 @@ class DelegationRunner:
             )
             child.set_frame(child_frame_id)
             self._tree.emit("frame_attached", child)
+            # stderr: stdout is the result channel of `openai4s run --json` and
+            # `openai4s benchmark --json`, and this line made both unparseable.
             print(
                 f"[delegate] frame_id={child_frame_id} "
                 f"child={child.child_id} depth={child.depth} "
-                f"leaf={child.depth >= MAX_DEPTH}"
+                f"leaf={child.depth >= MAX_DEPTH}",
+                file=sys.stderr,
             )
 
         # Delegated Agents are costly worker processes from the trainer's

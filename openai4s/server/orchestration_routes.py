@@ -55,6 +55,14 @@ ROUTES = contract.validate_routes((_CANCEL, _LOGS, _JOB, _JOBS, _SUBMIT, _PROFIL
 
 _PATH_PREFIX = "/orchestration"
 
+#: The profile a submission gets when it names none -- and, until
+#: cluster.toml defines profiles, the only one there is.
+DEFAULT_PROFILE = "cpu-interactive"
+
+#: Where an operator describes the site; named in refusals because "unknown"
+#: alone sent people looking for a typo in a name that could never work.
+_CLUSTER_TOML_HINT = "<data_dir>/cluster.toml (see docs/team-server.md)"
+
 #: How much of a log file the tail route will return. A batch job can write
 #: gigabytes; a browser asking "how is it going" wants the end.
 MAX_LOG_TAIL_BYTES = 64 * 1024
@@ -112,9 +120,10 @@ def _may_submit_to(self, backend: str) -> bool:
     return backend not in PRIVILEGED_BACKENDS
 
 
-def _job_json(workload: Any, allocation: Any = None) -> dict:
+def _job_json(workload: Any, allocation: Any = None, exit_code: Any = None) -> dict:
     """The wire shape. `allocation_id` is the public identity of a running
-    attempt; the backend's own job id stays inside (INV-2)."""
+    attempt; the backend's own job id stays inside (INV-2). `exit_code` is
+    the finished attempt's status, when its backend reported one."""
     payload = {
         "id": workload.id,
         "kind": workload.spec.kind.value,
@@ -130,6 +139,8 @@ def _job_json(workload: Any, allocation: Any = None) -> dict:
         "created_at": getattr(workload, "created_at", None),
         "updated_at": getattr(workload, "updated_at", None),
     }
+    if exit_code is not None:
+        payload["exit_code"] = exit_code
     if allocation is not None:
         payload["allocation"] = {
             "allocation_id": allocation.id,
@@ -138,6 +149,21 @@ def _job_json(workload: Any, allocation: Any = None) -> dict:
             "reason": allocation.reason.value if allocation.reason else None,
         }
     return payload
+
+
+def _exit_code(store: Any, workload: Any) -> int | None:
+    """The exit status of a finished job's last attempt, if one was seen.
+
+    A FAILED job with no reason and empty logs said nothing at all about why;
+    the status the backend observed is the first thing to look at.
+    """
+    if not workload.phase.is_terminal:
+        return None
+    allocations = store.workloads.list_allocations(workload.id)
+    if not allocations:
+        return None
+    code = (allocations[-1].diagnostics or {}).get("exit_code")
+    return code if isinstance(code, int) and not isinstance(code, bool) else None
 
 
 def handle(
@@ -227,7 +253,7 @@ def handle(
             self._json({"error": "job not found"}, 404)
             return True
         allocation = store.workloads.active_allocation(workload.id)
-        payload = _job_json(workload, allocation)
+        payload = _job_json(workload, allocation, _exit_code(store, workload))
         payload["allocations"] = [
             {
                 "allocation_id": a.id,
@@ -261,7 +287,11 @@ def handle(
         self._json(
             {
                 "jobs": [
-                    _job_json(w, store.workloads.active_allocation(w.id))
+                    _job_json(
+                        w,
+                        store.workloads.active_allocation(w.id),
+                        _exit_code(store, w),
+                    )
                     for w in workloads
                 ]
             }
@@ -286,7 +316,7 @@ def handle(
             self._json({"error": "command is required", "code": "invalid_command"}, 400)
             return True
 
-        profile_name = str(body.get("profile") or "cpu-interactive")
+        profile_name = str(body.get("profile") or DEFAULT_PROFILE)
         cluster = getattr(runner, "cluster_config", None)
         profile: ResourceProfile | None = None
         if cluster is not None and cluster.configured:
@@ -296,6 +326,22 @@ def handle(
                 self._json({"error": str(exc), "code": "unknown_profile"}, 400)
                 return True
         if profile is None:
+            if profile_name != DEFAULT_PROFILE:
+                # Accepted, this ran on the local backend and was recorded
+                # under a profile that exists nowhere.
+                self._json(
+                    {
+                        "error": (
+                            f"unknown profile {profile_name!r}: no usable "
+                            f"cluster.toml is configured, so the only profile is "
+                            f"{DEFAULT_PROFILE!r}; define profiles in "
+                            f"{_CLUSTER_TOML_HINT}"
+                        ),
+                        "code": "unknown_profile",
+                    },
+                    400,
+                )
+                return True
             profile = ResourceProfile(name=profile_name)
 
         try:
@@ -317,7 +363,13 @@ def handle(
         if available and backend not in available:
             self._json(
                 {
-                    "error": f"unknown backend {backend!r}",
+                    "error": (
+                        "the cluster backend is not configured: describe the "
+                        f"site in {_CLUSTER_TOML_HINT}; until then jobs run "
+                        "on the local backend"
+                        if backend == "cluster"
+                        else f"unknown backend {backend!r}"
+                    ),
                     "code": "unknown_backend",
                     "available": sorted(available),
                 },

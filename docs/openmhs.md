@@ -24,8 +24,10 @@ added), registers the connectors. Agent commands follow the ordinary host permis
 Already cloned without `--recursive`? Run `git submodule update --init third_party/OpenMHS`.
 Installed OpenAI4S with `pip`? `openai4s lab setup` downloads the same pinned
 OpenMHS release into `~/.openai4s/openmhs` (or the Lab panel's **Set up OpenMHS**
-button does it). In the workbench everything else is one click: Lab tab →
-**Device market** → **Install**.
+button does it): about 35 MB to download, about 150 MB on disk. No other `lab`
+command downloads it silently: `search`, `show`, `add` and `up` ask first on a
+terminal, refuse in a script, and download only with `--yes`. In the workbench
+everything else is one click: Lab tab → **Device market** → **Install**.
 
 ## The device market: 746 devices
 
@@ -197,7 +199,8 @@ results. Installing or starting the lab does not add global allow rules. Previou
 preview-generated grants are removed on start, and commands use the normal host
 permission policy. Child processes receive runtime paths and the lab directory,
 not inherited provider keys. `openai4s lab reset` erases the lab's evidence,
-latches and LIMS; `openai4s lab down` stops its endpoints. After a reboot, an
+latches and LIMS, which cannot be undone, so it asks first on a terminal and a
+script must pass `--yes`; `openai4s lab down` stops its endpoints. After a reboot, an
 operator opening the panel can restore a lab that was left running; a team
 member's status poll cannot restart it.
 

@@ -1563,10 +1563,22 @@ RUN_NOT_COMPLETED_EXIT = 3
 #: migration that failed and was rolled back, or one refused before it began.
 MIGRATION_FAILED_CODE = "migration_failed"
 
+_RUN_DESCRIPTION = """\
+Run one task in this process and print the result. No daemon is needed, and
+the model comes from the environment or a .env file (OPENAI4S_LLM_PROVIDER,
+OPENAI4S_LLM_MODEL and the provider's API key variable).
+
+The agent works in the current directory: the files it writes land here and
+are listed when it finishes. The run is also stored as a session: start the
+web UI (`openai4s serve`) to open it, read its answer and see the code that
+ran in its Notebook.
+"""
+
 _RUN_EXIT_STATUS_HELP = """\
 exit status:
   0  the run completed (stop_reason "submitted")
-  1  an unhandled error (a Python traceback on stderr)
+  1  an unhandled error: a Python traceback on stderr, also saved in
+     <data_dir>/logs/cli-run.log (summarised by `openai4s diagnostics`)
   2  refused: a usage error (an empty task: empty_task; an invalid
      --allow-test-command: invalid_allow_test_command), an explicit --mode
      reusable_pipeline|codebase_change whose test command nothing can
@@ -1577,7 +1589,15 @@ exit status:
      --json prints the error and its code on stdout, and the two database
      refusals still print their error line on stderr
   3  the run ended without completing: stop_reason max_turns, no_progress,
-     cancelled, or any other value
+     cancelled (also Ctrl-C: one "interrupted:" line on stderr), or any
+     other value
+  4  the model call failed: no API key (llm_not_configured), a key the
+     provider rejected (llm_auth_failed), a model or endpoint it does not
+     have (llm_model_not_found), a rate limit (llm_rate_limited), an
+     endpoint that could not be reached (llm_unreachable), or another
+     llm_* code; one "error:" line on stderr says what failed and what to
+     check, --json prints the error and its code on stdout, and --debug
+     (or OPENAI4S_DEBUG=1) adds the Python traceback
 
 --json prints the full result, stop_reason included, for exit 0 and 3 alike.
 With --auto the status still follows stop_reason alone; read
@@ -1595,6 +1615,425 @@ def _run_refusal(args, payload: dict) -> int:
     return 2
 
 
+#: `openai4s run` exit status when the model call itself failed. Its own
+#: status so a wrapper can tell "fix the model configuration" from a refusal
+#: (2), a run that ended without completing (3) and a bug (1).
+RUN_LLM_FAILED_EXIT = 4
+
+
+def _provider_error_detail(error) -> str:
+    """The provider's own sentence about a failed call, bounded and redacted.
+
+    A terminal is where the reader needs it ("The API key format is
+    incorrect"), and a provider may echo part of a credential in it, so every
+    credential-shaped word is replaced before it is printed.
+    """
+    from openai4s.observability import redact_text
+
+    body = getattr(error, "body", None)
+    if not isinstance(body, str) or not body.strip():
+        return ""
+    detail = body
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        inner = parsed.get("error")
+        if isinstance(inner, dict):
+            parsed = inner
+        elif isinstance(inner, str):
+            detail = inner
+        if isinstance(parsed.get("message"), str):
+            detail = parsed["message"]
+    detail = " ".join(redact_text(detail).split())
+    return detail[:300] + ("…" if len(detail) > 300 else "")
+
+
+def _run_llm_failure(error, cfg) -> dict:
+    """What failed in a model call and what to check, as `error` + `code`.
+
+    Chosen from the exception's type and its `status` only, never by matching
+    its prose: those are the fields the transport sets deliberately.
+    """
+    from openai4s.llm.models import (
+        MissingCredentialError,
+        TransportError,
+        llm_failure_code,
+    )
+
+    llm = cfg.llm
+    provider = str(getattr(llm, "provider", "") or "")
+    model = str(getattr(llm, "model", "") or "") or "the provider's default"
+    base_url = str(getattr(llm, "base_url", "") or "") or "its default endpoint"
+    key_vars = f"OPENAI4S_{provider.upper()}_API_KEY (or OPENAI4S_LLM_API_KEY)"
+    status = getattr(error, "status", None)
+    code = llm_failure_code(error)
+    if isinstance(error, MissingCredentialError):
+        code = "llm_not_configured"
+        message = (
+            f"no API key is configured for provider {provider!r}. `openai4s "
+            f"run` reads the model from the environment: set {key_vars} in "
+            "the shell or in a .env file (see .env.example), then run it "
+            "again."
+        )
+    elif status in (401, 403):
+        code = "llm_auth_failed"
+        message = (
+            f"the model provider rejected the API key for provider "
+            f"{provider!r} (HTTP {status}). Check {key_vars}."
+        )
+    elif status == 404:
+        code = "llm_model_not_found"
+        message = (
+            f"the model provider has no model {model!r} at {base_url} (HTTP "
+            "404). Check OPENAI4S_LLM_MODEL and OPENAI4S_LLM_BASE_URL."
+        )
+    elif code in ("llm_rate_limited", "llm_request_burst", "llm_upstream_overloaded"):
+        message = (
+            "the model provider is rate-limiting or overloaded"
+            + (f" (HTTP {status})" if status else "")
+            + ". Try again later; OPENAI4S_LLM_MAX_RETRIES and "
+            "OPENAI4S_LLM_RETRY_BUDGET set how long one call keeps retrying."
+        )
+    elif code in ("llm_deadline_exceeded", "llm_stream_timeout"):
+        message = (
+            "the model call timed out. Try again, or raise "
+            "OPENAI4S_LLM_TIMEOUT / OPENAI4S_LLM_TOTAL_TIMEOUT."
+        )
+    elif code is None and isinstance(error, TransportError) and status is None:
+        # No HTTP status means the request never got an answer: a connect,
+        # DNS or read failure by construction.
+        code = "llm_unreachable"
+        message = (
+            f"could not reach the model provider at {base_url}. Check the "
+            "network and OPENAI4S_LLM_BASE_URL."
+        )
+    else:
+        code = code or "llm_error"
+        message = (
+            "the model call failed"
+            + (f" (HTTP {status})" if status else "")
+            + ". Check OPENAI4S_LLM_PROVIDER, OPENAI4S_LLM_MODEL and "
+            "OPENAI4S_LLM_BASE_URL, or try again."
+        )
+    payload: dict = {"error": message, "code": code, "provider": provider}
+    if status is not None:
+        payload["status"] = status
+    detail = _provider_error_detail(error)
+    if detail:
+        payload["detail"] = detail
+    return payload
+
+
+def _run_llm_failed(args, error, cfg, agent) -> int:
+    """Report a failed model call in one paragraph and exit 4, no traceback."""
+
+    if getattr(args, "debug", False) or os.environ.get("OPENAI4S_DEBUG", "").strip():
+        import traceback
+
+        traceback.print_exception(type(error), error, error.__traceback__)
+    payload = _run_llm_failure(error, cfg)
+    _record_run_answer(agent, args.task, error=payload)
+    frame_id = getattr(agent, "frame_id", None)
+    if frame_id:
+        payload["frame_id"] = str(frame_id)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        line = f"error: {payload['error']}"
+        if payload.get("detail"):
+            line += f" The provider said: {payload['detail']}"
+        print(line, file=sys.stderr)
+    return RUN_LLM_FAILED_EXIT
+
+
+#: How many directory entries `run` walks to list the files it wrote. Past
+#: this the working directory is too large to diff cheaply (a home directory)
+#: and the list is left out rather than paid for twice.
+_RUN_FILES_SCAN_LIMIT = 50_000
+
+
+def _run_files_snapshot(root: Path, skip: Path | None = None) -> dict | None:
+    """Identity of each visible file under ``root``; None when it is too large.
+
+    Hidden entries (``.git``, the run's own ``.openai4s/``) and the data
+    directory are not the run's deliverables and are not walked.
+    """
+
+    out: dict = {}
+    seen = 0
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            if seen > _RUN_FILES_SCAN_LIMIT:
+                return None
+            if entry.name.startswith(".") or entry.name == "__pycache__":
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if skip is None or Path(entry.path).resolve() != skip:
+                        pending.append(entry.path)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            out[entry.path] = (st.st_ino, st.st_size, st.st_mtime_ns)
+    return out
+
+
+def _run_files_written(root: Path, before, skip: Path | None = None):
+    """Absolute paths the run created or changed under ``root``, or None."""
+
+    if before is None:
+        return None
+    after = _run_files_snapshot(root, skip)
+    if after is None:
+        return None
+    return sorted(path for path, state in after.items() if before.get(path) != state)
+
+
+#: The run-scoped copies the runtime spills into the kernel's working
+#: directory, by subdirectory of ``.openai4s/``: oversized tool results
+#: (`agent/compaction.py`) and oversized cell output (`agent/runtime.py`).
+_RUN_SPILL_NAMES = {
+    "context": re.compile(r"[0-9a-f]{64}\.(json|txt)"),
+    "observations": re.compile(r"obs-(stdout|stderr)-[0-9a-f]{16}\.txt"),
+}
+
+
+def _run_context_spill_cleanup(root: Path):
+    """Return a callable that removes the run's spilled copies from ``root``.
+
+    An oversized tool result or cell output is copied under ``.openai4s/`` in
+    the kernel's working directory so a later cell of the same run can read
+    it back (the data directory's archive and the recorded cell keep the
+    bytes). For a CLI run that directory is wherever the user stood, and the
+    copies stayed behind as an untracked hidden directory after the run. Only
+    files this run added are removed, and a directory only when this run
+    created it and it is empty: a project folder keeps its own ``.openai4s/``.
+    """
+
+    base = root / ".openai4s"
+    existed = {base: base.exists()}
+    before: dict[str, set[str]] = {}
+    for sub in _RUN_SPILL_NAMES:
+        existed[base / sub] = (base / sub).exists()
+        try:
+            before[sub] = set(os.listdir(base / sub)) if existed[base / sub] else set()
+        except OSError:
+            before[sub] = set()
+
+    def cleanup() -> None:
+        for sub, spilled in _RUN_SPILL_NAMES.items():
+            directory = base / sub
+            try:
+                if directory.is_symlink() or not directory.is_dir():
+                    continue
+                names = os.listdir(directory)
+            except OSError:
+                continue
+            for name in names:
+                if name not in before[sub] and spilled.fullmatch(name):
+                    try:
+                        os.unlink(directory / name)
+                    except OSError:
+                        pass
+        # Children first, then `.openai4s/` itself.
+        for directory, was_there in reversed(list(existed.items())):
+            if not was_there:
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+
+    return cleanup
+
+
+def _run_session(agent) -> tuple:
+    """The Store and root frame a CLI run records its conversation in."""
+
+    store = getattr(getattr(agent, "dispatcher", None), "store", None)
+    frame_id = getattr(agent, "frame_id", None)
+    if store is None or not frame_id or not hasattr(store, "add_message"):
+        return None, None
+    return store, str(frame_id)
+
+
+def _record_run_task(agent, task: str) -> None:
+    """Open the run's session the way the Web composer opens one.
+
+    A CLI run left a root frame with no message and no title: the Web UI
+    listed it as a blank "Untitled session" -- or hid it when the run wrote
+    no file -- and its export and share page were empty. The task is the
+    user message and, until something better names it, the title.
+    """
+
+    store, frame_id = _run_session(agent)
+    if store is None:
+        return
+    try:
+        frame = store.get_frame(frame_id) or {}
+        if not (frame.get("name") or frame.get("task_summary")):
+            store.update_frame(frame_id, task_summary=" ".join(task.split())[:80])
+        store.add_message(
+            root_frame_id=frame_id, role="user", content=task, frame_id=frame_id
+        )
+    except Exception:  # noqa: BLE001 - a record cannot stop the run
+        pass
+
+
+def _record_run_answer(agent, task: str, result=None, *, error=None) -> None:
+    """Store how the run ended as the session's assistant message.
+
+    The same words the Web turn stores: the rendered completion, the stop
+    marker for a cancelled run, or the error a failed run printed.
+    """
+
+    store, frame_id = _run_session(agent)
+    if store is None:
+        return
+    try:
+        from openai4s.server.completions import (
+            cancellation_marker,
+            completion_message,
+            response_language,
+        )
+
+        language = response_language(task)
+        metadata = None
+        result = result or {}
+        stop_reason = result.get("stop_reason")
+        if error is not None:
+            content = f"error: {error['error']}"
+            metadata = {"failure": {"code": str(error.get("code") or "run_failed")}}
+        elif stop_reason == "submitted" and result.get("submitted_output"):
+            content = completion_message(result["submitted_output"], language=language)
+        elif stop_reason == "cancelled":
+            content = cancellation_marker("user", language)
+            metadata = {"cancelled": {"reason": "user"}}
+        else:
+            content = str(result.get("final_message") or "").strip() or (
+                f"_The run ended without completing ({stop_reason})._"
+            )
+        store.add_message(
+            root_frame_id=frame_id,
+            role="assistant",
+            content=content,
+            frame_id=frame_id,
+            metadata=metadata,
+        )
+    except Exception:  # noqa: BLE001 - the run's own result is already final
+        pass
+
+
+#: Where `run` keeps the traceback of a crash. `<data_dir>/logs/*.log*` is what
+#: `openai4s diagnostics` collects -- as a structured record plus line counts
+#: and a fingerprint, never the text -- and the file itself stays readable here.
+_RUN_CRASH_LOG = "cli-run.log"
+_RUN_CRASH_LOG_MAX_BYTES = 1_000_000
+
+
+def _record_run_crash(
+    cfg, error: BaseException, *, agent=None, task: str = ""
+) -> Path | None:
+    """Record a crashed run: in its session, and in the CLI run log.
+
+    The session gets the same kind of failure message the other exits store;
+    the log gets a structured record and the redacted traceback. Returns the
+    log's path, or None when it could not be written.
+    """
+
+    import traceback
+
+    _record_run_answer(
+        agent,
+        task,
+        error={
+            "error": f"the run stopped on an unexpected error ({type(error).__name__})",
+            "code": "run_crashed",
+        },
+    )
+
+    from openai4s.observability import redact_text
+    from openai4s.server.errors import (
+        DIAGNOSTIC_DETAIL,
+        error_class,
+        safe_type_name,
+    )
+
+    try:
+        logs = Path(cfg.data_dir) / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        path = logs / _RUN_CRASH_LOG
+        if path.exists() and path.stat().st_size > _RUN_CRASH_LOG_MAX_BYTES:
+            # One older generation; `cli-run.log.1` still matches the glob.
+            path.replace(logs / f"{_RUN_CRASH_LOG}.1")
+        # The shape `server.errors.record_diagnostic` emits, so the bundle
+        # keeps the same fields for a CLI crash as for a daemon one.
+        record = {
+            "ts": round(time.time(), 3),
+            "event": "unhandled_exception",
+            "level": "error",
+            "surface": "cli:run",
+            "exception": safe_type_name(error),
+            "detail": DIAGNOSTIC_DETAIL,
+            "error_class": error_class(error),
+        }
+        trace = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+            # Line by line: `redact_text` scans space-separated words, and a
+            # token at the end of a line would otherwise carry its newline.
+            for line in trace.splitlines():
+                handle.write(redact_text(line) + "\n")
+        try:
+            from openai4s.security.permissions import harden_file
+
+            harden_file(path)
+        except Exception:  # noqa: BLE001 - hardening is best-effort
+            pass
+        return path
+    except Exception:  # noqa: BLE001 - reporting a crash must not mask it
+        return None
+
+
+def _run_interrupted(args, agent) -> int:
+    """Report a run that Ctrl-C ended: one line (or the --json result), exit 3.
+
+    It was a 39-line KeyboardInterrupt traceback and exit 130, while `--help`
+    promised exit 3 and a `--json` result for a cancelled run.
+    """
+
+    result = agent.interrupted_result()
+    _record_run_answer(agent, args.task, result)
+    frame_id = getattr(agent, "frame_id", None)
+    if frame_id:
+        result["frame_id"] = str(frame_id)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        turns = result.get("turns") or 0
+        session = f"session {frame_id}" if frame_id else "the session"
+        print(
+            f"interrupted: the run was cancelled after {turns} "
+            f"turn{'' if turns == 1 else 's'}; {session} is recorded as "
+            "cancelled.",
+            file=sys.stderr,
+        )
+    return RUN_NOT_COMPLETED_EXIT
+
+
 def cmd_run(args) -> int:
     from openai4s.agent import Agent
     from openai4s.agent.loop import (
@@ -1604,6 +2043,7 @@ def cmd_run(args) -> int:
     )
     from openai4s.host.code_evidence import EVIDENCE_REQUIRED_MODES
     from openai4s.kernel.readiness import EnvironmentReadinessError
+    from openai4s.llm.models import LLMError
 
     if not str(getattr(args, "task", "") or "").strip():
         # A blank task is a usage error, refused before any config, store or
@@ -1646,10 +2086,30 @@ def cmd_run(args) -> int:
     agent_options: dict = {}
     if allowed_tests:
         agent_options["allowed_test_commands"] = tuple(allowed_tests)
-    if getattr(args, "auto", False):
-        # The post-run review judges what the run recorded; without its cells
-        # the reviewer sees an answer and no executed code or output at all.
-        agent_options["record_cells"] = True
+    # Every run records its cells: the session's Notebook is where the code
+    # behind a number is found later (it was in no file, no terminal and no
+    # Notebook), and `--auto`'s post-run review judges what the run recorded.
+    agent_options["record_cells"] = True
+    progress = None
+    if not getattr(args, "quiet", False):
+        # On stderr, so stdout stays the result. Without it a run printed
+        # nothing until it ended, and a hung run, a rate-limit wait and a long
+        # cell were indistinguishable.
+        from openai4s.agent.runtime import RunProgress
+
+        def _progress_line(line: str) -> None:
+            # One write per line: the repeats come from another thread and
+            # must not split a `-v` trace line in two.
+            sys.stderr.write(line + "\n")
+            sys.stderr.flush()
+
+        progress = RunProgress(
+            _progress_line,
+            # `-v` already shows where each turn begins; it keeps only the
+            # elapsed-time repeats for a phase that lasts.
+            phases=not args.verbose,
+        )
+        agent_options["progress"] = progress
     agent = Agent(cfg=cfg, verbose=args.verbose, task_mode=mode, **agent_options)
     if mode in EVIDENCE_REQUIRED_MODES:
         # Before the first model call: an explicit code mode that can never
@@ -1670,9 +2130,23 @@ def cmd_run(args) -> int:
                 args,
                 {"error": refusal, "code": "code_mode_test_runner_unauthorized"},
             )
+    _record_run_task(agent, args.task)
+    # The Agent runs its kernel in the current directory; what the run writes
+    # there is listed at the end, and its context spill is not left behind.
+    workdir = Path.cwd()
+    data_dir = Path(cfg.data_dir).expanduser().resolve()
+    files_before = _run_files_snapshot(workdir, data_dir)
+    remove_context_spill = _run_context_spill_cleanup(workdir)
     try:
-        with _foreground_cell_interrupt(agent):
-            result = agent.run(args.task)
+        try:
+            with _foreground_cell_interrupt(agent):
+                result = agent.run(args.task)
+        finally:
+            if progress is not None:
+                progress.close()
+            remove_context_spill()
+    except KeyboardInterrupt:
+        return _run_interrupted(args, agent)
     except EnvironmentReadinessError as error:
         # A standard-profile refusal is raised only at the first Code Cell.
         # Keeping this adapter typed lets native tools and structured
@@ -1683,11 +2157,39 @@ def cmd_run(args) -> int:
             "code": error.error_code,
             "standard_profile_readiness": error.readiness,
         }
+        _record_run_answer(agent, args.task, error=payload)
         if args.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             print(f"error: {payload['error']}", file=sys.stderr)
         return 2
+    except LLMError as error:
+        # The most common first failure -- no key, a wrong key, a model name
+        # the provider does not have -- used to surface as an 89-line
+        # traceback with the cause on its last line, and as nothing at all on
+        # stdout under --json.
+        return _run_llm_failed(args, error, cfg, agent)
+    except Exception as error:
+        # A crash still ends with its traceback (exit 1), but it used to exist
+        # only in the terminal: the support bundle had no trace of it.
+        where = _record_run_crash(cfg, error, agent=agent, task=args.task)
+        if where is not None:
+            print(
+                f"error: the run crashed ({type(error).__name__}). The traceback "
+                f"below is also saved in {where}; `openai4s diagnostics` "
+                "includes a summary of it.",
+                file=sys.stderr,
+            )
+        raise
+    _record_run_answer(agent, args.task, result)
+    if getattr(agent, "frame_id", None):
+        # The session the run is stored as (`openai4s share create <id>`).
+        result = {**result, "frame_id": str(agent.frame_id)}
+    files_written = _run_files_written(workdir, files_before, data_dir)
+    if files_written is not None:
+        # Absolute paths: the run's internal artifact ids name nothing a
+        # person can open, and no CLI command resolves them.
+        result = {**result, "files_written": files_written}
     if getattr(args, "auto", False):
         # A machine-readable terminal is the point of --auto: CI needs to tell
         # "ran and was verified" from "ran and nobody checked".
@@ -1713,8 +2215,24 @@ def cmd_run(args) -> int:
                 "submitted_output:",
                 json.dumps(result["submitted_output"], ensure_ascii=False, indent=2),
             )
-        if result.get("final_message"):
-            print("final:", result["final_message"])
+        final = result.get("final_message")
+        submitted = result.get("submitted_output")
+        output = submitted.get("output") if isinstance(submitted, dict) else None
+        summaries = [
+            str(block.get("summary") or "").strip()
+            for block in (submitted, output)
+            if isinstance(block, dict)
+        ]
+        # A structured completion's summary IS the final message; printing it
+        # again under another label only made the answer look like two.
+        if final and str(final).strip() not in summaries:
+            print("final:", final)
+        if result.get("files_written"):
+            print("files written:")
+            for path in result["files_written"]:
+                print(f"  {path}")
+        if result.get("frame_id"):
+            print(f"session: {result['frame_id']} (open it in the Web UI)")
         auto = result.get("auto_mode")
         if auto:
             print(f"=== review: {auto['terminal']} — {auto['user_truth']} ===")
@@ -2742,6 +3260,103 @@ def _parse_duration(text: str) -> int:
         raise SystemExit(2) from None
 
 
+#: From "no relay" to a share link: the Share dialog's three steps, for the
+#: terminal.
+_SHARE_SETUP_STEPS = """\
+Sharing publishes a read-only snapshot through a relay server you run, and no
+relay is configured yet. To set it up:
+  1. Set OPENAI4S_SHARE_RELAY_URL and OPENAI4S_SHARE_AUTH_TOKEN (and
+     OPENAI4S_SHARE_BASE_DOMAIN) in the daemon's environment or its .env file.
+     The relay itself runs on a public host with `openai4s relay serve`.
+  2. Restart the daemon (`openai4s stop`, then `openai4s serve`).
+  3. Run `openai4s share enable`.
+Full steps: docs/webshare.md"""
+
+#: The daemon's `share/status` names missing settings by field; a person sets
+#: the variable.
+_SHARE_SETTING_VARS = {
+    "relay_url": "OPENAI4S_SHARE_RELAY_URL",
+    "auth_token": "OPENAI4S_SHARE_AUTH_TOKEN",
+}
+
+
+def _share_status_text(rec: dict) -> str:
+    """`share status` / `enable` / `disable` in words, with the next step.
+
+    They printed the daemon's JSON (`{"state": "disabled", "configured":
+    false}`) whatever the outcome; `--json` still does.
+    """
+
+    state = str(rec.get("state") or "")
+    if state == "disabled":
+        if rec.get("configured"):
+            return "Sharing is off. Turn it on with `openai4s share enable`."
+        return "Sharing is off.\n" + _SHARE_SETUP_STEPS
+    if state == "unconfigured":
+        missing = ", ".join(
+            _SHARE_SETTING_VARS.get(str(name), str(name))
+            for name in rec.get("missing") or []
+        )
+        return (
+            f"Sharing is on, but no relay is configured (missing: {missing}).\n"
+            + _SHARE_SETUP_STEPS
+        )
+    if state == "connected":
+        return "Sharing is on and connected to the relay."
+    if state == "connecting":
+        return "Sharing is on; connecting to the relay."
+    return f"Sharing state: {state or 'unknown'}"
+
+
+def _share_session_title(item: dict) -> str:
+    """A share's or a session's name, as the Web UI would show it."""
+
+    session = item.get("session") if isinstance(item.get("session"), dict) else {}
+    return str(
+        item.get("title")
+        or session.get("name")
+        or session.get("task_summary")
+        or item.get("name")
+        or item.get("task_summary")
+        or "untitled session"
+    )
+
+
+def _share_counts_text(item: dict) -> str:
+    counts = item.get("counts") or {}
+    return ", ".join(
+        f"{int(counts.get(key) or 0)} {key}"
+        for key in ("messages", "cells", "artifacts")
+    )
+
+
+def _share_expiry_text(expires_at) -> str:
+    """`expires 2026-11-27 14:03` (local time) or `never expires`."""
+
+    try:
+        stamp = float(expires_at) / 1000.0  # the daemon stores epoch ms
+    except (TypeError, ValueError):
+        return "never expires"
+    if stamp <= 0:
+        return "never expires"
+    return "expires " + time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+
+
+def _share_published_text(rec: dict, session: dict | None) -> str:
+    """`shared "<title>" (f-…, N messages, …) → <url>, expires <when>`.
+
+    The daemon's share record names no session, so a create describes the
+    session the CLI resolved; an update names the share instead.
+    """
+
+    counts = _share_counts_text(rec)
+    tail = f"→ {rec.get('url')}, {_share_expiry_text(rec.get('expires_at'))}"
+    if session is None:
+        return f"updated share {rec.get('share_id')} ({counts}) {tail}"
+    title = rec.get("title") or _share_session_title(session)
+    return f'shared "{title}" ({session.get("id")}, {counts}) {tail}'
+
+
 def cmd_share(args) -> int:
     cfg = get_config()
     action = args.share_action
@@ -2757,6 +3372,7 @@ def cmd_share(args) -> int:
     ):
         if not _require_daemon(cfg):
             return 1
+    shared_session: dict | None = None  # what a create published, for its echo
     try:
         if action == "create":
             root = args.session
@@ -2767,12 +3383,34 @@ def cmd_share(args) -> int:
                     print("error: no sessions found", file=sys.stderr)
                     return 2
                 root = items[0].get("frame_id") or items[0].get("id")
+                shared_session = items[0]
+                # A public link to whichever session happens to be newest:
+                # say which one, and on a terminal ask first.
+                latest = (
+                    f'{root} "{_share_session_title(items[0])}" '
+                    f"({int(items[0].get('message_count') or 0)} messages)"
+                )
+                if not (args.yes or args.json) and sys.stdin.isatty():
+                    print(
+                        f"Publish the latest session, {latest}, as a read-only "
+                        "link? [y/N] ",
+                        end="",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    if sys.stdin.readline().strip().lower() not in ("y", "yes"):
+                        print("nothing was shared", file=sys.stderr)
+                        return 1
             body: dict = {}
             if args.title:
                 body["title"] = args.title
             if args.expires:
                 body["expires_in"] = _parse_duration(args.expires)
             status, rec = _daemon_request(cfg, "POST", f"/frames/{root}/shares", body)
+            if shared_session is None and status < 400 and not args.json:
+                _, frame = _daemon_request(cfg, "GET", f"/frames/{root}")
+                shared_session = frame if isinstance(frame, dict) else {}
+            shared_session = {"id": root, **(shared_session or {})}
         elif action == "update":
             ubody: dict = {}
             if getattr(args, "no_expiry", False):
@@ -2810,20 +3448,52 @@ def cmd_share(args) -> int:
     if args.json:
         print(json.dumps(rec, ensure_ascii=False, indent=2))
     elif status >= 400:
-        print(f"error: {rec.get('error') or rec}", file=sys.stderr)
+        detail = rec.get("error") if isinstance(rec, dict) else rec
+        if not detail:
+            # Never the dict's repr.
+            code = rec.get("code") if isinstance(rec, dict) else None
+            detail = f"HTTP {status}" + (f" ({code})" if code else "")
+        print(f"error: {detail}", file=sys.stderr)
+        if isinstance(rec, dict) and rec.get("code") == "sharing_unconfigured":
+            print(_SHARE_SETUP_STEPS, file=sys.stderr)
     elif action == "create" or action == "update":
-        print(rec.get("url") or json.dumps(rec))
+        # Publishing is an outward action: say what went out, not only where.
+        print(_share_published_text(rec, shared_session))
+        counts = rec.get("counts") or {}
+        if not any(int(counts.get(k) or 0) for k in ("messages", "cells", "artifacts")):
+            print(
+                "warning: this session has no messages, cells or artifacts to "
+                "show, so the shared page is empty",
+                file=sys.stderr,
+            )
         _warn_share_tunnel_down(cfg)
     elif action == "list":
         for item in rec.get("shares", []):
-            print(f"{item['share_id']}\t{item['status']}\t{item.get('url', '')}")
-        if rec.get("shares"):
+            # A list row names no session, only the share's own title.
+            print(
+                f"{item['share_id']}\t{item['status']}\t"
+                f"{item.get('title') or '(no title)'}\t{_share_counts_text(item)}\t"
+                f"{_share_expiry_text(item.get('expires_at'))}\t{item.get('url', '')}"
+            )
+        if not rec.get("shares"):
+            # Nothing at all read as "the command did not run".
+            print("no shares")
+        else:
             _warn_share_tunnel_down(cfg)
     elif action == "import":
         rid = rec.get("root_frame_id")
         print(
             f"imported session {rid} (view-only). Open the web UI and use "
             "“Restart fresh” to continue."
+        )
+    elif action in ("status", "enable", "disable"):
+        print(_share_status_text(rec))
+    elif action == "revoke":
+        print(
+            # `already` is also the answer for an id that never existed.
+            f"share {args.share_id} was not active (nothing to revoke)"
+            if rec.get("already")
+            else f"revoked share {args.share_id}; its link no longer works"
         )
     else:
         print(json.dumps(rec, ensure_ascii=False))
@@ -2899,6 +3569,26 @@ def cmd_relay_gen_token(args) -> int:
     return 0
 
 
+def _cluster_command_refusal(command: list[str]) -> str | None:
+    """Why ``command`` cannot be what the user meant, or None.
+
+    `cluster submit "echo hi"` is the natural way to type a command, and it
+    asks for a program named `echo hi`: the job was accepted, FAILED, and
+    showed the same `echo hi` as a job that ran. One argument with a space in
+    it that is not an existing path is refused with the form that works.
+    """
+
+    if len(command) != 1 or not any(ch.isspace() for ch in command[0]):
+        return None
+    if os.path.exists(command[0]):
+        return None
+    return (
+        f"{command[0]!r} is one argument, which names a program called "
+        "exactly that. Give the command as separate arguments, without the "
+        f"quotes: openai4s cluster submit {command[0].strip()}"
+    )
+
+
 def cmd_cluster(args) -> int:
     """`openai4s cluster …` — batch jobs, through the daemon.
 
@@ -2909,6 +3599,14 @@ def cmd_cluster(args) -> int:
     """
     cfg = get_config()
     action = args.cluster_action
+    if action == "submit":
+        refusal = _cluster_command_refusal(list(args.command))
+        if refusal is not None:
+            if getattr(args, "json", False):
+                print(json.dumps({"error": refusal, "code": "command_is_one_string"}))
+            else:
+                print(f"error: {refusal}", file=sys.stderr)
+            return 2
     if not _require_daemon(cfg):
         return 1
     try:
@@ -2947,13 +3645,28 @@ def cmd_cluster(args) -> int:
         # refused submit printed "submitted None (None)" and a 401 on `list`
         # printed "no jobs", with the daemon's own explanation nowhere.
         detail = rec.get("error") if isinstance(rec, dict) else None
+        if isinstance(rec, dict) and rec.get("code") == "already_final":
+            # The body has no `error`, so this printed the dict's repr.
+            detail = f"job {args.job_id} already finished ({rec.get('phase')})"
+        elif not detail and isinstance(rec, dict):
+            detail = f"HTTP {status}" + (f" ({rec['code']})" if rec.get("code") else "")
         print(f"error: {detail or rec or f'HTTP {status}'}", file=sys.stderr)
+    elif action == "cancel":
+        print(f"cancel requested for {rec.get('id')} ({rec.get('reason')})")
     elif action == "list":
+        import shlex
+
         jobs = (rec or {}).get("jobs") or []
         for job in jobs:
+            # Quoted as a shell would need it: `['echo hi']` and
+            # `['echo', 'hi']` printed the same `echo hi`, and only one ran.
+            why = [str(job["reason"])] if job.get("reason") else []
+            if job.get("exit_code") not in (None, 0):
+                why.append(f"exit {job['exit_code']}")
             print(
                 f"{job['id']}  {job['phase']:<10} {job['profile']:<16} "
-                f"{' '.join(job['command'])[:48]}"
+                f"{shlex.join(job['command'])[:48]}"
+                + (f"  ({', '.join(why)})" if why else "")
             )
         if not jobs:
             print("no jobs")
@@ -2964,6 +3677,8 @@ def cmd_cluster(args) -> int:
             print(rec["stdout"], end="")
         if rec.get("stderr"):
             print(rec["stderr"], end="", file=sys.stderr)
+        if not (rec.get("stdout") or rec.get("stderr")):
+            print("(no output)", file=sys.stderr)
     elif action == "profiles":
         for profile in (rec or {}).get("profiles") or []:
             print(
@@ -2971,7 +3686,14 @@ def cmd_cluster(args) -> int:
                 f"gpus={profile['gpus']} walltime={profile['walltime_s']}s"
             )
         if not (rec or {}).get("configured"):
-            print("(no cluster.toml configured; local backend only)")
+            # Where the file goes, and what works until it exists: the bare
+            # "not configured" left both to a search of the docs.
+            print(
+                "(no cluster.toml configured; local backend only, with the "
+                "default 'cpu-interactive' profile. To add a cluster, describe "
+                f"it in {Path(cfg.data_dir) / 'cluster.toml'} -- see "
+                "docs/team-server.md -- and restart the daemon.)"
+            )
     else:
         print(json.dumps(rec))
     return 0 if 200 <= int(status) < 300 else 2
@@ -3292,13 +4014,38 @@ def build_parser() -> argparse.ArgumentParser:
 
     pr = sub.add_parser(
         "run",
-        help="run one Code-as-Action task in-process",
+        help="run one task here, without the daemon or the web UI",
+        description=_RUN_DESCRIPTION,
         epilog=_RUN_EXIT_STATUS_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    pr.add_argument("task", help="the task description")
-    pr.add_argument("--json", action="store_true", help="emit full JSON result")
-    pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
+    pr.add_argument("task", help="what you want done, in plain words")
+    pr.add_argument(
+        "--json",
+        action="store_true",
+        help="print the whole result as JSON on stdout (progress stays on stderr)",
+    )
+    pr.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="trace every turn on stderr: the model's reply, each tool call "
+        "with its arguments, and the head of each result (the result itself "
+        "stays on stdout)",
+    )
+    pr.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="no progress lines on stderr (by default each turn says what it "
+        "is doing, and repeats it every 30s while it lasts)",
+    )
+    pr.add_argument(
+        "--debug",
+        action="store_true",
+        help="also print the Python traceback when the model call fails "
+        "(same as OPENAI4S_DEBUG=1)",
+    )
     from openai4s.agent.task_modes import TaskMode
 
     pr.add_argument(
@@ -3306,13 +4053,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[mode.value for mode in TaskMode],
         default=None,
         help=(
-            "task mode. Omitted, it is detected conservatively from the task "
-            "text (guidance only — detection never gates completion) and "
-            "defaults to analysis_run. Selecting reusable_pipeline or "
-            "codebase_change explicitly requires the run to save source "
-            "files, keep a thin entry point, and back its completion with "
-            "verified source/entry-point/test evidence, including a "
-            "Host-authorized host.bash receipt for each test command"
+            "what the task should leave behind: analysis_run (the default: "
+            "an answer backed by an analysis), reusable_pipeline (scripts "
+            "you can run again) or codebase_change (a change to the code in "
+            "this directory). The last two finish only when their saved code "
+            "and its tests really ran; a run with nobody to approve the test "
+            "commands needs --allow-test-command"
         ),
     )
     pr.add_argument(
@@ -3321,25 +4067,23 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CMD",
         default=None,
         help=(
-            "pre-authorize host.bash for this exact command string in this run "
-            "(repeatable; requires --mode reusable_pipeline or codebase_change). "
-            "A headless run has nobody to approve the shell command its test "
-            "evidence must come from; this installs a conversation-scoped "
-            "exact-command allow rule and nothing broader. The receipt that "
-            "backs test_evidence is the kernel worker's report of that string's "
-            "exit status, run with the Cell's environment (PATH, cwd): it catches "
-            "a test that was not run, only printed, or failed, and is not proof "
-            "against a Cell that fakes the runner"
+            "with --mode reusable_pipeline or codebase_change: let this run "
+            "execute this exact command string as a test without asking anyone "
+            "(repeat the flag for more commands; nothing else is allowed by "
+            "it). The run must still execute it: the kernel worker reports its "
+            "real exit status, which catches a test that never ran, was only "
+            "printed or failed -- it is not proof against code written to fake "
+            "a test runner"
         ),
     )
     pr.add_argument(
         "--auto",
         action="store_true",
         help=(
-            "autonomous Auto Mode: boundary actions go to the Guardian instead "
-            "of failing closed, and the result is reviewed before the run "
-            "reports a terminal. NOT full access -- the Guardian's active "
-            "surface is a read-only allowlist bound to a verified action digest"
+            "run without stopping for approvals: an action that would ask you "
+            "is decided by an automatic safety reviewer instead (it approves "
+            "read-only actions only, so this is not full access), and the "
+            "result is checked before the run reports it (auto_mode in --json)"
         ),
     )
     pr.set_defaults(fn=cmd_run)
@@ -3561,6 +4305,12 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("session", help="root frame id, or 'latest'")
     sc.add_argument("--title", help="optional share title")
     sc.add_argument("--expires", help="auto-revoke after this long, e.g. 30m/24h/7d")
+    sc.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="with 'latest': publish without asking which session it is",
+    )
     su = _share_sub("update", "refresh a share snapshot")
     su.add_argument("share_id")
     su.add_argument("--expires", help="reset the expiry, e.g. 30m/24h/7d")
@@ -3581,8 +4331,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="the command to run, as separate arguments (never one string: "
         "splitting a command line is where quoting bugs become injection)",
     )
-    cls.add_argument("--profile", default="cpu-interactive")
-    cls.add_argument("--backend", help="local | cluster (default: local)")
+    cls.add_argument(
+        "--profile",
+        default="cpu-interactive",
+        help="a profile from <data_dir>/cluster.toml (`cluster profiles` lists "
+        "them); without one, only the default cpu-interactive exists",
+    )
+    cls.add_argument(
+        "--backend",
+        help="local | cluster (cluster needs <data_dir>/cluster.toml; default: "
+        "cluster when it is configured, else local)",
+    )
     cls.add_argument("--workdir")
     cls.add_argument("--json", action="store_true")
     cls.set_defaults(fn=cmd_cluster)

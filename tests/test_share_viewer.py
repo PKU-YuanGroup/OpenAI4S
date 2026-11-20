@@ -149,7 +149,8 @@ def test_cli_share_create_says_when_the_relay_is_down(
     args = build_parser().parse_args(["share", "create", "f-1"])
     assert cli.cmd_share(args) == 0
     captured = capsys.readouterr()
-    assert captured.out.strip() == "https://s1.share.example/"
+    # CLI-36: the line also names the session that went out; the link is on it.
+    assert "→ https://s1.share.example/" in captured.out
     assert ("relay tunnel is not connected" in captured.err) is warned
     assert ("ConnectionRefusedError" in captured.err) is warned
 

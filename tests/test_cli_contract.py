@@ -695,7 +695,7 @@ def test_stage1_run_allows_control_only_agent_before_any_readiness_probe(
     calls: list[tuple[str, object]] = []
 
     class Agent:
-        def __init__(self, *, cfg, verbose, task_mode=None):
+        def __init__(self, *, cfg, verbose, task_mode=None, **_reporting):
             calls.append(("construct", (cfg, verbose, task_mode)))
 
         def run(self, task):
@@ -758,7 +758,7 @@ def test_stage1_run_projects_typed_first_cell_readiness_refusal(
     }
 
     class Agent:
-        def __init__(self, *, cfg, verbose, task_mode=None):
+        def __init__(self, *, cfg, verbose, task_mode=None, **_reporting):
             del cfg, verbose, task_mode
 
         def run(self, task):
@@ -794,7 +794,7 @@ def test_flag_off_run_preserves_agent_execution_without_readiness_probe(
     calls: list[tuple[str, object]] = []
 
     class Agent:
-        def __init__(self, *, cfg, verbose, task_mode=None):
+        def __init__(self, *, cfg, verbose, task_mode=None, **_reporting):
             calls.append(("construct", (cfg, verbose, task_mode)))
 
         def run(self, task):
@@ -849,7 +849,7 @@ def test_run_that_did_not_complete_exits_non_zero_with_its_result_intact(
     )
 
     class Agent:
-        def __init__(self, *, cfg, verbose, task_mode=None):
+        def __init__(self, *, cfg, verbose, task_mode=None, **_reporting):
             del cfg, verbose, task_mode
 
         def run(self, task):

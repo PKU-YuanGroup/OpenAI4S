@@ -530,6 +530,7 @@ openai4s lab …     # the simulated OpenMHS lab (`openai4s lab --help`)
 | 1 | An unhandled error; a Python traceback is on stderr. |
 | 2 | Refused before or at the first Code Cell: a usage error (an empty task, `empty_task`; an invalid `--allow-test-command`, `invalid_allow_test_command`), an explicit `--mode reusable_pipeline\|codebase_change` whose test command nothing can authorize (`code_mode_test_runner_unauthorized`), the standard environment is not ready, the database schema is newer than this build (`future_schema`), or an upgrade of an older database failed and was rolled back (`migration_failed`; the error line names the kept backup). `--json` prints the error and its code on stdout; the two database refusals also keep their `error:` line on stderr. |
 | 3 | The run ended without completing: `stop_reason` is `max_turns`, `no_progress`, `cancelled`, or any other value. |
+| 4 | The model call failed: no API key (`llm_not_configured`), a key the provider rejected (`llm_auth_failed`), a model or endpoint it does not have (`llm_model_not_found`), a rate limit (`llm_rate_limited`), an endpoint that could not be reached (`llm_unreachable`), or another `llm_*` code. One `error:` line on stderr says what failed and what to check; `--json` prints the error and its code on stdout; `--debug` (or `OPENAI4S_DEBUG=1`) adds the Python traceback. |
 
 `--json` prints the full result, `stop_reason` included, for exit 0 and 3
 alike. With `--auto` the status still follows `stop_reason` alone; the review

@@ -371,6 +371,20 @@ def test_run_all_honours_the_root_it_is_given(tmp_path):
     ), "run_all ran the default suite instead of the empty root it was given"
 
 
+def test_a_delegating_case_leaves_stdout_to_the_report(capsys):
+    """`openai4s benchmark --json` was not JSON: three `[delegate] frame_id=…`
+    lines came before the `{`, printed by the delegation runner on stdout."""
+
+    workflow = next(w for w in WORKFLOWS if w.id == "delegation")
+    for case in workflow.cases:
+        result = run_case(workflow, case)
+        assert result.passed or result.skipped, result.detail
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[delegate] frame_id=" in captured.err
+
+
 def test_the_cli_treats_zero_workflows_as_a_failure(monkeypatch, capsys, tmp_path):
     """Zero workflows is not a pass. A packaging regression must not exit 0."""
     import importlib
