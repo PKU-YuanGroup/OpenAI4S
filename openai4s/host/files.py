@@ -1358,7 +1358,12 @@ class WorkspaceFileService:
         workspace = self.workspace()
         parts = self._candidate_parts(relative)
         if not parts and not allow_root:
-            raise ValueError("workspace file path must name a file")
+            # M-44: "workspace file path must name a file" for a read of "."
+            # said nothing a user could act on.
+            raise ValueError(
+                f"{str(relative)!r} is the workspace folder, not a file: name a "
+                "file inside it (list_dir shows what is there)"
+            )
         candidate = workspace.joinpath(*parts)
         try:
             target = candidate.resolve()
