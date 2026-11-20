@@ -92,3 +92,11 @@
   color: var(--warn-text);
   font-size: 12px;
 }
+
+/* SYNC-27: a refused manual run, said beside the input it was typed into. */
+.nb-repl-notice {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}

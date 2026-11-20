@@ -381,6 +381,13 @@ export async function kernelCtl(action: string): Promise<void> {
   if (dockIsNotebook()) nbRender();
 }
 
+/**
+ * SYNC-27: why the last manual run was refused, for the Notebook pane to show
+ * beside the input. It used to go under the chat composer, away from the
+ * Notebook the user was typing in. Per session; the next accepted run clears it.
+ */
+export const replNotice = field<{ sid: string; text: string } | null>(() => null);
+
 /** app.js:9920-9947. The REPL's controls follow `pendingReplIdentity`, set here. */
 export async function executeNotebookCode(code: string, language: string): Promise<boolean> {
   code = String(code || "");
@@ -417,6 +424,7 @@ export async function executeNotebookCode(code: string, language: string): Promi
         owner && owner.kind && owner.id ? { ...pending, owner, accepted: true } : { ...pending, accepted: true };
     }
     hint(t("nb.action.queued", language === "r" ? "R" : "Python"));
+    if (replNotice.value && replNotice.value.sid === frameId) replNotice.value = null;
     if (!accepted && currentId.value === frameId) {
       invalidateKernelCache();
       await loadExecutionLog(frameId);
@@ -424,7 +432,10 @@ export async function executeNotebookCode(code: string, language: string): Promi
     }
     return true;
   } catch (error) {
-    hint(t("nb.repl.execFailed", apiErrorText(error)), true);
+    replNotice.value = { sid: frameId, text: t("nb.repl.execFailed", apiErrorText(error)) };
+    // Refused because the switch went off in another window: the next read
+    // brings the pane in line (the input goes; the status strip says why).
+    invalidateKernelCache();
     return false;
   } finally {
     const pending = pendingReplIdentity.value as { execution_id?: string } | null;

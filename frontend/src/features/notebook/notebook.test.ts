@@ -94,6 +94,7 @@ import {
   replEnabledNow,
   replHistory,
   replLoad,
+  replNotice,
   shortRuntime,
   syncKernel,
 } from "./kernel";
@@ -538,6 +539,31 @@ describe("F-14 Notebook", () => {
       expect(await second).toBe(false);
       answer({ status: "accepted" });
       expect(await first).toBe(true);
+    });
+
+    it("says a refused manual run in the Notebook, not under the chat composer (SYNC-27)", async () => {
+      // The switch went off in another window: the refusal was written under
+      // the chat composer, away from the Notebook the code was typed in.
+      const hints: Array<[string, boolean | undefined]> = [];
+      vi.stubGlobal("hint", (msg: string, err?: boolean) => hints.push([msg, err]));
+      const paths: string[] = [];
+      setNotebookApi(async (path) => {
+        paths.push(path);
+        if (path.endsWith("/kernel/execute")) {
+          throw new Error("notebook REPL is disabled; turn on manual Notebook cells in Settings → General");
+        }
+        return { alive: true, repl_enabled: false };
+      });
+      expect(await executeNotebookCode("print(1)", "python")).toBe(false);
+      expect(replNotice.value).toEqual({
+        sid: "frame-1",
+        text: expect.stringContaining("notebook REPL is disabled"),
+      });
+      expect(hints.filter(([, err]) => err)).toEqual([]);
+      // The next accepted run clears it.
+      setNotebookApi(async () => ({ status: "accepted" }));
+      expect(await executeNotebookCode("print(2)", "python")).toBe(true);
+      expect(replNotice.value).toBeNull();
     });
 
     it("a REPL execution whose terminal event was lost settles after a replay gap", async () => {

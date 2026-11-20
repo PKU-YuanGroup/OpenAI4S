@@ -57,6 +57,7 @@ import {
   replEnabled,
   replHistory,
   replLoad,
+  replNotice,
   runtimeBadge,
   runtimeStatusText,
   shortRuntime,
@@ -1003,6 +1004,7 @@ function ReplPanel() {
           }}
         />
       </div>
+      <ReplNotice />
     </div>
   );
 
@@ -1081,6 +1083,17 @@ export function NewCellsPill() {
   );
 }
 
+/** SYNC-27: a refused manual run, said in the Notebook it was typed into. */
+function ReplNotice() {
+  const notice = replNotice.value;
+  if (!notice || notice.sid !== currentId.value) return null;
+  return (
+    <div class="nb-repl-notice" role="alert">
+      {notice.text}
+    </div>
+  );
+}
+
 export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   const repl = replEnabled.value;
@@ -1103,6 +1116,7 @@ export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
           ) : (
             <>
               <StatusStrip />
+              <ReplNotice />
               <NewCellsPill />
             </>
           )}

@@ -26,7 +26,7 @@ import { markNotebookSeen, notebookDisplayEntries } from "./cells";
 import { onNotebookScroll } from "./scroll";
 import type { NotebookCell } from "./types";
 import { activeTab, dock } from "../../stores/ui";
-import { forkPending, invalidateKernelCache, kernelView, runtimeStatusText } from "./kernel";
+import { forkPending, invalidateKernelCache, kernelView, replNotice, runtimeStatusText } from "./kernel";
 import {
   CellActions,
   CellList,
@@ -276,6 +276,15 @@ describe("Notebook cell state", () => {
     const titles = JSON.stringify(CellActions({ cell: { producing_cell_id: "c", source: "x = 1" } }));
     expect(titles).toContain(nbT("nb.action.needsManual"));
     expect(titles).not.toContain(t("nb.action.unavailable"));
+  });
+
+  it("shows a refused manual run in the Notebook, for the session it belongs to (SYNC-27)", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { repl_enabled: false }, envs: null, cur: null };
+    replNotice.value = { sid: "frame-1", text: "Execution failed: notebook REPL is disabled" };
+    expect(textOf(NotebookDock({ entries: [] }))).toContain("Execution failed: notebook REPL is disabled");
+    replNotice.value = { sid: "frame-2", text: "Execution failed: another session" };
+    expect(textOf(NotebookDock({ entries: [] }))).not.toContain("another session");
   });
 });
 
