@@ -20,7 +20,7 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`refused-send.test.ts`](refused-send.test.ts) | 服务端在准入之前拒绝的发送（409 `model_profile_needs_key` / `model_revision_unavailable` / `model_profile_needs_active`）：文字回到输入框、移除乐观气泡（若输入框里已有新内容，则保留该气泡并标为未发送，被拒绝的文字不会丢失），提示保留服务端给出的原因而不是「本轮失败」；改绑成功后的提示说明实际绑定了什么（`rebindDoneText`）；改绑确认框依据服务端的 code 与消息说明真实原因（`rebindConfirmText`：配置已改指其他提供商或端点、缺少密钥、固定配置无法读取、匹配不唯一；只有服务端明确说"已不存在"时才这样说，其余情况用中性的"已不可用"）。拒绝在用户打开另一个会话之后才到达时，不往那个会话里放任何东西：不写入它的输入框、不显示提示、不打开设置、不弹改绑确认。 模型切换尚未保存时在本地阻止发送并保留草稿，保存完成后可重试。被拒绝的草稿连同其 `@` 钉选一起回到输入框，重试时发送的仍是同一批版本。 |
 | [`environment.ts`](environment.ts) | `send()` / `turnDone` 用的 standard-profile 就绪横幅，以及 `bootEnvironmentReadiness()`：Shell 渲染出横幅后由 `main.tsx` 启动的加载期拉取。它等字典就绪后再请求，并在切换语言时重绘横幅。 |
 | [`environment.test.ts`](environment.test.ts) | 加载期拉取：字典就绪前不发请求（字典失败时仍会发一次）、两处横幅都显示并填好文案、切换语言只重绘不再请求、开关关闭或首次拉取失败时横幅保持隐藏、无论调用多少次只启动一次，以及 `main.tsx` 在 `render` 之后启动它。 |
-| [`handlers.ts`](handlers.ts) | cards / candidate / step / plan / permission 的 WS 类型；`handleFrameUpdateTurn`。 |
+| [`handlers.ts`](handlers.ts) | cards / candidate / step / plan / permission 的 WS 类型；`handleFrameUpdateTurn`（回合开始时，会话的每个标签页都给出提示：屏幕上有那条排队气泡的显示“开始处理你排队的消息”，否则显示“运行中…”，并替换掉停止时的“正在停止…”）。 |
 | [`host.ts`](host.ts) | 用 `isReady` 查 window（`callLane` / `hostFn`）；取消按钮显隐。 |
 | [`icon.ts`](icon.ts) | 步骤 / 计划 / 权限多出来的图标（globe、list-check、lock 等）。 |
 | [`index.ts`](index.ts) | `installSend` 往 window 赋值、注册 WS handler。不碰 DOM：作曲框由 `main.tsx` 在 render 之后绑定。 |

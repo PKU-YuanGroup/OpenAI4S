@@ -9,7 +9,7 @@ F-15 Action Timeline 内核。`sanitize*` / `mergeActionTimelines` 是纯函数�
 | 文件 | 职责 |
 | --- | --- |
 | [`api.ts`](api.ts) | 同源 `/api/v1` fetch、`optionalApi`、`hint` / 后续车道 `isReady` 调用。 |
-| [`copy.ts`](copy.ts) | 车道本地的 zh/en 文案（生成的 `i18n` 词典来自冻结的 `app.js`）：C2 远程任务面板（`computeRecordsT`）与排队条（`queueT`）。`workbenchT`：沙盒与权限面板、诊断区块的平实文案（NAV-6）。 `timelineT`（一个 `overrideLookup`）替换时间线里中文界面显示为英文的标签（标题、行动类型、面板、检查点相关用语）和术语化的副标题；`island.ts` 用它作为 `t`。 |
+| [`copy.ts`](copy.ts) | 车道本地的 zh/en 文案（生成的 `i18n` 词典来自冻结的 `app.js`）：C2 远程任务面板（`computeRecordsT`）与排队条（`queueT`；“正在停止”一行按单条/多条分别措辞）。`workbenchT`：沙盒与权限面板、诊断区块的平实文案（NAV-6）。 `timelineT`（一个 `overrideLookup`）替换时间线里中文界面显示为英文的标签（标题、行动类型、面板、检查点相关用语）和术语化的副标题；`island.ts` 用它作为 `t`。 |
 | [`compute-records.test.ts`](compute-records.test.ts) | C2 行为测试（HTTP 替身）：503 为「任务记录暂不可用」（非「无任务」）且有重试；同会话失败保留过期页；切会话/筛选清空；仅成功空页显示无任务；缺 `total_live_count` 保持本页口径；加载更多按游标追加并按 job_id 去重；行显示记录自身更新时间。 |
 | [`dom.ts`](dom.ts) | `el` / `iconEl` / `ghostIconBtn` / `svgElement` / `$` / `bytes`。 |
 | [`execution-request.ts`](execution-request.ts) | `exactExecutionIdentity` / `scopedExecutionRequest`（app.js:3021-3041）：中断必须指名它要停的那一次执行。 |

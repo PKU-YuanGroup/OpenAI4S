@@ -1240,6 +1240,17 @@ describe("the running turn's status row", () => {
     handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-1", seq: 5 }));
     expect(hintLine()).toBe("Stopping…");
   });
+
+  it("a turn that starts says so in every tab, whatever the line said before (SYNC-7)", () => {
+    const say = (text: string): void => (globalThis as unknown as { hint: (t: string) => void }).hint(text);
+    // The tab that pressed Stop, after the stopped turn ended; a watching tab had "".
+    say("Stopping the current turn… then the queued message runs");
+    running.value = false;
+    onEvent({ type: "frame_update", frame_id: "f-1", root_frame_id: "f-1", status: "processing", execution_id: "exec-q" });
+    expect(running.value).toBe(true);
+    // (The real status line draws its spinner before the words.)
+    expect(hintLine().trim()).toBe(t("toast.running"));
+  });
 });
 
 // --------------------------------------------------------------------------

@@ -7,10 +7,12 @@
  * `text_chunk`.
  */
 
+import { t } from "../../i18n/runtime";
 import { _openGen } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { autoModeHint } from "../automode/hints";
 import { notePassingHint, syncTurnStatus } from "../messages/turnStatus";
+import { hint } from "../sessions/chrome";
 import { enableComposer } from "../sessions/dom";
 import { scheduleWorkbenchRefresh } from "../timeline/island";
 import { noteQueuedTurnStarted } from "../timeline/queue";
@@ -151,7 +153,15 @@ export function handleFrameUpdateTurn(m: WsMessage): void {
     // before it finished or was stopped): say so, or a Stop with a queue
     // looked like it had not worked.
     // ...and that line is about this moment only (it used to stay for minutes).
-    if (noteQueuedTurnStarted(m.execution_id, takeStopCarry())) notePassingHint();
+    const carry = takeStopCarry();
+    if (noteQueuedTurnStarted(m.execution_id, carry)) notePassingHint();
+    else {
+      // Every tab says the same of a turn that started. The tab that pressed
+      // Stop kept "Stopping… the queued message runs next" while that message
+      // ran, and a tab only watching said nothing at all (SYNC-7).
+      hint(carry ? carry + "；" + t("toast.running") : t("toast.running"), false, true);
+      if (carry) notePassingHint();
+    }
     if (fid) resumeWatch(String(fid), _openGen.value);
   }
   if (typeof m.status === "string" && TERMINAL_FRAME_STATUS.includes(m.status)) {

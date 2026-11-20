@@ -58,7 +58,8 @@ const QUEUE_COPY: CopyTable = {
     "queueRow.started": "Now running your queued message: “{0}”",
     "queueRow.sendNow": "Stop and send now",
     "queueRow.sendNowTitle": "Stop the running turn; the first queued message starts right away",
-    "queueRow.stopping": "Stopping the current turn… {0} queued message(s) will run next",
+    "queueRow.stopping": "Stopping the current turn… then the {0} queued messages run, in order",
+    "queueRow.stoppingOne": "Stopping the current turn… then the queued message runs",
   },
   zh: {
     "queueRow.headNote": "当前任务结束或被停止后依次运行",
@@ -70,11 +71,21 @@ const QUEUE_COPY: CopyTable = {
     "queueRow.started": "开始处理你排队的消息：“{0}”",
     "queueRow.sendNow": "停止并立即发送",
     "queueRow.sendNowTitle": "停止当前回合，排队的第一条消息随即开始",
-    "queueRow.stopping": "正在停止当前任务… 排队的 {0} 条消息会接着运行",
+    "queueRow.stopping": "正在停止当前任务… 排队的 {0} 条消息会接着依次运行",
+    "queueRow.stoppingOne": "正在停止当前任务… 排队的消息会接着运行",
   },
 };
 
-export const queueT = copyLookup(QUEUE_COPY);
+const queueLookup = copyLookup(QUEUE_COPY);
+
+/**
+ * The queue strip's words. "Stopping… 1 queued message(s) will run next" read
+ * as a machine's (SYNC-7): the stopping line names one message as one.
+ */
+export function queueT(key: string, ...args: unknown[]): string {
+  if (key === "queueRow.stopping" && Number(args[0]) === 1) return queueLookup("queueRow.stoppingOne");
+  return queueLookup(key, ...args);
+}
 
 /**
  * NAV-6: the side panels in a scientist's words. The sandbox row showed the
