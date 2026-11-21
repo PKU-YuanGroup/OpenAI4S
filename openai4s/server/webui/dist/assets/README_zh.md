@@ -8,7 +8,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `CapabilityBadges-Ci3sUJvR.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `CapabilityBadges-BcuB7hUp.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `KaTeX_AMS-Regular-BQhdFMY1.woff2` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `KaTeX_AMS-Regular-DMm9YOAa.woff` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `KaTeX_AMS-Regular-DRggAlZN.ttf` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
@@ -70,12 +70,12 @@
 | `KaTeX_Typewriter-Regular-CO6r4hn1.woff2` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `KaTeX_Typewriter-Regular-D3Ib7_Hf.ttf` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `en-BRK109D2.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `index-Dt8mQQKn.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `index-clTYOekC.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `index-D85zoY-U.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `index-DJG2qFBs.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `katex-DAR36jk3.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `katex-IejJBL89.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `mount-BeetwQqm.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `mount-Bv08Oltp.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `mount-Cd5vxWRa.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `mount-BxMY2KOd.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `mount-CdYs6Lai.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `mount-D59Fd6U-.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `zh-CbWSriuu.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
