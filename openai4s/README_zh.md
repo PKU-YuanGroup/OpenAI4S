@@ -48,6 +48,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`search_settings.py`](./search_settings.py) | 豆包之后的备用网页搜索引擎及其顺序：Tavily、You.com 和内置免 key 引擎，每个都可开关，并始终保留至少一个可用引擎。也负责这些引擎的 key（经 broker 存储，并同步到 `webtools` 读取的环境变量），以及首次设置和 `openai4s init` 里那一个搜索选项。 |
 | [`specialists.py`](./specialists.py) | 内置 specialist 档案——gateway 提供的目录清单与委派解析器实际应用的 persona/capability 策略共用这一个事实来源。可从 host 层导入；绝不导入 server。同名的 agents 表存储行覆盖内置档案。 |
 | [`store.py`](./store.py) | 持久化层的兼容 facade。唯一那条 SQLite 连接放在这里，schema 和受保护的只读查询也放在这里。各个聚焦的 storage 仓储拿到的是同一条连接和同一把锁。migration 已经不属于这个 facade：它们带版本、走事务、按 checksum 记录，放在 [`storage/migrations.py`](./storage/migrations.py) 里——每次打开都把所有表重新探一遍、再把失败的 `ALTER` 逐个吞掉，会让「这个数据库是不是最新的」变成代码自己都答不上来的问题。`close()` 是幂等的，并且只逐出恰好是它自己的那个缓存实例，因此之后 `get_store(path)` 可以为同一路径开出新的一代。 |
+| [`tls_trust.py`](./tls_trust.py) | Host 侧 HTTPS 校验证书时所用的信任库。所有出站 TLS 客户端（web fetch、LLM/MCP/搜索客户端背后的 deadline transport、endpoint 查询、telemetry、share 隧道）都在这里构造 context。在 macOS 上，它在解释器默认信任库之外再加上 Apple 随系统发布的根证书，因为 uv 安装的 CPython 用的是一份落后于系统的静态证书包；它从不放宽校验，显式设置的 `SSL_CERT_FILE`/`SSL_CERT_DIR` 保持原样，并把校验失败翻译成指明主机和处理办法的提示。 |
 | [`webtools.py`](./webtools.py) | Host 侧的 Web 搜索、抓取、探测与下载。transport 优先走标准库。内容转换在这里做，网络开关、SSRF 检查和 egress 强制也都在这里生效——而且是每一跳都生效，这正是重定向要手工跟随、而不是交给 `urllib` 的原因：由 opener 在内部走完的跳转链，只在第一个 URL 上被检查过一次，之后再没有。任何绕开这里触达网络的能力（内置 Skill 用裸 `urllib` 拉一个归档、探测资源是否存在时另起一个函数），就等于同时跳过了允许名单和这道 guard。 |
 
 ## 子目录

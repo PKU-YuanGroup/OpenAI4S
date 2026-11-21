@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./ui", () => ({ presentViewer: vi.fn() }));
 
-import { artifacts } from "../../stores/artifacts";
+import { artifacts, dockArtifact } from "../../stores/artifacts";
+import { setArtifactsFetch } from "./api";
+import { jsonResponse } from "./http-stub";
+import { answerVersionNote } from "./state";
 import { resetStoreFields } from "../../stores/signal-field";
-import { bindArtifactLinks, linkedArtifact, openLinkedArtifact, resetArtifactLinkBinding } from "./links";
+import { bindArtifactLinks, linkedArtifact, openLinkedArtifact, resetArtifactLinkBinding, versionAtAnswer } from "./links";
 import { presentViewer } from "./ui";
 
 const REPORT = { id: "a-bc112472a980", filename: "report.md", content_type: "text/markdown" };
@@ -60,6 +63,45 @@ describe("artifact links in rendered markdown", () => {
     artifacts.value = [{ id: "row-1", artifact_id: "a-1", filename: "fig.png" }];
     expect(linkedArtifact("/api/v1/artifacts/a-1")).toEqual(artifacts.value[0]);
     expect(linkedArtifact("/api/v1/artifacts/%E0%A4%A")).toBeNull();
+  });
+
+  // ART-5: a link in an older answer opened the redrawn figure, which no
+  // longer matched what the answer said about it.
+  it("finds the version an answer described when the file has moved on since", async () => {
+    const at = (minute: number) => new Date(Date.UTC(2026, 10, 12, 9, minute)).toISOString();
+    const versions = [
+      { version_id: "v3", created_at: at(40) },
+      { version_id: "v2", created_at: at(20) },
+      { version_id: "v1", created_at: at(5) },
+    ];
+    const answered = Date.parse(at(25));
+    expect(versionAtAnswer(versions, answered)).toEqual({ versionId: "v2", newer: 1 });
+    // Nothing newer than the answer, or nothing known from before it: no claim.
+    expect(versionAtAnswer(versions, Date.parse(at(50)))).toBeNull();
+    expect(versionAtAnswer(versions, Date.parse(at(1)))).toBeNull();
+    expect(versionAtAnswer([{ version_id: "v9", created_at: "not a date" }], answered)).toBeNull();
+
+    setArtifactsFetch(async () => jsonResponse({ versions }));
+    try {
+      const anchor = {
+        getAttribute: (name: string) => (name === "href" ? "/api/v1/artifacts/a-bc112472a980" : null),
+        closest: (selector: string) => (selector === "[data-ts]" ? { dataset: { ts: String(answered) } } : null),
+      };
+      const event = { ...click(null), target: { closest: (selector: string) => (selector === ".md a[href]" ? anchor : null) } } as unknown as MouseEvent;
+      // The Viewer mock does not open anything; say what it would be showing.
+      dockArtifact.value = REPORT;
+      expect(openLinkedArtifact(event)).toBe(true);
+      await vi.waitFor(() =>
+        expect(answerVersionNote.value).toEqual({ artifactId: REPORT.id, versionId: "v2", newer: 1 }),
+      );
+      // A live answer has no timestamp yet: the head opens and nothing is claimed.
+      answerVersionNote.value = null;
+      expect(openLinkedArtifact(click("/api/v1/artifacts/a-bc112472a980"))).toBe(true);
+      await Promise.resolve();
+      expect(answerVersionNote.value).toBeNull();
+    } finally {
+      setArtifactsFetch(null);
+    }
   });
 
   it("binds one delegated listener", () => {

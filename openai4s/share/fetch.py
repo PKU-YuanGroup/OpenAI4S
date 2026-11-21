@@ -13,6 +13,8 @@ import socket
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from openai4s import tls_trust
+
 MAX_BUNDLE_BYTES = 128 << 20
 _MAX_REDIRECTS = 3
 
@@ -93,7 +95,9 @@ def fetch_bundle(
         )
         try:
             # Redirects are handled manually so every hop is re-validated.
-            resp = urlopen(req, timeout=timeout)  # noqa: S310 - scheme validated above
+            resp = urlopen(  # noqa: S310 - scheme validated above
+                req, timeout=timeout, context=tls_trust.https_context()
+            )
         except OSError as error:
             raise BundleFetchError(f"download failed: {error}") from error
         status = getattr(resp, "status", 200)

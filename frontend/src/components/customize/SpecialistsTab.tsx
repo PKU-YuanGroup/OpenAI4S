@@ -2,6 +2,7 @@ import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
+import { specialistBadge, specialistDescription } from "../../features/customize/copy";
 import { nestedEditor } from "../../features/customize/state";
 import {
   asList,
@@ -53,7 +54,7 @@ export function SpecialistsTab() {
         <div class="cust-row" key={asString(s.name)}>
           <div class="info">
             <div class="nm">
-              <span>{asString(s.name)}</span> <Pill>custom</Pill>
+              <span>{asString(s.name)}</span> <Pill>{specialistBadge("custom")}</Pill>
             </div>
             <div class="ds">{asString(s.description)}</div>
           </div>
@@ -101,15 +102,15 @@ export function BuiltinRow({ ag }: { ag: Record<string, unknown> }) {
     <div class="cust-row">
       <div class="info">
         <div class="nm">
-          <span>{asString(ag.name)}</span> <Pill>{asString(ag.mode, "agent")}</Pill>
+          <span>{asString(ag.name)}</span> <Pill>{specialistBadge(asString(ag.mode, "agent"))}</Pill>
           {ag.supportsPlanMode ? (
             <>
               {" "}
-              <Pill>plan</Pill>
+              <Pill>{specialistBadge("plan")}</Pill>
             </>
           ) : null}
         </div>
-        <div class="ds">{asString(ag.description)}</div>
+        <div class="ds">{specialistDescription(ag)}</div>
       </div>
       <Toggle on={enabled.on} onClick={enabled.toggle} />
     </div>

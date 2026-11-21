@@ -7,6 +7,7 @@ transaction is only an observation; it never decides that an agent task is done.
 
 from __future__ import annotations
 
+import re
 import signal
 import threading
 import time
@@ -1210,12 +1211,18 @@ class CellExecutionService:
         )
 
 
+#: A run of three or more rule characters at either end of a comment line.
+_BANNER = re.compile(r"^(?:[-=*~_#+]\s*){3,}|(?:\s*[-=*~_#+]){3,}$")
+
+
 def activity_title(code: str, index: int) -> str:
     """Use a leading comment as the activity-card title when present."""
     for line in code.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
-            title = stripped.lstrip("#").strip()
+            # A banner is not a title: "# ---------- QC ----------" reads
+            # "QC", and a rule made only of dashes is skipped for the next line.
+            title = _BANNER.sub("", stripped.lstrip("#").strip()).strip()
             if title:
                 return title[:90]
         elif stripped:

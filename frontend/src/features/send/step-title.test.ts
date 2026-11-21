@@ -16,10 +16,30 @@ describe("step titles and summaries in the UI language (I18N-1)", () => {
     expect(stepTitleText("Switching to the local r-mini environment")).toBe("切换到本机环境 r-mini");
     expect(stepTitleText("Installing lifelines into base")).toBe("安装 lifelines 到 base");
     expect(stepTitleText("Running which")).toBe("运行 which");
+    expect(stepTitleText("Calling calc via example")).toBe("通过 example 调用 calc");
+    expect(stepTitleText("Calling now via example")).toBe("通过 example 调用 now");
     expect(stepSummaryText("12 results")).toBe("12 条结果");
     expect(stepSummaryText("1 artifact")).toBe("1 个产物");
     expect(stepSummaryText("exit 0 · 3 file changes")).toBe("退出码 0 · 3 个文件变更");
     expect(stepSummaryText("failed: timeout")).toBe("失败：timeout");
+  });
+
+  it("says which lines a paged read returned, and names a spill file plainly (TURN-3)", async () => {
+    await setLang("zh");
+    expect(stepTitleText("Reading an earlier step's full output")).toBe("读取先前步骤的完整输出");
+    expect(stepSummaryText("lines 121–270 of 336")).toBe("第 121–270 行，共 336 行");
+    expect(stepSummaryText("past the end (336 lines)")).toBe("已超出文件末尾（共 336 行）");
+    expect(stepSummaryText("336 lines")).toBe("336 行");
+  });
+
+  it("reads a cell's banner comment as its words, not its rule characters (CHAT-8)", async () => {
+    expect(stepTitleText("---------- QC decisions ----------")).toBe("QC decisions");
+    expect(stepTitleText("=== Fit the curves ===")).toBe("Fit the curves");
+    expect(stepTitleText("step 2 -- fit")).toBe("step 2 -- fit");
+    // Only rule characters: nothing better to show than what came.
+    expect(stepTitleText("----------")).toBe("----------");
+    await setLang("zh");
+    expect(stepTitleText("---------- QC 决策 ----------")).toBe("QC 决策");
   });
 
   it("leaves English, unknown titles and a cell's own title alone", async () => {

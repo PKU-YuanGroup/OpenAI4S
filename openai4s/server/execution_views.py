@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from typing import Callable, Protocol
 
 from openai4s.agent.actions import is_completion_only_cell
@@ -459,7 +461,10 @@ def _continues_failed_attempt(
 
     A retry chain starts only after a failed agent-style Cell and stays inside
     the same language/runtime segment. The first success after that failure is
-    the final revision; a later independent Cell starts a new group.
+    the final revision; a later independent Cell starts a new group. The next
+    Cell must also read as another attempt at the same code: the step after a
+    failed import is often an unrelated one, and folding the failure into it
+    hid the failed Cell behind "2 attempts" of something else.
     """
 
     if previous.get("status") not in {"error", "failed"}:
@@ -468,4 +473,27 @@ def _continues_failed_attempt(
         return False
     if previous.get("language") != language:
         return False
-    return previous.get("origin") == "agent" and current.get("origin") == "agent"
+    if previous.get("origin") != "agent" or current.get("origin") != "agent":
+        return False
+    return _similar_code(
+        str(previous.get("source") or ""), str(current.get("code") or "")
+    )
+
+
+_CODE_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+")
+
+
+def _similar_code(left: str, right: str) -> bool:
+    """Whether two sources share most of their identifiers and numbers.
+
+    Token bags, Dice coefficient >= 0.6, written in integers so the live twin
+    in ``frontend/src/features/notebook/cells.ts`` (``similarCode``) groups a
+    Cell the same way before and after a reload.
+    """
+
+    first = Counter(_CODE_TOKEN.findall(left))
+    second = Counter(_CODE_TOKEN.findall(right))
+    total = sum(first.values()) + sum(second.values())
+    if not total:
+        return left.strip() == right.strip()
+    return 10 * sum((first & second).values()) >= 3 * total

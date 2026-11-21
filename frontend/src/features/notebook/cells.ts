@@ -28,7 +28,7 @@ import { publicText } from "../scrub/scrub";
 import { appendLiveOutput } from "../stream/cap";
 import { API } from "../ws/connect";
 import type { WsMessage } from "../ws/types";
-import { nbRender } from "./scroll";
+import { nbRender, setNotebookBottomHook } from "./scroll";
 import type { NotebookCell, NotebookOutputArtifact } from "./types";
 
 export function asCells(value: unknown): NotebookCell[] {
@@ -383,6 +383,34 @@ type Attempt = {
 
 let projections = new Map<string, { records: NotebookCell[]; cell: NotebookCell }>();
 
+const CODE_TOKEN = /[A-Za-z_][A-Za-z0-9_]*|[0-9]+/g;
+
+function tokenBag(text: string): Map<string, number> {
+  const bag = new Map<string, number>();
+  for (const token of text.match(CODE_TOKEN) || []) bag.set(token, (bag.get(token) || 0) + 1);
+  return bag;
+}
+
+/**
+ * Whether two sources share most of their identifiers and numbers: token
+ * bags, Dice coefficient >= 0.6, in integers. The twin of `_similar_code` in
+ * openai4s/server/execution_views.py, so a cell groups the same way live and
+ * after a reload. The step after a failed cell is often an unrelated one.
+ */
+export function similarCode(left: string, right: string): boolean {
+  const first = tokenBag(left);
+  const second = tokenBag(right);
+  let total = 0;
+  let shared = 0;
+  first.forEach((count, token) => {
+    total += count;
+    shared += Math.min(count, second.get(token) || 0);
+  });
+  second.forEach((count) => (total += count));
+  if (!total) return left.trim() === right.trim();
+  return 10 * shared >= 3 * total;
+}
+
 /**
  * app.js:10076-10112. A group whose members are the same finished records
  * as on the last call returns the same projected object, so the memoized
@@ -414,8 +442,11 @@ export function projectNotebookCells(
         prev &&
         (prev.kernel_id || "python") === (cell.kernel_id || "python") &&
         (prev.language || "python") === (cell.language || "python");
+      // A draft's source is still arriving: it is judged once, when it runs.
+      const sameCode =
+        prev && !cell.draft && similarCode(String(prev.source || ""), String(cell.source || ""));
       entry =
-        previous && prev && previousFailed && sameRuntime && agentRetry
+        previous && prev && previousFailed && sameRuntime && agentRetry && sameCode
           ? {
               cell,
               groupId: previous.groupId || nbCellKey(prev),
@@ -472,6 +503,29 @@ export function notebookDisplayEntries(): NotebookCell[] {
   const combined = live.length ? saved.concat(live) : saved.slice();
   return projectNotebookCells(combined);
 }
+
+/**
+ * NB-2: the cells that were on screen the last time the view was at the
+ * bottom. During a turn the list holds still for a reader who scrolled up,
+ * and a growing output pushes the view away from the bottom by itself; either
+ * way new cells arrived unannounced. What is not in this set is new.
+ */
+const seenKeys = signal<ReadonlySet<string>>(new Set());
+
+export function markNotebookSeen(): void {
+  const keys = notebookDisplayEntries().map(nbCellKey);
+  const seen = seenKeys.value;
+  if (keys.length === seen.size && keys.every((key) => seen.has(key))) return;
+  seenKeys.value = new Set(keys);
+}
+
+/** How many cells arrived since the reader last saw the bottom of the Notebook. */
+export function unseenNotebookCells(): number {
+  const seen = seenKeys.value;
+  return notebookDisplayEntries().filter((cell) => !seen.has(nbCellKey(cell))).length;
+}
+
+setNotebookBottomHook(markNotebookSeen);
 
 let painted: { frameId: string | null; entries: NotebookCell[] } | null = null;
 

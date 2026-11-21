@@ -25,7 +25,9 @@ import urllib.error
 import pytest
 
 from openai4s.llm.models import (
+    LLMDeadlineExceeded,
     LLMError,
+    MissingCredentialError,
     StreamTimeoutError,
     TransportError,
     llm_failure_code,
@@ -1178,3 +1180,106 @@ def test_a_malformed_retry_count_keeps_the_default_ceiling(value):
     from openai4s.llm.transport import DEFAULT_MAX_ATTEMPTS, max_attempts_for_retries
 
     assert max_attempts_for_retries(value) == DEFAULT_MAX_ATTEMPTS
+
+
+# --------------------------------------------------------------------------
+# what the user has to do about it (usability review FR-1)
+# --------------------------------------------------------------------------
+
+
+def _kinded(status=None, error_code=None, cls=TransportError):
+    return cls("upstream said something", status=status, error_code=error_code)
+
+
+@pytest.mark.parametrize(
+    ("exc", "kind"),
+    [
+        (MissingCredentialError("no API key configured"), "llm_no_credential"),
+        (_kinded(401), "llm_auth_rejected"),
+        (_kinded(403), "llm_auth_rejected"),
+        (_kinded(400, "invalid_api_key"), "llm_auth_rejected"),
+        (_kinded(402), "llm_quota_exhausted"),
+        # A provider that answers 429 for an empty account: waiting will not
+        # help, so it must not read as a rate limit.
+        (_kinded(429, "insufficient_quota"), "llm_quota_exhausted"),
+        (_kinded(404), "llm_model_not_found"),
+        (_kinded(400, "model_not_found"), "llm_model_not_found"),
+        (_kinded(None), "llm_network"),
+        # The vocabulary `llm_failure_code` already had is passed through.
+        (_kinded(429), "llm_rate_limited"),
+        (_kinded(None, cls=LLMDeadlineExceeded), "llm_deadline_exceeded"),
+        (_kinded(None, cls=StreamTimeoutError), "llm_stream_timeout"),
+        # No claim: these keep the generic message.
+        (_kinded(500), None),
+        (_kinded(400, "an entire sentence a proxy put in the code field"), None),
+        (LLMError("LLM response contained invalid JSON"), None),
+        (ValueError("not an LLM failure at all"), None),
+    ],
+)
+def test_a_failed_call_is_classified_by_what_fixes_it(exc, kind):
+    from openai4s.llm.models import llm_error_kind
+
+    assert llm_error_kind(exc) == kind
+
+
+def test_the_retry_vocabulary_did_not_grow():
+    """`llm_failure_code` also feeds retry records and the recovery ledger; the
+    setup kinds are new words only on the surface that tells the user."""
+    assert llm_failure_code(MissingCredentialError("no key")) is None
+    assert llm_failure_code(_kinded(401)) is None
+    assert llm_failure_code(_kinded(404)) is None
+    assert llm_failure_code(_kinded(None)) is None
+
+
+@pytest.mark.parametrize(
+    ("exc", "needle"),
+    [
+        (MissingCredentialError("no key"), "Settings → Models"),
+        (_kinded(401), "rejected the API key"),
+        (_kinded(402), "out of quota"),
+        (_kinded(404), "no such model"),
+        (_kinded(None), "could not be reached"),
+    ],
+)
+def test_each_setup_failure_says_what_to_do_in_both_languages(exc, needle):
+    from openai4s.llm.models import llm_setup_message
+
+    english = llm_setup_message(exc, zh=False)
+    chinese = llm_setup_message(exc, zh=True)
+
+    assert needle in english
+    assert "设置 → 模型" in chinese or "服务商" in chinese
+    assert english != chinese
+    # Author-written only: nothing of the exception's own text.
+    assert "upstream said something" not in english + chinese
+    assert "no key" not in english + chinese
+
+
+def test_failures_that_are_not_fixed_in_settings_get_no_setup_message():
+    from openai4s.llm.models import llm_setup_message
+
+    assert llm_setup_message(_kinded(429), zh=False) is None
+    assert llm_setup_message(_kinded(500), zh=False) is None
+    assert llm_setup_message(LLMError("bad json"), zh=True) is None
+
+
+def test_a_tls_failure_behind_the_connection_error_is_named():
+    import ssl
+
+    from openai4s.llm.models import llm_setup_message
+
+    failure = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    failure.verify_code = 19
+    failure.verify_message = "self-signed certificate in certificate chain"
+    try:
+        try:
+            raise urllib.error.URLError(failure)
+        except urllib.error.URLError as inner:
+            raise TransportError("LLM connection error: opaque") from inner
+    except TransportError as outer:
+        english = llm_setup_message(outer, zh=False)
+        chinese = llm_setup_message(outer, zh=True)
+
+    assert "self-signed certificate in certificate chain" in english
+    assert "SSL_CERT_FILE" in english and "SSL_CERT_FILE" in chinese
+    assert "opaque" not in english

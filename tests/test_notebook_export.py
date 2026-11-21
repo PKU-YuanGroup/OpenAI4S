@@ -640,6 +640,59 @@ def test_the_clean_notebook_is_one_a_person_can_read_and_rerun():
     }
 
 
+def test_the_clean_notebook_leaves_out_cells_that_only_keep_the_books():
+    """NB-4: the cleaned export kept ``host.env.list`` / ``host.todo_write``
+    cells while its header said "0 diagnostic cells". A cell that only keeps
+    the session's books is diagnostic; one that also analyses stays."""
+
+    def cell(cell_id: str, index: int, code: str) -> dict:
+        return {
+            "producing_cell_id": cell_id,
+            "cell_index": index,
+            "language": "python",
+            "status": "ok",
+            "visibility": "scientific",
+            "code": code,
+            "stdout": "{'ok': True}\n",
+            "created_at": 3000 + index,
+        }
+
+    store = _CleanStore()
+    store.cells += [
+        cell("c-envs", 20, 'host.env.list(["openpyxl", "scipy"])\n'),
+        cell("c-todos", 21, 'host.todo_write([{"content": "QC"}])\n'),
+        cell("c-install", 22, 'host.env.create("work", ["statsmodels"])\n'),
+        cell(
+            "c-step",
+            23,
+            'import sys\nprint(sys.version)\nhost.plan_update("s1", "completed")\n',
+        ),
+        cell("c-mixed", 24, "host.todo_write(todos)\nprint(df.describe())\n"),
+    ]
+    service = NotebookExportService(store, read_version_bytes=lambda _v: None)
+    document = service.clean_notebook("root-1", title="QC")
+
+    kept = [
+        cell["metadata"]["openai4s"]["producing_cell_id"]
+        for cell in document["cells"]
+        if cell["cell_type"] == "code"
+    ]
+    assert kept == ["c-plot", "c-fetch", "c-mixed"]
+    assert document["metadata"]["openai4s"]["left_out"] == {
+        "failed_cells": 1,
+        "diagnostic_cells": 6,
+    }
+    assert "1 failed and 6 diagnostic" in "".join(document["cells"][0]["source"])
+    text = json.dumps(document["cells"])
+    for gone in ("host.env.list", "host.env.create", "plan_update"):
+        assert gone not in text
+
+    # The raw execution log is the record and still has every cell.
+    raw = json.loads(service.export("root-1", language="python")["data"])
+    raw_ids = {c["metadata"]["openai4s"]["producing_cell_id"] for c in raw["cells"]}
+    assert {"c-envs", "c-todos", "c-install", "c-step", "c-mixed"} <= raw_ids
+
+
 def test_the_clean_notebook_lists_a_figure_it_cannot_embed():
     service = NotebookExportService(_CleanStore(), read_version_bytes=lambda _v: None)
     document = service.clean_notebook("root-1")

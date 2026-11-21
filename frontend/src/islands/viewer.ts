@@ -5,6 +5,7 @@
  * M-03 deep-link copy + stale-version banner from F-17 are kept.
  */
 
+import { effect } from "@preact/signals";
 import { _artBust, _editing, dockArtifact } from "../stores/artifacts";
 import { currentId } from "../stores/session";
 import { _modalMode, provMode } from "../stores/ui";
@@ -15,11 +16,11 @@ import { validateLineage } from "../features/execution/validation";
 import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
 import { loadArtifacts } from "../features/artifacts/load";
-import { renderArtifactBody } from "../features/artifacts/renderers";
+import { renderArtifactBody, setVersionHistoryOpener } from "../features/artifacts/renderers";
 import { readWorkbenchFlag } from "../features/table/workbench";
 import { scienceSourceStatus } from "../features/artifacts/science-results";
 import { publicText } from "../features/scrub/scrub";
-import { viewerVersionState } from "../features/artifacts/state";
+import { answerVersionNote, viewerVersionState } from "../features/artifacts/state";
 import type { ArtifactRow } from "../features/artifacts/types";
 import { closeTab, openViewer } from "../features/artifacts/ui";
 import { detachArtifactEditor, renderArtifactEditor } from "../features/artifacts/editor-view";
@@ -525,8 +526,48 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
   void render();
 }
 
-/** app.js:9438-9456 plus F-17 M-03 version banner / deep-link copy. */
+/**
+ * ART-5: opened from an answer, and the file has newer versions than that
+ * answer. Says so and offers the version that was current then. Painted on
+ * its own, so the preview already on screen is not read again.
+ */
+let paintedAnswerNote: HTMLElement | null = null;
+
+export function paintAnswerNote(): void {
+  if (typeof document === "undefined") return;
+  const v = document.getElementById("dock-viewer");
+  if (!v) return;
+  if (paintedAnswerNote) paintedAnswerNote.remove();
+  paintedAnswerNote = null;
+  const note = answerVersionNote.value;
+  const a = dockArtifact.value as ArtifactRow | null;
+  if (!note || !a || a.id !== note.artifactId || a._exactVersion) return;
+  const box = el("div", "files-version-error viewer-answer-note");
+  box.setAttribute("role", "status");
+  box.appendChild(el("span", null, filesT("viewer.answer.newer", note.newer)));
+  const open = el("button", "outline-btn small", filesT("viewer.answer.open"));
+  open.setAttribute("type", "button");
+  open.onclick = () => {
+    void openViewer({ ...a, version_id: note.versionId, _exactVersion: false });
+  };
+  box.appendChild(open);
+  v.insertBefore(box, v.firstChild);
+  paintedAnswerNote = box;
+}
+
+setVersionHistoryOpener((a) => void showVersions(a));
+effect(() => {
+  answerVersionNote.value;
+  paintAnswerNote();
+});
+
 export function renderViewer(): void {
+  paintViewer();
+  paintAnswerNote();
+}
+
+/** app.js:9438-9456 plus F-17 M-03 version banner / deep-link copy. */
+function paintViewer(): void {
   if (typeof document === "undefined") return;
   const a = dockArtifact.value as ArtifactRow | null;
   const v = document.getElementById("dock-viewer");

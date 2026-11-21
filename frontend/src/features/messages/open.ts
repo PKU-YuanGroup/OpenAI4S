@@ -113,9 +113,9 @@ import { syncPendingApproval } from "./approval";
 import { ensureMessageDom, messagesHost } from "./dom";
 import {
   cancelFramedRender,
+  chatStep,
   interleaveHistory,
   renderEmptySession,
-  renderHistoryItem,
   renderMissingSession,
   scheduleFramedRender,
   type StoredMessage,
@@ -123,6 +123,7 @@ import {
 import { ApiError } from "../sessions/api";
 import { down, updateJumpPill } from "./scroll";
 import { flushRender, type LiveStream } from "./stream";
+import { notePassingHint } from "./turnStatus";
 
 function callLane(name: string, ...args: unknown[]): unknown {
   const fn = (globalThis as Record<string, unknown>)[name];
@@ -243,17 +244,6 @@ async function fetchSteps(fid: string): Promise<Array<Record<string, unknown>>> 
   return rows;
 }
 /**
- * A Notebook REPL cell's persisted step (`input.origin === "notebook"`). The
- * live chat never showed it -- a manual cell is not an agent turn -- so the
- * reopened transcript leaves it out too, rather than showing it alone above
- * the empty-session welcome.
- */
-function chatStep(row: Record<string, unknown>): boolean {
-  const input = row.input;
-  return !(input && typeof input === "object" && (input as { origin?: unknown }).origin === "notebook");
-}
-
-/**
  * Every approval this session asked for, decided or not. Optional history: a
  * failed read keeps the cards already confirmed rather than failing the
  * transcript, which is complete without them.
@@ -371,14 +361,16 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
         onCancel: resolve,
         onDone: resolve,
         onError: reject,
-        renderItem: (item, target) => {
+        // A running session's last turn is finished by its live replay.
+        openTail: runState.status === "fulfilled" ? runState.value.running : !!running.value,
+        around: (paint) => {
           // The step and approval renderers' compatibility registries must
           // keep pointing at live cards while an off-DOM batch is prepared.
           const liveSteps = stepEls.value;
           const livePerms = permCards.value;
           stepEls.value = stagedSteps;
           permCards.value = stagedPerms;
-          try { renderHistoryItem(item, target); }
+          try { paint(); }
           finally { stepEls.value = liveSteps; permCards.value = livePerms; }
         },
       });
@@ -437,12 +429,19 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       const btn = typeof document !== "undefined" && document.getElementById("cancel-btn");
       if (btn) btn.classList.remove("hidden");
       hint(t("conv.resuming.hint"), false, true);
+      // True for a moment only: the status row takes over (turnStatus.ts).
+      notePassingHint();
       resumeWatch(fid, gen);
     } else {
       closeTurnTicket(); hideCancel();
       // Mirrors turnDone: the "Stopping…"/"Resuming…" spinner belongs to the
       // turn this read just found finished, whichever path reached here.
-      const last = runState.value.status === "failed" ? lastTerminalFailure() : null;
+      // A failure this page was not watching is history: the failed turn says
+      // so in the conversation, and repeating it in red under the composer
+      // on every reopen read as an error happening now. Only a turn that was
+      // live here, whose terminal event was missed, gets the line.
+      const last =
+        liveAtRead && runState.value.status === "failed" ? lastTerminalFailure() : null;
       hint(last ? failureHint(last) : "", !!last);
       if (liveAtRead) {
         // The terminal events were missed (replay gap, watchdog): finish

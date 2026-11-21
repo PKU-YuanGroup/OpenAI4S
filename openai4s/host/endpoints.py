@@ -115,6 +115,8 @@ def probe_ready(
     import urllib.parse
     import urllib.request
 
+    from openai4s import tls_trust
+
     route = live_route or "/health"
     probe_url = url.rstrip("/") + "/" + route.lstrip("/")
 
@@ -132,7 +134,9 @@ def probe_ready(
         except Exception:  # noqa: BLE001 - a refusal is "not ready", not a raise
             return False
     try:
-        with urllib.request.urlopen(probe_url, timeout=timeout) as response:
+        with urllib.request.urlopen(
+            probe_url, timeout=timeout, context=tls_trust.https_context()
+        ) as response:
             return 200 <= getattr(response, "status", response.getcode()) < 300
     except (urllib.error.URLError, OSError, ValueError):
         return False

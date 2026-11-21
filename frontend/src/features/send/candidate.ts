@@ -138,7 +138,11 @@ export function replaceMessageAnswer(node: HTMLElement | null | undefined, text:
     return false;
   }
   const hadActions = !!node.querySelector(":scope > .msg-actions");
-  node.querySelectorAll(":scope > .md").forEach((item) => item.remove());
+  const blocks = Array.from(node.querySelectorAll(":scope > .md"));
+  // Where the answer was: a stored turn keeps its cards above it.
+  const last = blocks[blocks.length - 1];
+  const anchor = last ? last.nextSibling : node.firstChild;
+  blocks.forEach((item) => item.remove());
   const md = el("div", "md");
   md.innerHTML = renderMd(text);
   const st = liveStream.value as LiveWrap | null;
@@ -151,8 +155,7 @@ export function replaceMessageAnswer(node: HTMLElement | null | undefined, text:
     st.full = text;
     st._stableAt = 0;
     st._stableHtml = "";
-  } else if (node.firstChild) node.insertBefore(md, node.firstChild);
-  else node.appendChild(md);
+  } else node.insertBefore(md, anchor);
   (node as HTMLElement & { _messageText?: string })._messageText = text;
   if (hadActions) {
     const actions = node.querySelector(":scope > .msg-actions");

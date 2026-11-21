@@ -1055,7 +1055,10 @@ def cmd_doctor(args) -> int:
     """
     from openai4s import doctor
 
-    result = doctor.report(_doctor_config())
+    if getattr(args, "network", False):
+        result = doctor.report(_doctor_config(), network=True)
+    else:
+        result = doctor.report(_doctor_config())
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
@@ -1211,6 +1214,15 @@ def cmd_status(args) -> int:
         )
         print("  open     : run `openai4s url` for the sign-in URL")
         print(f"  model    : {health.get('model')}")
+        from openai4s import doctor
+
+        if doctor.credential_missing(cfg):
+            # A model name alone reads as "ready". Local configuration, like
+            # the data directory below: nothing is asked of the daemon.
+            print(
+                "  api key  : not configured — add one in Settings → Models "
+                "(or set OPENAI4S_LLM_API_KEY in .env and restart)"
+            )
         # The loopback health response is intentionally a minimal public
         # projection.  The CLI already owns the local configuration, so it can
         # report the data directory without publishing an absolute host path
@@ -2686,6 +2698,12 @@ def build_parser() -> argparse.ArgumentParser:
         "compute (no daemon needed)",
     )
     pdoc.add_argument("--json", action="store_true", help="machine-readable report")
+    pdoc.add_argument(
+        "--network",
+        action="store_true",
+        help="also contact the built-in science databases (one HEAD each) and "
+        "report reachability per host; without it nothing leaves this machine",
+    )
     pdoc.set_defaults(fn=cmd_doctor)
     pv = sub.add_parser(
         "verify-package",

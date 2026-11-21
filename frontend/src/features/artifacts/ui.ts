@@ -14,9 +14,9 @@ import {
   versionResolveMessage,
 } from "./deeplink";
 import { labTabLabel, mountLab } from "../lab";
-import { artifactKind, browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
+import { artifactKind, browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, isProcessFile, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
-import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
+import { answerVersionNote, filesIndexError, filesIndexItems, viewerVersionState } from "./state";
 import { abortPreviewReads } from "./api";
 import { pruneThumbReads, tileThumb, tileThumbBig } from "./thumbs";
 import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
@@ -69,6 +69,10 @@ export function renderDockTabs(): void {
   const bar = document.getElementById("dock-tabs");
   if (!bar) return;
   bar.innerHTML = "";
+  // The fixed tabs (Notebook, Timeline, Files) keep their place at the left;
+  // file tabs follow them. Every opened file used to be put in front, so two
+  // of them pushed Timeline and Files out of view.
+  const fileTabs: HTMLElement[] = [];
   ((openTabs.value as ArtifactRow[]) || []).forEach((a) => {
     const tab = tabBtn("div", artIcon(a), (a.filename || "artifact") + (a._exactVersion ? " · " + a.version_id : ""));
     if (activeTab.value === artifactTabKey(a)) tab.classList.add("active");
@@ -85,7 +89,7 @@ export function renderDockTabs(): void {
       provMode.value = false;
       setActiveTab(artifactTabKey(a));
     };
-    bar.appendChild(tab);
+    fileTabs.push(tab);
   });
   const notebook = tabBtn("button", "notebook", "Notebook");
   if (activeTab.value === "notebook") notebook.classList.add("active");
@@ -110,6 +114,7 @@ export function renderDockTabs(): void {
     files.onclick = () => setActiveTab("files");
     bar.appendChild(files);
   }
+  fileTabs.forEach((tab) => bar.appendChild(tab));
   // Many open files overflow the strip; the active tab is scrolled into view
   // instead of being pushed off the right edge (ART-15).
   const active = typeof bar.querySelector === "function" ? bar.querySelector(".dock-tab.active") : null;
@@ -273,16 +278,22 @@ export function renderConversationArtifacts(): void {
     g.appendChild(tiles);
     const host = document.getElementById("messages");
     if (!host) return;
-    let review: HTMLElement | null = host.querySelector(".step-review");
-    while (review && review.parentElement !== host) {
-      review = review.parentElement as HTMLElement | null;
-    }
-    host.insertBefore(g, review || null);
+    // One rule for both strips: last in the transcript (`messages/dom.ts`
+    // `keepStripsLast` holds them there while a turn adds rows). They list
+    // the session's files, so they belong to no single turn.
+    host.appendChild(g);
   };
   // UP-5: the person's own files -- uploads and project-folder imports -- are
-  // inputs; only what the agent produced is "generated".
-  section("uploaded", filesT("art.inputs"), arts.filter((a) => a.is_user_upload), filesT("art.inputs.title"));
-  section("generated", translate("art.generated"), arts.filter((a) => !a.is_user_upload));
+  // inputs; only what the agent produced is "generated". CHAT-6: both labels
+  // say "this session": a bare "GENERATED · 3" under a failed follow-up read
+  // as if that turn had produced three files.
+  section("uploaded", filesT("art.session.inputs"), arts.filter((a) => a.is_user_upload), filesT("art.inputs.title"));
+  section(
+    "generated",
+    filesT("art.session.files"),
+    arts.filter((a) => !a.is_user_upload),
+    filesT("art.session.files.title"),
+  );
   callWindow("down");
 }
 
@@ -311,6 +322,9 @@ export function renderFilesGrid(): void {
   if (typeof document === "undefined") return;
   paintFilesGrid();
 }
+
+/** The reader's choice to unfold the process files, kept across repaints. */
+let processFilesOpen = false;
 
 function paintFilesGrid(): void {
   const list = document.getElementById("results-list");
@@ -345,6 +359,11 @@ function paintFilesGrid(): void {
     list.appendChild(el("div", "files-empty", msg));
     return;
   }
+  // ART-4: scratch scripts and logs are how the results were made. They stay
+  // one click away, folded under the results and out of their count.
+  const working = arts.filter(isProcessFile);
+  if (count && working.length) count.textContent = String(arts.length - working.length);
+  const fold = working.length ? el("div", "files-process-grid") : null;
   arts.forEach((a) => {
     const hidden = (a.priority || 0) < 0;
     const card = el("div", hidden ? "art art-hidden" : "art");
@@ -374,8 +393,17 @@ function paintFilesGrid(): void {
       card.appendChild(el("div", "a-src", translate("files.fromSession", sessionNameFor(a.root_frame_id))));
     }
     card.onclick = () => presentViewer(a);
-    list.appendChild(card);
+    (fold && isProcessFile(a) ? fold : list).appendChild(card);
   });
+  if (!fold) return;
+  const group = el("details", "files-process") as HTMLDetailsElement;
+  group.open = processFilesOpen;
+  group.ontoggle = () => {
+    processFilesOpen = group.open;
+  };
+  group.appendChild(el("summary", "files-process-label", filesT("files.process", working.length)));
+  group.appendChild(fold);
+  list.appendChild(group);
 }
 
 /** ART-12: put a hidden file back in the list. */
@@ -425,6 +453,7 @@ function viewerVersionFor(a: ArtifactRow): VersionResolve {
 
 export function presentViewer(a: ArtifactRow): void {
   viewerRequest += 1;
+  answerVersionNote.value = null;
   rememberViewerVersion(viewerVersionFor(a));
   dockArtifact.value = a;
   provMode.value = false;

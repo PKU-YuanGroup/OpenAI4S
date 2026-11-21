@@ -1902,3 +1902,20 @@ def test_repl_r_execute_route_projects_a_bootstrap_refusal(monkeypatch, tmp_path
     # service may no longer have a posture to copy. The code is the contract.
     if isinstance(boundary, dict):
         assert boundary["code"] == "egress_boundary_unavailable"
+
+
+def test_a_banner_comment_is_not_a_card_title():
+    # CHAT-8: "# ---------- QC ----------" became the step card title.
+    from openai4s.server.cell_run import activity_title
+
+    assert activity_title("# ---------- QC decisions ----------\nx = 1\n", 3) == (
+        "QC decisions"
+    )
+    assert activity_title(
+        "# ==========\n# Fit the curves\n# ==========\ny = 2\n", 3
+    ) == ("Fit the curves")
+    # A rule with no words under it leaves the generated title.
+    assert activity_title("# ----------\nz = 3\n", 7) == "Running analysis · cell 7"
+    # Ordinary titles are untouched, short dashes included.
+    assert activity_title("# step 2 -- fit\n", 1) == "step 2 -- fit"
+    assert activity_title("# __init__ helpers\n", 1) == "__init__ helpers"

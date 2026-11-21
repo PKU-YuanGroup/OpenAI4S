@@ -178,6 +178,7 @@ def test_edit_versions_live_text_and_preserves_exact_event_shape(tmp_path):
                 "artifact": {
                     "id": artifact_id,
                     "filename": "notes.txt",
+                    "role": "deliverable",
                     "version_id": result["version_id"],
                     "root_frame_id": harness.frame_id,
                 },
@@ -464,6 +465,7 @@ def test_rename_moves_the_live_file_and_preserves_exact_event_shape(tmp_path):
             "artifact": {
                 "id": artifact_id,
                 "filename": "after.txt",
+                "role": "deliverable",
                 "root_frame_id": harness.frame_id,
             },
         },

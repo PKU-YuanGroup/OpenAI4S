@@ -15,6 +15,7 @@ is directly testable without the gateway or a live relay.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import secrets
@@ -236,6 +237,32 @@ class ShareService:
         # 7. GC old snapshots with no active lease.
         self._gc(share_id)
         return self.public_record(share_id)
+
+    def export_page(self, root_frame_id: str, *, language: str = "en") -> dict:
+        """The session as one self-contained read-only ``.html`` (EXP-3).
+
+        The same frozen projection and the same redacted view a hosted share
+        serves, built under the same FIFO ticket, with this machine's paths
+        shortened; no share row, no snapshot directory, no relay. Raises
+        `SessionPackageError` when the view cannot be made safe to hand out.
+        """
+        from openai4s.server.share_page import render_page
+
+        branch = self._active_branch(root_frame_id)
+
+        def _build(cancel_event: Any) -> ShareProjection:
+            return self.builder.build(root_frame_id, branch, cancel_event=cancel_event)
+
+        projection = self._run_in_ticket(root_frame_id, branch, _build)
+        view = self.builder.portable_view(projection, branch_id=branch)
+        data = render_page(view, projection.artifact_bytes, language=language)
+        return {
+            "filename": f"{root_frame_id}.session.html",
+            "content_type": "text/html; charset=utf-8",
+            "data": data,
+            "size_bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
 
     def _meta(
         self,

@@ -436,6 +436,9 @@ class ChatModel:
         self,
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
+        *,
+        only_tools: Sequence[Mapping[str, Any]] | None = None,
+        extra_tools: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         """One provider call, with its telemetry riding along.
 
@@ -446,7 +449,7 @@ class ChatModel:
         """
         probe = _CallProbe(stream=self.stream)
         try:
-            reply = self._complete(messages, on_delta, probe)
+            reply = self._complete(messages, on_delta, probe, only_tools, extra_tools)
         except BaseException as error:
             try:
                 error.call_telemetry = probe.record("error")  # type: ignore[attr-defined]
@@ -466,10 +469,18 @@ class ChatModel:
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
         probe: _CallProbe,
+        only_tools: Sequence[Mapping[str, Any]] | None = None,
+        extra_tools: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         if self.quota_gate is not None:
             self.quota_gate()
-        if callable(self.tools):
+        if only_tools is not None:
+            # The Engine's run_cell call: these declarations replace the
+            # catalogue for this one request, with the default tool choice,
+            # so every wire sends a non-empty tool list beside the tool
+            # history and a fenced cell in the text still counts.
+            source: Sequence[Any] = only_tools
+        elif callable(self.tools):
             try:
                 source = self.tools(messages)
             except TypeError as original:
@@ -479,7 +490,12 @@ class ChatModel:
                     raise original
         else:
             source = self.tools
-        kwargs: dict[str, Any] = {"tools": tuple(source)}
+        declared = tuple(source)
+        if extra_tools and declared:
+            # run_cell once the session has used it: beside the catalogue,
+            # never on a call that offers no tools (Web plan mode).
+            declared = (*declared, *extra_tools)
+        kwargs: dict[str, Any] = {"tools": declared}
         if self.call_context is not None:
             # Here, on the owning thread: this is the last point at which the
             # session state still describes the turn making this call.

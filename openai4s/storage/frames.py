@@ -22,6 +22,12 @@ from openai4s.execution.dependencies import (
 from openai4s.storage.deletion import SessionDeletionRepository
 from openai4s.storage.like import like_contains
 
+#: Content search (EXP-2): how many of each table's newest rows one query may
+#: scan, and the snippet it cuts around a match.
+_CONTENT_SCAN_ROWS = 50_000
+_SNIPPET_LEAD = 40
+_SNIPPET_CHARS = 160
+
 
 def visible_session_clause(
     user_id: str, *, table: str = "frames", session_expr: str | None = None
@@ -1416,6 +1422,106 @@ class FrameRepository:
                 if len(matches) >= limit:
                     break
         return matches
+
+    def search_session_content(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+        visible_to_user_id: str | None = None,
+    ) -> list[dict]:
+        """Sessions whose messages, cell code or cell output contain ``query``.
+
+        One row per hit, newest first: the session's frame columns, where
+        the text was found (``message`` / ``code`` / ``output``) and a short
+        snippet around the first match. Plain substring search (``LIKE``,
+        ASCII case-insensitive), so it needs no index and no FTS5 build.
+
+        Bounded three ways. Only the newest ``_CONTENT_SCAN_ROWS`` rows of
+        each table are scanned, the scan stops at ``limit`` hits, and the
+        snippet is cut out in SQL, so a megabyte of stdout is never copied
+        into Python to show sixty characters of it.
+
+        `visible_to_user_id` is a conjunct on the joined session row, as in
+        `search_frames`: a body is matched only for a session this caller
+        may see, never read first and filtered afterwards.
+        """
+        needle = query.strip()
+        if not needle:
+            return []
+        like = like_contains(needle)
+        scope, scope_params = "", []
+        if visible_to_user_id is not None:
+            clause, scope_params = visible_session_clause(visible_to_user_id, table="f")
+            scope = " AND " + clause
+
+        def cut(column: str) -> str:
+            return (
+                f"substr({column}, max(1, instr(lower({column}), lower(?)) - "
+                f"{_SNIPPET_LEAD}), {_SNIPPET_CHARS})"
+            )
+
+        def starts(column: str) -> str:
+            return f"instr(lower({column}), lower(?)) > {_SNIPPET_LEAD + 1}"
+
+        frame_columns = "f.frame_id,f.project_id,f.name,f.task_summary"
+        with self._lock:
+            messages = self._connection.execute(
+                f"SELECT {frame_columns},'message' AS match,"
+                f"{cut('m.content')} AS snippet,{starts('m.content')} AS cut_before,"
+                "m.created_at AS at FROM messages m "
+                "JOIN frames f ON f.frame_id=m.root_frame_id "
+                "WHERE m.rowid > (SELECT COALESCE(MAX(rowid),0) FROM messages) - ? "
+                "AND m.role IN ('user','assistant') "
+                "AND m.content LIKE ? ESCAPE '\\'" + scope + " "
+                "ORDER BY m.rowid DESC LIMIT ?",
+                (needle, needle, _CONTENT_SCAN_ROWS, like, *scope_params, limit),
+            ).fetchall()
+            in_code = "e.code LIKE ? ESCAPE '\\'"
+            cells = self._connection.execute(
+                f"SELECT {frame_columns},"
+                f"CASE WHEN {in_code} THEN 'code' ELSE 'output' END AS match,"
+                f"CASE WHEN {in_code} THEN {cut('e.code')} "
+                f"ELSE {cut('e.stdout')} END AS snippet,"
+                f"CASE WHEN {in_code} THEN {starts('e.code')} "
+                f"ELSE {starts('e.stdout')} END AS cut_before,"
+                "e.created_at AS at FROM execution_log e "
+                "JOIN frames f ON f.frame_id=COALESCE(e.root_frame_id,e.frame_id) "
+                "WHERE e.rowid > (SELECT COALESCE(MAX(rowid),0) FROM execution_log)"
+                " - ? AND (e.code LIKE ? ESCAPE '\\' OR e.stdout LIKE ? ESCAPE '\\')"
+                + scope
+                + " ORDER BY e.rowid DESC LIMIT ?",
+                (
+                    like,
+                    like,
+                    needle,
+                    needle,
+                    like,
+                    needle,
+                    needle,
+                    _CONTENT_SCAN_ROWS,
+                    like,
+                    like,
+                    *scope_params,
+                    limit,
+                ),
+            ).fetchall()
+        hits = []
+        for row in sorted(
+            [*messages, *cells], key=lambda r: r["at"] or 0, reverse=True
+        ):
+            text = " ".join(str(row["snippet"] or "").split())
+            hits.append(
+                {
+                    "id": row["frame_id"],
+                    "project_id": row["project_id"],
+                    "name": row["name"],
+                    "task_summary": row["task_summary"],
+                    "match": row["match"],
+                    "snippet": ("…" if row["cut_before"] else "") + text,
+                }
+            )
+        return hits
 
     # --- execution log ----------------------------------------------
     def log_cell(

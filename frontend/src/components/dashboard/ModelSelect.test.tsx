@@ -13,7 +13,10 @@ import {
 } from "../../features/customize/models";
 import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
-import { ModelSelect } from "./ModelSelect";
+import { ModelKeyNotice, ModelSelect } from "./ModelSelect";
+
+const openCustomize = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock("../../features/customize", () => ({ openCustomize }));
 
 type Node = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
 const fetchMock = vi.fn();
@@ -538,5 +541,31 @@ describe("#model-select with no session open", () => {
     ((ModelSelect() as Node).props?.onChange as (event: unknown) => void)({ currentTarget: { value: "mp-claude" } });
     await vi.waitFor(() => expect(hint).toHaveBeenCalledWith(modelT("model.default.adminOnly"), false));
     expect(defaultModel.value).toBe("doubao-seed-2.0-pro");
+  });
+
+  it("says so beside the selector when no API key is configured", async () => {
+    // A daemon nobody configured still lists its default model, which read
+    // as "ready" until the first send failed (usability review FR-1).
+    await loadModels();
+    expect(ModelKeyNotice()).toBeNull();
+
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        response({
+          models: { default: [{ id: "doubao-seed-2.0-pro", name: "doubao-seed-2.0-pro" }] },
+          default_model_id: "doubao-seed-2.0-pro",
+          credential_missing: true,
+        }),
+      ),
+    );
+    await loadModels();
+    const notice = ModelKeyNotice() as Node;
+    expect(notice.type).toBe("button");
+    expect(notice.props?.children).toBe(modelT("model.nokey"));
+    expect(notice.props?.title).toBe(modelT("model.nokey.title"));
+    (notice.props?.onClick as () => void)();
+    expect(openCustomize).toHaveBeenCalledWith("models");
+    // The selector itself is unchanged: it still names the default model.
+    expect((ModelSelect() as Node).props?.value).toBe("doubao-seed-2.0-pro");
   });
 });

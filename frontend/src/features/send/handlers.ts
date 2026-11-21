@@ -10,6 +10,7 @@
 import { _openGen } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { autoModeHint } from "../automode/hints";
+import { notePassingHint, syncTurnStatus } from "../messages/turnStatus";
 import { enableComposer } from "../sessions/dom";
 import { scheduleWorkbenchRefresh } from "../timeline/island";
 import { noteQueuedTurnStarted } from "../timeline/queue";
@@ -69,11 +70,16 @@ function handleAttachmentProblems(m: WsMessage): void {
 }
 
 function handleStep(m: WsMessage): void {
-  if (mine(eventFrameId(m))) addLiveStep(rec(m));
+  if (!mine(eventFrameId(m))) return;
+  addLiveStep(rec(m));
+  // A tool started: the conversation's status row says so.
+  syncTurnStatus();
 }
 
 function handleStepUpdate(m: WsMessage): void {
-  if (mine(eventFrameId(m))) updateLiveStep(rec(m));
+  if (!mine(eventFrameId(m))) return;
+  updateLiveStep(rec(m));
+  syncTurnStatus();
 }
 
 function handlePlanReady(m: WsMessage): void {
@@ -144,7 +150,8 @@ export function handleFrameUpdateTurn(m: WsMessage): void {
     // A follow-up this tab queued is the turn starting now (after the one
     // before it finished or was stopped): say so, or a Stop with a queue
     // looked like it had not worked.
-    noteQueuedTurnStarted(m.execution_id, takeStopCarry());
+    // ...and that line is about this moment only (it used to stay for minutes).
+    if (noteQueuedTurnStarted(m.execution_id, takeStopCarry())) notePassingHint();
     if (fid) resumeWatch(String(fid), _openGen.value);
   }
   if (typeof m.status === "string" && TERMINAL_FRAME_STATUS.includes(m.status)) {

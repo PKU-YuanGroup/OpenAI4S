@@ -3,12 +3,19 @@ import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { confirmAction, hint } from "../../features/customize/host";
+import {
+  globalRulesSummary,
+  permT,
+  toolDescription,
+  type PermRule,
+} from "../../features/customize/permissions";
 import { currentId } from "../../stores/session";
 import { useOptimistic, useTabRead } from "./hooks";
 import { Hdr, IconGhost, Note } from "./ui";
 
 type ScopeMeta = { scope: string; scope_id: string; label: string };
-type Rule = { rule_id: string; tool: string; pattern: string; decision: string };
+type ScopeKey = "conversation" | "project" | "global";
+type Rule = PermRule;
 
 function DecSelect({
   value,
@@ -85,10 +92,14 @@ function RuleRow({ g, r }: { g: ScopeMeta; r: Rule }) {
       failed: (e) => hint(t("toast.perm.updateFailed", apiErrorText(e)), true),
     },
   );
+  const what = toolDescription(r.tool);
   return (
     <div class="perm-rule">
       <span class="perm-rtool">{r.tool}</span>
-      <span class="perm-rpat mono">{r.pattern}</span>
+      <span class="perm-rwhat">
+        {what ? <span class="perm-rdesc">{what}</span> : null}
+        <span class="perm-rpat mono">{r.pattern}</span>
+      </span>
       <DecSelect
         value={decision.value ?? r.decision}
         disabled={decision.busy}
@@ -166,16 +177,18 @@ function AddRow({ g }: { g: ScopeMeta }) {
 export function PermissionsTab() {
   const [note, setNote] = useState<string | null>(null);
   const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const [scopes, setScopes] = useState<ScopeKey[]>([]);
 
   useTabRead(
     "permissions",
     async (current) => {
-      if (!currentId.value) {
-        setNote(t("cust.perm.noSessionNote"));
-        return;
-      }
-      const next = await api(`/frames/${currentId.value}/permissions`);
+      // Global rules exist with or without a session. With none open the tab
+      // used to print "only global defaults are shown below" and stop there.
+      const id = currentId.value;
+      const next = await api(id ? `/frames/${id}/permissions` : "/permissions");
       if (!current()) return;
+      setNote(id ? null : t("cust.perm.noSessionNote"));
+      setScopes(id ? ["conversation", "project", "global"] : ["global"]);
       setData(next);
     },
     setNote,
@@ -197,16 +210,17 @@ export function PermissionsTab() {
       }
     : null;
 
+  const byScope = (data && (data.rules as Record<string, Rule[]> | undefined)) || {};
+
   return (
     <div>
-      <Hdr title={t("cust.perm.title")} sub={t("cust.perm.desc")} />
+      <Hdr title={t("cust.perm.title")} sub={permT("permrules.desc")} />
+      {data ? <Note>{globalRulesSummary(byScope.global || [])}</Note> : null}
       {note ? <Note>{note}</Note> : null}
       {meta
-        ? (["conversation", "project", "global"] as const).map((k) => {
+        ? scopes.map((k) => {
             const g = meta[k]!;
-            const rules = ((data!.rules as Record<string, Rule[]> | undefined) || {})[
-              k
-            ] || [];
+            const rules = byScope[k] || [];
             return (
               <div class="perm-sec" key={k}>
                 <div class="perm-sec-h">{g.label}</div>

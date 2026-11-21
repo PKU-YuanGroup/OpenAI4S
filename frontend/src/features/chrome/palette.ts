@@ -9,7 +9,7 @@
 
 import { publicText } from "../scrub/scrub";
 import { cycleTheme, themeIsDark } from "../theme/theme";
-import { t } from "../../i18n/runtime";
+import { LANG, t } from "../../i18n/runtime";
 import { skillsCatalog } from "../../stores/customize";
 import { currentId } from "../../stores/session";
 import { api } from "./api";
@@ -22,9 +22,40 @@ export type PaletteItem = {
   group: string;
   label: string;
   sub?: string;
+  /** The query, when `sub` is a snippet whose match should be marked. */
+  mark?: string;
   icon?: string;
   run: () => void;
 };
+
+/** Feature-local copy (EXP-2): where in a session the query was found. */
+const FOUND_IN: Record<"en" | "zh", Record<string, string>> = {
+  en: { message: "Conversation", code: "Cell code", output: "Cell output" },
+  zh: { message: "对话", code: "单元代码", output: "单元输出" },
+};
+
+/**
+ * `text` split around every case-insensitive occurrence of `needle`. The
+ * snippet is a session's own text, so it is only ever placed as text nodes;
+ * this never builds markup.
+ */
+export function matchSegments(text: string, needle: string): Array<{ text: string; hit: boolean }> {
+  const out: Array<{ text: string; hit: boolean }> = [];
+  const find = needle.trim().toLowerCase();
+  const lower = text.toLowerCase();
+  // A case fold that changes length (rare) would misplace the cut: no marks.
+  if (!find || lower.length !== text.length) return text ? [{ text, hit: false }] : out;
+  let at = 0;
+  for (;;) {
+    const next = lower.indexOf(find, at);
+    if (next < 0) break;
+    if (next > at) out.push({ text: text.slice(at, next), hit: false });
+    out.push({ text: text.slice(next, next + find.length), hit: true });
+    at = next + find.length;
+  }
+  if (at < text.length) out.push({ text: text.slice(at), hit: false });
+  return out;
+}
 
 export type PaletteState = {
   open: boolean;
@@ -53,7 +84,23 @@ export function isPaletteOpen(): boolean {
 }
 
 type SkillRow = { name?: string; displayName?: string; description?: string };
-type SessionHit = { id: string; name?: string; task_summary?: string; project_id?: string | null };
+type SessionHit = {
+  id: string;
+  name?: string;
+  task_summary?: string;
+  project_id?: string | null;
+  /** Where the query was found (`title`, `message`, `code`, `output`) and the text around it. */
+  match?: string;
+  snippet?: string | null;
+};
+
+/** "Cell output · …B1 22.0 OVRFLW event" for a hit inside a session's content. */
+function sessionHitSub(hit: SessionHit): string | undefined {
+  const snippet = publicText(hit.snippet || "", 200);
+  if (!snippet) return undefined;
+  const where = FOUND_IN[LANG === "zh" ? "zh" : "en"][String(hit.match || "")];
+  return where ? `${where} · ${snippet}` : snippet;
+}
 type ArtifactHit = {
   id?: string;
   artifact_id?: string;
@@ -374,6 +421,8 @@ async function palSearchRemote(
         items.push({
           group: t("conv.title.default"),
           label: s.name || s.task_summary || t("conv.title.default"),
+          sub: sessionHitSub(s),
+          mark: q,
           icon: "message-square",
           run: () => {
             closePalette();
@@ -434,7 +483,14 @@ export function palRender(): void {
     }
     const txt = el("div", "pi-txt");
     txt.appendChild(el("div", "pi-label", it.label));
-    if (it.sub) txt.appendChild(el("div", "pi-sub", it.sub));
+    if (it.sub && it.mark) {
+      // A snippet: the match is marked, every piece set as text.
+      const sub = el("div", "pi-sub");
+      matchSegments(it.sub, it.mark).forEach((part) =>
+        sub.appendChild(el(part.hit ? "mark" : "span", null, part.text)),
+      );
+      txt.appendChild(sub);
+    } else if (it.sub) txt.appendChild(el("div", "pi-sub", it.sub));
     row.appendChild(txt);
     row.onmouseenter = () => {
       PAL.idx = i;

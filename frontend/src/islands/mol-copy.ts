@@ -28,6 +28,10 @@ const COPY: CopyTable = {
     "mol.chains.many": "{0} 条链",
     "mol.chains.sep": "、",
     "mol.hint": "拖动旋转 • 滚轮缩放 • Ctrl+拖动平移 • 点击残基添加或移除标签",
+    "mol.large.load": "仍然加载",
+    "mol.large.loadSize": "仍然加载（{0}）",
+    "mol.large.title": "以线条样式加载整个结构；大文件可能需要一些时间",
+    "mol.large.noSurface": "这个结构太大，不提供表面样式",
   },
   en: {
     "mol.color.label": "Color:",
@@ -48,6 +52,10 @@ const COPY: CopyTable = {
     "mol.chains.many": "{0} chains",
     "mol.chains.sep": ", ",
     "mol.hint": "Drag to rotate • Scroll to zoom • Ctrl+drag to pan • Click a residue to add or remove its label",
+    "mol.large.load": "Load anyway",
+    "mol.large.loadSize": "Load anyway ({0})",
+    "mol.large.title": "Loads the whole structure as lines; a large file can take a while",
+    "mol.large.noSurface": "This structure is too large for the surface style",
   },
 };
 

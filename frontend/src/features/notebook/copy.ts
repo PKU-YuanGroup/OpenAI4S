@@ -34,6 +34,9 @@ const COPY: CopyTable = {
     "nb.cell.status.running": "运行中",
     "nb.cell.status.interrupted": "已中断",
     "nb.cell.status.cancelled": "已取消",
+    // A model draft the agent is still writing (`notebook_cell_draft`).
+    "nb.cell.status.drafting": "草稿中",
+    "nb.cell.status.ready": "待运行",
     "nb.runtime.live": "就绪",
     "nb.runtime.busy": "忙碌",
     "nb.runtime.ended": "已结束",
@@ -55,6 +58,13 @@ const COPY: CopyTable = {
     "nb.env.selectTitle": "选择运行环境：内置环境由 OpenAI4S 提供，本机环境是在这台电脑上发现的。切换 Python 环境会重启内核并清空变量，Notebook 与文件保留。",
     "nb.cell.stateRevision": "状态 {0}",
     "nb.cell.stateRevisionTip": "会话状态的版本号。它通常等于单元编号；在分支或重放后，同一个单元可能对应另一个状态版本。",
+    "nb.newCells": "有 {0} 个新单元 ↓",
+    "nb.variables.showCode": "显示模块、函数和类（{0}）",
+    "nb.variables.hideCode": "只显示数据变量",
+    "nb.variables.onlyCode": "还没有数据变量。",
+    "nb.variables.shape": "{0} 行 × {1} 列",
+    "nb.variables.columnNames": "列：{0}",
+    "nb.newCells.one": "有 1 个新单元 ↓",
   },
   en: {
     "nb.crash.notice":
@@ -86,6 +96,8 @@ const COPY: CopyTable = {
     "nb.cell.status.running": "running",
     "nb.cell.status.interrupted": "interrupted",
     "nb.cell.status.cancelled": "cancelled",
+    "nb.cell.status.drafting": "drafting",
+    "nb.cell.status.ready": "ready",
     "nb.runtime.live": "Live",
     "nb.runtime.busy": "Busy",
     "nb.runtime.ended": "Ended",
@@ -107,6 +119,13 @@ const COPY: CopyTable = {
     "nb.env.selectTitle": "Choose the runtime environment: built-in ones ship with OpenAI4S, local ones were found on this computer. Switching the Python environment restarts the kernel and clears its variables; the Notebook and files are kept.",
     "nb.cell.stateRevision": "state {0}",
     "nb.cell.stateRevisionTip": "The session state's version number. It usually equals the cell number; after a branch or a replay one cell can map to another state version.",
+    "nb.newCells": "{0} new cells ↓",
+    "nb.variables.showCode": "Show modules, functions and classes ({0})",
+    "nb.variables.hideCode": "Data variables only",
+    "nb.variables.onlyCode": "No data variables yet.",
+    "nb.variables.shape": "{0} rows × {1} columns",
+    "nb.variables.columnNames": "Columns: {0}",
+    "nb.newCells.one": "1 new cell ↓",
   },
 };
 

@@ -1,11 +1,20 @@
 /** Read-only source-folder selection and project file browsing. */
 import { t } from "../../i18n";
 import { _modalMode } from "../../stores/ui";
-import { api, apiErrorText } from "./api";
+import { bytes } from "../artifacts/api";
+import { renderSheet } from "../artifacts/sheet";
+import { parseTable } from "../csv/csv";
+import { API, ApiError, api, apiErrorText } from "./api";
 import { projectFilesCopy as copy } from "./copy";
-import { $, el } from "./dom";
+import { $, closeModalEl, el } from "./dom";
 
-type FolderEntry = { name: string; path: string; kind?: "directory" | "file"; size?: number };
+type FolderEntry = {
+  name: string;
+  path: string;
+  kind?: "directory" | "file";
+  size?: number | null;
+  modified_ms?: number | null;
+};
 type FolderListing = {
   path: string;
   parent_path: string | null;
@@ -14,6 +23,18 @@ type FolderListing = {
   truncated: boolean;
 };
 type FilePreview = { path: string; name: string; content: string; size: number; truncated: boolean };
+
+/**
+ * ART-3: a project CSV/TSV is drawn as the Artifact viewer draws one -- the
+ * same parser and sheet -- rather than as raw text. A preview cut at the size
+ * cap ends mid-record, so its partial last line is left out.
+ */
+function previewRows(name: string, text: string, truncated: boolean): Record<string, unknown>[] | null {
+  if (!/\.(csv|tsv)$/i.test(name)) return null;
+  const complete = truncated ? text.slice(0, text.lastIndexOf("\n") + 1) : text;
+  const rows = parseTable(complete, { filename: name });
+  return rows && rows.length ? rows : null;
+}
 
 function button(label: string, onClick: () => void, cls = "outline-btn small"): HTMLButtonElement {
   const node = el("button", cls, label);
@@ -127,6 +148,50 @@ export async function browseProjectFolder(path?: string, focusHiddenToggle = fal
   }
 }
 
+/** A listed file's size and modification time, as much as the server knows. */
+export function entryMeta(entry: Pick<FolderEntry, "size" | "modified_ms">): string {
+  const parts: string[] = [];
+  if (typeof entry.size === "number") parts.push(bytes(entry.size));
+  if (typeof entry.modified_ms === "number") {
+    parts.push(new Date(entry.modified_ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }));
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * ART-3 "import and view": read one project file whole and add it to the
+ * session as an input, then open it in the Artifact viewer. The upload path
+ * is the paperclip's own, so naming conflicts, a busy session and the first
+ * session of a project behave as they do there.
+ */
+export async function importProjectFile(base: string, path: string): Promise<void> {
+  const response = await fetch(`${API}${base}/file?path=${encodeURIComponent(path)}&raw=1`);
+  if (!response.ok) {
+    let body: unknown = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    throw new ApiError(body, response.status);
+  }
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const file = new File([await response.blob()], name);
+  const { uploadFiles } = await import("../chrome/upload");
+  const [result] = await uploadFiles([file]);
+  if (!result || result.skipped) return;
+  if (!result.ok) throw result.error instanceof Error ? result.error : new Error(String(result.error || ""));
+  const [{ loadArtifacts }, { presentViewer }, { artifacts }] = await Promise.all([
+    import("../artifacts/load"),
+    import("../artifacts/ui"),
+    import("../../stores/artifacts"),
+  ]);
+  if (result.frameId) await loadArtifacts(result.frameId);
+  const rows = (artifacts.value as Array<{ id: string; filename?: string | null }>) || [];
+  const row = rows.find((candidate) => candidate.filename === result.filename);
+  if (row) presentViewer(row);
+}
+
 let browserVersion = 0;
 
 export async function openProjectFiles(
@@ -169,6 +234,32 @@ export async function openProjectFiles(
   let parentPath: string | null = null;
   const active = (version: number) => _modalMode.value === mode && request === version && !modal.classList.contains("hidden");
   const base = `/projects/${encodeURIComponent(projectId)}`;
+  // ART-3: any project file opens in the Artifact viewer -- sheets, tables,
+  // images, structures -- once it is an input of the session. The bytes are
+  // read through the read-only project route and handed to the ordinary
+  // upload; nothing is written to the project folder.
+  const importButton = (path: string): HTMLButtonElement => {
+    const node = button(copy("importView"), () => {
+      const version = request;
+      node.disabled = true;
+      node.textContent = copy("importing");
+      const status = el("p", "project-folder-note");
+      status.setAttribute("role", "status");
+      void importProjectFile(base, path).then(
+        () => { if (active(version)) closeModalEl(modal); },
+        (error: unknown) => {
+          if (!active(version)) return;
+          node.disabled = false;
+          node.textContent = copy("importView");
+          status.textContent = (error as { code?: string } | null)?.code === "project_file_too_large"
+            ? copy("importTooLarge")
+            : copy("importFailed", apiErrorText(error));
+          node.after(status);
+        },
+      );
+    }, "solid-btn small");
+    return node;
+  };
   const showFile = async (path: string): Promise<void> => {
     const version = ++request;
     content.innerHTML = "";
@@ -178,19 +269,31 @@ export async function openProjectFiles(
       if (!active(version)) return;
       content.innerHTML = "";
       content.appendChild(button(copy("back"), () => { void showDirectory(directory); }));
+      content.appendChild(importButton(data.path));
       content.appendChild(el("div", "project-folder-path", data.path));
       content.appendChild(el("div", "project-folder-note", copy("bytes", data.size.toLocaleString())));
       content.appendChild(el("p", "project-folder-note", copy("previewHelp")));
       if (data.truncated) content.appendChild(el("p", "project-folder-note", copy("previewLimited")));
+      const rows = previewRows(data.name || data.path, data.content, data.truncated);
       // textContent only: a project HTML file is data, never executable markup.
-      content.appendChild(el("pre", "project-file-preview", data.content));
+      if (rows) renderSheet(content, rows);
+      else content.appendChild(el("pre", "project-file-preview", data.content));
     } catch (error) {
-      if (active(version)) {
-        showError(content, error, () => { void showFile(path); });
+      if (!active(version)) return;
+      if ((error as { code?: string } | null)?.code === "binary_preview") {
+        // Not a failure and nothing a retry changes: this type has no text
+        // preview. It used to be a red "cannot read this path" with Retry.
+        content.innerHTML = "";
         content.appendChild(button(copy("back"), () => { void showDirectory(directory); }));
         content.appendChild(el("p", "project-folder-path", path));
-        content.appendChild(el("p", "project-folder-note", copy("previewHelp")));
+        content.appendChild(el("p", "project-folder-note", copy("noInlinePreview")));
+        content.appendChild(importButton(path));
+        return;
       }
+      showError(content, error, () => { void showFile(path); });
+      content.appendChild(button(copy("back"), () => { void showDirectory(directory); }));
+      content.appendChild(el("p", "project-folder-path", path));
+      content.appendChild(el("p", "project-folder-note", copy("previewHelp")));
     }
   };
   const showDirectory = async (path: string): Promise<void> => {
@@ -214,6 +317,8 @@ export async function openProjectFiles(
           else void showFile(entry.path);
         }, "project-folder-entry");
         row.title = entry.path;
+        const meta = isFolder ? "" : entryMeta(entry);
+        if (meta) row.appendChild(el("span", "project-folder-meta", meta));
         list.appendChild(row);
       }
       if (!data.entries.length) list.appendChild(el("div", "project-folder-note", copy("empty")));

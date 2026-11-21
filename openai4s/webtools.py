@@ -16,6 +16,7 @@ the daemon's Customize → Network panel flips this.
 from __future__ import annotations
 
 import base64
+import collections
 import contextlib
 import errno
 import hashlib
@@ -28,11 +29,14 @@ import re
 import socket
 import stat
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, BinaryIO, Callable, Iterator, Sequence
+
+from openai4s import tls_trust
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -311,6 +315,75 @@ def _path_matches_regular_inode(path: pathlib.Path, expected: os.stat_result) ->
     return stat.S_ISREG(current.st_mode) and os.path.samestat(expected, current)
 
 
+#: Hosts that publish a request rate, as (requests, per seconds). NCBI
+#: E-utilities allow three a second without an API key; a fourth in the same
+#: second is answered 429, which is what four parallel `web_fetch` calls got.
+HOST_RATE_LIMITS: dict[str, tuple[int, float]] = {
+    "eutils.ncbi.nlm.nih.gov": (3, 1.0),
+}
+
+#: One automatic retry after a 429, waiting what the server asked for. A
+#: `Retry-After` longer than this is not waited out: the caller gets the 429.
+RETRY_AFTER_DEFAULT_S = 1.0
+RETRY_AFTER_MAX_S = 10.0
+
+
+class HostThrottle:
+    """Space out request starts to the hosts in `HOST_RATE_LIMITS`.
+
+    Each caller reserves the next free start time under the lock and sleeps
+    outside it, so parallel fetches queue behind one another instead of all
+    waking at once. The clock and the sleep are injectable; nothing here
+    touches a host that publishes no limit.
+    """
+
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.clock = clock
+        self.sleep = sleep
+        self._lock = threading.Lock()
+        self._starts: dict[str, collections.deque[float]] = {}
+
+    def wait(self, url: str) -> float:
+        """Block until ``url``'s host may be asked again; returns the wait."""
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+        limit = HOST_RATE_LIMITS.get(host)
+        if limit is None:
+            return 0.0
+        count, window = limit
+        with self._lock:
+            starts = self._starts.setdefault(host, collections.deque(maxlen=count))
+            now = self.clock()
+            # Full window: the oldest of the last `count` starts frees a slot
+            # one window after it began.
+            start = now if len(starts) < count else max(now, starts[0] + window)
+            starts.append(start)
+        delay = start - now
+        if delay > 0:
+            self.sleep(delay)
+        return max(delay, 0.0)
+
+
+_throttle = HostThrottle()
+
+
+def _retry_after_429(status: int, headers: Any, retried: bool) -> float | None:
+    """Seconds to wait before the one retry a 429 gets, or ``None`` for none."""
+    if status != 429 or retried:
+        return None
+    from openai4s.llm.models import parse_retry_after
+
+    try:
+        asked = parse_retry_after((headers or {}).get("Retry-After"))
+    except Exception:  # noqa: BLE001 - an unreadable header is an absent one
+        asked = None
+    wait = RETRY_AFTER_DEFAULT_S if asked is None else asked
+    return wait if wait <= RETRY_AFTER_MAX_S else None
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Surface a 3xx as an HTTPError instead of quietly following it.
 
@@ -333,7 +406,7 @@ def _no_redirect_opener() -> urllib.request.OpenerDirector:
     a test that patches `urllib.request.build_opener` -- which is exactly how
     `web_probe`'s own test drives this code.
     """
-    return urllib.request.build_opener(_NoRedirect)
+    return urllib.request.build_opener(_NoRedirect, tls_trust.https_handler())
 
 
 #: The 3xx codes a redirect-following client would act on. 304 is deliberately
@@ -373,9 +446,13 @@ def _open_http_response(
     cur = url
     from openai4s import egress
 
-    for _hop in range(_max_redirects + 1):
+    # The one 429 retry is not a redirect and does not spend a hop.
+    retried = False
+    hops = 0
+    while hops <= _max_redirects:
         egress.check_url(cur)
         _guard_url(cur)
+        _throttle.wait(cur)
         if requests is not None:
             response = requests.request(
                 method,
@@ -388,8 +465,14 @@ def _open_http_response(
             try:
                 if response.is_redirect and response.headers.get("Location"):
                     cur = urllib.parse.urljoin(cur, response.headers["Location"])
+                    hops += 1
                     continue
                 status_code = int(response.status_code)
+                wait = _retry_after_429(status_code, response.headers, retried)
+                if wait is not None:
+                    retried = True
+                    _throttle.sleep(wait)
+                    continue
                 if not 200 <= status_code < 300:
                     response.raise_for_status()
                     raise RuntimeError(f"HTTP request failed with status {status_code}")
@@ -411,8 +494,22 @@ def _open_http_response(
             if error.code in _REDIRECT_CODES and location:
                 error.close()
                 cur = urllib.parse.urljoin(cur, location)
+                hops += 1
+                continue
+            wait = _retry_after_429(error.code, error.headers, retried)
+            if wait is not None:
+                error.close()
+                retried = True
+                _throttle.sleep(wait)
                 continue
             raise
+        except urllib.error.URLError as error:
+            # "unable to get local issuer certificate" names neither the host
+            # nor a remedy; say both.
+            untrusted = tls_trust.untrusted_certificate(error, cur)
+            if untrusted is None:
+                raise
+            raise untrusted from error
         with response:
             yield (
                 response,
@@ -723,7 +820,7 @@ def web_probe(
             "status": 0,
             "location": "",
             "exists": False,
-            "error": str(error.reason),
+            "error": str(tls_trust.untrusted_certificate(error, url) or error.reason),
         }
     return {
         "url": url,

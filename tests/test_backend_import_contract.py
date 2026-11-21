@@ -40,6 +40,12 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "PROVIDERS",
             "chat",
             "get_model_capabilities",
+            # The failed turn's cause, as one of a closed set (no credential,
+            # rejected key, quota, unknown model, unreachable). The gateway
+            # sends it with the event so the page can say what to fix instead
+            # of "the LLM call failed"; classifying there from the exception's
+            # text would be a second, drifting copy of the client's own rules.
+            "llm_error_kind",
             "llm_failure_code",
             "provider_specs",
             "supports_vision",
@@ -82,6 +88,11 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "check_download_cancelled",
             "web_download",
             "web_fetch",
+            # One HEAD through the same network switch, egress allowlist, SSRF
+            # guard and trust store as a fetch. `openai4s doctor --network`
+            # asks each science host through it, so "reachable" there means
+            # reachable for the agent, not for a second connection path.
+            "web_probe",
             "web_search",
             # The engine ids `web_search(engines=...)` accepts, in default
             # order. `search_settings.py` stores the user's order of exactly

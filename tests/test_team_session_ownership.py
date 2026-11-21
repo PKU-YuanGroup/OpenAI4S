@@ -8,6 +8,7 @@ and an unowned (pre-team) session is admin-only. All passwords are fake.
 from __future__ import annotations
 
 import json
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -276,6 +277,113 @@ def test_search_does_not_leak_other_users_sessions(daemon):
     status, raw = _get(daemon.port, "/api/v1/search?q=alice-secret", cookie=a)
     ids = {s["id"] for s in _body(raw)["sessions"]}
     assert fid_a in ids
+
+
+def _seed_searchable_bodies(daemon, fid: str) -> None:
+    daemon.store.add_message(
+        root_frame_id=fid,
+        role="assistant",
+        frame_id=fid,
+        content="QC：E6 空白孔在 14 h 后判定污染，整孔剔除。\n\n"
+        + "稳健性：补做 Freedman–Lane 置换检验，与参数 ANOVA 一致。 " * 3,
+    )
+    daemon.store.log_cell(
+        frame_id=fid,
+        root_frame_id=fid,
+        code="params = fit_gompertz_curve(od)\n",
+        result={"stdout": "x " * 200 + "B1 22.0 OVRFLW event\n", "stderr": ""},
+    )
+
+
+def test_search_finds_words_in_answers_code_and_output_with_a_snippet(daemon):
+    """EXP-2: "污染", "Freedman", "Gompertz" and "OVRFLW" were in a finished
+    session's answer, code and output, and search matched only its title."""
+    a = _login(daemon, "alice", "fake-pw-a")
+    fid = _create_session(daemon, a)
+    daemon.store.update_frame(fid, name="growth curves")
+    _seed_searchable_bodies(daemon, fid)
+
+    def hit(word: str) -> dict:
+        status, raw = _get(
+            daemon.port, "/api/v1/search?q=" + urllib.parse.quote(word), cookie=a
+        )
+        assert status == 200
+        sessions = _body(raw)["sessions"]
+        assert [s["id"] for s in sessions] == [fid], word
+        return sessions[0]
+
+    assert hit("污染")["match"] == "message"
+    assert "判定污染，整孔剔除" in hit("污染")["snippet"]
+    assert hit("freedman")["match"] == "message"  # ASCII case-insensitive
+    assert hit("Gompertz") == {
+        "id": fid,
+        "project_id": hit("Gompertz")["project_id"],
+        "name": "growth curves",
+        "task_summary": hit("Gompertz")["task_summary"],
+        "match": "code",
+        "snippet": "params = fit_gompertz_curve(od)",
+    }
+    overflow = hit("OVRFLW")
+    assert overflow["match"] == "output"
+    # Cut around the match, not the head of a long output, and bounded.
+    assert overflow["snippet"].startswith("…") and "OVRFLW event" in overflow["snippet"]
+    assert len(overflow["snippet"]) <= 161
+    # A title match keeps its place and has no snippet to show.
+    title = hit("growth cur")
+    assert title["match"] == "title" and title["snippet"] is None
+    # In a body a LIKE wildcard is a literal, not "match everything".
+    assert daemon.store._frames.search_session_content("%") == []
+    assert daemon.store._frames.search_session_content("gomp%curve") == []
+
+
+def test_content_search_does_not_leak_another_users_bodies(daemon):
+    """EXP-2 in team mode: a snippet is the body itself, so the scope has to
+    hold before a row is matched, not after."""
+    a = _login(daemon, "alice", "fake-pw-a")
+    b = _login(daemon, "bob", "fake-pw-b")
+    fid_a = _create_session(daemon, a)
+    _seed_searchable_bodies(daemon, fid_a)
+
+    for word in ("污染", "Freedman", "gompertz", "OVRFLW"):
+        path = "/api/v1/search?q=" + urllib.parse.quote(word)
+        status, raw = _get(daemon.port, path, cookie=b)
+        assert status == 200
+        assert _body(raw)["sessions"] == [], word
+        for leaked in ("整孔剔除", "置换检验", "fit_gompertz_curve", "OVRFLW event"):
+            assert leaked.encode() not in raw
+            assert leaked not in json.dumps(_body(raw), ensure_ascii=False)
+        status, raw = _get(daemon.port, path, cookie=a)
+        assert [s["id"] for s in _body(raw)["sessions"]] == [fid_a], word
+
+
+def test_the_read_only_page_export_is_scoped_like_every_session_read(daemon):
+    """EXP-3: the exported page is the whole session in one file, so the
+    route answers a colleague exactly as it answers for a session that does
+    not exist."""
+    a = _login(daemon, "alice", "fake-pw-a")
+    b = _login(daemon, "bob", "fake-pw-b")
+    fid_a = _create_session(daemon, a)
+    _seed_searchable_bodies(daemon, fid_a)
+    path = f"/api/v1/frames/{fid_a}/session/export-html"
+
+    status, raw = _get(daemon.port, path, cookie=b)
+    assert status == 404
+    assert b"OVRFLW" not in raw and "污染".encode() not in raw
+    missing, _ = _get(
+        daemon.port, "/api/v1/frames/f-000000000000/session/export-html", cookie=b
+    )
+    assert missing == 404
+
+    status, raw = _get(daemon.port, path + "?lang=zh", cookie=a)
+    assert status == 200
+    head, _, body = raw.partition(b"\r\n\r\n")
+    # A download, never a page rendered on the daemon's own origin.
+    assert b"content-disposition: attachment" in head.lower()
+    assert b"text/html" in head.lower()
+    page = body.decode("utf-8")
+    assert page.startswith("<!doctype html>") and "只读导出" in page
+    assert "判定污染，整孔剔除" in page and "fit_gompertz_curve" in page
+    assert "<script" not in page.lower()
 
 
 def test_project_timeline_is_ownership_filtered(daemon):

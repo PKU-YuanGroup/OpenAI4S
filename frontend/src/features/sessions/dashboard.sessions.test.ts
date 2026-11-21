@@ -253,6 +253,26 @@ describe("one place per session on the home page", () => {
     expect(api).not.toHaveBeenCalled();
   });
 
+  it("marks how a recent session ended: failed is said in words (UI-1)", () => {
+    attentionCards.value = [];
+    renderDashRecent([
+      { id: "f-ok", name: "Finished fit", status: "done", message_count: 2, updated_at: "2026-11-18T07:00:00Z" },
+      { id: "f-bad", name: "Broken fit", status: "failed", message_count: 2, updated_at: "2026-11-18T06:00:00Z" },
+      { id: "f-new", name: "Paused fit", status: "paused", message_count: 2, updated_at: "2026-11-18T05:00:00Z" },
+    ]);
+    const rows = dom["#dash-sessions"]!.children as unknown as Array<{
+      children: Array<{ cls: string; title?: string; textContent: string }>;
+    }>;
+    const dot = (index: number) => rows[index]!.children[0]!;
+    expect(dot(0).cls).toBe("d-dot done");
+    expect(dot(0).title).toBe(dashCopy("dash.status.done"));
+    expect(dot(1).cls).toBe("d-dot failed");
+    expect(dot(2).cls).toBe("d-dot");
+    const labels = (index: number) => rows[index]!.children.map((node) => node.textContent);
+    expect(labels(1)).toContain(dashCopy("dash.status.failed"));
+    expect(labels(0)).not.toContain(dashCopy("dash.status.failed"));
+  });
+
   it("does not repeat the session's name under a Running card's title", () => {
     const project = { project_id: "p1", name: "qPCR project" };
     expect(runCardSubtitle({ name: "ΔΔCt analysis", task_summary: "ΔΔCt analysis of the plate" }, project)).toBe(
@@ -285,7 +305,13 @@ describe("the seeded example project's name", () => {
 // NAV-4: after "Run the example analysis" the card vanished as soon as the
 // session existed, and nothing said when it finished or that cells failed.
 describe("the example run's notice", () => {
-  it("follows the run and says how many cells did not complete", async () => {
+  // CHAT-1: a fetch that failed inside a cell that carried on left "all 6
+  // cells ran without an error" on the card.
+  it.each([
+    [{ cells: 6, failed: 2 }, () => dashCopy("dash.example.doneFailed", 2, 6)],
+    [{ cells: 6, failed: 0, failed_steps: 1 }, () => dashCopy("dash.example.doneStepFailed", 6, 1)],
+    [{ cells: 6, failed: 0, failed_steps: 0 }, () => dashCopy("dash.example.done", 6)],
+  ])("follows the run and says how it ended: %j", async (result, expected) => {
     const ticks: Array<() => void> = [];
     vi.stubGlobal("window", {
       setInterval: (tick: () => void) => {
@@ -324,12 +350,10 @@ describe("the example run's notice", () => {
       frame_id: "f-example",
       project_id: "proj_example",
       error: null,
-      result: { cells: 6, failed: 2 },
+      result,
     };
     ticks[0]!();
-    await vi.waitFor(() =>
-      expect(texts(dom["#dash-sessions"])).toContain(dashCopy("dash.example.doneFailed", 2, 6)),
-    );
+    await vi.waitFor(() => expect(texts(dom["#dash-sessions"])).toContain(expected()));
     expect(texts(dom["#dash-sessions"])).toContain(dashCopy("dash.example.open"));
     expect(intervals.size).toBe(0);
   });

@@ -40,7 +40,7 @@ DISCLOSURE_TEXT: dict[str, dict[str, str]] = {
             "trajectory summary. This is the highest-risk outbound payload."
         ),
         "zh": (
-            "待执行的代码 cell、工具返回的内容片段，以及会话轨迹摘要。"
+            "待执行的单元代码、工具返回的内容片段，以及会话轨迹摘要。"
             "这是风险最高的外发内容，界面上会单独强调。"
         ),
     },

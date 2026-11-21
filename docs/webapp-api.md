@@ -362,7 +362,7 @@ success response body. Serializer shapes are in §4.
 
 | Method & path | Behavior |
 | --- | --- |
-| `GET /onboarding` | Redacted first-run state: the active `provider`/`model`/`base_url`, `has_api_key`, saved `profiles`, the local-model catalogue and environment/network posture, plus one `complete` flag the wizard opens on. Derived entirely from stored state, so opening the wizard contacts no provider and cannot be used to probe whether a key works. No credential value appears in the payload. `complete` is true once `POST /onboarding/complete` (or `openai4s init`) wrote the flag, **or** when the install is evidently past its first run: a stored model configuration (`llm_*` settings, an active or saved non-deleted profile) or history: any session that has held a message, or any executed Cell (a Notebook REPL cell records an execution and never a message, so an install used only through the Notebook counts; a session created and never run does not). 0.2.0 had no Web wizard and never wrote the flag from the Web UI, so without that rule an upgraded install reopened behind a first-run modal over its own history. An environment key alone does not count — with no history and no stored configuration that is what a fresh `.env` install looks like. The GET never writes the flag. One consequence is accepted: the wizard saves and activates a profile as soon as a new model is chosen, so a page reload after that choice, part-way through a fresh install's wizard, hydrates as complete and does not reopen the remaining steps. |
+| `GET /onboarding` | Redacted first-run state: the active `provider`/`model`/`base_url`, `has_api_key`, saved `profiles`, the local-model catalogue and environment/network posture, plus one `complete` flag the wizard opens on. Derived entirely from stored state, so opening the wizard contacts no provider and cannot be used to probe whether a key works. No credential value appears in the payload. `complete` is true once `POST /onboarding/complete` (or `openai4s init`) wrote the flag, **or** when the install is evidently past its first run: a stored model configuration (`llm_*` settings, an active or saved non-deleted profile) or history: any session that has held a message, or any executed Cell (a Notebook REPL cell records an execution and never a message, so an install used only through the Notebook counts; a session created and never run does not). 0.2.0 had no Web wizard and never wrote the flag from the Web UI, so without that rule an upgraded install reopened behind a first-run modal over its own history. An environment key alone does not count — with no history and no stored configuration that is what a fresh `.env` install looks like. The GET never writes the flag. One consequence is accepted: the wizard saves and activates a profile as soon as a new model is chosen, so a page reload after that choice, part-way through a fresh install's wizard, hydrates as complete and does not reopen the remaining steps. When the saved profiles are included, `provider_presets:[{id,base_url,model}]` gives the registry's own endpoint and default model for each offered protocol, so the wizard can name a provider and show its endpoint. |
 | `POST /onboarding/complete` | Marks first-run finished. In team mode this is admin-only (`403 admin_only`): the state is installation-wide, so a member dismissing it would be deciding for everyone. |
 
 ### Diagnostics
@@ -801,6 +801,7 @@ A session's kernel is on the daemon by default. Asking for it to be on a granted
 | --- | --- |
 | `POST /frames/{fid}/decision` | Answers a pending `await_permission` prompt. Body `{decision_id,allow,scope?("once"),pattern?,message?}`. A live decision returns `{ok,decision_id,allow,scope,resolution_context:"live_thread",requires_continue:false,original_action_executed:null}` and wakes the exact blocked call. After daemon restart it returns `resolution_context:"after_restart"`, `original_action_executed:false`, and `requires_continue:true` for an approval; no stored arguments are replayed. A restart `once` approval also returns its exact-grant `continuation_expires_at` and `continuation_authorization`; broader scopes persist a standing rule. Unknown, cross-frame, conflicting, or expired decisions return `ok:false` with `error`. |
 | `GET /frames/{fid}/permissions` | `{"root_frame_id","project_id","rules":[…]}` — rules effective for that conversation. |
+| `GET /permissions` | `{"rules":{"global":[…]}}` — the global tier alone, for Settings with no session open (the same rows the per-frame read carries). |
 | `POST /permissions` | Upsert a rule. Body `{scope("global"),scope_id?,frame_id?,tool("*"),pattern("*"),decision("ask")}`; when `scope_id` is omitted but `frame_id` given, the scope id is derived from the frame → `{"ok":true,"rule_id"}`. |
 | `POST /permissions/reset` | Re-seeds defaults → `{"ok":true,"rules":[…]}`. |
 | `DELETE /permissions/{rule_id}` | `{"ok":true}`. |
@@ -832,7 +833,7 @@ The first Agent/user Cell starts only the selected language; a native-tool or
 | `GET /frames/{fid}/kernel` | Kernel status: `{frame_id,state("none"|"running"|"stopped"|"ended"),alive,generation,generation_id,generation_ordinal,last_activity_at,ended_reason,turn_running,cell_count,manual_stop,repl_enabled,env:{name,language,python_version,pending,kernel_id}}`. `repl_enabled` is the manual-cells switch: `OPENAI4S_NOTEBOOK_REPL` forces it on, otherwise `GET /notebook/settings` decides. |
 | `GET/PUT /notebook/settings` | The Settings switch for manual Notebook cells: `{repl_enabled, env_forced, can_change}`. `PUT {"repl_enabled": true|false}` (a JSON boolean, else `400`) persists it; `env_forced` is true when `OPENAI4S_NOTEBOOK_REPL` forces it on, and then the switch cannot turn it off. Instance-wide: in team mode `PUT` is admin-only (`403 admin_only`) and `can_change` is false for members. |
 | `POST /frames/{fid}/kernel/install` | Body `{packages:[…]}` or `{package}` (+`restart`, default true) → pip-install report (`{ok,installed,…,restarted}`). In team mode this is admin only, including when the caller owns the session, because the installation changes a shared runtime environment. |
-| `GET /frames/{fid}/environments` | `{"environments":[…],"current","current_r","default","pending"}`. `current_r` is the R environment the session's R cells use (`null`: the default resolution). |
+| `GET /frames/{fid}/environments` | `{"environments":[…],"current","current_r","default","pending","runtimes"}`. `current_r` is the R environment the session's R cells use (`null`: the default resolution). `runtimes` says what each language actually runs in: `python` `{available,environment,kind,version}` and `r` `{available,selected,environment,kind,version,checked,packages:[{name,available}]}`, where `kind` is `builtin` / `managed` / `local`, `environment` is `""` for an R found on PATH, `checked` says whether the key-package probe ran, and no field carries a path. |
 | `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. An R-only env retargets the session's R cells instead (`language: "r"`; the next R cell starts there). Not gated by the manual-cells switch. In team mode this is owner/admin only. |
 
 When Stage 1 trusted delivery is enabled, `kernel/execute` also performs the
@@ -1110,7 +1111,7 @@ kept is the tail; `output` is prefixed with a notice when anything was dropped.
 | `GET /environments` | Same shape as `GET /frames/{fid}/environments`, without a session. |
 | `GET /kernel/packages` | `{"packages":[…],"preinstall":{…}}`. |
 | `GET /kernel/environment` | Full env freeze for Provenance → Environment. |
-| `POST /kernel/install` | Body `{packages}` or `{package}` → install report (no kernel restart). Admin only in team mode because it mutates the shared runtime environment. |
+| `POST /kernel/install` | Body `{packages}` or `{package}` → install report (no kernel restart). Admin only in team mode because it mutates the shared runtime environment. A successful report carries `installed_versions:[{name,version}]`, read back from the installed metadata. |
 
 ### Memory / network / web-search config
 
@@ -1240,6 +1241,13 @@ The gateway emits **four different shapes** under the same event type:
 4. **Delete / version-restore** — a bare refresh signal:
    `{"type":"artifact_created","root_frame_id"}` with **no artifact info
    whatsoever**.
+
+Where the event names its file (auto-capture, edit, rename, version restore,
+and the context-output spill) the nested `artifact` also carries `role`
+(`deliverable` | `process` | `internal`) from `artifact_paths.artifact_role`,
+the same value the list routes return, so a scratch script is folded live as
+it is after a reload. Upload omits it: a person's own file is never a process
+file.
 
 The event can also be **absent entirely**: the edit/rename/upload/delete/
 restore broadcasts only fire when the artifact has a `root_frame_id` (for

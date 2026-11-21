@@ -298,14 +298,21 @@ These are correctness failures, not style preferences:
 
 ## 9. Render-then-verify
 
+**Do all of this in the cell that draws the figure.** Every open figure is
+saved and closed when a cell ends, so a later cell has nothing to check:
+`plt.gcf()` there is a new blank figure, and the closed one's canvas has no
+renderer (`'FigureCanvasBase' object has no attribute 'get_renderer'`). Build,
+check, fix and save in one cell; to change a figure, re-run the cell that makes
+it.
+
 After `fig.savefig(...)`, before `host.save_artifact(...)`:
 
 **9.1 Geometric (bbox) check.**
 ```python
-r = fig.canvas.get_renderer()
-texts = [(t, t.get_window_extent(r)) for t in fig.findobj(mpl.text.Text)
+fig.draw_without_rendering()  # lays text out on any backend; no renderer handle
+texts = [(t, t.get_window_extent()) for t in fig.findobj(mpl.text.Text)
          if t.get_text().strip() and t.get_visible()]
-spines = [(s, s.get_window_extent(r)) for ax in fig.axes
+spines = [(s, s.get_window_extent()) for ax in fig.axes
           for s in ax.spines.values() if s.get_visible()]
 ticklabels = {ax: set(ax.get_xticklabels(which='both') + ax.get_yticklabels(which='both'))
               for ax in fig.axes}

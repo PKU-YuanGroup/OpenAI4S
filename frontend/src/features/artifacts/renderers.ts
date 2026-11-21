@@ -30,7 +30,7 @@ import {
   translate,
   TEXT_SOURCE_PREVIEW_CHARACTERS,
 } from "./api";
-import { filesT, readFailureText } from "./copy";
+import { filesT, readFailureText, readRetryHelps } from "./copy";
 import { artifactMetadataTarget, artUrl, previewSlice } from "./cache";
 import {
   artifactRendererDescriptor,
@@ -60,6 +60,13 @@ function partialPreview(container: HTMLElement, a: ArtifactRow, url: string, sho
  * and the exact-version original download. A failed read is never rendered as
  * a blank success.
  */
+let versionHistoryOpener: ((a: ArtifactRow) => void) | null = null;
+
+/** The Viewer island owns the version-history modal and registers it here. */
+export function setVersionHistoryOpener(fn: ((a: ArtifactRow) => void) | null): void {
+  versionHistoryOpener = fn;
+}
+
 export function rendererFailure(
   container: HTMLElement,
   a: ArtifactRow,
@@ -77,7 +84,7 @@ export function rendererFailure(
   );
   text.setAttribute("role", "alert");
   card.appendChild(text);
-  if (retry) {
+  if (retry && readRetryHelps(error)) {
     const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
     again.onclick = () => {
       container.innerHTML = "";
@@ -758,12 +765,19 @@ export function renderArtifactDescriptor(
   if (target._exactVersion) {
     // "固定版本" for a pinned historical tab, "最新版本" for the latest one; the
     // version id is a tooltip, not the subtitle (ART-15).
+    // ART-5: the label is the way into the version history, which used to
+    // be reachable only through the ⋮ menu.
     const version = el(
-      "span",
+      "button",
       "renderer-version",
       filesT(a._exactVersion ? "viewer.version.pinned" : "viewer.version.latest"),
     );
-    version.title = publicText(String(target.version_id), 64);
+    version.setAttribute("type", "button");
+    version.setAttribute("aria-label", filesT("viewer.version.history"));
+    version.title = filesT("viewer.version.history") + " · " + publicText(String(target.version_id), 64);
+    version.onclick = () => {
+      if (versionHistoryOpener) versionHistoryOpener(a);
+    };
     meta.appendChild(version);
   } else {
     // No version identity: the preview reads latest, and this is visible.

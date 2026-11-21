@@ -4128,27 +4128,79 @@ type TimelineSection = { key: string; node: HTMLElement };
  */
 type TimelineShell = {
   root: HTMLElement;
-  layout: HTMLElement;
-  side: HTMLElement;
+  /** The action ledger: first in the panel, and all a viewer sees by default. */
   actions: HTMLElement;
+  /** One disclosure for the runtime, recovery, branch, sub-agent, remote
+   *  compute, diagnostics and sandbox panels. */
+  technical: HTMLDetailsElement;
+  technicalLabel: HTMLElement;
+  technicalHint: HTMLElement;
+  technicalBody: HTMLElement;
+  side: HTMLElement;
   historyState: HTMLElement;
   sections: Map<string, TimelineSection>;
 };
 
 let timelineShell: TimelineShell | null = null;
 
+const TECHNICAL_PANELS_KEY = "os-timeline-technical";
+
+/** Whether this viewer left the technical panels open. Closed until they say otherwise. */
+function technicalPanelsOpen(): boolean {
+  try {
+    return localStorage.getItem(TECHNICAL_PANELS_KEY) === "open";
+  } catch {
+    return false;
+  }
+}
+
+function rememberTechnicalPanels(open: boolean): void {
+  try {
+    localStorage.setItem(TECHNICAL_PANELS_KEY, open ? "open" : "closed");
+  } catch {
+    /* storage unavailable (private window): the choice lasts for this page */
+  }
+}
+
 function ensureTimelineShell(root: HTMLElement): TimelineShell {
   const current = timelineShell;
-  if (current && current.root === root && current.layout.parentNode === root) return current;
-  const layout = el("div", "workbench-layout"),
-    side = el("div", "workbench-side"),
+  if (current && current.root === root && current.actions.parentNode === root) return current;
+  const side = el("div", "workbench-side"),
     actions = el("section", "timeline-actions"),
-    historyState = el("div", "timeline-history-state hidden");
+    historyState = el("div", "timeline-history-state hidden"),
+    technical = el("details", "timeline-technical") as HTMLDetailsElement,
+    summary = el("summary", "timeline-technical-summary"),
+    technicalLabel = el("span", "timeline-technical-label"),
+    technicalHint = el("span", "timeline-technical-hint"),
+    technicalBody = el("div", "timeline-technical-body");
   actions.appendChild(historyState);
-  layout.appendChild(side);
-  layout.appendChild(actions);
+  summary.appendChild(technicalLabel);
+  summary.appendChild(technicalHint);
+  technical.appendChild(summary);
+  technical.appendChild(technicalBody);
+  technical.open = technicalPanelsOpen();
+  // Remember only what the viewer did: a recovery that needs attention opens
+  // the disclosure for that render without changing the stored choice.
+  let byViewer = false;
+  summary.addEventListener("click", () => {
+    byViewer = true;
+  });
+  technical.addEventListener("toggle", () => {
+    if (byViewer) rememberTechnicalPanels(technical.open);
+    byViewer = false;
+  });
   root.replaceChildren();
-  timelineShell = { root, layout, side, actions, historyState, sections: new Map() };
+  timelineShell = {
+    root,
+    actions,
+    technical,
+    technicalLabel,
+    technicalHint,
+    technicalBody,
+    side,
+    historyState,
+    sections: new Map(),
+  };
   return timelineShell;
 }
 
@@ -4417,18 +4469,16 @@ export function renderActionTimeline(): void {
   root.dataset.timelineBranch = branchScope;
   const lang = LANG + ":" + timelineI18nEpoch;
   const runtime = runtimeSummary();
+  // The timeline first; everything else under one "Technical details"
+  // disclosure. Six panels of runtime, recovery, branch, sub-agent, remote
+  // compute, diagnostics and sandbox state used to sit above the ledger.
   syncTimelineChildren(root, [
     timelineSection(shell, "top", lang, timelineTop),
-    // The status words also depend on the kernel's own state (not started vs
-    // exited), which `runtime` does not carry: key on what is shown.
-    timelineSection(
-      shell,
-      "runtime",
-      lang + "|" + JSON.stringify(runtime) + "|" + runtimeStatusText(runtime.status),
-      () => runtimeSummaryNode(false, runtime),
-    ),
-    shell.layout,
+    shell.actions,
+    shell.technical,
   ]);
+  shell.technicalLabel.textContent = workbenchT("wb.details");
+  shell.technicalHint.textContent = workbenchT("wb.technical.hint");
   const undo = S.branchUndo;
   syncTimelineChildren(shell.side, [
     timelineSection(
@@ -4464,8 +4514,18 @@ export function renderActionTimeline(): void {
     (S.recoveryState && (S.recoveryState.status || (S.recoveryState.log || []).length))
   );
   const actionNodes = [shell.historyState];
+  const technicalNodes = [
+    // The status words also depend on the kernel's own state (not started vs
+    // exited), which `runtime` does not carry: key on what is shown.
+    timelineSection(
+      shell,
+      "runtime",
+      lang + "|" + JSON.stringify(runtime) + "|" + runtimeStatusText(runtime.status),
+      () => runtimeSummaryNode(false, runtime),
+    ),
+  ];
   if (hasRecovery)
-    actionNodes.push(
+    technicalNodes.push(
       timelineSection(
         shell,
         "recovery",
@@ -4481,10 +4541,18 @@ export function renderActionTimeline(): void {
         () => recoveryTimelineCard(S.recoveryState, S.recoveryActions),
       ),
     );
+  technicalNodes.push(shell.side);
+  syncTimelineChildren(shell.technicalBody, technicalNodes);
+  // A recovery that stopped part-way or failed has actions the viewer needs:
+  // show them, whatever was remembered (the stored choice is left alone).
+  const recoveryStatus = String((S.recoveryState && S.recoveryState.status) || "").toLowerCase();
+  if (recoveryStatus === "partial" || recoveryStatus === "failed") shell.technical.open = true;
   if (groups.length) actionNodes.push(actionTimelineLedger(groups, branchScope, rootFrameScope));
   else {
     destroyActionTimelineView();
-    if (!timeline.has_more_before && !S.workbenchErrors.timelineHistory && !hasRecovery) {
+    // The recovery card no longer shares this column, so it does not stand in
+    // for the empty message.
+    if (!timeline.has_more_before && !S.workbenchErrors.timelineHistory) {
       const loading = !!S._workbenchLoading;
       actionNodes.push(
         timelineSection(shell, "empty", lang + "|" + loading, () =>

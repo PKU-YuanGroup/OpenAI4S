@@ -53,6 +53,7 @@ import {
   projectNotebookCells,
   resetCellOutputs,
   setNotebookApi,
+  similarCode,
 } from "./cells";
 import {
   highlightCellSource,
@@ -999,6 +1000,44 @@ describe("F-14 Notebook", () => {
       expect(grouped[0] && grouped[0]._revisions && grouped[0]!._revisions!.length).toBe(1);
     });
 
+    // NB-4: a failed import folded into the next, unrelated cell as "2
+    // attempts". The same sources as the server's twin test
+    // (test_an_unrelated_cell_after_a_failure_is_not_its_retry).
+    it("keeps an unrelated cell after a failure as its own cell", () => {
+      const cell = (id: string, source: string, status: string): NotebookCell => ({
+        producing_cell_id: id, origin: "agent", status, kernel_id: "python", language: "python", source,
+      });
+      const projected = projectNotebookCells([
+        cell("load", "import openpyxl\nwb = openpyxl.load_workbook('demo.xlsx')", "error"),
+        cell("probe", "host.env.list(['openpyxl', 'pandas'])", "ok"),
+        cell("fit", "model = fit(table, start=0.5)", "error"),
+        cell("refit", "model = fit(table, start=0.1, bounds=(0, 1))", "ok"),
+      ]);
+      expect(projected.map(nbCellKey)).toEqual(["load", "probe", "refit"]);
+      expect(projected.map((entry) => entry.attempt_count)).toEqual([1, 1, 2]);
+      expect((projected[2]!._revisions || []).map(nbCellKey)).toEqual(["fit"]);
+    });
+
+    it("judges a draft only once it runs, not while its source is still arriving", () => {
+      const failed: NotebookCell = {
+        producing_cell_id: "a", origin: "agent", status: "error", kernel_id: "python", language: "python",
+        source: "model = fit(table, start=0.5)",
+      };
+      const retry: NotebookCell = {
+        ...failed, producing_cell_id: "b", status: "drafting", draft: true, live: true,
+      };
+      expect(projectNotebookCells([failed, retry]).map(nbCellKey)).toEqual(["a", "b"]);
+      expect(projectNotebookCells([failed, { ...retry, draft: false, status: "running" }]).map(nbCellKey)).toEqual(["b"]);
+    });
+
+    it("compares code by its identifiers and numbers", () => {
+      expect(similarCode("score = calculate(table)", "table = load()\nscore = calculate(table)")).toBe(true);
+      expect(similarCode("import openpyxl", "host.env.list(['pandas'])")).toBe(false);
+      // Nothing to compare on either side: only identical text is the same step.
+      expect(similarCode("", "")).toBe(true);
+      expect(similarCode("# 读取", "# 绘图")).toBe(false);
+    });
+
     // The memoized cell view only skips a cell whose props are the same
     // object; every projection used to clone every cell.
     it("returns the same projected object for finished records that did not change", () => {
@@ -1134,11 +1173,13 @@ describe("Notebook immutable output selection", () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it("shows the read limit and retries when the table preview is over budget", async () => {
+  it("shows the read limit without a pointless retry, and retries a failed read", async () => {
     const holder = new ArtifactNode("div");
     let missing = true;
+    let busy = false;
     vi.stubGlobal("document", { createElement: (tag: string) => new ArtifactNode(tag) });
     vi.stubGlobal("fetch", async () => {
+      if (busy) return new Response("busy", { status: 503 });
       if (missing) {
         return {
           ok: true,
@@ -1161,13 +1202,21 @@ describe("Notebook immutable output selection", () => {
       expect(errorCard(holder)?.children[0]?.textContent).toBe(
         filesT("viewer.read.limit", bytes(PREVIEW_READ_MAX_BYTES)),
       );
-      expect(retryButton(holder)).toBeDefined();
+      // ART-2: over the limit on every attempt, so only the download is offered.
+      expect(retryButton(holder)).toBeUndefined();
       expect(downloadLink(holder)?.href).toBe(url);
-      missing = false;
-      retryButton(holder)!.onclick?.();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(holder.children[0]?.className).toBe("nbc-table-scroll");
       dispose();
+      busy = true;
+      const again = new ArtifactNode("div");
+      const disposeAgain = renderTableInto(again as unknown as HTMLElement, "table.csv", url);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(retryButton(again)).toBeDefined();
+      busy = false;
+      missing = false;
+      retryButton(again)!.onclick?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(again.children[0]?.className).toBe("nbc-table-scroll");
+      disposeAgain();
     } finally { vi.unstubAllGlobals(); }
   });
 });
@@ -1247,5 +1296,27 @@ describe("Session options environment picker (ENV-6)", () => {
     click("base")!.onClick!(); // already in use: no request
     click("broken")!.onClick!(); // cannot run: explained, not sent
     expect(picked).toEqual(["work", "r-mini"]);
+  });
+
+  it("says what the R default resolves to (ENV-3)", () => {
+    const python = { available: true, environment: "base", kind: "builtin", version: "3.13.1" };
+    const r = { available: true, selected: false, environment: "lab_env", kind: "local", version: "4.4.1" };
+    const headings = (choice: Parameters<typeof environmentMenuItems>[0]) =>
+      environmentMenuItems(choice, () => undefined)
+        .map((item) => (item.node ? item.node.textContent : ""))
+        .filter(Boolean);
+
+    expect(headings({ envs, current: "base", currentR: null, runtimes: { python, r } })).toContain(
+      nbT("nb.env.group", "R", nbT("nb.env.default") + " → lab_env · local · R 4.4.1"),
+    );
+    // A chosen R environment is named as before.
+    expect(headings({ envs, current: "base", currentR: "lab_env", runtimes: { python, r } })).toContain(
+      nbT("nb.env.group", "R", "lab_env"),
+    );
+    // No R environment to pick from: the group still says which R runs.
+    const pythonOnly = envs.filter((row) => row.language === "python");
+    expect(
+      headings({ envs: pythonOnly, current: "base", currentR: null, runtimes: { python, r: { ...r, environment: "" } } }),
+    ).toContain(nbT("nb.env.group", "R", nbT("nb.env.default") + " → R installed on this computer · local · R 4.4.1"));
   });
 });

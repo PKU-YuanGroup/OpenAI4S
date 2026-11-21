@@ -33,6 +33,8 @@ _FILE = contract.RouteSpec(
 ROUTES = contract.validate_routes((_PICKER, _FILES, _FILE))
 MAX_ENTRIES = 500
 MAX_PREVIEW_BYTES = 256 * 1024
+#: The largest file "import and view" reads in one piece.
+MAX_IMPORT_BYTES = 32 * 1024 * 1024
 #: Where people keep data; the picker lists them first in the home directory.
 COMMON_HOME_FOLDERS = ("Documents", "Desktop", "Downloads")
 
@@ -102,9 +104,23 @@ def local_folders(raw: str, *, show_hidden: bool = False) -> dict:
     }
 
 
+def _modified_ms(files: ReadOnlyProjectFiles, relative: str) -> int | None:
+    """A listed file's modification time, read through the confined open.
+
+    The same verified, no-follow open a preview uses: no pathname built here
+    reaches the filesystem. A file that open refuses simply has no time.
+    """
+    try:
+        with files.open_verified_read(relative) as source:
+            return int(source.metadata.st_mtime * 1000)
+    except (ProjectFolderError, OSError, ValueError, RuntimeError):
+        return None
+
+
 def project_files(root: Path, raw: str) -> dict:
     relative = _relative(raw)
-    result = ReadOnlyProjectFiles(root).list_dir({"path": relative or "."})
+    files = ReadOnlyProjectFiles(root)
+    result = files.list_dir({"path": relative or "."})
     if "error" in result:
         raise ProjectFolderError(400, result["error"])
     entries = [
@@ -113,6 +129,9 @@ def project_files(root: Path, raw: str) -> dict:
             "path": entry["path"],
             "kind": "directory" if entry["is_dir"] else "file",
             "size": entry["size_bytes"],
+            "modified_ms": (
+                None if entry["is_dir"] else _modified_ms(files, entry["path"])
+            ),
         }
         for entry in result["entries"][:MAX_ENTRIES]
         if entry["is_dir"] or entry["size_bytes"] is not None
@@ -164,6 +183,30 @@ def project_file(root: Path, raw: str) -> dict:
     }
 
 
+def project_file_bytes(root: Path, raw: str) -> bytes:
+    """One project file's exact bytes, for "import and view" (ART-3).
+
+    The workbench hands them to the ordinary upload route, so the file opens
+    in the Artifact viewer as an input of the session; nothing is written to
+    the project folder. Same confined, verified read as the text preview, and
+    bounded: a file past the limit is refused rather than cut short.
+    """
+    relative = _relative(raw)
+    if not relative:
+        raise ProjectFolderError(400, "a file path is required")
+    with ReadOnlyProjectFiles(root).open_verified_read(relative) as source:
+        if source.size_bytes > MAX_IMPORT_BYTES:
+            raise ProjectFolderError(
+                413, "file is too large to import from here", "project_file_too_large"
+            )
+        data = source.handle.read(MAX_IMPORT_BYTES + 1)
+    if len(data) > MAX_IMPORT_BYTES:
+        raise ProjectFolderError(
+            413, "file is too large to import from here", "project_file_too_large"
+        )
+    return data
+
+
 def handle(handler: Any, method: str, sub: str, q: dict, cfg: Any, store: Any) -> bool:
     picker = _PICKER.match(method, sub)
     files = _FILES.match(method, sub)
@@ -180,6 +223,14 @@ def handle(handler: Any, method: str, sub: str, q: dict, cfg: Any, store: Any) -
             match = files or file
             assert match is not None
             root = project_folder_path(store, cfg, unquote(match.group(1)))
+            if file and (q.get("raw") or [""])[0] == "1":
+                handler._send(
+                    200,
+                    project_file_bytes(root, raw),
+                    "application/octet-stream",
+                    {"X-Content-Type-Options": "nosniff"},
+                )
+                return True
             result = project_files(root, raw) if files else project_file(root, raw)
         handler._json(result)
     except ProjectFolderError as error:

@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import stat
+import tempfile
 import threading
 import time
 import unicodedata
@@ -128,6 +129,22 @@ _PRIVATE_KEY_BLOCK = re.compile(
     re.DOTALL,
 )
 _REDACTED = "[REDACTED]"
+#: Folders only a daemon data directory has (EXP-1). Whatever precedes one in
+#: a recorded absolute path was *a* data directory: this one, or the one the
+#: data was moved from -- on a migrated machine, the previous user's home.
+#: Generic names (`artifacts`, `logs`) are left out: a project has those too.
+_DATA_DIR_SEGMENTS = (
+    "agent-workspaces",
+    "artifact-versions",
+    "workspace-cas",
+    "tool-results",
+    "session-imports",
+)
+_DATA_DIR_PATH = re.compile(
+    r"(?<![\w.~<>/\\:-])(?:[A-Za-z]:)?[/\\][^\s\"'(),;:]*?(?=[/\\](?:"
+    + "|".join(re.escape(segment) for segment in _DATA_DIR_SEGMENTS)
+    + r")(?:[/\\]|$))"
+)
 IMPORT_QUARANTINE_SETTING_PREFIX = "session:import-quarantine:"
 _DELIVERY_IMPORT_PENDING_CONTENT = (
     "Completion delivery is pending package verification."
@@ -1289,6 +1306,7 @@ class SessionPackageService:
                 raise SessionPackageError(
                     f"session package export still contains secret material: {name}"
                 )
+        local_paths_left = self._note_local_paths_left(files)
         manifest_body = {
             "format": PACKAGE_FORMAT,
             "schema_version": PACKAGE_SCHEMA_VERSION,
@@ -1325,29 +1343,119 @@ class SessionPackageService:
             "sha256": _sha256(data),
             "schema_version": PACKAGE_SCHEMA_VERSION,
             "immutable": True,
+            "local_paths_left": local_paths_left,
         }
+
+    def _note_local_paths_left(self, files: dict[str, bytes]) -> int:
+        """Count this machine's paths redaction left as written, and say so.
+
+        Message text, cell code and output, and the user's own files are
+        covered by digests or are the user's words, so they are not rewritten
+        (the owner's choice: tell the person instead). The count goes into
+        the package's own notes, per member and without the paths themselves,
+        and back to the caller so the page can say it before anyone shares
+        the file. Runs before the manifest, so the note is hashed like the rest.
+        """
+
+        patterns = [_DATA_DIR_PATH] + [
+            re.compile(re.escape(prefix) + r"(?=[/\\\s\"'),;:]|$)")
+            for prefix, _label in self._machine_path_prefixes()
+            if len(prefix) > 1 and prefix != "/"
+        ]
+        counts: dict[str, int] = {}
+        for name, payload in files.items():
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            spans = {
+                match.start()
+                for pattern in patterns
+                for match in pattern.finditer(text)
+            }
+            if spans:
+                counts[name] = len(spans)
+        total = sum(counts.values())
+        if total:
+            note_name = (
+                package_runtime.DIAGNOSTICS_FILE
+                if package_runtime.DIAGNOSTICS_FILE in files
+                else "REPRODUCE.md"
+            )
+            lines = [
+                "",
+                "## Local paths left as written",
+                "",
+                f"{total} absolute path(s) of the exporting machine remain in text "
+                "this package keeps byte-exact: messages, cell code and output "
+                "(covered by digests), and the session's own files. They were "
+                "not rewritten. Check them before you share this package.",
+                "",
+            ]
+            lines += [
+                f"- `{name}`: {count}"
+                for name, count in sorted(counts.items(), key=lambda item: -item[1])[
+                    :20
+                ]
+            ]
+            files[note_name] = files.get(note_name, b"").rstrip(b"\n") + (
+                "\n".join(lines) + "\n"
+            ).encode("utf-8")
+        return total
 
     #: Package documents that carry this machine's absolute paths (interpreters,
     #: environment prefixes, worker argv, tracebacks), and which keys to
     #: rewrite in each; ``None`` means every string value. Message text, cell
     #: code and anything a digest covers are deliberately not listed.
+    #:
+    #: ``snapshots.json`` used to be a list of eight keys. A checkpoint copies
+    #: whole kernel-generation records, so every key a generation gained that
+    #: the list did not (``working_directory``, ``sandbox.workspace``,
+    #: ``sandbox.temp_dir``) shipped the data directory: 176 paths in one
+    #: reviewed export. It is the platform's own metadata, so all of it is
+    #: rewritten and the exception is what gets named.
     _PATH_REDACTION: dict[str, frozenset[str] | None] = {
         "environment.json": None,
-        "snapshots.json": frozenset(
-            {
-                "base_prefix",
-                "environment_root",
-                "init_hooks",
-                "interpreter",
-                "interpreter_prefix",
-                "key",
-                "r_home",
-                "worker_argv",
-            }
-        ),
+        "snapshots.json": None,
         "notebook.json": frozenset({"stdout", "stderr", "error", "traceback"}),
         "ledger.json": frozenset({"observation"}),
     }
+    #: Subtrees kept byte-exact inside a document that is otherwise rewritten
+    #: whole. ``checkpoint_states[].state`` is covered by ``state_sha256`` and
+    #: holds what the user wrote (plans, annotations, memory), like a message.
+    _PATH_REDACTION_KEEP: dict[str, frozenset[str]] = {
+        "snapshots.json": frozenset({"checkpoint_states"}),
+    }
+
+    def _machine_path_prefixes(self) -> list[tuple[str, str]]:
+        """This machine's own directories and the label each one exports as."""
+
+        prefixes = [(str(self.data_dir), "<data_dir>")]
+        home = Path.home()
+        for spelling in {str(home), str(home.resolve())}:
+            prefixes.append((spelling, "~"))
+        # A kernel's private temp directory. On macOS it sits under a
+        # per-account `/var/folders/<xx>/<hash>/T`, which names the account as
+        # surely as the home directory does. A shared root such as `/tmp` is
+        # left alone: it identifies nobody, and rewriting it would edit every
+        # `/tmp/...` a cell ever printed.
+        temp = Path(tempfile.gettempdir())
+        for spelling in {str(temp), str(temp.resolve())}:
+            if len(Path(spelling).parts) > 3:
+                prefixes.append((spelling, "<tmp>"))
+        return prefixes
+
+    def _as_this_data_dir(self, value: str) -> str:
+        """Re-root a path through a data-directory folder under this one.
+
+        The prefix rules know this machine's directories, so a record written
+        before the data directory was moved shipped its old location. Run
+        first, so the prefix rules then give it the label a path recorded
+        here gets (``.``, ``<data_dir>``).
+        """
+
+        data_dir = str(self.data_dir)
+        return _DATA_DIR_PATH.sub(lambda _match: data_dir, value)
 
     def _redact_local_paths(
         self,
@@ -1374,10 +1482,7 @@ class SessionPackageService:
                 continue
             for spelling in {str(path), str(path.resolve())}:
                 prefixes.append((spelling, "."))
-        prefixes.append((str(self.data_dir), "<data_dir>"))
-        home = Path.home()
-        for spelling in {str(home), str(home.resolve())}:
-            prefixes.append((spelling, "~"))
+        prefixes.extend(self._machine_path_prefixes())
         patterns = [
             (re.compile(re.escape(prefix) + r"(?=[/\\\s\"'),;:]|$)"), label)
             for prefix, label in sorted(
@@ -1387,18 +1492,30 @@ class SessionPackageService:
         ]
 
         def text(value: str) -> str:
+            value = self._as_this_data_dir(value)
             for pattern, label in patterns:
                 value = pattern.sub(label, value)
             return value
 
-        def walk(value: Any, keys: frozenset[str] | None, active: bool) -> Any:
+        def walk(
+            value: Any,
+            keys: frozenset[str] | None,
+            active: bool,
+            keep: frozenset[str],
+        ) -> Any:
             if isinstance(value, Mapping):
                 return {
-                    key: walk(item, keys, active or keys is None or key in keys)
+                    key: (
+                        item
+                        if key in keep
+                        else walk(
+                            item, keys, active or keys is None or key in keys, keep
+                        )
+                    )
                     for key, item in value.items()
                 }
             if isinstance(value, list):
-                return [walk(item, keys, active) for item in value]
+                return [walk(item, keys, active, keep) for item in value]
             if isinstance(value, str) and (active or keys is None):
                 return text(value)
             return value
@@ -1409,7 +1526,8 @@ class SessionPackageService:
             if payload is None:
                 continue
             document = json.loads(payload)
-            output[name] = _canonical_json(walk(document, keys, False))
+            keep = self._PATH_REDACTION_KEEP.get(name, frozenset())
+            output[name] = _canonical_json(walk(document, keys, False, keep))
         return output
 
     def _runtime_scrubber(self) -> Callable[[Any], Any]:
@@ -1430,8 +1548,9 @@ class SessionPackageService:
             if value.decode("utf-8", "ignore")
         ]
         replacements: list[tuple[re.Pattern[str], str]] = []
-        home = str(Path.home())
-        for prefix, label in ((str(self.data_dir), "<data_dir>"), (home, "~")):
+        for prefix, label in sorted(
+            self._machine_path_prefixes(), key=lambda item: len(item[0]), reverse=True
+        ):
             if len(prefix) > 1 and prefix != "/":
                 replacements.append(
                     (re.compile(re.escape(prefix) + r"(?=[/\\\s\"'),;:]|$)"), label)
@@ -1442,6 +1561,7 @@ class SessionPackageService:
             for secret in secrets:
                 if secret in value:
                     value = value.replace(secret, _REDACTED)
+            value = self._as_this_data_dir(value)
             for pattern, label in replacements:
                 value = pattern.sub(label, value)
             return value

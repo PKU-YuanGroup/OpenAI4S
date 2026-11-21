@@ -2006,6 +2006,201 @@ def test_web_native_schema_history_and_cell_only_completion(monkeypatch, tmp_pat
     ]
 
 
+def test_web_turn_offers_only_run_cell_after_two_ignored_cell_notes(
+    monkeypatch, tmp_path
+):
+    """The Web composition of the same Engine, with a model that only answers
+    with function calls: two replies promise Python and send a filler tool,
+    the third call offers run_cell alone, and the call runs through the
+    session's own cell path. The fourth call has the catalogue back and the
+    cell's output as the tool result for run_cell's id."""
+
+    class Dispatcher:
+        last_output = None
+
+        def __call__(self, method, args):
+            return {"entries": [{"name": "demo.xlsx", "type": "file"}]}
+
+    runner, _hub, frame_id = _prepare_message_runner(
+        monkeypatch, tmp_path, Dispatcher()
+    )
+    runner.cfg.max_turns = 4
+    offered: list[tuple[list[str], object]] = []
+    sent: list[list[dict]] = []
+    executed: list[tuple[str, str]] = []
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del cfg, on_delta
+        index = len(offered)
+        names = [
+            getattr(tool, "name", None) or tool["name"] for tool in kwargs["tools"]
+        ]
+        offered.append((names, kwargs.get("tool_choice")))
+        sent.append([dict(message) for message in messages])
+        if names == ["run_cell"]:
+            code = "print('sheets', 2)"
+            call = _native_call(
+                f"call-{index}", "run_cell", {"language": "python", "code": code}
+            )
+        elif index == 3:
+            return {
+                "content": "```python\nhost.submit_output({'sheets': 2}, ['read'])\n```",
+                "usage": {},
+            }
+        else:
+            call = _native_call(f"call-{index}", "list_dir", {"path": f"dir{index}"})
+        return _native_reply("现在用 Python 读取 Excel。", [call])[0]
+
+    def fake_execute(state, code, origin, emit, stream=True, language="python"):
+        del origin, emit, stream
+        executed.append((language, code))
+        if "submit_output" in code:
+            state.dispatcher.last_output = {
+                "output": {"sheets": 2},
+                "completion_bullets": ["read"],
+            }
+            return {"result": {"stdout": "", "stderr": "", "error": None}}
+        return {"result": {"stdout": "sheets 2\n", "stderr": "", "error": None}}
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+
+    result = runner.run_message(frame_id, "default", "读取 demo.xlsx")
+
+    assert result["status"] == "completed"
+    assert [names == ["run_cell"] for names, _ in offered] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert "run_cell" not in offered[0][0] and "list_dir" in offered[3][0]
+    assert {choice for _, choice in offered} == {None}
+    # The run_cell code went through the same cell path as the fenced cell.
+    assert executed[0] == ("python", "print('sheets', 2)")
+    answer = next(
+        message for message in sent[3] if message.get("tool_call_id") == "call-2"
+    )
+    assert answer["role"] == "tool" and "sheets 2" in answer["content"]
+    groups = runner.store.list_action_groups(frame_id)
+    kinds = [group["kind"] for group in groups if group["kind"] != "user"]
+    assert kinds == ["native_tools", "native_tools", "code", "code", "terminal"]
+
+
+def test_web_session_keeps_run_cell_on_offer_once_it_has_used_it(monkeypatch, tmp_path):
+    """A model that calls run_cell whenever it is offered. After its first
+    run_cell the next call declares the catalogue with run_cell beside it and
+    the model's next cell (which completes the turn) comes straight away. The
+    next message rebuilds the circuit from the ledger and still offers it."""
+
+    class Dispatcher:
+        last_output = None
+
+        def __call__(self, method, args):
+            return {"entries": [{"name": "demo.xlsx", "type": "file"}]}
+
+    runner, _hub, frame_id = _prepare_message_runner(
+        monkeypatch, tmp_path, Dispatcher()
+    )
+    runner.cfg.max_turns = 4
+    offered: list[list[str]] = []
+    executed: list[str] = []
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg, on_delta
+        index = len(offered)
+        names = [
+            getattr(tool, "name", None) or tool["name"] for tool in kwargs["tools"]
+        ]
+        offered.append(names)
+        if names == ["run_cell"]:
+            code = "print('sheets', 2)"
+        elif "run_cell" in names:
+            code = f"host.submit_output({{'call': {index}}}, ['read'])"
+        else:
+            call = _native_call(f"call-{index}", "list_dir", {"path": f"dir{index}"})
+            return _native_reply("现在用 Python 读取 Excel。", [call])[0]
+        call = _native_call(
+            f"call-{index}", "run_cell", {"language": "python", "code": code}
+        )
+        return _native_reply("现在用 Python 读取 Excel。", [call])[0]
+
+    def fake_execute(state, code, origin, emit, stream=True, language="python"):
+        del origin, emit, stream, language
+        executed.append(code)
+        if "submit_output" in code:
+            state.dispatcher.last_output = {
+                "output": {"sheets": 2},
+                "completion_bullets": ["read"],
+            }
+        return {"result": {"stdout": "sheets 2\n", "stderr": "", "error": None}}
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+
+    first = runner.run_message(frame_id, "default", "读取 demo.xlsx")
+    second = runner.run_message(frame_id, "default", "再画一张图")
+
+    assert (first["status"], second["status"]) == ("completed", "completed")
+    assert offered[2] == ["run_cell"]
+    for names in (offered[0], offered[1]):
+        assert "list_dir" in names and "run_cell" not in names
+    for names in (offered[3], offered[4]):
+        assert "list_dir" in names and names[-1] == "run_cell"
+    assert executed == [
+        "print('sheets', 2)",
+        "host.submit_output({'call': 3}, ['read'])",
+        "host.submit_output({'call': 4}, ['read'])",
+    ]
+
+
+def test_post_cell_status_shows_the_sessions_paths_relative(monkeypatch, tmp_path):
+    """CHAT-4 follow-up: a cell that printed `host.save_artifact(...)`'s result
+    put the snapshot's absolute path into the conversation. The Web turn hands
+    the narration this session's workspace and data directory."""
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, _hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+    replies = iter(
+        [
+            "```python\nart = host.save_artifact('out.txt')\nprint(art)\nprint(1)\n```",
+            "```python\nhost.submit_output({'summary': 'done'}, ['done'])\n```",
+        ]
+    )
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg, on_delta, kwargs
+        return {"content": next(replies), "usage": {}}
+
+    def fake_execute(state, code, origin, emit, stream=True, language="python"):
+        del origin, emit, stream, language
+        if "submit_output" in code:
+            state.dispatcher.last_output = {
+                "output": {"summary": "done"},
+                "completion_bullets": ["done"],
+            }
+            return {"result": {"stdout": "", "stderr": "", "error": None}}
+        stdout = (
+            f"{{'filename': 'out.txt', 'path': '{tmp_path}/artifacts/v-1__out.txt'}}\n"
+            f"wrote {state.workspace}/out.txt"
+        )
+        return {"result": {"stdout": stdout, "stderr": "", "error": None}}
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+
+    result = runner.run_message(frame_id, "default", "Save it")
+
+    assert result["status"] == "completed"
+    [status] = [
+        message["content"]
+        for message in runner.store.list_messages(frame_id)
+        if "The cell finished" in str(message.get("content"))
+    ]
+    assert "'path': '<data_dir>/artifacts/v-1__out.txt'" in status
+    assert "wrote ./out.txt" in status
+    assert str(tmp_path) not in status
+
+
 def test_cancel_after_llm_reply_prevents_returned_cell(monkeypatch, tmp_path):
     dispatcher = SimpleNamespace(last_output=None)
     runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)

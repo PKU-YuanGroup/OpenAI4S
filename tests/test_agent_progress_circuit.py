@@ -7,7 +7,12 @@ import json
 
 import pytest
 
-from openai4s.agent.actions import FinalizeAction, NativeToolBatch, NativeToolCall
+from openai4s.agent.actions import (
+    CodeCell,
+    FinalizeAction,
+    NativeToolBatch,
+    NativeToolCall,
+)
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import (
     ActionRouted,
@@ -16,7 +21,11 @@ from openai4s.agent.events import (
     RunFinished,
 )
 from openai4s.agent.finalize import execute_finalize_action
-from openai4s.agent.ledger import RuntimeActionLedger, restore_progress_circuit
+from openai4s.agent.ledger import (
+    RuntimeActionLedger,
+    restore_action_history,
+    restore_progress_circuit,
+)
 from openai4s.agent.models import EngineResult, ExecutionOutcome, ModelReply, RunState
 from openai4s.agent.progress_circuit import (
     LONG_TEXT_MIN_CHARS,
@@ -25,13 +34,23 @@ from openai4s.agent.progress_circuit import (
     PROGRESS_REASON_LONG_TEXT,
     PROGRESS_REASON_MALFORMED,
     PROGRESS_REASON_SAME_ACTION,
+    PROGRESS_REASON_SAME_TARGET,
     PROGRESS_REASON_TOOL_ERROR,
+    SAME_ACTION_GRACE,
+    SAME_ACTION_THRESHOLD,
+    SAME_TARGET_GRACE,
+    SAME_TARGET_THRESHOLD,
     ProgressCircuit,
     attach_progress_circuit,
     circuit_from_state,
     reconstruct_progress_circuit,
 )
 from openai4s.store import Store
+
+#: Identical calls with identical results before the turn is stopped: the
+#: reminder at the threshold, then the grace the model gets to act on it.
+_SAME_ACTION_STOP = SAME_ACTION_THRESHOLD + SAME_ACTION_GRACE
+_SAME_TARGET_STOP = SAME_TARGET_THRESHOLD + SAME_TARGET_GRACE
 
 
 def _call(
@@ -180,16 +199,191 @@ def _native_replies(count: int, *, arguments=None, parse_error=None, name="list_
     return replies
 
 
-def test_same_action_three_times_blocks_fourth_dispatch():
-    engine, model, executor = _engine(_native_replies(5), max_turns=10)
+def _tool_results(result) -> list[str]:
+    return [m["content"] for m in result.messages if m["role"] == "tool"]
+
+
+def test_the_third_identical_call_is_warned_and_the_fifth_stops_the_turn():
+    """Three `query {"sql": "SELECT 1"}` no-ops ended a reviewed session's
+    turn as failed, with nothing in any result saying a loop had been seen.
+    The third now carries a reminder that names the call; only a model that
+    sends it twice more is stopped."""
+    engine, model, executor = _engine(
+        _native_replies(8, name="query", arguments={"sql": "SELECT 1"}),
+        max_turns=10,
+    )
 
     result = engine.run([{"role": "user", "content": "look around"}])
 
     assert result.stop_reason == NO_PROGRESS_STOP_REASON
     assert result.progress_reason == PROGRESS_REASON_SAME_ACTION
     assert result.completion is None
-    assert len(executor.dispatched) == 3
-    assert len(model.calls) == 3
+    assert len(executor.dispatched) == _SAME_ACTION_STOP == 5
+    assert len(model.calls) == 5
+    results = _tool_results(result)
+    assert ["[system] NOTE:" in text for text in results] == [
+        False,
+        False,
+        True,
+        False,
+        False,
+    ]
+    assert "identical call number 3 in a row to `query`" in results[2]
+    assert "The turn is stopped if the same call keeps repeating." in results[2]
+
+
+def test_a_model_that_heeds_the_reminder_is_not_stopped():
+    """The session that was failed for three no-ops: after them the model
+    sent a cell. With the reminder in between, the turn goes on."""
+    replies = _native_replies(3, name="query", arguments={"sql": "SELECT 1"})
+    replies.append(_reply("```python\nprint(1)\n```"))
+    replies.extend(_native_replies(2, name="query", arguments={"sql": "SELECT 1"}))
+    engine, model, executor = _engine(replies, max_turns=6)
+
+    result = engine.run([{"role": "user", "content": "parse the structure"}])
+
+    assert result.stop_reason == "max_turns"
+    assert result.progress_reason is None
+    assert len(model.calls) == 6
+
+
+def _reads(count: int, *, path: str = "notes/protocol.txt", start: int = 0):
+    return [
+        _reply(
+            tool_calls=[
+                _call(
+                    f"call_{index}",
+                    "read_text_file",
+                    {"path": path, "offset": 37 * index, "limit": 40 + index},
+                )
+            ]
+        )
+        for index in range(start, start + count)
+    ]
+
+
+def test_one_file_read_through_many_windows_is_warned_then_stopped():
+    """One spilled file was read twelve times at twelve offsets in the
+    reviewed session, inside 21 tool-only replies. No two calls were equal,
+    so the same-action rule counted each as new and nothing ever tripped."""
+    engine, model, executor = _engine(_reads(12), max_turns=20)
+
+    result = engine.run([{"role": "user", "content": "read the protocol"}])
+
+    assert result.stop_reason == NO_PROGRESS_STOP_REASON
+    assert result.progress_reason == PROGRESS_REASON_SAME_TARGET
+    assert len(executor.dispatched) == _SAME_TARGET_STOP == 8
+    results = _tool_results(result)
+    warned = [i for i, text in enumerate(results) if "has now reached" in text]
+    assert warned == [SAME_TARGET_THRESHOLD - 1]
+    assert (
+        "`read_text_file` has now reached `notes/protocol.txt` 5 times"
+        in results[warned[0]]
+    )
+
+
+def test_a_rewritten_file_counts_like_a_reread_one():
+    replies = [
+        _reply(
+            tool_calls=[
+                _call(
+                    f"call_{index}",
+                    "write_file",
+                    {"path": "scratch_inspect.py", "content": f"print({index})\n"},
+                )
+            ]
+        )
+        for index in range(10)
+    ]
+    engine, model, executor = _engine(replies, max_turns=20)
+
+    result = engine.run([{"role": "user", "content": "inspect the workbook"}])
+
+    assert result.progress_reason == PROGRESS_REASON_SAME_TARGET
+    assert len(executor.dispatched) == _SAME_TARGET_STOP
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        # Different files.
+        lambda index: {"path": f"data/part{index}.csv"},
+        # One directory searched for different things is not one thing reread.
+        lambda index: {"path": ".", "pattern": f"term{index}"},
+        # No file target at all: a search with new words every time.
+        lambda index: {"query": f"growth curve {index}", "limit": 5},
+    ],
+)
+def test_calls_that_only_look_alike_are_not_the_same_target(arguments):
+    replies = [
+        _reply(tool_calls=[_call(f"call_{index}", "content_search", arguments(index))])
+        for index in range(12)
+    ]
+    engine, model, executor = _engine(replies, max_turns=12)
+
+    result = engine.run([{"role": "user", "content": "look around"}])
+
+    assert result.stop_reason == "max_turns"
+    assert len(executor.dispatched) == 12
+    assert not any("has now reached" in text for text in _tool_results(result))
+
+
+def test_a_log_polled_with_the_same_call_is_not_the_same_target():
+    """An identical call whose answer moves is a poll under this rule too."""
+    executor = PollingExecutor([f"line {index}" for index in range(12)])
+    replies = _native_replies(
+        12, name="read_text_file", arguments={"path": "run.log", "offset": 0}
+    )
+    engine, model, executor = _engine(replies, executor, max_turns=12)
+
+    result = engine.run([{"role": "user", "content": "watch the job"}])
+
+    assert result.stop_reason == "max_turns"
+    assert len(executor.dispatched) == 12
+
+
+def test_a_cell_between_the_reads_starts_the_same_target_count_again():
+    replies = _reads(6)
+    replies.append(_reply("```python\nprint(1)\n```"))
+    replies.extend(_reads(6, start=6))
+    engine, model, executor = _engine(replies, max_turns=13)
+
+    result = engine.run([{"role": "user", "content": "read the protocol"}])
+
+    assert result.stop_reason == "max_turns"
+    assert result.progress_reason is None
+    warned = [i for i, text in enumerate(_tool_results(result)) if "reached" in text]
+    assert warned == [4, 10], "each streak is told once, on its fifth read"
+
+
+def test_the_same_target_count_is_rebuilt_from_the_ledger(tmp_path):
+    store = Store(tmp_path / "same-target.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-reads")
+    user = {"role": "user", "content": "read the protocol"}
+    ledger.append_user(user)
+    state = RunState([user], max_turns=6)
+    AgentEngine(FakeModel(_reads(6)), CountingExecutor(), event_sink=ledger).run(state)
+
+    restored = restore_progress_circuit(store, root)
+    assert restored == circuit_from_state(state)
+    assert restored.same_target_streak == 6
+    assert not restored.tripped
+
+    resumed = RunState([user], max_turns=10)
+    attach_progress_circuit(resumed, restored)
+    result = AgentEngine(
+        FakeModel(_reads(6, start=6)), CountingExecutor(), event_sink=ledger
+    ).run(resumed)
+    assert result.progress_reason == PROGRESS_REASON_SAME_TARGET
+    # Two more reads reach the stop; the reminder was the earlier run's and is
+    # not sent again.
+    assert len(_tool_results(result)) == _SAME_TARGET_STOP - 6
+    assert not any("has now reached" in text for text in _tool_results(result))
+    final = restore_progress_circuit(store, root)
+    assert final == circuit_from_state(resumed)
+    assert (final.trip_reason, final.trip_count) == (PROGRESS_REASON_SAME_TARGET, 8)
+    store.close()
 
 
 def test_an_identical_poll_whose_results_move_is_progress_not_a_loop():
@@ -223,9 +417,9 @@ def test_an_identical_poll_whose_results_move_is_progress_not_a_loop():
 
 def test_an_identical_poll_whose_results_stopped_moving_still_trips():
     """The control: a status payload that never changes is the loop."""
-    executor = PollingExecutor(['{"status": "running"}'] * 5)
+    executor = PollingExecutor(['{"status": "running"}'] * 8)
     engine, model, executor = _engine(
-        _native_replies(5, name="collect_children", arguments={"timeout": 300}),
+        _native_replies(8, name="collect_children", arguments={"timeout": 300}),
         executor,
         max_turns=10,
     )
@@ -234,7 +428,7 @@ def test_an_identical_poll_whose_results_stopped_moving_still_trips():
 
     assert result.stop_reason == NO_PROGRESS_STOP_REASON
     assert result.progress_reason == PROGRESS_REASON_SAME_ACTION
-    assert len(executor.dispatched) == 3
+    assert len(executor.dispatched) == _SAME_ACTION_STOP
 
 
 def test_malformed_twice_trips_without_a_third_provider_call():
@@ -428,6 +622,297 @@ def test_empty_replies_rebuild_the_live_circuit(tmp_path):
     store.close()
 
 
+def _distinct_listings(count: int, *, start: int = 0):
+    return [
+        _reply(tool_calls=[_call(f"call_{index}", arguments={"path": f"dir{index}"})])
+        for index in range(start, start + count)
+    ]
+
+
+def test_the_tool_only_streak_survives_a_restart_and_its_note_is_sent_once(tmp_path):
+    """The streak is rebuilt from the ledger like every other count, so a
+    daemon restart neither forgets five tool-only replies nor repeats the
+    reminder for a streak that already had it."""
+    store = Store(tmp_path / "tool-only.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-tools")
+    user = {"role": "user", "content": "look around"}
+    ledger.append_user(user)
+    state = RunState([user], max_turns=5)
+    AgentEngine(
+        FakeModel(_distinct_listings(5)), CountingExecutor(), event_sink=ledger
+    ).run(state)
+
+    restored = restore_progress_circuit(store, root)
+    assert restored == circuit_from_state(state)
+    assert restored.tool_only_streak == 5
+    assert not restored.tripped
+
+    resumed = RunState([user], max_turns=3)
+    attach_progress_circuit(resumed, restored)
+    result = AgentEngine(
+        FakeModel(_distinct_listings(3, start=5)),
+        CountingExecutor(),
+        event_sink=ledger,
+    ).run(resumed)
+    results = [m["content"] for m in result.messages if m["role"] == "tool"]
+    assert ["tool calls only" in text for text in results] == [True, False, False]
+    assert restore_progress_circuit(store, root) == circuit_from_state(resumed)
+    store.close()
+
+
+class _PromisingModel:
+    """Promises a cell with a new listing while the catalogue is on offer. On
+    the run_cell call it calls run_cell, or answers ``fallback`` as text;
+    offered run_cell beside the catalogue it calls it straight away.
+    ``offered`` records, per call, ``None``, the names offered instead, or
+    ``"+run_cell"`` for the catalogue with run_cell beside it."""
+
+    def __init__(self, fallback: str | None = None, *, start: int = 0):
+        self.fallback = fallback
+        self.index = start
+        self.offered: list[list[str] | str | None] = []
+
+    def complete(self, messages, on_delta, *, only_tools=None, extra_tools=None):
+        del messages, on_delta
+        if extra_tools is not None:
+            names = [tool["name"] for tool in extra_tools]
+            self.offered.append("+" + ",".join(names))
+        else:
+            self.offered.append(
+                None if only_tools is None else [tool["name"] for tool in only_tools]
+            )
+        self.index += 1
+        if only_tools is not None or extra_tools is not None:
+            if self.fallback is not None:
+                return _reply(self.fallback)
+            arguments = {"language": "python", "code": "print(1)"}
+            call = _call(f"call_{self.index}", "run_cell", arguments)
+            return _reply("现在用 Python 读取 Excel。", tool_calls=[call])
+        call = _call(f"call_{self.index}", arguments={"path": f"dir{self.index}"})
+        return _reply("现在用 Python 读取 Excel。", tool_calls=[call])
+
+
+class _CellExecutor(CountingExecutor):
+    """Answers a cell with a user observation, as the real executors do."""
+
+    def execute(self, action, reply, state):
+        if isinstance(action, CodeCell):
+            self.calls.append(action)
+            return ExecutionOutcome(
+                ({"role": "user", "content": "[Observation]\n1"},),
+                observation="[Observation]\n1",
+            )
+        return super().execute(action, reply, state)
+
+
+def test_the_run_cell_call_survives_a_restart_and_is_recorded_as_a_cell(tmp_path):
+    """Two noted replies, then the turn ends before the next call. The count
+    is rebuilt from the recorded results, so the resumed run's first call
+    offers run_cell alone; the cell it sends is recorded as a ``code`` group
+    that rebuilds as a cell (both streaks reset) and restores as the call and
+    its tool result, and a second restart offers the catalogue with run_cell
+    beside it, because the session has now used it."""
+    store = Store(tmp_path / "withheld.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-withheld")
+    user = {"role": "user", "content": "分析 demo.xlsx"}
+    ledger.append_user(user)
+    state = RunState([user], max_turns=2)
+    first = _PromisingModel()
+    AgentEngine(first, _CellExecutor(), event_sink=ledger).run(state)
+    assert first.offered == [None, None]
+
+    restored = restore_progress_circuit(store, root)
+    assert restored == circuit_from_state(state)
+    assert restored.announced_cell_streak == 2
+
+    resumed = RunState([user], max_turns=1)
+    attach_progress_circuit(resumed, restored)
+    model = _PromisingModel(start=2)
+    executor = _CellExecutor()
+    AgentEngine(model, executor, event_sink=ledger).run(resumed)
+    assert model.offered == [["run_cell"]]
+    assert executor.calls == [CodeCell("python", "print(1)")]
+
+    kinds = [group["kind"] for group in store.list_action_groups(root)]
+    replies = [kind for kind in kinds if kind in {"native_tools", "code"}]
+    assert replies == ["native_tools", "native_tools", "code"]
+    again = restore_progress_circuit(store, root)
+    assert again == circuit_from_state(resumed)
+    assert (again.announced_cell_streak, again.tool_only_streak) == (0, 0)
+    assert again.run_cell_used is True
+    history = restore_action_history(store, root)
+    position = next(
+        index
+        for index, message in enumerate(history)
+        if [item["id"] for item in message.get("tool_calls") or ()] == ["call_3"]
+    )
+    answer = history[position + 1]
+    assert (answer["role"], answer["tool_call_id"], answer["name"]) == (
+        "tool",
+        "call_3",
+        "run_cell",
+    )
+    # Recorded as the call's result, not rebuilt from an unanswered group.
+    assert answer["content"] == "[Observation]\n1" and answer["is_error"] is False
+
+    last = RunState([user], max_turns=1)
+    attach_progress_circuit(last, again)
+    model = _PromisingModel(start=3)
+    AgentEngine(model, _CellExecutor(), event_sink=ledger).run(last)
+    assert model.offered == ["+run_cell"]
+    store.close()
+
+
+def test_a_run_cell_cell_that_never_answered_restores_as_a_tool_result(tmp_path):
+    """The daemon stopped mid-cell: the ``code`` group has the run_cell call
+    and no observation. The restored history still closes that call id with
+    a tool result, never with a user message after a tool call."""
+    store = Store(tmp_path / "interrupted.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-interrupted")
+    ledger.append_user({"role": "user", "content": "分析 demo.xlsx"})
+    arguments = {"language": "python", "code": "print(1)"}
+    reply = ModelReply.from_mapping(
+        _reply("", tool_calls=[_call("call_9", "run_cell", arguments)])
+    )
+    ledger.emit(ReplyReceived(reply, 0))
+    ledger.emit(
+        ActionRouted(CodeCell("python", "print(1)", tool_call=reply.tool_calls[0]), 0)
+    )
+
+    history = restore_action_history(store, root)
+
+    assert [message["role"] for message in history] == ["user", "assistant", "tool"]
+    assert history[-1]["tool_call_id"] == "call_9"
+    assert history[-1]["is_error"] is True
+    assert "interrupted" in history[-1]["content"]
+    store.close()
+
+
+def _session_that_used_run_cell(store, root):
+    """Two noted replies, then the run_cell-only call's cell: the ledger's
+    ``code`` group for it."""
+    ledger = RuntimeActionLedger(store, root, "turn-1")
+    user = {"role": "user", "content": "分析 demo.xlsx"}
+    ledger.append_user(user)
+    model = _PromisingModel()
+    AgentEngine(model, _CellExecutor(), event_sink=ledger).run(
+        RunState([user], max_turns=3)
+    )
+    assert model.offered == [None, None, ["run_cell"]]
+    (code,) = [g for g in store.list_action_groups(root) if g["kind"] == "code"]
+    return code
+
+
+def test_run_cell_stays_on_offer_after_a_new_message_compaction_and_restart(
+    tmp_path,
+):
+    """The session used run_cell in an earlier turn. A new user message
+    starts a new epoch and a compaction drops the call from the provider
+    history, but the ledger still holds its ``code`` group: the restored
+    circuit keeps run_cell on offer, and the next cell comes with no filler
+    call before it."""
+    store = Store(tmp_path / "sticky.db")
+    root = store.new_frame(project_id="default", status="ready")
+    code = _session_that_used_run_cell(store, root)
+    later = RuntimeActionLedger(store, root, "turn-2")
+    later.append_user({"role": "user", "content": "再画一张图"})
+    later.append_compaction("earlier work was summarised", code["group_id"])
+    history = restore_action_history(store, root)
+    assert not any(
+        call.get("name") == "run_cell"
+        for message in history
+        for call in message.get("tool_calls") or ()
+    )
+
+    restored = restore_progress_circuit(store, root)
+    assert restored.run_cell_used is True
+    assert (restored.announced_cell_streak, restored.tool_only_streak) == (0, 0)
+
+    resumed = RunState(history, max_turns=1)
+    attach_progress_circuit(resumed, restored)
+    model = _PromisingModel(start=3)
+    executor = _CellExecutor()
+    AgentEngine(model, executor, event_sink=later).run(resumed)
+    assert model.offered == ["+run_cell"]
+    assert executor.calls == [CodeCell("python", "print(1)")]
+    store.close()
+
+
+def test_a_fork_keeps_run_cell_on_offer_only_if_its_history_used_it(tmp_path):
+    """Scoped to the branch being run: a fork whose inherited prefix holds
+    the run_cell cell keeps it on offer, a fork from before it does not,
+    each after a message of its own has started a new epoch there."""
+    store = Store(tmp_path / "forks.db")
+    root = store.new_frame(project_id="default", status="ready")
+    code = _session_that_used_run_cell(store, root)
+    for name, cursor in (("before", 0), ("after", code["ordinal"])):
+        checkpoint = store.create_session_checkpoint(
+            root_frame_id=root,
+            branch_id=root,
+            reason="fork base",
+            workspace_tree_id="a" * 64,
+            action_cursor=cursor,
+        )
+        store.fork_session_branch(
+            root_frame_id=root,
+            from_checkpoint_id=checkpoint["checkpoint_id"],
+            branch_id=name,
+        )
+        RuntimeActionLedger(store, root, f"turn-{name}", branch_id=name).append_user(
+            {"role": "user", "content": f"continue on {name}"}
+        )
+
+    assert restore_progress_circuit(store, root).run_cell_used is True
+    assert restore_progress_circuit(store, root, branch_id="after").run_cell_used
+    assert not restore_progress_circuit(store, root, branch_id="before").run_cell_used
+    store.close()
+
+
+def test_a_session_whose_cells_were_all_fenced_never_gets_run_cell(tmp_path):
+    store = Store(tmp_path / "fenced.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-fenced")
+    user = {"role": "user", "content": "分析 demo.xlsx"}
+    ledger.append_user(user)
+    replies = [_reply("```python\nprint(1)\n```") for _ in range(2)]
+    # A two-argument port: a call that offered run_cell would raise here.
+    AgentEngine(FakeModel(replies), _CellExecutor(), event_sink=ledger).run(
+        RunState([user], max_turns=2)
+    )
+    kinds = [group["kind"] for group in store.list_action_groups(root)]
+    assert kinds.count("code") == 2
+
+    restored = restore_progress_circuit(store, root)
+    assert restored.run_cell_used is False
+    resumed = RunState([user], max_turns=1)
+    attach_progress_circuit(resumed, restored)
+    model = FakeModel([_reply("```python\nprint(2)\n```")])
+    AgentEngine(model, _CellExecutor(), event_sink=ledger).run(resumed)
+    assert len(model.calls) == 1
+    store.close()
+
+
+def test_a_cell_or_a_code_running_tool_ends_the_tool_only_streak():
+    circuit = ProgressCircuit()
+    listing = NativeToolBatch(
+        (NativeToolCall("c", "c", "list_dir", 0, "{}", arguments={"path": "."}),)
+    )
+    background = NativeToolBatch(
+        (NativeToolCall("b", "b", "exec_background", 0, "{}", arguments={"code": "1"}),)
+    )
+    for _ in range(2):
+        circuit.observe_execution(listing, ExecutionOutcome())
+    assert circuit.tool_only_streak == 2
+    circuit.observe_execution(background, ExecutionOutcome())
+    assert circuit.tool_only_streak == 0
+    circuit.observe_execution(listing, ExecutionOutcome())
+    circuit.observe_code_progress()
+    assert circuit.tool_only_streak == 0
+
+
 def test_different_arguments_do_not_trip():
     replies = [
         _reply(tool_calls=[_call(f"call_{index}", arguments={"path": path})])
@@ -450,6 +935,8 @@ def test_reasoning_insert_does_not_reset_same_action_streak():
         _reply(tool_calls=[_call("call_1")]),
         _reply(tool_calls=[_call("call_2")]),
         _reply(tool_calls=[_call("call_3")]),
+        _reply(tool_calls=[_call("call_4")]),
+        _reply(tool_calls=[_call("call_5")]),
     ]
     engine, model, executor = _engine(replies, max_turns=10)
 
@@ -457,8 +944,8 @@ def test_reasoning_insert_does_not_reset_same_action_streak():
 
     assert result.stop_reason == NO_PROGRESS_STOP_REASON
     assert result.progress_reason == PROGRESS_REASON_SAME_ACTION
-    assert len(executor.dispatched) == 3
-    assert len(model.calls) == 4
+    assert len(executor.dispatched) == _SAME_ACTION_STOP
+    assert len(model.calls) == _SAME_ACTION_STOP + 1
 
 
 def _record_same_action(store, root: str, count: int, *, contents=None) -> None:
@@ -553,14 +1040,16 @@ def test_an_empty_epoch_is_restored_without_reading_a_single_group(tmp_path):
     store.list_action_groups = counting  # type: ignore[method-assign]
     restored = restore_progress_circuit(store, root)
     assert restored == ProgressCircuit()
-    assert reads == []
+    # No epoch group is read. The one read asks whether the session ever used
+    # run_cell, which is not the epoch's: code groups only, without events.
+    assert reads == [{"branch_id": root, "kind": "code", "include_events": False}]
     store.close()
 
 
 def test_restart_rebuilds_from_ledger_not_live_runstate(tmp_path):
     store = Store(tmp_path / "circuit.db")
     root = store.new_frame(project_id="default", status="ready")
-    _record_same_action(store, root, 3)
+    _record_same_action(store, root, _SAME_ACTION_STOP)
     stale_state = RunState([{"role": "user", "content": "look around"}], max_turns=10)
     stale_circuit = ProgressCircuit()
     stale_circuit.same_action_streak = 0
@@ -571,7 +1060,7 @@ def test_restart_rebuilds_from_ledger_not_live_runstate(tmp_path):
     restored = restore_progress_circuit(store, root)
     assert restored.tripped
     assert restored.trip_reason == PROGRESS_REASON_SAME_ACTION
-    assert restored.same_action_streak == 3
+    assert restored.same_action_streak == _SAME_ACTION_STOP
 
     state = RunState([{"role": "user", "content": "look around"}], max_turns=10)
     attach_progress_circuit(state, restored)
@@ -590,15 +1079,15 @@ def test_restart_rebuilds_from_ledger_not_live_runstate(tmp_path):
 def test_restart_mid_streak_does_not_zero_then_trips_on_next_same_action(tmp_path):
     store = Store(tmp_path / "mid-streak.db")
     root = store.new_frame(project_id="default", status="ready")
-    _record_same_action(store, root, 2)
+    _record_same_action(store, root, _SAME_ACTION_STOP - 1)
 
     first = restore_progress_circuit(store, root)
-    assert first.same_action_streak == 2
+    assert first.same_action_streak == _SAME_ACTION_STOP - 1
     assert not first.tripped
     del first
 
     restored = restore_progress_circuit(store, root)
-    assert restored.same_action_streak == 2
+    assert restored.same_action_streak == _SAME_ACTION_STOP - 1
     state = RunState([{"role": "user", "content": "look around"}], max_turns=10)
     attach_progress_circuit(state, restored)
     engine, model, executor = _engine(_native_replies(3), max_turns=10)
@@ -614,7 +1103,7 @@ def test_restart_mid_streak_does_not_zero_then_trips_on_next_same_action(tmp_pat
 def test_compaction_does_not_zero_because_ledger_is_the_authority(tmp_path):
     store = Store(tmp_path / "compact.db")
     root = store.new_frame(project_id="default", status="ready")
-    _record_same_action(store, root, 3)
+    _record_same_action(store, root, _SAME_ACTION_STOP)
 
     compacted_messages = [
         {"role": "system", "content": "compacted handoff"},
@@ -625,7 +1114,7 @@ def test_compaction_does_not_zero_because_ledger_is_the_authority(tmp_path):
 
     assert not from_messages.tripped
     assert from_ledger.tripped
-    assert from_ledger.same_action_streak == 3
+    assert from_ledger.same_action_streak == _SAME_ACTION_STOP
     assert compacted_messages[1]["role"] == "user"
     store.close()
 
@@ -633,7 +1122,7 @@ def test_compaction_does_not_zero_because_ledger_is_the_authority(tmp_path):
 def test_new_external_user_message_resets_epoch(tmp_path):
     store = Store(tmp_path / "reset.db")
     root = store.new_frame(project_id="default", status="ready")
-    _record_same_action(store, root, 3)
+    _record_same_action(store, root, _SAME_ACTION_STOP)
     RuntimeActionLedger(store, root, "turn-new").append_user(
         {"role": "user", "content": "try a different approach"}
     )
@@ -654,7 +1143,7 @@ def test_no_progress_continuation_explains_the_loop_in_live_and_restored_history
     ledger = RuntimeActionLedger(store, root, "turn-loop")
     user = {"role": "user", "content": "inspect the files"}
     ledger.append_user(user)
-    model = FakeModel(_native_replies(3))
+    model = FakeModel(_native_replies(_SAME_ACTION_STOP))
     executor = CountingExecutor()
     result = AgentEngine(model, executor, event_sink=ledger).run([user])
 
@@ -666,7 +1155,12 @@ def test_no_progress_continuation_explains_the_loop_in_live_and_restored_history
     assert "Do not repeat" in guidance["content"]
     restored = restore_action_history(store, root)
     assert restored[-1] == guidance
-    assert len([m for m in restored if m["role"] == "tool"]) == 3
+    restored_results = [m["content"] for m in restored if m["role"] == "tool"]
+    assert len(restored_results) == _SAME_ACTION_STOP
+    # The reminder is part of the recorded result, so the restored history
+    # reads the words the live model did.
+    assert restored_results == _tool_results(result)
+    assert "identical call number 3" in restored_results[2]
 
     followup = {"role": "user", "content": "continue"}
     RuntimeActionLedger(store, root, "turn-continue").append_user(followup)
@@ -678,8 +1172,8 @@ def test_no_progress_continuation_explains_the_loop_in_live_and_restored_history
     AgentEngine(next_model, executor).run(state)
     assert next_model.calls[0][-2:] == [guidance, followup]
     assert (
-        len(executor.dispatched) == 4
-    ), "restoring must not replay the three earlier calls"
+        len(executor.dispatched) == _SAME_ACTION_STOP + 1
+    ), "restoring must not replay the earlier calls"
     store.close()
 
 
@@ -933,3 +1427,100 @@ def test_an_accepted_finalize_never_moves_the_circuit_live_or_rebuilt(tmp_path):
         tmp_path, ["valid"] * 4, name="accepted"
     )
     assert live == restored == ProgressCircuit()
+
+
+def _stop_detail(replies, executor=None, *, max_turns=20):
+    from openai4s.agent.recovery import progress_stop_detail
+
+    state = RunState([{"role": "user", "content": "look around"}], max_turns=max_turns)
+    engine, _, _ = _engine(replies, executor, max_turns=max_turns)
+    result = engine.run(state)
+    names = [call.name for call in result.last_reply.tool_calls]
+    return progress_stop_detail(
+        result.progress_reason, circuit_from_state(state), names
+    )
+
+
+def test_a_stop_reports_which_call_repeated_and_how_often():
+    from openai4s.agent.recovery import no_progress_notice, no_progress_step
+
+    detail = _stop_detail(
+        _native_replies(8, name="query", arguments={"sql": "SELECT 1"})
+    )
+
+    assert detail == {
+        "reason": PROGRESS_REASON_SAME_ACTION,
+        "count": 5,
+        "tools": ["query"],
+        "target": "",
+    }
+    english = no_progress_notice(detail, "en")
+    assert (
+        "Stopped repeating actions: the model sent the identical `query` call 5 "
+        "times in a row and its result never changed." in english
+    )
+    assert no_progress_step(detail, "en") == {
+        "kind": "loop",
+        "title": "Repeated query × 5",
+        "input": {"tools": ["query"], "count": 5, "reason": "same_action"},
+        "summary": "same arguments, same result",
+    }
+
+
+def test_a_same_target_stop_names_the_file_but_not_a_spilled_output():
+    from openai4s.agent.recovery import no_progress_notice
+
+    detail = _stop_detail(_reads(12))
+    assert detail == {
+        "reason": PROGRESS_REASON_SAME_TARGET,
+        "count": 8,
+        "tools": ["read_text_file"],
+        "target": "notes/protocol.txt",
+    }
+    assert (
+        "模型对 `notes/protocol.txt` 调用了 8 次 `read_text_file`"
+        in no_progress_notice(detail, "zh")
+    )
+
+    spilled = _stop_detail(_reads(12, path=".openai4s/context/" + "ab" * 32 + ".txt"))
+    notice = no_progress_notice(spilled, "zh")
+    assert "模型对一份已存档的工具输出调用了 8 次 `read_text_file`" in notice
+    assert ".openai4s" not in notice
+
+
+@pytest.mark.parametrize("language", ["en", "zh"])
+def test_a_stop_without_a_recorded_cause_keeps_the_plain_notice(language):
+    from openai4s.agent.recovery import no_progress_notice, no_progress_step
+
+    notice = no_progress_notice(None, language)
+    assert ("Stopped repeating actions." in notice) or ("已停止重复动作。" in notice)
+    assert no_progress_step(None, language) is None
+    # A stop with no tool to point at (empty replies) says so and draws no card.
+    empty = {
+        "reason": PROGRESS_REASON_EMPTY_REPLY,
+        "count": 2,
+        "tools": [],
+        "target": "",
+    }
+    assert ("empty reply 2 times" in no_progress_notice(empty, language)) or (
+        "连续 2 次返回空回复" in no_progress_notice(empty, language)
+    )
+    assert no_progress_step(empty, language) is None
+
+
+def test_a_stop_detail_carries_no_arguments_or_unsafe_names():
+    from openai4s.agent.recovery import progress_stop_detail
+
+    circuit = ProgressCircuit()
+    circuit.trip_reason = PROGRESS_REASON_TOOL_ERROR
+    circuit.error_streak = 2
+    detail = progress_stop_detail(
+        PROGRESS_REASON_TOOL_ERROR, circuit, ["read_text_file", "x`; rm -rf /", 7]
+    )
+    assert detail == {
+        "reason": PROGRESS_REASON_TOOL_ERROR,
+        "count": 2,
+        "tools": ["read_text_file"],
+        "target": "",
+    }
+    assert progress_stop_detail(None, circuit, ["query"]) is None

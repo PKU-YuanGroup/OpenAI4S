@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import unquote
 
+from openai4s.artifact_paths import artifact_role
 from openai4s.server.errors import GatewayError
 from openai4s.storage.artifacts import ARTIFACT_KIND_NAMES
 
@@ -66,7 +67,14 @@ def artifact_row_json(row: dict) -> dict:
         "priority": row.get("priority", 0),
         "created_at": _iso(row.get("created_at")),
         "is_user_upload": bool(row.get("is_user_upload", 0)),
+        "role": artifact_role(row.get("filename")),
     }
+
+
+def offered_artifacts(rows: list[dict]) -> list[dict]:
+    """Rows a listing offers: the platform's own spill files are not Artifacts
+    to anyone browsing (ART-4). They stay stored and readable by id."""
+    return [row for row in rows if artifact_role(row.get("filename")) != "internal"]
 
 
 def filter_fingerprint(
@@ -227,7 +235,9 @@ def browse_index(
             fingerprint=fingerprint,
         )
     return {
-        "artifacts": [artifact_row_json(row) for row in page],
+        # Dropped after the cursor is cut from the full page, so `has_more`
+        # and the next page stay sound; this page is merely shorter.
+        "artifacts": [artifact_row_json(row) for row in offered_artifacts(page)],
         "next_cursor": next_cursor,
         "has_more": has_more,
     }

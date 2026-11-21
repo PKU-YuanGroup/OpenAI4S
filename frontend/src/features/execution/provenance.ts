@@ -129,20 +129,19 @@ export function showProvenance(a: unknown): void {
   setActiveTab(artifactTabKey(art));
 }
 
-const SUBS: Array<[string, string]> = [
-  ["code", "Code"],
-  ["exec", "Execution Log"],
-  ["messages", "Messages"],
-  ["environment", "Environment"],
-  ["review", "Review"],
-];
+/**
+ * The drawer's tabs, labelled in the UI language (I18N-1: they were English
+ * in the Chinese UI). `review` keeps its key; it shows where the file came
+ * from ("由单元 4 生成"), so it reads Origin / 来源.
+ */
+const SUBS = ["code", "exec", "messages", "environment", "review"] as const;
 
 export function renderProvenanceInto(v: HTMLElement, a: unknown): void {
   const art = asArtifact(a);
   if (!art) return;
   const tabs = el("div", "prov-subtabs");
-  SUBS.forEach(([k, lab]) => {
-    const b = el("button", "prov-subtab" + (provSub.value === k ? " active" : ""), lab);
+  SUBS.forEach((k) => {
+    const b = el("button", "prov-subtab" + (provSub.value === k ? " active" : ""), t("prov.sub." + k));
     b.onclick = () => {
       provSub.value = k;
       rerenderViewer();

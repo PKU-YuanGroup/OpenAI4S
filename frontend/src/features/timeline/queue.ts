@@ -76,9 +76,25 @@ export function renderQueueStrip(): void {
   if (!queue.length) return;
   // Says what Stop does to these before anyone presses it: Stop ends only the
   // running turn, and the first queued message starts right after.
-  box.appendChild(
-    el("div", "queue-head", t("queue.waiting", queue.length) + " · " + queueT("queueRow.headNote")),
+  const head = el("div", "queue-head");
+  head.appendChild(
+    el("span", "queue-head-t", t("queue.waiting", queue.length) + " · " + queueT("queueRow.headNote")),
   );
+  // For a correction that cannot wait: the existing Stop, whose turn's end
+  // starts the first queued message at once. Pressing the Stop button itself
+  // keeps one stop path (and its hints). Stop is hidden while a stop is in
+  // flight, and a second one would land on the message that just started.
+  const now = el("button", "outline-btn small queue-send-now", queueT("queueRow.sendNow")) as HTMLButtonElement;
+  now.type = "button";
+  now.title = queueT("queueRow.sendNowTitle");
+  now.onclick = () => {
+    const stop = document.getElementById("cancel-btn") as HTMLButtonElement | null;
+    if (now.disabled || !stop || stop.classList.contains("hidden")) return;
+    now.disabled = true;
+    stop.click();
+  };
+  head.appendChild(now);
+  box.appendChild(head);
   queue.forEach((item: any) => {
     const row = el("div", "queue-row");
     row.dataset.executionId = String(item.execution_id || "");

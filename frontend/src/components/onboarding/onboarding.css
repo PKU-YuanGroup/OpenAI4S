@@ -135,19 +135,6 @@
 #onboarding .onb-path > .onb-steps .onb-step + .onb-step::before {
   content: none;
 }
-/* Checklist surface: steps are rows. */
-#onboarding .onb-list > .onb-step {
-  justify-content: flex-start;
-  min-height: 44px;
-  padding: 0 16px;
-  border: 1px solid var(--border, #e6dfd8);
-  border-radius: var(--radius, 8px);
-  color: var(--text-000, #141413);
-  cursor: pointer;
-}
-#onboarding .onb-list > .onb-step:hover {
-  background: var(--bg-100, #f5f0e8);
-}
 #onboarding .onb-error {
   padding: 10px 14px;
   border-radius: var(--radius, 8px);
@@ -277,6 +264,28 @@
 #onboarding .onb-model-discovery-error {
   color: var(--danger, #b42318);
   font-size: 12px;
+}
+
+/* A note or a validation message sits directly under the field it is about. */
+#onboarding .onb-field-note {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+#onboarding .onb-field-error {
+  color: var(--danger, #b42318);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+/* Title row: the language switch stays reachable while the wizard is modal. */
+#onboarding .onb-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+#onboarding .onb-lang {
+  flex: none;
 }
 
 #onboarding .onb-warn {

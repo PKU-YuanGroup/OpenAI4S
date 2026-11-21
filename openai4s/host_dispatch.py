@@ -41,7 +41,7 @@ from openai4s.host.endpoints import probe_ready as _probe_ready
 from openai4s.host.files import WorkspaceFileService
 from openai4s.host.files import is_secret_path as _is_secret_path
 from openai4s.host.llm import LLMService
-from openai4s.host.mcp import MCPService
+from openai4s.host.mcp import MCPService, call_step_output, call_step_request
 from openai4s.host.progress import PLAN_STEP_STATUSES, ProgressService
 from openai4s.host.remote_capabilities import (
     RemoteCapabilityService,
@@ -67,6 +67,7 @@ from openai4s.tools.project_files import (
     project_permission_checks,
     resolve_project_permissions,
 )
+from openai4s.tools.read_text_file import read_step_summary, read_step_title
 from openai4s.tools.registry import (
     BUILTIN_CONTROL_HOST_METHODS,
     format_tool_result,
@@ -225,11 +226,19 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
         url = a.get("url", "")
         return ("fetch", f"Reading {_domain(url) or url}", {"url": url})
     if method == "web_download":
+        from openai4s.tools.web_download import DEFAULT_MAX_BYTES
+
         url = a.get("url", "")
+        # The size is not known before the request is made; the cap it stops
+        # at is, and the approval card says so.
         return (
             "fetch",
             f"Downloading from {_domain(url) or url}",
-            {"url": url, "path": a.get("path", "")},
+            {
+                "url": url,
+                "path": a.get("path", ""),
+                "max_bytes": a.get("max_bytes") or DEFAULT_MAX_BYTES,
+            },
         )
     if method == "science_import_dataset":
         return (
@@ -305,7 +314,7 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
         )
     if method == "read_file":
         p = a.get("path", "")
-        return ("read", f"Reading {p}", {"path": p})
+        return ("read", read_step_title(p), {"path": p})
     if method == "project_read_file":
         p = a.get("path", "")
         return ("read", f"Reading project file {p}", {"path": p})
@@ -547,6 +556,7 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
                 "server": a.get("server"),
                 "tool": a.get("tool"),
                 "args": a.get("args", {}),
+                "request": call_step_request(a),
             },
         )
     if method == "mhs_emergency_stop":
@@ -1099,6 +1109,14 @@ def _step_end(
             {"results": items, "note": note, "source": src},
             _plural(n, "result") + (f" · {src}" if src else ""),
         )
+    if method == "web_download":
+        # A download returns no text: counted as characters it read
+        # "0 chars" for a file of any size. The result's path is the resolved
+        # local one, so the card keeps the request's workspace-relative path.
+        return (
+            {"bytes": r.get("bytes"), "url": r.get("url")},
+            f"{int(r.get('bytes') or 0):,} bytes",
+        )
     if kind == "fetch":
         text = r.get("content") or r.get("text") or r.get("markdown") or ""
         return ({"content": text[:8000], "url": r.get("url")}, f"{len(text):,} chars")
@@ -1122,7 +1140,7 @@ def _step_end(
                 "total_lines": r.get("total_lines"),
                 "content": (r.get("content") or "")[:6000],
             },
-            _plural(int(r.get("total_lines") or 0), "line"),
+            read_step_summary(r),
         )
     if kind == "files":
         rows = r.get("matches") or r.get("entries") or []
@@ -1245,6 +1263,8 @@ def _step_end(
             "saved",
         )
     if kind == "mcp":
+        if method == "mcp_call":
+            return call_step_output(result)
         return ({"result": _short(result, 2000)}, "done")
     if kind == "fold":
         n_plddt = len((r.get("plddt_csv") or "").splitlines())

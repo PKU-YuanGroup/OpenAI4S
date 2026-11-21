@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import os
 import sqlite3
 import tempfile
@@ -20,10 +21,12 @@ from openai4s.project_folders import (
     require_local_project_folders,
     validate_folder_path,
 )
+from openai4s.server import local_auth, project_folder_routes
 from openai4s.server.project_folder_routes import (
     MAX_PREVIEW_BYTES,
     local_folders,
     project_file,
+    project_file_bytes,
 )
 from openai4s.store import get_store
 from tests.test_project_patch_unknown_id import _call
@@ -86,6 +89,43 @@ def test_folder_binding_browsing_preview_and_detach_over_http(tmp_path):
             status, refused = call("GET", f"/projects/{pid}/file?path={quote(path)}")
             assert status == expected, refused
             assert refused.get("request_id")
+        # ART-3: the list says how big and how recent a file is, and a file
+        # the text preview refuses can still be read whole for "import and
+        # view" -- through the same confinement, never past it.
+        by_name = {entry["name"]: entry for entry in listing["entries"]}
+        assert by_name["binary.dat"]["size"] == 2
+        assert (
+            abs(
+                by_name["binary.dat"]["modified_ms"]
+                - (source / "binary.dat").stat().st_mtime * 1000
+            )
+            < 1000
+        )
+        assert by_name["data"]["modified_ms"] is None
+        connection = http.client.HTTPConnection("127.0.0.1", daemon.port, timeout=20)
+        try:
+            connection.request(
+                "GET",
+                f"/api/v1/projects/{pid}/file?path=binary.dat&raw=1",
+                headers={local_auth.TOKEN_HEADER: daemon.token},
+            )
+            response = connection.getresponse()
+            assert response.status == 200
+            assert response.getheader("Content-Type") == "application/octet-stream"
+            assert response.read() == b"\x00\x01"
+        finally:
+            connection.close()
+        for path, expected in (
+            ("../outside.txt", 400),
+            (".env", 403),
+            ("escape.txt", 403),
+            ("", 400),
+        ):
+            status, refused = call(
+                "GET", f"/projects/{pid}/file?path={quote(path)}&raw=1"
+            )
+            assert status == expected, refused
+            assert "must stay private" not in str(refused)
         status, renamed = call("PATCH", f"/projects/{pid}", {"name": "Renamed"})
         assert status == 200 and renamed["folder_path"] == str(source.resolve())
         status, detached = call("PATCH", f"/projects/{pid}", {"folder_path": None})
@@ -424,6 +464,23 @@ def test_preview_rejects_hardlinks_and_special_files(tmp_path):
     for path in ("alias.txt", "pipe"):
         with pytest.raises((ValueError, OSError)):
             project_file(source, path)
+        # ART-3: the whole-file read for "import and view" refuses them too.
+        with pytest.raises((ValueError, OSError)):
+            project_file_bytes(source, path)
+
+
+def test_import_read_returns_exact_bytes_and_is_bounded(tmp_path, monkeypatch):
+    payload = bytes(range(256)) * 4
+    (tmp_path / "plate.xlsx").write_bytes(payload)
+    assert project_file_bytes(tmp_path, "plate.xlsx") == payload
+    monkeypatch.setattr(project_folder_routes, "MAX_IMPORT_BYTES", len(payload) - 1)
+    with pytest.raises(ProjectFolderError) as refused:
+        project_file_bytes(tmp_path, "plate.xlsx")
+    assert refused.value.status == 413
+    assert refused.value.code == "project_file_too_large"
+    for escape in ("../plate.xlsx", "/etc/hosts", "a\\b", ""):
+        with pytest.raises(ProjectFolderError):
+            project_file_bytes(tmp_path, escape)
 
 
 def test_project_history_is_separate_from_agent_input_searches(tmp_path):

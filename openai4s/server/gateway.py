@@ -58,7 +58,12 @@ from openai4s.agent.ledger import (
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
-from openai4s.agent.recovery import recovery_message
+from openai4s.agent.recovery import (
+    no_progress_notice,
+    no_progress_step,
+    progress_stop_detail,
+    recovery_message,
+)
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
 from openai4s.agent.task_modes import TaskMode, resolve_task_mode, task_mode_prompt
 from openai4s.config import (
@@ -82,6 +87,7 @@ from openai4s.llm import (
     PROVIDERS,
     chat,
     get_model_capabilities,
+    llm_error_kind,
     llm_failure_code,
     provider_specs,
 )
@@ -97,6 +103,7 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.server import (
+    artifact_index,
     artifact_index_routes,
     artifact_preview_routes,
     artifact_refs,
@@ -107,6 +114,7 @@ from openai4s.server import (
     compute_tasks,
     contract,
     diagnostics_routes,
+    example_session,
     file_routes,
     governance_routes,
     kernel_routes,
@@ -161,6 +169,7 @@ from openai4s.server.completions import (
     CANCEL_REASONS,
     cancellation_marker,
     completion_message,
+    narration_paths,
     response_language,
 )
 from openai4s.server.delivery import (
@@ -458,6 +467,12 @@ def _unauthorized_page(accept_language: str = "") -> bytes:
             "<p>如果你用的是桌面应用，退出后重新打开即可，应用打开的页面已经登录。</p>"
             "<p>在容器里运行时，请执行 "
             "<code>docker exec &lt;container&gt; openai4s url</code>。</p>"
+            # The header only says which language comes first in the browser,
+            # not which one the person reads: a Chinese speaker on an
+            # English-first browser got an English-only page. Each page ends
+            # with the one instruction that matters, in the other language.
+            "<p lang=en>English: run <code>openai4s url</code> in a terminal "
+            "and open the link it prints.</p>"
         ).encode("utf-8")
     return (
         "<!doctype html><html lang=en><meta charset=utf-8>"
@@ -479,6 +494,8 @@ def _unauthorized_page(accept_language: str = "") -> bytes:
         "app opens a page that is already signed in.</p>"
         "<p>In a container, run "
         "<code>docker exec &lt;container&gt; openai4s url</code>.</p>"
+        "<p lang=zh-CN>中文：在终端运行 <code>openai4s url</code>，"
+        "然后打开它打印出的链接即可登录。</p>"
     ).encode("utf-8")
 
 
@@ -2161,6 +2178,8 @@ class SessionState:
         self.task_mode_binding: bool = False
         self.last_model_prose: str = ""
         self.last_engine_completion = None
+        # What the no-progress circuit stopped this turn for, if it did.
+        self.last_progress_stop: dict | None = None
         # Set only around one AgentEngine CodeCell dispatch so the compatible
         # ``_execute_and_log`` call shape need not expose ledger internals.
         self.active_action_group_id: str | None = None
@@ -2665,7 +2684,10 @@ open. You do NOT need to call `host.save_artifact`; writing the file is enough.
 summary based only on already-observed results and name the deliverable files. Put a \
 PURE protocol-only submit cell last in that same reply; it is hidden from the \
 Notebook. The submitted output should normally contain `summary`, `findings`, \
-`metrics`, and `limitations` fields so the durable completion view remains useful.
+`metrics`, and `limitations` fields so the durable completion view remains useful. \
+A short follow-up or a direct question is the exception: answer it directly in \
+`summary` and leave out every field that would only repeat that answer. Key \
+`metrics` by short plain-language labels a reader understands, not code identifiers.
 
 Harness tools (an opencode-parity toolset, callable from any ```python cell as host.*):
 - `host.todo_write([{content,status}]) / host.todo_read()` — OPTIONAL progress \
@@ -2720,15 +2742,16 @@ research as a shell card). Prefer `host.web_fetch` over raw `requests`/`curl` fo
 readable page or API. Only fall back to synthetic/approximate data when a real fetch \
 genuinely fails or is too large.
 - Runtime packages differ by the session's selected environment. NEVER assume a \
-package is installed merely because it is common: first use `host.env.list([pkg])` \
-and switch to a reported prebuilt environment when needed. The base environment may \
-contain only a small subset. Guard genuinely optional imports and use a stdlib or \
-matplotlib fallback when the optional presentation package is not essential.
-- If you DO need an extra package, FIRST check the prebuilt envs with `host.env.list([pkg])` \
-and `host.env.use(...)` the one that has it — real MAFFT / IQ-TREE / trimAl / FastTree live \
-in the `phylo` env, biotite in `struct`, the full DS stack in `python`. Only if none has it, \
-`host.bash("pip install --break-system-packages <pkg>")` (a restart may be needed for a \
-clean import). Never claim a package is "unavailable" before checking the envs or installing.
+package is installed merely because it is common: check with `host.env.list([pkg])` \
+first. The base environment may contain only a small subset.
+- If you DO need a package the current environment lacks, switch to a built-in \
+environment that has it with `host.env.use(...)` — real MAFFT / IQ-TREE / trimAl / FastTree \
+live in the `phylo` env, biotite in `struct`, the full DS stack in `python` — or, when no \
+built-in environment has it, request the install with `host.env.create(None, [pkg])` \
+(native `env_create`); the user approves each install. Do not run pip yourself through \
+`host.bash`, and do not substitute your own parser or statistic for the package to avoid \
+asking (see Rules). Never claim a package is "unavailable" before checking the envs and \
+requesting the install.
 - ACCELERATOR ROUTES ARE DISTINCT — inspect `host.accelerator_status()` when a task needs \
 GPU models. It probes local first and then reports configured SSH routes. If more than one \
 candidate route exists, ask the user to choose `local` or `ssh:<alias>`; never choose on \
@@ -6287,6 +6310,8 @@ class SessionRunner:
                     if e.name == cur
                     else ("" if e.interpreter else " [R — use ```r cells]")
                 )
+                if not e.builtin:
+                    tag += " [the user's own environment: use only if they named it]"
                 note = ", ".join(e.notable(6)) or e.description()
                 lines.append(f"- {e.name}{tag}: {note}")
             if lines:
@@ -8634,6 +8659,7 @@ class SessionRunner:
         picks an env that already has the needed packages instead of installing
         into one kernel every task."""
         from openai4s.kernel import environments as envmod
+        from openai4s.kernel import runtime_status
 
         st = self._sessions.get(root_frame_id) if root_frame_id else None
         current = self._selected_env_name(st) if st else envmod.default_env_name()
@@ -8649,6 +8675,9 @@ class SessionRunner:
             "current_r": current_r,
             "default": envmod.default_env_name(),
             "pending": (st.pending_env if st else None),
+            # What each language actually runs in, for Settings → Compute and
+            # the runtime menu: `current_r: null` alone only says "default".
+            "runtimes": runtime_status.describe_runtimes(current, current_r),
         }
 
     def set_env(
@@ -9559,6 +9588,19 @@ class SessionRunner:
             pass
         return self.cfg.llm.api_key or ""
 
+    def llm_credential_missing(self) -> bool:
+        """Whether a message sent now would be refused for want of an API key.
+
+        `chat`'s own rule over the config a turn would resolve, so the composer
+        can say "no API key" before the first send instead of after it fails.
+        """
+        from openai4s.llm.client import credential_missing
+
+        try:
+            return credential_missing(self._llm_cfg())
+        except Exception:  # noqa: BLE001 - an unresolvable config makes no claim
+            return False
+
     def _llm_cfg(
         self, st: "SessionState | None" = None, *, apply_user_key: bool = True
     ):
@@ -9829,16 +9871,25 @@ class SessionRunner:
         own sentence, which is author-written (a `GatewayError`) or generic by
         construction, never the exception's text.
         """
-        from openai4s.llm.models import LLMError, TransportError, llm_retry_outcome
+        from openai4s.llm.models import (
+            LLMError,
+            llm_retry_outcome,
+            llm_setup_message,
+        )
 
         status = getattr(exc, "status", None)
-        code = str(getattr(exc, "error_code", "") or "")
         failure_code = llm_failure_code(exc)
         # How the retry policy ended the call, from typed fields: a capacity
         # message may say "retried" only when the transport recorded a retry.
         retry_outcome = llm_retry_outcome(exc)
         gave_up = retry_outcome != "retried"
         zh = language == "zh"
+        # A failure the user fixes in Settings names itself: no key, a rejected
+        # key, no quota, no such model, no connection. A missing key used to
+        # fall through to the generic sentence at the bottom, as did a 403/404.
+        guidance = llm_setup_message(exc, zh=zh)
+        if guidance is not None:
+            return guidance
         if failure_code == "llm_deadline_exceeded":
             return (
                 "**模型调用已达到总时限。** 请缩小请求后在当前会话继续。"
@@ -9921,15 +9972,6 @@ class SessionRunner:
                 else "**The model provider is currently overloaded.** The request was "
                 "retried with backoff; this is not an API-key configuration problem. "
                 "Continue this session later or temporarily switch models."
-            )
-        if status == 401 or code in ("invalid_api_key", "unauthorized"):
-            return (
-                "**LLM 认证失败（API Key 无效或缺失）。** 请在 Customize → Models "
-                "填写有效的 API Key，或在 `.env` 设置 `OPENAI4S_LLM_API_KEY` 后重启。"
-                if zh
-                else "**LLM authentication failed (the API key is missing or invalid).** "
-                "Enter a valid key in Customize → Models, or set "
-                "`OPENAI4S_LLM_API_KEY` in `.env` and restart."
             )
         if failure_code == "llm_rate_limited":
             if getattr(exc, "output_committed", False):
@@ -10024,17 +10066,6 @@ class SessionRunner:
                 else "**The LLM request timed out.** The network may be unstable or "
                 "the model may be slow. Try again, or increase "
                 "`OPENAI4S_LLM_TIMEOUT` in `.env`."
-            )
-        if isinstance(exc, TransportError) and status is None:
-            # A transport error with no HTTP status never reached the service:
-            # it is a connect, DNS, or read failure by construction.
-            return (
-                "**无法连接到 LLM 服务(或请求中断)。** 请检查网络与 "
-                "`OPENAI4S_LLM_BASE_URL`(Customize → Network 可确认联网是否开启)。"
-                if zh
-                else "**The LLM service could not be reached, or the request was "
-                "interrupted.** Check the network and `OPENAI4S_LLM_BASE_URL`; "
-                "Customize → Network shows whether network access is enabled."
             )
         if isinstance(exc, LLMError):
             return (
@@ -10997,7 +11028,8 @@ class SessionRunner:
             title_text = plan_mode_request_text(user_text) if st.plan else user_text
             # And without a text-form pin's `#v-<id>`: the title is display
             # text, and the hash is the version, not the user's words (ART-16).
-            title_text = artifact_refs.display_text(title_text)
+            # Nor is a `@project:<path>` token: the title is what was asked.
+            title_text = artifact_refs.title_text(title_text)
             if not (frame.get("name") or frame.get("task_summary")):
                 title_placeholder = re.sub(r"\s+", " ", title_text).strip()[:80]
                 self.store.update_frame(root_frame_id, task_summary=title_placeholder)
@@ -11254,6 +11286,7 @@ class SessionRunner:
             try:
                 st.dispatcher.last_output = None
                 st.last_engine_completion = None
+                st.last_progress_stop = None
                 st.active_action_ledger = action_ledger
                 try:
                     started_auto_run = self.scientific_review.begin_turn_run(
@@ -11323,15 +11356,25 @@ class SessionRunner:
                     # disagrees with the frame's status.
                     status = "failed"
                     failure_meta["code"] = NO_PROGRESS_STOP_REASON
-                    err_text = (
-                        "已停止重复动作。已记录重复原因；继续时会要求模型利用已有结果并换一种方法。也可编辑提示说明缺少的条件。"
-                        if response_language(user_text) == "zh"
-                        else (
-                            "Stopped repeating actions. "
-                            "The repetition context is recorded. Continue to ask the model "
-                            "to use existing results and choose a different approach, or edit the prompt."
+                    # The notice names what repeated and how often, and the
+                    # repeated call gets a step card: most of the tools a
+                    # model loops on (`query` did) draw none of their own.
+                    stop_language = response_language(user_text)
+                    err_text = no_progress_notice(st.last_progress_stop, stop_language)
+                    repeated = no_progress_step(st.last_progress_stop, stop_language)
+                    step_sink = getattr(st.dispatcher, "on_step", None)
+                    if repeated is not None and callable(step_sink):
+                        step_id = "s-" + uuid.uuid4().hex[:12]
+                        step_sink({"phase": "begin", "step_id": step_id, **repeated})
+                        step_sink(
+                            {
+                                "phase": "end",
+                                "step_id": step_id,
+                                "status": "warning",
+                                "output": repeated["input"],
+                                "summary": repeated["summary"],
+                            }
                         )
-                    )
                     emit(
                         {
                             "type": "text_chunk",
@@ -11349,7 +11392,12 @@ class SessionRunner:
                 # after composing the prose would mean the prose came from
                 # somewhere else, which is exactly how `str(exc)` got onto
                 # three surfaces.
-                stable_failure_code = llm_failure_code(e)
+                # The wider vocabulary: a missing or rejected key, an unknown
+                # model and an unreachable service get their own code, so the
+                # client can say what to do and offer Settings instead of
+                # "retry". The recovery ledger below knows none of them and
+                # records `runtime_error`, as it did.
+                stable_failure_code = llm_error_kind(e)
                 safe, _status_code = public_exception(
                     e,
                     surface="web:turn",
@@ -12348,6 +12396,7 @@ class SessionRunner:
                     "id": record["artifact_id"],
                     **record,
                     "priority": _INTERNAL_ARTIFACT_PRIORITY,
+                    "role": artifact_index.artifact_role(record.get("filename")),
                 },
             },
         )
@@ -12471,6 +12520,7 @@ class SessionRunner:
             narrate_actions=not st.plan,
             cancelled=st.cancel.is_set,
             action_ledger=action_ledger,
+            local_paths=narration_paths(st.workspace, self.cfg.data_dir),
         )
 
         def apply_pending() -> None:
@@ -12676,6 +12726,7 @@ class SessionRunner:
         from openai4s.agent.progress_circuit import (
             ProgressCircuit,
             attach_progress_circuit,
+            circuit_from_state,
         )
 
         try:
@@ -12705,6 +12756,15 @@ class SessionRunner:
             raise
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
+        st.last_progress_stop = progress_stop_detail(
+            result.progress_reason,
+            circuit_from_state(state),
+            (
+                (call.name for call in result.last_reply.tool_calls)
+                if result.last_reply is not None
+                else ()
+            ),
+        )
         # A `no_progress` stop is projected by `run_message`, next to
         # `max_turns`: it is a failed turn with a stable code, not a notice
         # appended to a turn that then records itself as completed.
@@ -17541,7 +17601,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             'APIs; POST {"confirm": true} to run it',
                             "confirmation_required",
                         )
-                    started = runner.example_seed.start(cfg, runner)
+                    started = runner.example_seed.start(
+                        cfg, runner, str(self._body().get("lang") or "en")
+                    )
                 self._json(
                     {
                         "seeded": existing is not None,
@@ -18568,6 +18630,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     }
                 )
                 return
+            if sub == "/permissions" and method == "GET":
+                # The global tier on its own, for Settings with no session
+                # open. Nothing new is disclosed: every caller already gets
+                # it inside `/frames/{id}/permissions`.
+                self._json(
+                    {
+                        "rules": {
+                            "global": store.get_permission_rules(
+                                scope="global", scope_id=""
+                            )
+                        }
+                    }
+                )
+                return
             if sub == "/permissions" and method == "POST":
                 b = self._body()
                 scope = b.get("scope") or "global"
@@ -19050,7 +19126,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 fid = m.group(1)
                 arts = store.list_artifacts({"root_frame_id": fid})
-                self._json([_artifact_json(a) for a in arts])
+                self._json(
+                    [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
+                )
                 return
             m = re.fullmatch(r"/projects/([^/]+)/artifacts", sub)
             if m and method == "GET":
@@ -19061,7 +19139,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 arts = self._team_filter_artifacts(
                     store.list_artifacts({"project_id": pid})
                 )
-                self._json([_artifact_json(a) for a in arts])
+                self._json(
+                    [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
+                )
                 return
             m = re.fullmatch(r"/frames/([^/]+)/execution-log", sub)
             if m and method == "GET":
@@ -19440,6 +19520,39 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     },
                 )
                 return
+            m = re.fullmatch(r"/frames/([^/]+)/session/export-html", sub)
+            if m and method == "GET":
+                # EXP-3: the read-only share page as one self-contained file,
+                # for a session nobody has set a relay up for. Same view, same
+                # frame scope guard as every `/frames/{id}/...` read.
+                fid = m.group(1)
+                frame = store.get_frame(fid)
+                if frame is None:
+                    raise GatewayError(404, "session not found")
+                try:
+                    exported = runner.shares.export_page(
+                        fid, language=str((q.get("lang") or ["en"])[0])
+                    )
+                except SessionPackageError as error:
+                    raise GatewayError(
+                        409, str(error), "session_not_exportable"
+                    ) from error
+                title = str(
+                    frame.get("name") or frame.get("task_summary") or ""
+                ).strip()
+                self._send(
+                    200,
+                    exported["data"],
+                    exported["content_type"],
+                    {
+                        "Content-Disposition": download_content_disposition(
+                            f"{title}.html" if title else exported["filename"],
+                            exported["filename"],
+                        ),
+                        "X-Content-SHA256": exported["sha256"],
+                    },
+                )
+                return
             m = re.fullmatch(r"/frames/([^/]+)/session/export", sub)
             if m and method == "GET":
                 fid = m.group(1)
@@ -19481,6 +19594,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         ),
                         "X-Content-SHA256": exported["sha256"],
                         "X-OpenAI4S-Session-Schema": str(exported["schema_version"]),
+                        # How many local paths redaction left in text it keeps
+                        # byte-exact; the page says so after the download.
+                        "X-OpenAI4S-Local-Paths-Left": str(
+                            int(exported.get("local_paths_left") or 0)
+                        ),
                     },
                 )
                 return
@@ -20993,7 +21111,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- payload builders ------------------------------------------
         def _models_payload(self) -> dict:
-            return model_profiles.models_payload(_default_model["id"])
+            payload = model_profiles.models_payload(_default_model["id"])
+            payload["credential_missing"] = runner.llm_credential_missing()
+            return payload
 
         def _mask_profile(self, p: dict) -> dict:
             return model_profiles.public_profile(p)
@@ -21852,6 +21972,8 @@ def _artifact_json(a: dict) -> dict:
         # True when the user uploaded this file (vs. produced by a code cell), so
         # the UI can label it "uploaded" instead of "generated".
         "is_user_upload": bool(a.get("is_user_upload", 0)),
+        # deliverable | process | internal, decided in one place (ART-4).
+        "role": artifact_index.artifact_role(a.get("filename")),
     }
 
 
@@ -22087,9 +22209,9 @@ def _format_annotations_block(annos: list) -> str:
         "请先看图、对照红圈确认每条标注指的是哪个元素。",
         "标注若是提问（例如问某个点或某条线是什么），直接回答，不要修改或覆盖图像。",
         "标注若是修改意见，再按下面的步骤改图：",
-        "1) 先定位生成下述图像的代码——查看本会话此前的代码单元与工作区文件；"
+        "1) 先定位生成下述图像的代码——查看本会话此前的单元与工作区文件；"
         "若不确定，用 host.glob/host.grep 按文件名或绘图关键字（savefig/plt/matplotlib）搜索。"
-        "自动截图名形如 figure_cellN_*.png，其中 N 是生成它的代码单元序号。",
+        "自动截图名形如 figure_cellN_*.png，其中 N 是生成它的单元序号。",
         "2) 逐条应用标注意见。以随附图上的红圈为准定位对应的子图/柱子/标签/元素；"
         "文字里的百分比坐标 (x 向右, y 向下) 仅作辅助。",
         "3) 重新运行绘图代码，写回同名图像文件（不要改文件名，旧版本会保留在版本历史里），"
@@ -22098,7 +22220,7 @@ def _format_annotations_block(annos: list) -> str:
     ]
     for (art_id, name), items in by_art.items():
         mm = re.search(r"figure_cell(\d+)_", str(name or ""))
-        cell = f"（由本会话第 {mm.group(1)} 个代码单元生成）" if mm else ""
+        cell = f"（由本会话第 {mm.group(1)} 个单元生成）" if mm else ""
         lines.append(f"• {name}{cell}")
         for a in sorted(items, key=lambda r: r.get("number") or 0):
             x = float(a.get("rel_x") or 0)
@@ -22187,6 +22309,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
                     file=sys.stderr,
                 )
         else:
+            from openai4s.doctor import MISSING_ENVIRONMENTS_REMEDY
             from openai4s.kernel import preinstall
 
             plan = preinstall.core_plan()
@@ -22195,8 +22318,8 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
                     f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
                     f"installed: {', '.join(plan['missing'][:6])}"
                     f"{' …' if len(plan['missing']) > 6 else ''}\n"
-                    f"[openai4s] startup does not install packages. Run "
-                    f"`openai4s setup`, or install from Customize → Compute.",
+                    f"[openai4s] startup does not install packages. "
+                    f"{MISSING_ENVIRONMENTS_REMEDY}",
                     file=sys.stderr,
                 )
     except Exception as error:  # noqa: BLE001 - diagnostics must never block startup
@@ -22388,6 +22511,8 @@ class _ExampleSeedState:
         self._thread: threading.Thread | None = None
         self._last_error: str | None = None
         self._last_result: dict[str, int] | None = None
+        #: The UI language the example's own text is written in.
+        self.language = "en"
 
     def running(self) -> bool:
         with self._lock:
@@ -22407,7 +22532,7 @@ class _ExampleSeedState:
         with self._lock:
             return dict(self._last_result) if self._last_result else None
 
-    def start(self, cfg: Config, runner: "SessionRunner") -> bool:
+    def start(self, cfg: Config, runner: "SessionRunner", language: str = "en") -> bool:
         """Begin seeding on a background thread. False if one is already going.
 
         Background because the seed runs real cells against live APIs: on the
@@ -22420,6 +22545,7 @@ class _ExampleSeedState:
                 return False
             self._last_error = None
             self._last_result = None
+            self.language = "zh" if language == "zh" else "en"
 
             def _run() -> None:
                 try:
@@ -22986,6 +23112,9 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
             _retire_demo_frame(runner, r.get("frame_id") or r.get("id"))
     if any((r.get("name") or "") == _DEMO_SESSION_NAME for r in roots):
         return None  # current demo already present
+    # The UI language of whoever asked for the example (CHAT-7); English for
+    # the opt-in startup seed, which nobody asked for in a language.
+    language = str(getattr(runner.example_seed, "language", "en"))
     fid = store.new_frame(
         kind="turn", project_id="proj_example", status="done", model=cfg.llm.model
     )
@@ -23010,84 +23139,30 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
     store.update_frame(
         fid,
         name=_DEMO_SESSION_NAME,
-        task_summary="Pull NIF3/DUF34 family records + sequences from the UniProt "
-        "REST API, compute real per-protein biochemistry and pairwise "
-        "identity with a Kyte-Doolittle hydropathy "
-        "profile, fetch a representative structure from the RCSB PDB "
-        "API, and write a reproducible report — every value real.",
+        task_summary=example_session.copy(language, "task_summary"),
     )
     demo_user_message = store.add_message(
         root_frame_id=fid,
         role="user",
         frame_id=fid,
-        content="Analyse the NIF3/DUF34 protein family using real data only: pull "
-        "family records and sequences from the UniProt REST API, compute "
-        "per-protein biochemistry (MW, pI, GRAVY) and pairwise sequence "
-        "identity, plot a Kyte-Doolittle hydropathy profile, fetch a "
-        "representative 3D structure from the RCSB PDB API, and write a "
-        "short reproducible report.",
+        content=example_session.copy(language, "prompt"),
     )
     runner._capture_cursor_checkpoint_best_effort(  # noqa: SLF001
         fid,
         source_kind="message",
         source_id=demo_user_message["message_id"],
     )
-    # One row per demo cell: its source plus, where the cell has a
-    # user-visible deliverable, how to recognize it in the artifact store and
-    # the success line to render. The execution loop and the material lines
-    # both derive from this table — the cell number in each fallback comes
-    # from the same enumeration — so inserting or reordering a demo cell
-    # cannot leave the message citing the wrong cell, and a cell's expected
-    # artifact lives on the same row as the cell that writes it.
-    demo_plan: tuple[tuple[str, dict[str, Any] | None], ...] = (
+    # One row per demo cell: its source plus the material it writes, if any.
+    # `example_session.summary_text` words each material and recognises its
+    # file from this same key, so inserting or reordering a demo cell cannot
+    # leave the message citing the wrong cell.
+    demo_plan: tuple[tuple[str, str | None], ...] = (
         (_DEMO_UNIPROT, None),
         (_DEMO_MCP, None),
-        (
-            _DEMO_PLOT,
-            {
-                # Any .png, not an exact name: the figure filename carries the
-                # producing cell's index. If _DEMO_PLOT ever exports another
-                # format, update this predicate on the same row.
-                "produced": lambda names: any(
-                    str(name or "").endswith(".png") for name in names
-                ),
-                "line": "- **hydropathy figure (PNG)** — Kyte-Doolittle "
-                "profile of the reference sequence\n",
-                "label": "hydropathy figure",
-            },
-        ),
-        (
-            _DEMO_CSV,
-            {
-                "filename": "family_biochemistry.csv",
-                "line": "- **family_biochemistry.csv** — per-protein length "
-                "/ MW / pI / GRAVY / % identity\n",
-                "label": "biochemistry table",
-            },
-        ),
-        (
-            _DEMO_PDB,
-            {
-                "filename": "nif3_structure.pdb",
-                "line": "- **nif3_structure.pdb** — real RCSB structure "
-                "(opens in the 3Dmol viewer)\n",
-                # Bespoke fallback: a missing structure is a deliberate
-                # skip (Cell 5 writes it only on a successful live RCSB
-                # download), not a crash to send the reader hunting for.
-                "missing": "- _3D structure_ — skipped this run: the RCSB "
-                "download was unreachable (no placeholder is ever "
-                "substituted; see nif3_report.md)\n",
-            },
-        ),
-        (
-            _DEMO_MD,
-            {
-                "filename": "nif3_report.md",
-                "line": "- **nif3_report.md** — reproducible summary with "
-                "data provenance\n",
-                "label": "summary report",
-            },
-        ),
+        (_DEMO_PLOT, "figure"),
+        (_DEMO_CSV, "table"),
+        (_DEMO_PDB, "structure"),
+        (_DEMO_MD, "report"),
     )
     cell_failures: list[str] = []
     for index, (code, _material) in enumerate(demo_plan, start=1):
@@ -23113,86 +23188,26 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
             # treating those as successes reopened the all-green "Done —
             # every value is real" header over cells that never finished.
             cell_failures.append(f"{label}: interrupted before completion")
-    # Describe only the materials that were actually produced. Every
-    # deliverable is conditional in practice — the structure needs a live
-    # RCSB download, the figure/table/report need optional science libraries
-    # the lightweight install does not ship (matplotlib, pandas) —
-    # so every line branches on the artifact store rather than over-claiming.
-    _produced = {
-        a.get("filename") for a in store.list_artifacts({"root_frame_id": fid})
-    }
-    _material_lines: list[str] = []
-    for index, (_code, material) in enumerate(demo_plan, start=1):
-        if material is None:
-            continue
-        produced = (
-            material["produced"](_produced)
-            if "produced" in material
-            else material["filename"] in _produced
-        )
-        if produced:
-            _material_lines.append(material["line"])
-        elif "missing" in material:
-            _material_lines.append(material["missing"])
-        else:
-            _material_lines.append(
-                f"- _{material['label']}_ — not produced this run (Cell "
-                f"{index} did not complete; see its error in the Notebook "
-                "tab)\n"
-            )
-    if cell_failures:
-        # An honest header beats the reassuring one: some cells crashed, so
-        # "every value is real" must not be claimed on their behalf. A missing
-        # module is the common cause, so name it and say how to install it
-        # rather than leaving the reader to guess.
-        missing_modules = sorted(
-            {
-                match.group(1).split(".")[0]
-                for failure in cell_failures
-                for match in [re.search(r"No module named '([^']+)'", failure)]
-                if match
-            }
-        )
-        install_hint = ""
-        if missing_modules:
-            install_hint = (
-                "\nMissing Python module(s): "
-                + ", ".join(f"`{name}`" for name in missing_modules)
-                + ". The example uses the science extra (numpy, pandas, "
-                "matplotlib). From a source checkout run `uv sync --extra "
-                "science` (or `./setup.sh`); for a pip install run `pip install "
-                '"openai4s[science]"`. Restart OpenAI4S afterwards so new '
-                "kernels pick them up.\n"
-            )
-        _header = (
-            f"{len(cell_failures)} of {len(demo_plan)} example cells did not "
-            "complete on this install:\n"
-            + "".join(f"- {failure}\n" for failure in cell_failures)
-            + install_hint
-            + "\nEvery value that **was** produced is computed from real data "
-            "(no simulated or placeholder values), and the materials below "
-            "list only what was actually produced."
-        )
-    else:
-        _header = (
-            "Done — every value in this session is computed from real data "
-            "(no simulated or placeholder values)."
-        )
-    store.add_message(
-        root_frame_id=fid,
-        role="assistant",
+    # Describe only the materials that were actually produced, as real links
+    # (CHAT-7), and name every failure: a crashed cell, and a step that failed
+    # inside a cell that carried on (CHAT-1).
+    step_failures = example_session.failed_steps(store, fid)
+    example_session.finish(
+        store=store,
+        emit=runner.hub.emitter(fid),
         frame_id=fid,
-        content=_header + "\n\n"
-        "**Real inputs**\n"
-        "- **UniProt REST API** — NIF3/DUF34 family records + sequences\n"
-        "- **RCSB PDB API** — full-text search + coordinate download of a "
-        "representative structure\n"
-        "- **MCP connector `example`** — `calc` / `now` tools over the "
-        "Connectors bridge\n\n"
-        "**Materials — click any artifact to view**\n"
-        + "".join(_material_lines)
-        + "\nOpen the **Notebook** tab to replay the executed cells, or the "
-        "**Files** panel to view each material.",
+        failed_cells=len(cell_failures),
+        summary=example_session.summary_text(
+            language=language,
+            materials=[material for _code, material in demo_plan],
+            artifacts=store.list_artifacts({"root_frame_id": fid}),
+            cell_failures=cell_failures,
+            step_failures=step_failures,
+            trusted_delivery=bool(getattr(runner, "stage1_trusted_delivery", False)),
+        ),
     )
-    store.update_frame(fid, status="done")
-    return {"cells": len(demo_plan), "failed": len(cell_failures)}
+    return {
+        "cells": len(demo_plan),
+        "failed": len(cell_failures),
+        "failed_steps": len(step_failures),
+    }

@@ -36,6 +36,9 @@ export function CopyCommand({ item }: { item: { command: string; label: string }
   );
 }
 
+/** What builds a missing managed environment (`doctor.MISSING_ENVIRONMENTS_REMEDY`). */
+const SETUP_COMMAND = "openai4s setup";
+
 /** The card's one-line state, without "standard profile" or "readiness" jargon. */
 function environmentSummary(readiness: StandardReadiness): string {
   if (readiness.ready) return ot("onboarding.env.state.ready");
@@ -108,16 +111,19 @@ export function EnvironmentCard({
           </div>
         ) : null,
       )}
-      {readiness.remediation &&
-      readiness.remediation.requires_explicit_action &&
-      readiness.remediation.commands.length ? (
+      {readiness.remediation ? (
         <div class="standard-readiness-remediation">
+          {/* FR-3: one instruction wherever environments are missing -- the
+              CLI banner's and `doctor`'s. The daemon's generation-repair
+              commands (`env plan` / `env apply`) are not a second path here. */}
           <div class="standard-readiness-label">{ot("onboarding.env.remediation")}</div>
-          <div class="standard-readiness-explicit">{t("environment.readiness.explicitOnly")}</div>
-          {readiness.remediation.commands.map((item) => (
-            <CopyCommand key={item.command} item={item} />
-          ))}
-          <div class="standard-readiness-explicit">{ot("onboarding.env.notOnPath")}</div>
+          {absent.length ? (
+            <>
+              <div class="standard-readiness-explicit">{t("environment.readiness.explicitOnly")}</div>
+              <CopyCommand item={{ command: SETUP_COMMAND, label: "" }} />
+              <div class="standard-readiness-explicit">{ot("onboarding.env.notOnPath")}</div>
+            </>
+          ) : null}
         </div>
       ) : null}
     </section>

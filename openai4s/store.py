@@ -3621,6 +3621,7 @@ class Store:
         after_ordinal: int | None = None,
         limit: int | None = None,
         include_events: bool = True,
+        kind: str | None = None,
     ) -> list[dict]:
         return self._actions.list_groups(
             root_frame_id,
@@ -3629,6 +3630,7 @@ class Store:
             after_ordinal=after_ordinal,
             limit=limit,
             include_events=include_events,
+            kind=kind,
         )
 
     def list_action_events(self, group_id: str) -> list[dict]:
@@ -5569,16 +5571,30 @@ class Store:
                 "LIMIT ?",
                 (q, *artifact_params, limit),
             ).fetchall()
+        # EXP-2: a word in a final answer, a cell or its output finds the
+        # session too, with the text around it. Title matches stay first.
+        sessions = {
+            r["frame_id"]: {
+                "id": r["frame_id"],
+                "project_id": r["project_id"],
+                "name": r["name"],
+                "task_summary": r["task_summary"],
+                "match": "title",
+                "snippet": None,
+            }
+            for r in frames
+        }
+        for hit in self._frames.search_session_content(
+            query, limit=limit, visible_to_user_id=visible_to_user_id
+        ):
+            known = sessions.get(hit["id"])
+            if known is None and len(sessions) < limit:
+                sessions[hit["id"]] = hit
+            elif known is not None and known["snippet"] is None:
+                known["snippet"] = hit["snippet"]
+                known["match"] = hit["match"]
         return {
-            "sessions": [
-                {
-                    "id": r["frame_id"],
-                    "project_id": r["project_id"],
-                    "name": r["name"],
-                    "task_summary": r["task_summary"],
-                }
-                for r in frames
-            ],
+            "sessions": list(sessions.values()),
             "artifacts": [
                 {
                     "id": r["artifact_id"],

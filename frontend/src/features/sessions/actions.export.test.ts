@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { exportSession } from "./actions";
+import { exportSession, exportSessionPackage } from "./actions";
+import { sessionCopy } from "./copy";
 import { hint } from "./chrome";
 import { sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
@@ -46,5 +47,38 @@ describe("Markdown export requires confirmed reads", () => {
     finish(new Response("[]")); await exportDone;
     expect(clicks).toHaveBeenCalledOnce();
     expect(await blobs[0]!.text()).toContain("# Original session");
+  });
+});
+
+describe("session package export says what it left as written (EXP-1)", () => {
+  const clicks = vi.fn();
+  beforeEach(() => {
+    vi.mocked(hint).mockClear(); clicks.mockClear();
+    vi.stubGlobal("document", {
+      createElement: () => ({ click: clicks, remove: () => {} }),
+      body: { appendChild: () => {} },
+    });
+    vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:package");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    vi.useFakeTimers();
+  });
+  afterEach(() => { vi.runOnlyPendingTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it("names the count of local paths left in the package", async () => {
+    vi.stubGlobal("fetch", async () => new Response("zip", { headers: { "X-OpenAI4S-Local-Paths-Left": "3" } }));
+    await exportSessionPackage("f", { name: "Plate 3" });
+    expect(clicks).toHaveBeenCalledOnce();
+    expect(hint).toHaveBeenLastCalledWith(sessionCopy("exportedPathsLeft", 3));
+  });
+
+  it("says plainly when nothing was left, and shows a refusal instead of saving it", async () => {
+    vi.stubGlobal("fetch", async () => new Response("zip", { headers: { "X-OpenAI4S-Local-Paths-Left": "0" } }));
+    await exportSessionPackage("f");
+    expect(hint).toHaveBeenLastCalledWith(sessionCopy("exported"));
+    clicks.mockClear();
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ error: "revert awaiting recovery" }), { status: 409 }));
+    await exportSessionPackage("f");
+    expect(clicks).not.toHaveBeenCalled();
+    expect(hint).toHaveBeenLastCalledWith(sessionCopy("exportFailed", "revert awaiting recovery"), true);
   });
 });

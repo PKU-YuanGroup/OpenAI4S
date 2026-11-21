@@ -188,6 +188,35 @@ describe("ModelsTab active configuration", () => {
     expect(tagged(tree, "data-live-model")).toHaveLength(0);
     expect(content(tree)).not.toContain("versions.load.err");
   });
+
+  it("lists the model in use first, above the provider panel and the add form (UI-1)", async () => {
+    const tree = await open({
+      "/model-profiles": () =>
+        response({
+          profiles: [
+            { id: "mp-1", name: "Saved earlier", provider: "ark", model: "m-1", has_api_key: true },
+            { id: "mp-2", name: "In use", provider: "ark", model: "m-2", has_api_key: true },
+          ],
+          active_id: "mp-2",
+          protocols: ["ark"],
+        }),
+      "/config/llm": () => response(LIVE),
+    });
+    const rows = tagged(tree, "activeId");
+    expect(rows.map((row) => (row.props!.p as { id: string }).id)).toEqual(["mp-2", "mp-1"]);
+
+    const components: string[] = [];
+    const walk = (current: unknown): void => {
+      if (Array.isArray(current)) return current.forEach(walk);
+      if (!current || typeof current !== "object") return;
+      const node = current as { type?: unknown; props?: { children?: unknown } };
+      if (typeof node.type === "function") components.push(node.type.name);
+      walk(node.props?.children);
+    };
+    walk(tree);
+    expect(components.indexOf("ProfileRow")).toBeGreaterThan(-1);
+    expect(components.indexOf("ProfileRow")).toBeLessThan(components.indexOf("VolcenginePanel"));
+  });
 });
 
 describe("local endpoint add", () => {

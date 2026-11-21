@@ -590,11 +590,22 @@ export function stepBody(step: Step): HTMLElement {
         ? [{ filename: out.filename, version_id: out.version_id }]
         : [];
     const arts = artsRaw.map(rec);
+    const imgArts = arts.filter((a) => {
+      const nm = String(a.filename || "").toLowerCase();
+      const ct = String(a.content_type || "");
+      return (
+        a.artifact_id &&
+        (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm))
+      );
+    });
+    // A figure is shown below with its name as the caption; listing it here
+    // too put every file name on the card twice (three times with the title).
+    const shown = new Set(imgArts.map((a) => a.filename));
     const files = (
       Array.isArray(inp.files) && inp.files.length
         ? inp.files
         : arts.map((a) => a.filename)
-    ).filter(Boolean) as unknown[];
+    ).filter((fn) => !!fn && !shown.has(fn)) as unknown[];
     const env = inp.environment || "python";
     const kvRow = (label: string, text: unknown): HTMLElement => {
       const r = el("div", "s-kv");
@@ -629,7 +640,7 @@ export function stepBody(step: Step): HTMLElement {
       fl.appendChild(line);
     });
     fl.appendChild(el("span", "s-brk", "]"));
-    box.appendChild(kvNodeRow("files", fl));
+    if (files.length) box.appendChild(kvNodeRow("files", fl));
     box.appendChild(kvRow("environment", env));
     if (arts.length && (arts[0]?.artifact_id || arts[0]?.checksum)) {
       const wrap = el("div", "s-out");
@@ -648,14 +659,6 @@ export function stepBody(step: Step): HTMLElement {
       wrap.appendChild(json);
       box.appendChild(wrap);
     }
-    const imgArts = arts.filter((a) => {
-      const nm = String(a.filename || "").toLowerCase();
-      const ct = String(a.content_type || "");
-      return (
-        a.artifact_id &&
-        (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm))
-      );
-    });
     if (imgArts.length) {
       const figs = el("div", "s-figs");
       imgArts.forEach((a) => {
@@ -700,21 +703,60 @@ function paintStepBody(handle: StepHandle): void {
   handle.bodyStale = false;
 }
 
-export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
-  const { card, meta, ic, step } = handle;
+function stepOutcome(step: Step) {
   const status = step.status || "running";
   // Refused by a loaded Skill's network limit: not a crash, and not "0 results".
   const blocked = status !== "running" && !!blockedView(step);
   // Denied by the user, refused by a rule, or cancelled by a Stop while it
   // waited for approval: a refusal, shown neutrally, never as a failure.
   const declined = status === "error" && !blocked ? declinedStep(step.output) : null;
+  return { status, blocked, declined };
+}
+
+/**
+ * The card head's words: its title and status line. The host words both in
+ * English and they are translated here (I18N-1), so a language switch has to
+ * say them again (`relabelStepCards`); the static repaint cannot reach them.
+ */
+function paintStepWords(handle: StepHandle): void {
+  const { card, meta, step } = handle;
+  const { status, declined } = stepOutcome(step);
+  meta.textContent =
+    status === "running"
+      ? step.kind === "review"
+        ? sendCopy("reviewing")
+        : ""
+      : stepNetworkMeta(step) ||
+        (declined ? declinedMeta(declined) : "") ||
+        (step.summary != null ? stepSummaryText(String(step.summary)) : "") ||
+        (step.output && rec(step.output).error ? t("step.status.failed") : "");
+  const label = card.querySelector(".s-lbl");
+  // A loaded Skill's network limit: the server words these in English.
+  if (label) label.textContent = stepNetworkLabel(step) || stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+}
+
+/** Every step card on screen, in the language just applied. */
+export function relabelStepCards(): void {
+  const registry = stepEls.value as Record<string, StepHandle> | null;
+  if (!registry) return;
+  for (const handle of Object.values(registry)) {
+    if (!handle.card.isConnected) continue;
+    paintStepWords(handle);
+    // An open body is redrawn now; a closed one when it is next opened.
+    if (handle.card.classList.contains("open")) paintStepBody(handle);
+    else handle.bodyStale = true;
+  }
+}
+
+export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
+  const { card, ic, step } = handle;
+  const { status, blocked, declined } = stepOutcome(step);
   card.classList.toggle("running", status === "running");
   card.classList.toggle("err", status === "error" && !blocked && !declined);
   card.classList.toggle("warn", status === "warning" || blocked);
   card.classList.toggle("declined", !!declined);
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
-    meta.textContent = step.kind === "review" ? sendCopy("reviewing") : "";
   } else {
     ic.innerHTML = icon(
       blocked
@@ -730,23 +772,9 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
               : stepIcon(step.kind),
       14,
     );
-    meta.textContent =
-      stepNetworkMeta(step) ||
-      (declined ? declinedMeta(declined) : "") ||
-      (step.summary != null ? stepSummaryText(String(step.summary)) : "") ||
-      (step.output && rec(step.output).error ? t("step.status.failed") : "");
   }
   // I18N-1: the host words titles in English; an update can retitle a card.
-  if (step.title) {
-    const label = card.querySelector(".s-lbl");
-    if (label) label.textContent = stepTitleText(String(step.title));
-  }
-  // A loaded Skill's network limit: the server words these in English.
-  const netLabel = stepNetworkLabel(step);
-  if (netLabel) {
-    const label = card.querySelector(".s-lbl");
-    if (label) label.textContent = netLabel;
-  }
+  paintStepWords(handle);
   card.classList.toggle("s-net-limited", marksNetworkLimit(step));
   if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") {
     card.classList.add("open");
@@ -792,7 +820,8 @@ export function buildStepCard(step: Step, paint: StepPaint = {}): StepHandle {
       ),
     );
   }
-  h.appendChild(el("span", "s-lbl", stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")))));
+  // `applyStepState` below writes its words (`paintStepWords`).
+  h.appendChild(el("span", "s-lbl", ""));
   const meta = el("span", "s-meta", "");
   h.appendChild(meta);
   const chev = el("span", "s-chev");
@@ -823,14 +852,35 @@ function stepRegistry(): Record<string, StepHandle> {
 
 type DemotableStream = LiveStream & { toolCard?: HTMLElement & { _demoted?: boolean } };
 
-/** A Cell's activity card that steps follow becomes the "Code" group head. */
+/**
+ * A Cell's activity card that steps follow becomes their quieter group head.
+ * It keeps its title: relabelled "Code", a cell the model had titled, or
+ * "Analysis · cell 24", read as a card called "Code".
+ */
 function demoteToolCard(st: DemotableStream): void {
   if (st.toolCard && !st.toolCard._demoted) {
     st.toolCard.classList.add("has-steps");
     st.toolCard._demoted = true;
-    const lbl = st.toolCard.querySelector(".lbl");
-    if (lbl) lbl.textContent = t("step.label.code");
   }
+}
+
+/**
+ * One plan card per turn. Every plan update is a step of its own, and each
+ * used to add another complete "Planning · 6 steps" card to the conversation.
+ * A later plan step of the same turn repaints the turn's card where it is and
+ * answers to its id from then on. Null when `turn` has no plan card yet.
+ */
+function mergePlanStep(turn: Element | null | undefined, step: Step): StepHandle | null {
+  if (!turn || step.kind !== "plan") return null;
+  const registry = stepRegistry();
+  const prior = Object.values(registry).find(
+    (handle) => handle.step.kind === "plan" && handle.card.parentElement === turn,
+  );
+  if (!prior) return null;
+  prior.step = step;
+  if (step.step_id) registry[String(step.step_id)] = prior;
+  applyStepState(prior, LAZY_BODY);
+  return prior;
 }
 
 export function addLiveStep(m: Record<string, unknown>): void {
@@ -850,16 +900,18 @@ export function addLiveStep(m: Record<string, unknown>): void {
   }
   const st = ensure() as DemotableStream | null;
   if (!st) return;
-  const handle = buildStepCard(
-    {
-      step_id: m.step_id != null ? String(m.step_id) : undefined,
-      kind: m.kind != null ? String(m.kind) : undefined,
-      title: m.title != null ? String(m.title) : undefined,
-      input: rec(m.input),
-      status: m.status != null ? String(m.status) : "running",
-    },
-    LAZY_BODY,
-  );
+  const step: Step = {
+    step_id: m.step_id != null ? String(m.step_id) : undefined,
+    kind: m.kind != null ? String(m.kind) : undefined,
+    title: m.title != null ? String(m.title) : undefined,
+    input: rec(m.input),
+    status: m.status != null ? String(m.status) : "running",
+  };
+  if (mergePlanStep(st.wrap, step)) {
+    down();
+    return;
+  }
+  const handle = buildStepCard(step, LAZY_BODY);
   if (m.step_id) stepRegistry()[String(m.step_id)] = handle;
   placeInLiveStream(handle.card, st);
   demoteToolCard(st);
@@ -880,6 +932,9 @@ export function updateLiveStep(m: Record<string, unknown>): void {
 }
 
 export function renderStoredStep(s: Step, target?: ParentNode | null): HTMLElement {
+  // The history paint names the turn its card joins (`messages/list.ts`).
+  const merged = mergePlanStep((target as { turn?: Element | null } | null | undefined)?.turn, s);
+  if (merged) return merged.card;
   const handle = buildStepCard(s, LAZY_BODY);
   if (s.step_id) stepRegistry()[String(s.step_id)] = handle;
   handle.card.dataset.ts = String(s.created_at || 0);
