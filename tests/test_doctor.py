@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 import types
 from dataclasses import replace as dataclasses_replace
 
@@ -20,6 +21,11 @@ import pytest
 
 from openai4s import doctor
 from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
+
+
+def _hosts(text: str) -> set[str]:
+    """The host names a text names, each an exact token (not a substring)."""
+    return set(re.findall(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", text))
 
 
 @pytest.fixture
@@ -1093,9 +1099,13 @@ def test_the_network_probe_reports_an_unreachable_database_per_host(cfg, monkeyp
 
     text = doctor.render(result)
     assert "All checks passed." not in text
-    [pdb_line] = [line for line in text.splitlines() if "search.rcsb.org" in line]
+    [pdb_line] = [
+        line for line in text.splitlines() if {"search.rcsb.org"} <= _hosts(line)
+    ]
     assert "FAIL" in pdb_line and tls_error in pdb_line
-    [uniprot_line] = [line for line in text.splitlines() if "rest.uniprot.org" in line]
+    [uniprot_line] = [
+        line for line in text.splitlines() if {"rest.uniprot.org"} <= _hosts(line)
+    ]
     assert "HTTP 200" in uniprot_line
 
 
@@ -1184,9 +1194,9 @@ def test_a_host_that_times_out_twice_says_timed_out_not_refused():
     assert "timed_out" not in answers["pdb"]
     result = {"status": doctor.WARN, "checks": [_reachability_check(answers)]}
     lines = doctor.render(result).splitlines()
-    [ensembl] = [l for l in lines if "rest.ensembl.org" in l]
-    [zenodo] = [l for l in lines if "zenodo.org" in l]
-    [pdb] = [l for l in lines if "search.rcsb.org" in l]
+    [ensembl] = [l for l in lines if {"rest.ensembl.org"} <= _hosts(l)]
+    [zenodo] = [l for l in lines if {"zenodo.org"} <= _hosts(l)]
+    [pdb] = [l for l in lines if {"search.rcsb.org"} <= _hosts(l)]
     assert "timed out: no answer within 10 s, on 2 tries" in ensembl
     assert "timed out" not in zenodo and "not granted" in zenodo
     assert "timed out" not in pdb and "TLS certificate" in pdb

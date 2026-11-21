@@ -22,6 +22,7 @@ is a throwaway self-signed certificate with no private key anywhere.
 from __future__ import annotations
 
 import ast
+import re
 import ssl
 import subprocess
 import urllib.error
@@ -33,6 +34,12 @@ import pytest
 from openai4s import tls_trust
 
 _PACKAGE = Path(__file__).resolve().parent.parent / "openai4s"
+
+
+def _hosts(text: str) -> set[str]:
+    """The host names a text names, each an exact token (not a substring)."""
+    return set(re.findall(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", text))
+
 
 #: A throwaway self-signed CA certificate (public half only).
 TEST_ROOT_PEM = """-----BEGIN CERTIFICATE-----
@@ -411,7 +418,7 @@ def test_a_missing_issuer_names_the_host_and_the_remedy():
     assert isinstance(untrusted, urllib.error.URLError)
     assert untrusted.reason is failure
     text = str(untrusted)
-    assert "search.example.org" in text
+    assert {"search.example.org"} <= _hosts(text)
     assert "unable to get local issuer certificate" in text
     assert "SSL_CERT_FILE" in text
     assert "/q" not in text
@@ -420,7 +427,7 @@ def test_a_missing_issuer_names_the_host_and_the_remedy():
 def test_an_expired_certificate_is_not_blamed_on_the_ca_bundle():
     failure = _verify_failure(10, "certificate has expired")
     text = str(tls_trust.untrusted_certificate(failure, "https://old.example.org/"))
-    assert "old.example.org" in text
+    assert {"old.example.org"} <= _hosts(text)
     assert "certificate has expired" in text
     assert "SSL_CERT_FILE" not in text
 
@@ -471,10 +478,10 @@ def test_web_fetch_reports_the_untrusted_host(monkeypatch):
 
     with pytest.raises(urllib.error.URLError) as caught:
         webtools.web_fetch("https://search.example.org/api")
-    assert "search.example.org" in str(caught.value)
+    assert {"search.example.org"} <= _hosts(str(caught.value))
     assert "SSL_CERT_FILE" in str(caught.value)
 
     probe = webtools.web_probe("https://search.example.org/api")
     assert probe["exists"] is False and probe["status"] == 0
-    assert "search.example.org" in probe["error"]
+    assert {"search.example.org"} <= _hosts(probe["error"])
     assert "SSL_CERT_FILE" in probe["error"]
