@@ -28,7 +28,7 @@ import {
 } from "../execution/branch";
 import { scheduleWorkbenchRefresh } from "../notebook/kernel";
 import { paintIcon } from "../icons/paths";
-import { CHAT_MD, renderMd } from "../md/render";
+import { renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
 import { api } from "../sessions/api";
 import { hint } from "../sessions/chrome";
@@ -463,7 +463,7 @@ export function renderStored(
     }
   } else {
     const md = el("div", "md");
-    md.innerHTML = renderMd(text, CHAT_MD);
+    md.innerHTML = renderMd(text);
     embedArtifactFigures(md);
     w.appendChild(md);
     if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
@@ -615,7 +615,7 @@ export function historyTurns(): HistoryTurns {
 
   const flush = (): void => {
     if (!group || !run.length) return;
-    group.md.innerHTML = renderMd(run.join("\n\n"), CHAT_MD);
+    group.md.innerHTML = renderMd(run.join("\n\n"));
     embedArtifactFigures(group.md);
     run = [];
   };
