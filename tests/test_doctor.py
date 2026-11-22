@@ -964,7 +964,7 @@ def test_the_cli_sends_the_request_only_with_network(monkeypatch, capsys):
     cli = importlib.import_module("openai4s.cli.main")
     seen = []
 
-    def fake_report(_cfg, *, network=False, live_model=None):
+    def fake_report(_cfg, *, network=False, live_model=None, language="en"):
         seen.append((network, live_model))
         return {"status": doctor.OK, "checks": []}
 
@@ -1463,7 +1463,7 @@ def test_the_cli_flag_is_what_turns_the_probe_on(monkeypatch, capsys):
 
     seen = []
 
-    def report(_cfg, *, network=False, live_model=None):
+    def report(_cfg, *, network=False, live_model=None, language="en"):
         seen.append(network)
         return {"status": doctor.OK, "checks": []}
 
