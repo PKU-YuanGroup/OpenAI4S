@@ -397,11 +397,16 @@ class _Env:
         Returns {environments:[…], current, recommend, missing}."""
         return self._call("env_list", [{"packages": list(packages or [])}])
 
-    def use(self, name: str) -> dict:
+    def use(self, name: str, reason: str | None = None) -> dict:
         """Switch the notebook kernel to a prebuilt environment for the following
         cells. Call it in its OWN cell, then import in a new one (the switch is
-        applied before the next cell). Returns {ok, env, note}."""
-        return self._call("env_use", [{"name": name}])
+        applied before the next cell). `reason` (optional, one sentence) is
+        shown to the user if the switch asks for approval. Returns
+        {ok, env, note}."""
+        spec: dict = {"name": name}
+        if reason:
+            spec["reason"] = str(reason)
+        return self._call("env_use", [spec])
 
     def list_dependencies(self, packages: list[str] | None = None) -> dict:
         """Which of `packages` are missing from each environment. Alias of

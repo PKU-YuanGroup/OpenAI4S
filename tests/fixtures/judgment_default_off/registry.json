@@ -280,6 +280,11 @@
           "description": "Prebuilt environment to switch to.",
           "minLength": 1,
           "type": "string"
+        },
+        "reason": {
+          "description": "Optional: one sentence on why this step needs that environment. Shown to the user when the switch asks for approval.",
+          "maxLength": 300,
+          "type": "string"
         }
       },
       "required": [

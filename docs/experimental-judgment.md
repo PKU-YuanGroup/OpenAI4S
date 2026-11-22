@@ -638,3 +638,13 @@ search snapshots are recaptured from this catalog: additional documents change
 lexical document frequencies even for unrelated search queries. The native
 tool registry and heuristic classifier snapshots remain unchanged. No semantic
 judgment capability is enabled by importing these local research recipes.
+
+### `env_use` reason — 2026-11-22
+
+`env_use` gains an optional `reason` string (≤300 characters) that the
+approval card shows beside the environment a switch targets (owner decision
+32, finding SCI-21). The native tool registry snapshot
+(`tests/fixtures/judgment_default_off/registry.json`) was recaptured for that
+one property and nothing else; the system-context, search and classifier
+snapshots are byte-identical. It is a schema change to a control tool, not an
+enabled semantic judgment.

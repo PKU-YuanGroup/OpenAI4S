@@ -363,6 +363,22 @@ describe("what a card says before the user decides", () => {
     expect(permContext({ tool: "env_use", input: { name: "python", local: false } }).lines).toEqual([]);
   });
 
+  it("shows the reason the agent gave for an environment switch (SCI-21)", async () => {
+    const { permContext } = await import("./permission");
+    const card = {
+      tool: "env_use",
+      input: { name: "work", local: true, reason: "RDKit is only installed in work." },
+    };
+    setLang("en");
+    expect(permContext(card).lines).toEqual([
+      "The agent's reason: RDKit is only installed in work.",
+      expect.stringContaining("your own conda environments"),
+    ]);
+    setLang("zh");
+    expect(permContext(card).lines[0]).toBe("智能体给出的原因：RDKit is only installed in work.");
+    expect(permContext({ tool: "env_use", input: { name: "r", local: false, reason: "  " } }).lines).toEqual([]);
+  });
+
   it("says which sub-agent asks, by its task (SCI-21)", async () => {
     const { permContext } = await import("./permission");
     setLang("en");

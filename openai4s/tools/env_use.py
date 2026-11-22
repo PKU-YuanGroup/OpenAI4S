@@ -19,6 +19,15 @@ class EnvUseTool(Tool):
                 "minLength": 1,
                 "description": "Prebuilt environment to switch to.",
             },
+            "reason": {
+                "type": "string",
+                "maxLength": 300,
+                "description": (
+                    "Optional: one sentence on why this step needs that "
+                    "environment. Shown to the user when the switch asks "
+                    "for approval."
+                ),
+            },
         },
         "required": ["name"],
     }

@@ -483,3 +483,10 @@ bioSkills），以及 19 个 Python sidecar。默认关闭快照只因独立的�
 的五条结果中开始包含该 Skill；`science_search` 的 schema 增加 STRING、
 BindingDB 来源及筛选参数。分类器快照逐字节不变，中文词法查询仍为空。
 这些是目录与 schema 的变化，没有启用语义判断。
+
+### `env_use` 的 reason — 2026-11-22
+
+`env_use` 新增一个可选的 `reason` 字符串（不超过 300 个字符），审批卡会把它显示在切换的目标环境旁边
+（负责人决定 32，问题 SCI-21）。原生工具注册快照
+（`tests/fixtures/judgment_default_off/registry.json`）只为这一个属性重新采集，别无其他；
+系统提示、检索和分类器快照逐字节不变。这是一个控制工具的 schema 变化，没有启用语义判断。

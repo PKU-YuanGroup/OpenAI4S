@@ -211,6 +211,7 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     toolInput: "Input schema",
     subAgentTask: "Asked by the sub-agent working on: {0}",
     subAgentNamed: "Asked by the sub-agent {0}",
+    envReason: "The agent's reason: {0}",
   },
   zh: {
     downloadTo: "保存到工作区：{0}",
@@ -232,6 +233,7 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     toolInput: "输入参数结构",
     subAgentTask: "发起请求的子代理正在做：{0}",
     subAgentNamed: "发起请求的子代理：{0}",
+    envReason: "智能体给出的原因：{0}",
   },
 };
 
@@ -277,6 +279,9 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
     }
     lines.push(ctx("installKeep"));
   } else if (m.tool === "env_use") {
+    // SCI-21: the reason the model gave for the switch, in its own words.
+    const reason = String(inp.reason || "").trim();
+    if (reason) lines.push(ctx("envReason", reason));
     if (inp.local === true) lines.push(ctx("localEnv"));
   } else if (m.tool === "bash") {
     if (inp.environment) {

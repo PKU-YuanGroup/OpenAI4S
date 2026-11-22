@@ -387,10 +387,16 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
         from openai4s.tools.env_use import EnvUseTool
 
         local = EnvUseTool.is_local(name)
+        view = {"name": name, "local": local}
+        # SCI-21: the model's own reason for the switch, shown on the approval
+        # card beside the environment (bounded like the schema says).
+        reason = " ".join(str(a.get("reason") or "").split())[:300]
+        if reason:
+            view["reason"] = reason
         return (
             "env",
             f"Switching to the {'local ' if local else ''}{name} environment",
-            {"name": name, "local": local},
+            view,
         )
     if method == "env_setup":
         # ``name`` is the caller's free-text label, not the environment the
