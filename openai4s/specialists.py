@@ -130,7 +130,10 @@ Working standards:
 """,
         ),
         SpecialistProfile(
-            name="EXPLORE",
+            # Called EXPLORE until owner decision 31: the name read as the
+            # autonomous Explore mode, which is a different thing. EXPLORE
+            # still resolves here (`SPECIALIST_ALIASES`).
+            name="SCOUT",
             mode="subagent",
             unrestricted=False,
             # Deliberately NOT the `web` alias: that alias includes
@@ -151,7 +154,7 @@ Working standards:
                 "concise map — no writes."
             ),
             system_prompt="""\
-You are EXPLORE: a read-only scout. Your job is to search — the literature via
+You are SCOUT: a read-only scout. Your job is to search — the literature via
 web_search/web_fetch/science databases, and the local files via read_file,
 grep, glob and list_dir — and return a concise, well-organized map of what
 exists and where.
@@ -237,7 +240,7 @@ Protocol:
             mode="primary",
             supports_plan_mode=True,
             unrestricted=False,
-            # Same explicit web-read set as EXPLORE: the `web` alias would
+            # Same explicit web-read set as SCOUT: the `web` alias would
             # smuggle in the web_download workspace writer.
             capabilities=(
                 "web_search",
@@ -310,11 +313,41 @@ Rules:
 }
 
 
+#: Former names of a builtin, upper-cased, to the name it has now. A model
+#: that still writes ``host.delegate(name="EXPLORE")``, a stored session that
+#: recorded it and a capability switch saved under it all keep working.
+SPECIALIST_ALIASES: dict[str, str] = {"EXPLORE": "SCOUT"}
+
+
+def canonical_specialist_name(name: str) -> str:
+    """A former builtin name becomes the current one; any other name is kept
+    exactly as given (custom specialists are matched by their own spelling)."""
+    raw = str(name or "").strip()
+    return SPECIALIST_ALIASES.get(raw.upper(), raw)
+
+
+def specialist_state_names(name: str) -> tuple[str, ...]:
+    """Every name one specialist's on/off switch is stored under.
+
+    The current name first, then each former one. A switch turned off under
+    EXPLORE before the rename must still read as off for SCOUT, so readers
+    require every one of them to be on and the toggle writes all of them.
+    """
+    canonical = canonical_specialist_name(name)
+    former = tuple(
+        alias
+        for alias, target in SPECIALIST_ALIASES.items()
+        if target == canonical.upper()
+    )
+    return (canonical, *former)
+
+
 def builtin_specialist(name: str) -> SpecialistProfile | None:
-    """Resolve one built-in profile, case-insensitively; ``None`` if unknown."""
+    """Resolve one built-in profile, case-insensitively and through former
+    names; ``None`` if unknown."""
     if not name:
         return None
-    return BUILTIN_SPECIALISTS.get(str(name).upper())
+    return BUILTIN_SPECIALISTS.get(canonical_specialist_name(name).upper())
 
 
 def builtin_catalog() -> list[dict[str, Any]]:
@@ -324,7 +357,10 @@ def builtin_catalog() -> list[dict[str, Any]]:
 
 __all__ = [
     "BUILTIN_SPECIALISTS",
+    "SPECIALIST_ALIASES",
     "SpecialistProfile",
     "builtin_catalog",
     "builtin_specialist",
+    "canonical_specialist_name",
+    "specialist_state_names",
 ]

@@ -19,6 +19,8 @@ from openai4s.specialists import (
     SpecialistProfile,
     builtin_catalog,
     builtin_specialist,
+    canonical_specialist_name,
+    specialist_state_names,
 )
 
 
@@ -53,7 +55,7 @@ def _service(store):
 def test_every_builtin_has_a_real_persona_and_the_expected_roster():
     assert list(BUILTIN_SPECIALISTS) == [
         "SCIENTIST",
-        "EXPLORE",
+        "SCOUT",
         "GENERAL",
         "REMOTE_GPU_PROVISIONER",
         "PLAN",
@@ -102,13 +104,13 @@ def test_catalog_and_runtime_rosters_are_the_same_object_graph():
 
 
 def test_builtin_specialist_lookup_is_case_insensitive():
-    assert builtin_specialist("explore") is BUILTIN_SPECIALISTS["EXPLORE"]
+    assert builtin_specialist("scout") is BUILTIN_SPECIALISTS["SCOUT"]
     assert builtin_specialist("Remote_Gpu_Provisioner") is not None
     assert builtin_specialist("NOSUCH") is None
 
 
 def test_restricted_builtins_derive_a_fail_closed_execution_policy():
-    for name in ("EXPLORE", "PLAN", "REVIEWER"):
+    for name in ("SCOUT", "PLAN", "REVIEWER"):
         profile = BUILTIN_SPECIALISTS[name]
         assert profile.unrestricted is False
         overrides = profile.profile_overrides()
@@ -126,10 +128,10 @@ def test_restricted_builtins_derive_a_fail_closed_execution_policy():
 
 
 def test_read_only_scouts_keep_web_reads_without_the_download_writer():
-    """EXPLORE and PLAN advertise web research; the policy must keep the
+    """SCOUT and PLAN advertise web research; the policy must keep the
     read side (web_search/web_fetch) while refusing web_download, which
     persists URL bytes into the shared session workspace."""
-    for name in ("EXPLORE", "PLAN"):
+    for name in ("SCOUT", "PLAN"):
         policy = child_execution_policy(BUILTIN_SPECIALISTS[name].profile_overrides())
         assert policy.allows("web_search"), name
         assert policy.allows("web_fetch"), name
@@ -165,14 +167,14 @@ def test_profile_overrides_carries_an_optional_max_turns():
 
 def test_delegating_to_a_builtin_injects_persona_and_policy():
     service, sent = _service(_EmptyStore())
-    service.delegate({"request": "map the repo", "name": "EXPLORE"})
+    service.delegate({"request": "map the repo", "name": "SCOUT"})
 
     spec = sent[0]
-    assert "You are acting as the specialist **EXPLORE**." in spec["request"]
-    assert BUILTIN_SPECIALISTS["EXPLORE"].system_prompt in spec["request"]
+    assert "You are acting as the specialist **SCOUT**." in spec["request"]
+    assert BUILTIN_SPECIALISTS["SCOUT"].system_prompt in spec["request"]
     assert spec["unrestricted"] is False
     assert spec["capabilities"] == list(
-        BUILTIN_SPECIALISTS["EXPLORE"].profile_overrides()["capabilities"]
+        BUILTIN_SPECIALISTS["SCOUT"].profile_overrides()["capabilities"]
     )
 
 
@@ -181,7 +183,7 @@ def test_call_site_settings_still_win_over_builtin_defaults():
     service.delegate(
         {
             "request": "scout",
-            "name": "EXPLORE",
+            "name": "SCOUT",
             "capabilities": ["read_file"],
             "unrestricted": True,  # floor: the builtin's False cannot be raised
         }
@@ -194,9 +196,9 @@ def test_call_site_settings_still_win_over_builtin_defaults():
 @pytest.mark.parametrize(
     "name,capability",
     [
-        ("EXPLORE", "bash"),
-        ("EXPLORE", "write_file"),
-        ("EXPLORE", "web_download"),
+        ("SCOUT", "bash"),
+        ("SCOUT", "write_file"),
+        ("SCOUT", "web_download"),
         ("PLAN", "web"),
         ("REVIEWER", "delegation"),
     ],
@@ -213,7 +215,7 @@ def test_restricted_builtin_call_cannot_widen_capabilities(name, capability):
 def test_restricted_builtin_accepts_method_level_capability_subset():
     service, sent = _service(_EmptyStore())
     service.delegate(
-        {"request": "map files", "name": "EXPLORE", "capabilities": ["list_dir"]}
+        {"request": "map files", "name": "SCOUT", "capabilities": ["list_dir"]}
     )
 
     assert sent[0]["capabilities"] == ["list_dir"]
@@ -231,7 +233,7 @@ def test_a_stored_row_with_the_same_name_overrides_the_builtin():
 
     spec = sent[0]
     assert "You are the user's own explorer." in spec["request"]
-    assert BUILTIN_SPECIALISTS["EXPLORE"].system_prompt not in spec["request"]
+    assert BUILTIN_SPECIALISTS["SCOUT"].system_prompt not in spec["request"]
     # The row's overrides applied; the builtin's restriction keys did not.
     assert spec["skill_names"] == ["literature-review"]
     assert "capabilities" not in spec
@@ -250,7 +252,7 @@ def test_general_and_scientist_get_persona_without_restrictions():
 
 def test_builtin_policy_is_armed_on_the_real_child_dispatcher(monkeypatch):
     """End to end through the existing choke point: DelegationService injects
-    the EXPLORE profile into the spec, `_run_one` derives the policy and arms
+    the SCOUT profile into the spec, `_run_one` derives the policy and arms
     it via set_child_execution_policy, and the child's own dispatcher then
     refuses a write."""
     import openai4s.agent.loop as loop_mod
@@ -279,7 +281,7 @@ def test_builtin_policy_is_armed_on_the_real_child_dispatcher(monkeypatch):
     runner = DelegationRunner(get_config(), child_max_turns=3)
     service = DelegationService(delegate=runner, steering={}, store=_EmptyStore())
     try:
-        result = service.delegate({"request": "map the repo", "name": "EXPLORE"})
+        result = service.delegate({"request": "map the repo", "name": "SCOUT"})
     finally:
         runner.close()
 
@@ -297,3 +299,84 @@ def test_remote_gpu_provisioner_prompt_moved_without_rewording():
     assert "remote-GPU provisioning specialist" in prompt
     assert "host.register_remote_capability" in prompt
     assert "Never claim a model is configured until verified." in prompt
+
+
+# --------------------------------------------------------------------------
+# owner decision 31: EXPLORE is SCOUT now, and EXPLORE still works
+# --------------------------------------------------------------------------
+
+
+def test_the_former_name_explore_resolves_to_scout():
+    assert "EXPLORE" not in BUILTIN_SPECIALISTS
+    assert "EXPLORE" not in [entry["name"] for entry in builtin_catalog()]
+    for spelling in ("EXPLORE", "explore", "Explore"):
+        assert builtin_specialist(spelling) is BUILTIN_SPECIALISTS["SCOUT"]
+        assert canonical_specialist_name(spelling) == "SCOUT"
+    # A custom specialist's name is never rewritten.
+    assert canonical_specialist_name("my_explorer") == "my_explorer"
+    assert specialist_state_names("SCOUT") == ("SCOUT", "EXPLORE")
+    assert specialist_state_names("GENERAL") == ("GENERAL",)
+
+
+def test_a_model_that_still_delegates_to_explore_gets_scout():
+    service, sent = _service(_EmptyStore())
+    service.delegate({"request": "map the repo", "name": "EXPLORE"})
+
+    spec = sent[0]
+    assert "You are acting as the specialist **SCOUT**." in spec["request"]
+    assert BUILTIN_SPECIALISTS["SCOUT"].system_prompt in spec["request"]
+    assert spec["unrestricted"] is False
+    assert spec["capabilities"] == list(
+        BUILTIN_SPECIALISTS["SCOUT"].profile_overrides()["capabilities"]
+    )
+
+
+def test_a_switch_saved_under_explore_still_turns_scout_off():
+    """A user who turned EXPLORE off before the rename did not turn SCOUT on."""
+    state = {"EXPLORE": False}
+    service = DelegationService(
+        delegate=lambda spec: {"ok": True},
+        steering={},
+        store=_EmptyStore(),
+        specialist_enabled=lambda name: all(
+            state.get(n, True) for n in specialist_state_names(name)
+        ),
+    )
+    for spelling in ("SCOUT", "EXPLORE"):
+        with pytest.raises(RuntimeError, match="disabled by capability policy"):
+            service.delegate({"request": "map", "name": spelling})
+
+
+def test_the_agents_routes_answer_explore_as_scout_and_keep_its_switch(tmp_path):
+    """Through the real routes: a switch stored under EXPLORE before the rename
+    shows SCOUT off, an old client's `PUT /agents/EXPLORE/enabled` turns SCOUT
+    on (both stored names), and `GET /agents/EXPLORE` answers SCOUT's row."""
+    from openai4s.server import gateway as gateway_mod
+    from openai4s.store import get_store
+    from tests.test_missing_resource_mutations import _cfg, _handler, _Hub
+
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    try:
+        store = get_store(cfg.db_path)
+        store.set_capability_enabled("specialist", "EXPLORE", False, scope="global")
+        assert store.specialist_profiles().enabled("SCOUT") is False
+        handler, seen = _handler(cfg, runner)
+
+        handler._api("GET", "/agents")
+        rows = {row["name"]: row for row in seen[-1][0]}
+        assert "EXPLORE" not in rows and rows["SCOUT"]["enabled"] is False
+
+        handler._body = lambda: {"enabled": True}
+        handler._api("PUT", "/agents/EXPLORE/enabled")
+        body, code = seen[-1]
+        assert code == 200 and body["name"] == "SCOUT" and body["enabled"] is True
+        state = store.capability_state()
+        assert state.is_enabled("specialist", "SCOUT")
+        assert state.is_enabled("specialist", "EXPLORE")
+
+        handler._api("GET", "/agents/EXPLORE")
+        body, code = seen[-1]
+        assert code == 200 and body["name"] == "SCOUT" and body["enabled"] is True
+    finally:
+        runner.close()

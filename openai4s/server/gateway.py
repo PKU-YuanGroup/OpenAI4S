@@ -273,7 +273,11 @@ from openai4s.server.volcengine_arkcli import ArkCliError
 from openai4s.server.volcengine_connector import VolcengineConnectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
-from openai4s.specialists import builtin_catalog
+from openai4s.specialists import (
+    builtin_catalog,
+    canonical_specialist_name,
+    specialist_state_names,
+)
 from openai4s.storage.connectors import public_connector
 from openai4s.storage.governance import QuotaExceeded, record_session_llm_usage
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
@@ -20332,6 +20336,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/agents/([^/]+)/enabled", sub)
             if m and method in ("PUT", "PATCH"):
                 name = unquote(m.group(1))
+                if store.get_agent(name, include_disabled=True) is None:
+                    # EXPLORE is SCOUT now (owner decision 31).
+                    name = canonical_specialist_name(name)
                 enabled = bool(self._body().get("enabled", True))
                 # The GET sibling answers 404 for a name no known agent has,
                 # while this route wrote a capability row for ANY name and
@@ -20345,13 +20352,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 ):
                     self._json({"error": "unknown agent"}, 404)
                     return
-                state = store.set_capability_enabled(
-                    "specialist",
-                    name,
-                    enabled,
-                    scope="global",
-                    metadata={"source": "web"},
-                )
+                # Under the former name too: a switch saved as EXPLORE is
+                # read together with SCOUT's (`specialist_state_names`).
+                for state_name in specialist_state_names(name):
+                    state = store.set_capability_enabled(
+                        "specialist",
+                        state_name,
+                        enabled,
+                        scope="global",
+                        metadata={"source": "web"},
+                    )
                 self._json(
                     {
                         "ok": True,
@@ -20364,7 +20374,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/agents/([^/]+)", sub)
             if m and method == "GET":
                 name = unquote(m.group(1))
-                for a in self._agents_payload():
+                agents = self._agents_payload()
+                if not any(a["name"] == name for a in agents):
+                    name = canonical_specialist_name(name)  # EXPLORE → SCOUT
+                for a in agents:
                     if a["name"] == name:
                         self._json(a)
                         return
@@ -21470,7 +21483,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 out.append(
                     {
                         **a,
-                        "enabled": capability_state.is_enabled("specialist", a["name"]),
+                        "enabled": all(
+                            capability_state.is_enabled("specialist", state_name)
+                            for state_name in specialist_state_names(a["name"])
+                        ),
                         "parameters": {},
                         "systemPrompt": None,
                         "userHidden": False,

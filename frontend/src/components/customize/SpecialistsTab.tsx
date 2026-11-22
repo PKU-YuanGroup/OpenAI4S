@@ -2,7 +2,7 @@ import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
-import { specialistBadge, specialistDescription } from "../../features/customize/copy";
+import { specialistBadge, specialistDescription, specialistName } from "../../features/customize/copy";
 import { nestedEditor } from "../../features/customize/state";
 import {
   asList,
@@ -102,7 +102,7 @@ export function BuiltinRow({ ag }: { ag: Record<string, unknown> }) {
     <div class="cust-row">
       <div class="info">
         <div class="nm">
-          <span>{asString(ag.name)}</span> <Pill>{specialistBadge(asString(ag.mode, "agent"))}</Pill>
+          <span>{specialistName(ag)}</span> <Pill>{specialistBadge(asString(ag.mode, "agent"))}</Pill>
           {ag.supportsPlanMode ? (
             <>
               {" "}

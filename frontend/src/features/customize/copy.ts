@@ -12,7 +12,7 @@ import { LANG, languageRevision } from "../../i18n/runtime";
 const SPECIALIST_ZH: Record<string, string> = {
   SCIENTIST:
     "主研究智能体。编写调用完整 host.* 工具集（bash、web_search/web_fetch、文件与 grep/glob 工具、委派、技能）的 Python，产出可发表级的图表、表格和报告。",
-  EXPLORE:
+  SCOUT:
     "只读侦察。检索文献和你的文件（web_search、web_fetch、grep、glob、read_file），返回一份简明的线索图，不做任何写入。",
   GENERAL:
     "通用子智能体，处理一个独立的子任务；可使用完整工具集，并通过 host.delegate(...) 返回结构化结果。",
@@ -42,6 +42,15 @@ const SEEDED_EN: Record<string, string> = {
   example: "Local demo MCP server: echo / now / calc / random_int.",
 };
 
+/**
+ * Owner decision 31: the read-only scout was called EXPLORE, which read as
+ * the autonomous Explore mode. It is SCOUT now and 侦察 in Chinese, with the
+ * name the agent uses beside it.
+ */
+const SPECIALIST_NAME_ZH: Record<string, string> = {
+  SCOUT: "侦察（SCOUT）",
+};
+
 /** The badges beside a specialist's name. */
 const BADGE_ZH: Record<string, string> = {
   primary: "主智能体",
@@ -61,6 +70,13 @@ export function specialistDescription(row: Record<string, unknown>): string {
   const described = String(row.description ?? "");
   if (row.source !== "bundled") return described;
   return zh(SPECIALIST_ZH, String(row.name ?? "")) ?? described;
+}
+
+/** A bundled specialist's name in the UI language; a person's own is kept. */
+export function specialistName(row: Record<string, unknown>): string {
+  const name = String(row.name ?? "");
+  if (row.source !== "bundled") return name;
+  return zh(SPECIALIST_NAME_ZH, name) ?? name;
 }
 
 /**

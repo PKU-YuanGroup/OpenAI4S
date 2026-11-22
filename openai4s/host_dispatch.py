@@ -2347,10 +2347,14 @@ class HostDispatcher:
         }
 
     def _specialist_enabled(self, name: str) -> bool:
+        from openai4s.specialists import specialist_state_names
+
         scope = self._current_capability_scope()
-        return self.store.capability_state(**scope).is_enabled(
-            "specialist",
-            name,
+        state = self.store.capability_state(**scope)
+        # A builtin's former name keeps its switch (EXPLORE is SCOUT now).
+        return all(
+            state.is_enabled("specialist", state_name)
+            for state_name in specialist_state_names(name)
         )
 
     def _invoke_control_behavior(self, method: str, *arguments: Any) -> Any:
