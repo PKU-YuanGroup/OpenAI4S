@@ -2105,6 +2105,56 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/(?:branches/([^/]+)) [ok]": {
+      "schema": {
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "deleted_at": {
+            "type": "integer"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "root_frame_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch_id",
+          "deleted_at",
+          "ok",
+          "root_frame_id"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [error]": {
       "schema": {
         "properties": {
@@ -7709,6 +7759,65 @@
         "type": "object"
       }
     },
+    "GET /agents/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          },
+          "skillsLocked": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "supportsPlanMode": {
+            "type": "boolean"
+          },
+          "systemPrompt": {
+            "type": "null"
+          },
+          "unrestricted": {
+            "type": "boolean"
+          },
+          "userHidden": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "description",
+          "enabled",
+          "healthy",
+          "mode",
+          "name",
+          "parameters",
+          "skillsLocked",
+          "source",
+          "supportsPlanMode",
+          "systemPrompt",
+          "unrestricted",
+          "userHidden"
+        ],
+        "type": "object"
+      }
+    },
     "GET /agents/([^/]+)/enabled [error]": {
       "schema": {
         "properties": {
@@ -12150,6 +12259,39 @@
           "queued_count",
           "root_frame_id",
           "session_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -16902,6 +17044,28 @@
           "quarantine_reason": {
             "type": "null"
           },
+          "r": {
+            "properties": {
+              "alive": {
+                "type": "boolean"
+              },
+              "generation_id": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "alive",
+              "generation_id",
+              "state"
+            ],
+            "type": "object"
+          },
           "repl_enabled": {
             "type": "boolean"
           },
@@ -16932,6 +17096,7 @@
           "last_activity_at",
           "manual_stop",
           "quarantine_reason",
+          "r",
           "repl_enabled",
           "state",
           "trust_state",
@@ -18203,19 +18368,50 @@
                 "type": "integer"
               },
               "generation_id": {
-                "type": "string"
+                "type": [
+                  "null",
+                  "string"
+                ]
               },
               "generation_ordinal": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "last_activity_at": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "manual_stop": {
                 "type": "boolean"
               },
               "quarantine_reason": {
                 "type": "null"
+              },
+              "r": {
+                "properties": {
+                  "alive": {
+                    "type": "boolean"
+                  },
+                  "generation_id": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "alive",
+                  "generation_id",
+                  "state"
+                ],
+                "type": "object"
               },
               "repl_enabled": {
                 "type": "boolean"
@@ -18247,6 +18443,7 @@
               "last_activity_at",
               "manual_stop",
               "quarantine_reason",
+              "r",
               "repl_enabled",
               "state",
               "trust_state",
@@ -18259,7 +18456,10 @@
             "type": "boolean"
           },
           "status": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           }
         },
         "required": [
@@ -27436,6 +27636,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -37388,6 +37621,39 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [error]": {
       "schema": {
         "properties": {
@@ -39516,6 +39782,9 @@
           "created_at": {
             "type": "integer"
           },
+          "deleted_at": {
+            "type": "null"
+          },
           "from_checkpoint_id": {
             "type": "string"
           },
@@ -39562,6 +39831,7 @@
           "base_checkpoint_id",
           "branch_id",
           "created_at",
+          "deleted_at",
           "from_checkpoint_id",
           "head_checkpoint_id",
           "name",
@@ -50841,6 +51111,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
