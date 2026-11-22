@@ -8467,6 +8467,38 @@ class SessionRunner:
                 if quarantine
                 else None
             ),
+            # SCI-35: the fields above are the Python slot's. A session that
+            # only ever ran R cells read as "not started" while its R kernel
+            # was live, so the R slot reports its own state beside them.
+            "r": self._r_slot_status(st, root_frame_id),
+        }
+
+    def _r_slot_status(self, st: SessionState | None, root_frame_id: str) -> dict:
+        """The R slot's {state, alive, generation_id}, computed as the Python
+        slot's is in `kernel_status`: the live supervisor while the session is
+        resident, else its newest persisted R generation."""
+        supervisor_status = st.kernels.status("r") if st else None
+        persisted = (
+            None
+            if supervisor_status is not None
+            else self.store.latest_kernel_generation(
+                root_frame_id,
+                "r",
+                branch_id=self.store.active_session_branch(root_frame_id),
+            )
+        )
+        if supervisor_status is None:
+            state = "ended" if persisted is not None else "none"
+        else:
+            state = supervisor_status["state"]
+        return {
+            "state": state,  # none | running | stopped | ended
+            "alive": bool(supervisor_status and supervisor_status["alive"]),
+            "generation_id": (
+                supervisor_status.get("generation_id")
+                if supervisor_status
+                else (persisted or {}).get("generation_id")
+            ),
         }
 
     def _env_summary(self, st: SessionState | None) -> dict:

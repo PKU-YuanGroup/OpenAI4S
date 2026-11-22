@@ -64,6 +64,18 @@ export type KernelStatus = {
   repl_enabled?: boolean;
   artifact_workbench?: boolean;
   explicit_recovery_required?: boolean;
+  /**
+   * SCI-35: the R slot's own state. Every field above is the Python slot's,
+   * so a session that only ran R read as "not started" while R was live.
+   */
+  r?: KernelSlotStatus;
+};
+
+/** One language slot's state, as `kernel_status` reports the R slot. */
+export type KernelSlotStatus = {
+  state?: string;
+  alive?: boolean;
+  generation_id?: string | null;
 };
 
 export type KernelEnvRow = {

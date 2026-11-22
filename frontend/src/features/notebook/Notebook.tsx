@@ -62,6 +62,7 @@ import {
   runtimeBadge,
   runtimeStatusText,
   shortRuntime,
+  shownKernelSlot,
   syncKernel,
 } from "./kernel";
 import {
@@ -804,43 +805,54 @@ function kernelStateLabel(st: KernelStatus): { text: string; cls: string } {
     none: t("nb.kernel.stateNone"),
   };
   // After a crash the slot is "none" again but a generation ran: "exited",
-  // not "not started".
+  // not "not started". SCI-35: the slot described is R's in a session where
+  // only R ran or R is the live one.
+  const slot = shownKernelSlot(st);
   const label = st.turn_running
     ? t("dash.badge.running")
     : kernelExited(st)
       ? nbT("nb.kernel.stateExited")
-      : names[st.state || ""] || st.state;
+      : names[slot.state] || slot.state;
+  const generation = slot.language === "python" && st.generation ? t("nb.kernel.generation", st.generation) : "";
   return {
-    text: String(label || "") + (st.generation ? t("nb.kernel.generation", st.generation) : ""),
-    cls: "kstate " + (st.turn_running ? "run" : st.state || ""),
+    text: String(label || "") + generation,
+    cls: "kstate " + (st.turn_running ? "run" : slot.state),
   };
 }
 
 function kernelTitle(st: KernelStatus): string {
   const env = st.env || {};
+  const slot = shownKernelSlot(st);
   return (
-    kernelLabel(kernelIdFromEnv(env)) +
+    (slot.language === "r" ? kernelLabel("r") : kernelLabel(kernelIdFromEnv(env))) +
     " kernel · " +
     t("nb.kernel.shared") +
-    (st.generation_id ? " · " + nbLabelT("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
+    (slot.generation_id ? " · " + nbLabelT("nb.owner.generation", shortRuntime(slot.generation_id)) : "") +
     (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "")
   );
 }
 
 /** A kernel ran and its process is gone (a crash): the next cell starts a new one. */
 export function kernelExited(st: KernelStatus): boolean {
-  return !st.alive && !st.turn_running && (st.state || "none") === "none" && !!st.generation_id;
+  const slot = shownKernelSlot(st);
+  return !slot.alive && !st.turn_running && slot.state === "none" && !!slot.generation_id;
 }
 
 export function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {
   const env = st.env || {};
-  const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
+  // SCI-35: an R-only session is described by its R slot, not as a Python
+  // kernel that never started.
+  const slot = shownKernelSlot(st);
+  const rt =
+    slot.language === "r"
+      ? kernelLabel("r")
+      : kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
   if (st.turn_running) return { text: t("nb.status.live", rt), cls: "live" };
-  if (st.alive) return { text: t("nb.status.ready", rt), cls: "ready" };
+  if (slot.alive) return { text: t("nb.status.ready", rt), cls: "ready" };
   // A fresh session said "ended — view only" before any cell had run.
-  if (st.state === "stopped") return { text: nbT("nb.status.stopped", rt), cls: "ended" };
-  if (st.state === "ended") return { text: t("nb.status.ended", rt), cls: "ended" };
-  if (st.generation_id) return { text: nbT("nb.status.exited", rt), cls: "ended" };
+  if (slot.state === "stopped") return { text: nbT("nb.status.stopped", rt), cls: "ended" };
+  if (slot.state === "ended") return { text: t("nb.status.ended", rt), cls: "ended" };
+  if (slot.generation_id) return { text: nbT("nb.status.exited", rt), cls: "ended" };
   return { text: nbT("nb.status.notStarted", rt), cls: "idle" };
 }
 
@@ -928,7 +940,7 @@ function ReplPanel() {
       ? kernelStateLabel(st)
       : { text: "…", cls: "kstate" };
   const quarantined = !!(st && st.view_only === true && st.trust_state === "quarantined");
-  const reviveHidden = !st || !!(st.alive || st.turn_running || quarantined);
+  const reviveHidden = !st || !!(shownKernelSlot(st).alive || st.turn_running || quarantined);
   const busy = replBusy.value;
   const pendingAction = kernelAction.value && kernelAction.value.sid === sid ? kernelAction.value.action : "";
   const shownState = pendingAction ? { text: nbT("nb.kernel.action." + pendingAction), cls: "kstate run" } : state;
