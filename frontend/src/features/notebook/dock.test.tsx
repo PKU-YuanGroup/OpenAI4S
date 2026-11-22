@@ -26,7 +26,14 @@ import { markNotebookSeen, notebookDisplayEntries } from "./cells";
 import { onNotebookScroll } from "./scroll";
 import type { NotebookCell } from "./types";
 import { activeTab, dock } from "../../stores/ui";
-import { forkPending, invalidateKernelCache, kernelView, replNotice, runtimeStatusText } from "./kernel";
+import {
+  forkPending,
+  invalidateKernelCache,
+  kernelView,
+  replNotice,
+  runtimeSummary,
+  runtimeStatusText,
+} from "./kernel";
 import {
   CellActions,
   CellList,
@@ -502,5 +509,44 @@ describe("Notebook read-only mode (NB-5)", () => {
     for (const mode of ["live", "busy", "ended", "restoring", "partial", "failed"]) {
       expect(runtimeStatusText(mode, null)).not.toMatch(/view only|仅供查看/);
     }
+  });
+});
+
+// SCI-35 #5: the kernel read's own fields are the Python slot's. A session
+// that only ever ran R cells said "not started" while its R kernel was live.
+describe("Notebook status in an R-only session", () => {
+  const env = { python_version: "3.11" };
+  const rLive = { state: "none", alive: false, env, r: { state: "running", alive: true, generation_id: "g-r1" } };
+
+  it("reads a live R kernel as live, in the status line, the badge and the summary", () => {
+    expect(kernelStatusLine(rLive)).toEqual({ text: t("nb.status.ready", "R"), cls: "ready" });
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: rLive, envs: null, cur: null };
+    const badge = byClass(KernelChips({ entries: [] }), "nb-live-badge")!;
+    expect(String(badge.props?.class)).toContain("live");
+    expect(textOf(badge)).toBe(nbT("nb.runtime.live"));
+    expect(textOf(badge)).not.toBe(nbT("nb.kernel.notStarted"));
+    // The R generation is shown when Python never started.
+    expect(runtimeSummary().r).toBe("g-r1");
+    expect(runtimeSummary().status).toBe("live");
+  });
+
+  it("describes an R kernel that ran and is gone, not a Python one that never started", () => {
+    const rEnded = { state: "none", env, r: { state: "ended", alive: false, generation_id: "g-r1" } };
+    expect(kernelStatusLine(rEnded).text).toBe(t("nb.status.ended", "R"));
+    const rExited = { state: "none", env, r: { state: "none", alive: false, generation_id: "g-r1" } };
+    expect(kernelStatusLine(rExited).text).toBe(nbT("nb.status.exited", "R"));
+    expect(runtimeStatusText("ended", rExited)).toBe(nbT("nb.kernel.stateExited"));
+  });
+
+  it("leaves a Python session as it was", () => {
+    const pythonLive = { state: "running", alive: true, env, r: { state: "none", alive: false, generation_id: null } };
+    expect(kernelStatusLine(pythonLive)).toEqual({ text: t("nb.status.ready", "Python 3.11"), cls: "ready" });
+    const neither = { state: "none", env, r: { state: "none", alive: false, generation_id: null } };
+    expect(kernelStatusLine(neither).text).toBe(nbT("nb.status.notStarted", "Python 3.11"));
+    expect(runtimeStatusText("ended", neither)).toBe(nbT("nb.kernel.notStarted"));
+    // Python ran and ended; R is idle too: Python's state is the one described.
+    const pythonEnded = { state: "ended", generation_id: "g-py", env, r: { state: "ended", generation_id: "g-r" } };
+    expect(kernelStatusLine(pythonEnded).text).toBe(t("nb.status.ended", "Python 3.11"));
   });
 });

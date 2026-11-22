@@ -45,6 +45,7 @@ import { embedArtifactFigures } from "./figures";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { planModeRequestText, planSeed, planSeedMarker } from "./planPrompt";
+import { resayProgress } from "./progress";
 import { cancelledIdentity, stoppedMarker } from "./stopped";
 import { cellCardOnScreen, chatCells, renderStoredCell, type StoredCell } from "./cellCard";
 import { dropEmptyProse, openTurnGroup, placeCardInTurn, turnTextKey, type TurnGroup } from "./turnGroup";
@@ -463,7 +464,9 @@ export function renderStored(
     }
   } else {
     const md = el("div", "md");
-    md.innerHTML = renderMd(text);
+    // Decision 30: a server progress row in the UI language; the stored row
+    // (`_messageText`, Copy) is unchanged.
+    md.innerHTML = renderMd(resayProgress(text));
     embedArtifactFigures(md);
     w.appendChild(md);
     if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
@@ -708,7 +711,9 @@ export function historyTurns(): HistoryTurns {
       review = { status: String(status), truth };
     }
     if (m.failure && m.failure.request_id) failure = m.failure;
-    run.push(text);
+    // Decision 30: shown in the UI language; the rating key and Copy read the
+    // stored row, so they do not change with the language.
+    run.push(resayProgress(text));
     prose.push(text);
   };
   return { add, end };

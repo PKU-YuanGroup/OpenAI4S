@@ -21,6 +21,7 @@ import {
   reconcilePendingRepl,
   scheduleWorkbenchRefresh,
 } from "./kernel";
+import { watchComposerRun } from "./pasted";
 import { watchNotebookVisibility } from "./scroll";
 import type { WindowTarget } from "./types";
 
@@ -117,6 +118,8 @@ export function installNotebook(
   watchNotebookVisibility();
   watchReplayGaps();
   watchRunEnd();
+  // SYNC-15: "Run in Notebook" for a code block in the chat composer.
+  watchComposerRun();
 }
 
 export { highlightTraceback, notebookExportLink };

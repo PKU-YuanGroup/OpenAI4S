@@ -8,8 +8,8 @@ F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-
 
 | 文件 | 职责 |
 | --- | --- |
-| [`annot.ts`](annot.ts) | 图片标注器、pin 状态、作曲框 chip（app.js:8965-8993, 9149-9429）。缩放为 1 时图片按窗格宽度适应，级别显示「适应宽度」而非容易被读成原始尺寸的「100%」；操作提示胶囊和缩放条位于预留的边距里，不再压住图片（ART-15）。 |
-| [`annot.test.ts`](annot.test.ts) | `annotationStatus` 映射；held pin；`openAnnotations`；删除一条后评论列表在重绘的 chip 上重新打开。 |
+| [`annot.ts`](annot.ts) | 图片标注器、pin 状态、作曲框 chip（app.js:8965-8993, 9149-9429）。缩放为 1 时图片按窗格宽度适应，级别显示「适应宽度」而非容易被读成原始尺寸的「100%」；操作提示胶囊和缩放条位于预留的边距里，不再压住图片（ART-15）。在只读的导入副本中（其横幅显示时），点击图片不会添加标注而是说明原因，提示文字也不再提供添加标注，图钉的删除按钮被禁用；服务器对保存或移除的只读拒绝（423 `locked`）按界面语言、用本地文案表显示，而不是服务器的英文（M-66）。 |
+| [`annot.test.ts`](annot.test.ts) | `annotationStatus` 映射；held pin；`openAnnotations`；删除一条后评论列表在重绘的 chip 上重新打开；只读副本不会打开标注草稿（普通会话会），保存遭 423 拒绝时以中英文显示，其他失败保留原文（M-66）。 |
 | [`dom.ts`](dom.ts) | `el`（再导出 artifacts 的同名函数）/ `$` / lucide 子集 / `ghostIconBtn`。 |
 | [`frames.ts`](frames.ts) | 惰性 HTML iframe 策略、无沙箱的 PDF blob frame（`applyPdfFrame`：Chromium 不在任何沙箱 frame 里运行 PDF 查看器）、回环源与 grant 路径检查；应用同源 Ketcher 与剪贴板权限。 |
 | [`frames.test.ts`](frames.test.ts) | iframe sandbox 属性、派生的回环源、grant 路径检查及应用同源 Ketcher。 |

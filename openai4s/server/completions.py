@@ -1178,7 +1178,10 @@ def _normalized(value: str) -> str:
 #: The status lines this module writes around actions. A notebook export and
 #: anything else that wants only the model's own narration filters these out;
 #: ``tests/test_server_completions.py`` checks every template is recognised so
-#: the two cannot drift apart.
+#: the two cannot drift apart. The workbench says these lines again in the UI
+#: language from its own copy of every template
+#: (``frontend/src/features/messages/progress.ts``); rewording one here means
+#: rewording it there, which ``tests/test_progress_copy_parity.py`` enforces.
 _PROGRESS_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (

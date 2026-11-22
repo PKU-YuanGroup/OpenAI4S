@@ -200,6 +200,46 @@ function shortRuntime(value: unknown): string {
   return text ? (text.length > 12 ? text.slice(0, 8) + "…" : text) : t("runtime.none");
 }
 
+/** One language slot, as the status line and badge describe it. */
+export type ShownKernelSlot = {
+  language: "python" | "r";
+  state: string;
+  alive: boolean;
+  generation_id: string;
+};
+
+function slotStarted(state: unknown, generationId: unknown): boolean {
+  return !!generationId || (!!state && state !== "none");
+}
+
+/**
+ * SCI-35: the slot the status line and badge describe. A kernel read's own
+ * fields are the Python slot's, so a session that only ever ran R cells read
+ * as "not started" (or "ended") while its R kernel was live. Either slot
+ * being live makes the session live; otherwise Python's state is described
+ * once Python has started, and R's when only R ever has.
+ */
+export function shownKernelSlot(st: KernelStatus | null | undefined): ShownKernelSlot {
+  const kernel = st || {};
+  const r = kernel.r || {};
+  const python: ShownKernelSlot = {
+    language: "python",
+    state: String(kernel.state || "none"),
+    alive: !!kernel.alive,
+    generation_id: String(kernel.generation_id || ""),
+  };
+  const rSlot: ShownKernelSlot = {
+    language: "r",
+    state: String(r.state || "none"),
+    alive: !!r.alive,
+    generation_id: String(r.generation_id || ""),
+  };
+  if (python.alive) return python;
+  if (rSlot.alive) return rSlot;
+  if (!slotStarted(kernel.state, kernel.generation_id) && slotStarted(r.state, r.generation_id)) return rSlot;
+  return python;
+}
+
 /**
  * The runtime badge's words, one answer for the Notebook badge and the
  * Timeline's runtime strip. "Ended · view only" was shown for a kernel that
@@ -213,11 +253,12 @@ export function runtimeStatusText(
   kernel: KernelStatus | null = currentKernelStatus(),
 ): string {
   if (mode === "ended" && kernel) {
-    const idle = !kernel.alive && !kernel.turn_running;
-    if (idle && (kernel.state || "none") === "none") {
-      return kernel.generation_id ? nbT("nb.kernel.stateExited") : nbT("nb.kernel.notStarted");
+    const slot = shownKernelSlot(kernel);
+    const idle = !slot.alive && !kernel.turn_running;
+    if (idle && slot.state === "none") {
+      return slot.generation_id ? nbT("nb.kernel.stateExited") : nbT("nb.kernel.notStarted");
     }
-    if (idle && kernel.state === "stopped") return t("nb.kernel.stateStopped");
+    if (idle && slot.state === "stopped") return t("nb.kernel.stateStopped");
   }
   return nbT("nb.runtime." + mode);
 }
@@ -233,7 +274,8 @@ export function runtimeStatus(): string {
   if (/partial/.test(recoveryStatus)) return "partial";
   if (/restor|recover|bootstrap|validat/.test(recoveryStatus)) return "restoring";
   if (queue.owner || running.value || kcSt.turn_running) return "busy";
-  if (kcSt.alive) return "live";
+  // SCI-35: a live R kernel is a live session, Python's slot or not.
+  if (shownKernelSlot(kcSt).alive) return "live";
   return "ended";
 }
 
@@ -294,7 +336,8 @@ export function runtimeSummary(): {
     kcSt.python_generation_id ||
     kcSt.generation_id ||
     (pythonCell && pythonCell.generation_id);
-  const rGeneration = recovery.r_generation_id || (rCell && rCell.generation_id);
+  const rGeneration =
+    recovery.r_generation_id || (kcSt.r && kcSt.r.generation_id) || (rCell && rCell.generation_id);
   return {
     status,
     branch: publicText(branch, 96),
@@ -486,8 +529,20 @@ export async function reconcilePendingRepl(frameId: string): Promise<void> {
 }
 
 function runtimeKeyOf(st: KernelStatus | null): string {
+  const r = (st && st.r) || {};
   return st
-    ? [st.state, st.alive, st.turn_running, st.generation_id, st.generation, st.view_only, st.trust_state].join(":")
+    ? [
+        st.state,
+        st.alive,
+        st.turn_running,
+        st.generation_id,
+        st.generation,
+        st.view_only,
+        st.trust_state,
+        r.state,
+        r.alive,
+        r.generation_id,
+      ].join(":")
     : "";
 }
 

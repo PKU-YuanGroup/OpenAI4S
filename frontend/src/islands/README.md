@@ -8,8 +8,8 @@ F-18 imperative islands. 3Dmol lazy script-tag inject (vendored copy only; the d
 
 | File | Responsibility |
 | --- | --- |
-| [`annot.ts`](annot.ts) | Image annotator, pin status, composer chip (app.js:8965-8993, 9149-9429). At z=1 the image is fitted to the pane width and the level reads "fit width", not "100%" (which read as actual size); the hint pill and zoom bar sit in reserved margins instead of over the figure (ART-15). |
-| [`annot.test.ts`](annot.test.ts) | `annotationStatus` mapping; held pins; `openAnnotations`; the comment list reopens on the repainted chip after a removal. |
+| [`annot.ts`](annot.ts) | Image annotator, pin status, composer chip (app.js:8965-8993, 9149-9429). At z=1 the image is fitted to the pane width and the level reads "fit width", not "100%" (which read as actual size); the hint pill and zoom bar sit in reserved margins instead of over the figure (ART-15). In a read-only imported copy (its banner is up) a click on the image adds no comment and says why, the hint does not offer it and a pin's Delete is disabled; the server's read-only refusal (423 `locked`) of a save or removal is said in the UI language from a local copy table instead of the server's English (M-66). |
+| [`annot.test.ts`](annot.test.ts) | `annotationStatus` mapping; held pins; `openAnnotations`; the comment list reopens on the repainted chip after a removal; a read-only copy opens no comment draft (an ordinary session does) and a 423 refusal of a save is said in Chinese and English, any other failure keeping its own text (M-66). |
 | [`dom.ts`](dom.ts) | `el` (the artifacts helper, re-exported) / `$` / lucide subset / `ghostIconBtn`. |
 | [`frames.ts`](frames.ts) | Inert HTML iframe policy, the unsandboxed PDF-blob frame (`applyPdfFrame`: Chromium refuses its PDF viewer in any sandboxed frame), verified loopback origin and grant path checks; app-origin Ketcher + clipboard allow. |
 | [`frames.test.ts`](frames.test.ts) | iframe sandbox attributes, the derived loopback origin, grant path checks, and app-origin Ketcher. |

@@ -81,6 +81,9 @@ const COPY: CopyTable = {
     "nb.missing.open": "打开 设置 → 计算",
     "nb.missing.r":
       "当前 R 环境没有“{0}”包。会话里不能安装 R 包：运行 openai4s setup 构建托管的 R 环境，或在本机 R 里装好后，在会话选项的「运行环境」里选用那个 R。",
+    // SYNC-15: code pasted into the chat composer (pasted.ts).
+    "nb.composerRun.label": "在 Notebook 中运行 · {0}",
+    "nb.composerRun.title": "把消息里的这段 {0} 代码作为手动单元在 Notebook 中运行，并从消息中移除",
   },
   en: {
     "nb.crash.notice":
@@ -158,6 +161,8 @@ const COPY: CopyTable = {
     "nb.missing.open": "Open Settings → Compute",
     "nb.missing.r":
       "This R environment does not have the “{0}” package. R packages cannot be installed from a session: run openai4s setup to build the managed R environment, or install it in your own R and pick that R under Runtime environment in the session options.",
+    "nb.composerRun.label": "Run in Notebook · {0}",
+    "nb.composerRun.title": "Run this {0} code from your message as a manual Notebook cell, and take it out of the message",
   },
 };
 

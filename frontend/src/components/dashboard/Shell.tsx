@@ -328,6 +328,10 @@ export function Shell() {
                   {/* Files chosen with + / paste / drop, until the message
                       they go with is sent (chrome/attachments.ts, M-10). */}
                   <div id="composer-attachments" class="composer-attach hidden" />
+                  {/* "Run in Notebook" for a code block pasted into the
+                      composer, while manual cells are on (notebook/pasted.ts,
+                      SYNC-15). */}
+                  <div id="composer-run" class="composer-attach composer-run hidden" />
                   <textarea
                     id="composer"
                     rows={1}
