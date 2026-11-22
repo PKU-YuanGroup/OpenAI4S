@@ -1232,4 +1232,35 @@ what it deliberately does not cover.
 
 ### Gate results
 
-(filled in by the commit that records them)
+Run on `071b54a1`, the head before this table, on macOS (Apple Silicon) with
+credential-less scratch daemons; the developer's real data directory was not
+used. The commit that adds this table changes only this file.
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Offline suite | `uv run python scripts/capture_response_schemas.py --check` (the suite under `-n auto --maxprocesses=4 --dist loadfile`) | 13523 passed, 42 skipped, 4 xfailed (the NV-07 samples) in 6 min 4 s |
+| Format, lint, strict types | `uv run pre-commit run --all-files` · `uv run mypy` | exit 0; mypy: no issues in 50 source files |
+| Directory READMEs | `uv run python scripts/check_directory_readmes.py` | 207 maintained directories, complete bilingual coverage |
+| Scenario contracts | `uv run python3 -m harness.cli run --tier pr --offline` | 38 of 38 passed (26 contract-only, 12 production-backed) |
+| Response shapes and route contracts | `scripts/capture_response_schemas.py --check` · `scripts/capture_response_contract.py --check` | no breaking change to the frozen shapes (1362 route/status shapes, 245/245 routes exercised); 245 of 245 routes have a contract |
+| Source secret scan | `python3 scripts/source_secret_scan.py` | passed (4595 files) |
+| Plan crosswalk | `uv run python scripts/reaudit_crosswalk.py --check` | up to date, 47 closed rows |
+| Workbench | `npm test --prefix frontend` · `npm run typecheck` · `npm run extract-i18n:check` · `npm run build --prefix frontend` | Vitest 2415 passed in 179 files; typecheck passed; i18n 1213/1213; build passed with no diff under `openai4s/server/webui/dist` |
+| Packaging | `uv build` · `scripts/verify_release_artifacts.py` | wheel and sdist verified |
+| Browser (Chromium) | `browser_smoke`, `browser_admission_fault`, `browser_p1_controls`, `browser_stage1_trusted_delivery`, `browser_sandbox_preview`, `browser_auto_mode_status`, `browser_artifact_preview`, `browser_matrix --browser=chromium`, `browser_stage0_acceptance` (self-test and acceptance), `browser_team_mode` | all passed; matrix 14/14; the access token appeared 0 times in the daemon log |
+| Upgrade readback (03) | `installed_runtime_smoke.py --bundle <candidate> --baseline-bundle OpenAI4S-1.0.1-linux-x86_64.tar.gz --baseline-sha256 026c753d…4503b` in a `linux/amd64` container (`--network none`), candidate cross-built from `3cf7ac3a` | fresh install passed (18.0 s); upgrade passed all 14 checks (8.1 s): schema 43 → 44, three Cells and both CSV versions byte-exact before and after a restart, the restored copy read by 1.0.1 |
+| Rollback refusal | the 1.0.1 bundle's `Store()` on a database the candidate created | `FutureSchemaError` (`future_schema`), database bytes unchanged |
+
+Not run here: the container smoke, both Linux bubblewrap smokes, the
+Firefox/WebKit browser matrix, the Skill installer checks, the single-cell
+stack job and a `release.yml` dry run. The first five are CI jobs on this pull
+request; the dry run needs the owner's go-ahead.
+
+### What §22 does not claim
+
+- No release version number: `pyproject.toml` still says 1.0.1, so the
+  candidate bundle in the upgrade run is named 1.0.1 too.
+- The upgrade run used a bundle cross-built on macOS and executed under
+  emulation; the release job builds and runs it on a Linux x86_64 runner.
+- No live LLM turn: every end-to-end run used a credential-less daemon or a
+  mock provider.
