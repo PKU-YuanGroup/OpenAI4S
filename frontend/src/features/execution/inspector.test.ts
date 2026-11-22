@@ -1,10 +1,11 @@
 import { effect } from "@preact/signals";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { variableInspector } from "../../stores/notebook";
 import { resetStoreFields } from "../../stores/signal-field";
 import { currentId } from "../../stores/session";
 import { setExecutionFetch } from "./api";
-import { refreshVariableInspector } from "./inspector";
+import { isCodeVariable, refreshVariableInspector, renderVariableInspector, setPaintInspector } from "./inspector";
+import { nbT } from "../notebook/copy";
 
 type Inspector = { loading: string | null; results: Record<string, { variables?: Array<{ name?: string }> }> };
 
@@ -37,5 +38,90 @@ describe("variable inspector state", () => {
     stop();
     expect(seen.map((state) => state.loading)).toEqual([null, "python", "python", null]);
     expect(seen[seen.length - 1]!.results.python!.variables![0]!.name).toBe("x");
+  });
+});
+
+// NB-3: the inspector listed every imported module and helper function, each
+// with a visible "fingerprint cd316ded…" pill.
+describe("variable inspector list", () => {
+  class FakeNode {
+    children: FakeNode[] = [];
+    className = "";
+    textContent = "";
+    title = "";
+    value = "";
+    disabled = false;
+    attrs: Record<string, string> = {};
+    onclick: (() => void) | null = null;
+    onchange: (() => void) | null = null;
+    constructor(readonly tag: string) {}
+    appendChild(child: FakeNode): FakeNode { this.children.push(child); return child; }
+    setAttribute(name: string, value: string): void { this.attrs[name] = value; }
+    all(): FakeNode[] { return [this, ...this.children.flatMap((child) => child.all())]; }
+  }
+  const paintOnce = () => renderVariableInspector() as unknown as FakeNode;
+  const names = (panel: FakeNode) =>
+    panel.all().filter((node) => node.className === "nb-variable-name").map((node) => node.textContent);
+
+  it("says a DataFrame's shape and what its columns are called (NB-3)", () => {
+    vi.stubGlobal("document", { createElement: (tag: string) => new FakeNode(tag) });
+    try {
+      variableInspector.value = {
+        language: "python", loading: null, error: "", request: 1,
+        results: {
+          python: {
+            available: true, state: "active", state_revision: 3,
+            variables: [
+              { name: "growth", type: "DataFrame", kind: "table", rows: 1764, columns: 9,
+                column_names: ["well", "strain"] },
+            ],
+          },
+        },
+      };
+      const texts = paintOnce().all().map((node) => node.textContent);
+      expect(texts).toContain(nbT("nb.variables.shape", 1764, 9));
+      expect(texts).toContain(nbT("nb.variables.columnNames", "well, strain, …"));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("lists data variables, keeps code names behind a toggle and the fingerprint in a tooltip", () => {
+    vi.stubGlobal("document", { createElement: (tag: string) => new FakeNode(tag) });
+    try {
+      variableInspector.value = {
+        language: "python", loading: null, error: "", request: 1,
+        results: {
+          python: {
+            available: true, state: "active", state_revision: 3,
+            variables: [
+              { name: "df", type: "DataFrame" },
+              { name: "fit", type: "function" },
+              { name: "np", type: "module" },
+              { name: "n", type: "int", preview: 48, fingerprint: "cd316ded0123456789" },
+            ],
+          },
+        },
+      };
+      let panel = paintOnce();
+      expect(names(panel)).toEqual(["df", "n"]);
+      const texts = panel.all().map((node) => node.textContent).join(" ");
+      expect(texts).not.toContain("cd316ded");
+      const row = panel.all().find((node) => node.className === "nb-variable-row" && node.title)!;
+      expect(row.title).toContain("cd316ded");
+      const toggle = panel.all().find((node) => node.className.includes("nb-variables-code"))!;
+      expect(toggle.textContent).toBe(nbT("nb.variables.showCode", 2));
+      // The toggle repaints through the registered painter; the choice persists.
+      setPaintInspector(() => { panel = paintOnce(); });
+      toggle.onclick!();
+      expect(names(panel)).toEqual(["df", "fit", "np", "n"]);
+      panel.all().find((node) => node.className.includes("nb-variables-code"))!.onclick!();
+      expect(names(panel)).toEqual(["df", "n"]);
+      expect(isCodeVariable({ type: "closure" })).toBe(true);
+      expect(isCodeVariable({ type: "ndarray" })).toBe(false);
+    } finally {
+      setPaintInspector(null);
+      vi.unstubAllGlobals();
+    }
   });
 });

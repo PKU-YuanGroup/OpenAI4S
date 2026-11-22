@@ -5,7 +5,7 @@
  */
 
 import { fetchArtifactText, isArtifactReadAborted } from "../artifacts/api";
-import { filesT, readFailureText } from "../artifacts/copy";
+import { filesT, readFailureText, readRetryHelps } from "../artifacts/copy";
 import { paintIcon } from "../icons/paths";
 import { isReady } from "../../compat/stub";
 import { _tbl } from "../../stores/artifacts";
@@ -292,9 +292,11 @@ export function renderTableInto(holder: HTMLElement, fname: string, url: string)
       const card = el("div", "nbc-artifact-error");
       card.setAttribute("role", "alert");
       card.appendChild(el("span", null, readFailureText(error)));
-      const retry = el("button", "nbc-action", filesT("viewer.read.retry"));
-      retry.onclick = () => { card.remove(); void read(); };
-      card.appendChild(retry);
+      if (readRetryHelps(error)) {
+        const retry = el("button", "nbc-action", filesT("viewer.read.retry"));
+        retry.onclick = () => { card.remove(); void read(); };
+        card.appendChild(retry);
+      }
       const download = el("a", "nbc-action") as HTMLAnchorElement;
       download.textContent = t("common.download");
       download.href = url;

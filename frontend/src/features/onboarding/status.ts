@@ -8,6 +8,7 @@ import {
 } from "../customize/environment";
 import { sanitizeLocalModelDiscovery, type LocalDiscovery } from "../customize/models";
 import { publicText } from "../scrub/scrub";
+import { readProviderPresets, type ProviderPreset } from "./presets";
 
 function asList(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
@@ -51,6 +52,8 @@ export type OnboardingStatus = {
   profiles: Record<string, unknown>[];
   active_id: string;
   protocols: unknown[];
+  /** The registry's endpoint and default model for each offered protocol. */
+  provider_presets: ProviderPreset[];
   local_model_catalog: LocalDiscovery;
   environment: StandardReadiness | null;
 };
@@ -92,6 +95,7 @@ export function sanitizeOnboardingStatus(raw: unknown): OnboardingStatus {
     profiles,
     active_id: asString(row.active_id),
     protocols: asList(row.protocols),
+    provider_presets: readProviderPresets(row.provider_presets),
     local_model_catalog: sanitizeLocalModelDiscovery(row.local_model_catalog),
     environment: sanitizeStandardProfileReadiness(row.environment),
   };

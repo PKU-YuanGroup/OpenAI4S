@@ -639,6 +639,69 @@ def _wrap_matplotlib_figure(module: Any) -> None:
     figure = getattr(module, "Figure", None)
     if isinstance(figure, type):
         _prov_wrap_method_writer(figure, "savefig", path_argno=0)
+        _mark_figure_saves(figure)
+
+
+def _mark_figure_saves(figure: type) -> None:
+    """Have each Figure know whether it is on disk as it now looks.
+
+    The gateway saves every figure a Cell leaves open unless the Cell already
+    saved it to a file and has not changed it since (`server/artifacts.py`,
+    `_capture_snippet`). `Figure.stale` cannot answer that: matplotlib 3.11
+    leaves it True after any `fig.savefig`, so every saved figure was stored a
+    second time. Saving to a path sets `_openai4s_saved`; a later change clears
+    it through the figure's stale callback. Drawing, or saving again, raises
+    that same callback without changing what the figure shows, so both put
+    back the mark they found. Done at import, like the lineage wrapper, so the
+    Cell that imports, plots and saves in one go is covered.
+    """
+    save, draw = getattr(figure, "savefig", None), getattr(figure, "draw", None)
+    if save is None or draw is None or getattr(save, "_openai4s_marks", False):
+        return
+
+    def mark(fig: Any, saved: bool) -> None:
+        fig._openai4s_saved = saved
+        if not saved or getattr(fig.stale_callback, "_openai4s_marks", False):
+            return
+        previous = fig.stale_callback
+
+        def changed(artist: Any, stale: bool) -> None:
+            if stale:
+                artist._openai4s_saved = False
+            if previous is not None:
+                previous(artist, stale)
+
+        changed._openai4s_marks = True  # type: ignore[attr-defined]
+        fig.stale_callback = changed
+
+    @functools.wraps(save)
+    def savefig(self: Any, *args: Any, **kwargs: Any) -> Any:
+        was_saved = getattr(self, "_openai4s_saved", False)
+        result = save(self, *args, **kwargs)
+        target = args[0] if args else kwargs.get("fname")
+        # A buffer (an inline display) is not a file the Cell delivered.
+        to_file = isinstance(target, (str, bytes)) or hasattr(target, "__fspath__")
+        try:
+            mark(self, to_file or was_saved)
+        except Exception:  # noqa: BLE001 - a mark must never fail a save
+            pass
+        return result
+
+    @functools.wraps(draw)
+    def redraw(self: Any, *args: Any, **kwargs: Any) -> Any:
+        was_saved = getattr(self, "_openai4s_saved", False)
+        try:
+            return draw(self, *args, **kwargs)
+        finally:
+            if was_saved:
+                self._openai4s_saved = True
+
+    savefig._openai4s_marks = True  # type: ignore[attr-defined]
+    try:
+        figure.savefig = savefig  # type: ignore[attr-defined]
+        figure.draw = redraw  # type: ignore[attr-defined]
+    except (AttributeError, TypeError):
+        pass
 
 
 class _WrapAfterExecLoader:

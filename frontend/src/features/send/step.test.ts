@@ -10,7 +10,7 @@ vi.mock("../artifacts/ui", async (importOriginal) => ({
 import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
 import { startStream } from "../messages/stream";
-import { addLiveStep, buildStepCard, renderStoredStep, updateLiveStep } from "./step";
+import { addLiveStep, buildStepCard, relabelStepCards, renderStoredStep, updateLiveStep } from "./step";
 
 /** Just enough DOM for step cards (no jsdom here). */
 class El {
@@ -25,6 +25,9 @@ class El {
   private text = "";
   constructor(tag: string) {
     this.tagName = tag.toUpperCase();
+  }
+  get parentElement(): El | null {
+    return this.parent;
   }
   classList = {
     add: (...names: string[]) => names.forEach((n) => this.classes.add(n)),
@@ -175,6 +178,28 @@ describe("step card copy follows the UI language", () => {
     );
     expect(finding.querySelector(".review-issue-head")!.querySelector("strong")!.textContent).toBe("审阅发现");
   });
+
+  it("cards already on screen say their title and status again after a language switch (I18N-1)", async () => {
+    await setLang("zh");
+    const read = renderStoredStep({
+      step_id: "l-1",
+      kind: "read",
+      status: "done",
+      title: "Reading project file cohort.csv",
+      summary: "12 results",
+    }) as unknown as El;
+    const call = renderStoredStep({ step_id: "l-2", kind: "mcp", status: "running", title: "Calling calc via example" }) as unknown as El;
+    const words = (card: El) => [card.querySelector(".s-lbl")!.textContent, card.querySelector(".s-meta")!.textContent];
+    expect(words(read)).toEqual(["读取项目文件 cohort.csv", "12 条结果"]);
+    expect(words(call)).toEqual(["通过 example 调用 calc", ""]);
+    await setLang("en");
+    relabelStepCards();
+    expect(words(read)).toEqual(["Reading project file cohort.csv", "12 results"]);
+    expect(words(call)).toEqual(["Calling calc via example", ""]);
+    await setLang("zh");
+    relabelStepCards();
+    expect(words(read)).toEqual(["读取项目文件 cohort.csv", "12 条结果"]);
+  });
 });
 
 describe("a collapsed step card builds its body on first expand", () => {
@@ -261,7 +286,8 @@ describe("artifact step card", () => {
       status: "done",
       output: { artifacts: [{ filename: "fig.png", artifact_id: "a-1" }] },
     });
-    const name = (handle.card as unknown as El).querySelector(".s-fn.clk")!;
+    // A figure opens from its thumbnail (its name is the caption, not also a list row).
+    const name = (handle.card as unknown as El).querySelector(".s-fig")!;
     name.onclick!();
     await settle();
     expect(viewer.dock).toHaveBeenCalledTimes(1);
@@ -280,12 +306,72 @@ describe("artifact step card", () => {
     const card = open(handle);
     const img = card.querySelector("img") as unknown as { src?: string } | null;
     expect(String(img?.src || "")).toContain("/artifacts/versions/v-old");
-    const name = card.querySelector(".s-fn.clk")!;
+    const name = card.querySelector(".s-fig")!;
     name.onclick!();
     await settle();
     expect(viewer.open).toHaveBeenCalledWith(
       expect.objectContaining({ id: "a-9", version_id: "v-old", _exactVersion: true }),
     );
+  });
+
+  it("names each saved file once: figures by their caption, the rest in the list (CHAT-8)", () => {
+    const handle = buildStepCard({
+      step_id: "s-3",
+      kind: "artifact",
+      status: "done",
+      input: { files: ["fit.png", "fit.svg", "table.csv"] },
+      output: {
+        artifacts: [
+          { filename: "fit.png", artifact_id: "a-1" },
+          { filename: "fit.svg", artifact_id: "a-2" },
+          { filename: "table.csv", artifact_id: "a-3" },
+        ],
+      },
+    });
+    const card = handle.card as unknown as El;
+    expect(card.querySelectorAll(".s-fn").map((node) => node.textContent)).toEqual(['"table.csv"']);
+    expect(card.querySelectorAll(".s-fig-cap").map((node) => node.textContent)).toEqual(["fit.png", "fit.svg"]);
+    // Figures only: no empty "files [ ]" row.
+    const figures = buildStepCard({
+      step_id: "s-4",
+      kind: "artifact",
+      status: "done",
+      output: { artifacts: [{ filename: "fit.png", artifact_id: "a-1" }] },
+    }).card as unknown as El;
+    expect(figures.querySelectorAll(".s-files")).toEqual([]);
+    expect(figures.querySelectorAll(".s-fig-cap")).toHaveLength(1);
+  });
+});
+
+describe("plan steps (CHAT-8)", () => {
+  it("a turn keeps one plan card, repainted by each plan update", () => {
+    const plan = (id: string, todos: Array<{ content: string; status: string }>): Record<string, unknown> => ({
+      type: "step",
+      step_id: id,
+      kind: "plan",
+      title: "Planning",
+      status: "running",
+      input: { todos },
+    });
+    addLiveStep(plan("p-1", [{ content: "Read the plate", status: "in_progress" }]));
+    updateLiveStep({ step_id: "p-1", status: "done", summary: "1 step", output: {} });
+    addLiveStep({ step_id: "s-x", kind: "read", title: "Reading plate.csv", status: "done" });
+    addLiveStep(
+      plan("p-2", [
+        { content: "Read the plate", status: "completed" },
+        { content: "Fit the curves", status: "in_progress" },
+      ]),
+    );
+    updateLiveStep({ step_id: "p-2", status: "done", summary: "2 steps", output: {} });
+    const cards = messages.querySelectorAll(".step-plan");
+    expect(cards).toHaveLength(1);
+    // The one card shows the latest plan, where the first one appeared.
+    expect(cards[0]!.querySelectorAll(".s-todo-t").map((node) => node.textContent)).toEqual([
+      "Read the plate",
+      "Fit the curves",
+    ]);
+    expect(cards[0]!.querySelector(".s-meta")?.textContent).toBe("2 steps");
+    expect(messages.querySelectorAll(".step")).toHaveLength(2);
   });
 });
 

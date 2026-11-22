@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 import types
 from dataclasses import replace as dataclasses_replace
 
@@ -20,6 +21,11 @@ import pytest
 
 from openai4s import doctor
 from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
+
+
+def _hosts(text: str) -> set[str]:
+    """The host names a text names, each an exact token (not a substring)."""
+    return set(re.findall(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", text))
 
 
 @pytest.fixture
@@ -630,7 +636,7 @@ def test_a_fresh_install_with_only_the_base_env_recommends_setup(cfg, monkeypatc
 
     check = _by_name(doctor.report(cfg))["runtime"]
     assert check["status"] == doctor.WARN
-    assert "no prebuilt environment" in check["detail"]
+    assert "no managed environment built" in check["detail"]
     assert check["remedy"], "a fresh install must be told to run setup"
     assert check["facts"]["prebuilt_environments"] == 0
 
@@ -972,3 +978,277 @@ def test_allowlist_keeps_a_proven_sandbox_and_fails_raw_network(cfg, monkeypatch
     check = _by_name(doctor.report(cfg))["isolation"]
     assert check["status"] == doctor.FAIL
     assert "egress_boundary_unavailable" in check["detail"]
+
+
+# --------------------------------------------------------------------------
+# "all checks passed" beside an unreachable database (usability review SET-2)
+# --------------------------------------------------------------------------
+
+
+def _env(name, *, builtin=True, rscript=None):
+    return types.SimpleNamespace(name=name, builtin=builtin, rscript=rscript)
+
+
+def test_a_users_own_conda_environments_are_not_counted_as_managed(cfg, monkeypatch):
+    """Discovery lists personal conda environments so a person can pick one.
+    Counting them reported "3 prebuilt environment(s) available" on a machine
+    where the wizard said, correctly, that the managed ones did not exist."""
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *a, **k: [
+            _env("base"),
+            _env("lab_env", builtin=False),
+            _env("work", builtin=False),
+            _env("stats", builtin=False, rscript="/opt/envs/stats/bin/Rscript"),
+        ],
+    )
+    monkeypatch.setattr(
+        "openai4s.kernel.r_kernel.resolve_r_interpreter",
+        lambda *a, **k: "/opt/envs/stats/bin/Rscript",
+    )
+
+    check = _by_name(doctor.report(cfg))["runtime"]
+
+    assert check["status"] == doctor.WARN
+    assert "no managed environment built" in check["detail"]
+    assert "3 local conda environment(s)" in check["detail"]
+    assert "prebuilt environment(s) available" not in check["detail"]
+    assert check["facts"]["prebuilt_environments"] == 0
+    assert check["facts"]["local_environments"] == 3
+    assert check["remedy"] == doctor.MISSING_ENVIRONMENTS_REMEDY
+    assert "`openai4s setup`" in check["remedy"]
+
+
+def test_built_in_managed_and_local_environments_are_told_apart(cfg, monkeypatch):
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *a, **k: [
+            _env("base"),
+            _env("python"),
+            _env("r", rscript="/opt/envs/r/bin/Rscript"),
+            _env("lab_env", builtin=False),
+        ],
+    )
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: None)
+
+    check = _by_name(doctor.report(cfg))["runtime"]
+
+    assert check["status"] == doctor.OK
+    assert "built-in interpreter + 2 managed environment(s)" in check["detail"]
+    assert "1 local conda environment(s)" in check["detail"]
+    assert check["facts"]["prebuilt_environments"] == 2
+    assert check["facts"]["local_environments"] == 1
+
+
+def test_the_default_run_probes_nothing_and_says_so(cfg, monkeypatch):
+    """Ten databases being built in is not ten databases being reachable, and
+    an offline run cannot know. It must not let `ok` be read as connected."""
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("the default doctor run contacted the network")
+
+    monkeypatch.setattr(doctor, "probe_science_hosts", forbidden)
+    monkeypatch.setattr("openai4s.webtools.web_probe", forbidden)
+
+    result = doctor.report(cfg)
+    check = _by_name(result)["connectors"]
+
+    assert check["status"] == doctor.OK
+    assert "reachability not probed" in check["detail"]
+    assert "openai4s doctor --network" in check["detail"]
+    assert check["facts"]["reachability_probed"] is False
+    assert "reachability" not in check["facts"]
+
+
+@pytest.mark.stubbed_backend
+def test_the_network_probe_reports_an_unreachable_database_per_host(cfg, monkeypatch):
+    """The reviewed machine: RCSB failed its TLS handshake while doctor printed
+    "All checks passed"."""
+    asked = []
+    tls_error = "TLS certificate for search.rcsb.org could not be verified"
+
+    def web_probe(url, *, timeout=15.0, user_agent=None):
+        asked.append(url)
+        if "rcsb" in url:
+            return {"url": url, "status": 0, "exists": False, "error": tls_error}
+        return {"url": url, "status": 200, "location": "", "exists": True}
+
+    monkeypatch.setenv("OPENAI4S_ALLOW_NETWORK", "1")
+    monkeypatch.setattr("openai4s.webtools.web_probe", web_probe)
+
+    result = doctor.report(cfg, network=True)
+    check = _by_name(result)["connectors"]
+
+    assert sorted(asked) == sorted(
+        f"https://{host}/" for host in doctor.SCIENCE_HOSTS.values()
+    )
+    assert check["status"] == doctor.WARN
+    assert "9 of 10 reachable (unreachable: pdb)" in check["detail"]
+    assert check["facts"]["reachability_probed"] is True
+    assert check["facts"]["reachability"]["pdb"] == {
+        "host": "search.rcsb.org",
+        "reachable": False,
+        "error": tls_error,
+    }
+    assert check["facts"]["reachability"]["uniprot"] == {
+        "host": "rest.uniprot.org",
+        "reachable": True,
+        "http_status": 200,
+    }
+    assert result["status"] != doctor.OK
+
+    text = doctor.render(result)
+    assert "All checks passed." not in text
+    [pdb_line] = [
+        line for line in text.splitlines() if {"search.rcsb.org"} <= _hosts(line)
+    ]
+    assert "FAIL" in pdb_line and tls_error in pdb_line
+    [uniprot_line] = [
+        line for line in text.splitlines() if {"rest.uniprot.org"} <= _hosts(line)
+    ]
+    assert "HTTP 200" in uniprot_line
+
+
+def test_any_http_answer_is_reachable_and_a_refusal_is_not():
+    """A 404 for `/` still proves DNS, TCP and TLS. A guard that refuses the
+    request (egress allowlist, SSRF) is an answer too, not a crash."""
+
+    def probe(url, *, timeout):
+        if "zenodo" in url:
+            raise RuntimeError("egress allowlist: zenodo.org is not granted")
+        return {"url": url, "status": 404, "exists": False}
+
+    answers = doctor.probe_science_hosts(probe)
+
+    assert set(answers) == set(doctor.SCIENCE_HOSTS)
+    assert answers["zenodo"]["reachable"] is False
+    assert "not granted" in answers["zenodo"]["error"]
+    assert answers["pubchem"] == {
+        "host": "pubchem.ncbi.nlm.nih.gov",
+        "reachable": True,
+        "http_status": 404,
+    }
+
+
+@pytest.mark.stubbed_backend
+def test_a_timed_out_host_gets_one_retry_before_it_is_called_unreachable():
+    """A slow host is not a missing one: rest.ensembl.org answered in 7.6 s on
+    one try and missed the 10 s budget on others, and doctor reported a host
+    that works as unreachable."""
+    import threading
+
+    calls: dict[str, int] = {}
+    lock = threading.Lock()
+
+    def probe(url, *, timeout):
+        assert timeout == doctor._PROBE_TIMEOUT_S
+        with lock:
+            calls[url] = calls.get(url, 0) + 1
+            n = calls[url]
+        if "ensembl" in url and n == 1:
+            # The URLError shape web_probe returns for a connect timeout.
+            return {"url": url, "status": 0, "exists": False, "error": "timed out"}
+        return {"url": url, "status": 200, "exists": True}
+
+    answers = doctor.probe_science_hosts(probe)
+
+    assert answers["ensembl"] == {
+        "host": "rest.ensembl.org",
+        "reachable": True,
+        "http_status": 200,
+        "attempts": 2,
+    }
+    assert calls["https://rest.ensembl.org/"] == 2
+    assert all(n == 1 for url, n in calls.items() if "ensembl" not in url)
+    result = {"status": doctor.OK, "checks": [_reachability_check(answers)]}
+    [line] = [l for l in doctor.render(result).splitlines() if "ensembl" in l]
+    assert "HTTP 200 (after one timeout)" in line
+
+
+@pytest.mark.stubbed_backend
+def test_a_host_that_times_out_twice_says_timed_out_not_refused():
+    """Still unreachable after the retry, the per-host line says it timed out,
+    so it reads differently from a refusal or a TLS failure -- and neither of
+    those is retried."""
+    calls: dict[str, int] = {}
+
+    def probe(url, *, timeout):
+        calls[url] = calls.get(url, 0) + 1
+        if "ensembl" in url:
+            # A read timeout escapes urllib as a bare TimeoutError.
+            raise TimeoutError("The read operation timed out")
+        if "zenodo" in url:
+            raise RuntimeError("egress allowlist: zenodo.org is not granted")
+        if "rcsb" in url:
+            return {"url": url, "status": 0, "error": "TLS certificate not verified"}
+        return {"url": url, "status": 200, "exists": True}
+
+    answers = doctor.probe_science_hosts(probe)
+
+    assert calls["https://rest.ensembl.org/"] == 2
+    assert calls["https://zenodo.org/"] == 1
+    assert calls["https://search.rcsb.org/"] == 1
+    assert answers["ensembl"]["reachable"] is False
+    assert answers["ensembl"]["timed_out"] is True
+    assert "timed_out" not in answers["zenodo"]
+    assert "timed_out" not in answers["pdb"]
+    result = {"status": doctor.WARN, "checks": [_reachability_check(answers)]}
+    lines = doctor.render(result).splitlines()
+    [ensembl] = [l for l in lines if {"rest.ensembl.org"} <= _hosts(l)]
+    [zenodo] = [l for l in lines if {"zenodo.org"} <= _hosts(l)]
+    [pdb] = [l for l in lines if {"search.rcsb.org"} <= _hosts(l)]
+    assert "timed out: no answer within 10 s, on 2 tries" in ensembl
+    assert "timed out" not in zenodo and "not granted" in zenodo
+    assert "timed out" not in pdb and "TLS certificate" in pdb
+
+
+def _reachability_check(answers):
+    return {
+        "name": "connectors",
+        "status": doctor.WARN,
+        "detail": "probed",
+        "remedy": "",
+        "facts": {"reachability": answers},
+    }
+
+
+def test_the_probed_hosts_are_the_ones_the_connectors_query():
+    """The table is a second copy of ten URLs; hold it to the first."""
+    import inspect
+
+    from openai4s.host import science, zenodo
+
+    assert set(doctor.SCIENCE_HOSTS) == {db.id for db in science.DATABASES}
+    source = inspect.getsource(science) + inspect.getsource(zenodo)
+    for database, host in doctor.SCIENCE_HOSTS.items():
+        assert f"https://{host}/" in source, (database, host)
+
+
+def test_the_cli_flag_is_what_turns_the_probe_on(monkeypatch, capsys):
+    cli = importlib.import_module("openai4s.cli.main")
+
+    seen = []
+
+    def report(_cfg, *, network=False):
+        seen.append(network)
+        return {"status": doctor.OK, "checks": []}
+
+    monkeypatch.setattr(doctor, "report", report)
+
+    assert cli.main(["doctor"]) == 0
+    assert cli.main(["doctor", "--network"]) == 0
+    assert seen == [False, True]
+    capsys.readouterr()
+
+
+def test_credential_missing_is_the_model_checks_own_answer(cfg, monkeypatch):
+    """`openai4s status` printed a model name as if it were ready (FR-1)."""
+    assert doctor.credential_missing(cfg) is False
+
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    assert _by_name(doctor.report(cfg))["model"]["status"] == doctor.FAIL
+    assert doctor.credential_missing(cfg) is True
+
+    # Nothing can be told from a config the check cannot read: no claim.
+    assert doctor.credential_missing(types.SimpleNamespace()) is False

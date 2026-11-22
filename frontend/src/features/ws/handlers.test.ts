@@ -24,6 +24,7 @@ import {
   setLoadSessionsImpl,
 } from "./handlers";
 import { onEvent, resetWsHandlers } from "./registry";
+import { visibleArtifacts } from "../artifacts/files-index";
 
 describe("WS protocol handlers", () => {
   beforeEach(() => {
@@ -287,5 +288,26 @@ describe("WS protocol handlers", () => {
     vi.advanceTimersByTime(LOAD_ARTIFACTS_DEBOUNCE_MS);
     expect(load).toHaveBeenCalledTimes(1);
     expect(load).toHaveBeenCalledWith("f");
+  });
+
+  it("a process file arriving live is left out of the results as after a reload (ART-4)", () => {
+    currentId.value = "f";
+    // The capture event's shape, with the role the server now puts on it.
+    const live = (id: string, filename: string, role: string) =>
+      onEvent({
+        type: "artifact_created",
+        producing_cell_id: "c1",
+        artifact: { id, artifact_id: id, version_id: `v-${id}`, filename, role, root_frame_id: "f" },
+      });
+    live("s", "scratch_inspect.py", "process");
+    live("r", "growth.png", "deliverable");
+    const liveView = visibleArtifacts().map((a) => a.id);
+    // What the list route returns for the same two files after a reload.
+    artifacts.value = [
+      { id: "s", filename: "scratch_inspect.py", role: "process" },
+      { id: "r", filename: "growth.png", role: "deliverable" },
+    ];
+    expect(liveView).toEqual(visibleArtifacts().map((a) => a.id));
+    expect(liveView).toEqual(["r"]);
   });
 });

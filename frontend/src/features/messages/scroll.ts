@@ -90,6 +90,45 @@ function paintPillMode(pill: HTMLElement, toApproval: boolean): void {
 /** Where the last flush left the view, to tell a reader's move from growth. */
 let lastScrollTop = 0;
 
+/**
+ * When the reader last moved the transcript by hand -- a wheel, a touch, a
+ * scrolling key, or a press on the scroll box (its scrollbar). The browser
+ * lowers `scrollTop` by itself too: scroll anchoring holds the view when
+ * content above it shrinks (a stored card moving into a replayed turn, a
+ * collapsed card replacing its placeholder size). In the frame after a
+ * reopened running session jumps to its end, that drop and the turn's growth
+ * below read as the reader scrolling up, and the view stopped following.
+ */
+let readerInputAt = Number.NEGATIVE_INFINITY;
+let readerPressing = false;
+const READER_INPUT_MS = 1000;
+const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+const READER_EVENTS = ["wheel", "touchstart", "touchmove"] as const;
+let boundDoc: Document | null = null;
+
+function onReaderInput(): void {
+  readerInputAt = Date.now();
+}
+
+function onReaderPress(): void {
+  readerPressing = true;
+  onReaderInput();
+}
+
+function onReaderRelease(): void {
+  if (!readerPressing) return;
+  readerPressing = false;
+  onReaderInput();
+}
+
+function onReaderKey(event: Event): void {
+  if (SCROLL_KEYS.has((event as KeyboardEvent).key)) onReaderInput();
+}
+
+function readerMoving(): boolean {
+  return readerPressing || Date.now() - readerInputAt < READER_INPUT_MS;
+}
+
 function flushScroll(): void {
   scrollRaf = 0;
   const m = messagesHost();
@@ -99,9 +138,10 @@ function flushScroll(): void {
     // the view (a gallery's images arriving, a step card opening) leaves the
     // view short of the bottom without anyone scrolling; measuring "at the
     // bottom?" then dropped follow, and the stream stopped following until
-    // the user pressed "Latest" again.
+    // the user pressed "Latest" again. A move up the reader did not make is
+    // the browser's own (see `readerInputAt`).
     if (messagesAtBottom(m)) _messagesFollow.value = true;
-    else if (m.scrollTop < lastScrollTop - 1) _messagesFollow.value = false;
+    else if (m.scrollTop < lastScrollTop - 1 && readerMoving()) _messagesFollow.value = false;
     pendingMeasure = false;
   }
   const follow = pendingDown;
@@ -167,6 +207,15 @@ export function bindMessageScroll(host?: HTMLElement | null): void {
   const pill = $("#jump-pill");
   if (m) {
     m.addEventListener("scroll", onMessagesScroll, { passive: true });
+    for (const type of READER_EVENTS) m.addEventListener(type, onReaderInput, { passive: true });
+    m.addEventListener("pointerdown", onReaderPress, { passive: true });
+    const doc = typeof document !== "undefined" ? document : null;
+    if (doc && typeof doc.addEventListener === "function") {
+      doc.addEventListener("pointerup", onReaderRelease, true);
+      doc.addEventListener("pointercancel", onReaderRelease, true);
+      doc.addEventListener("keydown", onReaderKey, true);
+      boundDoc = doc;
+    }
     boundHost = m;
     lastScrollTop = m.scrollTop || 0;
     watchGrowth(m);
@@ -215,8 +264,18 @@ function watchGrowth(m: HTMLElement): void {
 export function unbindMessageScroll(): void {
   if (boundHost) {
     boundHost.removeEventListener("scroll", onMessagesScroll);
+    for (const type of READER_EVENTS) boundHost.removeEventListener(type, onReaderInput);
+    boundHost.removeEventListener("pointerdown", onReaderPress);
     boundHost = null;
   }
+  if (boundDoc) {
+    boundDoc.removeEventListener("pointerup", onReaderRelease, true);
+    boundDoc.removeEventListener("pointercancel", onReaderRelease, true);
+    boundDoc.removeEventListener("keydown", onReaderKey, true);
+    boundDoc = null;
+  }
+  readerInputAt = Number.NEGATIVE_INFINITY;
+  readerPressing = false;
   if (boundPill) {
     boundPill.removeEventListener("click", onJumpPillClick);
     boundPill = null;

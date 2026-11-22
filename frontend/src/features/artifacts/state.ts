@@ -42,6 +42,11 @@ export const filesIndexError = signal<string | null>(null);
 export const filesIndexReq = signal(0);
 /** Exact-version resolve outcome for the open Viewer. */
 export const viewerVersionState = signal<VersionResolve | null>(null);
+/**
+ * ART-5: the Artifact was opened from an answer and has versions newer than
+ * that answer. `versionId` is the one that was current when it was written.
+ */
+export const answerVersionNote = signal<{ artifactId: string; versionId: string; newer: number } | null>(null);
 /** The session whose last `/frames/{id}/artifacts` read failed. Failed is not empty. */
 export const artifactsReadError = signal<{ frameId: string; generation: number } | null>(null);
 

@@ -499,6 +499,56 @@ def test_resolve_env_falls_back_to_base(tmp_path, monkeypatch):
 # Rscript (r-mini, without survival) while PATH had a complete R.
 
 
+def test_the_base_description_lists_what_is_installed_instead_of_a_promise(tmp_path):
+    """`host.env.list` described the default kernel as "启动即预装
+    numpy/pandas/scipy/matplotlib/联网栈" on every install. The reviewed one
+    had no networking stack and no openpyxl; the line is now read off the
+    interpreter's own packages."""
+    root = _make_py_env(tmp_path, "daemon-venv", packages=("numpy", "openpyxl"))
+    base = E.Environment(
+        name="base", language="python", root=root, python=sys.executable, is_conda=False
+    )
+
+    assert base.description() == "内置默认内核：已安装 numpy, openpyxl"
+    for promised in ("scipy", "matplotlib", "联网栈", "预装"):
+        assert promised not in base.description()
+
+    bare = E.Environment(
+        name="base",
+        language="python",
+        root=_make_py_env(tmp_path, "bare-venv", packages=()),
+        python=sys.executable,
+        is_conda=False,
+    )
+    assert bare.description() == "内置默认内核：未检测到常用科学计算包"
+
+
+def test_the_prompt_asks_for_a_missing_package_instead_of_working_around_it():
+    """The reviewed model found no openpyxl, did not ask for it, and parsed the
+    .xlsx with zipfile + XML and hand-wrote the ANOVA "to avoid the install
+    wait". The Web prompt had told it to: fall back to the stdlib when a
+    package is missing, or pip-install through host.bash."""
+    from openai4s.agent.loop import SYSTEM_PROMPT
+
+    web = SYSTEM_PROMPT + gateway_mod._GATEWAY_PROMPT_EXTRA
+
+    assert "A missing package is something to ask for, not to work around." in web
+    assert "native `env_create` tool" in SYSTEM_PROMPT
+    assert 'host.env.create(None, ["pkg"])' in SYSTEM_PROMPT
+    assert "Do NOT re-implement the library to avoid that wait" in SYSTEM_PROMPT
+    assert "unzipping an .xlsx" in SYSTEM_PROMPT
+    assert "hand-coded statistical test" in SYSTEM_PROMPT
+    # R has no installer (owner decision): name the package, point at setup.
+    assert "R packages cannot be installed from a session." in SYSTEM_PROMPT
+    assert "`openai4s setup` builds the managed R environment" in SYSTEM_PROMPT
+    assert "Do not silently fall back to base R." in SYSTEM_PROMPT
+    # What the Web half used to say instead.
+    assert "pip install --break-system-packages" not in web
+    assert "matplotlib fallback" not in web
+    assert "request the install with `host.env.create(None, [pkg])`" in web
+    assert "do not substitute your own parser or statistic" in web
+
+
 def test_envs_in_the_users_conda_root_are_local_but_product_names_are_not(
     tmp_path, monkeypatch
 ):
@@ -516,6 +566,74 @@ def test_envs_in_the_users_conda_root_are_local_but_product_names_are_not(
     assert E.get_environment("python").builtin is True  # built by `openai4s setup`
     assert E.get_environment("curated").builtin is True  # operator-configured root
     assert E.get_environment("base").builtin is True
+
+
+def test_env_list_does_not_recommend_the_users_own_environment(tmp_path, monkeypatch):
+    """PERM-3. The step card read "4 envs · use <a personal conda env>" and the
+    model asked to switch into it: `recommend` was whichever environment had
+    the most of the requested packages, the user's own included. A built-in
+    environment and an install request come first; a local one is the user's
+    to name.
+
+    The package names are made up on purpose: the daemon's own interpreter is a
+    built-in candidate too, and with real names the answer depended on what
+    the venv running the suite happened to have installed (it flipped the day
+    the default science extra gained openpyxl and statsmodels)."""
+    conda_root = tmp_path / "miniconda3"
+    _make_py_env(
+        conda_root / "envs",
+        "lab_env",
+        packages=("probe-pkg-a", "probe-pkg-b", "probe-pkg-c"),
+    )
+    operator_root = tmp_path / "operator-envs"
+    _make_py_env(operator_root, "curated", packages=("probe-pkg-a", "probe-pkg-b"))
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(operator_root))
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "d"))
+    E.discover_environments(force=True)
+    disp = build_dispatcher()
+    wanted = ["probe-pkg-a", "probe-pkg-b", "probe-pkg-c", "nonexistent-probe-pkg"]
+
+    listed = disp._m_env_list({"packages": wanted})
+
+    envs = {e["name"]: e for e in listed["environments"]}
+    assert envs["lab_env"]["builtin"] is False and envs["curated"]["builtin"] is True
+    # The local environment covers more, and is still reported honestly...
+    assert envs["lab_env"]["has"] == ["probe-pkg-a", "probe-pkg-b", "probe-pkg-c"]
+    # ...but the recommendation is the best built-in one, plus what to ask for.
+    assert listed["recommend"] == "curated"
+    assert listed["install"] == ["probe-pkg-c", "nonexistent-probe-pkg"]
+    assert listed["missing"] == ["probe-pkg-c", "nonexistent-probe-pkg"]
+    assert "only if the user named it" in listed["note"]
+    assert "env_create" in listed["note"]
+    # The standing "Kernel environment" paragraph gives the same order.
+    from openai4s.kernel.constraints import kernel_constraints_note
+
+    standing = kernel_constraints_note(
+        posture={"mode": "off", "backend": None, "raw_network": False}
+    )
+    assert "switch to the built-in environment it recommends" in standing
+    assert "builtin=false is the user's own" in standing
+
+
+def test_env_list_keeps_an_environment_the_user_already_picked(tmp_path, monkeypatch):
+    """A local environment the session already runs in was the user's own
+    choice (a UI pick does not ask), so it stays a candidate; and staying put
+    is not a recommendation to switch."""
+    conda_root = tmp_path / "miniconda3"
+    lab = _make_py_env(conda_root / "envs", "lab_env", packages=("pandas", "openpyxl"))
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "d"))
+    E.discover_environments(force=True)
+    disp = build_dispatcher()
+    disp.active_env_bin = str(lab / "bin")
+
+    listed = disp._m_env_list({"packages": ["openpyxl", "nonexistent-probe-pkg"]})
+
+    assert listed["current"] == "lab_env"
+    assert listed["recommend"] is None
+    assert listed["install"] == ["nonexistent-probe-pkg"]
+    assert listed["missing"] == ["nonexistent-probe-pkg"]
 
 
 def test_switching_into_a_local_env_needs_approval_by_default(tmp_path, monkeypatch):

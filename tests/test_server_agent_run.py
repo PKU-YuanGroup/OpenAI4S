@@ -327,6 +327,82 @@ def test_web_event_sink_adds_real_post_cell_status_after_intent_prose():
     ]
 
 
+def test_web_event_sink_shortens_this_sessions_paths_in_the_post_cell_status():
+    """CHAT-4 follow-up: the gateway hands the sink this session's workspace
+    and data directory; the status line under a cell shows them relative."""
+    visible = []
+    sink = WebEventSink(
+        [].append,
+        "frame-1",
+        visible,
+        lambda usage: None,
+        local_paths=(
+            ("/srv/lab/data/agent-workspaces/f-1", "."),
+            ("/srv/lab/data", "<data_dir>"),
+        ),
+    )
+    action = CodeCell("python", "print(open('out.txt').name)\n")
+    sink.emit(TurnStarted(turn=0))
+    sink.emit(ReplyReceived(ModelReply(content=""), turn=0))
+    sink.emit(ActionRouted(action, turn=0))
+    sink.emit(
+        OutcomeProduced(
+            ExecutionOutcome(
+                observation="[Observation]\nstdout:\n"
+                "/srv/lab/data/agent-workspaces/f-1/out.txt\n"
+                "/srv/lab/data/artifacts/v-1__out.txt"
+            ),
+            turn=0,
+        )
+    )
+
+    assert visible[-1]["text"] == (
+        "The cell finished. Output:\n```text\n./out.txt\n"
+        "<data_dir>/artifacts/v-1__out.txt\n```"
+    )
+
+
+def test_web_event_sink_says_a_status_line_once_and_opens_only_once():
+    """CHAT-4: three identical tool calls produced the same canned sentence
+    back to back, and "I am inspecting ... before continuing" came back in the
+    middle of a run as if it were starting again."""
+    sent = []
+    visible = []
+    sink = WebEventSink(
+        sent.append, "frame-1", visible, lambda usage: None, language="zh"
+    )
+
+    def tool_turn(turn: int, name: str) -> None:
+        action = NativeToolBatch((_native_call(turn, name=name),))
+        sink.emit(TurnStarted(turn=turn))
+        sink.emit(
+            ReplyReceived(ModelReply(content="", tool_calls=action.calls), turn=turn)
+        )
+        sink.emit(ActionRouted(action, turn=turn))
+        sink.emit(OutcomeProduced(ExecutionOutcome(observation="ok"), turn=turn))
+
+    for turn in range(3):
+        tool_turn(turn, "query")
+    texts = [block["text"] for block in visible]
+    assert texts == ["我正在执行下一步，并会把关键结果反馈在对话中。"]
+    assert len([event for event in sent if event["type"] == "text_chunk"]) == 1
+
+    tool_turn(3, "read_text_file")
+    tool_turn(4, "query")
+    texts = [block["text"] for block in visible]
+    # Not the run's first action, so no "先…再…" opener; and a line that comes
+    # back after a different one is said again.
+    assert texts[1] == "我正在查看相关文件和数据。"
+    assert texts[2] == texts[0] and len(texts) == 3
+
+    opener = WebEventSink([].append, "frame-2", [], lambda usage: None, language="zh")
+    action = NativeToolBatch((_native_call(0, name="read_text_file"),))
+    opener.emit(TurnStarted(turn=0))
+    opener.emit(ReplyReceived(ModelReply(content="", tool_calls=action.calls), turn=0))
+    opener.emit(ActionRouted(action, turn=0))
+    assert opener.current_prose.startswith("我先检查相关文件和数据")
+
+
 def test_native_batch_returns_canonical_tool_history_and_never_completes(
     monkeypatch,
 ):

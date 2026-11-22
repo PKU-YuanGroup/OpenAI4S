@@ -349,16 +349,19 @@ export class ArtifactReadError extends Error {
   maxBytes: number;
   /** Bytes actually read from the response body before stopping. */
   bytes: number;
+  /** The size the server declared, when the refusal came from it. */
+  declared: number | null;
   constructor(
     kind: ArtifactReadKind,
     message: string,
-    context: { maxBytes: number; bytes?: number },
+    context: { maxBytes: number; bytes?: number; declared?: number | null },
   ) {
     super(message);
     this.name = "ArtifactReadError";
     this.kind = kind;
     this.maxBytes = context.maxBytes;
     this.bytes = context.bytes || 0;
+    this.declared = context.declared ?? null;
   }
 }
 
@@ -495,7 +498,7 @@ async function readArtifactText(
       throw new ArtifactReadError(
         "too_large",
         `artifact is ${declared} bytes, over the ${maxBytes}-byte preview limit`,
-        { maxBytes, bytes: 0 },
+        { maxBytes, bytes: 0, declared },
       );
     }
     const body = response.body;

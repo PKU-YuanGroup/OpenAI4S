@@ -18,6 +18,7 @@ const TITLE_ZH: Rule[] = [
   [/^Searching the web$/, "搜索网页"],
   [/^Reading project file (.+)$/, "读取项目文件 $1"],
   [/^Reading history for (.+)$/, "读取 $1 的历史"],
+  [/^Reading an earlier step's full output$/, "读取先前步骤的完整输出"],
   [/^Reading (.+)$/, "读取 $1"],
   [/^Browsing project files$/, "浏览项目文件"],
   [/^Finding files$/, "查找文件"],
@@ -49,6 +50,8 @@ const TITLE_ZH: Rule[] = [
   [/^Installing (.+)$/, "安装 $1"],
   [/^Rolling back(.*)$/, "回滚$1"],
   [/^Searching (.+)$/, "搜索 $1"],
+  // A connector (MCP) tool call: `host_dispatch` "Calling {tool} via {server}".
+  [/^Calling (.+) via (.+)$/, "通过 $2 调用 $1"],
   [/^Running shell command$/, "运行 shell 命令"],
   [/^Running (?!analysis · cell )(.+)$/, "运行 $1"],
 ];
@@ -80,9 +83,18 @@ function apply(rules: Rule[], text: string): string | null {
   return null;
 }
 
+/**
+ * A cell's banner comment is not a title: "---------- QC ----------" reads
+ * "QC". The server strips it now (`server/cell_run.py` `activity_title`);
+ * steps stored before that still carry the rule characters.
+ */
+const BANNER = /^(?:[-=*~_#+]\s*){3,}|(?:\s*[-=*~_#+]){3,}$/g;
+
 export function stepTitleText(title: string): string {
-  if (LANG === "en" || !title) return title;
-  return apply(TITLE_ZH, title) ?? title;
+  if (!title) return title;
+  const plain = title.replace(BANNER, "").trim() || title;
+  if (LANG === "en") return plain;
+  return apply(TITLE_ZH, plain) ?? plain;
 }
 
 export function stepSummaryText(summary: string): string {
@@ -93,6 +105,11 @@ export function stepSummaryText(summary: string): string {
   if (failed) return "失败：" + failed[1];
   const exit = /^exit (-?\d+)(?: · ([\d,]+) file changes?)?$/.exec(summary);
   if (exit) return "退出码 " + exit[1] + (exit[2] ? ` · ${exit[2]} 个文件变更` : "");
+  // A paged read says which lines it returned (TURN-3).
+  const range = /^lines ([\d,]+)–([\d,]+) of ([\d,]+)$/.exec(summary);
+  if (range) return `第 ${range[1]}–${range[2]} 行，共 ${range[3]} 行`;
+  const past = /^past the end \(([\d,]+) lines?\)$/.exec(summary);
+  if (past) return `已超出文件末尾（共 ${past[1]} 行）`;
   const counted = /^([\d,]+) ([a-z]+?)s?$/.exec(summary);
   if (counted && UNIT_ZH[counted[2]!]) return `${counted[1]} ${UNIT_ZH[counted[2]!]}`;
   return summary;

@@ -334,6 +334,7 @@ _TURN_REASONS = frozenset(
 _PROGRESS_REASONS = frozenset(
     {
         "same_action",
+        "same_target",
         "consecutive_malformed",
         "similar_tool_error",
         "long_text_repeat",

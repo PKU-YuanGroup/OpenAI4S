@@ -1,13 +1,13 @@
 /**
  * M-01 first-run wizard state machine.
- * Four required decision steps; skip and checklist are first-class.
+ * Four required decision steps; skip is first-class.
  * Provider requests stay 0 until Test or a model-list fetch; both are counted.
  */
 
 export const REQUIRED_STEPS = ["path", "test", "readiness", "project"] as const;
 export type RequiredStep = (typeof REQUIRED_STEPS)[number];
 
-export type Surface = "hidden" | "wizard" | "checklist" | "done";
+export type Surface = "hidden" | "wizard" | "done";
 
 export type PathKind = "existing" | "cloud" | "local";
 
@@ -68,8 +68,6 @@ export type WizardAction =
   | { type: "choosePath"; path: PathChoice }
   | { type: "goto"; step: RequiredStep }
   | { type: "next" }
-  | { type: "showChecklist" }
-  | { type: "showWizard" }
   | { type: "skip" }
   | { type: "startTest" }
   /** A model-list fetch: a provider request, but not the Test decision. */
@@ -191,10 +189,6 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
         error: null,
       };
     }
-    case "showChecklist":
-      return { ...state, surface: "checklist", error: null };
-    case "showWizard":
-      return { ...state, surface: "wizard", error: null };
     case "skip":
       return {
         ...state,
@@ -259,13 +253,4 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
 
 export function requiredStepCount(): number {
   return REQUIRED_STEPS.length;
-}
-
-export function checklistItems(
-  state: WizardState,
-): Array<{ step: RequiredStep; done: boolean }> {
-  return REQUIRED_STEPS.map((step) => ({
-    step,
-    done: state.decided.includes(step),
-  }));
 }

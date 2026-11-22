@@ -160,8 +160,10 @@ scripts.
 - **Standard environment readiness (opt-in)** — with the Stage 1 flag enabled,
   persistent dashboard and conversation banners show when the `standard`
   Python/R pair is missing or cannot be verified. Customize → Compute lists all
-  missing environments and packages and offers copy-only `env plan`/`env apply`
-  repair commands; the browser never installs them. A normal task may still use
+  missing environments and packages and gives the one instruction the CLI
+  banner and `doctor` give: copy-only `openai4s setup` for missing
+  environments, single packages through Compute; the browser never installs
+  them. A normal task may still use
   native control tools or structured finalization. If it routes a Code Cell,
   that Cell is refused before a pending environment switch, identity/attempt,
   or runtime exists; the terminal event opens the Compute repair card. Direct

@@ -11,9 +11,15 @@ assert, deterministically, that:
  * the auth headers differ per wire (Bearer / x-api-key / x-goog-api-key).
 """
 
+import copy
+import json
+
 import pytest
 
 from openai4s import llm
+from openai4s.agent.actions import CodeCell
+from openai4s.agent.engine import AgentEngine
+from openai4s.agent.models import ExecutionOutcome
 from openai4s.config import LLMConfig
 
 # --- a capturing fake transport ------------------------------------------
@@ -245,6 +251,189 @@ def test_a_delta_callback_does_not_refuse_a_blocking_wire(cap):
     assert out["content"] == "ok"
     assert cap.url.endswith(":generateContent")
     assert deltas == []
+
+
+_LOOKUP = {
+    "name": "lookup",
+    "description": "Look up a fact.",
+    "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+}
+
+
+def _run_cell_requests():
+    """The third and fourth requests of an Engine run whose model promises
+    Python with a lookup twice, then answers the run_cell-only call with a
+    run_cell call: what each wire is handed, built by the real Engine. The
+    fourth offers the catalogue with run_cell beside it, so the tools it
+    declares are returned with it."""
+
+    requests = []
+    beside = []
+
+    class Model:
+        def complete(self, messages, on_delta, *, only_tools=None, extra_tools=None):
+            index = len(requests)
+            requests.append((copy.deepcopy(list(messages)), only_tools))
+            beside.append(extra_tools)
+            if only_tools is not None:
+                name, arguments = "run_cell", {"language": "python", "code": "print(2)"}
+            else:
+                name, arguments = "lookup", {"q": str(index)}
+            call = {
+                "id": f"call_{index}",
+                "wire_id": f"call_{index}",
+                "name": name,
+                "ordinal": 0,
+                "raw_arguments": json.dumps(arguments),
+                "arguments": arguments,
+                "parse_error": None,
+                "provider_meta": {},
+            }
+            return {"content": "现在用 Python 读取 Excel。", "tool_calls": [call]}
+
+    class Executor:
+        def execute(self, action, reply, state):
+            if isinstance(action, CodeCell):
+                # What every executor answers a cell with.
+                return ExecutionOutcome(
+                    ({"role": "user", "content": "[Observation]\n2"},),
+                    observation="[Observation]\n2",
+                )
+            return ExecutionOutcome(
+                tuple(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "wire_id": call.wire_id,
+                        "name": call.name,
+                        "content": "found",
+                        "is_error": False,
+                    }
+                    for call in action.calls
+                )
+            )
+
+    AgentEngine(Model(), Executor(), max_turns=4).run(
+        [{"role": "user", "content": "read demo.xlsx"}]
+    )
+    (third, offered), (fourth, again) = requests[2], requests[3]
+    assert [tool["name"] for tool in offered] == ["run_cell"] and again is None
+    assert beside[2] is None and [tool["name"] for tool in beside[3]] == ["run_cell"]
+    return third, offered, (fourth, [_LOOKUP, *beside[3]])
+
+
+def _no_forced_choice(provider, payload):
+    """``auto`` or no choice at all: a fenced cell in the text still counts."""
+    if provider == "claude":
+        assert payload.get("tool_choice", {"type": "auto"})["type"] == "auto"
+    elif provider == "gemini":
+        mode = payload.get("toolConfig", {}).get("functionCallingConfig", {})
+        assert mode.get("mode", "AUTO") == "AUTO"
+    else:
+        assert payload.get("tool_choice", "auto") == "auto"
+
+
+@pytest.mark.parametrize("provider", ["ark", "chatgpt", "claude", "gemini"])
+def test_the_run_cell_call_and_its_answer_are_well_formed_on_every_wire(cap, provider):
+    """The Agent's fallback call offers run_cell alone, with the default tool
+    choice; the next call offers the catalogue with run_cell beside it and
+    answers run_cell's call id with the cell's observation as a tool result."""
+    third, offered, (fourth, declared) = _run_cell_requests()
+
+    llm.chat(third, _cfg(provider), tools=offered)
+    payload = cap.payload
+    _no_forced_choice(provider, payload)
+    if provider in ("ark", "chatgpt"):
+        names = [tool["function"]["name"] for tool in payload["tools"]]
+    elif provider == "claude":
+        names = [tool["name"] for tool in payload["tools"]]
+    else:
+        names = [tool["name"] for tool in payload["tools"][0]["functionDeclarations"]]
+    assert names == ["run_cell"]
+
+    llm.chat(fourth, _cfg(provider), tools=declared)
+    payload = cap.payload
+    _no_forced_choice(provider, payload)
+    if provider in ("ark", "chatgpt"):
+        names = [tool["function"]["name"] for tool in payload["tools"]]
+    elif provider == "claude":
+        names = [tool["name"] for tool in payload["tools"]]
+    else:
+        names = [tool["name"] for tool in payload["tools"][0]["functionDeclarations"]]
+    assert names == ["lookup", "run_cell"]
+    if provider in ("ark", "chatgpt"):
+        call, answer = payload["messages"][-2:]
+        assert call["tool_calls"][0]["function"]["name"] == "run_cell"
+        assert call["tool_calls"][0]["id"] == answer["tool_call_id"] == "call_2"
+        assert (answer["role"], answer["content"]) == ("tool", "[Observation]\n2")
+    elif provider == "claude":
+        call, answer = payload["messages"][-2:]
+        (use,) = [part for part in call["content"] if part["type"] == "tool_use"]
+        (result,) = answer["content"]
+        assert (use["name"], use["id"]) == ("run_cell", "call_2")
+        assert (result["type"], result["tool_use_id"]) == ("tool_result", "call_2")
+        assert result["content"] == "[Observation]\n2"
+    else:
+        call, answer = payload["contents"][-2:]
+        (use,) = [
+            part["functionCall"] for part in call["parts"] if "functionCall" in part
+        ]
+        (result,) = [part["functionResponse"] for part in answer["parts"]]
+        assert (use["name"], use["id"]) == ("run_cell", "call_2")
+        assert (result["name"], result["id"]) == ("run_cell", "call_2")
+        assert result["response"] == {"output": "[Observation]\n2"}
+
+
+def test_the_run_cell_call_and_its_answer_are_well_formed_on_responses(monkeypatch):
+    sent = []
+
+    def post_sse(url, payload, headers, timeout, on_event):
+        sent.append(payload)
+        output = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "ok"}],
+            }
+        ]
+        on_event(
+            {
+                "type": "response.completed",
+                "response": {"status": "completed", "output": output, "usage": {}},
+            }
+        )
+
+    monkeypatch.setattr(llm.transport, "post_sse", post_sse)
+    third, offered, (fourth, declared) = _run_cell_requests()
+    llm.chat(third, _cfg("openai_responses"), tools=offered)
+    llm.chat(fourth, _cfg("openai_responses"), tools=declared)
+
+    first, second = sent
+    _no_forced_choice("openai_responses", first)
+    assert [tool["name"] for tool in first["tools"]] == ["run_cell"]
+    _no_forced_choice("openai_responses", second)
+    assert [tool["name"] for tool in second["tools"]] == ["lookup", "run_cell"]
+    call, answer = second["input"][-2:]
+    assert (call["type"], call["name"], call["call_id"]) == (
+        "function_call",
+        "run_cell",
+        "call_2",
+    )
+    assert (answer["type"], answer["call_id"]) == ("function_call_output", "call_2")
+    assert answer["output"] == "[Observation]\n2"
+
+
+def test_an_anthropic_none_choice_takes_no_other_field(cap):
+    # The facade's "no tool calls" shape on the Anthropic wire, which rejects
+    # ``disable_parallel_tool_use`` beside ``{"type": "none"}``.
+    llm.chat(
+        [{"role": "user", "content": "hi"}],
+        _cfg("claude"),
+        tools=[_LOOKUP],
+        tool_choice="none",
+        parallel_tool_calls=False,
+    )
+    assert cap.payload["tool_choice"] == {"type": "none"}
 
 
 def test_config_base_url_override(cap):

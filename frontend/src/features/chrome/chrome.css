@@ -17,6 +17,7 @@ html[data-theme="dark"] .palette-input{background-image:url("data:image/svg+xml,
 .pi-txt{min-width:0}
 .pi-label{font-size:14px;font-weight:500;color:var(--text-000,#141413);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pi-sub{margin-top:2px;font-size:13px;color:var(--text-400,#6c6a64);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pi-sub mark{background:var(--bg-300,#e8e0d2);color:var(--text-000,#141413);border-radius:3px;padding:0 2px}
 .palette-empty{padding:24px;text-align:center;color:var(--text-400,#6c6a64);font-size:14px}
 
 body.layout-compact{font-size:13px}

@@ -1578,6 +1578,44 @@ def _safe_container_summary(value: object) -> tuple[str, int, str, str] | None:
     return kind, length, preview[:240], hashlib.sha256(canonical).hexdigest()
 
 
+#: Column labels a table entry lists before it says "…".
+_INSPECT_COLUMN_NAMES = 20
+
+
+def _exact_dataframe_type() -> object:
+    """``pandas.DataFrame`` if pandas is already imported, else ``None``.
+
+    The one non-builtin type the inspector reads (NB-3): a scientist's main
+    result is usually a DataFrame, and "DataFrame" alone said nothing about
+    it. Never imports pandas, reads the class from the module's own dict (no
+    module ``__getattr__`` runs), and matches the exact class only, so a
+    subclass that overrides ``shape`` or ``columns`` stays opaque.
+    """
+    module = sys.modules.get("pandas")
+    if type(module) is not type(sys):
+        return None
+    candidate = dict.get(object.__getattribute__(module, "__dict__"), "DataFrame")
+    return candidate if type(candidate) is type else None
+
+
+def _dataframe_summary(value: object) -> dict | None:
+    """Shape and the first column labels of an exact ``pandas.DataFrame``."""
+    try:
+        rows, width = value.shape  # type: ignore[attr-defined]
+        labels = value.columns[:_INSPECT_COLUMN_NAMES].tolist()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - a frame that cannot say stays opaque
+        return None
+    if type(rows) is not int or type(width) is not int or type(labels) is not list:
+        return None
+    names = [
+        str(label)[:80] for label in labels if type(label) in (str, int, float, bool)
+    ]
+    # A MultiIndex or object labels: give the count, not a partial list.
+    if len(names) != len(labels):
+        names = []
+    return {"kind": "table", "rows": rows, "columns": width, "column_names": names}
+
+
 def _inspect_one(name: str, value: object) -> dict:
     value = _untagged(value)
     entry = {"name": name[:160], "type": _safe_type_name(value)}
@@ -1609,6 +1647,10 @@ def _inspect_one(name: str, value: object) -> dict:
             # member makes preview/fingerprint unavailable, never executable.
             _sample, length = _container_sample(value)
             entry.update(kind="container", length=length)
+    elif value_type is _exact_dataframe_type():
+        summary = _dataframe_summary(value)
+        if summary is not None:
+            entry.update(summary)
     return entry
 
 

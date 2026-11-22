@@ -3843,6 +3843,39 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/session/export-html [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/shares [error]": {
       "schema": {
         "properties": {
@@ -10285,6 +10318,88 @@
           },
           "pending": {
             "type": "null"
+          },
+          "runtimes": {
+            "properties": {
+              "python": {
+                "properties": {
+                  "available": {
+                    "type": "boolean"
+                  },
+                  "environment": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "available",
+                  "environment",
+                  "kind",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "r": {
+                "properties": {
+                  "available": {
+                    "type": "boolean"
+                  },
+                  "checked": {
+                    "type": "boolean"
+                  },
+                  "environment": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "packages": {
+                    "items": {
+                      "properties": {
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "available",
+                        "name"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "selected": {
+                    "type": "boolean"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "available",
+                  "checked",
+                  "environment",
+                  "kind",
+                  "packages",
+                  "selected",
+                  "version"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "python",
+              "r"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -10292,7 +10407,8 @@
           "current_r",
           "default",
           "environments",
-          "pending"
+          "pending",
+          "runtimes"
         ],
         "type": "object"
       }
@@ -12559,6 +12675,65 @@
     },
     "GET /frames/([^/]+)/artifacts [ok]": {
       "schema": {
+        "items": {
+          "properties": {
+            "artifact_id": {
+              "type": "string"
+            },
+            "checksum": {
+              "type": "string"
+            },
+            "content_type": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "filename": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "is_user_upload": {
+              "type": "boolean"
+            },
+            "priority": {
+              "type": "integer"
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            },
+            "root_frame_id": {
+              "type": "string"
+            },
+            "size_bytes": {
+              "type": "integer"
+            },
+            "version_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "artifact_id",
+            "checksum",
+            "content_type",
+            "created_at",
+            "filename",
+            "id",
+            "is_user_upload",
+            "priority",
+            "project_id",
+            "role",
+            "root_frame_id",
+            "size_bytes",
+            "version_id"
+          ],
+          "type": "object"
+        },
         "type": "array"
       }
     },
@@ -15119,6 +15294,88 @@
           },
           "pending": {
             "type": "null"
+          },
+          "runtimes": {
+            "properties": {
+              "python": {
+                "properties": {
+                  "available": {
+                    "type": "boolean"
+                  },
+                  "environment": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "available",
+                  "environment",
+                  "kind",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "r": {
+                "properties": {
+                  "available": {
+                    "type": "boolean"
+                  },
+                  "checked": {
+                    "type": "boolean"
+                  },
+                  "environment": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "packages": {
+                    "items": {
+                      "properties": {
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "available",
+                        "name"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "selected": {
+                    "type": "boolean"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "available",
+                  "checked",
+                  "environment",
+                  "kind",
+                  "packages",
+                  "selected",
+                  "version"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "python",
+              "r"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -15126,7 +15383,8 @@
           "current_r",
           "default",
           "environments",
-          "pending"
+          "pending",
+          "runtimes"
         ],
         "type": "object"
       }
@@ -15486,9 +15744,6 @@
                   "type": "boolean"
                 },
                 "stale_reasons": {
-                  "items": {
-                    "type": "string"
-                  },
                   "type": "array"
                 },
                 "state_revision": {
@@ -17275,6 +17530,31 @@
         "type": "object"
       }
     },
+    "GET /frames/([^/]+)/session/export-html [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /frames/([^/]+)/shares [ok]": {
       "schema": {
         "properties": {
@@ -18717,6 +18997,9 @@
     "GET /models [ok]": {
       "schema": {
         "properties": {
+          "credential_missing": {
+            "type": "boolean"
+          },
           "default_model_id": {
             "type": "string"
           },
@@ -18767,6 +19050,7 @@
           }
         },
         "required": [
+          "credential_missing",
           "default_model_id",
           "models"
         ],
@@ -19292,6 +19576,28 @@
           },
           "provider": {
             "type": "string"
+          },
+          "provider_presets": {
+            "items": {
+              "properties": {
+                "base_url": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "base_url",
+                "id",
+                "model"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -19309,7 +19615,8 @@
           "platform",
           "profiles",
           "protocols",
-          "provider"
+          "provider",
+          "provider_presets"
         ],
         "type": "object"
       }
@@ -19643,35 +19950,62 @@
         "type": "object"
       }
     },
-    "GET /permissions [error]": {
+    "GET /permissions [ok]": {
       "schema": {
         "properties": {
-          "code": {
-            "type": "string"
-          },
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "request_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "integer"
+          "rules": {
+            "properties": {
+              "global": {
+                "items": {
+                  "properties": {
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string"
+                    },
+                    "pattern": {
+                      "type": "string"
+                    },
+                    "rule_id": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "scope_id": {
+                      "type": "string"
+                    },
+                    "tool": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "created_at",
+                    "decision",
+                    "pattern",
+                    "rule_id",
+                    "scope",
+                    "scope_id",
+                    "tool",
+                    "updated_at"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "global"
+            ],
+            "type": "object"
           }
         },
         "required": [
-          "code",
-          "error",
-          "method",
-          "path",
-          "request_id",
-          "status"
+          "rules"
         ],
         "type": "object"
       }
@@ -20081,6 +20415,9 @@
                 "project_id": {
                   "type": "string"
                 },
+                "role": {
+                  "type": "string"
+                },
                 "root_frame_id": {
                   "type": "string"
                 },
@@ -20101,6 +20438,7 @@
                 "is_user_upload",
                 "priority",
                 "project_id",
+                "role",
                 "root_frame_id",
                 "size_bytes",
                 "version_id"
@@ -20158,6 +20496,9 @@
             "project_id": {
               "type": "string"
             },
+            "role": {
+              "type": "string"
+            },
             "root_frame_id": {
               "type": "string"
             },
@@ -20178,6 +20519,7 @@
             "is_user_upload",
             "priority",
             "project_id",
+            "role",
             "root_frame_id",
             "size_bytes",
             "version_id"
@@ -20279,6 +20621,12 @@
                 "kind": {
                   "type": "string"
                 },
+                "modified_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
                 "name": {
                   "type": "string"
                 },
@@ -20294,6 +20642,7 @@
               },
               "required": [
                 "kind",
+                "modified_ms",
                 "name",
                 "path",
                 "size"
@@ -21478,11 +21827,23 @@
                 "id": {
                   "type": "string"
                 },
-                "name": {
+                "match": {
                   "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "project_id": {
                   "type": "string"
+                },
+                "snippet": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "task_summary": {
                   "type": "null"
@@ -21490,8 +21851,10 @@
               },
               "required": [
                 "id",
+                "match",
                 "name",
                 "project_id",
+                "snippet",
                 "task_summary"
               ],
               "type": "object"
@@ -28272,6 +28635,39 @@
         "type": "object"
       }
     },
+    "PATCH /frames/([^/]+)/session/export-html [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /frames/([^/]+)/shares [error]": {
       "schema": {
         "properties": {
@@ -32505,6 +32901,9 @@
               "project_id": {
                 "type": "string"
               },
+              "role": {
+                "type": "string"
+              },
               "root_frame_id": {
                 "type": "string"
               },
@@ -32525,6 +32924,7 @@
               "is_user_upload",
               "priority",
               "project_id",
+              "role",
               "root_frame_id",
               "size_bytes",
               "version_id"
@@ -32975,6 +33375,9 @@
               "project_id": {
                 "type": "string"
               },
+              "role": {
+                "type": "string"
+              },
               "root_frame_id": {
                 "type": "string"
               },
@@ -32995,6 +33398,7 @@
               "is_user_upload",
               "priority",
               "project_id",
+              "role",
               "root_frame_id",
               "size_bytes",
               "version_id"
@@ -40855,6 +41259,39 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/session/export-html [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/shares [error]": {
       "schema": {
         "properties": {
@@ -43138,6 +43575,28 @@
           },
           "provider": {
             "type": "string"
+          },
+          "provider_presets": {
+            "items": {
+              "properties": {
+                "base_url": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "base_url",
+                "id",
+                "model"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -43155,7 +43614,8 @@
           "platform",
           "profiles",
           "protocols",
-          "provider"
+          "provider",
+          "provider_presets"
         ],
         "type": "object"
       }
@@ -50904,6 +51364,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/session/export-html [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],

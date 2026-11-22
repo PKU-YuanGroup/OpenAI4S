@@ -2460,3 +2460,53 @@ def test_guardian_audit_completion_failure_denies_without_guessing_audit_id(
     finally:
         subject.unregister_channel(root)
         store.close()
+
+
+def test_global_rules_are_readable_without_a_session(tmp_path):
+    """Settings → Permissions with no session open reads the global tier.
+
+    The only read was `/frames/{id}/permissions`, so the tab had nothing to
+    ask for and showed an empty page under "only global defaults are shown".
+    """
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+        def has_subscriber(self, root_frame_id):
+            return False
+
+        def drop_frame(self, root_frame_id):
+            return None
+
+    cfg = Config(data_dir=tmp_path, llm=LLMConfig(provider="deepseek", api_key="k"))
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    try:
+        runner.store.seed_default_permission_rules()
+        handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+        replies: list[tuple[int, dict]] = []
+        handler._query = lambda: {}
+        handler._body = lambda: {}
+        handler._json = lambda value, code=200: replies.append((code, value))
+
+        handler._api("GET", "/permissions")
+
+        code, body = replies[-1]
+        assert code == 200
+        assert set(body) == {"rules"} and set(body["rules"]) == {"global"}
+        rules = body["rules"]["global"]
+        seeded = {(r["tool"], r["pattern"]): r["decision"] for r in rules}
+        assert seeded[("write_file", "*")] == "allow"
+        assert seeded[("env_setup", "*")] == "ask"
+        assert seeded[("read_file", "*.env")] == "deny"
+        assert all(r["scope"] == "global" and r["rule_id"] for r in rules)
+        # The same rows a session's read carries in its global tier.
+        frame_id = runner.store.new_frame(kind="turn", project_id="work")
+        handler._api("GET", f"/frames/{frame_id}/permissions")
+        assert replies[-1][1]["rules"]["global"] == rules
+    finally:
+        runner.store.close()

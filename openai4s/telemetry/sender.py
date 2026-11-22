@@ -22,6 +22,7 @@ import os
 import urllib.request
 from typing import Any, Callable
 
+from openai4s import tls_trust
 from openai4s.telemetry import consent as consent_mod
 from openai4s.telemetry import gate
 from openai4s.telemetry.wire import SealedPayload
@@ -62,7 +63,7 @@ def endpoint() -> str | None:
 
 def _default_transport(request: urllib.request.Request) -> int:
     """Open the socket. The only place in the tree that does, for telemetry."""
-    opener = urllib.request.build_opener(_NoRedirects)
+    opener = urllib.request.build_opener(_NoRedirects, tls_trust.https_handler())
     with opener.open(request, timeout=_TIMEOUT_S) as response:
         return int(getattr(response, "status", 0))
 

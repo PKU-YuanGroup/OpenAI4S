@@ -29,7 +29,7 @@ import {
   previewReadSignal,
 } from "./api";
 import { previewSlice } from "./cache";
-import { filesT, readFailureText } from "./copy";
+import { filesT, readFailureText, readRetryHelps } from "./copy";
 import { downloadLink } from "./partial";
 import type { ArtifactRow } from "./types";
 import { mdCodeBlock, renderMd } from "../md";
@@ -561,12 +561,14 @@ export function renderNotebookArtifact(container: HTMLElement, a: ArtifactRow, u
       const body = el("div", "renderer-fallback-text", readFailureText(error));
       body.setAttribute("role", "alert");
       card.appendChild(body);
-      const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
-      again.onclick = () => {
-        container.innerHTML = "";
-        retry();
-      };
-      card.appendChild(again);
+      if (readRetryHelps(error)) {
+        const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
+        again.onclick = () => {
+          container.innerHTML = "";
+          retry();
+        };
+        card.appendChild(again);
+      }
       card.appendChild(downloadLink(url, a));
       container.appendChild(card);
     });

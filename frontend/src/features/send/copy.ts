@@ -3,6 +3,7 @@ import { LANG } from "../../i18n/runtime";
 export type SendCopyKey =
   | "send"
   | "queue"
+  | "queuedBadge"
   | "reviewing"
   | "reviewFinding"
   | "planDesc"
@@ -14,6 +15,7 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
   en: {
     send: "Send",
     queue: "Queue: runs after the current turn",
+    queuedBadge: "Queued · not sent yet",
     reviewing: "Reviewing",
     reviewFinding: "Review finding",
     planDesc: "Drafts a step-by-step plan for you to review; nothing runs until you approve it.",
@@ -24,6 +26,7 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
   zh: {
     send: "发送",
     queue: "加入队列：当前任务结束后运行",
+    queuedBadge: "排队中 · 尚未发送",
     reviewing: "正在审阅",
     reviewFinding: "审阅发现",
     planDesc: "先写出分步计划给你审阅，你批准后才开始执行。",

@@ -11,6 +11,7 @@ non-MHS row keeps the original behaviour.
 from __future__ import annotations
 
 import hashlib
+import json
 import shlex
 from typing import Any, Callable, Mapping, Protocol
 
@@ -554,4 +555,43 @@ class MCPService:
             return {"error": f"mcp prompt get({server}.{name}) failed: {exc}"}
 
 
-__all__ = ["MCPService"]
+def call_step_request(spec: Mapping[str, Any]) -> str:
+    """``example.calc(expression="1376 + 4")``: the call, as the card shows it.
+
+    The card showed only the result, so a reader could not tell what a
+    connector had been asked (CHAT-7). Bounded: an argument can be a file.
+    """
+
+    args = spec.get("args")
+    rendered = ", ".join(
+        f"{key}={json.dumps(value, ensure_ascii=False, default=str)}"
+        for key, value in (args.items() if isinstance(args, Mapping) else ())
+    )
+    return f"{spec.get('server')}.{spec.get('tool')}({rendered})"[:600]
+
+
+def call_step_output(result: Any) -> tuple[dict[str, Any], str]:
+    """(card output, one-line summary) for a finished connector call.
+
+    A tool result is ``{"is_error", "text", "raw"}``; the card printed that
+    whole envelope as JSON. Its text is the answer, and a short one is also
+    the summary.
+    """
+
+    if not isinstance(result, Mapping) or not isinstance(result.get("text"), str):
+        return ({"result": _clip(result, 2000)}, "done")
+    text = result["text"].strip()
+    line = " ".join(text.split())
+    summary = line if 0 < len(line) <= 80 else "done"
+    return ({"result": text[:2000], "is_error": bool(result.get("is_error"))}, summary)
+
+
+def _clip(value: Any, limit: int) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = str(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+__all__ = ["MCPService", "call_step_output", "call_step_request"]

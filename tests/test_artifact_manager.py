@@ -1593,6 +1593,84 @@ def test_figure_capture_skips_saved_figures_and_failed_cells(tmp_path):
     assert open_figures["stdout"].strip() == "[]"
 
 
+def test_a_figure_saved_with_fig_savefig_is_not_captured_again(tmp_path):
+    """ART-1: every figure was stored twice. The agent writes
+    `fig.savefig(...)`, after which matplotlib 3.11 leaves `fig.stale` True
+    (only `plt.savefig` redraws), so the "saved and unchanged" test built on
+    `stale` never held and each figure got a figure_cellN_k.png twin -- the
+    blank figure a bare `plt.gcf()` makes included. Real kernel, real
+    matplotlib: the answer is matplotlib's behaviour, not ours."""
+    _require_matplotlib_in_the_kernel()
+    harness = ArtifactHarness(tmp_path)
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    def run(kernel, index, code):
+        before = harness.manager.snapshot(harness.workspace)
+        result = kernel.execute(code, cell_id=f"cell-{index}")
+        assert result["error"] is None, result["error"]
+        return harness.manager.capture(
+            harness.session,
+            index,
+            f"cell-{index}",
+            before,
+            lambda event: None,
+            language="python",
+            run_system_cell=kernel.execute,
+        )
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        # Import, plot and save in the kernel's first plotting Cell, the way
+        # the agent does: PNG at print resolution plus an SVG.
+        first = run(
+            kernel,
+            1,
+            "import matplotlib\nmatplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "fig, axes = plt.subplots(1, 2, layout='constrained')\n"
+            "axes[0].plot([1, 2])\naxes[0].set_title('growth')\n"
+            "fig.savefig('Fig1.png', dpi=300, bbox_inches='tight')\n"
+            "fig.savefig('Fig1.svg')\n",
+        )
+        assert first.figures == []
+        assert sorted(a["filename"] for a in first.artifacts) == [
+            "Fig1.png",
+            "Fig1.svg",
+        ]
+
+        # Inspecting a saved figure (a draw, text extents, an inline copy
+        # into a buffer) does not change what it shows.
+        checked = run(
+            kernel,
+            2,
+            "import io\nfig, ax = plt.subplots()\nax.plot([3, 4])\n"
+            "fig.savefig('Fig2.png')\n"
+            "fig.canvas.draw()\nr = fig.canvas.get_renderer()\n"
+            "boxes = [t.get_window_extent(r) for t in fig.findobj(matplotlib.text.Text)]\n"
+            "fig.savefig(io.BytesIO(), format='png')\n",
+        )
+        assert checked.figures == []
+
+        # Saved, then changed: what the figure shows is not in the file.
+        changed = run(
+            kernel,
+            3,
+            "fig, ax = plt.subplots()\nax.plot([5, 6])\n"
+            "fig.savefig('Fig3.png')\nax.set_title('later')\n",
+        )
+        assert changed.figures == ["figure_cell3_1.png"]
+
+        # Never saved to a file: captured.
+        unsaved = run(kernel, 4, "fig, ax = plt.subplots()\nax.plot([7, 8])\n")
+        assert unsaved.figures == ["figure_cell4_1.png"]
+
+        # `plt.gcf()` with no open figure makes an empty one: nothing to keep.
+        blank = run(kernel, 5, "fig = plt.gcf()\nfig.canvas.draw()\n")
+        assert blank.figures == []
+        assert not (harness.workspace / "figure_cell5_1.png").exists()
+        open_figures = kernel.execute("print(plt.get_fignums())")
+    assert open_figures["stdout"].strip() == "[]"
+
+
 def test_r_capture_never_runs_python_figure_probe(tmp_path):
     harness = ArtifactHarness(tmp_path)
     before = harness.manager.snapshot(harness.workspace)

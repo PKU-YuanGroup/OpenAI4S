@@ -4,6 +4,9 @@ export type TimelineUsage = {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  /** The part of `input_tokens` read back from the provider's cache. */
+  cache_read: number;
+  reasoning_tokens: number;
 };
 
 export type TimelineEvent = {

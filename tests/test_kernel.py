@@ -222,6 +222,47 @@ def test_variable_inspector_reads_only_safe_builtins_without_repr_hooks():
         assert kernel.execute("print(events)")["stdout"].strip() == "[]"
 
 
+def test_variable_inspector_gives_an_exact_dataframe_its_shape_and_columns():
+    """NB-3: "DataFrame" alone said nothing about the session's main result.
+    Only the exact pandas class is read; a subclass stays opaque."""
+    pytest.importorskip("pandas")
+    with Kernel(dispatcher=_echo_dispatcher) as kernel:
+        setup = kernel.execute(
+            "import pandas as pd\n"
+            "events = []\n"
+            "growth = pd.DataFrame({'well': ['A1', 'A2', 'A3'], 'od': [0.1, 0.2, 0.3]})\n"
+            "wide = pd.DataFrame([[0] * 25], columns=[f'c{i}' for i in range(25)])\n"
+            "nested = pd.DataFrame([[1, 2]], columns=pd.MultiIndex.from_tuples("
+            "[('a', 'x'), ('a', 'y')]))\n"
+            "class TrapFrame(pd.DataFrame):\n"
+            "    @property\n"
+            "    def shape(self):\n"
+            "        events.append('shape'); raise RuntimeError('shape')\n"
+            "trap = TrapFrame({'a': [1]})"
+        )
+        assert setup["error"] is None
+
+        variables = {
+            item["name"]: item for item in kernel.inspect_variables()["variables"]
+        }
+
+        assert variables["growth"] == {
+            "name": "growth",
+            "type": "DataFrame",
+            "kind": "table",
+            "rows": 3,
+            "columns": 2,
+            "column_names": ["well", "od"],
+        }
+        assert variables["wide"]["columns"] == 25
+        assert variables["wide"]["column_names"] == [f"c{i}" for i in range(20)]
+        # Tuple labels: the count, not a partial list.
+        assert variables["nested"]["columns"] == 2
+        assert variables["nested"]["column_names"] == []
+        assert variables["trap"] == {"name": "trap", "type": "TrapFrame"}
+        assert kernel.execute("print(events)")["stdout"].strip() == "[]"
+
+
 def test_variable_inspector_shows_a_value_read_from_a_tracked_artifact_plainly():
     """Provenance hands such a value back as its tagged `str`/`bytes` subclass,
     which is still the plain value; any other subclass stays opaque."""

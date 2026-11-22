@@ -128,10 +128,8 @@ function saveNew(path: PathChoice, key: string): Promise<void> {
   return (step.props!.onSaveNew as (path: PathChoice, key: string) => Promise<void>)(path, key);
 }
 
-/** Checklist -> "Choose a model path", the way a user goes back to the step. */
+/** The step rail's "Choose a model path", the way a user goes back to the step. */
 function backToPath(): void {
-  const checklist = find(render(), (node) => node.type === "button" && textOf(node) === ot("onboarding.checklist"))!;
-  (checklist.props!.onClick as () => void)();
   const step = find(
     render(),
     (node) => node.type === "button" && textOf(node).endsWith(ot("onboarding.step.path")),

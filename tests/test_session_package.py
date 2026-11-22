@@ -4189,6 +4189,300 @@ def test_exported_package_redacts_local_absolute_paths(tmp_path, monkeypatch):
         store.close()
 
 
+def _export_with_a_real_kernel_generation(tmp_path, monkeypatch):
+    """A session whose export carries what a real one does: a kernel
+    generation, a checkpoint that references it, and a failed cell.
+
+    Everything this machine owns lives under ``tmp_path`` -- the data
+    directory, the session workspace below it, the home directory and the
+    temporary directory -- so one substring says whether a local path
+    survived anywhere in the package.
+    """
+    import tempfile
+
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    temp_root = tmp_path / "var" / "folders" / "ab" / "0123abcd" / "T"
+    temp_root.mkdir(parents=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    session_workspace = str(workspace(root, root).resolve())
+    kernel_temp = str(temp_root / "openai4s-kernel-abc123")
+    interpreter = str(home / "miniforge3" / "envs" / "lab_env" / "bin" / "python")
+    environment = {
+        "environment_name": "lab_env",
+        "environment_root": str(home / "miniforge3" / "envs" / "lab_env"),
+        "interpreter": interpreter,
+        "kernel_mode": "python",
+        "runtime": "python",
+        "worker_argv": [interpreter, "-m", "openai4s.kernel.worker"],
+        "working_directory": session_workspace,
+        "sandbox": {
+            "backend": "seatbelt",
+            "mode": "auto",
+            "temp_dir": kernel_temp,
+            "workspace": session_workspace,
+        },
+        # No allowlist names this key. A field added next year is the case
+        # the redaction has to cover without anyone remembering to list it.
+        "added_later": {"cache": [f"{kernel_temp}/matplotlib"]},
+    }
+    bootstrap = {
+        "environment_root": str(home / "miniforge3" / "envs" / "lab_env"),
+        "interpreter": interpreter,
+        "working_directory": session_workspace,
+        "status": "ready",
+    }
+    generation = store.create_kernel_generation(
+        root_frame_id=root,
+        branch_id=root,
+        language="python",
+        environment=environment,
+        bootstrap=bootstrap,
+        state="active",
+    )
+    store.log_cell(
+        frame_id=root,
+        root_frame_id=root,
+        project_id=project["project_id"],
+        code="import pandas as pd\npd.read_csv('missing.csv')",
+        result={
+            "id": "cell-failed",
+            "stdout": f"cwd {session_workspace}\n",
+            "stderr": "",
+            "error": (
+                "Traceback (most recent call last):\n"
+                f'  File "{interpreter}/../lib/site.py", line 1, in <module>\n'
+                f"FileNotFoundError: {session_workspace}/missing.csv"
+            ),
+        },
+        cell_index=2,
+        state_revision=2,
+        generation_id=generation["generation_id"],
+    )
+    domain.create_checkpoint(root, metadata={"label": "after the failed cell"})
+    return store, domain, root, domain.session_export(root)
+
+
+def test_no_member_of_an_exported_package_carries_a_local_path(tmp_path, monkeypatch):
+    """EXP-1. The reviewed export had 176 absolute paths in `snapshots.json`:
+    44 checkpoints, each with the session workspace under three keys and the
+    kernel's temporary directory under a fourth, none of them in the key
+    allowlist that document was redacted by. This reads every member, so the
+    next unlisted key fails here instead of shipping."""
+    store, domain, root, exported = _export_with_a_real_kernel_generation(
+        tmp_path, monkeypatch
+    )
+    try:
+        files = _unpack(exported["data"])
+        local = {str(tmp_path).encode(), str(tmp_path.resolve()).encode()}
+        leaks = sorted(
+            name
+            for name, payload in files.items()
+            if any(prefix in payload for prefix in local)
+        )
+        assert leaks == []
+
+        # The checkpoint really does carry the generation, with its shape kept.
+        checkpoints = json.loads(files["snapshots.json"])["checkpoints"]
+        (python,) = [
+            checkpoint["generation_refs"]["python"]
+            for checkpoint in checkpoints
+            if "python" in checkpoint["generation_refs"]
+        ]
+        assert python["environment"]["working_directory"] == "."
+        assert python["environment"]["sandbox"]["workspace"] == "."
+        assert python["bootstrap"]["working_directory"] == "."
+        assert python["environment"]["sandbox"]["temp_dir"] == (
+            "<tmp>/openai4s-kernel-abc123"
+        )
+        assert python["environment"]["added_later"] == {
+            "cache": ["<tmp>/openai4s-kernel-abc123/matplotlib"]
+        }
+        assert python["environment"]["interpreter"] == (
+            "~/miniforge3/envs/lab_env/bin/python"
+        )
+    finally:
+        store.close()
+
+
+def test_an_export_counts_the_local_paths_it_leaves_and_says_so(tmp_path, monkeypatch):
+    """EXP-1, owner's choice: text a digest covers (here a message that quotes
+    a home-directory path) is not rewritten, so the export counts what it left,
+    notes it in the package without repeating the paths, and still verifies."""
+    from openai4s.evidence import verify_package
+
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        clean = domain.session_export(root)
+        assert clean["local_paths_left"] == 0
+        clean_files = _unpack(clean["data"])
+        assert not any(
+            b"Local paths left as written" in payload
+            for payload in clean_files.values()
+        )
+
+        quoted = f"{home}/data/plate3.xlsx"
+        store.add_message(
+            root_frame_id=root,
+            frame_id=root,
+            role="user",
+            content=f"The raw file is {quoted}",
+        )
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+
+        assert exported["local_paths_left"] >= 1
+        # Left as written: it is the user's message.
+        assert quoted.encode() in files["session.json"]
+        notes = [
+            payload.decode("utf-8")
+            for payload in files.values()
+            if b"Local paths left as written" in payload
+        ]
+        assert len(notes) == 1
+        assert "`session.json`" in notes[0]
+        assert str(home) not in notes[0]
+
+        package = tmp_path / "left.openai4s-session.zip"
+        package.write_bytes(exported["data"])
+        report = verify_package(package)
+        assert report["ok"], report["problems"]
+    finally:
+        store.close()
+
+
+def test_a_moved_data_directory_does_not_ship_its_old_location(tmp_path, monkeypatch):
+    """EXP-1. The prefix rules know this machine's data directory and home, so
+    a record written before the data directory was moved -- another machine,
+    another account -- shipped the previous location: a checkpoint's
+    workspace keys, a cell's printout, the runtime evidence. A path through a
+    data-directory folder is re-rooted whatever precedes it."""
+    from openai4s.evidence import verify_package
+
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    store, domain, project, root, _artifact, _checkpoint, _workspace = _source(tmp_path)
+    old_home = tmp_path / "previous-machine" / "Users" / "bob"
+    old_workspace = str(old_home / ".openai4s" / "agent-workspaces" / root)
+    try:
+        environment = {
+            "runtime": "python",
+            "working_directory": old_workspace,
+            "sandbox": {"backend": "seatbelt", "workspace": old_workspace},
+        }
+        generation = store.create_kernel_generation(
+            root_frame_id=root,
+            branch_id=root,
+            language="python",
+            environment=environment,
+            bootstrap={"working_directory": old_workspace, "status": "ready"},
+            state="active",
+        )
+        store.log_cell(
+            frame_id=root,
+            root_frame_id=root,
+            project_id=project["project_id"],
+            code="import os\nprint(os.getcwd())",
+            result={"id": "cell-cwd", "stdout": f"{old_workspace}\n", "stderr": ""},
+            cell_index=2,
+            state_revision=2,
+            generation_id=generation["generation_id"],
+        )
+        store.log_host_call(
+            method="write_file",
+            args=[{"path": f"{old_workspace}/fig.png"}],
+            ok=True,
+            frame_id=root,
+        )
+        domain.create_checkpoint(root, metadata={"label": "after the move"})
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+        leaks = sorted(
+            name for name, payload in files.items() if str(old_home).encode() in payload
+        )
+        assert leaks == []
+        checkpoints = json.loads(files["snapshots.json"])["checkpoints"]
+        (python,) = [
+            checkpoint["generation_refs"]["python"]
+            for checkpoint in checkpoints
+            if "python" in checkpoint["generation_refs"]
+        ]
+        # The label a path recorded under this data directory gets.
+        assert python["bootstrap"]["working_directory"] == (
+            f"<data_dir>/agent-workspaces/{root}"
+        )
+        assert f"<data_dir>/agent-workspaces/{root}/fig.png" in (
+            files["runtime/host_calls.json"].decode()
+        )
+        package = tmp_path / "moved.openai4s-session.zip"
+        package.write_bytes(exported["data"])
+        assert verify_package(str(package))["ok"]
+        assert domain.session_import(exported["data"])["root_frame_id"] != root
+    finally:
+        store.close()
+
+
+def test_a_redacted_package_still_verifies_inspects_and_imports(tmp_path, monkeypatch):
+    from openai4s.evidence import verify_package
+    from openai4s.package_diagnosis import diagnose, read_package
+
+    store, domain, root, exported = _export_with_a_real_kernel_generation(
+        tmp_path, monkeypatch
+    )
+    try:
+        package = tmp_path / "session.openai4s-session.zip"
+        package.write_bytes(exported["data"])
+        report = verify_package(str(package))
+        assert report["ok"], report["problems"]
+        assert diagnose(read_package(str(package)))
+
+        imported = domain.session_import(exported["data"])
+        new_root = imported["root_frame_id"]
+        assert new_root != root
+        assert {cell["code"] for cell in store.list_cells(new_root)} >= {
+            "score = 0.93",
+            "import pandas as pd\npd.read_csv('missing.csv')",
+        }
+        assert store.list_session_checkpoints(new_root)
+    finally:
+        store.close()
+
+
+def test_a_digest_covered_checkpoint_state_is_not_rewritten(tmp_path, monkeypatch):
+    """`checkpoint_states[].state` is covered by `state_sha256`, and what it
+    holds is what the user wrote (plans, annotations, memory). Rewriting a
+    path inside it would make the package fail its own import."""
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    store, domain, project, root, _artifact, _checkpoint, _workspace = _source(tmp_path)
+    try:
+        noted = f"raw reads live in {home}/sequencing"
+        snapshots = {
+            "checkpoints": [{"metadata": {"note": noted}}],
+            "checkpoint_states": [{"state": {"memory": {"entries": [noted]}}}],
+        }
+        redacted = json.loads(
+            domain.packages._redact_local_paths(
+                {"snapshots.json": _canonical(snapshots)}, root, branches=(root,)
+            )["snapshots.json"]
+        )
+        assert redacted["checkpoints"][0]["metadata"]["note"] == (
+            "raw reads live in ~/sequencing"
+        )
+        assert redacted["checkpoint_states"] == snapshots["checkpoint_states"]
+    finally:
+        store.close()
+
+
 def test_download_names_are_human_and_survive_non_ascii_titles():
     from openai4s.server.security_headers import download_content_disposition
 

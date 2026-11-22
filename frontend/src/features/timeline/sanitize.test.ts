@@ -173,16 +173,19 @@ describe("sanitizeActionTimeline", () => {
     const safe = sanitizeActionTimeline({
       groups: [
         group("sk-abcdefghijk", 1, {
-          usage: { input_tokens: -1, output_tokens: 1.5, total_tokens: 9 },
+          usage: { input_tokens: -1, output_tokens: 1.5, total_tokens: 9, cache_read: 7, reasoning_tokens: "3" },
           cost: "nope",
         }),
       ],
     });
     expect(safe.groups[0]?.group_id).toBe("[redacted]");
+    // TURN-7: the cache and reasoning counters are kept, under the same coercion.
     expect(safe.groups[0]?.usage).toEqual({
       input_tokens: 0,
       output_tokens: 0,
       total_tokens: 9,
+      cache_read: 7,
+      reasoning_tokens: 0,
     });
     expect(safe.groups[0]?.cost).toBeNull();
   });
@@ -469,6 +472,27 @@ describe("sanitizeVariableInspection", () => {
     expect(safe.available).toBe(true);
     expect(safe.variables[0]?.preview).toBe(1);
     expect(safe.variables[1]?.preview).toBeUndefined();
+  });
+
+  it("keeps a table's shape and text column labels (NB-3)", () => {
+    branchState.value = { branch_id: "br" };
+    const safe = sanitizeVariableInspection(
+      {
+        available: true,
+        state: "active",
+        root_frame_id: "f",
+        branch_id: "br",
+        language: "python",
+        variables: [
+          { name: "df", type: "DataFrame", kind: "table", rows: 36, columns: 5, column_names: ["well", "strain"] },
+          { name: "bad", type: "DataFrame", rows: -2, columns: 1.5, column_names: "well" },
+        ],
+      },
+      "f",
+      "python",
+    );
+    expect(safe.variables[0]).toMatchObject({ rows: 36, columns: 5, column_names: ["well", "strain"] });
+    expect(safe.variables[1]).toEqual({ name: "bad", type: "DataFrame" });
   });
 });
 

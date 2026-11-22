@@ -114,6 +114,24 @@ def test_container_base_and_python_inputs_are_integrity_locked():
     assert "science)" in dockerfile and '"")' in dockerfile
 
 
+def test_the_default_science_stack_reads_a_spreadsheet_and_fits_a_model():
+    """ENV-2: a default kernel that cannot open an .xlsx is not a default.
+
+    A reviewer's first cell was ``import openpyxl`` and it failed; the agent
+    then hand-parsed the workbook's XML and hand-wrote an ANOVA instead of
+    asking to install anything. The owner's answer was to ship the three
+    packages, so the extra and the image's hash-locked export both name them.
+    """
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    science = pyproject.split("\nscience = [", 1)[1].split("\n]", 1)[0]
+    requirements = SCIENCE_REQUIREMENTS.read_text(encoding="utf-8")
+    for name in ("openpyxl", "statsmodels", "seaborn"):
+        assert f'"{name}>=' in science, name
+        assert re.search(rf"(?m)^{name}==", requirements), name
+    # seaborn draws through matplotlib, whose Pillow floor excludes 3.10.
+    assert re.search(r'"seaborn>=[^"]*; python_version >= \'3\.11\'"', science)
+
+
 def test_science_requirements_match_locked_export(tmp_path):
     exported = tmp_path / "science.txt"
     subprocess.run(

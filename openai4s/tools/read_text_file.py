@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
 
@@ -117,4 +119,51 @@ class ReadTextFileTool(Tool):
         return result
 
 
-__all__ = ["ReadTextFileTool"]
+#: Where the platform parks output too large for the model's context: the
+#: externalised observations of ``agent.compaction`` and the long cell output
+#: of ``agent.runtime``. Their file names are content hashes.
+_SPILL_DIRS = (".openai4s/context/", ".openai4s/observations/")
+SPILL_READ_TITLE = "Reading an earlier step's full output"
+
+
+def read_step_title(path: Any) -> str:
+    """The step card's title for one read.
+
+    A spill file is named by a 64-character hash, the same on every page the
+    model reads back, so the card names what it is instead (TURN-3).
+    """
+
+    text = str(path or "")
+    normalised = text.replace("\\", "/").removeprefix("./")
+    if normalised.startswith(_SPILL_DIRS):
+        return SPILL_READ_TITLE
+    return f"Reading {text}"
+
+
+def read_step_summary(result: Mapping[str, Any]) -> str:
+    """The step card's one-line summary: the lines this read returned.
+
+    It was the file's total line count, identical on every page of a paged
+    read, so five different reads looked like one read repeated (TURN-3).
+    """
+
+    total = int(result.get("total_lines") or 0)
+    whole = f"{total} line" + ("" if total == 1 else "s")
+    offset = result.get("offset")
+    if type(offset) is not int or total <= 0:
+        return whole
+    content = str(result.get("content") or "")
+    shown = content.count("\n") + 1 if content else 0
+    if shown == 0:
+        return whole if offset == 0 else f"past the end ({whole})"
+    if offset == 0 and shown >= total:
+        return whole
+    return f"lines {offset + 1}–{offset + shown} of {total}"
+
+
+__all__ = [
+    "SPILL_READ_TITLE",
+    "ReadTextFileTool",
+    "read_step_summary",
+    "read_step_title",
+]

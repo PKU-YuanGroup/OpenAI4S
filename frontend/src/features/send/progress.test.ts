@@ -8,7 +8,15 @@ import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
 import { S } from "../timeline/s";
-import { formatElapsed, formatTokens, paintTurnClock, refreshSessionUsage } from "./progress";
+import { actionTimeline } from "../../stores/timeline";
+import {
+  formatElapsed,
+  formatTokens,
+  paintTurnClock,
+  paintUsageTitle,
+  refreshSessionUsage,
+  usageBreakdown,
+} from "./progress";
 
 class Node {
   textContent = "";
@@ -95,5 +103,42 @@ describe("turn progress", () => {
     );
     await refreshSessionUsage();
     expect(usage.classList.contains("hidden")).toBe(true);
+  });
+
+  it("the chip's tooltip says how much of the total was new, cached, output and reasoning (TURN-7)", async () => {
+    currentId.value = "f-u";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "f-u", input_tokens: 4_080_795, output_tokens: 58_464 }),
+      })),
+    );
+    // Before the timeline is read: the two totals, as before.
+    await refreshSessionUsage();
+    expect(usage.title).toContain("输入 4,080,795");
+    // Two model calls; `input_tokens` includes what was read from the cache.
+    const call = (input: number, cached: number, output: number, reasoning: number) => ({
+      usage: { input_tokens: input, cache_read: cached, output_tokens: output, reasoning_tokens: reasoning },
+    });
+    actionTimeline.value = {
+      root_frame_id: "f-u",
+      has_earlier: false,
+      groups: [call(80_795, 0, 8_464, 3_720), { usage: null }, call(4_000_000, 3_869_032, 50_000, 20_000)],
+    };
+    paintUsageTitle();
+    expect(usage.title).toBe(
+      "本会话累计用量：新输入 211,763 · 缓存输入 3,869,032 · 输出 58,464（其中推理 23,720） tokens。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
+    );
+    expect(usageBreakdown(actionTimeline.value, "f-u")).toEqual({
+      fresh: 211_763,
+      cached: 3_869_032,
+      output: 58_464,
+      reasoning: 23_720,
+    });
+    // Another session's timeline, or one with earlier pages not loaded, is not a breakdown of this one.
+    expect(usageBreakdown(actionTimeline.value, "f-other")).toBeNull();
+    expect(usageBreakdown({ ...(actionTimeline.value as object), has_earlier: true }, "f-u")).toBeNull();
   });
 });

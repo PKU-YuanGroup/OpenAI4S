@@ -625,7 +625,11 @@ def test_max_turns_stop(monkeypatch):
 
 
 def test_repeated_native_tool_trips_no_progress(monkeypatch, tmp_path):
-    """Same native tool+args three times must stop as no_progress, not completed."""
+    """An identical native call that keeps coming stops as no_progress, not completed.
+
+    The third identical result carries the circuit's reminder; the fifth ends
+    the turn.
+    """
 
     provider_calls = []
 
@@ -664,15 +668,176 @@ def test_repeated_native_tool_trips_no_progress(monkeypatch, tmp_path):
 
     assert result["stop_reason"] == "no_progress"
     assert result["submitted_output"] is None
-    assert len(provider_calls) == 3
+    assert len(provider_calls) == 5
     groups = agent.dispatcher.store.list_action_groups(agent.frame_id)
     kinds = [group["kind"] for group in groups]
-    assert kinds.count("native_tools") == 3
+    assert kinds.count("native_tools") == 5
+    recorded = [
+        event["result"]["content"]
+        for group in groups
+        if group["kind"] == "native_tools"
+        for event in group["events"]
+        if event["type"] == "result"
+    ]
+    assert [
+        "identical call number 3 in a row to `list_dir`" in text for text in recorded
+    ] == [False, False, True, False, False]
     assert kinds[-1] == "terminal"
     terminal = groups[-1]["events"][0]
     assert terminal["type"] == "failed"
     assert terminal["result"]["reason"] == "no_progress"
     assert "completion" not in terminal["result"]
+
+
+def test_a_cli_run_offers_only_run_cell_after_two_ignored_cell_notes(
+    monkeypatch, tmp_path
+):
+    """The CLI and delegated children compose the Engine here, through
+    ``ChatModel`` into the ``chat`` facade. A model that only ever answers with
+    function calls: the third call offers run_cell alone, the call runs in the
+    real kernel and is recorded like any cell, and the fourth call offers the
+    catalogue again with the cell's output as the tool result for that id."""
+
+    offered = []
+    sent = []
+
+    def chat(messages, cfg, **kwargs):
+        del cfg
+        index = len(offered)
+        names = [
+            getattr(tool, "name", None) or tool["name"] for tool in kwargs["tools"]
+        ]
+        offered.append((names, kwargs.get("tool_choice")))
+        sent.append([dict(message) for message in messages])
+        if names == ["run_cell"]:
+            name = "run_cell"
+            arguments = {"language": "python", "code": "print('sheets', 6 * 7)"}
+        else:
+            name, arguments = "list_dir", {"path": f"dir{index}"}
+        call = {
+            "id": f"call-{index}",
+            "wire_id": f"call-{index}",
+            "name": name,
+            "ordinal": 0,
+            "raw_arguments": json.dumps(arguments),
+            "arguments": arguments,
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        content = "现在用 Python 读取 Excel。"
+        return {
+            "content": content,
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [call],
+            },
+        }
+
+    monkeypatch.setattr(loop_mod, "chat", chat)
+    agent = Agent(
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=4,
+        workspace=tmp_path,
+        record_cells=True,
+    )
+    result = agent.run("read demo.xlsx")
+
+    assert result["stop_reason"] == "max_turns"
+    assert [names == ["run_cell"] for names, _ in offered] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert "run_cell" not in offered[0][0] and "list_dir" in offered[3][0]
+    assert {choice for _, choice in offered} == {None}
+    groups = agent.dispatcher.store.list_action_groups(agent.frame_id)
+    kinds = [group["kind"] for group in groups if group["kind"] != "user"]
+    assert kinds == ["native_tools", "native_tools", "code", "native_tools", "terminal"]
+    # Recorded by the same cell recorder a fenced cell goes through.
+    (cell,) = agent.dispatcher.store.list_cells(agent.frame_id)
+    assert cell["code"] == "print('sheets', 6 * 7)" and cell["origin"] == "agent"
+    answer = next(
+        message for message in sent[3] if message.get("tool_call_id") == "call-2"
+    )
+    assert answer["role"] == "tool" and "sheets 42" in answer["content"]
+
+
+def test_a_cli_session_keeps_run_cell_on_offer_once_it_has_used_it(
+    monkeypatch, tmp_path
+):
+    """A model that calls run_cell whenever it is offered and otherwise sends
+    filler: after its first run_cell every request declares the catalogue
+    with run_cell beside it, the next cell comes with no filler call before
+    it, and the Agent's next run (its circuit rebuilt from the ledger) still
+    offers it on its first request."""
+
+    offered = []
+
+    def chat(messages, cfg, **kwargs):
+        del messages, cfg
+        index = len(offered)
+        names = [
+            getattr(tool, "name", None) or tool["name"] for tool in kwargs["tools"]
+        ]
+        offered.append(names)
+        if "run_cell" in names:
+            name = "run_cell"
+            arguments = {"language": "python", "code": f"print('cell', {index})"}
+        else:
+            name, arguments = "list_dir", {"path": f"dir{index}"}
+        call = {
+            "id": f"call-{index}",
+            "wire_id": f"call-{index}",
+            "name": name,
+            "ordinal": 0,
+            "raw_arguments": json.dumps(arguments),
+            "arguments": arguments,
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        content = "现在用 Python 读取 Excel。"
+        return {
+            "content": content,
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [call],
+            },
+        }
+
+    monkeypatch.setattr(loop_mod, "chat", chat)
+    agent = Agent(
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=5,
+        workspace=tmp_path,
+        record_cells=True,
+    )
+    agent.run("read demo.xlsx")
+
+    assert offered[2] == ["run_cell"]
+    for names in (offered[0], offered[1]):
+        assert "list_dir" in names and "run_cell" not in names
+    for names in (offered[3], offered[4]):
+        assert "list_dir" in names and names[-1] == "run_cell"
+    groups = agent.dispatcher.store.list_action_groups(agent.frame_id)
+    kinds = [group["kind"] for group in groups if group["kind"] != "user"]
+    assert kinds == ["native_tools", "native_tools", "code", "code", "code", "terminal"]
+    cells = agent.dispatcher.store.list_cells(agent.frame_id)
+    assert [cell["code"] for cell in cells] == [
+        "print('cell', 2)",
+        "print('cell', 3)",
+        "print('cell', 4)",
+    ]
+
+    agent.max_turns = 1
+    agent.run("now plot it")
+    assert "list_dir" in offered[5] and offered[5][-1] == "run_cell"
 
 
 # ---- R execution channel (```r) -------------------------------------------

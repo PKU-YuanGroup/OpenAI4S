@@ -32,7 +32,7 @@ import {
   renderSecurityPanel,
 } from "./island";
 import { timelineLocalClock, timelineOverviewExactTime } from "./model";
-import { queueT, timelineT } from "./copy";
+import { queueT, timelineT, workbenchT } from "./copy";
 import { noteQueuedTurnStarted, queuedFollowUpCount, renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
@@ -565,6 +565,30 @@ describe("queue strip", () => {
     expect(strip.classList.contains("hidden")).toBe(true);
   });
 
+  it("offers to stop the running turn so the queued message starts now (TURN-5)", () => {
+    const doc = mountDocument();
+    const stop = doc.createElement("button");
+    stop.id = "cancel-btn";
+    doc.body.appendChild(stop);
+    const pressed = vi.fn();
+    stop.onclick = pressed;
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: null, queue: [queued("exec-a")] };
+    renderQueueStrip();
+    const now = doc.querySelector("#queue-strip .queue-send-now")!;
+    expect(now.textContent).toBe("Stop and send now");
+    now.click();
+    // The one Stop path, once: a second press would stop the message that just started.
+    expect(pressed).toHaveBeenCalledTimes(1);
+    now.click();
+    expect(pressed).toHaveBeenCalledTimes(1);
+    // A stop already in flight hides Stop; the strip's button then does nothing.
+    stop.classList.add("hidden");
+    renderQueueStrip();
+    doc.querySelector("#queue-strip .queue-send-now")!.click();
+    expect(pressed).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels a queued row in the session that queued it, not the one now open", async () => {
     const doc = mountDocument();
     const calls = stubApi(() => ({ ok: true }));
@@ -995,7 +1019,7 @@ describe("signal writes publish new objects", () => {
 
 describe("delegation evidence panel", () => {
   const scope =
-    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子代理。若记录了生产 Cell，则要求该 Cell 成功；没有 Cell 回执的版本仍可能通过。核对发生在子代理完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
+    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子代理。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子代理完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
 
   it("renders both verdicts, truncation, unavailable, and the scope note once", async () => {
     mountDocument();
@@ -1073,7 +1097,7 @@ describe("delegation evidence panel", () => {
       expect(text).toContain("版本与归属已核对 1 · 证据不足 1");
       expect(text).toContain("仅显示前 2 项 / 共 13 项");
       expect(text).toContain("复用已有版本");
-      expect(text).toContain("Cell 成功");
+      expect(text).toContain("单元成功");
       expect(panel.querySelector(".delegation-evidence-list")?.getAttribute("data-details-key")).toBe(
         "delegation-evidence:c-checked",
       );
@@ -1087,7 +1111,7 @@ describe("delegation evidence panel", () => {
       expect(text).toContain("版本与归属已核对");
       expect(text).toContain("证据不足");
       expect(text).toContain("无 sha256 记录");
-      expect(text).toContain("无 Cell 回执");
+      expect(text).toContain("无单元回执");
       expect(text).not.toContain("原生写入");
       const unavailable = panel.querySelectorAll(".delegation-evidence")[1];
       expect(unavailable?.textContent).toContain("证据不可用");
@@ -1425,5 +1449,93 @@ describe("side panels in a scientist's words", () => {
     expect(timelineLocalClock(ms)).toBe(
       `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:56.159`,
     );
+  });
+});
+
+// SET-4: the ledger sat below six panels of runtime, recovery, branch,
+// sub-agent, remote compute, diagnostics and sandbox state.
+describe("the timeline comes first; the technical panels share one disclosure", () => {
+  function stubStorage(initial: Record<string, string> = {}): Map<string, string> {
+    const store = new Map(Object.entries(initial));
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, String(value)),
+    });
+    return store;
+  }
+
+  function shown(): FakeDocument {
+    const doc = mountDocument();
+    stubFrames();
+    stubResizeObserver();
+    showTimeline("frame-t", [group("g-1", 1)]);
+    renderActionTimeline();
+    return doc;
+  }
+
+  it("puts the ledger before the panels and keeps the panels closed by default", () => {
+    stubStorage();
+    const doc = shown();
+    const order = doc.getElementById("dock-timeline")!.children.map((node) => node.className);
+    const ledger = order.findIndex((name) => name.includes("timeline-actions"));
+    const technical = order.findIndex((name) => name.includes("timeline-technical"));
+    expect(ledger).toBeGreaterThan(-1);
+    expect(technical).toBeGreaterThan(ledger);
+
+    const details = doc.querySelector("details.timeline-technical")!;
+    expect(details.open).toBe(false);
+    // Every panel is inside the disclosure, none beside the ledger.
+    for (const panel of [".branch-panel", ".delegation-panel", ".context-panel", ".security-panel"]) {
+      expect(details.querySelector(panel), panel).not.toBeNull();
+      expect(doc.querySelector(".timeline-actions " + panel), panel).toBeNull();
+    }
+    expect(details.querySelector(".timeline-technical-label")!.textContent).toBe(workbenchT("wb.details"));
+  });
+
+  it("remembers what the viewer chose, and only that", () => {
+    const store = stubStorage();
+    const details = shown().querySelector("details.timeline-technical")!;
+    details.querySelector("summary")!.click();
+    details.open = true;
+    details.dispatchEvent({ type: "toggle" });
+    expect(store.get("os-timeline-technical")).toBe("open");
+  });
+
+  it("starts from the stored choice, and does not write back a toggle the viewer did not make", () => {
+    const store = stubStorage({ "os-timeline-technical": "open" });
+    const details = shown().querySelector("details.timeline-technical")!;
+    expect(details.open).toBe(true);
+    details.open = false;
+    details.dispatchEvent({ type: "toggle" });
+    expect(store.get("os-timeline-technical")).toBe("open");
+  });
+
+  it("opens for a recovery that stopped part-way, without storing that", () => {
+    const store = stubStorage({ "os-timeline-technical": "closed" });
+    const doc = mountDocument();
+    stubFrames();
+    stubResizeObserver();
+    showTimeline("frame-t", [group("g-1", 1)]);
+    S.recoveryState = { status: "partial", log: [] };
+    renderActionTimeline();
+    const details = doc.querySelector("details.timeline-technical")!;
+    expect(details.open).toBe(true);
+    expect(details.querySelector(".kind-recovery")).not.toBeNull();
+    expect(store.get("os-timeline-technical")).toBe("closed");
+  });
+
+  it("works without storage", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    });
+    const details = shown().querySelector("details.timeline-technical")!;
+    expect(details.open).toBe(false);
+    details.querySelector("summary")!.click();
+    expect(() => details.dispatchEvent({ type: "toggle" })).not.toThrow();
   });
 });

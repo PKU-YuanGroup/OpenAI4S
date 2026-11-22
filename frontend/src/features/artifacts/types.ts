@@ -14,6 +14,8 @@ export type ArtifactRow = {
   priority?: number | null;
   created_at?: string | null;
   is_user_upload?: boolean | number | null;
+  /** ART-4, decided by the server (`artifact_role`): `process` is how a result was made. */
+  role?: "deliverable" | "process" | "internal" | null;
   producing_cell_id?: string | null;
   /** When true, Viewer/artUrl pin this `version_id` and never fall back to latest. */
   _exactVersion?: boolean;

@@ -87,6 +87,48 @@ def test_resolve_confines_parent_absolute_and_symlink_paths(tmp_path):
     assert result["path"] == "inside.txt"
 
 
+def test_paged_reads_of_a_spill_file_show_their_own_line_range(tmp_path):
+    """TURN-3: every page of an externalised observation read back as
+    "Reading .openai4s/context/<sha256>.txt · 336 lines" -- the total and an
+    internal hash name, identical on every card, so it looked like a loop."""
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    spill = ".openai4s/context/" + "ab" * 32 + ".txt"
+    (workspace / ".openai4s" / "context").mkdir(parents=True)
+    (workspace / spill).write_text("".join(f"row {i}\n" for i in range(336)))
+    (workspace / "notes.txt").write_text("one\ntwo\nthree\n")
+    steps: list[dict] = []
+    dispatcher.on_step = steps.append
+
+    def card(spec: dict) -> tuple[str, str]:
+        del steps[:]
+        dispatcher("read_file", [spec])
+        begin, end = steps
+        return begin["title"], end["summary"]
+
+    pages = [
+        card({"path": spill, "limit": 120}),
+        card({"path": spill, "offset": 120, "limit": 150}),
+        card({"path": spill, "offset": 270, "limit": 120}),
+        card({"path": spill, "offset": 400, "limit": 120}),
+    ]
+    assert {title for title, _ in pages} == {"Reading an earlier step's full output"}
+    assert [summary for _, summary in pages] == [
+        "lines 1–120 of 336",
+        "lines 121–270 of 336",
+        "lines 271–336 of 336",
+        "past the end (336 lines)",
+    ]
+    assert "ab" * 8 not in "".join(title for title, _ in pages)
+
+    # An ordinary file keeps its name, and a whole read keeps the plain count.
+    assert card({"path": "notes.txt"}) == ("Reading notes.txt", "3 lines")
+    assert card({"path": "notes.txt", "offset": 1, "limit": 1}) == (
+        "Reading notes.txt",
+        "lines 2–2 of 3",
+    )
+
+
 def test_read_file_preserves_text_window_and_binary_shapes(tmp_path):
     dispatcher = _dispatcher(tmp_path)
     workspace = dispatcher._workspace()

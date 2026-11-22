@@ -176,9 +176,9 @@ ok "container logs do not contain the access token"
 
 # The science stack is what makes the default image worth its size. Import it
 # rather than trusting that pip reported success.
-docker exec "$CONTAINER" python -c "import numpy, pandas, matplotlib, sklearn" \
+docker exec "$CONTAINER" python -c "import numpy, pandas, matplotlib, sklearn, openpyxl, statsmodels, seaborn" \
   || fail "the science stack does not import inside the image"
-ok "numpy, pandas, matplotlib and scikit-learn import"
+ok "numpy, pandas, matplotlib, scikit-learn, openpyxl, statsmodels and seaborn import"
 
 # The image's interpreter is a support claim, not a smoke substitute for the
 # 3.14 offline suite. Still refuse an image that is not the series the
