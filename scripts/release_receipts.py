@@ -548,27 +548,32 @@ def normalize_upgrade_readback(
         raise ReceiptError(
             "upgrade readback used the candidate itself as the previous bundle"
         )
-    pin = dict(baseline_pin) if baseline_pin is not None else pinned_upgrade_baseline()
+    # A previous bundle newer than the candidate is a downgrade, never evidence.
+    # The same version is allowed only where the field is not required: that is
+    # a rebuild of a released version rehearsing the scenario against itself.
+    baseline_key = _version_key(baseline["version"])
     candidate_key = _version_key(candidate["version"])
+    if baseline_key is None or candidate_key is None:
+        raise ReceiptError(
+            f"upgrade readback names versions {baseline['version']!r} → "
+            f"{candidate['version']!r}; both must be MAJOR.MINOR.PATCH"
+        )
+    if baseline_key > candidate_key or (
+        baseline_key == candidate_key and upgrade_readback_required(candidate["name"])
+    ):
+        raise ReceiptError(
+            f"upgrade readback started from {baseline['version']}, which is not "
+            f"older than the candidate {candidate['version']}"
+        )
+    pin = dict(baseline_pin) if baseline_pin is not None else pinned_upgrade_baseline()
     pin_key = _version_key(str(pin.get("version") or ""))
-    if candidate_key is None or pin_key is None or candidate_key > pin_key:
+    if pin_key is None or candidate_key > pin_key:
         for field in ("name", "version", "sha256"):
             if baseline[field] != str(pin.get(field) or ""):
                 raise ReceiptError(
                     f"upgrade readback started from previous bundle {field} "
                     f"{baseline[field]!r}, not the pinned {pin.get(field)!r}"
                 )
-    if upgrade_readback_required(candidate["name"]):
-        baseline_key = _version_key(baseline["version"])
-        if (
-            baseline_key is None
-            or candidate_key is None
-            or baseline_key >= candidate_key
-        ):
-            raise ReceiptError(
-                f"upgrade readback started from {baseline['version']}, which is not "
-                f"older than the candidate {candidate['version']}"
-            )
     if candidate["schema"] < baseline["schema"]:
         raise ReceiptError(
             f"upgrade readback reports schema {baseline['schema']} → "
