@@ -355,14 +355,18 @@ async function main() {
       assertion(/sequences|序列/i.test(text), `alignment summary missing: ${text}`);
     });
 
-    await runCase(page, "over-budget file fails honestly with retry and exact download", async () => {
+    // ART-2 (487e2489): a read over the limit is refused the same way every
+    // time, so the card offers the exact download and no Retry.
+    await runCase(page, "over-budget file fails honestly with exact download and no retry", async () => {
       await open(oversized, "oversized.a3m");
       await page.locator("#dock-viewer .renderer-fallback").waitFor({ timeout: 30000 });
       const card = await page.locator("#dock-viewer .renderer-fallback").innerText();
       assertion(/read limit|读取上限/i.test(card), `failure card did not name the limit: ${card}`);
       assertion(
-        (await page.locator("#dock-viewer .renderer-fallback button").count()) >= 1,
-        "failure card has no retry",
+        (await page
+          .locator("#dock-viewer .renderer-fallback button", { hasText: /retry|重试/i })
+          .count()) === 0,
+        "an over-limit read still offers a Retry that can only be refused again",
       );
       const href = await page
         .locator("#dock-viewer .renderer-fallback a")

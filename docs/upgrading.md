@@ -2,7 +2,9 @@
 
 [中文说明](upgrading_zh.md)
 
-An install that is already on 1.0.0 reads the next section before the first
+An install that is already on 1.0.1 reads the next section before the first
+start of the release after it. An install that is already on 1.0.0 reads
+"Upgrading to 1.0.1" before the first
 start of 1.0.1. An install that is already on 0.3.1 reads "Upgrading to 1.0.0"
 before the first start of 1.0.0; one that goes straight to 1.0.1 reads that
 section and "Upgrading to 1.0.1", and its first open migrates schema 35 to 43.
@@ -17,6 +19,45 @@ stored judge rows (see "Upgrading to 0.3.1"). Each release after 1.0.1 is
 tested on one upgrade path before it is published; "How a release tests the
 upgrade" at the end of this page says which data and which channel that covers
 and how to roll back.
+
+## Upgrading to the release after 1.0.1 (schema 43 → 44)
+
+Stop the daemon (`openai4s stop`, then check `openai4s status`) and copy the
+whole data directory while nothing is running, including any
+`openai4s.db-wal` or `openai4s.db-journal` file, exactly as for 1.0.1 below.
+
+The first command that opens the database migrates it from schema 43 to 44.
+Migration 44 creates one table, which starts empty, and records itself in
+`schema_migrations`; no table, index or row that 1.0.1 stored is read,
+altered or removed:
+
+| Version | Adds |
+| --- | --- |
+| 44 | `message_admissions`: submission receipts for plain messages, so a browser whose `POST /frames/{fid}/message` answer was lost asks what happened instead of sending the turn again |
+
+This upgrade path — data written by the 1.0.1 Linux x86_64 bundle, migrated
+and read back by the new bundle, then the pre-migration copy restored and read
+by 1.0.1 again — is the one the release ran before it was published; see
+"How a release tests the upgrade" at the end of this page. To go back to
+1.0.1, stop the daemon and restore the copy you made: 1.0.1 refuses a schema
+44 database with `future_schema` before it writes anything.
+
+What an API client sees change:
+
+- `POST /frames/{fid}/message` accepts an optional `client_request_id`
+  (32 lowercase hex characters, `wait:false`, no `annotation_ids`), and its
+  202 then carries `admission_state`. `GET /frames/{fid}/message-admissions/{client_request_id}`
+  answers what became of it. A request without the field gets the 1.0.1
+  response unchanged.
+- The public failure `code` of a model call that the provider refused is now
+  named by what was proven: `llm_authentication_failed` (HTTP 401),
+  `llm_access_denied` (403), `llm_model_unavailable` (404 with the provider
+  code `model_not_found`), `llm_request_target_not_found` (any other 404) and
+  `llm_endpoint_unreachable` (connection refused or host not resolved before
+  a request was sent). In 1.0.1 a 401 or 403 read `llm_auth_rejected` and a
+  404 read `llm_model_not_found`; those two codes remain only for the same
+  provider codes on another status. Failures stored by 1.0.1 keep their codes.
+- `GET /onboarding` adds `completed_explicitly`; `complete` keeps its meaning.
 
 ## Upgrading to 1.0.1 (schema 36 → 43)
 
