@@ -2424,6 +2424,23 @@ class ArtifactRepository:
             grouped.setdefault(str(row["artifact_id"]), []).append(dict(row))
         return grouped
 
+    def artifact_ids_versioned_since(
+        self, root_frame_id: str, since_ms: int
+    ) -> set[str]:
+        """The session's artifacts that gained a version at or after ``since_ms``.
+
+        A file created then has its first version then; one only rewritten
+        then has a later version than its row's ``created_at`` says (M-59).
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT DISTINCT v.artifact_id FROM artifact_versions v "
+                "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                "WHERE a.root_frame_id=? AND v.created_at>=?",
+                (root_frame_id, int(since_ms)),
+            ).fetchall()
+        return {str(row[0]) for row in rows}
+
     def list_versions(self, artifact_id: str) -> list[dict]:
         with self._lock:
             latest = self._connection.execute(

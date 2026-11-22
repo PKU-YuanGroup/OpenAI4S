@@ -11609,6 +11609,15 @@ class SessionRunner:
                 current_artifacts = self.store.list_artifacts(
                     {"root_frame_id": root_frame_id}
                 )
+                # M-59: every file those unfinished turns wrote -- created, or
+                # an older file only rewritten -- has a version since then.
+                versioned_since = (
+                    self.store.artifact_ids_versioned_since(
+                        root_frame_id, unfinished_since
+                    )
+                    if unfinished_since is not None
+                    else set()
+                )
                 produced_artifacts = [
                     artifact
                     for artifact in current_artifacts
@@ -11618,11 +11627,9 @@ class SessionRunner:
                         )
                         != artifact.get("latest_version_id")
                         or (
-                            # A file those turns created; one they only
-                            # rewrote is not told apart from an older head.
-                            unfinished_since is not None
-                            and not artifact.get("is_user_upload")
-                            and int(artifact.get("created_at") or 0) >= unfinished_since
+                            not artifact.get("is_user_upload")
+                            and str(artifact.get("artifact_id") or "")
+                            in versioned_since
                         )
                     )
                     # Hidden rows (internal context spills, files the user

@@ -4536,6 +4536,11 @@ class Store:
     def set_version_source(self, version_id: str, source: Any) -> None:
         self._artifacts.set_version_source(version_id, source)
 
+    def artifact_ids_versioned_since(
+        self, root_frame_id: str, since_ms: int
+    ) -> set[str]:
+        return self._artifacts.artifact_ids_versioned_since(root_frame_id, since_ms)
+
     def list_versions(self, artifact_id: str) -> list[dict]:
         return self._artifacts.list_versions(artifact_id)
 

@@ -2905,6 +2905,74 @@ def test_the_summary_after_failed_turns_lists_what_they_produced(tmp_path, monke
         runner.close()
 
 
+def test_the_summary_after_a_failed_turn_lists_a_file_it_only_rewrote(
+    tmp_path, monkeypatch
+):
+    """M-59, the gap the first fix named: a file that already existed and was
+    only rewritten during a failed turn was not listed by the summary that
+    finally completed the task (its row's `created_at` is older). A file the
+    earlier completed turn wrote and nobody touched since stays unlisted."""
+    import time
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    plan = iter(
+        [
+            ((("km_curve.png", b"v1\n"), ("notes.csv", b"n\n")), "submitted"),
+            ((("km_curve.png", b"v2 with the arms split\n"),), "max_turns"),
+            ((("report.md", b"# report\n"),), "submitted"),
+        ]
+    )
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def one_turn(state, emit, visible):
+        del visible
+        files, reason = next(plan)
+        for filename, data in files:
+            path = state.workspace / filename
+            path.write_bytes(data)
+            assert runner._register_file(state, path, f"cell-{filename}", emit)
+        state.dispatcher.last_output = (
+            {
+                "output": {"summary": "The analysis is complete."},
+                "completion_bullets": ["Wrote the report"],
+            }
+            if reason == "submitted"
+            else None
+        )
+        state.last_model_prose = ""
+        return reason
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", one_turn)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+
+    def summary_after(request):
+        # Turns a millisecond apart at least: versions are compared by time.
+        time.sleep(0.01)
+        result = runner.run_message(frame_id, "default", request)
+        rows = runner.store.list_messages(frame_id, limit=None)
+        return result["status"], str(rows[-1]["content"])
+
+    try:
+        assert summary_after("Plot the curve")[0] == "completed"
+        assert summary_after("Split it by arm")[0] == "failed"
+        status, final = summary_after("Continue")
+        assert status == "completed"
+        listed = final.split("Artifacts:", 1)[1]
+        assert "[km_curve.png](" in listed
+        assert "[report.md](" in listed
+        assert "notes.csv" not in listed
+    finally:
+        runner.close()
+
+
 def test_a_context_spill_is_not_listed_as_a_turn_deliverable(tmp_path, monkeypatch):
     """ART-10: the model's large-output spill (context-output-*.json) is an
     Artifact so it stays readable by version, but it was listed first in the
