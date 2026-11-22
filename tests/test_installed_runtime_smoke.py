@@ -1159,6 +1159,45 @@ def test_a_lossy_candidate_fails_the_check_that_saw_the_loss(
     assert not scenario.work_root.exists()
 
 
+def test_a_loss_that_appears_only_after_the_candidate_restarts_is_refused(
+    monkeypatch, tmp_path
+):
+    scenario, _started = _fake_upgrade(monkeypatch, tmp_path, migrate=lambda s: None)
+    store = _FakeRuntimeState(scenario.data_dir)
+    first_start = scenario._start_daemon
+    candidate_starts = []
+
+    def start(runtime=None):
+        daemon = first_start(runtime)
+        if runtime is scenario.candidate:
+            candidate_starts.append(runtime)
+            if len(candidate_starts) == 2:
+                state = store.load()
+                state["cells"].pop()
+                store.save(state)
+        return daemon
+
+    monkeypatch.setattr(scenario, "_start_daemon", start)
+    report = scenario.run()
+    assert report["failure"]["check"] == "candidate_restart"
+    assert "2 entries" in report["failure"]["detail"]
+
+
+def test_a_kept_copy_that_was_written_to_is_refused(monkeypatch, tmp_path):
+    """The pre-migration copy is evidence only while nothing opened it."""
+    scenario, _started = _fake_upgrade(monkeypatch, tmp_path, migrate=lambda s: None)
+    real_restore = scenario.step_restore_backup
+
+    def restore_then_touch_the_copy():
+        real_restore()
+        (scenario.backup_dir / "stray.log").write_text("written later", "utf-8")
+
+    monkeypatch.setattr(scenario, "step_restore_backup", restore_then_touch_the_copy)
+    report = scenario.run()
+    assert report["failure"]["check"] == "baseline_readback"
+    assert "kept pre-migration copy" in report["failure"]["detail"]
+
+
 def test_a_restore_that_brought_back_the_migrated_data_is_refused(
     monkeypatch, tmp_path
 ):
