@@ -353,6 +353,38 @@ export const projectActivityCopy = copyLookup({
 });
 
 /**
+ * M-73: deleting a branch from the open session's sidebar list. Only a branch
+ * that is neither the current one nor the main line offers it, and it asks
+ * first: the branch cannot be switched to again.
+ */
+export const branchDeleteCopy = copyLookup({
+  en: {
+    "branchDelete.label": "Delete branch “{0}”",
+    "branchDelete.confirm":
+      "Delete branch “{0}”?\n\nIt is removed from this session's branches and can no longer be opened. Its own messages, Notebook cells and files are no longer shown; branches forked from it keep everything they share with it. This cannot be undone.",
+    "branchDelete.ok": "Delete branch",
+    "branchDelete.done": "Deleted branch “{0}”.",
+    "branchDelete.failed": "Could not delete branch “{0}”: {1}",
+    "branchDelete.active": "“{0}” is the current branch. Switch to another branch before deleting it.",
+    "branchDelete.mainLine": "The main line cannot be deleted.",
+    "branchDelete.busy": "The session is running. Delete the branch when it has finished.",
+    "branchDelete.notFound": "Branch “{0}” no longer exists.",
+  },
+  zh: {
+    "branchDelete.label": "删除分支「{0}」",
+    "branchDelete.confirm":
+      "删除分支「{0}」？\n\n它会从这个会话的分支中移除，之后无法再打开。只属于它的消息、Notebook 单元和产物不再显示；从它分出的分支仍保留与它共有的部分。此操作无法撤销。",
+    "branchDelete.ok": "删除分支",
+    "branchDelete.done": "已删除分支「{0}」。",
+    "branchDelete.failed": "没能删除分支「{0}」：{1}",
+    "branchDelete.active": "「{0}」是当前分支。请先切换到其他分支，再删除它。",
+    "branchDelete.mainLine": "主线不能删除。",
+    "branchDelete.busy": "会话正在运行，请等它结束后再删除分支。",
+    "branchDelete.notFound": "分支「{0}」已经不存在了。",
+  },
+});
+
+/**
  * SCI-17 / SYNC-28: how a session's last turn ended, when it did not simply
  * finish -- as words and an icon, never a colour alone. `null` for a finished,
  * running or new session. Shared by the sidebar row and the home list.

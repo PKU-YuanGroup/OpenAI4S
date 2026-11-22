@@ -331,6 +331,9 @@ def test_project_member_cannot_destroy_or_rewrite_another_members_session(daemon
         called.append(str(kwargs.get("operation"))) or {"ok": True}
     )
     daemon.runner.delete_session = lambda *args, **kwargs: called.append("delete")
+    daemon.runner.delete_session_branch = lambda *args, **kwargs: (
+        called.append("delete_branch") or {"ok": True}
+    )
 
     for suffix, body in (
         ("recovery/actions/restart_fresh", {"confirm": True}),
@@ -347,6 +350,9 @@ def test_project_member_cannot_destroy_or_rewrite_another_members_session(daemon
         assert status == 403, (suffix, raw[:200])
         assert _body(raw).get("code") == "owner_only"
     status, raw = _delete(daemon, f"/api/v1/frames/{fid}", bob)
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "owner_only"
+    status, raw = _delete(daemon, f"/api/v1/frames/{fid}/branches/branch-victim", bob)
     assert status == 403, raw[:200]
     assert _body(raw).get("code") == "owner_only"
 

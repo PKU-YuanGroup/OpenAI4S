@@ -41,6 +41,8 @@ class SnapshotRepository(Protocol):
 
     def list_branches(self, root_frame_id: str) -> list[dict[str, Any]]: ...
 
+    def delete_branch(self, **fields: Any) -> dict[str, Any] | None: ...
+
     def list_checkpoints(
         self, root_frame_id: str, *, branch_id: str | None = None, limit: int = 100
     ) -> list[dict[str, Any]]: ...
@@ -61,6 +63,20 @@ SettingCompareDeleter = Callable[[str, str], bool]
 
 class RevertRecoveryRequiredError(RuntimeError):
     """A revert could not be completed or safely compensated."""
+
+
+class BranchDeletionRefused(RuntimeError):
+    """A branch cannot be deleted; ``code`` says why, for the route to map.
+
+    ``branch_not_found``: the Session has no such branch, or it was already
+    deleted. ``branch_main_line``: the Session's own first branch, which every
+    other branch descends from. ``branch_active``: the branch the Session is
+    on now; switch away first.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -172,6 +188,78 @@ class SessionBranchingService:
             }
         )
         return created
+
+    def check_delete(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str,
+        active_branch_id: str,
+    ) -> None:
+        """Raise `BranchDeletionRefused` unless `delete_branch` may proceed.
+
+        Read-only, so a route can refuse before it waits for the Session's
+        writer ticket; `delete_branch` makes the same check again under it.
+        """
+
+        if not isinstance(branch_id, str) or not branch_id.strip():
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        if branch_id == root_frame_id:
+            raise BranchDeletionRefused(
+                "branch_main_line", "the main line of a session cannot be deleted"
+            )
+        branch = self.repository.get_branch(branch_id)
+        if (
+            branch is None
+            or branch.get("root_frame_id") != root_frame_id
+            or branch.get("deleted_at") is not None
+        ):
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        if branch_id == active_branch_id:
+            raise BranchDeletionRefused(
+                "branch_active",
+                "the current branch cannot be deleted; switch to another branch first",
+            )
+
+    def delete_branch(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str,
+        active_branch_id: str,
+    ) -> dict[str, Any]:
+        """Delete a branch that is neither the main line nor the active one.
+
+        Deletion is a tombstone (M-73). The branch leaves every branch list and
+        can no longer be switched to, but nothing it recorded is removed: its
+        checkpoints, messages, Cells and Artifact versions stay in the append-
+        only history, because a branch forked from it projects them as its own
+        prefix. Its workspace directory is left in place for the same reason
+        the rows are: the Artifact versions written there still name it.
+        """
+
+        self.check_delete(
+            root_frame_id, branch_id=branch_id, active_branch_id=active_branch_id
+        )
+        deleted = self.repository.delete_branch(
+            root_frame_id=root_frame_id, branch_id=branch_id
+        )
+        if deleted is None:
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        self._emit(
+            {
+                "type": "branch_deleted",
+                "root_frame_id": root_frame_id,
+                "branch_id": branch_id,
+                "ok": True,
+            }
+        )
+        return {
+            "ok": True,
+            "root_frame_id": root_frame_id,
+            "branch_id": branch_id,
+            "deleted_at": deleted.get("deleted_at"),
+        }
 
     def _materialize_fork_workspace(
         self,
@@ -662,7 +750,14 @@ class SessionBranchingService:
         )
 
     def projection(self, root_frame_id: str) -> dict[str, Any]:
-        branches = self.repository.list_branches(root_frame_id)
+        # A deleted branch (M-73) is listed nowhere; its rows stay for the
+        # branches that inherit them. The tombstone column says nothing about
+        # a listed branch, so it is not part of this view.
+        branches = [
+            {key: value for key, value in branch.items() if key != "deleted_at"}
+            for branch in self.repository.list_branches(root_frame_id)
+            if branch.get("deleted_at") is None
+        ]
         return {
             "root_frame_id": root_frame_id,
             "branches": [
@@ -1537,6 +1632,7 @@ def project_branch_steps(
 
 
 __all__ = [
+    "BranchDeletionRefused",
     "CheckpointRequest",
     "RevertRecoveryRequiredError",
     "SessionBranchingService",

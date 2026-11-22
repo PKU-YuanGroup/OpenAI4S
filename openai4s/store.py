@@ -4063,6 +4063,9 @@ class Store:
     def fork_session_branch(self, **fields: Any) -> dict:
         return self._session_snapshots.fork_branch(**fields)
 
+    def delete_session_branch(self, **fields: Any) -> dict | None:
+        return self._session_snapshots.delete_branch(**fields)
+
     def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
         return self._session_snapshots.get_checkpoint(checkpoint_id)
 

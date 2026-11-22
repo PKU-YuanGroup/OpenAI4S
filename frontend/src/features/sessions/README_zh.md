@@ -14,7 +14,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`boot.ts`](boot.ts) | window 导出、`setLoadSessionsImpl`、工作台点击接线。Shell 的事件立即绑定，但首个视图要等语言分块加载完成（或加载失败、或超过 `I18N_ROUTE_WAIT_MS`）才路由：仪表盘列表、侧栏和打开的会话经 `t()` 渲染，字典到达后不会重绘。若等待超时，这些列表（仪表盘、侧栏、空会话）会在字典真正到达时重绘一次。切换语言时（app.js `rerenderI18n`）用已有数据重绘仪表盘列表、项目菜单、侧栏、未命名标题、空会话、输入框占位符（运行中的回合保留排队文案）、排队条、转录中的文件条和右侧面板，不发新请求。 |
 | [`boot.i18n-gate.test.ts`](boot.i18n-gate.test.ts) | 字典加载前事件已绑定，首次路由等待字典；语言分块加载失败或卡住时仍会路由；等待超时后才到达的字典会重绘列表（仅此情形）。只有真正切换语言时，才会用已有数据重绘列表；回合运行中切换语言时输入框保留排队占位符。 |
 | [`branches.test.ts`](branches.test.ts) | 列出所有分支、当前分支有标记且不可点；点其他分支走激活流程；没有检查点的分支不可选；只有主线或投影属于其他会话时不显示。 |
-| [`branches.ts`](branches.ts) | M-73：当打开的会话除主线外还有分支时，在侧栏的会话行下列出它们（数据来自工作台已读取的 `branchState`）：标出当前分支，点击其他分支会经过 Timeline 里需确认的 `activateSessionBranch` 切换。在 `renderSessions` 之后、以及分支投影或打开的会话变化时重绘（`watchSessionBranches`，由 `boot.ts` 安装）。 |
+| [`branches.ts`](branches.ts) | M-73：当打开的会话除主线外还有分支时，在侧栏的会话行下列出它们（数据来自工作台已读取的 `branchState`）：标出当前分支，点击其他分支会经过 Timeline 里需确认的 `activateSessionBranch` 切换。既不是当前分支、也不是主线的分支还有一个删除按钮：`deleteSessionBranch` 先用应用内的 `askConfirm` 确认，再发送 `DELETE /frames/{id}/branches/{branch_id}`，然后重新读取分支列表（负责人决定 24）。在 `renderSessions` 之后、以及分支投影或打开的会话变化时重绘（`watchSessionBranches`，由 `boot.ts` 安装）。 |
 | [`chrome.test.ts`](chrome.test.ts) | hint 错误前缀（`错误：` / `Error: `），不新增 i18n 键；`reportFailure` 把失败的「发起即不管」操作显示为错误提示；`watchActivateKeys` 只观察右侧标签栏、文件面板和对话里的产物卡片条，而不是整个 body；菜单的 ↑/↓/Home/End，以及 Esc 或选中某项后焦点回到打开它的按钮（SYNC-9/10）。 |
 | [`chrome.ts`](chrome.ts) | `hint`、`reportFailure`（「发起即不管」操作的失败处理）、断连横幅、`openMenu` 的 Esc/`role=menu`（↑/↓/Home/End 在菜单项间移动，Esc 或选中后焦点回到打开它的按钮）、键盘激活（只观察会插入可激活节点的容器）。 |
 | [`compute.ts`](compute.ts) | 会话在哪里运行（M3b-6）：会话标题栏的徽标（写明尚未满足的就绪条件）、内核状态丢失横幅（INV-11），以及「运行位置」对话框。app.js:8375-8517。 |
@@ -51,7 +51,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`paging.test.ts`](paging.test.ts) | 分页常量、会话排序、走页/去重、仪表盘过滤。 |
 | [`paging.ts`](paging.ts) | `MESSAGE_PAGE_SIZE=300`、`SESSION_MAX_PAGES=50`、排序/走页/过滤。 |
 | [`navigation.ts`](navigation.ts) | 视图代际与同步的目录清理。刻意不承担列表读取归属：列表读取以所属项目为界。 |
-| [`copy.ts`](copy.ts) | 目录读取失败与重试、操作失败提示、输入框菜单标签（上下文用量、审阅中、开/关）、分享对话框、本地项目文件夹和本地历史标签，以及项目活动记录视图（`projectActivityCopy`）的双语文案。 `dashCopy` 存放首页示例分析状态提示和「会话都在上方」这一行。 `displayProjectName`：种子示例项目在保持原名「Example project」时按界面语言显示。 |
+| [`copy.ts`](copy.ts) | 目录读取失败与重试、操作失败提示、输入框菜单标签（上下文用量、审阅中、开/关）、分享对话框、本地项目文件夹和本地历史标签、项目活动记录视图（`projectActivityCopy`），以及侧栏删除分支（`branchDeleteCopy`）的双语文案。 `dashCopy` 存放首页示例分析状态提示和「会话都在上方」这一行。 `displayProjectName`：种子示例项目在保持原名「Example project」时按界面语言显示。 |
 | [`load.navigation.test.ts`](load.navigation.test.ts) | 会话/文件夹/分页乱序、按项目划分的读取归属、读取失败及自动打开归属。 |
 | [`actions.export.test.ts`](actions.export.test.ts) | Markdown 导出要求读取成功及结构有效，并固定会话标题。 |
 | [`projects.navigation.test.ts`](projects.navigation.test.ts) | 已过期的项目导航不能覆盖当前会话及会话/文件夹列表；菜单筛选会取消待处理的项目打开（包含 A→B→A 重复筛选），该次打开随即把视图交还——重新加载被它在入口处退役了读取的那个会话；若工作区已显示而没有会话，则打开菜单所选的项目；当前导航将所有权交给其会话。列表读取以所属项目为界，而不是视图代际：同一项目的刷新即使被打开会话或回到 Home 抢先，也照样生效。没有列出任何会话的项目会请求复用未使用的会话。 |

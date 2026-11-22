@@ -7,17 +7,25 @@
  * and switches (the same confirmed activation the panel runs).
  *
  * The branch projection is the one the workbench already reads on every
- * session open (`branchState`); nothing new is fetched. No delete: there is
- * no route for it.
+ * session open (`branchState`); nothing new is fetched.
+ *
+ * Owner decision 24: a branch that is neither the current one nor the main
+ * line also has a delete button. It asks first, in the app's own dialog, then
+ * sends `DELETE /frames/{id}/branches/{branch_id}` and re-reads the branches.
  */
 
 import { effect, untracked } from "@preact/signals";
 import { onLanguageChange, t } from "../../i18n";
 import { currentId } from "../../stores/session";
 import { branchState } from "../../stores/timeline";
+import { askConfirm } from "../chrome/dialog";
 import { branchDisplayName } from "../execution/branch";
 import { branchT } from "../execution/copy";
+import { ApiError, api, apiErrorText } from "./api";
+import { hint } from "./chrome";
+import { branchDeleteCopy } from "./copy";
 import { $, el } from "./dom";
+import { iconEl } from "./icon";
 import { callLane } from "./lane";
 
 type Branch = { branch_id?: string; name?: string; activatable?: boolean };
@@ -42,6 +50,7 @@ export function sessionBranchList(fid: string, view: unknown = branchState.value
     const id = String(branch.branch_id);
     const current = id === state.branch_id;
     const name = branchDisplayName(branch, fid);
+    const item = el("div", "session-branch-item");
     const row = el("button", "session-branch" + (current ? " current" : "")) as HTMLButtonElement;
     row.type = "button";
     row.dataset.branchId = id;
@@ -62,9 +71,77 @@ export function sessionBranchList(fid: string, view: unknown = branchState.value
         void callLane("activateSessionBranch", id);
       };
     }
-    box.appendChild(row);
+    item.appendChild(row);
+    // The main line is the session's own id; neither it nor the current
+    // branch can be deleted (the server refuses both with 409 as well).
+    if (!current && id !== fid) {
+      const remove = el("button", "session-branch-del") as HTMLButtonElement;
+      remove.type = "button";
+      remove.dataset.branchId = id;
+      remove.title = branchDeleteCopy("branchDelete.label", name);
+      remove.setAttribute("aria-label", remove.title);
+      remove.appendChild(iconEl("trash-2", 13));
+      remove.onclick = (event) => {
+        event.stopPropagation();
+        void deleteSessionBranch(fid, id, name);
+      };
+      item.appendChild(remove);
+    }
+    box.appendChild(item);
   }
   return box;
+}
+
+const deleting = new Set<string>();
+
+/** What a refused deletion says; the server's own sentence only when unmapped. */
+function deleteRefusal(error: unknown, name: string): string {
+  const code = error instanceof ApiError ? error.code : "";
+  if (code === "branch_active") return branchDeleteCopy("branchDelete.active", name);
+  if (code === "branch_main_line") return branchDeleteCopy("branchDelete.mainLine");
+  if (code === "session_busy") return branchDeleteCopy("branchDelete.busy");
+  if (code === "branch_not_found") return branchDeleteCopy("branchDelete.notFound", name);
+  return branchDeleteCopy("branchDelete.failed", name, apiErrorText(error));
+}
+
+/**
+ * Delete one branch of the open session after the in-app confirm (never the
+ * browser's `confirm()`, which an embedded pane dismisses on its own). One
+ * request per branch at a time; a cancel sends nothing. True when deleted.
+ */
+export async function deleteSessionBranch(fid: string, branchId: string, name: string): Promise<boolean> {
+  const key = fid + "\0" + branchId;
+  if (!fid || !branchId || fid === branchId || deleting.has(key)) return false;
+  const yes = await askConfirm(branchDeleteCopy("branchDelete.confirm", name), {
+    danger: true,
+    okLabel: branchDeleteCopy("branchDelete.ok"),
+  });
+  if (!yes || deleting.has(key)) return false;
+  deleting.add(key);
+  let deleted = false;
+  let stale = false;
+  try {
+    await api(`/frames/${encodeURIComponent(fid)}/branches/${encodeURIComponent(branchId)}`, {
+      method: "DELETE",
+    });
+    deleted = true;
+    if (currentId.value === fid) hint(branchDeleteCopy("branchDelete.done", name));
+  } catch (error) {
+    stale = error instanceof ApiError && error.code === "branch_not_found";
+    if (currentId.value === fid) hint(deleteRefusal(error, name), true);
+  } finally {
+    deleting.delete(key);
+  }
+  // The list this button came from is out of date either way. A failed
+  // re-read is not a failed deletion; the `branch_deleted` event retries it.
+  if (deleted || stale) {
+    try {
+      await Promise.resolve(callLane("loadWorkbenchState", fid, true, ["branches"]));
+    } catch {
+      /* the next branch event or session open re-reads the list */
+    }
+  }
+  return deleted;
 }
 
 /** Put the open session's branch list under its row (or take it away). */

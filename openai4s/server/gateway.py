@@ -246,6 +246,7 @@ from openai4s.server.security_headers import (
     security_headers,
     workbench_security_headers,
 )
+from openai4s.server.session_branching import BranchDeletionRefused
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
     CursorCheckpointUnavailable,
@@ -5594,6 +5595,40 @@ class SessionRunner:
                 "dimensions": dimensions,
                 "recovery": recovery_result,
             }
+
+    def delete_session_branch(
+        self,
+        root_frame_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> dict[str, Any]:
+        """M-73: delete a branch that is neither the active one nor the main line.
+
+        Refused rather than queued while anything runs in the Session. The
+        domain check runs first, read-only, and again under the lifecycle
+        ticket, where no activation can make the branch the active one.
+        """
+
+        try:
+            self.session_domain.check_branch_delete(root_frame_id, branch_id=branch_id)
+            if self._execution_active(root_frame_id):
+                raise GatewayError(
+                    409,
+                    "a turn or Cell is running in this session; delete the "
+                    "branch when it has finished",
+                    "session_busy",
+                )
+            return self.mutate_session_domain(
+                root_frame_id,
+                project_id,
+                operation="delete_branch",
+                mutate=lambda: self.session_domain.delete_branch(
+                    root_frame_id, branch_id=branch_id
+                ),
+            )
+        except BranchDeletionRefused as error:
+            status = 404 if error.code == "branch_not_found" else 409
+            raise GatewayError(status, str(error), error.code) from error
 
     def execute_recovery_action(
         self,
@@ -19627,6 +19662,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     unquote(m.group(2)),
                 )
                 self._json(result)
+                return
+            # M-73: delete a branch that is neither the active one nor the main
+            # line. `branches/` sits inside the group on purpose: the response
+            # capture files a path under the matching route with the most
+            # literal characters outside groups, and a bare
+            # `/frames/([^/]+)/branches/([^/]+)` would out-rank, and so take
+            # over, `branches/checkpoints`, `branches/revert` and
+            # `branches/revert-preview` (tests/test_session_branch_delete.py).
+            m = re.fullmatch(r"/frames/([^/]+)/(?:branches/([^/]+))", sub)
+            if m and method == "DELETE":
+                frame_id = m.group(1)
+                frame = store.get_frame(frame_id)
+                if frame is None:
+                    raise GatewayError(404, "session not found")
+                self._json(
+                    runner.delete_session_branch(
+                        frame_id,
+                        str(frame.get("project_id") or "default"),
+                        unquote(m.group(2)),
+                    )
+                )
                 return
             m = re.fullmatch(
                 r"/frames/([^/]+)/(?:checkpoints|branches/checkpoints)", sub
