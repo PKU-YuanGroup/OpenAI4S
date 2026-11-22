@@ -71,8 +71,19 @@ import { renderComposerRefChips, renderMessageRefChips } from "../sessions/trans
 import { sub } from "../ws/connect";
 import {
   admissionSettled,
+  checkMessageReceipt,
+  clearReceiptNotice,
   forgetAdmission,
+  forgetMessageReceipt,
+  mintClientRequestId,
+  receiptCopy,
+  refusalCode,
   rememberAdmission,
+  rememberMessageReceipt,
+  scheduleMessageReceiptRetry,
+  showReceiptNotice,
+  watchMessageReceipt,
+  type ReceiptOutcome,
 } from "./admission";
 import {
   isEnvironmentReadinessError,
@@ -87,6 +98,7 @@ import { bindTurnProgress } from "./progress";
 import { bindTurnStatus } from "../messages/turnStatus";
 import {
   acceptTurnTicket,
+  activateTurnTicket,
   openTurnTicket,
   ownsTurnTicket,
   resumeWatch,
@@ -400,13 +412,16 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   // the turn locked would strand the composer behind a turn never posted.
   const annIds = anns.map((x) => annotationId(x)).filter(Boolean);
   let admissionId = "";
-  if (annIds.length) {
-    try {
-      admissionId = mintAdmissionId();
-    } catch (error) {
-      hint(t("toast.sendFailed", apiErrorText(error)), true);
-      return;
-    }
+  // A send without pins carries a submission receipt instead (NV-01): its own
+  // 128-bit id, stored before the POST, so a lost answer is asked about rather
+  // than guessed. Refused here, like the admission id, when there is no CSPRNG.
+  let clientRequestId = "";
+  try {
+    if (annIds.length) admissionId = mintAdmissionId();
+    else clientRequestId = mintClientRequestId();
+  } catch (error) {
+    hint(t("toast.sendFailed", apiErrorText(error)), true);
+    return;
   }
   const es = $(".empty-session");
   if (es) es.remove();
@@ -493,6 +508,10 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     callLane("refreshAllStages");
     callLane("updateAnnotBadge");
   }
+  if (clientRequestId) {
+    rememberMessageReceipt(dispatchFrameId, clientRequestId);
+    w.dataset.clientRequestId = clientRequestId;
+  }
   // Guarantee this client is subscribed BEFORE the POST spawns the turn
   // thread, on the pinned id the POST is about.
   sub(dispatchFrameId);
@@ -508,6 +527,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         explore: exploreNow,
         annotation_ids: annIds,
         annotation_reservation_id: admissionId || undefined,
+        client_request_id: clientRequestId || undefined,
         // `{filename, version_id}` per `@` pin; the text carries the names only.
         mentions: sentMentions.length ? mentionsPayload(sentMentions) : undefined,
         wait: false,
@@ -520,6 +540,8 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       annotation_reservation_id?: unknown;
       model_binding?: unknown;
     };
+    // Answered: there is nothing left to ask the receipt.
+    if (clientRequestId) forgetMessageReceipt(dispatchFrameId, clientRequestId);
     if (accepted?.request_id) confirmHistorySubmission();
     // Admission is what pins a fresh session (its first send binds the
     // default), and the 202 names the pair: the composer shows it rather than
@@ -549,6 +571,30 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       callLane("updateAnnotBadge");
     }
   } catch (e) {
+    const failedStatus = (e as { status?: unknown } | null)?.status;
+    if (clientRequestId && !(Number.isInteger(failedStatus) && (failedStatus as number) < 500)) {
+      // No answer, or a 5xx: the server may have taken it. Ask the receipt
+      // rather than call the message failed (or resend it).
+      const apply = receiptApplier({
+        fid: dispatchFrameId,
+        gen: dispatchOpenGen,
+        id: clientRequestId,
+        bubble: w,
+        text,
+        mentions: sentMentions,
+        token: turnTicketToken,
+        planTurn,
+        choiceMark,
+        transport: !Number.isInteger(failedStatus),
+        confirmHistory: confirmHistorySubmission,
+      });
+      watchMessageReceipt(dispatchFrameId, clientRequestId, apply);
+      await checkMessageReceipt(clientRequestId);
+      void loadSessions();
+      return;
+    }
+    // A 4xx is a definite refusal (the receipt says so too): nothing to ask.
+    if (clientRequestId) forgetMessageReceipt(dispatchFrameId, clientRequestId);
     const refused = !!(e && Number.isInteger((e as { status?: number }).status) && (e as { status: number }).status >= 400);
     // The refusal belongs to the session this message was sent from, and the
     // composer, the hint line and Customize are shared by every session. Once
@@ -653,6 +699,114 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     resumeWatch(dispatchFrameId, dispatchOpenGen);
   }
   void loadSessions();
+}
+
+type UnconfirmedSend = {
+  fid: string;
+  gen: number;
+  id: string;
+  bubble: HTMLElement;
+  text: string;
+  mentions: readonly ComposerMention[];
+  token: number | null;
+  planTurn: { queued: boolean; executionId: string | null } | null;
+  choiceMark: ReturnType<typeof composerChoiceMark>;
+  transport: boolean;
+  confirmHistory: () => void;
+};
+
+/**
+ * What a send whose answer was lost does with its receipt (NV-01).
+ *
+ * Accepted: the bubble is that turn -- reattached to the live view only when
+ * the session's execution snapshot still names the same execution, otherwise
+ * read back from history. Refused: the turn never ran, so it is settled like
+ * any refusal and the draft goes back into an empty composer. Anything else
+ * (pending, indeterminate, 404, 5xx, offline) is "Submission pending
+ * confirmation" with "Check again", re-asked a bounded number of times; the
+ * composer is released, because nothing is known to be running.
+ */
+function receiptApplier(ctx: UnconfirmedSend): (outcome: ReceiptOutcome) => void {
+  let first = true;
+  return (outcome) => {
+    const wasFirst = first;
+    first = false;
+    const here = (): boolean => currentId.value === ctx.fid && (_openGen.value || 0) === ctx.gen;
+    if (outcome.kind === "accepted") {
+      forgetMessageReceipt(ctx.fid, ctx.id);
+      clearReceiptNotice(ctx.id, ctx.bubble);
+      ctx.confirmHistory();
+      const rec = outcome.record;
+      if (rec.execution_id) ctx.bubble.dataset.executionId = String(rec.execution_id);
+      if (rec.model_binding) noteAdmittedModelBinding(ctx.fid, rec.model_binding, ctx.choiceMark);
+      if (ctx.planTurn && planPendingTurn.value === ctx.planTurn && rec.execution_id) {
+        planPendingTurn.value = { ...ctx.planTurn, executionId: String(rec.execution_id) };
+      }
+      if (outcome.active) {
+        const accepted = {
+          request_id: rec.request_id,
+          execution_id: rec.execution_id,
+          queue_position: outcome.queuePosition,
+        };
+        if (ownsTurnTicket(ctx.token)) {
+          if (!acceptTurnTicket(ctx.token, accepted)) retireTurnTicket(ctx.token);
+        } else if (outcome.queuePosition === 0 && here()) {
+          // Released while unconfirmed and running now: take it back, as a
+          // `processing` event for it would have.
+          activateTurnTicket(rec.request_id, rec.execution_id);
+          if (!running.value) {
+            running.value = true;
+            enableComposer(false);
+            setCancelHidden(false);
+          }
+        }
+        if (here()) {
+          hint(running.value ? t("toast.running") : t("queue.accepted"), false, running.value);
+          if (running.value) resumeWatch(ctx.fid, ctx.gen);
+        }
+      } else {
+        if (ownsTurnTicket(ctx.token)) turnDone("settled");
+        if (here()) {
+          hint("");
+          callLane("recoverConversation", ctx.fid, ctx.gen);
+        }
+      }
+      void loadSessions();
+      return;
+    }
+    if (outcome.kind === "refused") {
+      forgetMessageReceipt(ctx.fid, ctx.id);
+      clearReceiptNotice(ctx.id, ctx.bubble);
+      ctx.confirmHistory();
+      if (ctx.planTurn && planPendingTurn.value === ctx.planTurn) {
+        planPending.value = false;
+        planPendingTurn.value = null;
+      }
+      if (ownsTurnTicket(ctx.token)) turnDone("failed");
+      if (here()) {
+        settleRefusedBubble(ctx.bubble, ctx.text, ctx.mentions);
+        hint(receiptCopy("refused", refusalCode(outcome.record)), true);
+      } else ctx.bubble.classList.add("cancelled");
+      void loadSessions();
+      return;
+    }
+    if (ownsTurnTicket(ctx.token)) turnDone("unconfirmed");
+    if (wasFirst) {
+      // The optimistic bubble's protection from history reads, as before: a
+      // transport failure keeps it one bounded grace, a 5xx releases it now.
+      if (ctx.transport) {
+        setTimeout(() => {
+          ctx.confirmHistory();
+          if (here()) callLane("alignHistoryAfterTurn", ctx.fid, ctx.gen);
+        }, SUBMISSION_GRACE_MS);
+      } else ctx.confirmHistory();
+    }
+    if (here()) {
+      showReceiptNotice(ctx.id, ctx.bubble);
+      hint(receiptCopy("pending"), true);
+      scheduleMessageReceiptRetry(ctx.fid);
+    }
+  };
 }
 
 /** Feature-local copy: `i18n/en.ts` / `zh.ts` are generated extracts of app.js. */
