@@ -2043,10 +2043,9 @@ body{line-height:1.55;color:var(--text-000)}
 #dash-project-search:focus-visible,.timeline-search-input:focus-visible{outline:none}
 
 /* ---- buttons: coral primary · hairline secondary · ghost icon ---- */
-/* SYNC-30: white 14px text needs 4.5:1; on --clay it was 3.28:1, on --clay-em 5.06:1. */
-.solid-btn{justify-content:center;height:36px;padding:0 16px;border-radius:var(--radius);background:var(--clay-em);color:#fff;font-size:14px;font-weight:500;line-height:1}
+.solid-btn{justify-content:center;height:36px;padding:0 16px;border-radius:var(--radius);background:var(--clay);color:#fff;font-size:14px;font-weight:500;line-height:1}
 .solid-btn:hover{opacity:1}
-.solid-btn:active{background:color-mix(in srgb,var(--clay-em) 82%,#000)}
+.solid-btn:active{background:var(--clay-em)}
 .solid-btn:disabled{background:var(--line);color:var(--text-400);cursor:default}
 .solid-btn.small{height:30px;padding:0 12px;font-size:13px}
 html[data-theme="dark"] .solid-btn{background:var(--clay);color:#fff}
