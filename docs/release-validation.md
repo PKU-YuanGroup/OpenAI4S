@@ -308,6 +308,31 @@ are an explicit decision (`tests/test_governance.py`). The layer runs only in
 that job (the nightly bundle smoke exercises the HTTP scenario without it),
 and `browser_open` is part of the same report the receipt binds.
 
+The release job also runs an upgrade scenario after the fresh-install one,
+with `--baseline-bundle` and `--baseline-sha256`. The previous stable Linux
+x86_64 bundle is pinned once, by name, version and SHA-256, in the
+`linux-runtime-smoke` job's `env`; the job downloads it into `$RUNNER_TEMP`,
+never into `dist/`, and a failed download leaves no file. The smoke copies it
+into its own temporary directory and compares the digest before unpacking
+anything, so a missing file is `baseline_unavailable` and other bytes are
+`baseline_digest_mismatch`. The two bundles are unpacked into separate
+directories and share one isolated `HOME`, environment and data directory path.
+The previous bundle writes a project, a session, three Cells and two versions
+of one CSV, and stops with its process group gone. The whole data directory is
+then copied and the copy's manifest digest is recorded. The candidate takes over the same path
+and migrates it; `preflight_schema`, loaded from each bundle's own
+`migrations.py`, reads the schema before and after. The project and session
+ids, every Cell record and both CSV versions must read back byte for byte, and
+again after a candidate restart with the same execution count. Finally the
+copy replaces the migrated directory at the same path, its manifest must match,
+and the previous bundle must read the same data from it; the copy itself must
+still be unchanged. These fourteen checks, both bundles' names, versions,
+SHA-256s and schemas, and the ids and raw digests read back are the report's
+`upgrade_readback`. The scenario has its own 600 s total and keeps F16's
+per-step budgets. It covers the Linux x86_64 bundle only; the wheel, the
+container image, the Windows package and the macOS image keep their own
+evidence.
+
 ## Windows package
 
 Not a native Windows build. `openai4s/platform_support.py` refuses to start a
@@ -396,7 +421,15 @@ of them must say `passed` — `figure` because the bundle pre-bakes the science
 stack, and `browser_open` because the release job runs the browser layer — so a
 skip, a `not_run` or a timeout is a refusal rather than an omission. The stored
 copy is canonicalised to those fields, so no log text or unbounded diagnostic
-enters the receipt.
+enters the receipt. A receipt for a tarball whose file name carries a version
+after 1.0.1 must also carry `upgrade_readback`, bound to that tarball's digest
+and to the previous bundle pinned in `release.yml`, with all fourteen checks
+`passed`, both CSV versions and the three Cell ids recorded, and a schema that
+did not go backwards. An unavailable previous bundle, a wrong digest, a
+scenario that did not run and a failed check are each refused with their own
+message. The receipt schema stays 3, because the requirement follows the
+version the receipt is for: receipts for 1.0.1 and older stay verifiable
+without the field.
 
 Staging re-validates the same report against the tarball it finds on disk, and
 so do the finalize-time checks: a receipt whose evidence is missing, `not_run`,

@@ -13,7 +13,10 @@ schema 32 and "Upgrading to 0.3.1" for 33 through 35. Any jump across releases
 works the same way: the first open runs every migration in between, so read
 each section from the release after yours up to the one you install. A 0.3.0
 install that goes straight to 1.0.1 also crosses schema 33, which rewrites
-stored judge rows (see "Upgrading to 0.3.1").
+stored judge rows (see "Upgrading to 0.3.1"). Each release after 1.0.1 is
+tested on one upgrade path before it is published; "How a release tests the
+upgrade" at the end of this page says which data and which channel that covers
+and how to roll back.
 
 ## Upgrading to 1.0.1 (schema 36 → 43)
 
@@ -631,3 +634,62 @@ and every daemon requires its access token, including one bound to
 * **Skills installer.** The npm package `@pku-yuangroup/openai4s-skills@0.2.0`
   stays installable and contains 603 Skills. The repository and the 0.3.0 wheel
   carry 604.
+
+## How a release tests the upgrade
+
+Before a release after 1.0.1 is published, the release workflow opens data
+written by the previous stable release with the new one. This runs in the
+workflow's Linux x86_64 job, `linux-runtime-smoke`:
+
+1. The previous stable Linux x86_64 bundle is pinned by file name, version and
+   SHA-256 in `.github/workflows/release.yml`. The job downloads it into the
+   runner's temporary directory, not into the directory that holds the
+   release's own files. The smoke copies it into its own directory and checks
+   the SHA-256 against the pin before it unpacks anything. The previous bundle
+   and the new one are unpacked into separate directories.
+2. The previous bundle starts on an empty data directory, with the same
+   isolated `HOME`, environment and loopback port as the fresh-install check.
+   It creates a project and a session, runs three Cells and writes two versions
+   of one CSV file. It then stops through `openai4s stop`, and the check waits
+   until none of its processes is left.
+3. The whole data directory is copied. Nothing opens the copy.
+4. The new bundle starts on the same data directory path and migrates it.
+   `preflight_schema` reads the schema before and after. The project and
+   session ids, the Cell records and both CSV versions must come back
+   unchanged, byte for byte. The new bundle is restarted and must report the
+   same execution history and the same bytes.
+5. After the new bundle stops, the copy replaces the migrated directory at the
+   same path, and the previous bundle must read the same project, session,
+   Cells and both CSV versions from it.
+
+The result is stored as `upgrade_readback` in the Linux bundle's build receipt:
+both bundles' names, versions and SHA-256s, both schemas, every check, and the
+project, session, Cell, Artifact and CSV version ids with each version's raw
+SHA-256. A Linux bundle whose receipt lacks it is not released. Neither is one
+whose previous bundle could not be downloaded, did not match the pinned
+SHA-256, or failed a check, and each of these stops the release with its own
+error.
+
+The tested data is what the pinned previous release (1.0.1, schema 43) wrote,
+opened by the release being published. The tested channel is the Linux x86_64
+bundle. This check does not cover the PyPI wheel, the container image, the
+Windows/WSL2 package or the macOS app, data written by a release older than the
+pinned one, or a data directory moved to another path. An upgrade across
+several releases runs every migration in between; `tests/test_schema_migrations.py`
+tests those steps on their own.
+
+To roll back a Linux bundle install the way the check does, stop the new
+release, then put the copy you made before upgrading back at the same path:
+
+```bash
+openai4s stop                                       # then check `openai4s status`
+mv ~/.openai4s ~/.openai4s-after-upgrade
+cp -a ~/.openai4s-before-<new-version> ~/.openai4s
+```
+
+Use the path the data directory had (`~/.openai4s` unless `OPENAI4S_DATA_DIR`
+names another one): the check restores to the original path only. Then start
+the previous release with its own launcher, `bin/openai4s` in the directory you
+unpacked it into, or run its `install.sh` again so that `openai4s` on your
+`PATH` points back to it. Anything created after the upgrade is not in the
+copy, and a newer release that opens the copy migrates it again.
