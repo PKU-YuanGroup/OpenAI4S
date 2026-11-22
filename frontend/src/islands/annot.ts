@@ -21,8 +21,52 @@ import type { ArtifactRow } from "../features/artifacts/types";
 import { openViewer } from "../features/artifacts/ui";
 import { hint } from "../features/sessions/chrome";
 import { filesT } from "../features/artifacts/copy";
+import { copyLookup } from "../i18n/copy";
 import { $, el, icon, iconEl } from "./dom";
 import { translate } from "./host";
+
+/**
+ * M-66: comments in a read-only session. An imported copy is view-only until
+ * it is restarted fresh, and the server refuses a comment there (423) with an
+ * English sentence that the save toast showed as it was.
+ */
+const annotT = copyLookup({
+  zh: {
+    "annot.readOnly.add": "这是导入会话的只读副本，不能添加标注；全新重启后才能添加。",
+    "annot.readOnly.hint": "⌘/Ctrl+滚轮或双指捏合缩放 · 放大后拖动平移 · 只读副本不能添加标注",
+    "annot.readOnly.delete": "只读副本中的标注不能删除",
+    "annot.readOnly.save":
+      "标注没有保存：这个会话目前是只读的。导入的副本要先全新重启，正在恢复的会话要先完成恢复。",
+    "annot.readOnly.remove":
+      "标注没有移除：这个会话目前是只读的。导入的副本要先全新重启，正在恢复的会话要先完成恢复。",
+  },
+  en: {
+    "annot.readOnly.add":
+      "This is a read-only copy of an imported session: comments can be added once it is restarted fresh.",
+    "annot.readOnly.hint": "⌘/Ctrl+scroll or pinch to zoom · drag to pan · a read-only copy takes no comments",
+    "annot.readOnly.delete": "Comments in a read-only copy cannot be deleted",
+    "annot.readOnly.save":
+      "The comment was not saved: this session is read-only right now. An imported copy has to be restarted fresh, and a session being recovered has to finish recovering, first.",
+    "annot.readOnly.remove":
+      "The comment was not removed: this session is read-only right now. An imported copy has to be restarted fresh, and a session being recovered has to finish recovering, first.",
+  },
+});
+
+/** The open session is a read-only imported copy: its banner is up (M-66, `sessions/imported.ts`). */
+function readOnlyCopy(): boolean {
+  return !!$("#imported-banner");
+}
+
+/**
+ * The server's read-only refusal (423 `locked`: a quarantined import, or a
+ * revert waiting for recovery), said in the UI language; null for any other
+ * failure, which keeps its own text.
+ */
+export function annotRefusalText(err: unknown, action: "save" | "remove"): string | null {
+  const e = (err && typeof err === "object" ? err : {}) as { status?: unknown; code?: unknown };
+  if (Number(e.status) !== 423 && e.code !== "locked") return null;
+  return annotT(action === "save" ? "annot.readOnly.save" : "annot.readOnly.remove");
+}
 
 export type Annotation = {
   id?: string;
@@ -197,7 +241,7 @@ function openAnnotDraft(stage: AnnotStage, a: ArtifactRow, x: number, y: number)
       hint(
         status === 404
           ? translate("annot.save.err404")
-          : translate("annot.save.err", apiErrorText(err)),
+          : annotRefusalText(err, "save") || translate("annot.save.err", apiErrorText(err)),
         true,
       );
     }
@@ -288,7 +332,7 @@ export function openPinPop(stage: AnnotStage, a: ArtifactRow, an: Annotation): v
       hint(translate("annot.deleted"));
     } catch (err) {
       del.disabled = false;
-      hint(translate("toast.deleteFailed", apiErrorText(err)), true);
+      hint(annotRefusalText(err, "remove") || translate("toast.deleteFailed", apiErrorText(err)), true);
     }
   };
   // A held pin is not the user's to delete: a turn is quoting it, and the
@@ -298,6 +342,10 @@ export function openPinPop(stage: AnnotStage, a: ArtifactRow, an: Annotation): v
     del.disabled = true;
     del.title = translate("annot.status.pending");
     del.dataset.heldByTurn = "1";
+  } else if (readOnlyCopy()) {
+    // M-66: nor is a pin in a read-only copy, which the server refuses (423).
+    del.disabled = true;
+    del.title = annotT("annot.readOnly.delete");
   }
   const close = el("button", "annot-btn solid", translate("common.close"));
   close.onclick = () => closeAnnotPop();
@@ -348,7 +396,7 @@ export function updateAnnotBadge(): void {
       hint(translate("annot.discarded"));
     } catch (err) {
       cancel.disabled = false;
-      hint(translate("annot.remove.err", apiErrorText(err)), true);
+      hint(annotRefusalText(err, "remove") || translate("annot.remove.err", apiErrorText(err)), true);
     }
   };
   chip.appendChild(main);
@@ -393,7 +441,7 @@ function toggleAnnotList(anchor: HTMLElement): void {
         const chip = $("#annot-bar .annot-chip");
         if (openAnnotations().length && chip) toggleAnnotList(chip);
       } catch (err) {
-        hint(translate("annot.remove.err", apiErrorText(err)), true);
+        hint(annotRefusalText(err, "remove") || translate("annot.remove.err", apiErrorText(err)), true);
       }
     };
     acts.appendChild(openBtn);
@@ -552,7 +600,8 @@ export function renderAnnotatableImage(body: HTMLElement, a: ArtifactRow, url: s
   bar.appendChild(lvl);
   bar.appendChild(bIn);
   wrap.appendChild(bar);
-  wrap.appendChild(el("div", "zoom-hint", translate("zoom.hint")));
+  // M-66: a read-only copy is not offered "click the image to annotate".
+  wrap.appendChild(el("div", "zoom-hint", readOnlyCopy() ? annotT("annot.readOnly.hint") : translate("zoom.hint")));
 
   // Pins are %-positioned so they don't need the fit width; CSS fits the image at
   // z=1, so nothing here depends on pane-layout timing.
@@ -620,6 +669,13 @@ export function renderAnnotatableImage(body: HTMLElement, a: ArtifactRow, url: s
     const x = (e.clientX - r.left) / r.width,
       y = (e.clientY - r.top) / r.height;
     if (x < 0 || x > 1 || y < 0 || y > 1) return;
+    // M-66: a read-only copy takes no comments. Checked at the click, since
+    // the banner can go up (or come down with a restart) after the image
+    // was drawn; the draft would only end in the server's refusal.
+    if (readOnlyCopy()) {
+      hint(annotT("annot.readOnly.add"));
+      return;
+    }
     openAnnotDraft(stage, a, x, y);
   });
 }
