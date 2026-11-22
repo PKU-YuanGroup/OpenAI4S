@@ -1456,3 +1456,132 @@ def test_artifact_evidence_rows_order_by_capture_time_and_honor_limit(tmp_path):
         if row["version_id"] != saved[2]["version_id"]
     ]
     assert tied_ids == [row["version_id"] for row in older]
+
+
+# --- NV-07: the repository half of a same-content rewrite ------------------
+#
+# Artifact ``a.csv`` has V1 and V2; a later Cell reads it, writes the same
+# bytes back and also writes ``b.csv``.  The repository already knows the
+# write was ``head_checksum_reused`` on V2 and already keeps V2 as recorded.
+# The wrong Notebook edge (tests/test_notebook_lineage.py, NV-07 section) is
+# lost between here and the binder: these pin the facts at their source so
+# the future hand-off has a stable contract to carry.
+
+
+def _nv07_write(repository, frame_id, path: Path, checksum, cell_id, **extra):
+    return repository.record_cell_artifact(
+        path=str(path),
+        filename=path.name,
+        content_type="text/csv",
+        size_bytes=4,
+        checksum=checksum,
+        producing_cell_id=cell_id,
+        frame_id=frame_id,
+        reuse_matching_head=True,
+        **extra,
+    )
+
+
+def test_nv07_same_content_rewrite_is_an_observation_on_the_untouched_head(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    a = tmp_path / "a.csv"
+    v1 = _nv07_write(repository, frame_id, a, "bytes-1", "cell-1")
+    v2 = _nv07_write(
+        repository,
+        frame_id,
+        a,
+        "bytes-2",
+        "cell-2",
+        input_version_ids=[v1["version_id"]],
+    )
+    v2_row = repository.version_meta(v2["version_id"])
+    v2_inputs = repository.lineage_inputs(v2["version_id"])
+
+    # The Cell read a.csv at V2 and hands that read on as the input of both writes.
+    rewrite = _nv07_write(
+        repository,
+        frame_id,
+        a,
+        "bytes-2",
+        "cell-3",
+        input_version_ids=[v2["version_id"]],
+    )
+    b = _nv07_write(
+        repository,
+        frame_id,
+        tmp_path / "b.csv",
+        "bytes-b",
+        "cell-3",
+        input_version_ids=[v2["version_id"]],
+    )
+
+    assert rewrite["version_id"] == v2["version_id"]
+    assert rewrite["version_created"] is False
+    assert rewrite["capture_kind"] == CAPTURE_KIND_HEAD_CHECKSUM_REUSED
+    assert b["version_created"] is True
+    assert b["capture_kind"] == CAPTURE_KIND_VERSION_CREATED
+    # History is untouched: same row, same inputs, and no V2 -> V2 self-loop.
+    assert len(repository.list_versions(v2["artifact_id"])) == 2
+    assert repository.version_meta(v2["version_id"]) == v2_row
+    assert repository.lineage_inputs(v2["version_id"]) == v2_inputs
+    assert repository.lineage_inputs(v2["version_id"], producing_cell_id="cell-3") == []
+    # The live path still resolves to the head the Cell read, and B links to
+    # exactly the input it was handed.
+    assert (
+        repository.version_for_path(
+            str(a), root_frame_id=frame_id, project_id="science"
+        )
+        == v2["version_id"]
+    )
+    assert [
+        row["version_id"] for row in repository.lineage_inputs(b["version_id"])
+    ] == [v2["version_id"]]
+    observed = repository.list_capture_observations(version_id=v2["version_id"])
+    assert [(row["producing_cell_id"], row["capture_kind"]) for row in observed] == [
+        ("cell-2", CAPTURE_KIND_VERSION_CREATED),
+        ("cell-3", CAPTURE_KIND_HEAD_CHECKSUM_REUSED),
+    ]
+
+
+def test_nv07_same_content_rewrite_after_restore_reuses_the_restored_head(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    a = tmp_path / "a.csv"
+    v1 = _nv07_write(repository, frame_id, a, "bytes-1", "cell-1")
+    v2 = _nv07_write(repository, frame_id, a, "bytes-2", "cell-2")
+    restored = repository.record_artifact_restore(
+        artifact_id=v1["artifact_id"],
+        source_version_id=v1["version_id"],
+        expected_latest_version_id=v2["version_id"],
+        version_id="v-nv07-restored",
+        path=str(a),
+        snapshot_path=None,
+        size_bytes=4,
+        checksum="bytes-1",
+        frame_id=frame_id,
+    )
+    restored_inputs = repository.lineage_inputs(restored["version_id"])
+    assert [row["version_id"] for row in restored_inputs] == [v1["version_id"]]
+
+    rewrite = _nv07_write(
+        repository,
+        frame_id,
+        a,
+        "bytes-1",
+        "cell-4",
+        input_version_ids=[restored["version_id"]],
+    )
+
+    # The restored head is reused, not V1: history is never searched.
+    assert rewrite["version_id"] == restored["version_id"]
+    assert rewrite["capture_kind"] == CAPTURE_KIND_HEAD_CHECKSUM_REUSED
+    assert len(repository.list_versions(v1["artifact_id"])) == 3
+    # The restore edge V1 -> restored stays the restored version's only input.
+    assert repository.lineage_inputs(restored["version_id"]) == restored_inputs
+    assert (
+        repository.version_for_path(
+            str(a), root_frame_id=frame_id, project_id="science"
+        )
+        == restored["version_id"]
+    )
