@@ -1056,3 +1056,180 @@ jobs on this pull request.
 - No live LLM turn, and no live sub-agent: every end-to-end run used a
   credential-less daemon.
 - R raw-network blocking under `enforce` is not demonstrated by a test (01).
+
+## 22. Next release: report items 01–07 (2026-11-22)
+
+> Plan: the owner's "OpenAI4S 下一版本改进报告" (items 01–07, release definition
+> in its §12), with the owner's design decisions of 2026-11-22
+> Branch: `feat/next-version-1-1`, five parallel lanes cherry-picked onto
+> `origin/main` @ `53e161b0`
+> Recorded against the commit that adds this section; the gate table at the end
+> names the head it was run on.
+
+Same layout as §21: status, where it is wired into the real main path, the
+command that verifies it, what was put back to prove the tests can fail, and
+what it deliberately does not cover.
+
+### 01 — Submission receipts for plain messages (P0)
+
+- **Status:** `Completed`, with two stated deviations (below).
+- **Wiring:** `POST /frames/{fid}/message` takes an optional `client_request_id`
+  (exactly 32 lowercase hex; 400 with `annotation_ids`, with `wait` not false,
+  or malformed; 404 on a sub-frame). `SessionRunner.claim_message_receipt`
+  claims `(session root, initiator, id)` in `message_admissions` (migration 44,
+  `openai4s/storage/message_admissions.py`) before `submit_message` freezes a
+  model, takes a ticket or resolves an `@` file. The digest is the canonical
+  SHA-256 of the normalized client input; same key and digest → the original
+  receipt (202 accepted/pending, 200 refused/indeterminate), different digest →
+  409 `client_request_id_conflict`. Correlation rides the existing `on_admitted`
+  hook, so it is durable before `Thread.start`; every synchronous refusal is
+  recorded with its code. `GET /frames/{fid}/message-admissions/{id}` reads it;
+  `effective_state` resolves a `pending` row from this daemon's in-process
+  record, else its `daemon_instance` (`PROCESS_INSTANCE_ID`). The table is in
+  `QUERY_DENYLIST` and in the session-deletion cascade. The composer
+  (`features/send/send.ts`, `admission.ts`) mints the id with the CSPRNG,
+  stores it before the POST, and after no answer or a 5xx asks the receipt:
+  accepted → reattach only when `execution-queue` names the same
+  `execution_id`, else history; refused → the draft comes back; pending,
+  indeterminate, 404, 503, offline → 「提交待确认」 with 「重新查询」.
+- **Verification:** `uv run pytest tests/test_followup_admission.py tests/test_unstarted_worker_admission.py tests/test_schema_migrations.py -q`;
+  `npm test --prefix frontend -- src/features/send`; `node tests/browser_admission_fault.mjs`
+  (lost 202 + offline receipt then reload: no resend, one user row; a proxy 502
+  with a 404 receipt stays pending and Check again re-asks).
+- **Put back:** the claim never deduplicating, skipping correlation, dropping
+  the local started record, skipping refusal recording, ignoring the initiator
+  on read, reading a previous daemon's rows as pending, disabling the composer's
+  receipt branch and not persisting the id before the POST each turned the
+  targeted tests red.
+- **Deviations:** a previous daemon's `pending` row with no correlated ticket
+  reads `refused` (`daemon_restarted_before_admission`) rather than
+  `indeterminate`, because correlation is committed before the worker starts;
+  with a ticket it reads `indeterminate`. "Durable execution evidence" is the
+  receipt's own committed state: failure metadata carries only a
+  client-choosable request id, and the coordinator keeps no history of finished
+  tickets.
+- **Not covered:** annotation sends, synchronous `wait:true` calls, plan
+  approval, the Notebook and the CLI keep their own entry points. An actual
+  branch activation between send and replay is covered by construction (the
+  receipt stores its branch), not by a test.
+
+### 02 — History previews and Cell→Markdown read the recorded version (P0)
+
+- **Status:** `Completed`.
+- **Wiring:** `renderMessageRefChips` (`features/messages/list.ts`) and the step
+  cards' `openArt` (`features/send/step.ts`) open the recorded
+  `artifact_id`/`version_id` through `applyArtifactDeepLink`, without first
+  finding the file in the session's list; a ref with no version shows
+  「历史版本未记录」 and opens nothing; a late answer for an earlier click is
+  dropped. `ArtifactManager.promote_cell` embeds only the figure version the
+  Cell's `output_artifacts` binds (exactly one row; the version belongs to that
+  Artifact; the Artifact belongs to the promoting session), read with
+  `ArtifactRestoreService.verified_snapshot_bytes(max_bytes=…)` under an 8 MiB
+  per-image and 8 MiB per-document budget; every refusal leaves a pointer line
+  and the rest of the document is written.
+- **Verification:** `uv run pytest tests/test_artifact_manager.py tests/test_gateway_session_domain_routes.py -q`;
+  `npm test --prefix frontend -- src/features/messages src/features/send/step.test.ts`;
+  `node tests/browser_artifact_preview.mjs` (chip opens V1 while Files opens
+  the head; the step card draws the 1-pixel V1, not the 2-pixel head).
+- **Put back:** the old promote code failed all eight promote tests; removing
+  the budget, the session check, the single-row check or the read cap each
+  failed its test; the old `list.ts`/`step.ts` failed 14 Vitest cases.
+- **Not covered:** figures inline in assistant replies follow the completion
+  links, which point at the head while trusted delivery is off. The Markdown
+  refusal reasons are English, like the document's headings.
+
+### 03 — Upgrade readback from the previous stable Linux bundle (P0)
+
+- **Status:** `Completed` for Linux x86_64; see the real run in the gate table.
+- **Wiring:** `scripts/installed_runtime_smoke.py --baseline-bundle/--baseline-sha256`
+  runs `UpgradeScenario` after the fresh-install scenario: the old bundle's
+  digest is checked before unpacking; each bundle unpacks into its own
+  directory; the old bundle writes a project, a session, three Cells and two
+  CSV versions and stops; the whole data directory is copied; the candidate
+  migrates the same path and must read every id, Cell and CSV byte back, again
+  after a restart; the copy is restored and the old bundle must read it.
+  `preflight_schema` runs inside each bundle's own interpreter.
+  `scripts/release_receipts.py` keeps and verifies `upgrade_readback`; it is
+  required for any release after 1.0.1 and the old bundle must match the pin
+  in `.github/workflows/release.yml` (`OPENAI4S_UPGRADE_BASELINE_*`).
+  `release_pipeline.py` seals it into the evidence.
+- **Verification:** `uv run pytest tests/test_installed_runtime_smoke.py tests/test_release_rehearsal.py tests/test_release_pipeline.py tests/test_release_gate_manifest.py tests/test_release_docs.py -q`.
+- **Put back:** removing the version requirement, the pin comparison, the
+  lost-version check, the candidate digest binding, the old-bundle digest
+  check, the restored-schema check, the kept-copy manifest check, the restart
+  re-read or the Cell-record comparison each turned a test red.
+- **Not covered:** macOS and Windows packages, PyPI, the container image, and
+  data written by releases older than 1.0.1. The nightly `linux-bundle-smoke`
+  does not run the upgrade.
+
+### 04 — The first-run wizard resumes after a reload (P1)
+
+- **Status:** `Completed`.
+- **Wiring:** `OnboardingService.web_status` adds `completed_explicitly`
+  (`complete` keeps its upgrade-compatible meaning). `WizardHost` writes
+  `{step:"test", profile_id}` to sessionStorage after a profile save answers
+  and before activation; `resolveResume` (`features/onboarding/machine.ts`)
+  returns to Test when that profile is the active one, offers it when it is
+  visible but inactive, and otherwise clears the marker. Skip, Finish and
+  sign-out clear it. Probe, activation, environment setup and project creation
+  stay behind clicks.
+- **Verification:** `uv run pytest tests/test_web_onboarding.py -q`;
+  `npm test --prefix frontend -- src/features/onboarding src/features/chrome/team.test.ts`.
+- **Put back:** the marker write, the resume dispatch, the boot mount, the
+  sign-out clear, the skip/finish clear and the backend flag each turned tests red.
+- **Not covered:** a resume in another tab (sessionStorage is per tab, by design).
+
+### 05 — A model failure names its cause and opens model settings (P1)
+
+- **Status:** `Deviated` in placement only: the five codes live in
+  `llm_error_kind` (the public failure layer), not in `llm_failure_code`,
+  whose vocabulary also feeds retry records and the recovery ledger and is
+  pinned by `test_the_retry_vocabulary_did_not_grow`.
+- **Wiring:** `llm_authentication_failed` (401), `llm_access_denied` (403),
+  `llm_model_unavailable` (404 with a code in `_MODEL_UNAVAILABLE_CODES`),
+  `llm_request_target_not_found` (other 404) and `llm_endpoint_unreachable`
+  (`TransportError.endpoint_unreachable`, set by `_url_error` only for a refused
+  connection or a DNS failure before a request byte was written). They reach
+  the turn through `_friendly_error` → `llm_setup_message` and `failure_meta`
+  unchanged; `failureMeta` (`features/messages/failure.ts`) offers
+  「打开模型设置」 for each, live and on reopen. The Models-tab probe
+  (`model_profiles._probe_detail`) words a 404 and a pre-send refusal the same way.
+- **Verification:** `uv run pytest tests/test_llm_transport_typed.py tests/test_public_exception_projector.py tests/test_model_profile_probe_reachable.py -q`;
+  `npm test --prefix frontend -- src/features/messages src/components/customize/ModelsTab.test.tsx`.
+- **Put back:** the classifier change, `needsModelSettings`, the `_give_up`
+  copy of the fact and the exclusion of connect timeouts each turned tests red.
+- **Not covered:** `llm_auth_rejected` and `llm_model_not_found` remain for the
+  same provider codes on another status; stored 1.0.1 failures keep their codes.
+
+### 06 — The Compute tab keeps the last confirmed jobs when a read fails (P1)
+
+- **Status:** `Completed`.
+- **Wiring:** `ComputeTab.loadJobs` keeps four presentations (loading,
+  confirmed, stale with 「上次确认 HH:MM:SS」 and Retry, unavailable). "No jobs"
+  needs a 2xx whose `jobs` is an array of rows with a string `id` and `status`.
+  A failure while the last confirmed list had a running or queued job re-reads
+  after 2 s, then 4 s; the third consecutive failure leaves it to Retry. Cancel
+  is offered only on a confirmed read. Only GETs are repeated.
+- **Verification:** `npm test --prefix frontend -- src/components/customize/ComputeTab.test.tsx`.
+- **Put back:** 11 of the 12 new tests fail against the original component;
+  seven targeted mutations (coalescing, a third backoff step, wrong delays, no
+  reset, Cancel on stale rows, no shape check, backoff without a running job)
+  were each caught.
+- **Not covered:** the cached list is component state, so leaving the tab
+  during an outage shows "unavailable" on return.
+
+### 07 — Lineage samples for a reused Artifact version (P2, preparation)
+
+- **Status:** `Not started` for the logic, by design; the samples are in.
+- **Evidence:** `tests/test_notebook_lineage.py` (NV-07 section) reproduces,
+  through the real capture path, three wrong edges as `xfail(strict=True)`:
+  a trusted same-bytes rewrite links B to V1 and gives V2 a new edge; after a
+  restore, B links to a version never on disk; after a checkpoint revert, B
+  links to V2 although V1's bytes were read. A fourth pins that
+  `register_file` does not hand the reuse fact to capture. Different-content
+  overwrite, same-Cell merge and untrusted capture are correct today and pass.
+  The acceptance design is the comment block at the top of that section.
+
+### Gate results
+
+(filled in by the commit that records them)
