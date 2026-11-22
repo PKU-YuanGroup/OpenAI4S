@@ -523,7 +523,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "fb11fd69bc27db963129c0088d4104a93eea05ae5d72335c4e68a1fe0fddfe3e"
+      "evidence_digest": "1aa19d011cc0530602a1d18ff8f449a58a1742d8ecac83afd0c6c1c60fd4143a"
     },
     {
       "source": "R5",
@@ -537,7 +537,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_revision_binding.py,tests/test_model_binding_recovery.py,tests/test_model_catalog.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "ef1efe9fe5663b56768de1e2ebc8dbd20d9fc3d6950fb607ea34232bd85ab9ca"
+      "evidence_digest": "0ab6cbe6a300e8c0a3cb86415806ff0bf50c99aa2a73e5f31e2ff4c2b046dba3"
     },
     {
       "source": "R5",
@@ -717,7 +717,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "fb11fd69bc27db963129c0088d4104a93eea05ae5d72335c4e68a1fe0fddfe3e"
+      "evidence_digest": "1aa19d011cc0530602a1d18ff8f449a58a1742d8ecac83afd0c6c1c60fd4143a"
     },
     {
       "source": "R7",
