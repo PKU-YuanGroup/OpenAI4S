@@ -32,6 +32,7 @@ import {
   type HistoryItem,
 } from "./list";
 import { keepStripsLast } from "./dom";
+import { PROGRESS_COPY } from "./progress";
 import { cancelFrame } from "./raf";
 import { flushScrollNow, unbindMessageScroll, updateJumpPill } from "./scroll";
 import type { LiveStream } from "./stream";
@@ -1543,5 +1544,80 @@ describe("a finished turn and its stored rows", () => {
     turnDone("completed", { type: "frame_update", status: "completed" });
     await Promise.resolve();
     expect(asked).toEqual([["f-1", _openGen.value, "Done: fitted."]]);
+  });
+});
+
+// --------------------------------------------------------------------------
+// Decision 30: the server's progress lines in the UI language
+// --------------------------------------------------------------------------
+
+describe("the server's progress lines follow the UI language, the model's prose does not", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({}, 404)));
+  });
+
+  const turnMd = (): string =>
+    Array.from(messages().querySelectorAll(":scope > .msg.assistant .md"))
+      .map((node) => node.textContent || "")
+      .join("\n");
+
+  it("says a live English narration in a Chinese UI, and keeps what was sent for Copy", async () => {
+    await setLang("zh");
+    renderStored({ role: "user", content: "Fit the growth curves", message_id: "m-1" });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("The plate has 96 wells.\n\n"));
+    onEvent(chunk(PROGRESS_COPY.en["cell.r"] + "\n\n"));
+    onEvent(chunk(PROGRESS_COPY.en["finished.output"] + "\n```text\nslope 2.1\n```\n\n"));
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    const shown = turnMd();
+    expect(shown).toContain(PROGRESS_COPY.zh["cell.r"]);
+    expect(shown).toContain(PROGRESS_COPY.zh["finished.output"]);
+    expect(shown).toContain("slope 2.1");
+    expect(shown).not.toContain(PROGRESS_COPY.en["cell.r"]);
+    // The model's own sentence is never translated.
+    expect(shown).toContain("The plate has 96 wells.");
+    // Copy and the rating read what the turn sent, as its stored rows say it.
+    expect(turnTexts()[0]).toContain(turnTextKey(PROGRESS_COPY.en["cell.r"]));
+  });
+
+  it("says a stored Chinese row in an English UI, with its output block verbatim", async () => {
+    const rows = [
+      { role: "user", content: "拟合生长曲线", message_id: "m-1", created_at: at(0) },
+      { role: "assistant", content: "先看一下孔板。", message_id: "m-2", created_at: at(1) },
+      { role: "assistant", content: PROGRESS_COPY.zh["cell.python"], message_id: "m-3", created_at: at(2) },
+      {
+        role: "assistant",
+        content: [PROGRESS_COPY.zh["finished.head"], "```text\n斜率 2.1\n```", "（共 9 行，完整输出在 Notebook。）"].join("\n"),
+        message_id: "m-4",
+        created_at: at(3),
+      },
+      { role: "assistant", content: "更新了计划（3 步，完成 1 步）。", message_id: "m-5", created_at: at(4) },
+    ];
+    await setLang("en");
+    await paintHistory(interleaveHistory(rows, [], []));
+    const shown = turnMd();
+    expect(shown).toContain(PROGRESS_COPY.en["cell.python"]);
+    expect(shown).toContain(PROGRESS_COPY.en["finished.head"]);
+    expect(shown).toContain("斜率 2.1");
+    expect(shown).toContain("(9 lines in total; the full output is in the Notebook.)");
+    expect(shown).toContain("Updated the plan (3 steps, 1 done).");
+    expect(shown).toContain("先看一下孔板。");
+    expect(shown).not.toContain(PROGRESS_COPY.zh["cell.python"]);
+    // The rating key is the stored text, whatever the language on screen.
+    const key = turnTexts()[0];
+
+    // The same rows after a switch to Chinese (what the transcript's language
+    // re-read paints): Chinese again, the same key.
+    messages().replaceChildren();
+    await setLang("zh");
+    await paintHistory(interleaveHistory(rows, [], []));
+    expect(turnMd()).toContain(PROGRESS_COPY.zh["cell.python"]);
+    expect(turnTexts()[0]).toBe(key);
+  });
+
+  it("says a single stored row in the UI language too", async () => {
+    await setLang("en");
+    const row = renderStored({ role: "assistant", content: PROGRESS_COPY.zh.plan, message_id: "m-9" }) as HTMLElement;
+    expect(row.querySelector(".md")?.textContent || "").toContain(PROGRESS_COPY.en.plan);
   });
 });

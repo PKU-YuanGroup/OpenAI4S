@@ -33,6 +33,7 @@ import { cancelFrame, scheduleFrame } from "./raf";
 import { down } from "./scroll";
 import { appendLiveStoppedMarker, cancelledIdentity } from "./stopped";
 import { embedArtifactFigures } from "./figures";
+import { resayProgress } from "./progress";
 import { _messagesFollow } from "../../stores/ui";
 import { dropTurnGroupIfEmpty, openTurnGroup, placeCardInTurn } from "./turnGroup";
 
@@ -354,7 +355,10 @@ export function feed(
       down();
       return;
     }
-    st.text += chunk;
+    // Decision 30: a server progress line arrives as one chunk, in the
+    // turn's language; it is shown in the UI language. `full` keeps what was
+    // sent, as the stored row does (Copy, the rating key, the reconcile).
+    st.text += resayProgress(chunk);
     st.full += chunk;
     st.md.classList.add("cursor");
     if (
