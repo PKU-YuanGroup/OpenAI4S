@@ -1143,6 +1143,15 @@ def test_the_upgrade_scenario_passes_when_the_candidate_keeps_everything(
             lambda state: state["cells"].pop(), "cell_records", id="lost-cell"
         ),
         pytest.param(
+            # Same number of Cells, but the last one now names the first CSV
+            # version: only the record comparison can see that.
+            lambda state: state["cells"][2]["output_artifacts"][0].update(
+                version_id="v-1"
+            ),
+            "cell_records",
+            id="cell-rebound-to-another-version",
+        ),
+        pytest.param(
             lambda state: state["frames"].clear(), "project_session", id="lost-session"
         ),
     ],
