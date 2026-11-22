@@ -262,6 +262,7 @@ from openai4s.server.volcengine_connector import VolcengineConnectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
 from openai4s.specialists import builtin_catalog
+from openai4s.storage import message_admissions as message_receipts
 from openai4s.storage.connectors import public_connector
 from openai4s.storage.governance import QuotaExceeded, record_session_llm_usage
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
@@ -2897,6 +2898,9 @@ class SessionRunner:
         self.skills = SkillLoader(cfg=cfg)
         self._sessions: dict[str, SessionState] = {}
         self._jobs: dict[str, MessageJob] = {}
+        #: This daemon's own record of the submission receipts it is
+        #: claiming, and of any outcome whose durable write failed.
+        self.message_receipts_local = message_receipts.LocalOutcomes()
         #: Serializes every read-check-write of a session's model pin. The
         #: composer's re-pin and a send's first bind can arrive together; with
         #: no lock the send read "unpinned", the re-pin wrote the user's
@@ -9259,6 +9263,198 @@ class SessionRunner:
             "request_id": record["request_id"],
             "job_id": record["job_id"],
         }
+
+    # -- plain-message submission receipts (`client_request_id`) ----------
+    #
+    # The annotation ledger above answers "what became of my pins"; this
+    # answers "was my message taken" for a send with no pins. Separate table,
+    # separate route: the two keys mean different things and the annotation
+    # path's behaviour is frozen.
+
+    def claim_message_receipt(
+        self,
+        root_frame_id: str,
+        initiator: str,
+        client_request_id: str,
+        digest: str,
+    ) -> tuple[bool, dict]:
+        """Claim the key, or return the row another request already holds."""
+        created, row = self.store.message_admissions.claim(
+            root_frame_id=root_frame_id,
+            initiator=initiator,
+            client_request_id=client_request_id,
+            request_digest=digest,
+            daemon_instance=self._owner_instance_id,
+        )
+        if created:
+            self.message_receipts_local.begin(
+                (root_frame_id, initiator, client_request_id)
+            )
+        return created, row
+
+    def correlate_message_receipt(self, key: tuple[str, str, str], job) -> None:
+        """Durable before the worker starts, or the start is aborted.
+
+        Runs as `submit_message`'s `on_admitted`, inside the guard around
+        `Thread.start`. Any failure -- a raise, a commit whose outcome is
+        unknown, a CAS that matched nothing -- is the same answer: the
+        receipt cannot name this ticket, so the turn must not run.
+        """
+        root_frame_id, initiator, client_request_id = key
+        try:
+            recorded = self.store.message_admissions.correlate(
+                root_frame_id=root_frame_id,
+                initiator=initiator,
+                client_request_id=client_request_id,
+                job_id=job.job_id,
+                request_id=job.request_id,
+                execution_id=job.execution_id,
+                branch_id=job.branch_id,
+                model_profile_id=job.model_profile_id,
+                model_profile_revision=job.model_profile_revision,
+            )
+        except Exception as error:  # noqa: BLE001
+            raise GatewayError(
+                500,
+                "the submission receipt could not be recorded; the turn was "
+                "not started",
+                "admission_not_recorded",
+            ) from error
+        if not recorded:
+            raise GatewayError(
+                500,
+                "the submission receipt could not be recorded; the turn was "
+                "not started",
+                "admission_not_recorded",
+            )
+
+    def accept_message_receipt(self, key: tuple[str, str, str], job) -> None:
+        """The worker started. Never raises: the turn is already running.
+
+        A failed write leaves the row `pending`; this daemon's own record
+        then says what happened, and a later daemon -- with no such record --
+        reads the row as `indeterminate`.
+        """
+        root_frame_id, initiator, client_request_id = key
+        try:
+            if self.store.message_admissions.accept(
+                root_frame_id=root_frame_id,
+                initiator=initiator,
+                client_request_id=client_request_id,
+                job_id=job.job_id,
+            ):
+                self.message_receipts_local.settle(key)
+                return
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+        self.message_receipts_local.record(
+            key, message_receipts.LocalOutcomes.STARTED, job_id=job.job_id
+        )
+
+    def refuse_message_receipt(
+        self, key: tuple[str, str, str], error: BaseException, *, correlated: bool
+    ) -> None:
+        """The turn was not started. Never raises: the refusal propagates."""
+        if isinstance(error, GatewayError):
+            code = error.error_code or error_code_for(error.code)
+            status: int | None = int(error.code)
+        else:
+            # Correlated means the ticket existed and only the worker thread
+            # failed to start; uncorrelated means something failed earlier.
+            code = "worker_not_started" if correlated else "internal_error"
+            status = 500
+        root_frame_id, initiator, client_request_id = key
+        try:
+            if self.store.message_admissions.refuse(
+                root_frame_id=root_frame_id,
+                initiator=initiator,
+                client_request_id=client_request_id,
+                code=code,
+                status=status,
+            ):
+                self.message_receipts_local.settle(key)
+                return
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+        self.message_receipts_local.record(
+            key, message_receipts.LocalOutcomes.NOT_STARTED, code=code, status=status
+        )
+
+    def message_receipt(
+        self,
+        root_frame_id: str,
+        initiator: str,
+        client_request_id: str,
+        *,
+        row: dict | None = None,
+    ) -> dict | None:
+        """The receipt as a client is told it, `pending` resolved. Read-only.
+
+        None when this identity has no such receipt in this session -- the
+        same answer for a stranger's key and a guessed one.
+        """
+        if row is None:
+            row = self.store.message_admissions.get(
+                root_frame_id=root_frame_id,
+                initiator=initiator,
+                client_request_id=client_request_id,
+            )
+        if row is None:
+            return None
+        key = (root_frame_id, initiator, client_request_id)
+        local = self.message_receipts_local.get(key)
+        state, code = message_receipts.effective_state(
+            row, current_instance=self._owner_instance_id, local=local
+        )
+        refused = state == message_receipts.REFUSED
+        job_id = None if refused else row.get("job_id")
+        refusal_status = row.get("refusal_status")
+        if refused and local is not None and local.get("status") is not None:
+            refusal_status = local.get("status")
+        return {
+            "client_request_id": client_request_id,
+            "frame_id": root_frame_id,
+            "admission_state": state,
+            "job_id": job_id,
+            "request_id": None if refused else row.get("request_id"),
+            "execution_id": None if refused else row.get("execution_id"),
+            "branch_id": None if refused else row.get("branch_id"),
+            # The pair this turn was admitted under, as it was then. A re-pin
+            # or a branch switch since does not change what the turn ran on.
+            "model_binding": (
+                {
+                    "model_profile_id": row.get("model_profile_id") or "",
+                    "model_profile_revision": int(
+                        row.get("model_profile_revision") or 0
+                    ),
+                }
+                if job_id
+                else None
+            ),
+            "refusal": (
+                {"code": code or "refused", "status": refusal_status}
+                if refused
+                else None
+            ),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+
+    def live_queue_position(
+        self, root_frame_id: str, execution_id: str | None
+    ) -> int | None:
+        """Where this execution stands now: 0 running, n queued, None gone."""
+        if not execution_id:
+            return None
+        snapshot = self.executions.snapshot(root_frame_id)
+        owner = snapshot.get("owner") or {}
+        if owner.get("execution_id") == execution_id:
+            position = owner.get("queue_position")
+            return 0 if position is None else position
+        for item in snapshot.get("queue", []):
+            if item.get("execution_id") == execution_id:
+                return item.get("queue_position")
+        return None
 
     def submit_review(self, root_frame_id: str, project_id: str) -> MessageJob:
         return self.reviews.submit(root_frame_id, project_id)
@@ -18183,6 +18379,99 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 ann_ids = b.get("annotation_ids") or []
                 annos: list = []
                 reservation_id = ""
+                # A plain message's submission receipt (NV-01). Claimed here,
+                # before `submit_message` freezes a model, takes a ticket or
+                # resolves a file, so a request that finds the key taken is
+                # answered from the row and never submits a second time.
+                receipt_key: tuple[str, str, str] | None = None
+                client_request_id = b.get("client_request_id")
+                if client_request_id is not None:
+                    if type(
+                        client_request_id
+                    ) is not str or not message_receipts.CLIENT_REQUEST_ID.fullmatch(
+                        client_request_id
+                    ):
+                        raise GatewayError(
+                            400,
+                            "client_request_id must be 32 lowercase hex characters",
+                            "invalid_client_request_id",
+                        )
+                    if ann_ids:
+                        raise GatewayError(
+                            400,
+                            "client_request_id is for messages without pinned "
+                            "comments; those use annotation_reservation_id",
+                            "client_request_id_with_annotations",
+                        )
+                    if b.get("wait", True) is not False:
+                        raise GatewayError(
+                            400,
+                            "client_request_id requires wait:false",
+                            "client_request_id_requires_async",
+                        )
+                    if str(f.get("root_frame_id") or f.get("frame_id") or "") != fid:
+                        raise GatewayError(
+                            404,
+                            "a submission receipt belongs to a Session, not to "
+                            "one of its sub-frames",
+                            "not_a_session_root" if f else "frame_not_found",
+                        )
+                    initiator = self._team_owner_user_id() or ""
+                    digest = message_receipts.request_digest(
+                        request=req,
+                        mentions=mentions,
+                        model=b.get("model"),
+                        plan=bool(b.get("plan")),
+                        explore=bool(b.get("explore")),
+                        task_mode=b.get("task_mode"),
+                    )
+                    created, receipt_row = runner.claim_message_receipt(
+                        fid, initiator, client_request_id, digest
+                    )
+                    if not created:
+                        if receipt_row.get("request_digest") != digest:
+                            raise GatewayError(
+                                409,
+                                "this client_request_id was already used for a "
+                                "different message",
+                                "client_request_id_conflict",
+                            )
+                        # A replay. Whatever the key's state, the answer is
+                        # the original receipt and nothing is submitted.
+                        receipt = (
+                            runner.message_receipt(
+                                fid, initiator, client_request_id, row=receipt_row
+                            )
+                            or {}
+                        )
+                        state = receipt.get("admission_state")
+                        replayed_job = receipt.get("job_id")
+                        self._json(
+                            {
+                                **receipt,
+                                "status": state,
+                                "owner": (
+                                    {"kind": "agent", "id": replayed_job}
+                                    if replayed_job
+                                    else None
+                                ),
+                                "queue_position": runner.live_queue_position(
+                                    fid, receipt.get("execution_id")
+                                ),
+                                "replayed": True,
+                            },
+                            (
+                                202
+                                if state
+                                in (
+                                    message_receipts.ACCEPTED,
+                                    message_receipts.PENDING,
+                                )
+                                else 200
+                            ),
+                        )
+                        return
+                    receipt_key = (fid, initiator, client_request_id)
                 if ann_ids:
                     # Before the reservation, not after it. The admission is a
                     # durable row, and a request naming a missing or child
@@ -18264,6 +18553,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     aborts the unstarted turn instead of producing a 202 whose
                     ledger row is indistinguishable from a refusal's.
                     """
+                    if receipt_key is not None:
+                        runner.correlate_message_receipt(receipt_key, started_job)
+                        correlated["receipt"] = started_job.job_id
                     if not reservation_id:
                         return
                     correlated["job_id"] = started_job.job_id
@@ -18293,12 +18585,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         on_admitted=_persist_correlation,
                         **({"mentions": mentions} if mentions else {}),
                     )
-                except BaseException:
+                except BaseException as refusal:
                     # Every synchronous refusal lands here -- the 413 on an
                     # oversized message, a 409, a 429, and the `Thread.start`
                     # failure that would otherwise strand the turn. The pins go
                     # back to `open` so the composer can retry with them, and
                     # only this request's reservation is released.
+                    if receipt_key is not None:
+                        runner.refuse_message_receipt(
+                            receipt_key,
+                            refusal,
+                            correlated=bool(correlated.get("receipt")),
+                        )
                     if reservation_id:
                         try:
                             # Two shapes of refusal, and they are not the
@@ -18330,6 +18628,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         except Exception:  # noqa: BLE001
                             traceback.print_exc()
                     raise
+                if receipt_key is not None:
+                    runner.accept_message_receipt(receipt_key, job)
                 # Consumed only by a message the server accepted, and that
                 # ordering is the whole guarantee. This ran *before*
                 # `submit_message`, which is where every refusal this route can
@@ -18438,6 +18738,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                     "annotation_reservation_id": reservation_id,
                                 }
                                 if reservation_id
+                                else {}
+                            ),
+                            # Only for a client that asked for a receipt; one
+                            # that did not gets the response it always got.
+                            **(
+                                {
+                                    "admission_state": message_receipts.ACCEPTED,
+                                    "client_request_id": client_request_id,
+                                }
+                                if receipt_key is not None
                                 else {}
                             ),
                         },
@@ -18986,6 +19296,31 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     locator=locator,
                 )
                 self._json({"annotation": _annotation_json(anno)}, 201)
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/message-admissions/([^/]+)", sub)
+            if m and method == "GET":
+                # What a client asks after its plain-message 202 never
+                # arrived. Read-only: it reports the receipt, never submits.
+                # Scoped to the session root and to the identity that sent
+                # it, so another member -- an admin included -- who can read
+                # the session still cannot read this, and learns only 404.
+                frame = store.get_frame(m.group(1)) or {}
+                if str(
+                    frame.get("root_frame_id") or frame.get("frame_id") or ""
+                ) != m.group(1) or not message_receipts.CLIENT_REQUEST_ID.fullmatch(
+                    m.group(2)
+                ):
+                    raise GatewayError(
+                        404, "no such submission receipt", "message_admission_not_found"
+                    )
+                receipt = runner.message_receipt(
+                    m.group(1), self._team_owner_user_id() or "", m.group(2)
+                )
+                if receipt is None:
+                    raise GatewayError(
+                        404, "no such submission receipt", "message_admission_not_found"
+                    )
+                self._json(receipt)
                 return
             m = re.fullmatch(r"/frames/([^/]+)/admissions/([^/]+)", sub)
             if m and method == "GET":

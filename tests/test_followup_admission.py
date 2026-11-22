@@ -2116,3 +2116,808 @@ def test_a_release_refuses_a_partial_or_empty_hold(client):
     )
     assert client.store.get_admission("resv-release-partial-01")["state"] == "released"
     assert client.store.get_annotation(first)["status"] == "open"
+
+
+# --------------------------------------------------------------------------
+# NV-01: submission receipts for plain messages (`client_request_id`)
+#
+# A plain send had nothing durable to ask about once its 202 was lost: the
+# browser waited out a short grace and re-read history, and two sends of the
+# same text could not be told apart. The receipt is claimed before anything
+# else happens to the message, keyed on session root + initiating identity +
+# the client's own id, and every later request naming the key reads that row
+# instead of submitting. Everything here drives the real Handler.
+# --------------------------------------------------------------------------
+
+from openai4s.storage import message_admissions as receipts  # noqa: E402
+
+
+def _rid(seed: str) -> str:
+    """A well-formed client id, distinct per test."""
+    import hashlib
+
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+
+def _receipt(client, client_request_id, frame_id=None):
+    return client.post_method(
+        "GET",
+        f"/frames/{frame_id or client.frame_id}/message-admissions/{client_request_id}",
+        {},
+    )
+
+
+def _row(client, client_request_id, frame_id=None, initiator=""):
+    return client.store.message_admissions.get(
+        root_frame_id=frame_id or client.frame_id,
+        initiator=initiator,
+        client_request_id=client_request_id,
+    )
+
+
+def _agent_tickets(client, frame_id=None):
+    snapshot = client.runner.executions.snapshot(frame_id or client.frame_id)
+    items = list(snapshot.get("queue") or [])
+    if snapshot.get("owner"):
+        items.append(snapshot["owner"])
+    return [
+        item for item in items if ((item.get("owner") or {}).get("kind")) == "agent"
+    ]
+
+
+class _count_submits:
+    """Every call that reached `SessionRunner.submit_message`."""
+
+    def __init__(self, client):
+        self.calls: list = []
+        self._client = client
+        self._real = client.runner.submit_message
+
+        def _spy(*args, **kwargs):
+            self.calls.append(args[:1])
+            return self._real(*args, **kwargs)
+
+        client.runner.submit_message = _spy
+
+    def stop(self):
+        self._client.runner.submit_message = self._real
+
+
+def test_a_receipted_send_is_accepted_and_the_receipt_names_its_turn(client):
+    """The 202 grows `admission_state`; the GET a reloaded page makes answers
+    with the same job, request, execution and branch the 202 named."""
+    _state, finish = _hold_the_head(client)
+    try:
+        rid = _rid("accepted")
+        status, body = client.message("plot it", wait=False, client_request_id=rid)
+        assert status == 202, (status, body)
+        assert body["admission_state"] == "accepted"
+        assert body["client_request_id"] == rid
+        # The pre-existing fields are untouched.
+        for key in ("job_id", "execution_id", "request_id", "model_binding"):
+            assert body.get(key) is not None, key
+
+        status, receipt = _receipt(client, rid)
+        assert status == 200, (status, receipt)
+        assert receipt["admission_state"] == "accepted"
+        assert receipt["job_id"] == body["job_id"]
+        assert receipt["request_id"] == body["request_id"]
+        assert receipt["execution_id"] == body["execution_id"]
+        assert receipt["branch_id"]
+        assert receipt["model_binding"] == body["model_binding"]
+        assert receipt["refusal"] is None
+    finally:
+        finish()
+
+
+def test_a_send_without_a_receipt_gets_the_response_it_always_got(client):
+    _state, finish = _hold_the_head(client)
+    try:
+        status, body = client.message("plot it", wait=False)
+        assert status == 202
+        assert "admission_state" not in body
+        assert "client_request_id" not in body
+        assert not client.store._conn.execute(
+            "SELECT COUNT(*) FROM message_admissions"
+        ).fetchone()[0]
+    finally:
+        finish()
+
+
+def test_a_replay_returns_the_original_receipt_and_submits_nothing(client):
+    """A lost 202 and a resend of the same request: the second request is
+    answered from the row, with the first one's identity, and no second ticket
+    is taken."""
+    _state, finish = _hold_the_head(client)
+    submits = _count_submits(client)
+    try:
+        rid = _rid("replay")
+        _s, first = client.message("plot it", wait=False, client_request_id=rid)
+        status, again = client.message("plot it", wait=False, client_request_id=rid)
+        assert status == 202, (status, again)
+        assert again["replayed"] is True
+        assert again["status"] == "accepted"
+        assert again["admission_state"] == "accepted"
+        for key in ("job_id", "execution_id", "request_id", "model_binding"):
+            assert again[key] == first[key], key
+        assert again["owner"] == first["owner"]
+        assert again["queue_position"] == first["queue_position"]
+        assert len(submits.calls) == 1, submits.calls
+        assert [t["execution_id"] for t in _agent_tickets(client)] == [
+            first["execution_id"]
+        ]
+    finally:
+        submits.stop()
+        finish()
+
+
+def test_concurrent_identical_requests_produce_exactly_one_execution(client):
+    """The claim is the only arbiter. Eight requests racing for one key: one
+    submits, every other one is answered from the row."""
+    _state, finish = _hold_the_head(client)
+    submits = _count_submits(client)
+    rid = _rid("concurrent")
+    barrier = threading.Barrier(8)
+    answers: list = []
+
+    def _send():
+        barrier.wait(5)
+        answers.append(client.message("plot it", wait=False, client_request_id=rid))
+
+    threads = [threading.Thread(target=_send) for _ in range(8)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(20)
+        assert len(answers) == 8
+        assert all(status == 202 for status, _ in answers), answers
+        fresh = [body for _, body in answers if not body.get("replayed")]
+        assert len(fresh) == 1, answers
+        assert len(submits.calls) == 1, submits.calls
+        tickets = _agent_tickets(client)
+        assert [t["execution_id"] for t in tickets] == [fresh[0]["execution_id"]]
+        # Every replay names that execution, or (still in flight) none yet.
+        for _, body in answers:
+            assert body.get("execution_id") in (None, fresh[0]["execution_id"])
+            assert body["admission_state"] in ("accepted", "pending")
+    finally:
+        submits.stop()
+        finish()
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"request": "plot something else"},
+        {"plan": True},
+        {"explore": True},
+        {"task_mode": "reusable_pipeline"},
+        {"model": "another-model"},
+        {"mentions": [{"filename": "a.csv", "version_id": "v-abcdef123456"}]},
+    ],
+    ids=["text", "plan", "explore", "task_mode", "model", "mentions"],
+)
+def test_the_same_key_with_a_different_request_is_a_conflict(client, changed):
+    _state, finish = _hold_the_head(client)
+    submits = _count_submits(client)
+    try:
+        rid = _rid("conflict-" + next(iter(changed)))
+        body = {"request": "plot it", "wait": False, "client_request_id": rid}
+        status, first = client.post(f"/frames/{client.frame_id}/message", body)
+        assert status == 202, first
+        status, refused = client.post(
+            f"/frames/{client.frame_id}/message", {**body, **changed}
+        )
+        assert status == 409, (status, refused)
+        assert refused["code"] == "client_request_id_conflict"
+        assert len(submits.calls) == 1
+        # The conflict changed nothing about the original receipt.
+        assert _receipt(client, rid)[1]["job_id"] == first["job_id"]
+    finally:
+        submits.stop()
+        finish()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["A" * 32, "a" * 31, "a" * 33, "g" * 32, 17, "", None],
+    ids=["upper", "short", "long", "not-hex", "int", "empty", "null"],
+)
+def test_a_malformed_client_request_id_is_refused_before_anything_is_written(
+    client, bad
+):
+    body = {"request": "plot it", "wait": False, "client_request_id": bad}
+    if bad is None:
+        # `null` is "no receipt", not a malformed one.
+        _state, finish = _hold_the_head(client)
+        try:
+            status, _ = client.post(f"/frames/{client.frame_id}/message", body)
+            assert status == 202
+        finally:
+            finish()
+        return
+    status, refused = client.post(f"/frames/{client.frame_id}/message", body)
+    assert status == 400, (status, refused)
+    assert refused["code"] == "invalid_client_request_id"
+    assert not client.store._conn.execute(
+        "SELECT COUNT(*) FROM message_admissions"
+    ).fetchone()[0]
+    assert client.runner.executions.snapshot(client.frame_id).get("queue") == []
+
+
+@pytest.mark.parametrize("wait", [True, "false", 0, "absent"])
+def test_a_receipt_requires_an_asynchronous_send(client, wait):
+    body = {"request": "plot it", "client_request_id": _rid("wait")}
+    if wait != "absent":
+        body["wait"] = wait
+    status, refused = client.post(f"/frames/{client.frame_id}/message", body)
+    assert status == 400, (status, refused)
+    assert refused["code"] == "client_request_id_requires_async"
+    assert _row(client, _rid("wait")) is None
+
+
+def test_a_receipt_cannot_ride_on_an_annotation_send(client):
+    """The pinned-comment path has its own admission id; the two are never
+    mixed, so neither key can be mistaken for the other."""
+    annotation_id = _pin(client)
+    status, refused = client.message(
+        "go",
+        wait=False,
+        annotation_ids=[annotation_id],
+        client_request_id=_rid("annotated"),
+    )
+    assert status == 400, (status, refused)
+    assert refused["code"] == "client_request_id_with_annotations"
+    assert _status(client, annotation_id) == "open"
+    assert _row(client, _rid("annotated")) is None
+
+
+def test_another_session_cannot_read_a_receipt(client):
+    _state, finish = _hold_the_head(client)
+    try:
+        rid = _rid("scoped")
+        status, _body = client.message("plot it", wait=False, client_request_id=rid)
+        assert status == 202
+        other = client.runner.create_session(client.project_id)
+        child = client.store.new_frame(
+            kind="turn", project_id=client.project_id, parent_id=client.frame_id
+        )
+        assert _receipt(client, rid)[0] == 200
+        assert _receipt(client, rid, frame_id=other)[0] == 404
+        assert _receipt(client, rid, frame_id=child)[0] == 404
+        assert _receipt(client, rid, frame_id="f-does-not-exist")[0] == 404
+        # A well-formed id nobody claimed, and a malformed one.
+        assert _receipt(client, _rid("never-sent"))[0] == 404
+        assert _receipt(client, "not-an-id")[0] == 404
+    finally:
+        finish()
+
+
+def test_a_receipt_cannot_be_claimed_against_a_sub_frame(client):
+    child = client.store.new_frame(
+        kind="turn", project_id=client.project_id, parent_id=client.frame_id
+    )
+    status, refused = client.post(
+        f"/frames/{child}/message",
+        {"request": "go", "wait": False, "client_request_id": _rid("child")},
+    )
+    assert status == 404, (status, refused)
+    assert refused["code"] == "not_a_session_root"
+    assert not client.store._conn.execute(
+        "SELECT COUNT(*) FROM message_admissions"
+    ).fetchone()[0]
+
+
+def test_a_deleted_session_takes_its_receipts_with_it(client):
+    _state, finish = _hold_the_head(client)
+    rid = _rid("deleted")
+    try:
+        status, _ = client.message("plot it", wait=False, client_request_id=rid)
+        assert status == 202
+    finally:
+        finish()
+    for job in list(client.runner._jobs.values()):
+        job.done.wait(20)
+    assert _row(client, rid) is not None
+    client.runner.delete_session(client.frame_id)
+    assert _row(client, rid) is None
+    assert _receipt(client, rid)[0] == 404
+
+
+# ---- each refusal is a distinct, verifiable state ---------------------------
+
+
+def test_a_full_queue_is_recorded_as_a_refusal_and_replays_as_one(client):
+    finish = _fill_the_queue(client)
+    submits = _count_submits(client)
+    try:
+        rid = _rid("queue-full")
+        status, body = client.message("one more", wait=False, client_request_id=rid)
+        assert status == 429, (status, body)
+        status, receipt = _receipt(client, rid)
+        assert status == 200, receipt
+        assert receipt["admission_state"] == "refused"
+        assert receipt["refusal"] == {"code": "queue_full", "status": 429}
+        assert receipt["job_id"] is None and receipt["execution_id"] is None
+        # A replay is answered from the row with 200: it does not try again.
+        status, replay = client.message("one more", wait=False, client_request_id=rid)
+        assert status == 200, (status, replay)
+        assert replay["admission_state"] == "refused"
+        assert replay["replayed"] is True
+        assert len(submits.calls) == 1
+    finally:
+        submits.stop()
+        finish()
+
+
+def test_an_unstartable_worker_is_recorded_as_a_refusal(client):
+    rid = _rid("thread-start")
+    ran = _watch_run_message(client)
+    real_start = threading.Thread.start
+
+    def _refuse(self, *args, **kwargs):
+        if (self.name or "").startswith("openai4s-turn-"):
+            raise RuntimeError("can't start new thread")
+        return real_start(self, *args, **kwargs)
+
+    threading.Thread.start = _refuse
+    try:
+        status, body = client.message(
+            "the worker will not start", wait=False, client_request_id=rid
+        )
+    finally:
+        threading.Thread.start = real_start
+    assert status >= 500, (status, body)
+    assert ran == []
+    status, receipt = _receipt(client, rid)
+    assert status == 200, receipt
+    assert receipt["admission_state"] == "refused"
+    assert receipt["refusal"]["code"] == "worker_not_started"
+    assert receipt["job_id"] is None
+    row = _row(client, rid)
+    assert row["state"] == "refused" and row["job_id"] is None, row
+    assert not client.runner.is_running(client.frame_id)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["raise", "false", "commit-then-raise"],
+    ids=["the write raises", "the write matches nothing", "commits, then raises"],
+)
+def test_a_correlation_failure_is_a_refusal_and_never_starts_the_turn(client, fault):
+    rid = _rid("correlate-" + fault)
+    ran = _watch_run_message(client)
+    started = _watch_thread_start()
+    repo = client.store.message_admissions
+    real = repo.correlate
+
+    def _fail(**kwargs):
+        if fault == "raise":
+            raise sqlite3.OperationalError("database is locked")
+        if fault == "false":
+            return False
+        real(**kwargs)
+        raise sqlite3.OperationalError("disk I/O error after commit")
+
+    repo.correlate = _fail
+    try:
+        status, body = client.message(
+            "a turn whose receipt cannot be correlated",
+            wait=False,
+            client_request_id=rid,
+        )
+    finally:
+        repo.correlate = real
+        started.stop()
+    assert status == 500, (status, body)
+    assert body["code"] == "admission_not_recorded"
+    assert ran == [] and started.turns == []
+    status, receipt = _receipt(client, rid)
+    assert status == 200, receipt
+    assert receipt["admission_state"] == "refused"
+    assert receipt["refusal"] == {"code": "admission_not_recorded", "status": 500}
+    # Even when the correlation landed, the refusal took it back.
+    row = _row(client, rid)
+    assert row["job_id"] is None and row["execution_id"] is None, row
+    assert client.runner.executions.snapshot(client.frame_id).get("queue") == []
+    assert not client.runner.is_running(client.frame_id)
+
+
+def test_a_row_a_previous_daemon_left_pending_is_indeterminate(client):
+    """The restart case. A correlated `pending` row means the ticket existed;
+    whether its worker started, the daemon that knew is gone."""
+    rid = _rid("restart-correlated")
+    repo = client.store.message_admissions
+    created, _row0 = repo.claim(
+        root_frame_id=client.frame_id,
+        initiator="",
+        client_request_id=rid,
+        request_digest=receipts.request_digest(
+            request="plot it",
+            mentions=None,
+            model=None,
+            plan=False,
+            explore=False,
+            task_mode=None,
+        ),
+        daemon_instance="daemon-before-the-restart",
+    )
+    assert created
+    assert repo.correlate(
+        root_frame_id=client.frame_id,
+        initiator="",
+        client_request_id=rid,
+        job_id="job-old",
+        request_id="req-old",
+        execution_id="exec-old",
+        branch_id=client.frame_id,
+        model_profile_id="",
+        model_profile_revision=0,
+    )
+    status, receipt = _receipt(client, rid)
+    assert status == 200, receipt
+    assert receipt["admission_state"] == "indeterminate"
+    assert receipt["execution_id"] == "exec-old"
+    assert receipt["refusal"] is None
+
+    # A replay of that request is answered, not re-run.
+    submits = _count_submits(client)
+    try:
+        status, replay = client.message("plot it", wait=False, client_request_id=rid)
+    finally:
+        submits.stop()
+    assert status == 200, (status, replay)
+    assert replay["admission_state"] == "indeterminate"
+    assert submits.calls == []
+    # And reading did not rewrite the row.
+    assert _row(client, rid)["state"] == "pending"
+
+
+def test_a_row_a_previous_daemon_never_correlated_was_never_started(client):
+    """Correlation is durable before `Thread.start`, so a `pending` row with
+    no ticket is a submission that never ran -- a refusal, not a mystery."""
+    rid = _rid("restart-uncorrelated")
+    client.store.message_admissions.claim(
+        root_frame_id=client.frame_id,
+        initiator="",
+        client_request_id=rid,
+        request_digest="0" * 64,
+        daemon_instance="daemon-before-the-restart",
+    )
+    status, receipt = _receipt(client, rid)
+    assert status == 200, receipt
+    assert receipt["admission_state"] == "refused"
+    assert receipt["refusal"]["code"] == receipts.NOT_STARTED_CODE
+
+
+def test_a_receipt_this_daemon_is_still_claiming_reads_pending(client):
+    rid = _rid("in-flight")
+    created, _ = client.runner.claim_message_receipt(client.frame_id, "", rid, "0" * 64)
+    assert created
+    status, receipt = _receipt(client, rid)
+    assert status == 200 and receipt["admission_state"] == "pending", receipt
+
+
+# ---- a turn that started while its receipt write failed ---------------------
+
+
+def _scripted_turns(client, monkeypatch):
+    """A real turn: one Cell, then a structured completion.
+
+    Counted per request text, so two sessions' turns are told apart.
+    """
+    model_calls: dict[str, int] = {}
+    cells: dict[str, int] = {}
+
+    class _Dispatcher:
+        last_output = None
+
+        def __call__(self, method, args):
+            return {}
+
+    def ensure_runtime(state):
+        state.dispatcher = _Dispatcher()
+        state.messages = [{"role": "system", "content": "sys"}]
+        return state.dispatcher
+
+    def _key(messages):
+        for message in messages:
+            text = str(message.get("content") or "")
+            for key in ("baseline turn", "faulted turn"):
+                if key in text:
+                    return key
+        return "?"
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        key = _key(messages)
+        model_calls[key] = model_calls.get(key, 0) + 1
+        if model_calls[key] == 1:
+            return {"content": "```python\nprint('rows', 3)\n```", "usage": {}}
+        return {
+            "content": "```python\nhost.submit_output({'rows': 3}, ['counted'])\n```",
+            "usage": {},
+        }
+
+    def fake_execute(state, code, origin, emit, stream=True, language="python"):
+        key = state.root_frame_id
+        cells[key] = cells.get(key, 0) + 1
+        if "submit_output" in code:
+            state.dispatcher.last_output = {
+                "output": {"rows": 3},
+                "completion_bullets": ["counted"],
+            }
+        return {"result": {"stdout": "rows 3\n", "stderr": "", "error": None}}
+
+    client.runner.cfg.max_turns = 4
+    monkeypatch.setattr(client.runner, "_ensure_runtime", ensure_runtime)
+    monkeypatch.setattr(client.runner, "_spawn_title_summary", lambda *a, **k: None)
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(client.runner, "_execute_and_log", fake_execute)
+    return model_calls, cells
+
+
+def _drain(client):
+    for job in list(client.runner._jobs.values()):
+        assert job.done.wait(20), "a turn did not finish"
+
+
+def test_a_turn_whose_accepted_write_failed_still_runs_exactly_once(
+    client, monkeypatch
+):
+    """The injected fault the report names: the worker started, the write
+    that records it did not. The same key sent again must not start a second
+    turn, and the turn that did run costs what one clean submit costs."""
+    model_calls, cells = _scripted_turns(client, monkeypatch)
+
+    # The baseline: one clean receipted submit, in its own session.
+    baseline = client.runner.create_session(client.project_id)
+    status, body = client.post(
+        f"/frames/{baseline}/message",
+        {
+            "request": "baseline turn",
+            "wait": False,
+            "client_request_id": _rid("baseline"),
+        },
+    )
+    assert status == 202, body
+    _drain(client)
+    # A real, completed turn: one Cell, then the completion Cell.
+    assert model_calls.get("baseline turn") == 2, model_calls
+    assert cells.get(baseline) == 2, cells
+    assert client.runner._jobs and all(
+        (job.result or {}).get("status") == "completed"
+        for job in client.runner._jobs.values()
+    ), [job.result for job in client.runner._jobs.values()]
+
+    # The fault: `accept` raises once the worker is already running.
+    repo = client.store.message_admissions
+    real_accept = repo.accept
+    accept_attempts: list = []
+
+    def _accept_fails(**kwargs):
+        accept_attempts.append(kwargs)
+        raise sqlite3.OperationalError("disk I/O error")
+
+    repo.accept = _accept_fails
+    submits = _count_submits(client)
+    rid = _rid("faulted")
+    try:
+        status, first = client.message(
+            "faulted turn", wait=False, client_request_id=rid
+        )
+        assert status == 202, first
+        assert first["admission_state"] == "accepted"
+        # The client lost that answer and sends the same request again,
+        # once while the turn runs and once after it finished.
+        status, again = client.message(
+            "faulted turn", wait=False, client_request_id=rid
+        )
+        assert status == 202, again
+        assert again["replayed"] is True
+        assert again["execution_id"] == first["execution_id"]
+        _drain(client)
+        status, late = client.message("faulted turn", wait=False, client_request_id=rid)
+        assert status == 202, late
+        assert late["execution_id"] == first["execution_id"]
+    finally:
+        repo.accept = real_accept
+        submits.stop()
+    _drain(client)
+
+    assert accept_attempts, "the fault never fired"
+    assert len(submits.calls) == 1, submits.calls
+    assert _row(client, rid)["state"] == "pending", "the fault did not hold"
+    assert model_calls["faulted turn"] == model_calls["baseline turn"]
+    assert cells[client.frame_id] == cells[baseline]
+    # This daemon remembers what the row could not record.
+    status, receipt = _receipt(client, rid)
+    assert status == 200 and receipt["admission_state"] == "accepted", receipt
+    assert receipt["execution_id"] == first["execution_id"]
+
+    # After a restart, nothing remembers it: the honest answer is that
+    # nobody knows, never "not accepted" (which invites a second run).
+    client.runner._owner_instance_id = "daemon-after-the-restart"
+    client.runner.message_receipts_local = receipts.LocalOutcomes()
+    status, receipt = _receipt(client, rid)
+    assert status == 200 and receipt["admission_state"] == "indeterminate", receipt
+
+
+def test_a_receipt_outlives_the_in_memory_ticket_and_a_re_pin(client):
+    """A turn's receipt is durable: the job registry forgetting the job and
+    the session being re-pinned afterwards do not change what the receipt
+    says the turn was admitted under -- its job, branch and model pair."""
+    _state, finish = _hold_the_head(client)
+    rid = _rid("durable")
+    try:
+        status, first = client.message("plot it", wait=False, client_request_id=rid)
+        assert status == 202
+    finally:
+        finish()
+    _drain(client)
+    client.runner._jobs.clear()
+    client.store.update_frame(
+        client.frame_id, model_profile_id="prof-later", model_profile_revision=9
+    )
+    status, receipt = _receipt(client, rid)
+    assert status == 200, receipt
+    assert receipt["admission_state"] == "accepted"
+    assert receipt["job_id"] == first["job_id"]
+    assert receipt["model_binding"] == first["model_binding"]
+    branch = receipt["branch_id"]
+    assert branch, receipt
+    status, replay = client.message("plot it", wait=False, client_request_id=rid)
+    assert status == 202, replay
+    assert replay["branch_id"] == branch
+    assert replay["model_binding"] == first["model_binding"]
+    assert replay["queue_position"] is None, "a finished turn is not queued"
+
+
+# ---- the repository on its own -----------------------------------------------
+
+
+def test_the_repository_claims_once_and_only_moves_out_of_pending(client):
+    repo = client.store.message_admissions
+    key = {
+        "root_frame_id": client.frame_id,
+        "initiator": "",
+        "client_request_id": _rid("repo"),
+    }
+    created, row = repo.claim(**key, request_digest="a" * 64, daemon_instance="d1")
+    assert created and row["state"] == "pending"
+    again, row2 = repo.claim(**key, request_digest="b" * 64, daemon_instance="d2")
+    assert not again
+    assert row2["request_digest"] == "a" * 64 and row2["daemon_instance"] == "d1"
+
+    correlation = dict(
+        job_id="job-1",
+        request_id="req-1",
+        execution_id="exec-1",
+        branch_id="br-1",
+        model_profile_id="",
+        model_profile_revision=0,
+    )
+    assert repo.correlate(**key, **correlation)
+    # Once only: a correlated row is not re-pointed.
+    assert not repo.correlate(**key, **{**correlation, "job_id": "job-2"})
+    assert not repo.accept(**key, job_id="job-2")
+    assert repo.accept(**key, job_id="job-1")
+    # Terminal: neither a refusal nor a second accept rewrites it.
+    assert not repo.refuse(**key, code="late", status=500)
+    assert not repo.accept(**key, job_id="job-1")
+    assert repo.get(**key)["state"] == "accepted"
+
+
+def test_the_repository_bounds_what_a_row_may_hold(client):
+    repo = client.store.message_admissions
+    with pytest.raises(ValueError):
+        repo.claim(
+            root_frame_id=client.frame_id,
+            initiator="",
+            client_request_id="Z" * 32,
+            request_digest="a" * 64,
+            daemon_instance="d",
+        )
+    with pytest.raises(ValueError):
+        repo.claim(
+            root_frame_id=client.frame_id,
+            initiator="u" * 129,
+            client_request_id=_rid("bound"),
+            request_digest="a" * 64,
+            daemon_instance="d",
+        )
+    key = {
+        "root_frame_id": client.frame_id,
+        "initiator": "",
+        "client_request_id": _rid("bound"),
+    }
+    repo.claim(**key, request_digest="a" * 64, daemon_instance="d")
+    with pytest.raises(ValueError):
+        repo.correlate(
+            **key,
+            job_id="j" * 129,
+            request_id="r",
+            execution_id="e",
+            branch_id="b",
+            model_profile_id="",
+            model_profile_revision=0,
+        )
+    assert repo.refuse(**key, code="c" * 500, status=400)
+    assert len(repo.get(**key)["refusal_code"]) == receipts.MAX_CODE_CHARS
+
+
+def test_a_receipt_is_not_agent_readable(client):
+    with pytest.raises(PermissionError):
+        client.store.query("SELECT * FROM message_admissions")
+
+
+def test_the_digest_is_over_the_normalized_client_input_only():
+    base = dict(
+        request="plot it",
+        mentions=[{"filename": "a.csv", "version_id": "v-abcdef123456"}],
+        model=None,
+        plan=False,
+        explore=False,
+        task_mode=None,
+    )
+    digest = receipts.request_digest(**base)
+    assert digest == receipts.request_digest(**{**base, "model": ""})
+    assert digest == receipts.request_digest(**{**base, "task_mode": "  "})
+    assert digest != receipts.request_digest(**{**base, "request": "plot it "})
+    assert digest != receipts.request_digest(**{**base, "mentions": []})
+    assert len(digest) == 64
+
+
+def test_only_the_identity_that_sent_can_read_its_receipt(tmp_path, monkeypatch):
+    """Team mode, over a real socket. Session read access is not enough: an
+    admin may read the session and a member may not, and both are told 404
+    for the receipt, because the key includes who sent it."""
+    from openai4s.storage import team as team_mod
+    from tests.test_team_auth_routes import _get, _login, _post, _TeamDaemon
+
+    monkeypatch.setattr(team_mod, "PBKDF2_ITERATIONS", 1200)
+    node = _TeamDaemon(tmp_path)
+    try:
+        alice = node.seed_user("alice", "fake-pw-a")
+        node.seed_user("bob", "fake-pw-b")
+        node.seed_user("root", "fake-pw-r", role="admin")
+        node.store.create_project(name="p", description="", context="")
+        project_id = str(node.store.list_projects()[0]["project_id"])
+
+        def _json_body(raw):
+            return json.loads(raw.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+
+        a = _login(node, "alice", "fake-pw-a")
+        status, raw = _post(
+            node.port, "/api/v1/frames", {"project_id": project_id}, cookie=a
+        )
+        assert status == 200, raw[:300]
+        fid = _json_body(raw).get("frame_id") or _json_body(raw).get("id")
+        rid = _rid("team")
+        status, raw = _post(
+            node.port,
+            f"/api/v1/frames/{fid}/message",
+            {"request": "plot it", "wait": False, "client_request_id": rid},
+            cookie=a,
+        )
+        assert status == 202, raw[:400]
+        path = f"/api/v1/frames/{fid}/message-admissions/{rid}"
+
+        status, raw = _get(node.port, path, cookie=a)
+        assert status == 200, raw[:300]
+        assert _json_body(raw)["admission_state"] in ("accepted", "pending")
+        row = node.store.message_admissions.get(
+            root_frame_id=fid, initiator=str(alice["id"]), client_request_id=rid
+        )
+        assert row is not None, "the key is not the sender's identity"
+
+        root = _login(node, "root", "fake-pw-r")
+        # The positive control: the admin can read the session itself.
+        assert _get(node.port, f"/api/v1/frames/{fid}", cookie=root)[0] == 200
+        assert _get(node.port, path, cookie=root)[0] == 404
+        bob = _login(node, "bob", "fake-pw-b")
+        assert _get(node.port, path, cookie=bob)[0] == 404
+    finally:
+        for job in list(node.runner._jobs.values()):
+            job.done.wait(20)
+        node.close()
