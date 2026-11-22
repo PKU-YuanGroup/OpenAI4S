@@ -1,14 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const viewer = vi.hoisted(() => ({ open: vi.fn(), dock: vi.fn() }));
-vi.mock("../artifacts/ui", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../artifacts/ui")>()),
-  openViewer: viewer.open,
-  dockOpen: viewer.dock,
+const viewer = vi.hoisted(() => ({
+  open: vi.fn(),
+  dock: vi.fn(),
+  link: vi.fn(),
+  realLink: null as null | ((...args: unknown[]) => Promise<void>),
 }));
+vi.mock("../artifacts/ui", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../artifacts/ui")>();
+  viewer.realLink = actual.applyArtifactDeepLink as (...args: unknown[]) => Promise<void>;
+  return {
+    ...actual,
+    openViewer: viewer.open,
+    dockOpen: viewer.dock,
+    applyArtifactDeepLink: (...args: unknown[]) => viewer.link(...args),
+  };
+});
 
 import { setLang, t } from "../../i18n/runtime";
+import { dockArtifact } from "../../stores/artifacts";
 import { resetStoreFields } from "../../stores/signal-field";
+import { setArtifactsFetch } from "../artifacts/api";
+import { jsonResponse } from "../artifacts/http-stub";
+import { viewerVersionState } from "../artifacts/state";
+import type { ArtifactRow } from "../artifacts/types";
 import { startStream } from "../messages/stream";
 import { addLiveStep, buildStepCard, relabelStepCards, renderStoredStep, updateLiveStep } from "./step";
 
@@ -87,6 +102,14 @@ class El {
     if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
     this.parent = null;
   }
+  replaceWith(node: El): void {
+    const parent = this.parent;
+    if (!parent) return;
+    node.remove();
+    parent.children.splice(parent.children.indexOf(this), 1, node);
+    node.parent = parent;
+    this.parent = null;
+  }
   contains(node: El | null): boolean {
     for (let cur = node; cur; cur = cur.parent) if (cur === this) return true;
     return false;
@@ -117,6 +140,8 @@ beforeEach(async () => {
   resetStoreFields();
   viewer.open.mockReset();
   viewer.dock.mockReset();
+  viewer.link.mockReset();
+  setArtifactsFetch(null);
   const body = new El("body");
   hintBox = body.appendChild(new El("div"));
   messages = body.appendChild(new El("div"));
@@ -279,24 +304,24 @@ describe("opening a session whose turn is still running", () => {
 
 describe("artifact step card", () => {
   it("reports a viewer that fails to open instead of leaving the rejection unhandled", async () => {
-    viewer.open.mockReturnValue(Promise.reject(new Error("version lookup failed")));
+    viewer.link.mockReturnValue(Promise.reject(new Error("version lookup failed")));
     const handle = buildStepCard({
       step_id: "s-1",
       kind: "artifact",
       status: "done",
-      output: { artifacts: [{ filename: "fig.png", artifact_id: "a-1" }] },
+      output: { artifacts: [{ filename: "fig.png", artifact_id: "a-1", version_id: "v-1" }] },
     });
     // A figure opens from its thumbnail (its name is the caption, not also a list row).
     const name = (handle.card as unknown as El).querySelector(".s-fig")!;
     name.onclick!();
     await settle();
     expect(viewer.dock).toHaveBeenCalledTimes(1);
-    expect(viewer.open).toHaveBeenCalledWith(expect.objectContaining({ id: "a-1", filename: "fig.png" }));
+    expect(viewer.link).toHaveBeenCalledWith({ artifactId: "a-1", versionId: "v-1" });
     expect(hintBox.textContent).toContain(t("toast.failed", "version lookup failed"));
   });
 
   it("shows and opens the version this step produced, not the latest (ART-4)", async () => {
-    viewer.open.mockReturnValue(Promise.resolve());
+    viewer.link.mockReturnValue(Promise.resolve());
     const handle = buildStepCard({
       step_id: "s-2",
       kind: "artifact",
@@ -309,9 +334,8 @@ describe("artifact step card", () => {
     const name = card.querySelector(".s-fig")!;
     name.onclick!();
     await settle();
-    expect(viewer.open).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "a-9", version_id: "v-old", _exactVersion: true }),
-    );
+    expect(viewer.link).toHaveBeenCalledWith({ artifactId: "a-9", versionId: "v-old" });
+    expect(viewer.open).not.toHaveBeenCalled();
   });
 
   it("names each saved file once: figures by their caption, the rest in the list (CHAT-8)", () => {
@@ -566,5 +590,157 @@ describe("a loaded Skill's network limit", () => {
     }).card as unknown as El;
     expect(card.querySelector(".s-meta")!.textContent).toBe("loaded");
     expect(card.classes.has("s-net-limited")).toBe(false);
+  });
+});
+
+describe("NV-02 a step card opens the version it recorded", () => {
+  type Versions = Record<string, { status?: number; body: unknown }>;
+  const HISTORY: Versions = {
+    "a-fig": {
+      body: {
+        versions: [
+          { version_id: "v-2", filename: "fig.png", is_latest: true, ordinal: 2 },
+          { version_id: "v-1", filename: "fig.png", is_latest: false, ordinal: 1 },
+        ],
+      },
+    },
+    "a-csv": { body: { versions: [{ version_id: "c-1", filename: "table.csv", is_latest: true, ordinal: 1 }] } },
+  };
+
+  /** The server's `/artifacts/{id}/versions`, with optional held answers. */
+  function serveVersions(table: Versions, held: Record<string, Promise<void>> = {}): string[] {
+    const requested: string[] = [];
+    setArtifactsFetch(async (url: string) => {
+      requested.push(url);
+      const id = decodeURIComponent((/\/artifacts\/([^/]+)\/versions$/.exec(url) || [])[1] || "");
+      if (held[id]) await held[id];
+      const row = table[id];
+      return jsonResponse(row ? row.body : { versions: [] }, row?.status ?? 200);
+    });
+    return requested;
+  }
+
+  async function drain(): Promise<void> {
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function docked(): ArtifactRow {
+    return dockArtifact.value as ArtifactRow;
+  }
+
+  let cards = 0;
+  function artifactCard(artifacts: Array<Record<string, unknown>>, stored = true): El {
+    const step = { step_id: `nv-${++cards}`, kind: "artifact", status: "done", output: { artifacts } };
+    return (stored ? renderStoredStep(step) : buildStepCard(step).card) as unknown as El;
+  }
+
+  beforeEach(() => {
+    viewer.link.mockImplementation((...args: unknown[]) => viewer.realLink!(...args));
+    viewerVersionState.value = null;
+  });
+
+  afterEach(() => {
+    setArtifactsFetch(null);
+  });
+
+  it("a reopened or live card, its figure and its file read V1 while the head is V2", async () => {
+    serveVersions(HISTORY);
+    const recorded = [
+      { filename: "fig.png", artifact_id: "a-fig", version_id: "v-1" },
+      { filename: "table.csv", artifact_id: "a-csv", version_id: "c-1" },
+    ];
+    const stored = artifactCard(recorded);
+    expect((stored.querySelector("img") as unknown as { src: string }).src).toBe("/api/v1/artifacts/versions/v-1");
+    stored.querySelector(".s-fig")!.onclick!();
+    await drain();
+    expect(docked()).toMatchObject({ id: "a-fig", version_id: "v-1", filename: "fig.png", _exactVersion: true });
+    expect(viewerVersionState.value?.status).toBe("exact");
+    stored.querySelector(".s-fn")!.onclick!();
+    await drain();
+    expect(docked()).toMatchObject({ id: "a-csv", version_id: "c-1", _exactVersion: true });
+
+    // The live turn's card is the same card.
+    const live = startStream() as unknown as { wrap: El };
+    addLiveStep({ step_id: "nv-live", kind: "artifact", status: "running", input: { files: ["fig.png"] } });
+    updateLiveStep({ step_id: "nv-live", status: "done", output: { artifacts: recorded.slice(0, 1) } });
+    const card = live.wrap.querySelector(".step")!;
+    expect((card.querySelector("img") as unknown as { src: string }).src).toBe("/api/v1/artifacts/versions/v-1");
+    card.querySelector(".s-fig")!.onclick!();
+    await drain();
+    expect(docked()).toMatchObject({ id: "a-fig", version_id: "v-1", _exactVersion: true });
+  });
+
+  it("a card that recorded no version says so and neither shows nor opens the head", async () => {
+    const requested = serveVersions(HISTORY);
+    const card = artifactCard([
+      { filename: "fig.png", artifact_id: "a-fig" },
+      { filename: "table.csv", artifact_id: "a-csv" },
+    ]);
+    expect(card.querySelector("img")).toBeNull();
+    expect(card.querySelector(".s-fig-note")!.textContent).toBe("Historical version not recorded");
+    expect(card.querySelector(".s-fig-cap")!.textContent).toBe("fig.png");
+    card.querySelector(".s-fig")!.onclick!();
+    expect(hintBox.textContent).toBe("Historical version not recorded");
+    hintBox.textContent = "";
+    card.querySelector(".s-fn")!.onclick!();
+    expect(hintBox.textContent).toBe("Historical version not recorded");
+    await drain();
+    expect(viewer.link).not.toHaveBeenCalled();
+    expect(viewer.dock).not.toHaveBeenCalled();
+    expect(requested).toEqual([]);
+
+    await setLang("zh");
+    const zh = artifactCard([{ filename: "fig.png", artifact_id: "a-fig" }], false);
+    expect(zh.querySelector(".s-fig-note")!.textContent).toBe("历史版本未记录");
+  });
+
+  it("an image whose version cannot be read says so instead of a broken image", () => {
+    const card = artifactCard([{ filename: "fig.png", artifact_id: "a-fig", version_id: "v-gone" }]);
+    const img = card.querySelector("img") as unknown as { onerror: () => void };
+    img.onerror();
+    expect(card.querySelector("img")).toBeNull();
+    expect(card.querySelector(".s-fig-note")!.textContent).toBe("This version's image could not be shown.");
+    expect(card.querySelector(".s-fig-cap")!.textContent).toBe("fig.png");
+  });
+
+  it("a missing or unreadable version shows the missing-version state, never the head", async () => {
+    serveVersions({
+      ...HISTORY,
+      "a-private": { status: 403, body: { error: "artifact belongs to another session" } },
+    });
+    artifactCard([{ filename: "fig.png", artifact_id: "a-fig", version_id: "v-deleted" }])
+      .querySelector(".s-fig")!
+      .onclick!();
+    await drain();
+    expect(viewerVersionState.value).toMatchObject({ status: "stale", versionId: "v-deleted", latestVersionId: "v-2" });
+    expect(docked().version_id).toBeUndefined();
+
+    // Gone and not this reader's cannot be told apart: one answer for both.
+    for (const artifactId of ["a-unknown", "a-private"]) {
+      artifactCard([{ filename: "x.png", artifact_id: artifactId, version_id: "v-x" }])
+        .querySelector(".s-fig")!
+        .onclick!();
+      await drain();
+      expect(viewerVersionState.value).toMatchObject({ status: "not-found", artifactId, versionId: "v-x" });
+      expect(docked()).toEqual({ id: artifactId, artifact_id: artifactId });
+    }
+  });
+
+  it("a late answer for an earlier click does not replace the newer view", async () => {
+    let release!: () => void;
+    serveVersions(HISTORY, { "a-fig": new Promise<void>((resolve) => (release = resolve)) });
+    const card = artifactCard([
+      { filename: "fig.png", artifact_id: "a-fig", version_id: "v-1" },
+      { filename: "table.csv", artifact_id: "a-csv", version_id: "c-1" },
+    ]);
+    card.querySelector(".s-fig")!.onclick!();
+    await drain();
+    card.querySelector(".s-fn")!.onclick!();
+    await drain();
+    expect(docked()).toMatchObject({ id: "a-csv", version_id: "c-1" });
+    release();
+    await drain();
+    expect(docked()).toMatchObject({ id: "a-csv", version_id: "c-1" });
+    expect(viewerVersionState.value).toMatchObject({ status: "exact", versionId: "c-1" });
   });
 });
