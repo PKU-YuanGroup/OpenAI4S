@@ -556,6 +556,27 @@ the backup list, and `builtin` keeps only the keyless engines as backups.
 Doubao is not a backup: whenever an Agent Plan key is stored (an Ark Agent Plan
 model key counts) it is tried before the backups, whichever one is chosen.
 
+**CLI language.** `openai4s init`, `openai4s doctor` and `openai4s setup` print
+their prose in Chinese or English; the other subcommands are English for now.
+`OPENAI4S_LANG` decides when it is set: `zh` (also `zh_CN`, `zh-CN`,
+`zh_CN.UTF-8`) or `en`, and any other value means English. Unset, the locale
+decides: the first non-empty one of `LC_ALL`, `LC_MESSAGES` and `LANG`, so a
+`zh_CN.UTF-8` terminal gets Chinese. No locale, `C`/`POSIX`, or another
+language gets English; the variables are only read, nothing asks the
+operating system. Only the prose changes: `--json` output (always English,
+byte for byte), exit codes, command names, flags, environment variable names,
+paths and package names are the same in both languages. Messages another
+component raises (an exception, the sandbox's own reason) are printed as
+raised.
+
+**CLI 语言。** `openai4s init`、`openai4s doctor` 和 `openai4s setup` 的说明文字可以用中文或
+英文输出；其他子命令暂时仍是英文。设置了 `OPENAI4S_LANG` 时以它为准：`zh`（也接受 `zh_CN`、
+`zh-CN`、`zh_CN.UTF-8`）或 `en`，其他值一律按英文。未设置时看系统区域设置：`LC_ALL`、
+`LC_MESSAGES`、`LANG` 中第一个非空的那个决定，所以 `zh_CN.UTF-8` 的终端会得到中文；没有区域
+设置、`C`/`POSIX` 或其他语言都按英文。这里只读取环境变量，不会去询问操作系统。变的只有说明文字：
+`--json` 输出（始终是英文，逐字节不变）、退出码、命令名、参数、环境变量名、路径和包名在两种语言下
+都一样。其他组件抛出的消息（异常、沙箱自己给出的原因）按原样输出。
+
 ## Platform support
 
 The native runtime is supported on Linux and macOS. The current

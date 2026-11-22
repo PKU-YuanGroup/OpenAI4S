@@ -1104,7 +1104,12 @@ def cmd_doctor(args) -> int:
     grepping prose.
     """
     from openai4s import doctor
+    from openai4s.cli.lang import cli_language
 
+    # CLI-35: the human form speaks `OPENAI4S_LANG` / the locale's language;
+    # `--json` is a machine interface and stays English, byte for byte.
+    as_json = bool(getattr(args, "json", False))
+    language = "en" if as_json else cli_language()
     # `--network` is the one switch for everything that leaves this machine:
     # the built-in science hosts (one HEAD each) and one small authenticated
     # request that confirms the API key and the model id with the provider.
@@ -1112,14 +1117,17 @@ def cmd_doctor(args) -> int:
     # reading "All checks passed" beside a key the provider would refuse.
     if getattr(args, "network", False):
         result = doctor.report(
-            _doctor_config(), network=True, live_model=doctor.send_test_request
+            _doctor_config(),
+            network=True,
+            live_model=doctor.send_test_request,
+            language=language,
         )
     else:
-        result = doctor.report(_doctor_config())
-    if getattr(args, "json", False):
+        result = doctor.report(_doctor_config(), language=language)
+    if as_json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
-        print(doctor.render(result))
+        print(doctor.render(result, language=language))
     return {doctor.OK: 0, doctor.WARN: 1, doctor.FAIL: 2}[result["status"]]
 
 
@@ -2303,26 +2311,16 @@ def _onboarding_service():
     return OnboardingService(cfg, store, PROVIDERS), store
 
 
-def _prompt_search() -> tuple[str | None, str]:
+def _prompt_search(say) -> tuple[str | None, str]:
     """Interactive init's one web-search decision; (None, "") keeps the setup."""
 
     # Doubao is not one of the backups: whenever an Agent Plan key is stored
     # (an Ark Agent Plan model key counts) it is tried before them, whatever is
     # picked here. Item 4 said "built-in keyless engines only" and the run then
     # said "Web search: Doubao, then builtin".
-    print(
-        "Web search (Doubao is tried before the backups whenever an Agent Plan "
-        "key is stored, an Ark Agent Plan model key included; 2-5 choose the "
-        "backups):"
-    )
-    print(
-        "  1) Doubao (Agent Plan key)  2) Tavily first (API key)  "
-        "3) You.com first (free; key optional)"
-    )
-    print(
-        "  4) backups: built-in keyless engines only (Doubao, if configured, "
-        "is still tried first)  5) Parallel first (keyless)"
-    )
+    print(say("init.search.title"))
+    print(say("init.search.menu1"))
+    print(say("init.search.menu2"))
     choices = {
         "1": "doubao",
         "2": "tavily",
@@ -2333,31 +2331,25 @@ def _prompt_search() -> tuple[str | None, str]:
     # Asked again on anything else: `9` used to be read as "keep the current
     # setup", and the run ended "Configured ..." with no web-search line.
     while True:
-        answer = input("Choose 1-5, or press Enter to keep the current setup: ")
+        answer = input(say("init.search.choose"))
         answer = answer.strip()
         if not answer:
             return None, ""
         choice = choices.get(answer)
         if choice is not None:
             break
-        print("  enter a number from 1 to 5, or press Enter to keep the current setup")
-    if choice == "doubao":
-        return choice, getpass.getpass("Agent Plan key (input hidden): ")
-    if choice == "tavily":
-        return choice, getpass.getpass("Tavily API key (input hidden): ")
-    if choice == "you":
-        return choice, getpass.getpass(
-            "You.com API key (optional; Enter for the free tier, input hidden): "
-        )
+        print(say("init.search.again"))
+    if choice in _INIT_KEYED_SEARCH:
+        return choice, getpass.getpass(say(f"init.search.key.{choice}"))
     return choice, ""
 
 
-def _prompt_value(label: str, default: str) -> str:
-    suffix = f" [{default}]" if default else ""
-    return input(f"{label}{suffix}: ").strip() or default
+def _prompt_value(label: str, default: str, say) -> str:
+    suffix = say("init.prompt_default", default=default) if default else ""
+    return input(say("init.prompt", label=label, default=suffix)).strip() or default
 
 
-def _prompt_yes_no(question: str) -> bool:
+def _prompt_yes_no(question: str, say) -> bool:
     """y/yes, or n/no/Enter; anything else is asked again.
 
     `maybe` used to count as no, silently, and the run went on to store no key.
@@ -2368,23 +2360,22 @@ def _prompt_yes_no(question: str) -> bool:
             return False
         if answer in {"y", "yes"}:
             return True
-        print("  answer y or n")
+        print(say("init.answer_y_or_n"))
 
 
-#: What each built-in provider id selects, under the name the README and the
-#: workbench give the same choice. The wizard listed bare ids, so someone
-#: holding a DeepSeek, vLLM or OpenRouter key had nothing to tell them that
-#: `chatgpt` is the "OpenAI-compatible" protocol.
+#: Each built-in provider id under the name the README and the workbench give
+#: the same choice; what speaks it is `init.what.<id>` in the CLI's phrase
+#: table (`cli/lang.py`). The wizard listed bare ids, so someone holding a
+#: DeepSeek, vLLM or OpenRouter key had nothing to tell them that `chatgpt` is
+#: the "OpenAI-compatible" protocol. A name is what a person types, so it is
+#: the same in every language.
 _INIT_PROVIDER_NAMES = {
-    "ark": ("Ark-compatible", "Volcengine Ark: Doubao, GLM, Kimi, DeepSeek"),
-    "chatgpt": (
-        "OpenAI-compatible",
-        "/chat/completions: OpenAI, DeepSeek, vLLM, OpenRouter, ...",
-    ),
-    "openai_responses": ("OpenAI Responses", "OpenAI /responses"),
-    "claude": ("Anthropic-compatible", "Anthropic /v1/messages"),
-    "gemini": ("Gemini-compatible", "Google generateContent"),
-    "ollama": ("Ollama", "cloud or local models"),
+    "ark": "Ark-compatible",
+    "chatgpt": "OpenAI-compatible",
+    "openai_responses": "OpenAI Responses",
+    "claude": "Anthropic-compatible",
+    "gemini": "Gemini-compatible",
+    "ollama": "Ollama",
 }
 #: The vendor names people type for a protocol.
 _INIT_PROVIDER_ALIASES = {
@@ -2404,20 +2395,22 @@ def _init_provider_id(value, providers) -> str | None:
     if text in providers:
         return text
     folded = re.sub(r"[\s_]+", "-", text)
-    for provider, (name, _what) in _INIT_PROVIDER_NAMES.items():
+    for provider, name in _INIT_PROVIDER_NAMES.items():
         if folded in (provider.replace("_", "-"), name.lower().replace(" ", "-")):
             return provider if provider in providers else None
     alias = _INIT_PROVIDER_ALIASES.get(folded)
     return alias if alias in providers else None
 
 
-def _init_provider_lines(providers) -> list[str]:
+def _init_provider_lines(providers, say) -> list[str]:
     """One line per provider: its id, its UI name, and what speaks it."""
     lines = []
-    for provider in _INIT_PROVIDER_NAMES:
+    for provider, name in _INIT_PROVIDER_NAMES.items():
         if provider in providers:
-            name, what = _INIT_PROVIDER_NAMES[provider]
-            lines.append(f"  {provider:<17} {name} ({what})")
+            what = say(f"init.what.{provider}")
+            lines.append(
+                say("init.provider_line", provider=provider, name=name, what=what)
+            )
     lines.extend(
         f"  {provider}"
         for provider in sorted(providers)
@@ -2427,6 +2420,11 @@ def _init_provider_lines(providers) -> list[str]:
 
 
 def cmd_init(args) -> int:
+    from openai4s.cli.lang import phrases, service_refusal
+
+    # One language for the whole run (CLI-35): `OPENAI4S_LANG`, else the
+    # locale. Only the prose follows it; `--json` and the exit code do not.
+    say = phrases()
     service, store = _onboarding_service()
     try:
         if args.provider:
@@ -2436,19 +2434,21 @@ def cmd_init(args) -> int:
             )
         defaults = service.defaults(args.provider)
         if args.api_key_stdin and args.search_key_stdin:
-            raise ValueError(
-                "stdin carries one key per run: use --api-key-stdin or "
-                "--search-key-stdin, not both"
-            )
+            raise ValueError(say("init.one_key_per_run"))
         if args.search_key_stdin and args.search not in _INIT_KEYED_SEARCH:
             # Refused before anything is read or saved. The piped key used to
             # be read and dropped, and the run still ended "Configured ...",
             # exit 0, with no web-search line to show nothing had happened.
             raise ValueError(
-                "--search-key-stdin needs --search "
-                + "|".join(_INIT_KEYED_SEARCH)
-                + " to say which engine the key is for"
-                + (f" (--search {args.search} takes no key)" if args.search else "")
+                say(
+                    "init.search_key_needs_engine",
+                    engines="|".join(_INIT_KEYED_SEARCH),
+                )
+                + (
+                    say("init.search_takes_no_key", choice=args.search)
+                    if args.search
+                    else ""
+                )
             )
         interactive = (
             not args.non_interactive
@@ -2465,12 +2465,7 @@ def cmd_init(args) -> int:
             # `echo | openai4s init`, `docker exec` without -t, ssh without a
             # tty: the guided command asked nothing and saved the defaults as
             # if they had been chosen, without a word.
-            print(
-                "note: stdin is not a terminal, so no questions are asked; "
-                "saving the options given and the provider defaults, as "
-                "--non-interactive does",
-                file=sys.stderr,
-            )
+            print(say("init.not_a_terminal"), file=sys.stderr)
         provider = args.provider or defaults["provider"]
         model = args.model
         base_url = args.base_url
@@ -2478,29 +2473,33 @@ def cmd_init(args) -> int:
 
         if interactive:
             known = ", ".join(sorted(service.providers))
-            print("OpenAI4S first-run setup")
-            print("Providers (type the id on the left, or the name beside it):")
-            for line in _init_provider_lines(service.providers):
+            print(say("init.title"))
+            print(say("init.providers"))
+            for line in _init_provider_lines(service.providers, say):
                 print(line)
             # Asked again until it names a provider this build has. A typo used
             # to be carried through every later question -- each showing the
             # *current* provider's defaults -- and refused only at the end,
             # with every answer discarded.
             while True:
-                typed = _prompt_value("Provider", provider).lower()
+                typed = _prompt_value(say("init.label.provider"), provider, say).lower()
                 chosen = _init_provider_id(typed, service.providers)
                 if chosen is not None:
                     break
-                print(f"  unknown provider {typed!r}; enter one of: {known}")
+                print(say("init.unknown_provider", typed=typed, known=known))
             if chosen != typed:
-                print(f"  using provider {chosen}")
+                print(say("init.using_provider", provider=chosen))
             provider = chosen
             defaults = service.defaults(provider)
-            model = model or _prompt_value("Model", defaults["model"])
-            base_url = base_url or _prompt_value("Base URL", defaults["base_url"])
+            model = model or _prompt_value(
+                say("init.label.model"), defaults["model"], say
+            )
+            base_url = base_url or _prompt_value(
+                say("init.label.base_url"), defaults["base_url"], say
+            )
             if not args.clear_api_key:
-                if _prompt_yes_no("Configure an API key now? [y/N]: "):
-                    api_key = getpass.getpass("API key (input hidden): ")
+                if _prompt_yes_no(say("init.ask_api_key"), say):
+                    api_key = getpass.getpass(say("init.api_key"))
         elif args.api_key_stdin:
             api_key = sys.stdin.readline().rstrip("\r\n")
 
@@ -2514,7 +2513,7 @@ def cmd_init(args) -> int:
 
         search_choice, search_key = args.search, ""
         if interactive and not search_choice:
-            search_choice, search_key = _prompt_search()
+            search_choice, search_key = _prompt_search(say)
         elif args.search_key_stdin:
             search_key = sys.stdin.readline().rstrip("\r\n")
         search = None
@@ -2527,10 +2526,11 @@ def cmd_init(args) -> int:
     except EOFError:
         # Ctrl-D, or a pipe that ran dry, at a question that now repeats until
         # it is answered: end the wizard instead of looping or tracing back.
-        print("\nerror: input ended before setup was finished", file=sys.stderr)
+        print("\n" + say("error", message=say("init.input_ended")), file=sys.stderr)
         return 1
     except (OSError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        message = service_refusal(str(exc), say)
+        print(say("error", message=message), file=sys.stderr)
         return 1
     finally:
         store.close()
@@ -2553,19 +2553,23 @@ def cmd_init(args) -> int:
         # which tests/test_onboarding.py asserts against a live secret.
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print(f"Configured {result.provider} / {result.model}")
-        print(f"Settings stored in {result.data_dir}")
+        print(say("init.configured", provider=result.provider, model=result.model))
+        print(say("init.stored_in", data_dir=result.data_dir))
         if needs_api_key:
-            print("No API key stored; add one in Settings → Models after launch.")
+            print(say("init.no_api_key"))
         if search is not None:
             backups = [e["id"] for e in search["engines"] if e["usable"]]
-            lead = "Doubao, then " if search["doubao_configured"] else ""
-            print(f"Web search: {lead}{' → '.join(backups)}")
+            lead = (
+                say("init.web_search_doubao_first")
+                if search["doubao_configured"]
+                else ""
+            )
+            print(say("init.web_search", lead=lead, order=" → ".join(backups)))
         if not result.native_runtime_supported:
-            print("Native Windows kernels are unsupported; run OpenAI4S under WSL2.")
+            print(say("init.no_native_windows"))
         # ./setup.sh leaves `openai4s` in .venv/bin, which is not on PATH in a
         # new terminal; ./start.sh is the launcher that works from a checkout.
-        print("Next: openai4s serve (or ./start.sh in the OpenAI4S folder)")
+        print(say("init.next"))
     return 0
 
 
@@ -2765,25 +2769,28 @@ def _update_cmd(tool: str, prefix: Path, yml: Path) -> list[str]:
 
 
 def cmd_setup(args) -> int:
+    from openai4s.cli.lang import phrases
+
+    say = phrases()  # CLI-35: one language for the whole run
     tool = _find_conda_tool()
     if not tool:
-        print("error: no conda/mamba/micromamba found on PATH.", file=sys.stderr)
-        print(
-            "       install one (e.g. micromamba) and re-run `openai4s setup`.",
-            file=sys.stderr,
-        )
+        print(say("setup.no_conda"), file=sys.stderr)
+        print(say("setup.install_conda"), file=sys.stderr)
         return 1
 
     envs_dir = _envs_dir()
     if not envs_dir.is_dir():
-        print(f"error: envs directory not found: {envs_dir}", file=sys.stderr)
+        print(say("setup.no_envs_dir", path=envs_dir), file=sys.stderr)
         return 1
 
     if args.only:
         if args.only not in _DEFAULT_ENVS:
             print(
-                f"error: unknown env '{args.only}' "
-                f"(choices: {', '.join(_DEFAULT_ENVS)})",
+                say(
+                    "setup.unknown_env",
+                    name=args.only,
+                    choices=", ".join(_DEFAULT_ENVS),
+                ),
                 file=sys.stderr,
             )
             return 1
@@ -2796,10 +2803,8 @@ def cmd_setup(args) -> int:
     existing = _existing_envs()
     update_existing = bool(getattr(args, "update", False))
 
-    print(
-        f"using '{tool}' to manage envs from {envs_dir}"
-        + (" (dry-run)" if args.dry_run else "")
-    )
+    dry_run = say("setup.dry_run") if args.dry_run else ""
+    print(say("setup.using", tool=tool, envs_dir=envs_dir, dry_run=dry_run))
     created = 0
     updated = 0
     skipped = 0
@@ -2807,17 +2812,14 @@ def cmd_setup(args) -> int:
     for name in wanted:
         yml = envs_dir / f"{name}.yml"
         if not yml.is_file():
-            print(f"  [{name}] skip: spec file missing ({yml})")
+            print(say("setup.spec_missing", name=name, yml=yml))
             failed += 1
             continue
         prefix = existing.get(name)
         if prefix is not None and not update_existing:
             # Named with its prefix: these are ordinary conda env names
             # (`python`, `r`), easily one the user already has for themselves.
-            print(
-                f"  [{name}] conda env '{name}' already exists at {prefix} — "
-                "skipping (use --update to sync it)"
-            )
+            print(say("setup.exists", name=name, prefix=prefix))
             skipped += 1
             continue
         cmd = (
@@ -2825,40 +2827,47 @@ def cmd_setup(args) -> int:
             if prefix is not None
             else _create_cmd(tool, name, yml)
         )
-        action = "update" if prefix is not None else "create"
+        command = " ".join(cmd)
         if args.dry_run:
-            where = (
-                f"at {prefix}"
-                if prefix is not None
-                else f"in {tool}'s own envs directory"
-            )
-            print(
-                f"  [{name}] would {action} conda env '{name}' {where}: "
-                f"{' '.join(cmd)}"
-            )
+            if prefix is not None:
+                print(say("setup.would_update", name=name, prefix=prefix, cmd=command))
+            else:
+                print(say("setup.would_create", name=name, tool=tool, cmd=command))
             continue
-        print(f"  [{name}] {action}… ({' '.join(cmd)})")
+        updating = prefix is not None
+        print(
+            say(
+                "setup.updating" if updating else "setup.creating",
+                name=name,
+                cmd=command,
+            )
+        )
         try:
             rc = subprocess.run(cmd).returncode
         except Exception as exc:  # noqa: BLE001
-            print(f"  [{name}] error: {exc}", file=sys.stderr)
+            print(say("setup.error", name=name, error=exc), file=sys.stderr)
             failed += 1
             continue
         if rc == 0:
-            print(f"  [{name}] {action}d")
-            if prefix is not None:
+            print(say("setup.updated" if updating else "setup.created", name=name))
+            if updating:
                 updated += 1
             else:
                 created += 1
         else:
-            print(f"  [{name}] FAILED (exit {rc})", file=sys.stderr)
+            print(say("setup.failed", name=name, rc=rc), file=sys.stderr)
             failed += 1
 
     if args.dry_run:
         return 0
     print(
-        f"done: {created} created, {updated} updated, "
-        f"{skipped} skipped, {failed} failed"
+        say(
+            "setup.done",
+            created=created,
+            updated=updated,
+            skipped=skipped,
+            failed=failed,
+        )
     )
     return 1 if failed else 0
 

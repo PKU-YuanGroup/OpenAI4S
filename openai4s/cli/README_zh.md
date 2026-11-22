@@ -15,6 +15,7 @@ CLI 只负责组合，不负责编排。`openai4s run` 用 [`../agent/`](../agen
 | 文件 | 职责 |
 | --- | --- |
 | [`__init__.py`](./__init__.py) | 重新导出 `main`，包本身就是 CLI 入口。 |
+| [`lang.py`](./lang.py) | 决定 `init`、`doctor`、`setup` 对人说话用的语言（CLI-35）：`OPENAI4S_LANG`（`zh`/`en`，也接受 `zh_CN.UTF-8` 之类）优先，否则看 `LC_ALL` → `LC_MESSAGES` → `LANG` 中第一个非空的，都没有就用英文；只读环境变量，不询问操作系统。这里放着 `init` 和 `setup` 按键索引的中英文句子表（`phrases()`），并把 onboarding 与搜索服务抛出的英文拒绝信息换成 CLI 当前的语言。`doctor` 各项检查的句子在 `openai4s/doctor.py` 自己的表里。`--json`、退出码、参数、环境变量名和路径不随语言变化。 |
 | [`main.py`](./main.py) | 一棵 argparse 树和它的 handler。在本进程内跑完的：`run`、`init`、`setup`、`env`（`plan`/`apply`/`list`/`rollback`/`recover`）、`doctor`、`diagnostics`、`verify-package`、`benchmark`、`user`（`add`/`list`/`disable`/`reset-password`，直接操作 store；密码走 `--password-stdin` 或生成后只打印一次，停用账号还会连带清掉它存下的 LLM key），以及 `jupyter` 的 describe/export/install。与 daemon 打交道的：`serve`（`--detached` 在 Linux/macOS 含 WSL2 上转入后台）、`status`、`stop`、`url`、`share` 的八个子命令，以及 `cluster`（`submit`/`list`/`cancel`/`logs`/`profiles`，走 daemon 的 orchestration 路由）；`relay serve` / `relay gen-token` 跑的是架在 VPS 上的公网 share relay，不是本机的东西。daemon 的 pidfile 与 statefile 也归它管；建环境时也是它在调 conda —— `setup --profile standard` 建日常用的 Python 与 R 这一对，`full` 建全部四个，`--only <name>` 只建一个。已有的环境除非加 `--update`，否则不动它；更新绝不会 prune 掉你自己装的包；而且更新时传的是发现逻辑真正找到的那个 prefix，而不是 spec 里的 `name:` —— 只给名字的话 conda 会拿它去解析自己的 root prefix，结果是在 Agent 根本不会用到的地方另建一个环境，还报成功。 |
 
 ## 运维契约
