@@ -24,9 +24,14 @@ import { keyPage, presetLabel } from "../../features/onboarding/presets";
 import {
   INITIAL_WIZARD,
   REQUIRED_STEPS,
+  RESUME_STEP,
+  clearResumeMarker,
   formatWizardError,
+  readResumeMarker,
   reduceWizard,
+  resolveResume,
   wizardErrorFromUnknown,
+  writeResumeMarker,
   type PathChoice,
   type PathKind,
   type RequiredStep,
@@ -596,7 +601,20 @@ export function WizardHost() {
       const next = await fetchOnboarding();
       if (!alive.current) return;
       setStatus(next);
-      dispatch({ type: "hydrate", complete: next.complete });
+      // NV-04: a reload after this tab's wizard saved a profile. The status
+      // just read is the authority on the marker (`resolveResume`); resuming
+      // only places the wizard, and every request after it is a click.
+      const resume = resolveResume(readResumeMarker(), next);
+      if (resume.kind === "clear") clearResumeMarker();
+      if (resume.kind === "test" || resume.kind === "choose") {
+        dispatch({
+          type: "resume",
+          step: resume.kind === "test" ? RESUME_STEP : "path",
+          path: pathFromProfile(resume.profile),
+        });
+      } else {
+        dispatch({ type: "hydrate", complete: next.complete });
+      }
     } catch (error) {
       if (!alive.current) return;
       const fail = wizardErrorFromUnknown(error);
@@ -684,6 +702,7 @@ export function WizardHost() {
     setBusy(true);
     try {
       await completeOnboarding({ skip: true });
+      clearResumeMarker();
       if (alive.current) dispatch({ type: "skip" });
     } catch (error) {
       if (alive.current) fail(error);
@@ -697,6 +716,7 @@ export function WizardHost() {
     setBusy(true);
     try {
       await completeOnboarding({ skip: true });
+      clearResumeMarker();
       if (alive.current) dispatch({ type: "finish" });
     } catch (error) {
       if (alive.current) fail(error);
@@ -728,6 +748,10 @@ export function WizardHost() {
     if (!id) id = asString((await saveModelProfile(body)).id);
     if (id) {
       savedProfiles.current[path.kind] = id;
+      // Saved, not yet activated or tested: from here a reload would read the
+      // install as `complete` and hide the remaining steps. Only a daemon that
+      // can tell "finished" from "configured" gets a marker to resume from.
+      if (status?.completed_explicitly === false) writeResumeMarker(id);
       await activateModelProfile(id);
     }
     // The composer's `#model-select` lists saved profiles and marks the active one.

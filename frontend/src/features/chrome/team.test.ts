@@ -476,3 +476,51 @@ describe("F-20 team surface", () => {
     expect(src).toContain("closeModalEl");
   });
 });
+
+describe("NV-04 signing out forgets the first-run wizard's resume marker", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it("clears the marker before the sign-out request leaves", async () => {
+    vi.resetModules();
+    const doc = new MiniDoc();
+    const stored = new Map<string, string>([
+      ["openai4s.onboarding.resume", JSON.stringify({ step: "test", profile_id: "mp-saved" })],
+      ["unrelated", "kept"],
+    ]);
+    const atLogout: Array<string | undefined> = [];
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("window", { document: doc, ac: { open: false } });
+    vi.stubGlobal("location", { pathname: "/", replace: vi.fn() });
+    vi.stubGlobal("confirm", () => true);
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => void stored.set(key, value),
+      removeItem: (key: string) => void stored.delete(key),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).endsWith("/auth/logout")) {
+          atLogout.push(stored.get("openai4s.onboarding.resume"));
+          return { status: 200, ok: true };
+        }
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({ team_mode: true, user: { username: "erika", role: "member" } }),
+        };
+      }),
+    );
+    const team: TeamApi = await import("./team");
+    team.ensureTeamDom();
+    await team.probeTeamAuth();
+    const chip = doc.getElementById("team-user") as unknown as { onclick: () => void };
+    chip.onclick();
+    expect(stored.has("openai4s.onboarding.resume")).toBe(false);
+    expect(stored.get("unrelated")).toBe("kept");
+    await vi.waitFor(() => expect(atLogout).toEqual([undefined]));
+  });
+});

@@ -211,6 +211,14 @@ class OnboardingService:
         payload["has_api_key"] = bool(payload.get("has_api_key"))
         payload["outbound"] = 0
         payload["contacted"] = False
+        # `complete` also reads "already set up" (`_already_set_up`), which a
+        # profile saved by the wizard itself satisfies. That keeps an upgraded
+        # install out of the wizard, and it is why a reload right after the
+        # wizard's own save hid the steps it had not reached. Only the written
+        # flag says the user finished or skipped; the Web wizard reads it to
+        # decide whether this tab may resume. Web only: `openai4s init --json`
+        # and `complete` keep their meaning.
+        payload["completed_explicitly"] = self._stored("onboarding_complete") == "1"
         payload["network"] = self.network_posture()
         if profiles is not None:
             payload["profiles"] = list(profiles.get("profiles") or [])

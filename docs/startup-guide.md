@@ -98,7 +98,14 @@ test, the environment and a first project; **Skip for now** leaves it, and a
 *"configure your API key"* banner links straight to the right screen. In the
 wizard, **Fetch models from endpoint** asks the endpoint which model ids it
 serves, so you can pick one instead of guessing; the key you type is used for
-that one request and is not stored by it.
+that one request and is not stored by it. The wizard saves your model before the
+connection test, so if you reload the page after that, the same browser tab
+reopens the wizard at **Test connection** (or, when the save did not get as far
+as activating the model, back on the model choice for you to confirm). Nothing
+is contacted until you click: the tab remembers only that step and the saved
+profile's id, and forgets them when you finish, skip, sign out, or the profile is
+gone. Another tab, or a browser that blocks site storage, opens the workbench as
+before; the remaining steps stay in **Settings**.
 
 **Recommended Volcengine flow**: install the official connector once with
 `npm i -g @volcengine/ark-cli@latest`, then open **Settings → Models** and click
@@ -286,7 +293,7 @@ openai4s serve
 
 ## 3. 配置模型 API
 
-OpenAI4S 启动时**不带任何 API Key**。全新的数据目录会打开**首次设置**向导，依次引导你选择模型、测试连接、检查环境与网络、创建第一个项目；点**暂时跳过**可以离开向导，界面上的 *「configure your API key」* 横幅会直接跳到对应页面。在向导里点「从端点获取模型」，会向接入点查询它提供的模型 id，供你直接选择而不必猜；你输入的 Key 只用于这一次请求，不会因此被保存。
+OpenAI4S 启动时**不带任何 API Key**。全新的数据目录会打开**首次设置**向导，依次引导你选择模型、测试连接、检查环境与网络、创建第一个项目；点**暂时跳过**可以离开向导，界面上的 *「configure your API key」* 横幅会直接跳到对应页面。在向导里点「从端点获取模型」，会向接入点查询它提供的模型 id，供你直接选择而不必猜；你输入的 Key 只用于这一次请求，不会因此被保存。向导会在测试连接之前先保存你选的模型，所以保存之后刷新页面，同一个浏览器标签页会重新打开向导并回到**测试连接**（如果保存后还没来得及激活这个模型，则回到选择模型这一步，由你确认）。在你点击之前不会联系任何服务：这个标签页只记住该步骤和已保存配置的 id，完成、跳过、退出登录或该配置已不存在时就会忘掉。换一个标签页，或浏览器禁止网站存储时，会像以前一样直接进入工作台，剩下的步骤可以在**设置**里完成。
 
 **推荐的火山流程**：先用 `npm i -g @volcengine/ark-cli@latest` 一次性安装官方
 连接器，然后打开 **设置 → 模型**，点击 **使用火山引擎登录**。OpenAI4S 会在浏览器中打开

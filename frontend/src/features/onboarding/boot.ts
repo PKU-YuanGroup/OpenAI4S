@@ -1,4 +1,5 @@
 import { fetchOnboarding } from "./api";
+import { clearResumeMarker, readResumeMarker, resolveResume } from "./machine";
 import type { OnboardingStatus } from "./status";
 
 export type WindowBag = Record<string, unknown>;
@@ -11,7 +12,9 @@ function mountWizard(): Promise<void> {
  * Load the first-run wizard only when it has something to show. A complete
  * setup, the usual case, hides it for the whole session (`hydrate` with
  * `complete`), so it used to ship in every first load for nothing. A status
- * that cannot be read still mounts it: the wizard reports that failure.
+ * that cannot be read still mounts it: the wizard reports that failure. So
+ * does a setup this tab's wizard left part-way (NV-04): `complete` there only
+ * means a profile was saved, and the marker the wizard wrote says which.
  */
 export async function startOnboarding(
   read: () => Promise<OnboardingStatus> = fetchOnboarding,
@@ -24,7 +27,13 @@ export async function startOnboarding(
     await mount();
     return;
   }
-  if (!status.complete) await mount();
+  if (!status.complete) {
+    await mount();
+    return;
+  }
+  const resume = resolveResume(readResumeMarker(), status);
+  if (resume.kind === "clear") clearResumeMarker();
+  if (resume.kind === "test" || resume.kind === "choose") await mount();
 }
 
 /** M-01 boot. No window contract names. */

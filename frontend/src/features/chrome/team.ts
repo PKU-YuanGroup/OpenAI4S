@@ -9,6 +9,7 @@
 
 import { LANG } from "../../i18n/runtime";
 import { paintIcon } from "../icons/paths";
+import { clearResumeMarker } from "../onboarding/machine";
 import { API } from "./api";
 import { byId, el } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
@@ -199,6 +200,8 @@ function applyIdentity(me: AuthMe | null): void {
     chip.classList.remove("hidden");
     chip.onclick = () => {
       if (!confirm("Sign out?")) return;
+      // The first-run wizard's resume marker belongs to this sign-in.
+      clearResumeMarker();
       fetch(API + "/auth/logout", { method: "POST" })
         .then(() => pageLocation().replace("/login"))
         .catch(() => pageLocation().replace("/login"));

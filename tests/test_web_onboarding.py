@@ -505,3 +505,83 @@ def test_get_onboarding_spawns_no_process_and_writes_nothing(tmp_path, monkeypat
     assert len(runner.store.list_projects()) == before_projects
     assert runner.store.get_frame(frame) == before_frame
     assert runner.store.has_message_history() is False
+
+
+# --- NV-04: a reload in the middle of the wizard can resume it ---------------
+#
+# `complete` reads "past its first run", and a profile the wizard itself saved
+# is enough for that. So a reload right after the wizard's save hid the steps it
+# had not reached (connection test, environment, project) and nothing said the
+# test had not run. The Web projection now also carries the written flag alone,
+# `completed_explicitly`, which the browser needs to tell "this tab's wizard is
+# still in progress" from "the user finished or skipped".
+
+
+def test_a_profile_the_wizard_saved_is_complete_but_not_completed_explicitly(
+    tmp_path,
+):
+    runner, call = _first_boot(tmp_path)
+    first = call("GET", "/onboarding")["body"]
+    assert first["complete"] is False
+    assert first["completed_explicitly"] is False
+
+    created = call(
+        "POST",
+        "/model-profiles",
+        {"name": "saved", "provider": "claude", "model": "claude-sonnet-4-5"},
+    )
+    assert created["code"] == 201, created
+    activated = call("POST", f"/model-profiles/{created['body']['id']}/activate")
+    assert activated["code"] == 200, activated
+
+    body = call("GET", "/onboarding")["body"]
+    # Upgrade compatibility is unchanged: a configured install is complete.
+    assert body["complete"] is True
+    # ...but nobody said so, which is what lets this tab resume its wizard.
+    assert body["completed_explicitly"] is False
+    assert isinstance(body["completed_explicitly"], bool)
+    # The saved profile is listed once, in the authenticated list the browser
+    # verifies its resume marker against, and it is the active one.
+    ids = [row["id"] for row in body["profiles"]]
+    assert ids.count(created["body"]["id"]) == 1
+    assert body["active_id"] == created["body"]["id"]
+    # The GET still writes nothing.
+    assert runner.store.get_setting("onboarding_complete") in (None, "")
+
+
+@pytest.mark.parametrize("payload", [{"skip": True}, {}])
+def test_skip_or_finish_is_completed_explicitly(tmp_path, payload):
+    runner, call = _first_boot(tmp_path)
+    result = call("POST", "/onboarding/complete", payload)
+    assert result["code"] == 200, result
+    assert result["body"]["complete"] is True
+    assert result["body"]["completed_explicitly"] is True
+    assert call("GET", "/onboarding")["body"]["completed_explicitly"] is True
+
+
+def test_an_upgraded_install_is_complete_without_completed_explicitly(tmp_path):
+    """The flag is not backfilled: an upgraded install keeps `complete` from its
+    history, and the browser only resumes a wizard it holds a marker for."""
+    runner, call = _first_boot(tmp_path)
+    project = runner.store.create_project(name="Work", description="", context="")
+    if isinstance(project, dict):
+        project = project["project_id"]
+    frame = runner.store.new_frame(kind="turn", project_id=project, status="done")
+    runner.store.add_message(root_frame_id=frame, role="user", content="17 * 23?")
+
+    body = call("GET", "/onboarding")["body"]
+    assert body["complete"] is True
+    assert body["completed_explicitly"] is False
+
+
+def test_cli_init_is_completed_explicitly_but_its_projection_is_unchanged(tmp_path):
+    """`openai4s init` writes the flag; its own `--json` projection does not
+    grow the Web-only field."""
+    from openai4s.llm.registry import provider_specs
+    from openai4s.store import get_store
+
+    cfg = Config(data_dir=tmp_path / "data", llm=LLMConfig(provider="chatgpt"))
+    service = OnboardingService(cfg, get_store(cfg.db_path), provider_specs())
+    result = service.configure(provider="chatgpt", api_key="fake-init-key-for-tests")
+    assert "completed_explicitly" not in result.as_dict()
+    assert service.web_status()["completed_explicitly"] is True
