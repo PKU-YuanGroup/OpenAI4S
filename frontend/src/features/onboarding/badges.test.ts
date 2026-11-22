@@ -75,7 +75,7 @@ describe("M-01 capability badges", () => {
     expect(capabilityBadgeText(rows[0]!).toLowerCase()).not.toContain("temporarily unavailable");
     const auth = badgesFromProbe(
       { native_tool_call: "unknown", streaming: "false" },
-      "the provider rejected the credential; check the API key for this profile in Customize -> Models",
+      "the provider rejected the credential; check the API key for this profile in Settings -> Models",
     );
     expect(capabilityBadgeText(auth[0]!)).toContain("the provider rejected the credential");
     expect(auth[1]!.state).toBe("false");

@@ -412,7 +412,7 @@
             "connector_enabled": false,
             "manager_list_tools_calls": 0,
             "result": {
-              "error": "connector 'disabled-characterization' is disabled; enable it in Customize → Connectors to use it"
+              "error": "connector 'disabled-characterization' is disabled; enable it in Settings → Connectors to use it"
             }
           },
           "phase": "characterization",

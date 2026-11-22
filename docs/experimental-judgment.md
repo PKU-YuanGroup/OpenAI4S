@@ -83,7 +83,7 @@ and timeout; persisted settings in that data dir are still read afresh.
 
 ### UI
 
-1. Open **Customize → General**. The Experimental block is on that tab
+1. Open **Settings → General**. The Experimental block is on that tab
    (`data-judgment`).
 2. Turn on the master switch. A disclosure dialog lists every capability,
    what it sends, and the hosting facts below. `safety_shadow` is marked
@@ -183,12 +183,12 @@ clearing the Store setting, also disables the layer when the environment
 variable is unset. With the master off, `host.judge` returns `disabled`
 and the transport is not called.
 
-Clear the key from Customize → General (Clear) or
+Clear the key from Settings → General (Clear) or
 `PUT {"clear_api_key": true}`. Headless: unset `OPENAI4S_TYPESAFE_API_KEY`.
 
 ## How to see status
 
-**UI.** Customize → General → Experimental. The block shows each flag's
+**UI.** Settings → General → Experimental. The block shows each flag's
 source (`env_off` / `env_on` / `setting` / `default` / `master_off` /
 `no_disclosure`), whether a key is configured, provider, model, egress
 mode, and whether `api.typesafe.ai` is already authorized. Test connection
@@ -435,7 +435,7 @@ Merged three branches in order: `w2-a-skills-backend` (`e491ff89` →
 `a66674d6`), `w2-c-skills-eval` (`ec8f1536` → `131470b5`), and
 `w2-b-frontend` (`3ee20db2` → `04dd3594`). `search_skills` now carries
 semantic suggestions when `skill_suggest` is on, there is a frozen 200-case
-bilingual evaluation with a locked test split, and Customize → General has an
+bilingual evaluation with a locked test split, and Settings → General has an
 Experimental section with per-capability disclosure.
 
 Integration fix `76876a59`: `_step_end` projected a `search_skills` result by

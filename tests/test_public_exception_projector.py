@@ -884,7 +884,7 @@ def test_ark_burst_protection_is_named_consistently_without_blaming_the_key(
         [result, updates[-1], stored[-1], chunks], ensure_ascii=False, default=str
     )
     assert "突发流量保护" in public_blob
-    assert "Customize → Models" not in public_blob
+    assert "Settings → Models" not in public_blob
     assert CREDENTIAL not in public_blob
 
 

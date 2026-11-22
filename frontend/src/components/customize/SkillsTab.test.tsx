@@ -9,7 +9,7 @@ import {
   skillSearchCountText,
 } from "./SkillsTab";
 
-// Customize → Skills lists 612 skills; 561 of them sit inside one collection.
+// Settings → Skills lists 612 skills; 561 of them sit inside one collection.
 
 const LIT = {
   name: "literature-review",

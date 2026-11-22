@@ -391,7 +391,7 @@ def test_doctor_fails_the_data_check_after_an_upgrade_that_did_not_complete(
 def test_a_pending_upgrade_leaves_the_saved_model_settings_unread_not_failed(
     cfg, monkeypatch
 ):
-    """The Customize -> Models key lives in the database doctor no longer
+    """The Settings -> Models key lives in the database doctor no longer
     opens, so "no key configured" would be a guess stated as a failure."""
     _no_ambient_key(monkeypatch)
     cfg.llm.api_key = ""
@@ -547,7 +547,7 @@ def test_a_model_configured_only_in_the_ui_is_not_reported_as_missing(cfg, monke
     """The regression.
 
     The daemon boots with no key — that is the documented path — and the model
-    is configured from Customize → Models, which writes to the store. Reading
+    is configured from Settings → Models, which writes to the store. Reading
     `cfg.llm` alone therefore diagnosed `model FAIL` on an installation that
     worked, sending the user to fix something that was not broken.
     """
@@ -760,7 +760,7 @@ def test_the_doctor_and_the_runtime_resolve_the_same_model(cfg):
 def test_a_saved_model_that_overrides_the_environment_is_named_as_such(
     tmp_path, monkeypatch
 ):
-    """CLI-8. `openai4s init` (or Customize -> Models) saves the model, and a
+    """CLI-8. `openai4s init` (or Settings -> Models) saves the model, and a
     saved model is read before `OPENAI4S_LLM_MODEL`. doctor printed the model
     without its origin, so editing `.env` changed nothing and nothing said why.
     """

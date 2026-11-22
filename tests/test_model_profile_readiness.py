@@ -153,7 +153,7 @@ def test_a_failed_probe_names_the_cause_without_quoting_the_provider(
     by publishing the provider's prose is not: `redact_text` is shape-based, and
     measured against a real 403 body it replaces a credential-shaped token while
     `10.4.2.17:8443`, `/Users/<name>/.certs/corp-ca.pem` and
-    `org-Acme-Research-Lab` all survive into a 200 body and the Customize ->
+    `org-Acme-Research-Lab` all survive into a 200 body and the Settings ->
     Models panel. `errors.py` had already removed `redact_text` for exactly this.
 
     So the distinction now comes from `status`/`error_code` -- fields this
@@ -243,7 +243,7 @@ def test_a_probe_never_publishes_what_redaction_does_not_catch(tmp_path, monkeyp
     credential-shaped token and lets everything else through, and "everything
     else" on a failed TLS or auth call includes the absolute path of a cert
     (with the account name in it), an internal address, and an org identifier.
-    All three reached a 200 body and the Customize -> Models panel.
+    All three reached a 200 body and the Settings -> Models panel.
     """
     import openai4s.llm as llm_module
     from openai4s.llm.models import TransportError

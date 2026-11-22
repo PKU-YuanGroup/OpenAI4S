@@ -547,7 +547,7 @@ def queue_preview(text: str) -> str:
 
 
 def _skill_result_status(payload: object) -> int:
-    """The status a Customize skill result should be answered with.
+    """The status a Settings skill result should be answered with.
 
     These routes answered 200 with an ``{"error": ...}`` body. The service
     returns soft dictionaries by design -- see ``server/skills.py`` -- but the
@@ -6610,7 +6610,7 @@ class SessionRunner:
         #
         # The dispatcher is built once per session from the BOOT config, whose
         # `llm.api_key` is empty on the documented install because the key is
-        # entered in Customize → Models and lives in settings. Everything the
+        # entered in Settings → Models and lives in settings. Everything the
         # dispatcher owns that reaches a provider was therefore dead there:
         # `host.llm` raised MissingCredentialError, and the injection screener's
         # nuanced pass returned "not injected" without ever calling a model, so
@@ -9703,7 +9703,7 @@ class SessionRunner:
     def _llm_cfg(
         self, st: "SessionState | None" = None, *, apply_user_key: bool = True
     ):
-        """Effective LLM config = base cfg + runtime overrides (Customize→Models)
+        """Effective LLM config = base cfg + runtime overrides (Settings→Models)
         + the session's chosen model. Makes the model selector real.
 
         Reads the 4 settings once (callers should resolve this once per turn, not
@@ -10179,11 +10179,11 @@ class SessionRunner:
             )
         if isinstance(exc, LLMError):
             return (
-                "**LLM 调用失败。** 请在 Customize → Models 确认模型与 API Key "
+                "**LLM 调用失败。** 请在 Settings → Models 确认模型与 API Key "
                 "配置后重试。"
                 if zh
                 else "**The LLM call failed.** Check the model and API key in "
-                "Customize → Models, then try again."
+                "Settings → Models, then try again."
             )
         return ("**这一轮出错了。** " if zh else "**This turn failed.** ") + str(
             (safe or {}).get("error") or INTERNAL_ERROR_MESSAGE
@@ -10550,7 +10550,7 @@ class SessionRunner:
                     409,
                     f"no model profile is active and more than one matches "
                     f"{recorded!r}; activate the one this session continues under "
-                    "in Customize -> Models, then send again",
+                    "in Settings -> Models, then send again",
                     "model_profile_needs_active",
                 )
             if len(matches) == 1 and not self._profile_credential(matches[0]).usable:
@@ -10559,7 +10559,7 @@ class SessionRunner:
                     409,
                     f"no model profile is active and {name!r}, which this "
                     "session's recorded model matches, has no usable API key; "
-                    "activate a profile in Customize -> Models (or add that "
+                    "activate a profile in Settings -> Models (or add that "
                     "profile's key), then send again",
                     "model_profile_needs_active",
                 )
@@ -10654,7 +10654,7 @@ class SessionRunner:
             raise GatewayError(
                 409,
                 f"no model profile is active and more than one matches {live!r}; "
-                "activate the one this session continues under in Customize -> "
+                "activate the one this session continues under in Settings -> "
                 "Models, or choose that profile",
                 "model_profile_needs_active",
             )
@@ -10749,7 +10749,7 @@ class SessionRunner:
         else:
             message = (
                 "this session is pinned to a model profile whose credential is "
-                "not available; add its API key in Customize -> Models or rebind "
+                "not available; add its API key in Settings -> Models or rebind "
                 "the session to continue"
             )
         return GatewayError(409, message, "model_revision_unavailable")
@@ -10789,7 +10789,7 @@ class SessionRunner:
         if credential.source == "revoked":
             message = (
                 f"the API key stored for model profile {name!r} can no longer be "
-                "read; enter it again in Customize -> Models"
+                "read; enter it again in Settings -> Models"
             )
         else:
             variable = (
@@ -10805,19 +10805,19 @@ class SessionRunner:
             elif chosen:
                 message = (
                     f"model profile {name!r} has no API key: add one in "
-                    f"Customize -> Models, set {variable} for the daemon, or "
+                    f"Settings -> Models, set {variable} for the daemon, or "
                     "choose another model"
                 )
             elif follows_active:
                 message = (
-                    f"model profile {name!r} has no API key: add one in Customize "
+                    f"model profile {name!r} has no API key: add one in Settings "
                     f"-> Models, set {variable} for the daemon, or activate "
                     "another profile"
                 )
             else:
                 message = (
                     f"model profile {name!r}, which this session's recorded "
-                    "model matches, has no API key: add one in Customize -> "
+                    "model matches, has no API key: add one in Settings -> "
                     f"Models or set {variable} for the daemon"
                 )
         raise GatewayError(409, message, "model_profile_needs_key")
@@ -13104,7 +13104,7 @@ class SessionRunner:
         # The session's RESOLVED config, not the boot one. Both screeners read
         # `cfg.llm.api_key` and return "unconfigured; failed open" when it is
         # empty -- and on the documented Web install it is always empty, because
-        # the key is configured through Customize → Models and lives in
+        # the key is configured through Settings → Models and lives in
         # settings, which is the reason `_llm_cfg` exists at all. So the port
         # widened, the call was wired, and the screener still never ran here:
         # every biosecurity-relevant cell got ALLOW with `screened=False` from a
@@ -14233,9 +14233,9 @@ class SessionRunner:
 
 
 # --------------------------------------------------------------------------- #
-#  Customize-panel payloads (agents / compute / environment / network / memory)
+#  Settings-panel payloads (agents / compute / environment / network / memory)
 # --------------------------------------------------------------------------- #
-# Built-in agent roster surfaced in Customize → Agents. Derived from
+# Built-in agent roster surfaced in Settings → Agents. Derived from
 # openai4s/specialists.py — the single source of truth that also supplies the
 # runtime personas and execution policies — so the catalog can never again
 # advertise a specialist the delegation resolver does not know. The payload
@@ -14312,7 +14312,7 @@ _CONNECTOR_DIRECTORY = [
 ]
 
 
-# Network egress groups shown in Customize → Network (the domains agent tools may
+# Network egress groups shown in Settings → Network (the domains agent tools may
 # reach). This is the SAME canonical allowlist that openai4s.egress ENFORCES
 # when OPENAI4S_EGRESS=allowlist — one source of truth for both
 # the display here and the fence in webtools/host.bash. The on/off master switch
@@ -15623,7 +15623,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
             403 rather than the frame guard's 404: these are management
             surfaces whose existence is not a secret, and the UI already
-            reads `admin_only` to decide which Customize panes to show.
+            reads `admin_only` to decide which Settings panes to show.
             """
             path = sub.split("?")[0]
             if not team_policy.is_admin_only_surface(method, path):
@@ -17382,7 +17382,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     }
                 )
                 return
-            # ---- editable LLM config (Customize → Models) ----
+            # ---- editable LLM config (Settings → Models) ----
             if sub == "/config/llm":
                 if method == "GET":
                     self._json(
@@ -21180,7 +21180,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
             if sub.split("?")[0] == "/memory" and method == "GET":
                 # Explicit or scoped: the cross-project view is a real
-                # feature (Customize -> Memory asks for it by name), but
+                # feature (Settings -> Memory asks for it by name), but
                 # it must never be what a caller gets for saying nothing.
                 pid = (q.get("project_id") or ["default"])[0]
                 self._team_guard_memory_scope(pid)
@@ -21261,7 +21261,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if sub in ("/memory/categories", "/memory/context") and method == "GET":
                 # Explicit or scoped: the cross-project view is a real
-                # feature (Customize -> Memory asks for it by name), but
+                # feature (Settings -> Memory asks for it by name), but
                 # it must never be what a caller gets for saying nothing.
                 pid = (q.get("project_id") or ["default"])[0]
                 self._team_guard_memory_scope(pid)
@@ -22662,7 +22662,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     # the daemon must not mutate the user's Python environment — this used to
     # call ensure_core(background=True), which resolved ~23 unpinned names
     # against PyPI and installed them with --break-system-packages on a thread
-    # nobody was watching. The UI surfaces the plan (Customize → Compute) and
+    # nobody was watching. The UI surfaces the plan (Settings → Compute) and
     # `openai4s setup` applies it.
     try:
         if cfg.roadmap_features.stage1_trusted_delivery:
@@ -23186,7 +23186,7 @@ for _e in entries:
           % (_e['accession'], _e['organism'], len(_e['sequence']), _mark))
 """
 _DEMO_MCP = r"""
-# Cell 2/6 -- the bundled MCP connector (Customize -> Connectors), on real inputs.
+# Cell 2/6 -- the bundled MCP connector (Settings -> Connectors), on real inputs.
 try:
     _total = sum(len(e['sequence']) for e in entries)
     _calc = host.mcp.call('example', 'calc',

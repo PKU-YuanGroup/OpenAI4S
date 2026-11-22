@@ -3720,7 +3720,7 @@ class HostDispatcher:
 
     def _m_remember(self, spec: dict) -> dict:
         """Persist a durable memory the daemon injects into future sessions
-        (only when memory is enabled in Customize → Memory)."""
+        (only when memory is enabled in Settings → Memory)."""
         content = (spec.get("content") or "").strip()
         if not content:
             return {"error": "remember: empty content"}

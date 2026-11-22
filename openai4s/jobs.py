@@ -1,7 +1,7 @@
 """Local compute-jobs manager.
 
 Runs a shell command or Python snippet as a tracked background subprocess so the
-UI (Customize → Compute → Jobs) can submit long-running work, watch its status
+UI (Settings → Compute → Jobs) can submit long-running work, watch its status
 and output, and cancel it — the local-machine analogue of the reference daemon's
 remote compute/jobs. Jobs run in a per-job workspace under the data dir.
 

@@ -546,7 +546,7 @@ profile says today.
   and `binding` says which (`bound`, `backfilled`). When that send would be
   refused again — several live profiles match, or the unique match has no
   usable credential — it answers `409 model_profile_needs_active` ("activate a
-  profile in Customize → Models") before dropping the old pin, rather than a
+  profile in Settings → Models") before dropping the old pin, rather than a
   `200` the next send contradicts.
 - `POST /frames/{id}/model-binding {model_id}` is the composer selector
   switching models **inside an open conversation**. `model_id` is the
@@ -850,7 +850,7 @@ corresponding refusal directly.
 default. The mutating `kernel/*` routes — `execute`, `restart`, `stop`,
 `start`, `interrupt` — return `403 {"error":…}` unless manual cells are on
 (Settings → General, `PUT /notebook/settings`, or `OPENAI4S_NOTEBOOK_REPL`). `kernel/install` is intentionally not gated:
-it backs Customize → Compute rather than arbitrary Notebook execution. Neither
+it backs Settings → Compute rather than arbitrary Notebook execution. Neither
 is `kernel/env`: choosing the session's environment (the session options menu)
 runs no code. An R-only environment retargets the session's R cells (the next
 R cell starts its kernel there; nothing starts now); `GET
@@ -1036,7 +1036,7 @@ change published behaviour for no stated benefit. Branch on `code`.
 | `POST /connectors/{id}/call` | Body `{tool,args}` → tool result; a failing call answers `502` with `code: "connector_failed"` (the MCP server's own message is not echoed — it quotes the argv and env it was launched with). |
 | `DELETE /connectors/{id}` | Disconnect + delete → `{"ok":true}`. |
 
-Doubao Search is the primary managed web-search product in Customize →
+Doubao Search is the primary managed web-search product in Settings →
 Network. It shares the brokered Agent Plan credential with Ark and DataPro,
 but its dedicated test route is deliberately not the generic multi-engine
 search path: a Tavily or keyless result must never make Doubao appear healthy.

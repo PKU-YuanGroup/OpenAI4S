@@ -1446,7 +1446,7 @@ class _Host:
 
     def remember(self, content: str, *, block: str = "general") -> dict:
         """Persist a durable fact the daemon re-injects into future sessions
-        (takes effect when Memory is enabled in Customize → Memory)."""
+        (takes effect when Memory is enabled in Settings → Memory)."""
         return self._call("remember", [{"content": content, "block": block}])
 
 

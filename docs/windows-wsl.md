@@ -381,7 +381,7 @@ file byte for byte.
 
 ### Volcengine login
 
-Configure the model in Customize → Models. A CLI installed inside WSL is
+Configure the model in Settings → Models. A CLI installed inside WSL is
 discovered normally and keeps precedence. When started through
 `OpenAI4S.cmd`, the launcher also discovers `arkcli.exe` on the Windows PATH
 and forwards its translated path as a fallback, used only when no CLI is found

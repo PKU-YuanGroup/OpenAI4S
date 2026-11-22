@@ -453,7 +453,7 @@ arbitrary code from the Notebook panel; members can read it.
 `OPENAI4S_NOTEBOOK_REPL=1` still forces it on, and then the switch cannot turn
 it off. With it off, the mutating `kernel/*` routes (`execute`, `restart`,
 `stop`, `start`, `interrupt`) return `403`; `kernel/install` remains available
-because it backs Customize → Compute, and `kernel/env` because choosing the
+because it backs Settings → Compute, and `kernel/env` because choosing the
 session's Python/R environment (session options menu) runs no code — only the
 session's owner or an admin may change it. When enabled, the
 input is multiline, selects Python/R, and appends a new immutable Cell through

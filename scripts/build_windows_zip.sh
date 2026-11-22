@@ -183,7 +183,7 @@ OpenAI4S $VERSION - first launch on Windows
    sign-in URL from \`openai4s url\`; the credential is removed from the address
    bar after the browser receives its local cookie. Later runs just start it.
 
-   Set your LLM provider + API key in the UI (Customize -> Models). No API key
+   Set your LLM provider + API key in the UI (Settings -> Models). No API key
    is shipped with this package.
 
 2. This package runs OpenAI4S inside WSL2, on purpose.

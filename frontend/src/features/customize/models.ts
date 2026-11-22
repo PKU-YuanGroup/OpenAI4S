@@ -305,7 +305,7 @@ export function composerModelName(id: unknown): string {
  * Port of app.js `loadModels`: fill the composer selector's stores from
  * `GET /models`. It was bridged to a `window.loadModels` nothing assigned, so
  * the selector stayed empty, every new frame recorded `model: null`, and the
- * post-profile-change refreshes in Customize did nothing.
+ * post-profile-change refreshes in Settings did nothing.
  */
 export async function loadModels(): Promise<void> {
   const choice = choiceSeq;

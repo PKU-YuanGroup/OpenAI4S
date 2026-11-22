@@ -15,7 +15,7 @@ connector manager 启动它。
 
 它不是内置模型 runtime。仅把本包放在源码树中，不会安装 RFdiffusion、ProteinMPNN、
 ColabFold、PyRosetta、ESM-2、OpenMM、checkpoint 或 GPU driver。需要在
-**Customize → Connectors** 中注册，并 bring up 下述 backend 配置。凡是会拉起这个
+**设置 → Connectors** 中注册，并 bring up 下述 backend 配置。凡是会拉起这个
 server 的路径——Agent 的工具调用，以及 connector 的 probe/call 接口——都走同一道
 confinement：默认路径 root 是调用方的会话工作区而不是 daemon 的源码 checkout，
 bring-up 准入闸门也处于开启状态。operator 显式给出的值仍然优先，但空值不算一次选择：
@@ -26,7 +26,7 @@ connector 编辑器会把一行光秃秃的 `NAME=` 写成 `""`，若把它当�
 
 ## Connector 配置
 
-在 **Customize → Connectors** 的 connector directory 中添加 **Protein Design**。
+在 **设置 → Connectors** 的 connector directory 中添加 **Protein Design**。
 添加表示明确启用这项能力，但此时不会启动进程；OpenAI4S 只会在
 第一次工具发现或工具调用时懒启动 MCP server。等价的自定义 stdio command 使用
 OpenAI4S 安装环境的 Python 解释器，参数为：

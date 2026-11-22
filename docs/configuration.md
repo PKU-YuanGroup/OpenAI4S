@@ -19,13 +19,13 @@ The provider id is what `OPENAI4S_LLM_PROVIDER` and `openai4s init --provider` t
 
 `ark` is Volcengine's Agent Plan gateway (the provider's default endpoint) — one endpoint + key serving the plan's text models: `doubao-seed-2.1-pro`, `doubao-seed-evolving`, `doubao-seed-2.1-lite`, `doubao-seed-2.0-mini`, `glm-5.3`, `glm-5.3-flash`, `kimi-k3.1-pro`, `kimi-k2.8-preview`, `deepseek-v4-{pro,flash}` and `deepseek-v4.1-flash` (plus its `-economy` variant), as listed in [the plan's model table](https://www.volcengine.com/docs/82379/2366394). The gateway answers any other id with HTTP 404 `UnsupportedModel`; 1.0.0's `doubao-seed-2.0-{pro,code,lite}` and `minimax-*` presets are no longer served. These are catalog presets, not saved profiles: no profile is pre-registered, so save one for each model you want to switch to. The plan gateway has no model-listing route, so First-run setup's **Fetch models** offers this catalog for it; other endpoints are asked for the ids they actually serve. Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
 
-Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). **A saved setting wins over all three:** whatever Customize → Models or `openai4s init` stored in the settings database (provider, model, base URL, key) is used before any environment variable is read, so editing `.env` does not change a model that was saved once — change it where it was saved, or run `openai4s init --model <id>`. `openai4s doctor` says where the model it reports came from and names an environment variable that a saved value overrides. The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
+Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). **A saved setting wins over all three:** whatever Settings → Models or `openai4s init` stored in the settings database (provider, model, base URL, key) is used before any environment variable is read, so editing `.env` does not change a model that was saved once — change it where it was saved, or run `openai4s init --model <id>`. `openai4s doctor` says where the model it reports came from and names an environment variable that a saved value overrides. The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
 
 The `openai` and `anthropic` wires stream token by token whenever the caller supplies a delta callback, and allow one blocking compatibility request only after HTTP 400/422 explicitly reports `streaming_not_supported`, or `unsupported_parameter` / `unknown_parameter` with structured `param: "stream"`. Authentication failures, empty streams, timeouts and uncertain read failures do not trigger compatibility requests. All transports share one send ceiling (`OPENAI4S_LLM_MAX_RETRIES` + 1, never below two, three by default) and one backoff budget per logical call; the compatibility POST itself is attempted only once, and because it is a fallback rather than a retry, `OPENAI4S_LLM_MAX_RETRIES=0` still leaves room for it. Cancellation before a send prevents it, and received text, reasoning, tool fragments or usage veto transparent replay. `responses` is always SSE; `gemini` is always blocking. `OPENAI4S_LLM_STREAM=0` (also `false`/`no`/`off`) forces the blocking path on the two that choose — worth reaching for behind a proxy that mishandles SSE, at the cost of the reply arriving as one blob per turn.
 
 ### Ollama models and web tools / Ollama 模型与网页工具
 
-In **Customize → Models**, choose **Ollama (cloud or local)**. For cloud
+In **Settings → Models**, choose **Ollama (cloud or local)**. For cloud
 inference, leave Base URL and model empty to use `https://ollama.com/v1` and
 `gemma4:31b`, and enter your Ollama API key. Environment configuration uses
 `OPENAI4S_LLM_PROVIDER=ollama` and `OLLAMA_API_KEY` (or
@@ -40,7 +40,7 @@ to `http://127.0.0.1:11434/v1` and the model to its installed name, for example
 requests carry no cloud credential; unknown local tool capabilities remain
 conservative until a successful capability probe.
 
-To use Ollama web tools with **any main model**, open **Customize → Network →
+To use Ollama web tools with **any main model**, open **Settings → Network →
 Ollama web tools**, enter the API key once and choose **Save key**. This
 independent credential enables `host.web_search` and `host.web_fetch`,
 including their native tool equivalents, without switching the main model or
@@ -186,7 +186,7 @@ Starting the daemon never modifies your Python environment. `serve` only *report
 openai4s setup            # provision the kernel environments
 ```
 
-or Customize → Compute → **Install additional packages** in the UI.
+or Settings → Compute → **Install additional packages** in the UI.
 
 This used to be implicit: `serve` resolved ~23 *unpinned* package names against PyPI on a background thread and installed them with `--break-system-packages`. That made booting the daemon mutate the user's interpreter, made two cold starts a week apart produce different environments, and made an offline cold start fail where nobody was looking. Diagnosis and mutation are now separate.
 
@@ -211,7 +211,7 @@ status transition, while plan drafting remains available. `openai4s run`
 applies the same typed check at its first Code Cell; `serve` and `doctor` report
 it without installing anything.
 
-The persistent workbench banner and Customize → Compute card show the complete
+The persistent workbench banner and Settings → Compute card show the complete
 missing-environment/package list. Remediation remains an explicit, managed
 transaction:
 
@@ -448,10 +448,10 @@ into that table.
 
 `api.typesafe.ai` is **not** a built-in egress group. In allowlist mode grant
 it with `host.request_network_access(domain="api.typesafe.ai")`. Status:
-Customize → General → Experimental, `openai4s doctor` (check name `judgment`),
+Settings → General → Experimental, `openai4s doctor` (check name `judgment`),
 and audit events `judgment` / `judgment_shadow`.
 
-Workbench: Customize → General. REST under `/api/v1/experimental/judgment`
+Workbench: Settings → General. REST under `/api/v1/experimental/judgment`
 (`GET` status, `PUT` flags/ack/key, `POST …/test` probe).
 
 ## Optional Jupyter adapter

@@ -2,7 +2,7 @@
 
 One module owns both halves of every built-in specialist:
 
-- the **catalog roster** the Web gateway serves (Customize → Agents,
+- the **catalog roster** the Web gateway serves (Settings → Agents,
   ``GET /agents`` / ``GET /specialists``, the system-prompt specialist list),
   via :func:`builtin_catalog`;
 - the **runtime profile** the delegation resolver applies (persona system

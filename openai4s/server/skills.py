@@ -1,7 +1,7 @@
-"""Web Customize service for user-authored skill documents.
+"""Web Settings service for user-authored skill documents.
 
 This service intentionally stays separate from ``openai4s.host.skills``.  The
-Web Customize API writes whole user ``SKILL.md`` documents and uses soft
+Web Settings API writes whole user ``SKILL.md`` documents and uses soft
 dictionaries for domain errors, while the in-kernel host service has a richer
 file editor, origin transitions, and permission behavior.
 """
@@ -34,7 +34,7 @@ from openai4s.skills_loader.loader import _requirements, skill_readiness
 #: missing is that the *gateway* then answered 200, so these never reached
 #: `errors.public_failure` and carried neither a stable `code` nor the
 #: `request_id` that ties a user's report to a log line. Worse, `api()` in the
-#: web client only throws on a non-2xx, so the Customize skill editor reported
+#: web client only throws on a non-2xx, so the Settings skill editor reported
 #: "saved" and closed the modal on a save that had not happened.
 #:
 #: The code is the contract; the status is a projection of it. Callers branch
@@ -447,7 +447,7 @@ class SkillCustomizationService:
         disabled_names = self.disabled_names if disabled is None else disabled
         try:
             catalog = self.loader.catalog(include_disabled=True)
-        except Exception:  # noqa: BLE001 - Customize degrades to an empty catalog
+        except Exception:  # noqa: BLE001 - Settings degrades to an empty catalog
             return []
 
         try:

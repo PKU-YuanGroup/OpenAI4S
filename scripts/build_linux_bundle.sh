@@ -616,7 +616,7 @@ OpenAI4S $VERSION — first launch on Linux ($ARCH)
      ./$APP_NAME
 
    That starts a local server and opens http://127.0.0.1:8760/ in your browser.
-   Set your LLM provider + API key in the UI (Customize -> Models). All data
+   Set your LLM provider + API key in the UI (Settings -> Models). All data
    lives in ~/.openai4s.  Logs: ~/.openai4s/logs/app.out
 
 2. Optional desktop integration (per-user, no root, touches only \$HOME):

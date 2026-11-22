@@ -138,7 +138,7 @@ export async function showContextUsage(): Promise<void> {
 
 
 /**
- * The new-skill editor of Customize → Skills, opened over that tab. app.js
+ * The new-skill editor of Settings → Skills, opened over that tab. app.js
  * drew a second copy of the skill form in #modal (`skillEditor`); this port
  * called that name, which nothing defines, so the menu entry did nothing. The
  * seed travels on the editor state for the form to start from.

@@ -7217,7 +7217,7 @@ def test_prose_streamer_hides_nested_tool_example_inside_python_cell():
 
 
 def test_kernel_install_route_is_not_gated_by_notebook_repl(tmp_path):
-    """Regression: prebuilt-env package install (Customize → Compute) is a
+    """Regression: prebuilt-env package install (Settings → Compute) is a
     separate affordance from the code REPL and must stay reachable in the
     default read-only build — it must NOT return 403."""
     cfg = _cfg(tmp_path)
@@ -8303,7 +8303,7 @@ def test_the_session_dispatcher_gets_the_key_the_install_configures(
     tmp_path, monkeypatch
 ):
     """The dispatcher is built once per session from the BOOT config, and on the
-    documented install that config has no key: it is entered in Customize →
+    documented install that config has no key: it is entered in Settings →
     Models and lives in settings. So everything the dispatcher owns that reaches
     a provider was dead there — `host.llm` raised MissingCredentialError, and
     the injection screener's nuanced pass returned "not injected" without

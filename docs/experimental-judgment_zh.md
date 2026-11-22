@@ -62,7 +62,7 @@ worker 也会保留这次运行显式传入的判断开关、服务商、模型�
 
 ### 界面
 
-1. 打开 **Customize → General**。Experimental 区块就在这个标签页上
+1. 打开 **设置 → General**。Experimental 区块就在这个标签页上
    （`data-judgment`）。
 2. 打开总开关。披露对话框会列出每一项能力、会发送什么数据，以及下面的托管事实。
    `safety_shadow` 单独标成外发风险最高。
@@ -145,12 +145,12 @@ export OPENAI4S_EXPERIMENTAL_JUDGMENT=0
 这会强制关闭所有子能力。环境变量未设置时，关掉 UI 总开关或清掉 Store setting
 同样关闭这一层。总开关关闭时，`host.judge` 返回 `disabled`，不调用传输层。
 
-在 Customize → General 点「清除」，或 `PUT {"clear_api_key": true}`。
+在设置 → General 点「清除」，或 `PUT {"clear_api_key": true}`。
 Headless：取消设置 `OPENAI4S_TYPESAFE_API_KEY`。
 
 ## 如何查看状态
 
-**界面。** Customize → General → Experimental。区块显示每项开关的来源
+**界面。** 设置 → General → Experimental。区块显示每项开关的来源
 （`env_off` / `env_on` / `setting` / `default` / `master_off` /
 `no_disclosure`）、key 是否已配置、provider、model、egress 模式，以及
 `api.typesafe.ai` 是否已经授权。测试连接把 `ok` / `unavailable` / `disabled`
@@ -330,7 +330,7 @@ W2 待办：`tests/conftest.py` 仍不清除 `OPENAI4S_*JUDGMENT*`，而现在�
 按顺序合入三个分支：`w2-a-skills-backend`（`e491ff89` → `a66674d6`）、
 `w2-c-skills-eval`（`ec8f1536` → `131470b5`）、`w2-b-frontend`（`3ee20db2` →
 `04dd3594`）。`skill_suggest` 打开时 `search_skills` 会带上语义推荐；有了一份
-冻结的 200 条中英文评测集和锁死的测试集划分；Customize → General 多了带逐项
+冻结的 200 条中英文评测集和锁死的测试集划分；设置 → General 多了带逐项
 披露的 Experimental 区块。
 
 集成修正 `76876a59`：`_step_end` 把 `search_skills` 的结果当 list 迭代，

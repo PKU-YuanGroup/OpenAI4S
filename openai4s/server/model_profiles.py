@@ -190,7 +190,7 @@ def _probe_detail(error: Exception, public: dict) -> str:
     `org-Acme-Research-Lab` all survive. The redaction is shape-based and a
     provider body carries more than credentials -- an absolute path with the
     account name on it, internal network topology, private model identifiers --
-    into a 200 body and the Customize -> Models panel.
+    into a 200 body and the Settings -> Models panel.
 
     `gateway._friendly_error` solved exactly this for the turn path and its
     docstring lays out the same reasoning. This is the surface that treatment
@@ -218,7 +218,7 @@ def _probe_detail(error: Exception, public: dict) -> str:
     if status == 401 or code in ("invalid_api_key", "unauthorized"):
         return (
             "the provider rejected the credential; check the API key for this "
-            "profile in Customize -> Models"
+            "profile in Settings -> Models"
         )
     if status == 403 or code == "forbidden":
         return (
@@ -1075,7 +1075,7 @@ class ModelProfileService:
 
         The distinction is the whole design. Everything here is derived from
         local state — is there a key, is the protocol one we can dispatch, is
-        there an endpoint and a model — so opening Customize answers "is this
+        there an endpoint and a model — so opening Settings answers "is this
         usable" for every profile at zero network cost and with no chance of a
         page load spending someone's API quota or waking a rate limiter.
 

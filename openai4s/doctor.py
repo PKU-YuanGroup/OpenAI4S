@@ -189,7 +189,7 @@ def _model_source(
 ) -> tuple[str, str, str]:
     """Where the reported model id came from: (source, note, overridden variable).
 
-    A turn reads the settings saved by Customize -> Models or `openai4s init`
+    A turn reads the settings saved by Settings -> Models or `openai4s init`
     before it reads the environment, so a model saved once keeps winning over
     an `OPENAI4S_LLM_MODEL` edited afterwards. The report named the model and
     not its origin, which left "I changed `.env` and nothing happened" with no
@@ -228,7 +228,7 @@ def _model(cfg: Any) -> Check:
     """Can we reach a model at all? Configuration only — no network call.
 
     Resolved the way a real turn resolves it: process config **plus** the
-    Customize → Models settings held in the store. Reading `cfg.llm` alone
+    Settings → Models settings held in the store. Reading `cfg.llm` alone
     diagnosed the documented setup path as broken — the daemon boots with no
     key and the model is configured from the UI — so an install that worked
     was told its model check had failed.
@@ -286,7 +286,7 @@ def _model(cfg: Any) -> Check:
         facts["database_settings_read"] = False
     # The value is never reported, only whether one resolved.
     if not llm.api_key and not keyless and unopened is not None:
-        # The key may be saved under Customize -> Models, in the database this
+        # The key may be saved under Settings -> Models, in the database this
         # run left closed; "no key" would be a guess reported as a failure.
         return Check(
             "model",

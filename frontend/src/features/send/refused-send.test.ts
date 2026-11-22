@@ -84,7 +84,7 @@ function fakeEl(): FakeEl {
 }
 
 const NEEDS_KEY =
-  "model profile 'claude-nokey' has no API key: add one in Customize -> Models, " +
+  "model profile 'claude-nokey' has no API key: add one in Settings -> Models, " +
   "set OPENAI4S_CLAUDE_API_KEY for the daemon, or activate another profile";
 
 function refusal(code: string, error: string) {
@@ -338,7 +338,7 @@ describe("send(): a message the server refuses before admission", () => {
     routes["/frames/frame_1/message"] = refusal("model_revision_unavailable", "no longer usable; rebind it");
     routes["/frames/frame_1/model-binding"] = refusal(
       "model_profile_needs_active",
-      "no model profile is active and more than one matches 'gpt-4o'; activate the one this session continues under in Customize -> Models, then send again",
+      "no model profile is active and more than one matches 'gpt-4o'; activate the one this session continues under in Settings -> Models, then send again",
     );
     dialogMock.answer = () => true;
     await send("hello");
@@ -497,7 +497,7 @@ describe("rebindConfirmText", () => {
     for (const message of [
       "this session is pinned to a model configuration that is no longer usable; rebind it to continue",
       "this session's pinned model configuration could not be read; rebind it to continue",
-      "this session is pinned to a model profile whose credential is not available; add its API key in Customize -> Models or rebind the session to continue",
+      "this session is pinned to a model profile whose credential is not available; add its API key in Settings -> Models or rebind the session to continue",
       "this session is pinned to an earlier configuration of its model profile, and the profile now names a different provider or endpoint; its credential is not sent to the old one. Rebind the session to continue",
       "",
     ]) {

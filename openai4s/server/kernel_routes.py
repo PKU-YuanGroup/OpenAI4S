@@ -404,7 +404,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
     m = _INSTALL.match(method, sub)
     if m:
         # NOT gated by notebook_repl: prebuilt-env package install is a
-        # separate Customize → Compute affordance, not the code REPL. Both
+        # separate Settings → Compute affordance, not the code REPL. Both
         # this route and global /kernel/install are nevertheless admin-only
         # in team mode because they mutate the shared runtime environment.
         _require_instance_admin(self, "install shared kernel packages")
