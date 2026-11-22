@@ -23,5 +23,7 @@ F-14 Notebook 面板。Cell 合并与 live 协议从 `app.js`（9765-9910）移�
 | [`editor.ts`](editor.ts) | REPL 输入框的编辑按键，写成作用于 textarea 值和选区的纯函数：Tab/Shift+Tab 缩进与取消缩进，光标在首行/末行时 ↑/↓ 调出历史（`ReplHistory`）。 |
 | [`copy.ts`](copy.ts) | `nbT`：生成的词典里没有的 Notebook 文案（中英文）：内核崩溃提示、新内核分隔线、输出标签、带文字的「中断」按钮和进行中的内核操作。 `nb.runtime.*`：运行状态徽标的文案（生成的中文词典里这些是英文）。 `nbLabelT`（一个 `overrideLookup`）：所有者标签、单元状态和变量查看器的中文文案。 |
 | [`notebook.css`](notebook.css) | 移植之后新增的 Notebook 样式（内核崩溃提示、新内核分隔线、「中断」按钮），只用 `style.css` 已有的 token。 |
+| [`pasted.ts`](pasted.ts) | SYNC-15（决策 22）：聊天输入框里输入或粘贴了 Python 或 R 代码块（不带语言的代码块按 Python）时，在 `#composer-run`（输入框文字上方）显示「在 Notebook 中运行」按钮。只有本会话开启了手动单元（`replEnabledNow`，隔离的只读副本永远不显示）且输入框可用时才显示；Notebook 未打开时粘贴代码块，会读取一次内核状态。点击后通过 `executeNotebookCode` 运行第一个可运行的代码块并打开 Notebook，运行被接受后把代码块从消息中移除（其余文字保留）；被拒绝时输入框保持原样。由 `renderComposerRefChips`（每次输入框改动）和 `watchComposerRun`（开关、REPL 忙碌、会话、语言）重绘。 |
+| [`pasted.test.ts`](pasted.test.ts) | 找到第一个闭合的 Python/R 代码块（无语言即 Python，其他语言和未闭合的代码块跳过），移除时保留文字；手动单元关闭、没有代码块、只读副本、输入框禁用时按钮隐藏，否则显示并写明语言；点击把代码和语言发到 `/kernel/execute` 并打开 Notebook；运行被拒绝时输入框不变。 |
 | [`index.ts`](index.ts) | 对外再导出。 |
 | [`notebook.test.ts`](notebook.test.ts) | 合并、重放去重、invalidate 时机、滚动门控、traceback XSS、被省略后重新出现的流式 `<pre>` 完整重绘、已完成的记录按原文完整显示、阅读时保持已绘制的列表（滚动其他面板不算）、未变化时复用投影与记录对象、kernel 读取按会话隔离并在 invalidate 后重读、Notebook 隐藏时不读取 kernel、REPL 提交与 fork 请求同一时间各只有一个、复制只在确认写入后才报成功。 已构建的导出按钮在切换语言后会重新标注。 |
