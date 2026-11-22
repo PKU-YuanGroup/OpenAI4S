@@ -3412,6 +3412,39 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/message-admissions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/messages [error]": {
       "schema": {
         "properties": {
@@ -5468,6 +5501,9 @@
                 "type": "integer"
               },
               "memories": {
+                "type": "integer"
+              },
+              "message_admissions": {
                 "type": "integer"
               },
               "messages": {
@@ -16773,6 +16809,129 @@
         "type": "object"
       }
     },
+    "GET /frames/([^/]+)/message-admissions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/message-admissions/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "admission_state": {
+            "type": "string"
+          },
+          "branch_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "client_request_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "execution_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "frame_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "model_binding": {
+            "properties": {
+              "model_profile_id": {
+                "type": "string"
+              },
+              "model_profile_revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "model_profile_id",
+              "model_profile_revision"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "refusal": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "status": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "code",
+              "status"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "request_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "admission_state",
+          "branch_id",
+          "client_request_id",
+          "created_at",
+          "execution_id",
+          "frame_id",
+          "job_id",
+          "model_binding",
+          "refusal",
+          "request_id",
+          "updated_at"
+        ],
+        "type": "object"
+      }
+    },
     "GET /frames/([^/]+)/messages [ok]": {
       "schema": {
         "properties": {
@@ -19170,6 +19329,9 @@
           "complete": {
             "type": "boolean"
           },
+          "completed_explicitly": {
+            "type": "boolean"
+          },
           "contacted": {
             "type": "boolean"
           },
@@ -19604,6 +19766,7 @@
           "active_id",
           "base_url",
           "complete",
+          "completed_explicitly",
           "contacted",
           "environment",
           "has_api_key",
@@ -28155,6 +28318,39 @@
       }
     },
     "PATCH /frames/([^/]+)/message [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/message-admissions/([^/]+) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -39596,26 +39792,47 @@
     "POST /frames/([^/]+)/message [ok]": {
       "schema": {
         "properties": {
+          "admission_state": {
+            "type": "string"
+          },
           "annotation_reservation_id": {
             "type": "string"
           },
           "annotations": {
             "type": "string"
           },
+          "branch_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "client_request_id": {
+            "type": "string"
+          },
           "code": {
             "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
           },
           "error": {
             "type": "string"
           },
           "execution_id": {
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "frame_id": {
             "type": "string"
           },
           "job_id": {
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "model_binding": {
             "properties": {
@@ -39630,7 +39847,10 @@
               "model_profile_id",
               "model_profile_revision"
             ],
-            "type": "object"
+            "type": [
+              "null",
+              "object"
+            ]
           },
           "owner": {
             "properties": {
@@ -39645,16 +39865,49 @@
               "id",
               "kind"
             ],
-            "type": "object"
+            "type": [
+              "null",
+              "object"
+            ]
           },
           "queue_position": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "refusal": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "status": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "code",
+              "status"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "replayed": {
+            "type": "boolean"
           },
           "request_id": {
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "status": {
             "type": "string"
+          },
+          "updated_at": {
+            "type": "integer"
           }
         },
         "required": [
@@ -39662,6 +39915,39 @@
           "frame_id",
           "job_id",
           "owner",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/message-admissions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -43272,6 +43558,9 @@
           "complete": {
             "type": "boolean"
           },
+          "completed_explicitly": {
+            "type": "boolean"
+          },
           "contacted": {
             "type": "boolean"
           },
@@ -43603,6 +43892,7 @@
           "active_id",
           "base_url",
           "complete",
+          "completed_explicitly",
           "contacted",
           "environment",
           "has_api_key",
@@ -50915,6 +51205,39 @@
       }
     },
     "PUT /frames/([^/]+)/message [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/message-admissions/([^/]+) [error]": {
       "schema": {
         "properties": {
           "code": {
