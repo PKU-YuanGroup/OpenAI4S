@@ -3063,6 +3063,8 @@ class SessionPackageService:
         active_branch = source.get("active_branch_id") or source_root
         if not isinstance(active_branch, str) or active_branch not in branch_ids:
             raise SessionPackageError("active session branch is invalid")
+        if branch_by_id[active_branch].get("deleted_at") is not None:
+            raise SessionPackageError("active session branch is deleted")
 
         # Schema-v1 packages created before branch-aware conversations omitted
         # ``branch_id`` and therefore belong to the source root.  New packages
@@ -4530,6 +4532,12 @@ class SessionPackageService:
                     source_project=source_project,
                     new_project=new_project,
                 )
+                if record.get("deleted_at") is not None:
+                    # M-73: deleted at the source, deleted here. Its rows came
+                    # along because the branches forked from it inherit them.
+                    self.store.delete_session_branch(
+                        root_frame_id=new_root, branch_id=branch_map[source_branch]
+                    )
                 remaining.remove(source_branch)
                 progressed = True
             if not progressed:

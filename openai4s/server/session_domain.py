@@ -23,7 +23,10 @@ from openai4s.server.notebook_export import NotebookExportService
 from openai4s.server.recovery_control import RecoveryControlService
 from openai4s.server.recovery_recipe import build_recovery_recipe
 from openai4s.server.renderers import RendererRegistry
-from openai4s.server.session_branching import SessionBranchingService
+from openai4s.server.session_branching import (
+    BranchDeletionRefused,
+    SessionBranchingService,
+)
 from openai4s.server.session_package import (
     SessionPackageService,
     session_import_quarantine_key,
@@ -110,6 +113,8 @@ class SessionDomainStore(Protocol):
     def create_session_checkpoint(self, **fields: Any) -> dict: ...
 
     def fork_session_branch(self, **fields: Any) -> dict: ...
+
+    def delete_session_branch(self, **fields: Any) -> dict | None: ...
 
     def get_session_checkpoint(self, checkpoint_id: str) -> dict | None: ...
 
@@ -218,6 +223,9 @@ class _SnapshotFacade:
 
     def fork_branch(self, **fields: Any) -> dict:
         return self.store.fork_session_branch(**fields)
+
+    def delete_branch(self, **fields: Any) -> dict | None:
+        return self.store.delete_session_branch(**fields)
 
     def get_checkpoint(self, checkpoint_id: str) -> dict | None:
         return self.store.get_session_checkpoint(checkpoint_id)
@@ -537,6 +545,34 @@ class SessionDomainService:
             "activatable": True,
         }
 
+    def check_branch_delete(self, root_frame_id: str, *, branch_id: str) -> None:
+        """Raise `BranchDeletionRefused` unless `delete_branch` may proceed."""
+
+        frame = self.store.get_frame(root_frame_id)
+        if frame is None or (frame.get("root_frame_id") or root_frame_id) != (
+            root_frame_id
+        ):
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        self.branching.check_delete(
+            root_frame_id,
+            branch_id=branch_id,
+            active_branch_id=self.store.active_session_branch(root_frame_id),
+        )
+
+    def delete_branch(self, root_frame_id: str, *, branch_id: str) -> dict[str, Any]:
+        """M-73: delete a branch that is not the main line or the active one.
+
+        Raises `BranchDeletionRefused`; see `SessionBranchingService.delete_branch`
+        for what deletion keeps.
+        """
+
+        self.check_branch_delete(root_frame_id, branch_id=branch_id)
+        return self.branching.delete_branch(
+            root_frame_id,
+            branch_id=branch_id,
+            active_branch_id=self.store.active_session_branch(root_frame_id),
+        )
+
     def _question_branch_name(self, root_frame_id: str, message_id: str) -> str | None:
         """M-73: a branch forked from a question is called after it.
 
@@ -563,7 +599,11 @@ class SessionDomainService:
         """Validate and materialize the exact branch head before publication."""
 
         branch = self.store.get_session_branch(branch_id)
-        if branch is None or branch.get("root_frame_id") != root_frame_id:
+        if (
+            branch is None
+            or branch.get("root_frame_id") != root_frame_id
+            or branch.get("deleted_at") is not None
+        ):
             raise KeyError(f"unknown branch {branch_id!r} for this session")
         checkpoint_id = branch.get("head_checkpoint_id")
         checkpoint = (

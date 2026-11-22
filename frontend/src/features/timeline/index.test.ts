@@ -79,3 +79,18 @@ it.each(["branch_projection_restored", "branch_activation_state"])("%s refresh a
   await vi.advanceTimersByTimeAsync(120);
   expect(open).toHaveBeenCalledWith("f", "p", { resetHistory: true });
 });
+
+// Owner decision 24: a branch deleted in another tab leaves this tab's list too.
+it("branch_deleted re-reads the branch list of the open session", async () => {
+  resetStoreFields(); vi.useFakeTimers();
+  S.currentId = "f"; S.project = "p";
+  installTimeline({});
+  const urls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    urls.push(String(url));
+    return { ok: true, status: 200, text: async () => "{}" };
+  }));
+  onEvent({ type: "branch_deleted", root_frame_id: "f", branch_id: "b", ok: true });
+  await vi.advanceTimersByTimeAsync(200);
+  expect(urls.some((url) => url.endsWith("/frames/f/branches"))).toBe(true);
+});

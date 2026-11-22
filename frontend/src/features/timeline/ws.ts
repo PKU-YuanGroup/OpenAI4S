@@ -119,6 +119,7 @@ const BRANCH_LIST_EVENTS = new Set([
   "checkpoint",
   "checkpoint_created",
   "branch_created",
+  "branch_deleted",
 ]);
 
 function handleBranch(m: WsMessage): void {
@@ -185,6 +186,7 @@ export function registerTimelineHandlers(): void {
     "checkpoint",
     "checkpoint_created",
     "branch_created",
+    "branch_deleted",
     "branch_reverted",
     "branch_revert_conflict",
   ]) {
