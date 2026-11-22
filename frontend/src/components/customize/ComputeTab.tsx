@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { t } from "../../i18n";
+import { copyLookup } from "../../i18n/copy";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
@@ -30,6 +31,74 @@ import { markCustomizeLoaded } from "../../features/customize/load";
 import { EnvironmentCard } from "../onboarding/ReadinessPanel";
 import { CustRow, Hdr, InfoRow } from "./ui";
 
+/** Feature-local: the generated `i18n/en.ts` / `zh.ts` are byte-checked extracts. */
+const jobsT = copyLookup({
+  zh: {
+    "jobsRead.loading": "正在读取任务列表…",
+    "jobsRead.unavailable": "任务列表暂不可用：{0}",
+    "jobsRead.stale": "无法刷新任务列表：{0}",
+    "jobsRead.lastConfirmed": "上次确认 {0}",
+    "jobsRead.retryIn": "{0} 秒后自动重读。",
+    "jobsRead.retry": "重试",
+    "jobsRead.checking": "正在读取…",
+    "jobsRead.confirmFirst": "状态未确认，重新读取后才能取消。",
+    "jobsRead.badReply": "返回的不是任务列表",
+  },
+  en: {
+    "jobsRead.loading": "Loading jobs…",
+    "jobsRead.unavailable": "The job list is unavailable: {0}",
+    "jobsRead.stale": "Could not refresh the job list: {0}",
+    "jobsRead.lastConfirmed": "Last confirmed {0}",
+    "jobsRead.retryIn": "Checking again in {0} s.",
+    "jobsRead.retry": "Retry",
+    "jobsRead.checking": "Checking…",
+    "jobsRead.confirmFirst": "Status not confirmed; read it again before cancelling.",
+    "jobsRead.badReply": "the reply was not a job list",
+  },
+});
+
+/**
+ * What the job list shows: `loading` before the first answer, `confirmed`
+ * once a read succeeded, `stale` when a later read failed (the last
+ * confirmed rows stay, stamped), `unavailable` when no read has succeeded.
+ */
+type JobsRead = {
+  phase: "loading" | "confirmed" | "stale" | "unavailable";
+  confirmedAt: number | null;
+  reason: string;
+  /** Seconds until the automatic re-read; 0 when none is scheduled. */
+  retryIn: number;
+  reading: boolean;
+};
+
+/**
+ * A failed read while the last confirmed list had a running or queued job is
+ * read again after 2 s, then 4 s; the third consecutive failure leaves it to
+ * Retry. Only the GET is ever repeated: submit and cancel stay explicit.
+ */
+const JOB_RETRY_MS = [2000, 4000];
+
+const isActiveJob = (j: Record<string, unknown>) =>
+  j.status === "running" || j.status === "queued";
+
+/** The `jobs` array of a reply, or null when the reply is not a job list. */
+function jobList(reply: Record<string, unknown>): Record<string, unknown>[] | null {
+  const list: unknown = reply.jobs;
+  if (!Array.isArray(list)) return null;
+  const ok = list.every((j: unknown) => {
+    const row = j && typeof j === "object" && !Array.isArray(j) ? (j as Record<string, unknown>) : null;
+    return !!row && typeof row.id === "string" && !!row.id && typeof row.status === "string";
+  });
+  return ok ? (list as Record<string, unknown>[]) : null;
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const clock = (at: number | null) => {
+  if (at == null) return "";
+  const d = new Date(at);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+};
+
 export function ComputeTab() {
   const alive = useAlive();
   const lease = useTimerLease();
@@ -39,6 +108,13 @@ export function ComputeTab() {
   const [envs, setEnvs] = useState<Record<string, unknown>[]>([]);
   const [remote, setRemote] = useState<Record<string, unknown> | null>(null);
   const [jobs, setJobs] = useState<Record<string, unknown>[]>([]);
+  const [jobsRead, setJobsRead] = useState<JobsRead>({
+    phase: "loading",
+    confirmedAt: null,
+    reason: "",
+    retryIn: 0,
+    reading: false,
+  });
   const [pkg, setPkg] = useState("");
   const [installing, setInstalling] = useState(false);
   // The environment listing (`runtimes`: what Python and R resolve to) for the
@@ -53,39 +129,73 @@ export function ComputeTab() {
   // One poll chain: each read supersedes the one before it and owns the next
   // tick. Submit and Cancel read too, and every read used to arm a timer of
   // its own, so N chains polled at once and answered out of order.
-  const jobPoll = useRef<{ seq: number; timer: ReturnType<typeof setTimeout> | 0 }>({
-    seq: 0,
-    timer: 0,
-  });
+  // `reading` is the seq of the read in flight (0: none), `failures` the
+  // consecutive failed reads, `active` whether the last confirmed list had a
+  // running or queued job.
+  const jobPoll = useRef<{
+    seq: number;
+    timer: ReturnType<typeof setTimeout> | 0;
+    reading: number;
+    failures: number;
+    active: boolean;
+  }>({ seq: 0, timer: 0, reading: 0, failures: 0, active: false });
 
+  const armJobPoll = (ms: number) => {
+    const poll = jobPoll.current;
+    poll.timer = scheduleTimeout(
+      lease,
+      () => {
+        poll.timer = 0;
+        void loadJobs();
+      },
+      ms,
+    );
+    _jobPoll.value = poll.timer;
+  };
+
+  // A failed read used to become an empty list and stop the poll: a short
+  // 503 looked like every job had gone, and so had their Output buttons.
   const loadJobs = async () => {
     const poll = jobPoll.current;
     const seq = ++poll.seq;
     clearLeaseTimeout(lease, poll.timer);
     poll.timer = 0;
-    let d: Record<string, unknown>;
+    poll.reading = seq;
+    setJobsRead((r) => ({ ...r, retryIn: 0, reading: true }));
+    let list: Record<string, unknown>[] | null = null;
+    let reason = "";
     try {
-      d = await api("/compute/jobs");
-    } catch {
-      d = { jobs: [] };
+      list = jobList(await api("/compute/jobs"));
+      if (!list) reason = jobsT("jobsRead.badReply");
+    } catch (e) {
+      reason = apiErrorText(e);
     }
     if (!alive() || seq !== poll.seq) return;
-    const list = asList(d.jobs) as Record<string, unknown>[];
-    setJobs(list);
-    const anyRunning = list.some(
-      (j) => j.status === "running" || j.status === "queued",
-    );
-    if (anyRunning) {
-      poll.timer = scheduleTimeout(
-        lease,
-        () => {
-          poll.timer = 0;
-          void loadJobs();
-        },
-        1500,
-      );
-      _jobPoll.value = poll.timer;
+    poll.reading = 0;
+    if (list) {
+      poll.failures = 0;
+      poll.active = list.some(isActiveJob);
+      setJobs(list);
+      setJobsRead({ phase: "confirmed", confirmedAt: Date.now(), reason: "", retryIn: 0, reading: false });
+      if (poll.active) armJobPoll(1500);
+      return;
     }
+    poll.failures += 1;
+    const delay = poll.active ? JOB_RETRY_MS[poll.failures - 1] || 0 : 0;
+    setJobsRead((r) => ({
+      phase: r.confirmedAt == null ? "unavailable" : "stale",
+      confirmedAt: r.confirmedAt,
+      reason,
+      retryIn: delay / 1000,
+      reading: false,
+    }));
+    if (delay) armJobPoll(delay);
+  };
+
+  /** Retry: a click while a read is in flight joins that read. */
+  const retryJobs = () => {
+    if (jobPoll.current.reading) return;
+    void loadJobs();
   };
 
   useTabRead(
@@ -464,7 +574,39 @@ export function ComputeTab() {
         </div>
       </div>
       <div class="job-list">
-        {!jobs.length ? (
+        {jobsRead.phase === "stale" || jobsRead.phase === "unavailable" ? (
+          <div class="cust-row" role="status">
+            <div class="info">
+              <div class="nm">
+                {jobsT(
+                  jobsRead.phase === "stale" ? "jobsRead.stale" : "jobsRead.unavailable",
+                  jobsRead.reason,
+                )}
+              </div>
+              <div class="ds">
+                {[
+                  jobsRead.phase === "stale"
+                    ? jobsT("jobsRead.lastConfirmed", clock(jobsRead.confirmedAt))
+                    : "",
+                  jobsRead.retryIn ? jobsT("jobsRead.retryIn", jobsRead.retryIn) : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+            </div>
+            <button
+              type="button"
+              class="outline-btn small"
+              disabled={jobsRead.reading}
+              onClick={retryJobs}
+            >
+              {jobsRead.reading ? jobsT("jobsRead.checking") : jobsT("jobsRead.retry")}
+            </button>
+          </div>
+        ) : null}
+        {jobsRead.phase === "loading" ? (
+          <div class="dock-empty">{jobsT("jobsRead.loading")}</div>
+        ) : jobsRead.phase === "unavailable" ? null : !jobs.length ? (
           <div class="dock-empty">{t("cust.jobs.empty")}</div>
         ) : (
           jobs.map((j) => (
@@ -482,6 +624,9 @@ export function ComputeTab() {
                     (j.truncated
                       ? " " + t("cust.jobs.dropped", (j.dropped_bytes || 0).toLocaleString())
                       : "")}
+                  {jobsRead.phase === "stale" && isActiveJob(j)
+                    ? " " + jobsT("jobsRead.confirmFirst")
+                    : ""}
                 </div>
               </div>
               <button
@@ -493,7 +638,8 @@ export function ComputeTab() {
               >
                 {t("cust.jobs.viewOutput")}
               </button>
-              {j.status === "running" || j.status === "queued" ? (
+              {/* Cancel only on a state this read confirmed: a stale row is read again first. */}
+              {jobsRead.phase === "confirmed" && isActiveJob(j) ? (
                 <button
                   type="button"
                   class="outline-btn small"

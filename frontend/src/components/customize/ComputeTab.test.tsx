@@ -54,7 +54,13 @@ vi.mock("../../features/customize/actions", async (importOriginal) => ({
   custTab: vi.fn(),
 }));
 
-import { createTimerLease, pendingTimerCount, resetTimerLeases } from "../../features/customize/timers";
+import {
+  createTimerLease,
+  disposeTimerLease,
+  pendingTimerCount,
+  resetTimerLeases,
+  type TimerLease,
+} from "../../features/customize/timers";
 import { ComputeTab } from "./ComputeTab";
 
 type Node = {
@@ -300,6 +306,266 @@ describe("Compute job polling", () => {
     const listed = text(find(render(), (node) => node.props?.class === "job-list"));
     expect(listed).toContain("done");
     expect(listed).not.toContain("sleep 60");
+    expect(pendingTimerCount()).toBe(0);
+  });
+});
+
+// NV-06: a failed `GET /compute/jobs` used to become an empty list and stop the
+// poll, so a short 503 looked like every job had gone, Output buttons too.
+describe("Compute job list when a read fails", () => {
+  const JOBS = "/api/v1/compute/jobs";
+  const DONE = { jobs: [{ id: "job-1", kind: "bash", command: "sleep 60", status: "done", exit_code: 0 }] };
+  /** A proxy-style 503: a text body, so the reason is the HTTP status. */
+  const down = () =>
+    Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve("Service Unavailable") });
+  let answers: Array<() => Promise<unknown>> = [];
+  let mounted = true;
+
+  function held() {
+    let release!: (body: unknown) => void;
+    const answer = new Promise((resolve) => {
+      release = (body) => resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(body)) });
+    });
+    return { answer: () => answer, release };
+  }
+
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date(2026, 10, 22, 9, 5, 7));
+    answers = [];
+    mounted = true;
+    mocks.alive = () => mounted;
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === JOBS && !init?.method) return (answers.shift() || (() => reply(RUNNING)))();
+      return reply(url === "/api/v1/compute/gpu" ? { available: false } : {});
+    });
+  });
+  afterEach(() => {
+    mocks.alive = () => true;
+  });
+
+  const listed = () => text(find(render(), (node) => node.props?.class === "job-list"));
+  const banner = () => find(render(), (node) => node.props?.role === "status");
+  const hasButton = (label: string) => !!find(render(), (node) => node.type === "button" && text(node) === label);
+  const onlyGets = () =>
+    mocks.fetch.mock.calls.every(([, init]) => !(init as RequestInit | undefined)?.method);
+
+  async function mount() {
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+  }
+
+  async function advance(ms: number) {
+    await vi.advanceTimersByTimeAsync(ms);
+    await flush();
+  }
+
+  it("first load 503: says the list is unavailable and offers Retry, never 'no jobs'", async () => {
+    answers.push(down);
+    render();
+    expect(listed()).toBe("Loading jobs…");
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+
+    expect(listed()).toContain("The job list is unavailable: HTTP 503");
+    expect(listed()).toContain("Retry");
+    expect(listed()).not.toContain("cust.jobs.empty");
+    expect(listed()).not.toContain("Last confirmed");
+    // Nothing was confirmed running, so nothing is re-read on its own.
+    expect(pendingTimerCount()).toBe(0);
+    await advance(30000);
+    expect(jobReads()).toBe(1);
+
+    button("Retry").props!.onClick!();
+    await flush();
+    expect(jobReads()).toBe(2);
+    expect(listed()).toContain("sleep 60");
+    expect(hasButton("common.cancel")).toBe(true);
+    expect(banner()).toBeNull();
+  });
+
+  it("503 while running keeps the rows and their Output, stamps them, then shows the terminal state", async () => {
+    await mount();
+    expect(hasButton("common.cancel")).toBe(true);
+
+    answers.push(down, () => reply(DONE));
+    await advance(1500);
+    expect(jobReads()).toBe(2);
+    const shown = listed();
+    expect(shown).toContain("Could not refresh the job list: HTTP 503");
+    expect(shown).toContain("Last confirmed 09:05:07");
+    expect(shown).toContain("Checking again in 2 s.");
+    expect(shown).toContain("sleep 60");
+    expect(hasButton("cust.jobs.viewOutput")).toBe(true);
+    // An unconfirmed "running" offers no Cancel until a read confirms it.
+    expect(hasButton("common.cancel")).toBe(false);
+    expect(shown).toContain("Status not confirmed; read it again before cancelling.");
+
+    await advance(1999);
+    expect(jobReads()).toBe(2);
+    await advance(1);
+    expect(jobReads()).toBe(3);
+    expect(listed()).toContain("done");
+    expect(listed()).not.toContain("Last confirmed");
+    expect(banner()).toBeNull();
+    expect(pendingTimerCount()).toBe(0);
+    expect(onlyGets()).toBe(true);
+  });
+
+  it.each([
+    ["no jobs field", {}],
+    ["jobs not an array", { jobs: "none" }],
+    ["a row without an id", { jobs: [{ status: "running" }] }],
+    ["a row that is not an object", { jobs: [null] }],
+    ["a top-level array", []],
+  ])("a 200 with %s is a failed read, not 'no jobs'", async (_label, body) => {
+    answers.push(() => reply(body));
+    await mount();
+    expect(listed()).toContain("The job list is unavailable: the reply was not a job list");
+    expect(listed()).not.toContain("cust.jobs.empty");
+  });
+
+  it("an invalid 200 after a confirmed list keeps the confirmed rows", async () => {
+    answers.push(() => reply(RUNNING), () => reply({ jobs: {} }));
+    await mount();
+    await advance(1500);
+    expect(listed()).toContain("Could not refresh the job list: the reply was not a job list");
+    expect(listed()).toContain("Last confirmed 09:05:07");
+    expect(listed()).toContain("sleep 60");
+  });
+
+  it("only a successful empty array says there are no jobs", async () => {
+    answers.push(() => reply({ jobs: [] }));
+    await mount();
+    expect(listed()).toBe("cust.jobs.empty");
+    expect(banner()).toBeNull();
+    expect(pendingTimerCount()).toBe(0);
+  });
+
+  it("re-reads after 2 s, then 4 s, then leaves it to Retry; a success resets the count", async () => {
+    await mount();
+    answers.push(down, down, down);
+
+    await advance(1500);
+    expect(jobReads()).toBe(2);
+    expect(listed()).toContain("Checking again in 2 s.");
+
+    await advance(1999);
+    expect(jobReads()).toBe(2);
+    await advance(1);
+    expect(jobReads()).toBe(3);
+    expect(listed()).toContain("Checking again in 4 s.");
+
+    await advance(3999);
+    expect(jobReads()).toBe(3);
+    await advance(1);
+    expect(jobReads()).toBe(4);
+    // Third consecutive failure: manual from here.
+    expect(listed()).not.toContain("Checking again");
+    expect(listed()).toContain("Last confirmed 09:05:07");
+    expect(pendingTimerCount()).toBe(0);
+    await advance(120000);
+    expect(jobReads()).toBe(4);
+
+    // The whole outage re-read with GET and nothing else.
+    expect(onlyGets()).toBe(true);
+
+    button("Retry").props!.onClick!();
+    await flush();
+    expect(jobReads()).toBe(5);
+    expect(banner()).toBeNull();
+    expect(hasButton("common.cancel")).toBe(true);
+
+    // The count started over: the next failure waits 2 s again.
+    answers.push(down);
+    await advance(1500);
+    expect(jobReads()).toBe(6);
+    expect(listed()).toContain("Checking again in 2 s.");
+    await advance(2000);
+    expect(jobReads()).toBe(7);
+    expect(onlyGets()).toBe(true);
+  });
+
+  it("leaving clears the retry and drops a late answer; coming back starts from a first load", async () => {
+    await mount();
+    answers.push(down);
+    await advance(1500);
+    expect(pendingTimerCount()).toBe(1);
+
+    const late = held();
+    answers.push(late.answer);
+    button("Retry").props!.onClick!();
+    await flush();
+    expect(jobReads()).toBe(3);
+
+    // Leave: what useAlive / useTimerLease do on unmount.
+    mounted = false;
+    disposeTimerLease(mocks.lease as TimerLease);
+    late.release(RUNNING);
+    await flush();
+    expect(pendingTimerCount()).toBe(0);
+    await advance(60000);
+    expect(jobReads()).toBe(3);
+
+    // Come back: a fresh mount, a fresh lease.
+    hookState.length = 0;
+    effects.length = 0;
+    mocks.lease = createTimerLease();
+    mounted = true;
+    render();
+    expect(listed()).toBe("Loading jobs…");
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(jobReads()).toBe(4);
+    expect(listed()).toContain("sleep 60");
+    expect(listed()).not.toContain("Last confirmed");
+    expect(hasButton("common.cancel")).toBe(true);
+    expect(pendingTimerCount()).toBe(1);
+  });
+
+  it("rapid Retry clicks share one read, and an older read that fails late is dropped", async () => {
+    answers.push(down);
+    await mount();
+    const retry = held();
+    answers.push(retry.answer);
+    // Clicks that land before the button repaints as "Checking…".
+    const click = button("Retry").props!.onClick!;
+    for (let i = 0; i < 5; i += 1) click();
+    await flush();
+    expect(jobReads()).toBe(2);
+    const checking = button("Checking…");
+    expect(checking.props!.disabled).toBe(true);
+    checking.props!.onClick!();
+    await flush();
+    expect(jobReads()).toBe(2);
+
+    retry.release(RUNNING);
+    await flush();
+    expect(listed()).toContain("sleep 60");
+    expect(banner()).toBeNull();
+
+    // A poll read that hangs, then fails after a newer read answered.
+    let fail!: () => void;
+    answers.push(
+      () =>
+        new Promise((resolve) => {
+          fail = () => resolve({ ok: false, status: 503, text: () => Promise.resolve("") });
+        }),
+      () => reply(DONE),
+    );
+    await advance(1500);
+    expect(jobReads()).toBe(3);
+    find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.jobs.cmdPlaceholder")!
+      .props!.onInput!({ target: { value: "true" } });
+    await button("cust.jobs.runBtn").props!.onClick!();
+    await flush();
+    expect(jobReads()).toBe(4);
+    fail();
+    await flush();
+    expect(listed()).toContain("done");
+    expect(banner()).toBeNull();
     expect(pendingTimerCount()).toBe(0);
   });
 });
