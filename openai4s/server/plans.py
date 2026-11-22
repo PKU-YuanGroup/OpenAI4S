@@ -266,6 +266,9 @@ class PlanService:
                     "frame_id": session.root_frame_id,
                     "artifact_id": record.get("artifact_id"),
                     "filename": filename,
+                    # The plan's own record, not a result (owner decision 33);
+                    # `plans.artifact_id` marks it for every later listing.
+                    "role": "process",
                 }
             )
             return record

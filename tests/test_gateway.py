@@ -4951,7 +4951,8 @@ def test_plan_restore_and_delete_artifact_created_shapes(tmp_path):
     rec = runner._write_plan_artifact(st, plan, None, events.append)
     ev = [e for e in events if e.get("type") == "artifact_created"][-1]
     assert "artifact" not in ev
-    assert set(ev) == {"type", "frame_id", "artifact_id", "filename"}
+    assert set(ev) == {"type", "frame_id", "artifact_id", "filename", "role"}
+    assert ev["role"] == "process"  # owner decision 33
     assert ev["artifact_id"] == rec["artifact_id"]
     assert ev["filename"].startswith("plan_") and ev["filename"].endswith(".json")
 

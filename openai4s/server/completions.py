@@ -6,7 +6,7 @@ import ast
 import json
 import re
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from openai4s.agent.actions import (
     Action,
@@ -706,8 +706,13 @@ def completion_message(
     language: str = "en",
     require_fallback: bool = True,
     trusted_delivery: bool = False,
+    role_marks: Mapping[str, str] | None = None,
 ) -> str:
-    """Render a submitted result into a durable, human-facing final message."""
+    """Render a submitted result into a durable, human-facing final message.
+
+    ``role_marks`` is `Store.artifact_role_marks` for ``artifacts``: a role the
+    server recorded wins over the filename (a plan's JSON is a process file).
+    """
     spec = completion if isinstance(completion, dict) else {}
     output = spec.get("output", completion)
     bullets = spec.get("completion_bullets") or []
@@ -749,7 +754,9 @@ def completion_message(
     ]
     bullets_at = len(parts)  # the list goes here, once the artifacts are known
 
-    artifact_lines = _artifact_lines(artifacts, trusted_delivery=trusted_delivery)
+    artifact_lines = _artifact_lines(
+        artifacts, trusted_delivery=trusted_delivery, role_marks=role_marks
+    )
     # ART-8: scripts, logs and copies of inputs are how the result was made,
     # not the result; listing them with the figures and tables buried the
     # deliverables. They stay linked, on one line after the deliverables.
@@ -1127,7 +1134,10 @@ def _deliverable_group(name: str) -> str:
 
 
 def _artifact_lines(
-    artifacts: Iterable[dict], *, trusted_delivery: bool = False
+    artifacts: Iterable[dict],
+    *,
+    trusted_delivery: bool = False,
+    role_marks: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """``(kind, markdown link)`` per artifact: ``process`` or a deliverable group."""
     lines: list[tuple[str, str]] = []
@@ -1136,11 +1146,11 @@ def _artifact_lines(
         if not isinstance(artifact, dict):
             continue
         name = str(artifact.get("filename") or "artifact")
-        role = artifact_role(name)
+        ident = str(artifact.get("artifact_id") or artifact.get("id") or "")
+        role = artifact_role(name, (role_marks or {}).get(ident))
         if role == "internal":
             continue
         version_id = artifact.get("version_id") or artifact.get("latest_version_id")
-        ident = str(artifact.get("artifact_id") or artifact.get("id") or "")
         target = completion_artifact_url(
             artifact_id=ident,
             filename=name,

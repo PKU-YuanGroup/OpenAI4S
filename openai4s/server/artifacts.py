@@ -940,6 +940,17 @@ class ArtifactManager:
         if getattr(self.store, "_artifact_manager_backend", None) is None:
             self.store._artifact_manager_backend = self
 
+    def _role(self, artifact_id: Any, filename: Any) -> str:
+        """`artifact_role` with the role the server recorded for this artifact
+        (owner decision 33: a plan's JSON is a process file, whatever its name).
+        A store without the lookup falls back to the filename."""
+        marks: Mapping[str, str] = {}
+        try:
+            marks = self.store.artifact_role_marks([str(artifact_id or "")])
+        except Exception:  # noqa: BLE001 - a label never fails the event
+            marks = {}
+        return artifact_role(filename, marks.get(str(artifact_id or "")))
+
     @contextmanager
     def writer_transaction(self) -> Iterator[None]:
         """Serialize an entire higher-level Artifact policy/write boundary."""
@@ -2204,7 +2215,7 @@ class ArtifactManager:
                         "id": artifact_id,
                         "artifact_id": artifact_id,
                         "filename": restored.get("filename"),
-                        "role": artifact_role(restored.get("filename")),
+                        "role": self._role(artifact_id, restored.get("filename")),
                         "content_type": restored.get("content_type"),
                         "version_id": restored_version_id,
                         "root_frame_id": root_frame_id,
@@ -2309,7 +2320,7 @@ class ArtifactManager:
                 "artifact": {
                     "id": artifact_id,
                     "filename": artifact["filename"],
-                    "role": artifact_role(artifact["filename"]),
+                    "role": self._role(artifact_id, artifact["filename"]),
                     "version_id": version_id,
                     "root_frame_id": root_frame_id,
                 },
@@ -2436,7 +2447,7 @@ class ArtifactManager:
                 "artifact": {
                     "id": artifact_id,
                     "filename": filename,
-                    "role": artifact_role(filename),
+                    "role": self._role(artifact_id, filename),
                     "root_frame_id": root_frame_id,
                 },
             },
@@ -3793,7 +3804,7 @@ class ArtifactManager:
                     "filename": display_filename,
                     # The list routes' classification (ART-4), so a scratch
                     # script is folded live exactly as it is after a reload.
-                    "role": artifact_role(display_filename),
+                    "role": self._role(record["artifact_id"], display_filename),
                     "content_type": record.get("content_type"),
                     "size_bytes": size,
                     "project_id": session.project_id,

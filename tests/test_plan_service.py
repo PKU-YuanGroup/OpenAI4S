@@ -74,7 +74,9 @@ def test_finalize_reuses_draft_row_artifact_and_resets_progress(tmp_path):
         "frame_id",
         "artifact_id",
         "filename",
+        "role",
     }
+    assert events[0]["role"] == "process"
     assert set(events[1]) == {
         "type",
         "frame_id",
@@ -764,3 +766,67 @@ def test_a_completed_turn_that_settled_every_step_still_completes_the_plan(tmp_p
     assert service.run_execution(frame_id, "science")["plan_status"] == "completed"
     assert store.get_plan(plan_id)["status"] == "completed"
     assert events[-1]["status"] == "completed"
+
+
+def test_a_plans_json_is_a_process_file_by_the_servers_mark_not_its_name(tmp_path):
+    """Owner decision 33 (SCI-35 #6): the plan JSON the plan service writes is
+    how the work was organised, not a result. The server knows which artifact
+    it is (`plans.artifact_id`), so it is `process` on the list route and in
+    the completion summary; a user's own file with a plan-like name is not."""
+    import hashlib
+
+    from openai4s.server import gateway as gateway_mod
+    from openai4s.server.completions import completion_message
+    from tests.test_missing_resource_mutations import _cfg, _handler, _Hub
+
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    try:
+        store = get_store(cfg.db_path)
+        events: list[dict] = []
+        service = PlanService(
+            store=store,
+            emitter_for=lambda _frame_id: events.append,
+            run_message=lambda *args, **kwargs: {},
+        )
+        session = _session(tmp_path, store)
+        service.finalize(
+            session, _reply("Assay plan", "Prepare"), "prose", events.append
+        )
+        plan_artifact = store.get_plan_by_frame(session.root_frame_id)["artifact_id"]
+        assert store.get_artifact(plan_artifact)["filename"].startswith("plan_")
+
+        decoy = session.workspace / "plan_budget.json"
+        decoy.write_text("{}", encoding="utf-8")
+        own = store.save_artifact(
+            path=str(decoy),
+            filename=decoy.name,
+            content_type="application/json",
+            size_bytes=2,
+            checksum=hashlib.sha256(b"{}").hexdigest(),
+            frame_id=session.root_frame_id,
+            project_id=session.project_id,
+        )
+        assert store.artifact_role_marks([plan_artifact, own["artifact_id"]]) == {
+            plan_artifact: "process"
+        }
+
+        handler, seen = _handler(cfg, runner)
+        handler._api("GET", f"/frames/{session.root_frame_id}/artifacts")
+        roles = {row["artifact_id"]: row["role"] for row in seen[-1][0]}
+        assert roles == {plan_artifact: "process", own["artifact_id"]: "deliverable"}
+        handler._api("GET", f"/projects/{session.project_id}/artifact-index")
+        page = seen[-1][0]["artifacts"]
+        assert {row["artifact_id"]: row["role"] for row in page} == roles
+
+        rows = store.list_artifacts({"root_frame_id": session.root_frame_id})
+        text = completion_message(
+            {"output": "Done."},
+            rows,
+            role_marks=store.artifact_role_marks(r["artifact_id"] for r in rows),
+        )
+        artifacts_part, working_part = text.split("Working files")
+        assert "plan_budget.json" in artifacts_part
+        assert "plan_assay" in working_part and "plan_assay" not in artifacts_part
+    finally:
+        runner.close()

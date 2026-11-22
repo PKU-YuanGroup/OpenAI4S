@@ -5247,7 +5247,9 @@ class SessionRunner:
             result = self.artifacts.restore(artifact_id, version_id)
         if result.get("ok") and result.get("artifact"):
             result = dict(result)
-            result["artifact"] = _artifact_json(result["artifact"])
+            result["artifact"] = _artifact_json(
+                result["artifact"], self.store.artifact_role_marks([artifact_id])
+            )
         return result
 
     def mutate_session_domain(
@@ -11663,6 +11665,10 @@ class SessionRunner:
                     language=response_language(user_text),
                     require_fallback=not bool(st.last_model_prose.strip()),
                     trusted_delivery=self.stage1_trusted_delivery,
+                    role_marks=self.store.artifact_role_marks(
+                        str(a.get("artifact_id") or a.get("id") or "")
+                        for a in produced_artifacts
+                    ),
                 )
                 if final_text:
                     delivered_at = int(time.time() * 1000)
@@ -19449,9 +19455,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     for a in store.list_artifacts({"root_frame_id": fid})
                     if a.get("latest_version_id")
                 ]
-                self._json(
-                    [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
-                )
+                offered = artifact_index.offered_artifacts(arts)
+                marks = store.artifact_role_marks(a["artifact_id"] for a in offered)
+                self._json([_artifact_json(a, marks) for a in offered])
                 return
             m = re.fullmatch(r"/projects/([^/]+)/artifacts", sub)
             if m and method == "GET":
@@ -19462,9 +19468,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 arts = self._team_filter_artifacts(
                     store.list_artifacts({"project_id": pid})
                 )
-                self._json(
-                    [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
-                )
+                offered = artifact_index.offered_artifacts(arts)
+                marks = store.artifact_role_marks(a["artifact_id"] for a in offered)
+                self._json([_artifact_json(a, marks) for a in offered])
                 return
             m = re.fullmatch(r"/frames/([^/]+)/execution-log", sub)
             if m and method == "GET":
@@ -20040,8 +20046,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 rec = store.set_priority(
                     m.group(1), int(self._body().get("priority", 0))
                 )
+                marks = store.artifact_role_marks([m.group(1)])
                 self._json(
-                    {"ok": True, "artifact": _artifact_json(rec) if rec else None}
+                    {
+                        "ok": True,
+                        "artifact": _artifact_json(rec, marks) if rec else None,
+                    }
                 )
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/versions", sub)
@@ -22307,7 +22317,9 @@ def _message_artifact_refs(message: dict) -> list[dict]:
     return projected
 
 
-def _artifact_json(a: dict) -> dict:
+def _artifact_json(a: dict, marks: Mapping[str, str] | None = None) -> dict:
+    """``marks``: `Store.artifact_role_marks`, a recorded role that wins over
+    the filename (owner decision 33: a plan's JSON is a process file)."""
     return {
         "id": a["artifact_id"],
         "artifact_id": a["artifact_id"],
@@ -22324,7 +22336,9 @@ def _artifact_json(a: dict) -> dict:
         # the UI can label it "uploaded" instead of "generated".
         "is_user_upload": bool(a.get("is_user_upload", 0)),
         # deliverable | process | internal, decided in one place (ART-4).
-        "role": artifact_index.artifact_role(a.get("filename")),
+        "role": artifact_index.artifact_role(
+            a.get("filename"), (marks or {}).get(str(a["artifact_id"]))
+        ),
     }
 
 

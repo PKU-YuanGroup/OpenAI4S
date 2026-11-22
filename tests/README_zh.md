@@ -339,7 +339,7 @@ streams，验证真实 RPC worker 重启后原结果恢复且不重放 action。
 | [`test_plan.py`](test_plan.py) | plan 的提取与生命周期。模型回了散文而不是 JSON 时，仍然能靠散文回退路径得到一个 plan；批准一个 plan 会把它当成普通的一轮跑起来。 |
 | [`test_plan_repository.py`](test_plan_repository.py) | 三个测试，证明 `PlanRepository` 透过 `Store` 门面的表现完全一致，畸形 JSON 也一样：它会回退，而不是抛出来。 |
 | [`test_plan_resume_claim.py`](test_plan_resume_claim.py) | 恢复一个暂停的 plan：两个真实并发 POST 打向真跑起来的 `ThreadingHTTPServer` 抢同一次状态迁移。原来路由里只是读一下状态，真正的写在它派生的后台任务里且无条件覆盖，于是两个请求都被接受、同一批步骤跑了两遍——这里数的是真正跑了几次，而不是从状态码倒推。 |
-| [`test_plan_service.py`](test_plan_service.py) | plan 服务这一层边界。定稿会复用草稿那一行和它的 Artifact，而不是再造一个；Artifact 写失败时它也扛得住，不会把 plan 丢掉。 |
+| [`test_plan_service.py`](test_plan_service.py) | plan 服务这一层边界。定稿会复用草稿那一行和它的 Artifact，而不是再造一个；Artifact 写失败时它也扛得住，不会把 plan 丢掉。plan 的 JSON 是过程文件，因为服务端给它做了标记（`plans.artifact_id` → `Store.artifact_role_marks`），列表路由和完成摘要都按此分类；用户自己的 `plan_*.json` 仍是交付产物（负责人决定 33）。 |
 | [`test_ports_helper.py`](test_ports_helper.py) | `_ports.py` 的契约，写成能失败的形式：分配必须是对端口 0 的单次 `bind`——用记录 bind 序列的方式断言，因为「调用返回后端口被持有」区分不了干净的 bind-0 和先探测、close 后重绑的实现（后者到那时同样持有端口），变异检验恰好证明了这一点。另一半契约：在端口已知之后挂上的 handler 才是真正应答请求的那一个。 |
 | [`test_protein_mutation_enhancement_skill.py`](test_protein_mutation_enhancement_skill.py) | 蛋白突变 Skill 的纯 helper。枚举、排序与选择轮次都是确定性的；错误路径被明确检查：野生型残基对不上的突变、越界的位点、没有位点的变体，一律抛错，而不是被悄悄打了分。 |
 | [`test_protein_design_mcp.py`](test_protein_design_mcp.py) | 原子 protein-design MCP connector，使用真实 stdio 和临时 fake backend 子进程驱动。它固定内置 connector-directory 入口、九工具 catalog、RFdiffusion 的 `deterministic + design_startnum` seed 契约及 PDB/TRB 配对、ProteinMPNN 官方 chain/fixed-position 参数和独立 motif/target/map 校验、blind ColabFold 的断网 namespace 与冻结参数、失败终态记录、路径约束，以及修正后的 Rosetta unsatisfied-H-bond 字段。整个模块标为 `stubbed_backend`，伪造的科学响应不会进入 API schema capture。 |

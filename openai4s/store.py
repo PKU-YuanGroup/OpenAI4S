@@ -53,7 +53,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from openai4s.capabilities import CapabilityStateService, SpecialistProfileService
 from openai4s.execution.dependencies import (
@@ -4880,6 +4880,19 @@ class Store:
 
     def list_plans(self, frame_id: str, *, limit: int = 50) -> list[dict]:
         return self._plans.list_for_frame(frame_id, limit=limit)
+
+    def artifact_role_marks(self, artifact_ids: Iterable[str]) -> dict[str, str]:
+        """The role the server recorded for an artifact, where it recorded one.
+
+        A plan's JSON is the plan service's own record of the plan, not a
+        result: `process` (owner decision 33), known from `plans.artifact_id`
+        rather than guessed from a `plan_*.json` name. Everything else is
+        classified by `artifact_paths.artifact_role` from its filename.
+        """
+        return {
+            artifact_id: "process"
+            for artifact_id in self._plans.artifact_ids(artifact_ids)
+        }
 
     def update_plan(
         self,
