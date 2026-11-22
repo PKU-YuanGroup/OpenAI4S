@@ -625,7 +625,7 @@ export function ComputeTab() {
                       ? " " + t("cust.jobs.dropped", (j.dropped_bytes || 0).toLocaleString())
                       : "")}
                   {jobsRead.phase === "stale" && isActiveJob(j)
-                    ? " " + jobsT("jobsRead.confirmFirst")
+                    ? " · " + jobsT("jobsRead.confirmFirst")
                     : ""}
                 </div>
               </div>
