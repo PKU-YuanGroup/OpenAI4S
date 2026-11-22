@@ -17374,8 +17374,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             or cfg.llm.provider,
                             "model": store.get_setting("llm_model")
                             or _default_model["id"],
-                            "base_url": store.get_setting("llm_base_url")
-                            or cfg.llm.base_url,
+                            # A team member is told which model, not where
+                            # the admin sends it (owner decision 25).
+                            "base_url": (
+                                ""
+                                if team_policy.hides_instance_endpoint(self)
+                                else store.get_setting("llm_base_url")
+                                or cfg.llm.base_url
+                            ),
                             "has_api_key": bool(runner.effective_api_key()),
                         }
                     )
@@ -21433,7 +21439,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- payload builders ------------------------------------------
         def _models_payload(self) -> dict:
-            payload = model_profiles.models_payload(_default_model["id"])
+            payload = model_profiles.models_payload(
+                _default_model["id"],
+                hide_endpoint=team_policy.hides_instance_endpoint(self),
+            )
             payload["credential_missing"] = runner.llm_credential_missing()
             return payload
 
@@ -21446,7 +21455,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # repair for the drift above, which is now fixed where the drift
             # started -- at the seed -- rather than by a later route happening
             # to be visited. Keeping a dead correction reads as coverage.
-            payload, _ = model_profiles.profiles_payload()
+            payload, _ = model_profiles.profiles_payload(
+                hide_endpoint=team_policy.hides_instance_endpoint(self)
+            )
             return payload
 
         def _skills_catalog(self, disabled: set[str]) -> list[dict]:

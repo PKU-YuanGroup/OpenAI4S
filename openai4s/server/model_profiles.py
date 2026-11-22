@@ -1138,18 +1138,21 @@ class ModelProfileService:
             "checked_endpoint": False,
         }
 
-    def public_profile(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+    def public_profile(
+        self, profile: Mapping[str, Any], *, hide_endpoint: bool = False
+    ) -> dict[str, Any]:
         """Return a profile projection that never includes the raw API key.
 
         ``has_api_key`` resolves rather than testing the field, so a profile
         whose keychain entry was revoked reports honestly instead of claiming a
-        credential it can no longer produce.
+        credential it can no longer produce. ``hide_endpoint`` blanks
+        ``base_url`` for a team member (`team_policy.hides_instance_endpoint`).
         """
         return {
             "id": profile.get("id"),
             "name": profile.get("name") or "",
             "provider": profile.get("provider") or "",
-            "base_url": profile.get("base_url") or "",
+            "base_url": "" if hide_endpoint else (profile.get("base_url") or ""),
             "model": profile.get("model") or "",
             "has_api_key": bool(self.resolve_key(profile)),
             # Where the credential this profile is dispatched under comes from:
@@ -1176,13 +1179,16 @@ class ModelProfileService:
             "effective_capabilities": self.effective_capabilities(profile),
         }
 
-    def models_payload(self, default_model_id: str) -> dict[str, Any]:
+    def models_payload(
+        self, default_model_id: str, *, hide_endpoint: bool = False
+    ) -> dict[str, Any]:
         """Build the header selector from the live model and the saved profiles.
 
         Built-in provider defaults are deliberately absent. An endpoint the user
         never configured must not be selectable: picking it would only fail at
         send time for want of a key. A profile that leaves `model` blank still
-        appears, resolved through its protocol's default.
+        appears, resolved through its protocol's default. ``hide_endpoint``
+        leaves each profile's ``base_url`` out of its entry and description.
         """
         live = self.store.get_setting("llm_model") or self.cfg.llm.model or "default"
         models: list[dict[str, Any]] = []
@@ -1240,7 +1246,7 @@ class ModelProfileService:
                 profile.get("provider"), profile.get("model")
             )
             provider = str(profile.get("provider") or "")
-            base_url = str(profile.get("base_url") or "")
+            base_url = "" if hide_endpoint else str(profile.get("base_url") or "")
             add(
                 profile_id,
                 profile.get("name") or model_id or "profile",
@@ -1287,7 +1293,9 @@ class ModelProfileService:
         )
         return profile if same else None
 
-    def profiles_payload(self) -> tuple[dict[str, Any], str | None]:
+    def profiles_payload(
+        self, *, hide_endpoint: bool = False
+    ) -> tuple[dict[str, Any], str | None]:
         """Return saved profiles without materializing built-in endpoints.
 
         Older releases seeded the model catalog into every user's saved profile
@@ -1335,7 +1343,10 @@ class ModelProfileService:
         ]
         return (
             {
-                "profiles": [self.public_profile(profile) for profile in profiles],
+                "profiles": [
+                    self.public_profile(profile, hide_endpoint=hide_endpoint)
+                    for profile in profiles
+                ],
                 "active_id": self.store.get_setting("active_model_profile") or "",
                 "protocols": list(PROFILE_PROTOCOLS),
             },

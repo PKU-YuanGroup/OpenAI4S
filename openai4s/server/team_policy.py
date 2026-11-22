@@ -388,6 +388,18 @@ def may_change_instance_config(handler: Any) -> bool:
     return not enabled(handler) or is_admin(handler)
 
 
+def hides_instance_endpoint(handler: Any) -> bool:
+    """Whether this reader is shown the instance model endpoints blanked.
+
+    A member reads which provider and model are active -- the UI names them --
+    but not where the admin sends the traffic: an internal gateway's address
+    is the operator's to give out, and the member cannot change it anyway.
+    Every route that projects the live `llm_base_url` or a saved profile's
+    `base_url` asks this, so the answer cannot differ between them.
+    """
+    return enabled(handler) and not is_admin(handler)
+
+
 # --- permission rules -------------------------------------------------------
 
 

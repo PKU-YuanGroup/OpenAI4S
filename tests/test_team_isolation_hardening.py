@@ -580,6 +580,61 @@ def test_a_member_cannot_repoint_the_group_llm_endpoint(daemon):
     assert status == 200
 
 
+def test_a_member_reads_the_active_model_but_not_the_admins_endpoint(daemon):
+    """Owner decision 25: the routes a member reads to name the active model
+    (`/config/llm`, `/model-profiles`, and the two that project the same
+    profile rows, `/models` and `/onboarding`) blank the admin's `base_url`
+    on the server. The UI already hid it for a member; the bytes did not."""
+    bob = _login(daemon, "bob", "fake-pw-b")
+    root = _login(daemon, "root", "fake-pw-r")
+    live = "https://llm-gateway.internal.example/v1"
+    saved = "https://profile-gateway.internal.example/v1"
+
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/config/llm",
+        {"provider": "chatgpt", "model": "gpt-test", "base_url": live},
+        cookie=root,
+    )
+    assert status == 200, raw[:200]
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/model-profiles",
+        {
+            "name": "Group",
+            "provider": "chatgpt",
+            "model": "gpt-test",
+            "base_url": saved,
+        },
+        cookie=root,
+    )
+    assert status == 201, _body(raw)
+
+    routes = (
+        "/api/v1/config/llm",
+        "/api/v1/model-profiles",
+        "/api/v1/models",
+        "/api/v1/onboarding",
+    )
+    for path in routes:
+        status, raw = _get(daemon.port, path, cookie=bob)
+        assert status == 200, f"{path}: {raw[:200]}"
+        body = raw.split(b"\r\n\r\n", 1)[1]
+        assert b"internal.example" not in body, f"{path} told a member: {body[:300]}"
+    member_view = _body(_get(daemon.port, "/api/v1/config/llm", cookie=bob)[1])
+    assert member_view["model"] == "gpt-test" and member_view["base_url"] == ""
+    profiles = _body(_get(daemon.port, "/api/v1/model-profiles", cookie=bob)[1])
+    assert [p["name"] for p in profiles["profiles"]] == ["Group"]
+    assert profiles["profiles"][0]["base_url"] == ""
+
+    # The admin still reads both, on every route that carries them.
+    admin_llm = _body(_get(daemon.port, "/api/v1/config/llm", cookie=root)[1])
+    assert admin_llm["base_url"] == live
+    for path in routes[1:]:
+        status, raw = _get(daemon.port, path, cookie=root)
+        assert status == 200 and saved.encode() in raw, path
+
+
 def test_shares_are_scoped_to_the_session_they_project(daemon):
     """A share URL is a capability: anyone holding it reads the session. So
     listing every share in the org hands them out, and revoking one is

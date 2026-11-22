@@ -34,13 +34,17 @@ def _payload(
     model_discovery: Any,
     *,
     can_configure: bool = True,
+    hide_endpoint: bool = False,
 ) -> dict[str, Any]:
-    profiles, _unused = model_profiles.profiles_payload()
+    profiles, _unused = model_profiles.profiles_payload(hide_endpoint=hide_endpoint)
     payload = service.web_status(
         profiles=profiles,
         catalog=model_discovery.catalog(),
         environment=standard_profile_readiness(enabled=True),
     )
+    if hide_endpoint:
+        # The live endpoint is the admin's, like each profile's (decision 25).
+        payload["base_url"] = ""
     # Whether this reader may save what the wizard asks for (TEAM-10). In team
     # mode the model setup is an admin's, and a member who was shown the
     # wizard could neither continue nor skip it: both are 403 `admin_only`.
@@ -80,6 +84,7 @@ def handle(
                 model_profiles,
                 model_discovery,
                 can_configure=team_policy.may_change_instance_config(self),
+                hide_endpoint=team_policy.hides_instance_endpoint(self),
             )
         )
         return True
