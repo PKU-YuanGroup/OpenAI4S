@@ -136,8 +136,13 @@ describe("source files are highlighted by extension (M-62)", () => {
     setArtifactsFetch(null);
     vi.unstubAllGlobals();
   });
+  // The text between the highlighter's own tags, each entity decoded once.
+  const ENTITIES: Record<string, string> = { lt: "<", gt: ">", quot: '"', "#39": "'", amp: "&" };
   const unescape = (html: string) =>
-    html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+    html
+      .split(/<[^>]*>/)
+      .join("")
+      .replace(/&(lt|gt|quot|#39|amp);/g, (_, name: string) => ENTITIES[name] ?? "");
 
   it("colours an R script and keeps its text byte for byte", async () => {
     const source = 'fit <- coxph(Surv(time, status) ~ age, data = df) # model\nif (x < 1) print("<b>")\n';
