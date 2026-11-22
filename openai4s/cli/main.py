@@ -2539,12 +2539,12 @@ def cmd_init(args) -> int:
 
     # `complete` says the first-run setup was saved (the Web wizard's flag),
     # not that a model can be called: `"has_api_key": false, "complete": true`
-    # read as ready to a script. A keyless local endpoint needs no key.
-    needs_api_key = not result.has_api_key and not keyless_endpoint(
+    # read as ready to a script. A keyless local endpoint needs no key. The
+    # flag is derived from the secret-free projection, never from the store.
+    payload = result.as_dict()
+    payload["needs_api_key"] = not payload["has_api_key"] and not keyless_endpoint(
         result.provider, result.model, result.base_url
     )
-    payload = result.as_dict()
-    payload["needs_api_key"] = needs_api_key
     if search is not None:
         payload["search"] = search
     if args.json:
@@ -2555,7 +2555,7 @@ def cmd_init(args) -> int:
     else:
         print(say("init.configured", provider=result.provider, model=result.model))
         print(say("init.stored_in", data_dir=result.data_dir))
-        if needs_api_key:
+        if payload["needs_api_key"]:
             print(say("init.no_api_key"))
         if search is not None:
             backups = [e["id"] for e in search["engines"] if e["usable"]]

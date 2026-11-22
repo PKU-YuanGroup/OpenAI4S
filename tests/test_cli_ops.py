@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -551,8 +552,12 @@ def test_share_update_echoes_the_new_expiry(monkeypatch, capsys):
     _share(monkeypatch, ["update", "sh-1", "--expires", "2h"], replies)
 
     out = capsys.readouterr().out
-    assert out.startswith("updated share sh-1 (2 messages, 0 cells, 0 artifacts)")
-    assert "https://sh-1.example.org/" in out and ", expires 20" in out
+    # The whole line, link included, with the expiry in local time.
+    assert re.fullmatch(
+        r"updated share sh-1 \(2 messages, 0 cells, 0 artifacts\) → "
+        r"https://sh-1\.example\.org/, expires \d{4}-\d{2}-\d{2} \d{2}:\d{2}",
+        out.strip(),
+    )
 
 
 @pytest.mark.parametrize(("answer", "posted"), [("n\n", False), ("y\n", True)])
