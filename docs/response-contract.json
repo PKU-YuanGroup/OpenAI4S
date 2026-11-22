@@ -1373,6 +1373,18 @@
         404
       ]
     },
+    "/frames/([^/]+)/message-admissions/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/frames/([^/]+)/messages": {
       "content_types": [
         "application/json"

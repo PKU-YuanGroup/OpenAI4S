@@ -872,6 +872,9 @@ _CAPTURE_TEXT_BYTES = b"contract capture, editable\n"
 # Fixed, so a re-capture produces a byte-identical artifact. Long enough
 # to satisfy the route's own 24-character floor for a client-supplied id.
 _CAPTURE_RESERVATION = "resv-contractcapture000000001"
+#: NV-01: a plain-message submission receipt the capture holds, in the route's
+#: own shape (32 lowercase hex), so its GET is recorded answering a held key.
+_CAPTURE_CLIENT_REQUEST_ID = "c0ffee00c0ffee00c0ffee00c0ffee01"
 #: Fixed, so the resolved decision is byte-identical across runs.
 _CAPTURE_DECISION_ID = "dec-contractcapture0001"
 #: A connector row for the toggle route to find. Never spawned: enabling it
@@ -1301,6 +1304,25 @@ def _drive_session_surface(
         root_frame_id=frame_id,
         annotation_ids=[pin],
     )
+    # A claimed plain-message receipt (single-user initiator ""), left
+    # `pending` by this daemon: without it the receipt route is only ever
+    # probed with a key nobody holds, and the contract records the 404 alone.
+    from openai4s.storage import message_admissions as message_receipts
+
+    store.message_admissions.claim(
+        root_frame_id=frame_id,
+        initiator="",
+        client_request_id=_CAPTURE_CLIENT_REQUEST_ID,
+        request_digest=message_receipts.request_digest(
+            request="capture receipt",
+            mentions=None,
+            model=None,
+            plan=False,
+            explore=False,
+            task_mode=None,
+        ),
+        daemon_instance=runner._owner_instance_id,
+    )
 
     # Two real coordinator tickets, so the execution projections describe a
     # session that is genuinely busy.
@@ -1406,6 +1428,10 @@ def _drive_session_surface(
         (
             r"/frames/([^/]+)/admissions/([^/]+)",
             f"{base}/admissions/{reservation}",
+        ),
+        (
+            r"/frames/([^/]+)/message-admissions/([^/]+)",
+            f"{base}/message-admissions/{_CAPTURE_CLIENT_REQUEST_ID}",
         ),
         (r"/artifacts/([^/]+)/renderer", f"/artifacts/{artifact_id}/renderer"),
         (

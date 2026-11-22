@@ -53,7 +53,7 @@
       "tests": "tests/test_queued_followups.py",
       "browser_evidence": "tests/browser_admission_fault.mjs",
       "external_evidence": "",
-      "evidence_digest": "4ef7588a74a8384ce55c65e324796982a63335b120c92e490a7af8bd8f11e977"
+      "evidence_digest": "f2a07a2be3f4493628ca0664070b5e958e6ebc39e7f2cf170cc66316bad417fb"
     },
     {
       "source": "R1",
@@ -523,7 +523,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "744f32267cc9b65f8c84ae3d29d11259ea6febadc9be162b5e14e22f4637f371"
+      "evidence_digest": "fc8222ac272be770f59d037da535c6892f0edbe5b218e4df68e92f29271464d0"
     },
     {
       "source": "R5",
@@ -717,7 +717,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "744f32267cc9b65f8c84ae3d29d11259ea6febadc9be162b5e14e22f4637f371"
+      "evidence_digest": "fc8222ac272be770f59d037da535c6892f0edbe5b218e4df68e92f29271464d0"
     },
     {
       "source": "R7",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "13a04b3886625334c619659af86e9a7d75d973ef03be431217759bfe9ab9beb0"
+      "evidence_digest": "914a543927cef241615244ac948e2c9be39e5d6439546194a98f71b90c87ade7"
     },
     {
       "source": "R7",
