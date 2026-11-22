@@ -17,6 +17,7 @@ import {
   setArtifactsFetch,
   translate,
 } from "./api";
+import { loadWorkbenchFlag } from "../table";
 import { artUrl } from "./cache";
 import { compatibilityRendererDescriptor } from "./catalog";
 import { filesT } from "./copy";
@@ -1173,6 +1174,9 @@ describe("every preview entry fails visibly and retries (A1)", () => {
       this.children = [];
       this.html = value;
     }
+    get firstChild(): PreviewNode | null {
+      return this.children[0] ?? null;
+    }
     appendChild(child: PreviewNode): PreviewNode {
       child.parent = this;
       this.children.push(child);
@@ -1413,15 +1417,23 @@ describe("every preview entry fails visibly and retries (A1)", () => {
     currentId.value = "f-1";
     expect(artifactWorkbench.value).toBe(false);
     const reads: string[] = [];
+    let answerKernel: (() => void) | null = null;
     setArtifactsFetch(async (url) => {
       reads.push(String(url));
       if (String(url).endsWith("/frames/f-1/kernel")) {
+        // The answer lands after the drawing, as it does on a slower runner.
+        await new Promise<void>((resolve) => {
+          answerKernel = resolve;
+        });
         return new Response(JSON.stringify({ state: "none", artifact_workbench: true }));
       }
       return new Response("C\n");
     });
     const root = mount("chemistry-2d");
-    await flush();
+    await vi.waitFor(() => expect(walk(root).some((node) => node.className === "chemistry-view")).toBe(true));
+    expect(answerKernel).toBeTruthy();
+    answerKernel!();
+    await vi.waitFor(() => expect(walk(root).some((node) => node.className === "wb-ketcher-bar")).toBe(true));
     const bar = walk(root).find((node) => node.className === "wb-ketcher-bar");
     expect(bar).toBeTruthy();
     expect(walk(bar!).some((node) => node.textContent === translate("wb.ketcher.edit"))).toBe(true);
@@ -1441,6 +1453,7 @@ describe("every preview entry fails visibly and retries (A1)", () => {
       smilesLines: () => [{ name: "aspirin", smiles: "CC(=O)OC1=CC=CC=C1C(=O)O" }],
     });
     const smi: ArtifactRow = { ...row, filename: "aspirin.smi" };
+    const notes = (root: PreviewNode) => walk(root).filter((node) => node.className === "renderer-note");
     const open = async (workbench: boolean, frame: string): Promise<PreviewNode> => {
       currentId.value = frame;
       setArtifactsFetch(async (url) =>
@@ -1451,10 +1464,14 @@ describe("every preview entry fails visibly and retries (A1)", () => {
       const root = new PreviewNode("div");
       root.page = true;
       renderArtifactDescriptor(host(root), smi, descriptor("chemistry-2d"));
+      // The note asks for the flag once it exists. Wait for that same read
+      // (one per session) and the render it releases, not a fixed number of
+      // turns: a slower runner reads the response body in more of them.
+      await vi.waitFor(() => expect(notes(root)).toHaveLength(1));
+      await loadWorkbenchFlag();
       await flush();
       return root;
     };
-    const notes = (root: PreviewNode) => walk(root).filter((node) => node.className === "renderer-note");
     const openButton = (root: PreviewNode) =>
       walk(root).find((node) => node.tagName === "BUTTON" && node.textContent === filesT("viewer.chem.openKetcher"));
 
