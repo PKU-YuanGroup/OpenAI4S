@@ -25,6 +25,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 import {
   authenticate,
   boundedLogCollector,
@@ -63,6 +64,39 @@ async function allocateLoopbackPort() {
 
 const PNG_1X1 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** A grey RGB PNG of the given size: two versions of one figure tell apart by width. */
+function pngOfWidth(width, height = 1) {
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8; // bit depth
+  header[9] = 2; // truecolour
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, 0x80)]);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", zlib.deflateSync(Buffer.concat(Array.from({ length: height }, () => row)))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 // A small multiple-sequence alignment: the sequence-family renderer a file can
 // select by extension (a bare .fasta capture is stamped text/plain by the
@@ -214,9 +248,9 @@ async function main() {
     assertion(projectId, "no project to attach a session to");
     const frame = await api("/frames", { title: "artifact preview", project_id: projectId });
     const fid = frame.id || frame.frame_id;
-    const upload = async (filename, contentType, bytes) => {
+    const upload = async (filename, contentType, bytes, frameId = fid) => {
       const result = await api("/uploads", {
-        frame_id: fid,
+        frame_id: frameId,
         project_id: projectId,
         filename,
         content_type: contentType,
@@ -255,6 +289,22 @@ async function main() {
     assertion(historyVersions.length >= 2, "history.csv did not keep two immutable versions");
     const firstVersion =
       historyVersions.find((row) => row.is_latest === false) || historyVersions[historyVersions.length - 1];
+    // NV-02: a figure redrawn under the same name (V1 one pixel wide, V2 two),
+    // and a file only another session of the project holds.
+    const plot = await upload("plot.png", "image/png", pngOfWidth(1));
+    const plotHead = await upload("plot.png", "image/png", pngOfWidth(2));
+    assertion(plotHead.artifactId === plot.artifactId, "plot.png did not version in place");
+    const plotV2 = ((await api(`/artifacts/${plot.artifactId}/versions`)).versions || []).find(
+      (row) => row.version_id !== plot.versionId,
+    )?.version_id;
+    assertion(plotV2, "plot.png did not keep two immutable versions");
+    const sibling = await api("/frames", { title: "artifact preview sibling", project_id: projectId });
+    const elsewhere = await upload(
+      "elsewhere.csv",
+      "text/csv",
+      "site,reading\nsibling-only,77\n",
+      sibling.id || sibling.frame_id,
+    );
 
     const playwrightModule = process.env.OPENAI4S_PLAYWRIGHT_MODULE;
     let playwright;
@@ -637,6 +687,152 @@ async function main() {
       );
       const text = await page.locator("#dock-viewer table.sheet").innerText();
       assertion(text.includes("1") && !text.includes("2,22"), "fixed version preview showed latest bytes");
+    });
+
+    // NV-02: history entries are drawn by the same window contracts the
+    // transcript uses for stored rows (`renderMessageRefChips`,
+    // `buildStepCard`), into this session's message list.
+    const historyChips = async (cls, refs) => {
+      await page.evaluate(
+        ({ cls: name, refs: rows }) => {
+          const host = document.createElement("div");
+          host.className = "msg user " + name;
+          document.getElementById("messages").appendChild(host);
+          window.renderMessageRefChips(host, rows);
+        },
+        { cls, refs },
+      );
+      return page.locator(`.${cls} .msg-ref-chip`);
+    };
+    const historyCard = async (cls, artifacts) => {
+      await page.evaluate(
+        ({ cls: name, artifacts: rows }) => {
+          const handle = window.buildStepCard({
+            step_id: name,
+            kind: "artifact",
+            status: "done",
+            output: { artifacts: rows },
+          });
+          handle.card.classList.add(name);
+          document.getElementById("messages").appendChild(handle.card);
+        },
+        { cls, artifacts },
+      );
+      return page.locator(`.${cls}`);
+    };
+    const viewerText = async () => await page.locator("#dock-viewer table.sheet").innerText();
+    const viewerDownload = async () =>
+      await page.locator("#dock-viewer .viewer-head a[download]").first().getAttribute("href");
+
+    await runCase(page, "a history ref chip opens its recorded version; Files opens the head", async () => {
+      const openHead = async () => {
+        await page.evaluate(() => window.setActiveTab("files"));
+        await page.locator(`#results-list .art[data-artifact-id="${history.artifactId}"]`).click();
+        await waitUntil("the head in the viewer", async () => (await viewerText()).includes("22"));
+        const head = await viewerDownload();
+        assertion(!String(head).includes("/versions/"), `the Files card pinned a version: ${head}`);
+      };
+      // The file is listed (and open) at its head, version two...
+      await openHead();
+      const chip = await historyChips("nv02-chip", [
+        { display_name: "history.csv", artifact_id: history.artifactId, version_id: firstVersion.version_id },
+      ]);
+      // ...and the message's chip still opens the version it recorded.
+      await chip.click();
+      await waitUntil("the recorded version in the viewer", async () =>
+        (await viewerDownload()) === `/api/v1/artifacts/versions/${firstVersion.version_id}`);
+      const recorded = await viewerText();
+      assertion(recorded.includes("11") && !recorded.includes("22"), `chip showed other bytes: ${recorded}`);
+      await openHead();
+    });
+
+    await runCase(page, "a reopened step card draws and opens the figure version it recorded", async () => {
+      const card = await historyCard("nv02-card", [
+        { filename: "plot.png", artifact_id: plot.artifactId, version_id: plot.versionId },
+      ]);
+      const img = card.locator(".s-fig img");
+      assertion(
+        (await img.getAttribute("src")) === `/api/v1/artifacts/versions/${plot.versionId}`,
+        "the card's figure is not the recorded version",
+      );
+      // V1 is one pixel wide; the head (V2) is two. The image is lazy: show it.
+      await img.scrollIntoViewIfNeeded();
+      const width = await waitUntil("the recorded figure to load", async () =>
+        await img.evaluate((node) => (node.complete ? node.naturalWidth : 0)));
+      assertion(width === 1, `the card drew ${width}px-wide bytes, not version one`);
+      await card.locator(".s-fig").click();
+      await waitUntil("the recorded figure in the viewer", async () =>
+        (await viewerDownload()) === `/api/v1/artifacts/versions/${plot.versionId}`);
+      assertion(plotV2 !== plot.versionId, "the head is a different version");
+    });
+
+    await runCase(page, "a card or chip that recorded no version says so and opens nothing", async () => {
+      const card = await historyCard("nv02-unrecorded", [
+        { filename: "plot.png", artifact_id: plot.artifactId },
+      ]);
+      assertion((await card.locator("img").count()) === 0, "an unrecorded figure drew the head");
+      const note = await card.locator(".s-fig-note").innerText();
+      assertion(/Historical version not recorded|历史版本未记录/.test(note), `no unrecorded note: ${note}`);
+      const before = await viewerDownload();
+      await card.locator(".s-fig").click();
+      await waitUntil("the unrecorded hint", async () =>
+        /Historical version not recorded|历史版本未记录/.test(await page.locator("#composer-hint").innerText()));
+      const chip = await historyChips("nv02-chip-unrecorded", [
+        { display_name: "history.csv", artifact_id: history.artifactId },
+      ]);
+      await chip.click();
+      assertion((await viewerDownload()) === before, "an unrecorded entry changed the viewer");
+    });
+
+    await runCase(page, "an uncached ref to another session's file opens through the server", async () => {
+      const chip = await historyChips("nv02-chip-elsewhere", [
+        { display_name: "elsewhere.csv", artifact_id: elsewhere.artifactId, version_id: elsewhere.versionId },
+      ]);
+      await chip.click();
+      await waitUntil("the other session's file", async () => (await viewerText()).includes("sibling-only"));
+      assertion(
+        (await viewerDownload()) === `/api/v1/artifacts/versions/${elsewhere.versionId}`,
+        "the cross-session chip did not open its recorded version",
+      );
+    });
+
+    await runCase(page, "a late version lookup does not replace the newer view", async () => {
+      const held = `**/api/v1/artifacts/${history.artifactId}/versions`;
+      let release;
+      let started;
+      const gate = new Promise((resolve) => { release = resolve; });
+      const requested = new Promise((resolve) => { started = resolve; });
+      await page.route(held, async (route) => {
+        started();
+        await gate;
+        // A case that failed first has already unrouted this request.
+        await route.continue().catch(() => {});
+      });
+      try {
+        const chips = await historyChips("nv02-chip-race", [
+          { display_name: "history.csv", artifact_id: history.artifactId, version_id: firstVersion.version_id },
+          { display_name: "elsewhere.csv", artifact_id: elsewhere.artifactId, version_id: elsewhere.versionId },
+        ]);
+        await chips.nth(0).click();
+        await Promise.race([requested, new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("the first lookup did not start")), 5000))]);
+        await chips.nth(1).click();
+        await waitUntil("the newer view", async () =>
+          (await viewerDownload()) === `/api/v1/artifacts/versions/${elsewhere.versionId}`);
+        const answered = page.waitForResponse((response) =>
+          response.url().endsWith(`/api/v1/artifacts/${history.artifactId}/versions`));
+        release();
+        await answered;
+        await page.waitForTimeout(300);
+        assertion(
+          (await viewerDownload()) === `/api/v1/artifacts/versions/${elsewhere.versionId}`,
+          "the late answer replaced the newer view",
+        );
+        assertion((await viewerText()).includes("sibling-only"), "the newer preview was replaced");
+      } finally {
+        release();
+        await page.unroute(held);
+      }
     });
 
     await runCase(page, "no page errors during the preview cases", async () => {
