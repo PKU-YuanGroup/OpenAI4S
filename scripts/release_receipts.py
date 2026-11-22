@@ -33,6 +33,16 @@ packaged runtime and is bound to the tarball's own digest. `verify_build_receipt
 refuses a Linux receipt whose evidence is missing, was recorded as `not_run`,
 failed, timed out, describes other bytes, or comes from an older scenario.
 Without this a release could publish a package nothing ever executed.
+
+**Upgrade readback** -- the same report may carry `upgrade_readback`: the
+previous stable Linux bundle (pinned by name, version and SHA-256 in
+`.github/workflows/release.yml`) wrote data that this tarball then migrated and
+read back, and the pre-migration copy was read by the previous bundle again. A
+Linux receipt for any release after 1.0.1 must carry it, bound to this
+tarball's digest and to the pinned previous bundle. An unavailable previous
+bundle, a wrong digest, a scenario that did not run and a failed check are
+refused with different messages. Receipts for 1.0.1 and older are not asked
+for it, so they stay verifiable.
 """
 
 from __future__ import annotations
@@ -70,6 +80,52 @@ RUNTIME_SMOKE_CHECKS = (
 )
 #: The only platform a Linux package receipt's runtime evidence may describe.
 RUNTIME_SMOKE_PLATFORM = ("linux", "x86_64")
+
+#: `runtime_smoke.upgrade_readback`: the previous stable Linux bundle wrote a
+#: project, a session, three Cells and two versions of one CSV; the candidate
+#: took over the same data directory, migrated it and read all of it back, and
+#: the pre-migration copy was then read by the previous bundle again. Written by
+#: `scripts/installed_runtime_smoke.py --baseline-bundle ... --baseline-sha256`.
+UPGRADE_READBACK_SCENARIO_VERSION = 1
+UPGRADE_READBACK_CHECKS = (
+    "baseline_digest",
+    "baseline_seed",
+    "baseline_stop",
+    "backup",
+    "schema_before",
+    "candidate_takeover",
+    "schema_after",
+    "project_session",
+    "cell_records",
+    "csv_versions",
+    "candidate_restart",
+    "restore_backup",
+    "baseline_readback",
+    "clean_exit",
+)
+#: Which release a receipt is for is read from the one name it always binds by
+#: digest, `OpenAI4S-<version>-linux-<arch>.tar.gz`. 1.0.1 is the last release
+#: whose Linux receipt predates `upgrade_readback` (and the first previous
+#: bundle the gate starts from), so a receipt for 1.0.1 or older stays
+#: verifiable without it and every later one must carry it. A version that
+#: cannot be read is treated as later: it fails closed.
+UPGRADE_READBACK_REQUIRED_AFTER = (1, 0, 1)
+#: The previous stable bundle is pinned once, in the release workflow, as the
+#: `linux-runtime-smoke` job's environment. The smoke step, this module and the
+#: staging verifier all read the same three values.
+RELEASE_WORKFLOW = (
+    Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
+)
+UPGRADE_BASELINE_PIN_KEYS = {
+    "name": "OPENAI4S_UPGRADE_BASELINE_NAME",
+    "version": "OPENAI4S_UPGRADE_BASELINE_VERSION",
+    "sha256": "OPENAI4S_UPGRADE_BASELINE_SHA256",
+}
+_RELEASE_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+_LINUX_TARBALL_NAME = re.compile(
+    r"^OpenAI4S-(?P<version>[^-/]+)-linux-(?P<arch>x86_64|aarch64)\.tar\.gz$"
+)
+_RECORD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 #: The archive suffix that names the tarball a Linux receipt describes.
 _LINUX_TARBALL = re.compile(r"-linux-(?P<arch>x86_64|aarch64)\.tar\.gz$")
@@ -264,12 +320,298 @@ def _artifact_rows(artifacts: Iterable[Path]) -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
+# Upgrade readback: the previous stable bundle's data, opened by this release
+# --------------------------------------------------------------------------- #
+def _version_key(version: str) -> tuple[int, int, int] | None:
+    matched = _RELEASE_VERSION.match(str(version or ""))
+    if not matched:
+        return None
+    major, minor, patch = (int(part) for part in matched.groups())
+    return major, minor, patch
+
+
+def tarball_release(name: str) -> str:
+    """The version a Linux tarball's file name declares, or ``""``."""
+    matched = _LINUX_TARBALL_NAME.match(Path(str(name or "")).name)
+    return matched.group("version") if matched else ""
+
+
+def upgrade_readback_required(name: str) -> bool:
+    """Whether a Linux receipt for this tarball must carry `upgrade_readback`."""
+    key = _version_key(tarball_release(name))
+    return key is None or key > UPGRADE_READBACK_REQUIRED_AFTER
+
+
+def pinned_upgrade_baseline(workflow: Path | None = None) -> dict[str, str]:
+    """The previous stable bundle the release workflow pins: name, version, SHA-256.
+
+    Read as text, line by line: each key must be set exactly once as a YAML
+    mapping entry, so a commented-out pin or a second, conflicting one is a
+    refusal rather than a guess.
+    """
+    path = Path(workflow) if workflow is not None else RELEASE_WORKFLOW
+    try:
+        text = path.read_text("utf-8")
+    except OSError as error:
+        raise ReceiptError(
+            f"the pinned upgrade baseline cannot be read from {path.name}: {error}"
+        ) from error
+    pin: dict[str, str] = {}
+    for field, key in UPGRADE_BASELINE_PIN_KEYS.items():
+        found = re.findall(
+            rf"^[ \t]+{key}:[ \t]*[\"']?([^\"'\s#]+)[\"']?[ \t]*(?:#.*)?$",
+            text,
+            re.M,
+        )
+        if len(found) != 1:
+            raise ReceiptError(
+                f"{path.name} sets {key} {len(found)} time(s); the upgrade "
+                "baseline must be pinned exactly once"
+            )
+        pin[field] = found[0]
+    if not _SHA256.match(pin["sha256"]):
+        raise ReceiptError(f"{path.name} pins no SHA-256 for the upgrade baseline")
+    if _version_key(pin["version"]) is None:
+        raise ReceiptError(
+            f"{path.name} pins upgrade baseline version {pin['version']!r}, not "
+            "MAJOR.MINOR.PATCH"
+        )
+    expected_name = (
+        f"OpenAI4S-{pin['version']}-linux-{RUNTIME_SMOKE_PLATFORM[1]}.tar.gz"
+    )
+    if pin["name"] != expected_name:
+        raise ReceiptError(
+            f"{path.name} pins upgrade baseline {pin['name']!r}; version "
+            f"{pin['version']} is {expected_name!r}"
+        )
+    return pin
+
+
+def _bundle_side(raw: Any, role: str) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise ReceiptError(f"upgrade readback records no {role} bundle")
+    name = str(raw.get("name") or "")
+    version = str(raw.get("version") or "")
+    if not name or tarball_release(name) != version or not version:
+        raise ReceiptError(
+            f"upgrade readback names {role} bundle {name or '<none>'!r} with version "
+            f"{version or '<none>'!r}; the name must be "
+            "OpenAI4S-<version>-linux-x86_64.tar.gz for that version"
+        )
+    sha256 = str(raw.get("sha256") or "").lower()
+    if not _SHA256.match(sha256):
+        raise ReceiptError(f"upgrade readback records no {role} bundle SHA-256")
+    schema = raw.get("schema")
+    if not isinstance(schema, int) or isinstance(schema, bool) or schema < 1:
+        raise ReceiptError(f"upgrade readback records no {role} schema")
+    return {"name": name, "version": version, "sha256": sha256, "schema": schema}
+
+
+def _upgrade_records(raw: Any) -> dict[str, Any]:
+    """The ids and raw digests the acceptance record keeps, each one checked."""
+    if not isinstance(raw, Mapping):
+        raise ReceiptError("upgrade readback records no ids or digests")
+    ids = {}
+    for field in ("project_id", "frame_id", "artifact_id"):
+        value = str(raw.get(field) or "")
+        if not _RECORD_ID.match(value):
+            raise ReceiptError(f"upgrade readback records no {field}")
+        ids[field] = value
+    history = raw.get("history_entries")
+    cells = raw.get("cell_ids")
+    if (
+        not isinstance(history, int)
+        or isinstance(history, bool)
+        or not isinstance(cells, list)
+        or len(cells) != history
+        or history < 3
+        or len(set(map(str, cells))) != len(cells)
+        or not all(isinstance(cell, str) and _RECORD_ID.match(cell) for cell in cells)
+    ):
+        raise ReceiptError(
+            "upgrade readback does not record the three Cells the previous bundle "
+            "ran, each by its own id"
+        )
+    versions = raw.get("csv_versions")
+    if not isinstance(versions, list) or len(versions) != 2:
+        count = len(versions) if isinstance(versions, list) else 0
+        raise ReceiptError(
+            f"upgrade readback records {count} CSV version(s), expected both; a "
+            "history version was lost"
+        )
+    rows = []
+    for row in versions:
+        if not isinstance(row, Mapping):
+            raise ReceiptError("upgrade readback has a malformed CSV version row")
+        version_id = str(row.get("version_id") or "")
+        digest = str(row.get("sha256") or "").lower()
+        size = row.get("size_bytes")
+        if (
+            not _RECORD_ID.match(version_id)
+            or not _SHA256.match(digest)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+        ):
+            raise ReceiptError(
+                "upgrade readback records a CSV version without its id, raw SHA-256 "
+                "or size"
+            )
+        rows.append({"version_id": version_id, "sha256": digest, "size_bytes": size})
+    if (
+        len({row["version_id"] for row in rows}) != 2
+        or len({row["sha256"] for row in rows}) != 2
+    ):
+        raise ReceiptError(
+            "upgrade readback records the same CSV version twice; a history version "
+            "was lost"
+        )
+    manifest = str(raw.get("backup_manifest_sha256") or "").lower()
+    if not _SHA256.match(manifest):
+        raise ReceiptError(
+            "upgrade readback records no digest of the pre-migration copy"
+        )
+    return {
+        **ids,
+        "cell_ids": [str(cell) for cell in cells],
+        "history_entries": history,
+        "csv_versions": rows,
+        "backup_manifest_sha256": manifest,
+    }
+
+
+def normalize_upgrade_readback(
+    raw: Any,
+    *,
+    artifact_sha256: str,
+    artifact_name: str | None = None,
+    baseline_pin: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Validate `upgrade_readback` against the tarball and the pinned baseline.
+
+    The refusals keep their causes apart, because each has a different remedy:
+    the previous bundle could not be obtained, it was not the pinned bytes, the
+    scenario was not run, or it ran and a check failed. Each blocks.
+
+    ``baseline_pin`` defaults to the release workflow's pin. The previous
+    bundle must be exactly that pin for a receipt whose version is newer than
+    the pinned one -- the release the pin exists for. A receipt at or below the
+    pinned version was written before the pin moved there, so only its own
+    consistency is checked.
+    """
+    if not isinstance(raw, Mapping):
+        raise ReceiptError("upgrade readback evidence is not an object")
+    if raw.get("scenario_version") != UPGRADE_READBACK_SCENARIO_VERSION:
+        raise ReceiptError(
+            "upgrade readback has scenario_version "
+            f"{raw.get('scenario_version')!r}, this gate requires "
+            f"{UPGRADE_READBACK_SCENARIO_VERSION}"
+        )
+    status = str(raw.get("status") or "")
+    failure = raw.get("failure") if isinstance(raw.get("failure"), Mapping) else {}
+    detail = str(failure.get("detail") or "")
+    if status == "baseline_unavailable":
+        raise ReceiptError(
+            "upgrade readback could not start: the previous stable Linux bundle was "
+            f"unavailable ({detail or 'no detail'})"
+        )
+    if status == "baseline_digest_mismatch":
+        raise ReceiptError(
+            "upgrade readback refused the previous stable Linux bundle: its SHA-256 "
+            f"is not the pinned one ({detail or 'no detail'})"
+        )
+    if status == "not_run":
+        raise ReceiptError(f"upgrade readback was not run: {detail or 'no detail'}")
+    if status != "passed":
+        raise ReceiptError(
+            "upgrade readback did not pass: "
+            f"{failure.get('check', 'scenario')}: {detail}"
+        )
+    if raw.get("failure") is not None:
+        raise ReceiptError(
+            "upgrade readback reports a failure while its status is passed"
+        )
+    baseline = _bundle_side(raw.get("baseline"), "previous")
+    candidate = _bundle_side(raw.get("candidate"), "candidate")
+    expected = str(artifact_sha256 or "").lower()
+    if candidate["sha256"] != expected:
+        raise ReceiptError(
+            f"upgrade readback describes candidate {candidate['sha256'][:12]}, not "
+            f"the tarball being released ({expected[:12] or '<none>'})"
+        )
+    if artifact_name is not None and candidate["name"] != Path(artifact_name).name:
+        raise ReceiptError(
+            f"upgrade readback describes candidate {candidate['name']}, not "
+            f"{Path(artifact_name).name}"
+        )
+    if baseline["sha256"] == candidate["sha256"]:
+        raise ReceiptError(
+            "upgrade readback used the candidate itself as the previous bundle"
+        )
+    pin = dict(baseline_pin) if baseline_pin is not None else pinned_upgrade_baseline()
+    candidate_key = _version_key(candidate["version"])
+    pin_key = _version_key(str(pin.get("version") or ""))
+    if candidate_key is None or pin_key is None or candidate_key > pin_key:
+        for field in ("name", "version", "sha256"):
+            if baseline[field] != str(pin.get(field) or ""):
+                raise ReceiptError(
+                    f"upgrade readback started from previous bundle {field} "
+                    f"{baseline[field]!r}, not the pinned {pin.get(field)!r}"
+                )
+    if upgrade_readback_required(candidate["name"]):
+        baseline_key = _version_key(baseline["version"])
+        if (
+            baseline_key is None
+            or candidate_key is None
+            or baseline_key >= candidate_key
+        ):
+            raise ReceiptError(
+                f"upgrade readback started from {baseline['version']}, which is not "
+                f"older than the candidate {candidate['version']}"
+            )
+    if candidate["schema"] < baseline["schema"]:
+        raise ReceiptError(
+            f"upgrade readback reports schema {baseline['schema']} → "
+            f"{candidate['schema']}; a migration cannot go backwards"
+        )
+    checks = raw.get("checks")
+    if not isinstance(checks, Mapping):
+        raise ReceiptError("upgrade readback records no checks")
+    canonical_checks: dict[str, str] = {}
+    for name in UPGRADE_READBACK_CHECKS:
+        value = str(checks.get(name) or "missing")
+        if value != "passed":
+            raise ReceiptError(
+                f"upgrade readback check {name!r} is {value!r}, not 'passed'"
+            )
+        canonical_checks[name] = "passed"
+    try:
+        duration = float(raw.get("duration_s"))
+    except (TypeError, ValueError):
+        raise ReceiptError("upgrade readback records no duration") from None
+    if not math.isfinite(duration) or duration < 0:
+        raise ReceiptError(f"upgrade readback records no duration (got {duration!r})")
+    return {
+        "scenario_version": UPGRADE_READBACK_SCENARIO_VERSION,
+        "status": "passed",
+        "baseline": baseline,
+        "candidate": candidate,
+        "checks": canonical_checks,
+        "records": _upgrade_records(raw.get("records")),
+        "duration_s": round(duration, 3),
+        "failure": None,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Executed-runtime evidence (appendix B.4, schema 3)
 # --------------------------------------------------------------------------- #
 def normalize_runtime_smoke(
     raw: Any,
     *,
     artifact_sha256: str,
+    artifact_name: str | None = None,
+    upgrade_baseline: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The appendix-B.4 runtime-smoke report, bound to the tarball being released.
 
@@ -280,6 +622,12 @@ def normalize_runtime_smoke(
     ``not_run`` or a timed-out run cannot pass. The report is canonicalised
     before storage: only the B.4 fields and the frozen check names survive, so a
     probe addition cannot smuggle an unbounded diagnostic into a receipt.
+
+    ``upgrade_readback`` is kept, canonicalised the same way, whenever the
+    report carries it. ``artifact_name`` is the tarball the receipt describes;
+    given one whose version is after ``UPGRADE_READBACK_REQUIRED_AFTER``, a
+    report without the field is refused. Without a name (a report checked
+    outside a receipt) the field is validated when present and not demanded.
     """
     if not isinstance(raw, Mapping):
         raise ReceiptError("runtime smoke evidence is not an object")
@@ -353,7 +701,7 @@ def normalize_runtime_smoke(
         raise ReceiptError(
             "runtime smoke evidence reports a failure while status is passed"
         )
-    return {
+    document: dict[str, Any] = {
         "scenario_version": RUNTIME_SMOKE_SCENARIO_VERSION,
         "target": "bundle",
         "artifact_sha256": recorded,
@@ -365,6 +713,23 @@ def normalize_runtime_smoke(
         "duration_s": round(duration, 3),
         "failure": None,
     }
+    upgrade = raw.get("upgrade_readback")
+    if upgrade is None:
+        if artifact_name is not None and upgrade_readback_required(artifact_name):
+            raise ReceiptError(
+                f"runtime smoke evidence for {Path(artifact_name).name} carries no "
+                "upgrade_readback; a Linux release after "
+                f"{'.'.join(map(str, UPGRADE_READBACK_REQUIRED_AFTER))} must show "
+                "that the previous stable bundle's data upgrades and reads back"
+            )
+    else:
+        document["upgrade_readback"] = normalize_upgrade_readback(
+            upgrade,
+            artifact_sha256=recorded,
+            artifact_name=artifact_name,
+            baseline_pin=upgrade_baseline,
+        )
+    return document
 
 
 def _require_smoke_arch(name: str) -> None:
@@ -398,6 +763,7 @@ def build_build_receipt(
     check_runs: Sequence[Mapping[str, Any]] = (),
     notary: Mapping[str, Any] | None = None,
     runtime_smoke: Mapping[str, Any] | None = None,
+    upgrade_baseline: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """What one build job produced, and from what.
 
@@ -414,6 +780,12 @@ def build_build_receipt(
     tarball's own digest, because "the bytes did not change" is not "the bytes
     run". Old receipts remain readable JSON but cannot satisfy this pipeline:
     they describe a package nothing executed.
+
+    For a tarball newer than ``UPGRADE_READBACK_REQUIRED_AFTER`` the report
+    must also carry ``upgrade_readback`` for this tarball and for the pinned
+    previous bundle (``upgrade_baseline``, by default the release workflow's
+    pin). The receipt schema stays 3: the field is required by the version the
+    receipt is for, so a receipt for an older release stays verifiable.
     """
     from scripts import release_gates
 
@@ -467,7 +839,10 @@ def build_build_receipt(
                 "bytes were never executed cannot be released"
             )
         document["runtime_smoke"] = normalize_runtime_smoke(
-            runtime_smoke, artifact_sha256=_digest(linux_artifact)
+            runtime_smoke,
+            artifact_sha256=_digest(linux_artifact),
+            artifact_name=linux_artifact.name,
+            upgrade_baseline=upgrade_baseline,
         )
     elif runtime_smoke is not None:
         raise ReceiptError(
@@ -483,12 +858,15 @@ def _verify_linux_smoke(
     *,
     assets_dir: Path,
     digests: Mapping[str, str] | None,
+    upgrade_baseline: Mapping[str, str] | None = None,
 ) -> None:
     """A Linux receipt must carry executed-runtime evidence for *these* bytes.
 
     The receipt is not itself hashed, so this re-checks the embedded report
     against the artifact row the outer loop already matched to a file on disk:
-    the same tarball digest the report claims to describe.
+    the same tarball digest the report claims to describe, and -- for a release
+    after the first pinned baseline -- the same candidate and pinned previous
+    bundle in its upgrade readback.
     """
     rows = [
         row for row in (document.get("artifacts") or []) if isinstance(row, Mapping)
@@ -510,7 +888,12 @@ def _verify_linux_smoke(
             "runtime smoke evidence; the package bytes being published were never "
             "executed"
         )
-    normalize_runtime_smoke(document.get("runtime_smoke"), artifact_sha256=digest)
+    normalize_runtime_smoke(
+        document.get("runtime_smoke"),
+        artifact_sha256=digest,
+        artifact_name=name,
+        upgrade_baseline=upgrade_baseline,
+    )
 
 
 def verify_build_receipts(
@@ -520,6 +903,7 @@ def verify_build_receipts(
     assets_dir: Path,
     required_kinds: Sequence[str] = (),
     digests: Mapping[str, str] | None = None,
+    upgrade_baseline: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Every receipt must name the frozen SHA, and describe bytes that are here.
 
@@ -617,6 +1001,7 @@ def verify_build_receipts(
                 Path(path),
                 assets_dir=Path(assets_dir),
                 digests=digests,
+                upgrade_baseline=upgrade_baseline,
             )
         seen[kind] = dict(document)
 
