@@ -283,7 +283,9 @@ def login_location(target: str | None) -> str:
     from urllib.parse import quote
 
     nxt = safe_next_path(target)
-    return "/login" if nxt is None else "/login?next=" + quote(nxt, safe="")
+    return _without_line_breaks(
+        "/login" if nxt is None else "/login?next=" + quote(nxt, safe="")
+    )
 
 
 #: A workbench session link: `/projects/<project>/frames/<session id>`. The
@@ -299,7 +301,18 @@ def guest_landing(path: str) -> str:
     link opens that session in the viewer.
     """
     match = _SESSION_LINK.fullmatch(path or "")
-    return "/replay#" + match.group(1) if match else "/replay"
+    return _without_line_breaks("/replay#" + match.group(1) if match else "/replay")
+
+
+def _without_line_breaks(location: str) -> str:
+    """A ``Location`` value, said at the header boundary to hold no line break.
+
+    Both callers already guarantee it: ``safe_next_path`` refuses every
+    character outside printable ASCII and ``quote`` encodes what is left, and a
+    session id is ``[A-Za-z0-9_-]``. Stating it here is what code scanning
+    reads as the response-splitting barrier.
+    """
+    return location.replace("\r", "").replace("\n", "")
 
 
 def public_user(user: dict) -> dict:
