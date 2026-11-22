@@ -1937,13 +1937,15 @@ def test_promote_cell_embeds_recorded_figure_versions_as_safe_data_urls(tmp_path
     assert _embedded_images(text) == [_PNG + b"figure-bytes"]
 
 
+@pytest.mark.parametrize("trusted_delivery", [False, True])
 def test_promote_cell_embeds_the_version_its_cell_made_not_the_workspace_file(
-    tmp_path,
+    tmp_path, trusted_delivery
 ):
     """NV-02: a later Cell overwrote the figure; promoting the earlier Cell
     used to read that newer file from the workspace and freeze it beside the
-    earlier Cell's code and output."""
-    harness = ArtifactHarness(tmp_path)
+    earlier Cell's code and output. Both capture paths keep a readable
+    snapshot: the copied one and the trusted frozen one."""
+    harness = ArtifactHarness(tmp_path, trusted_delivery=trusted_delivery)
     v1 = _record_figure(harness, "fig.png", _PNG + b"version one", "cell-1")
     v2 = _record_figure(harness, "fig.png", _PNG + b"version two", "cell-2")
     assert v1["artifact_id"] == v2["artifact_id"]
