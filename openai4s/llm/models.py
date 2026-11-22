@@ -75,6 +75,12 @@ class TransportError(LLMError):
         #: ``"deadline"`` (it exceeded what was left of the total timeout), or
         #: ``"request_limit"`` (this invocation's explicit attempt cap).
         self.retry_stop: str | None = None
+        #: Internal fact, set only by the transport's ``_url_error``: the
+        #: connection was refused or the host name did not resolve, and the
+        #: logical call had not yet written a request byte. It names a cause
+        #: (``llm_endpoint_unreachable``); it never decides a retry, and it is
+        #: not part of ``to_dict``.
+        self.endpoint_unreachable: bool = False
 
     @property
     def is_rate_limit(self) -> bool:
@@ -150,6 +156,11 @@ def llm_failure_code(exc: BaseException) -> str | None:
 _AUTH_REJECTED_CODES = frozenset({"invalid_api_key", "unauthorized"})
 _MODEL_NOT_FOUND_CODES = frozenset({"model_not_found"})
 _QUOTA_EXHAUSTED_CODES = frozenset({"insufficient_quota"})
+#: The provider machine codes that turn a 404 into "this model is not
+#: available" (`llm_model_unavailable`). Deliberately an explicit allowlist:
+#: every other 404 -- a wrong base URL path, a proxy's own page, a provider
+#: code nobody listed here -- says only that the request target was not found.
+_MODEL_UNAVAILABLE_CODES = frozenset({"model_not_found"})
 
 
 def llm_error_kind(exc: BaseException) -> str | None:
@@ -159,12 +170,25 @@ def llm_error_kind(exc: BaseException) -> str | None:
     adds the failures that are fixed in Settings rather than by waiting:
 
     * ``llm_no_credential`` -- no API key is configured at all;
-    * ``llm_auth_rejected`` -- the provider refused the key (401/403);
+    * ``llm_authentication_failed`` -- the service did not accept the
+      credential (HTTP 401);
+    * ``llm_access_denied`` -- the service refused access (HTTP 403);
     * ``llm_quota_exhausted`` -- the account is out of quota (402), which a
       retry policy cannot help and a rate limit can;
-    * ``llm_model_not_found`` -- the provider has no such model or route (404);
-    * ``llm_network`` -- the request never got an HTTP answer (DNS, connect,
-      TLS).
+    * ``llm_model_unavailable`` -- a 404 whose provider code is in
+      ``_MODEL_UNAVAILABLE_CODES``;
+    * ``llm_request_target_not_found`` -- any other 404: check the endpoint
+      and the model id;
+    * ``llm_endpoint_unreachable`` -- the connection was refused or the host
+      did not resolve before a request byte was written (the transport's
+      ``endpoint_unreachable`` fact);
+    * ``llm_network`` -- any other failure without an HTTP answer (connect
+      timeout, TLS, a reset).
+
+    Two codes from the first version remain for structured signals the
+    status-based ones above do not cover: ``llm_auth_rejected`` (an
+    ``invalid_api_key``/``unauthorized`` code on another status) and
+    ``llm_model_not_found`` (``model_not_found`` on a status other than 404).
 
     Kept apart from `llm_failure_code` because that one also feeds the retry
     records and the recovery ledger, where these would be new vocabulary.
@@ -181,11 +205,21 @@ def llm_error_kind(exc: BaseException) -> str | None:
     known = llm_failure_code(exc)
     if known is not None:
         return known
-    if status in (401, 403) or code in _AUTH_REJECTED_CODES:
+    if status == 401:
+        return "llm_authentication_failed"
+    if status == 403:
+        return "llm_access_denied"
+    if code in _AUTH_REJECTED_CODES:
         return "llm_auth_rejected"
-    if status == 404 or code in _MODEL_NOT_FOUND_CODES:
+    if status == 404:
+        if code in _MODEL_UNAVAILABLE_CODES:
+            return "llm_model_unavailable"
+        return "llm_request_target_not_found"
+    if code in _MODEL_NOT_FOUND_CODES:
         return "llm_model_not_found"
     if isinstance(exc, TransportError) and status is None:
+        if getattr(exc, "endpoint_unreachable", False) is True:
+            return "llm_endpoint_unreachable"
         return "llm_network"
     return None
 
@@ -219,6 +253,40 @@ _SETUP_MESSAGES: dict[str, tuple[str, str]] = {
         "和服务地址。",
         "**The model provider has no such model or route (404).** Check the "
         "model name and the base URL in Settings → Models.",
+    ),
+    "llm_authentication_failed": (
+        "**模型服务未接受身份凭据（HTTP 401）。** 请在 设置 → 模型 检查 API Key "
+        "是否正确、是否过期，以及它是否属于当前的服务地址。",
+        "**The model service did not accept the credentials (HTTP 401).** In "
+        "Settings → Models, check that the API key is correct, not expired, and "
+        "belongs to this endpoint.",
+    ),
+    "llm_access_denied": (
+        "**模型服务拒绝了访问（HTTP 403）。** 请在 设置 → 模型 检查这个账户或 Key "
+        "是否有权使用所选的模型和服务地址。",
+        "**The model service refused access (HTTP 403).** In Settings → Models, "
+        "check that this account or key may use the selected model and endpoint.",
+    ),
+    "llm_model_unavailable": (
+        "**模型服务报告这个模型不可用（HTTP 404）。** 请在 设置 → 模型 检查模型 ID，"
+        "或改用该服务提供的模型。",
+        "**The model service reports that this model is not available (HTTP "
+        "404).** In Settings → Models, check the model id or choose a model this "
+        "service offers.",
+    ),
+    "llm_request_target_not_found": (
+        "**模型服务上找不到所请求的地址（HTTP 404）。** 请在 设置 → 模型 检查服务地址"
+        "和模型 ID。",
+        "**The model service found nothing at the requested address (HTTP "
+        "404).** Check the endpoint and the model id in Settings → Models.",
+    ),
+    "llm_endpoint_unreachable": (
+        "**无法连接到模型服务地址：连接被拒绝或域名无法解析，请求没有发出。** 请在 "
+        "设置 → 模型 检查服务地址，并确认该服务正在运行、本机网络可用。",
+        "**The model endpoint could not be reached: the connection was refused "
+        "or the host name did not resolve, so no request was sent.** Check the "
+        "base URL in Settings → Models, and that the service is running and this "
+        "machine is online.",
     ),
     "llm_network": (
         "**无法连接到模型服务（或请求中断）。** 请检查网络、代理，以及 设置 → 模型 "

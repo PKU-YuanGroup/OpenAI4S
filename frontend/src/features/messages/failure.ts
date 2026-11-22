@@ -22,6 +22,11 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     llm_quota_exhausted: "The model account is out of quota. Top up with the provider, or pick another model in Settings → Models.",
     llm_model_not_found: "The model provider has no such model or route. Check the model name and base URL in Settings → Models.",
     llm_network: "The model service could not be reached. Check the network and the base URL in Settings → Models.",
+    llm_authentication_failed: "The model service did not accept the credentials (401). Check the API key in Settings → Models.",
+    llm_access_denied: "The model service refused access (403). Check that this key may use the model and endpoint in Settings → Models.",
+    llm_model_unavailable: "The model service reports that this model is not available. Check the model id in Settings → Models.",
+    llm_request_target_not_found: "The model service found nothing at the requested address (404). Check the endpoint and the model id in Settings → Models.",
+    llm_endpoint_unreachable: "The model endpoint refused the connection or its host name did not resolve, so no request was sent. Check the base URL in Settings → Models.",
     openModels: "Open model settings",
     supportLog: "Details: logs/support.log in the data directory.",
     continue: "Continue",
@@ -40,6 +45,11 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     llm_quota_exhausted: "模型账户的额度已用完。请到服务商处充值，或在 设置 → 模型 换一个模型。",
     llm_model_not_found: "模型服务找不到这个模型或接口。请在 设置 → 模型 检查模型名称和服务地址。",
     llm_network: "无法连接到模型服务。请检查网络，以及 设置 → 模型 里的服务地址。",
+    llm_authentication_failed: "模型服务未接受身份凭据（401）。请在 设置 → 模型 检查 API Key。",
+    llm_access_denied: "模型服务拒绝了访问（403）。请在 设置 → 模型 检查这个 Key 是否有权使用该模型和服务地址。",
+    llm_model_unavailable: "模型服务报告这个模型不可用。请在 设置 → 模型 检查模型 ID。",
+    llm_request_target_not_found: "模型服务上找不到所请求的地址（404）。请在 设置 → 模型 检查服务地址和模型 ID。",
+    llm_endpoint_unreachable: "模型服务地址拒绝连接或域名无法解析，请求没有发出。请在 设置 → 模型 检查服务地址。",
     openModels: "打开模型设置",
     supportLog: "详情见数据目录下的 logs/support.log。",
     continue: "继续",
@@ -86,6 +96,10 @@ export function canContinueFailure(code: unknown): boolean {
 /**
  * Failures fixed in Settings → Models, not by trying again: no key, a
  * rejected key, no quota, no such model, no connection (`llm_error_kind`).
+ * NV-05 split the first version's rejected key / missing model / no
+ * connection by what the daemon can prove (401, 403, a listed 404 code, any
+ * other 404, a refusal before sending); rows stored with the first version's
+ * codes keep their own sentence and the same button.
  */
 export function needsModelSettings(code: unknown): boolean {
   return [
@@ -94,6 +108,11 @@ export function needsModelSettings(code: unknown): boolean {
     "llm_quota_exhausted",
     "llm_model_not_found",
     "llm_network",
+    "llm_authentication_failed",
+    "llm_access_denied",
+    "llm_model_unavailable",
+    "llm_request_target_not_found",
+    "llm_endpoint_unreachable",
   ].includes(String(code || ""));
 }
 

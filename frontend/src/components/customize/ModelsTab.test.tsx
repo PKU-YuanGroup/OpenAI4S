@@ -563,3 +563,35 @@ describe("M2 model capability provenance", () => {
     expect(tagged(badgeTree(tree), "data-effective-field")).toHaveLength(0);
   });
 });
+
+describe("NV-05 opened from a failed turn's 打开模型设置", () => {
+  it("reads only local settings: no probe, no model-list fetch, no write", async () => {
+    // A profile whose last turn failed with a 401: the tab shows it, and the
+    // probe stays behind its own Test button.
+    await open({
+      "/model-profiles": () =>
+        response({
+          profiles: [
+            {
+              id: "mp-1",
+              name: "Lab key",
+              provider: "chatgpt",
+              model: "gpt-test",
+              base_url: "https://api.example/v1",
+              has_api_key: true,
+              readiness: { state: "ready", detail: "" },
+            },
+          ],
+          active_id: "mp-1",
+          protocols: ["chatgpt"],
+        }),
+      "/config/llm": () => response(LIVE),
+    });
+    const calls = mocks.fetch.mock.calls as Array<[string, RequestInit | undefined]>;
+    expect(calls.map(([url]) => url)).toContain("/api/v1/model-profiles");
+    for (const [url, init] of calls) {
+      expect(String(init?.method || "GET").toUpperCase(), url).toBe("GET");
+      expect(url).not.toMatch(/probe|discover|\/message|chat/);
+    }
+  });
+});

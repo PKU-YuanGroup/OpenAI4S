@@ -20,6 +20,7 @@ value, which is also the only way to pin the Retry-After/backoff precedence.
 
 import http.client
 import io
+import socket
 import urllib.error
 
 import pytest
@@ -1195,14 +1196,15 @@ def _kinded(status=None, error_code=None, cls=TransportError):
     ("exc", "kind"),
     [
         (MissingCredentialError("no API key configured"), "llm_no_credential"),
-        (_kinded(401), "llm_auth_rejected"),
-        (_kinded(403), "llm_auth_rejected"),
+        (_kinded(401), "llm_authentication_failed"),
+        (_kinded(403), "llm_access_denied"),
         (_kinded(400, "invalid_api_key"), "llm_auth_rejected"),
         (_kinded(402), "llm_quota_exhausted"),
         # A provider that answers 429 for an empty account: waiting will not
         # help, so it must not read as a rate limit.
         (_kinded(429, "insufficient_quota"), "llm_quota_exhausted"),
-        (_kinded(404), "llm_model_not_found"),
+        (_kinded(404), "llm_request_target_not_found"),
+        (_kinded(404, "model_not_found"), "llm_model_unavailable"),
         (_kinded(400, "model_not_found"), "llm_model_not_found"),
         (_kinded(None), "llm_network"),
         # The vocabulary `llm_failure_code` already had is passed through.
@@ -1235,9 +1237,9 @@ def test_the_retry_vocabulary_did_not_grow():
     ("exc", "needle"),
     [
         (MissingCredentialError("no key"), "Settings → Models"),
-        (_kinded(401), "rejected the API key"),
+        (_kinded(401), "did not accept the credentials"),
         (_kinded(402), "out of quota"),
-        (_kinded(404), "no such model"),
+        (_kinded(404), "found nothing at the requested address"),
         (_kinded(None), "could not be reached"),
     ],
 )
@@ -1283,3 +1285,300 @@ def test_a_tls_failure_behind_the_connection_error_is_named():
     assert "self-signed certificate in certificate chain" in english
     assert "SSL_CERT_FILE" in english and "SSL_CERT_FILE" in chinese
     assert "opaque" not in english
+
+
+# --------------------------------------------------------------------------
+# NV-05: a model failure with a fix in Settings names exactly which one
+# --------------------------------------------------------------------------
+#
+# Driven through the real transport (`_urlopen` is its documented open seam),
+# so the error the classifier reads is the one a provider answer produces.
+# The synthetic secret below is deliberately not credential-shaped: it only
+# has to be recognisable if any of it leaked.
+
+_NV05_SECRET = "nv05-private-upstream-marker-7f3e"
+_NV05_KINDS = (
+    "llm_authentication_failed",
+    "llm_access_denied",
+    "llm_model_unavailable",
+    "llm_request_target_not_found",
+    "llm_endpoint_unreachable",
+)
+
+
+def _failing_post(monkeypatch, failure, **kwargs):
+    """Every attempt fails with ``failure``; returns (error, attempts)."""
+    attempts = []
+
+    def urlopen(*_a, **_k):
+        attempts.append(1)
+        raise failure() if callable(failure) else failure
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    with pytest.raises(TransportError) as caught:
+        post_json("https://x.invalid/v1", {}, {}, 5, sleep=_Recorder(), **kwargs)
+    return caught.value, len(attempts)
+
+
+def _http(code, body, headers=None):
+    return lambda: _http_error(code, body.encode("utf-8"), headers)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "kind"),
+    [
+        (
+            401,
+            '{"error":{"code":"invalid_api_key","message":"%s"}}',
+            "llm_authentication_failed",
+        ),
+        (403, '{"error":{"message":"%s"}}', "llm_access_denied"),
+        (
+            404,
+            '{"error":{"code":"model_not_found","message":"%s"}}',
+            "llm_model_unavailable",
+        ),
+        # Any other 404 -- another provider code, a proxy's page, no body --
+        # says only that the target was not found: endpoint and model id.
+        (
+            404,
+            '{"error":{"code":"not_found_error","message":"%s"}}',
+            "llm_request_target_not_found",
+        ),
+        (404, "<html><body>%s</body></html>", "llm_request_target_not_found"),
+        (404, "", "llm_request_target_not_found"),
+        # An exact allowlist: a code that only starts like the listed one is not it.
+        (
+            404,
+            '{"error":{"code":"model_not_found %s"}}',
+            "llm_request_target_not_found",
+        ),
+    ],
+    ids=[
+        "401",
+        "403",
+        "404-model",
+        "404-other-code",
+        "404-html",
+        "404-empty",
+        "404-prose-code",
+    ],
+)
+def test_an_http_answer_is_classified_by_its_status_and_listed_code(
+    monkeypatch, status, body, kind
+):
+    from openai4s.llm.models import llm_error_kind
+
+    text = body % _NV05_SECRET if "%s" in body else body
+    error, attempts = _failing_post(
+        monkeypatch,
+        _http(status, text, {"www-authenticate": f"Bearer realm={_NV05_SECRET}"}),
+    )
+    assert llm_error_kind(error) == kind
+    # The retry boundary is unchanged: none of these is replayed.
+    assert error.retryable is False
+    assert attempts == 1
+    assert error.endpoint_unreachable is False
+    assert error.output_committed is False
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        ConnectionRefusedError(61, "Connection refused"),
+        socket.gaierror(8, "nodename nor servname provided"),
+    ],
+    ids=["refused", "unknown-host"],
+)
+def test_a_pre_send_refusal_or_dns_failure_is_an_unreachable_endpoint(
+    monkeypatch, reason
+):
+    from openai4s.llm.models import llm_error_kind
+    from openai4s.llm.transport import DEFAULT_MAX_ATTEMPTS
+
+    error, attempts = _failing_post(monkeypatch, urllib.error.URLError(reason))
+    assert error.endpoint_unreachable is True
+    assert llm_error_kind(error) == "llm_endpoint_unreachable"
+    # Still replayable exactly as before: the fact names a cause, not a policy.
+    assert error.retryable is True
+    assert attempts == DEFAULT_MAX_ATTEMPTS
+
+
+def test_a_connect_timeout_is_not_claimed_as_an_unreachable_endpoint(monkeypatch):
+    """A slow network or a dropping firewall looks the same as a dead host."""
+    from openai4s.llm.models import llm_error_kind
+
+    error, _attempts = _failing_post(
+        monkeypatch, urllib.error.URLError(TimeoutError(60, "Operation timed out"))
+    )
+    assert error.retryable is True
+    assert error.endpoint_unreachable is False
+    assert llm_error_kind(error) == "llm_network"
+
+
+def test_a_refusal_after_this_call_already_sent_is_not_claimed_either():
+    """`sent` is the logical call's latch: once a byte left, nothing proves the
+    endpoint is absent, so neither the retry nor the cause is claimed."""
+    from openai4s.llm.models import llm_error_kind
+    from openai4s.llm.transport import _url_error
+
+    error = _url_error(
+        urllib.error.URLError(ConnectionRefusedError(61, "refused")),
+        provider="p",
+        operation="post_json",
+        sent=True,
+    )
+    assert error.retryable is False
+    assert error.endpoint_unreachable is False
+    assert llm_error_kind(error) == "llm_network"
+
+
+def test_a_reset_after_the_request_was_written_stays_a_network_failure(monkeypatch):
+    from openai4s.llm.models import llm_error_kind
+
+    error, attempts = _failing_post(
+        monkeypatch, ConnectionResetError("connection reset by peer")
+    )
+    assert attempts == 1
+    assert error.endpoint_unreachable is False
+    assert llm_error_kind(error) == "llm_network"
+
+
+def test_a_real_refused_loopback_connection_is_an_unreachable_endpoint():
+    """The real urllib path, through the deadline watchdog: a closed loopback
+    port refuses at connect, so no request byte was written."""
+    from openai4s.llm.models import llm_error_kind
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    with pytest.raises(TransportError) as caught:
+        post_json(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            {},
+            {},
+            5,
+            max_attempts=1,
+            sleep=_Recorder(),
+        )
+    assert caught.value.endpoint_unreachable is True
+    assert llm_error_kind(caught.value) == "llm_endpoint_unreachable"
+
+
+def test_giving_up_on_the_retry_budget_keeps_the_fact(monkeypatch):
+    from openai4s.llm.models import llm_error_kind
+
+    monkeypatch.setattr("openai4s.llm.transport.random.uniform", lambda _a, b: b)
+    error, attempts = _failing_post(
+        monkeypatch,
+        urllib.error.URLError(ConnectionRefusedError(61, "refused")),
+        retry_budget=0.0,
+    )
+    assert attempts == 1
+    assert error.retry_stop == "budget"
+    assert error.endpoint_unreachable is True
+    assert llm_error_kind(error) == "llm_endpoint_unreachable"
+
+
+def test_a_stream_that_already_produced_output_keeps_its_own_code(monkeypatch):
+    """Output reached the caller: the committed-output code and veto win, and
+    nothing about it reads as a configuration problem."""
+    from openai4s.llm.models import StreamReadError, llm_error_kind
+
+    class _Stream:
+        def __iter__(self):
+            yield b'data: {"delta":"committed"}\n'
+            yield b"\n"
+            raise ConnectionRefusedError(61, "refused mid-stream")
+
+        def close(self):
+            return None
+
+    attempts = []
+
+    def urlopen(*_a, **_k):
+        attempts.append(1)
+        return _Stream()
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    seen = []
+    with pytest.raises(TransportError) as caught:
+        post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
+    assert seen == [{"delta": "committed"}]
+    assert isinstance(caught.value, StreamReadError)
+    assert caught.value.output_committed is True
+    assert caught.value.endpoint_unreachable is False
+    assert llm_error_kind(caught.value) == "llm_stream_interrupted"
+    assert len(attempts) == 1
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        _kinded(500),
+        _kinded(400, "context_length_exceeded"),
+        _kinded(409),
+        LLMError("LLM response contained invalid JSON"),
+    ],
+    ids=["500", "400-unlisted", "409", "bad-json"],
+)
+def test_an_unknown_upstream_error_makes_no_settings_claim(exc):
+    from openai4s.llm.models import llm_error_kind, llm_setup_message
+
+    assert llm_error_kind(exc) is None
+    assert llm_setup_message(exc, zh=False) is None
+
+
+def test_the_new_kinds_stay_out_of_the_retry_vocabulary_and_the_log_dict(
+    monkeypatch,
+):
+    """`llm_failure_code` feeds retry records, the recovery ledger and package
+    evidence; the five kinds are words for the person, not for those."""
+    from openai4s.llm.models import llm_error_kind
+
+    errors = [
+        _kinded(401),
+        _kinded(403),
+        _kinded(404, "model_not_found"),
+        _kinded(404),
+    ]
+    refused, _attempts = _failing_post(
+        monkeypatch, urllib.error.URLError(ConnectionRefusedError(61, "refused"))
+    )
+    errors.append(refused)
+    assert [llm_error_kind(e) for e in errors] == list(_NV05_KINDS)
+    assert [llm_failure_code(e) for e in errors] == [None] * 5
+    assert "endpoint_unreachable" not in refused.to_dict()
+
+
+@pytest.mark.parametrize("kind", _NV05_KINDS)
+def test_each_new_kind_says_what_to_do_in_both_languages(kind):
+    from openai4s.llm.models import _SETUP_MESSAGES
+
+    chinese, english = _SETUP_MESSAGES[kind]
+    assert "Settings → Models" in english
+    assert "设置 → 模型" in chinese
+    assert english.startswith("**") and chinese.startswith("**")
+    assert english != chinese
+
+
+def test_the_new_messages_are_author_written_only(monkeypatch):
+    from openai4s.llm.models import llm_setup_message
+
+    error, _attempts = _failing_post(
+        monkeypatch,
+        _http(
+            401,
+            '{"error":{"code":"invalid_api_key","message":"%s"}}' % _NV05_SECRET,
+            {"x-request-id": _NV05_SECRET},
+        ),
+    )
+    # The evidence is on the error for private diagnostics...
+    assert _NV05_SECRET in (error.body or "")
+    # ...and none of it is in what the person reads.
+    for zh in (False, True):
+        message = llm_setup_message(error, zh=zh) or ""
+        assert message
+        assert _NV05_SECRET not in message
+        assert "invalid_api_key" not in message

@@ -457,12 +457,16 @@ def _http_error(
 #: Structured reasons that can only come from the connect phase. Prose is not
 #: one of them: a `URLError("connection refused")` is a string, not evidence.
 _CONNECT_PHASE_REASONS = (ConnectionRefusedError, socket.gaierror, TimeoutError)
+#: The subset that also proves the endpoint is unreachable as configured. A
+#: connect timeout is not in it: a slow network, a proxy or a firewall that
+#: drops packets look the same, so it stays a plain network failure.
+_UNREACHABLE_REASONS = (ConnectionRefusedError, socket.gaierror)
 
 
 def _url_error(
     e: urllib.error.URLError, *, provider: str | None, operation: str, sent: bool
 ) -> TransportError:
-    return TransportError(
+    error = TransportError(
         f"LLM connection error: {e.reason}",
         provider=provider,
         operation=operation,
@@ -474,6 +478,12 @@ def _url_error(
         # any reason that is only prose, does not.
         retryable=not sent and isinstance(e.reason, _CONNECT_PHASE_REASONS),
     )
+    # The same evidence, narrowed to what proves the configured endpoint is not
+    # there: a refused connection or an unresolved name, before this logical
+    # call wrote a request byte. Names the cause only (`llm_error_kind`); the
+    # retry decision above is untouched.
+    error.endpoint_unreachable = not sent and isinstance(e.reason, _UNREACHABLE_REASONS)
+    return error
 
 
 #: How often a backoff wait looks up to see whether the turn was cancelled.
@@ -557,6 +567,7 @@ def _give_up(
     )
     restated.retries_attempted = err.retries_attempted
     restated.retry_stop = stop
+    restated.endpoint_unreachable = err.endpoint_unreachable
     return restated
 
 

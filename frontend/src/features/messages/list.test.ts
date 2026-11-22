@@ -1065,3 +1065,140 @@ describe("NV-02 a message's @-ref chip opens the version it recorded", () => {
     expect(viewerVersionState.value).toMatchObject({ status: "exact", versionId: "x-1" });
   });
 });
+
+// --- NV-05: a model failure's fix entry, live and on reopen -----------------
+//
+// The gateway names five fixable model failures by what it can prove (401,
+// 403, a listed 404 code, any other 404, a refusal before sending). The
+// failure row offers 「打开模型设置」/"Open model settings" for each, the same
+// way whether the turn just failed in front of the user or the session was
+// reopened later. Settings is mocked: what it reads on open is covered by the
+// gateway tests and the Models tab's own.
+
+import { turnDone } from "../send/turn";
+import { feed } from "./stream";
+
+const nv05 = vi.hoisted(() => ({ openCustomize: vi.fn(() => Promise.resolve()) }));
+vi.mock("../customize", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../customize")>()),
+  openCustomize: nv05.openCustomize,
+}));
+
+describe("NV-05 a model failure's fix entry, live and on reopen", () => {
+  // What `_friendly_error` streams and stores for each code (English).
+  const SENTENCES: Record<string, string> = {
+    llm_authentication_failed: "**The model service did not accept the credentials (HTTP 401).** Check the API key in Settings → Models.",
+    llm_access_denied: "**The model service refused access (HTTP 403).** Check the account in Settings → Models.",
+    llm_model_unavailable: "**The model service reports that this model is not available (HTTP 404).** Check the model id in Settings → Models.",
+    llm_request_target_not_found: "**The model service found nothing at the requested address (HTTP 404).** Check the endpoint and the model id in Settings → Models.",
+    llm_endpoint_unreachable: "**The model endpoint could not be reached: the connection was refused or the host name did not resolve, so no request was sent.** Check the base URL in Settings → Models.",
+  };
+  let doc: RowDoc;
+  let requests: string[];
+
+  beforeEach(async () => {
+    await setLang("en");
+    resetStoreFields();
+    doc = new RowDoc();
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    requests = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      requests.push(String(url));
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+    nv05.openCustomize.mockClear();
+  });
+
+  function entry(row: RowEl): { meta: RowEl; button: RowEl } {
+    const meta = row.querySelector(".msg-failure-meta");
+    expect(meta, "no failure row").not.toBeNull();
+    const button = meta!.querySelector(".turn-open-models");
+    expect(button, "no Open model settings button").not.toBeNull();
+    return { meta: meta!, button: button! };
+  }
+
+  function clickOpensModels(button: RowEl): void {
+    const before = requests.length;
+    nv05.openCustomize.mockClear();
+    button.onclick!();
+    expect(nv05.openCustomize).toHaveBeenCalledTimes(1);
+    expect(nv05.openCustomize).toHaveBeenCalledWith("models");
+    // Opening the settings sends nothing by itself: no model request, no turn.
+    expect(requests.length).toBe(before);
+  }
+
+  it.each(ROW_RENDERERS)("%s: each code reopens with its sentence and the button", (_name, render) => {
+    for (const [code, sentence] of Object.entries(SENTENCES)) {
+      const row = render({
+        role: "assistant",
+        content: sentence,
+        failure: { code, request_id: "web-nv05" },
+      }) as unknown as RowEl;
+      expect(row.querySelector(".md")!.textContent).toContain(sentence.replace(/\*\*/g, "").slice(0, 40));
+      const { meta, button } = entry(row);
+      expect(meta.dataset.failureCode).toBe(code);
+      expect(meta.dataset.requestId).toBe("web-nv05");
+      expect(button.textContent).toBe("Open model settings");
+      clickOpensModels(button);
+    }
+    expect(requests.filter((url) => /probe|discover|message|chat/.test(url))).toEqual([]);
+  });
+
+  it.each(ROW_RENDERERS)("%s: a row stored with a first-version code keeps its own sentence", (_name, render) => {
+    const old = "**The model provider rejected the API key (401/403).** In Settings → Models, check that the key is correct.";
+    const row = render({
+      role: "assistant",
+      content: old,
+      failure: { code: "llm_auth_rejected", request_id: "web-old" },
+    }) as unknown as RowEl;
+    expect(row.querySelector(".md")!.textContent).toContain("rejected the API key (401/403)");
+    const { meta, button } = entry(row);
+    expect(meta.dataset.failureCode).toBe("llm_auth_rejected");
+    clickOpensModels(button);
+  });
+
+  it("an unknown upstream failure gets no settings button, live or on reopen", () => {
+    const row = renderFirstPage({
+      role: "assistant",
+      content: "**The LLM call failed.** Check the model and API key in Customize → Models, then try again.",
+      failure: { code: "internal_error", request_id: "web-unknown" },
+    }) as unknown as RowEl;
+    expect(row.querySelector(".msg-failure-meta")!.querySelector(".turn-open-models")).toBeNull();
+  });
+
+  it.each([
+    ["before the first output", ""],
+    ["after streamed output", "Here is the first half of the answer.\n"],
+  ])("a live failure %s ends with the same entry a reopen shows", async (_when, streamed) => {
+    await setLang("zh");
+    const code = "llm_authentication_failed";
+    const sentence = SENTENCES[code]!;
+    const failure = { code, request_id: "web-live-nv05" };
+    if (streamed) feed("text", streamed, { type: "text_chunk", block_type: "text" });
+    // The gateway streams its sentence as the turn's last text, then the
+    // terminal frame event carries the code and the local id.
+    feed("text", "\n\n" + sentence + "\n", { type: "text_chunk", block_type: "text" });
+    turnDone("failed", { type: "frame_update", status: "failed", ...failure });
+
+    const live = doc.messages.children.at(-1)!;
+    const { meta: liveMeta, button: liveButton } = entry(live);
+    expect(liveMeta.dataset.failureCode).toBe(code);
+    expect(liveMeta.dataset.requestId).toBe("web-live-nv05");
+    expect(liveButton.textContent).toBe("打开模型设置");
+    expect(live.querySelectorAll(".msg-failure-meta")).toHaveLength(1);
+
+    const reopened = renderFirstPage({
+      role: "assistant",
+      content: (streamed ? streamed + "\n\n" : "") + sentence,
+      failure,
+    }) as unknown as RowEl;
+    const { meta: storedMeta, button: storedButton } = entry(reopened);
+    expect(storedMeta.textContent).toBe(liveMeta.textContent);
+    expect(storedMeta.dataset.failureCode).toBe(liveMeta.dataset.failureCode);
+    expect(storedButton.textContent).toBe(liveButton.textContent);
+    clickOpensModels(liveButton);
+    clickOpensModels(storedButton);
+  });
+});

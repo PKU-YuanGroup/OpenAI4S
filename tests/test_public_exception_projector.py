@@ -2184,9 +2184,9 @@ def test_a_missing_api_key_is_said_in_the_language_of_the_request(runner, monkey
 @pytest.mark.parametrize(
     ("status", "code", "needle"),
     [
-        (401, "llm_auth_rejected", "rejected the API key"),
-        (403, "llm_auth_rejected", "rejected the API key"),
-        (404, "llm_model_not_found", "no such model"),
+        (401, "llm_authentication_failed", "did not accept the credentials"),
+        (403, "llm_access_denied", "refused access"),
+        (404, "llm_request_target_not_found", "found nothing at the requested"),
         (None, "llm_network", "could not be reached"),
     ],
 )
@@ -3367,3 +3367,208 @@ def test_a_failing_plan_turn_owns_the_session_while_it_settles(runner):
 
     # And the rescue happened: the row is not left `executing`.
     assert _plan_status(runner, frame_id) == "failed"
+
+
+# --------------------------------------------------------------------------
+# NV-05: which model failure it was, the same on every surface
+# --------------------------------------------------------------------------
+#
+# Each error is produced by the real transport from a provider answer that
+# carries the canaries in its body and in its headers, then raised out of the
+# turn. The code is the only thing about it that may travel: the socket event,
+# the job result, the stored row and its reopened projection all carry the same
+# code and local request id, and none of them carries the answer.
+
+
+def _transport_failure(monkeypatch, answer):
+    """The `TransportError` post_json raises when every attempt meets `answer`."""
+    from openai4s.llm import transport
+
+    def urlopen(*_a, **_k):
+        raise answer()
+
+    real = transport._urlopen
+    monkeypatch.setattr(transport, "_urlopen", urlopen)
+    try:
+        transport.post_json(
+            "https://x.invalid/v1", {}, {}, 5, max_attempts=1, sleep=lambda _s: None
+        )
+    except TransportError as error:
+        return error
+    finally:
+        monkeypatch.setattr(transport, "_urlopen", real)
+    raise AssertionError("the transport did not fail")
+
+
+def _provider_answer(status, code=None):
+    import io
+    import urllib.error
+
+    error = {"message": f"key {CREDENTIAL} at {ABS_PATH}"}
+    if code:
+        error["code"] = code
+    body = json.dumps({"error": error}).encode("utf-8")
+    headers = {
+        "www-authenticate": f"Bearer error={CREDENTIAL}",
+        "x-request-id": SHELL_COMMAND,
+    }
+    return lambda: urllib.error.HTTPError(
+        "https://x.invalid/v1", status, "err", headers, io.BytesIO(body)
+    )
+
+
+def _refused():
+    import urllib.error
+
+    return urllib.error.URLError(ConnectionRefusedError(61, f"refused {ABS_PATH}"))
+
+
+def _assert_no_canary(*surfaces):
+    blob = json.dumps(surfaces, ensure_ascii=False, default=str)
+    for canary in CANARIES:
+        assert canary not in blob, canary
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    ("answer", "code", "needle"),
+    [
+        (
+            _provider_answer(401, "invalid_api_key"),
+            "llm_authentication_failed",
+            "did not accept the credentials",
+        ),
+        (_provider_answer(403), "llm_access_denied", "refused access"),
+        (
+            _provider_answer(404, "model_not_found"),
+            "llm_model_unavailable",
+            "this model is not available",
+        ),
+        (
+            _provider_answer(404, "not_found_error"),
+            "llm_request_target_not_found",
+            "endpoint and the model id",
+        ),
+        (_refused, "llm_endpoint_unreachable", "no request was sent"),
+    ],
+    ids=["401", "403", "404-model", "404-plain", "pre-send-refused"],
+)
+def test_each_fixable_model_failure_has_one_code_on_every_surface(
+    runner, monkeypatch, answer, code, needle
+):
+    exc = _transport_failure(monkeypatch, answer)
+    _fid, _accepted, result, messages = _run_failing_turn(runner, monkeypatch, exc)
+    updates = _failed_frame_updates(runner)
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert result["code"] == code
+    assert updates[-1]["code"] == code
+    assert stored[-1]["failure"]["code"] == code
+    # One local id, and nothing claims committed output for a call that made none.
+    assert stored[-1]["failure"]["request_id"] == result["request_id"]
+    assert "output_committed" not in stored[-1]["failure"]
+    # The live stream and the reopened row say the same sentence.
+    assert needle in result["error"]
+    assert stored[-1]["content"] == result["error"]
+    live = [e for e in runner.hub.events if e.get("type") == "text_chunk"]
+    assert any(result["error"] in str(e.get("chunk") or "") for e in live)
+    _assert_no_canary(result, messages, runner.hub.events)
+
+
+@pytest.mark.stubbed_backend
+def test_a_rejection_after_streamed_output_keeps_the_retry_veto(runner, monkeypatch):
+    """A 401 that arrives inside a stream which already produced text: the code
+    names the fix, and `output_committed` still says a replay is not safe."""
+    exc = TransportError(
+        f"OpenAI stream error: {CREDENTIAL}",
+        provider="deepseek",
+        operation="post_sse",
+        status=401,
+        output_committed=True,
+    )
+    _fid, _accepted, result, messages = _run_failing_turn(runner, monkeypatch, exc)
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert result["code"] == "llm_authentication_failed"
+    assert result["output_committed"] is True
+    assert stored[-1]["failure"]["output_committed"] is True
+    assert _failed_frame_updates(runner)[-1]["output_committed"] is True
+    _assert_no_canary(result, messages, runner.hub.events)
+
+
+@pytest.mark.stubbed_backend
+def test_an_interrupted_stream_keeps_its_own_code(runner, monkeypatch):
+    from openai4s.llm.models import StreamReadError
+
+    exc = StreamReadError(
+        f"stream died {ABS_PATH}", provider="deepseek", output_committed=True
+    )
+    _fid, _accepted, result, _messages = _run_failing_turn(runner, monkeypatch, exc)
+    assert result["code"] == "llm_stream_interrupted"
+    assert result["output_committed"] is True
+
+
+@pytest.mark.stubbed_backend
+def test_an_unknown_upstream_error_makes_no_settings_claim(runner, monkeypatch):
+    exc = _transport_failure(monkeypatch, _provider_answer(400, "context_length"))
+    _fid, _accepted, result, messages = _run_failing_turn(runner, monkeypatch, exc)
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert result["code"] == "internal_error"
+    assert stored[-1]["failure"]["code"] == "internal_error"
+    for word in ("401", "403", "404", "refused", "no request was sent"):
+        assert word not in result["error"]
+    _assert_no_canary(result, messages, runner.hub.events)
+
+
+def test_the_public_projection_of_each_kind_carries_no_answer(monkeypatch):
+    """`public_exception` with the kind as its code: a fixed body, the local id,
+    and no field of the provider's answer -- not its body, headers, status line,
+    provider request id or raw code."""
+    from openai4s.llm.models import llm_error_kind
+
+    for answer in (
+        _provider_answer(401, "invalid_api_key"),
+        _provider_answer(403),
+        _provider_answer(404, "model_not_found"),
+        _provider_answer(404),
+        _refused,
+    ):
+        exc = _transport_failure(monkeypatch, answer)
+        body, status = public_exception(
+            exc,
+            surface="web:turn",
+            request_id="req-nv05",
+            error_code=llm_error_kind(exc),
+        )
+        assert status == 500
+        assert body["code"] == llm_error_kind(exc)
+        assert body["request_id"] == "req-nv05"
+        assert body["error"] == INTERNAL_ERROR_MESSAGE
+        assert "output_committed" not in body
+        _assert_no_canary(body)
+        assert "invalid_api_key" not in json.dumps(body)
+        assert "model_not_found" not in json.dumps(body)
+
+
+@pytest.mark.stubbed_backend
+def test_opening_model_settings_after_a_failure_contacts_no_model(runner, monkeypatch):
+    """The fix entry opens Customize -> Models. What that page reads -- the
+    profile list with its local readiness, the onboarding status -- must not
+    send a model request; the probe stays behind its own button."""
+    import openai4s.llm as llm_mod
+    from openai4s.llm import transport
+
+    exc = _transport_failure(monkeypatch, _provider_answer(401, "invalid_api_key"))
+    _run_failing_turn(runner, monkeypatch, exc)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("opening model settings made a model request")
+
+    monkeypatch.setattr(llm_mod, "chat", _boom)
+    monkeypatch.setattr(transport, "post_json", _boom)
+    monkeypatch.setattr(transport, "post_sse", _boom)
+    monkeypatch.setattr(transport, "_urlopen", _boom)
+    for path in ("/model-profiles", "/models", "/onboarding"):
+        body, status = _api(runner, "GET", path)
+        assert status == 200, (path, body)
