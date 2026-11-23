@@ -24782,7 +24782,110 @@
             "type": "object"
           },
           "model_profile": {
-            "type": "null"
+            "properties": {
+              "base_url": {
+                "type": "string"
+              },
+              "capability_receipt": {
+                "type": "null"
+              },
+              "credential_source": {
+                "type": "string"
+              },
+              "effective_capabilities": {
+                "properties": {
+                  "streaming": {
+                    "properties": {
+                      "source": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "value"
+                    ],
+                    "type": "object"
+                  },
+                  "tool_calling": {
+                    "properties": {
+                      "source": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "value"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "streaming",
+                  "tool_calling"
+                ],
+                "type": "object"
+              },
+              "has_api_key": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "readiness": {
+                "properties": {
+                  "checked_endpoint": {
+                    "type": "boolean"
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "checked_endpoint",
+                  "detail",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "base_url",
+              "capability_receipt",
+              "credential_source",
+              "effective_capabilities",
+              "has_api_key",
+              "id",
+              "model",
+              "name",
+              "provider",
+              "readiness",
+              "revision"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
           },
           "plans": {
             "type": "array"
