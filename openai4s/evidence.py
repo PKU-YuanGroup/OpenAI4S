@@ -21,7 +21,11 @@ What verification establishes, stated precisely so it is not over-read:
   * the manifest's own body hashes to ``manifest_sha256``, so the list of
     hashes was not itself edited;
   * nothing is in the archive that the manifest does not account for — an
-    extra file is a modification even when every listed hash still matches.
+    extra file is a modification even when every listed hash still matches;
+  * for a session package, the records pass the importer's own preflight
+    (still archive-only: no Store, no config). Without it a package whose
+    hashes all matched could be one every import refused. Lifted out of an
+    OpenAI4S installation this last check is skipped and reported as such.
 
 What it does NOT establish: authorship. Anyone can rewrite the payload and the
 manifest together. Detecting *that* needs a signature over the manifest digest
@@ -39,6 +43,8 @@ from pathlib import Path
 from typing import Any
 
 MANIFEST_NAME = "manifest.json"
+#: The one format whose records an importer reads (server/session_package.py).
+SESSION_FORMAT = "openai4s.session"
 
 # Untrusted-archive limits, kept in step with the importer's
 # (server/session_package.py). `verify_package` reads the manifest and every
@@ -186,6 +192,20 @@ def verify_package(path: Path | str) -> dict:
         for name in sorted(names - listed - {MANIFEST_NAME}):
             problems.append(f"{name}: present in the archive but not in the manifest")
 
+    payload = path.read_bytes()
+    # 4. A session package that hashes clean can still be one no importer
+    #    accepts: the hashes describe the bytes, not whether the records in
+    #    them agree with each other. Ask the importer's own preflight, so
+    #    "verified" never precedes "import refused". Skipped once the bytes
+    #    are already known to be modified, and where the importer is absent.
+    importable: bool | None = None
+    if not problems and manifest.get("format") == SESSION_FORMAT:
+        refusal = _import_refusal(payload)
+        if refusal is not NotImplemented:
+            importable = refusal is None
+            if refusal is not None:
+                problems.append(f"the importer would refuse this package: {refusal}")
+
     return {
         "path": str(path),
         "ok": not problems,
@@ -193,12 +213,31 @@ def verify_package(path: Path | str) -> dict:
         "schema_version": manifest.get("schema_version"),
         "files_verified": sorted(checked),
         "problems": problems,
-        "archive_sha256": _sha256(path.read_bytes()),
+        "importable": importable,
+        "archive_sha256": _sha256(payload),
         "verifies": (
-            "internal consistency only — this does not establish who produced "
-            "the package"
+            "internal consistency"
+            + (
+                ", and that this release's importer accepts the records"
+                if importable is not None
+                else " only"
+            )
+            + " — this does not establish who produced the package"
         ),
     }
+
+
+def _import_refusal(payload: bytes) -> Any:
+    """The importer's reason for refusing ``payload``, or None if it would not.
+
+    ``NotImplemented`` when this module has been lifted out of an OpenAI4S
+    installation: the hash checks still stand on the standard library alone.
+    """
+    try:
+        from openai4s.server.session_package import import_refusal
+    except ImportError:
+        return NotImplemented
+    return import_refusal(payload)
 
 
 __all__ = ["EvidenceError", "MANIFEST_NAME", "verify_package"]

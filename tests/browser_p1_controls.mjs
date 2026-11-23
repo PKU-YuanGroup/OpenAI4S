@@ -1092,7 +1092,8 @@ try {
     }
     await route.continue();
   });
-  for (const entry of ["#new-session", "#tab-new"]) {
+  // M-41: the header's "New session" pseudo-tab is gone; New is the sidebar's.
+  for (const entry of ["#new-session"]) {
     const before = await page.evaluate(() => S.currentId);
     const posted = new Promise((resolve) => { signalFrameCreate = resolve; });
     await page.locator(entry).click();

@@ -331,6 +331,12 @@ class AttentionService:
             (current or {}).get("updated_at") or frame.get("updated_at")
         )
         items: list[dict[str, Any]] = []
+        if view_only and self._completed_import(frame_id):
+            # M-66: a finished import is view-only by design until its owner
+            # restarts it fresh; that is not a fault to attend to, and the
+            # session says so itself (a read-only banner). An import that was
+            # interrupted part-way still is one.
+            return items
         if view_only:
             items.append(
                 self._card(
@@ -353,6 +359,21 @@ class AttentionService:
                 )
             )
         return items
+
+    def _completed_import(self, frame_id: str) -> bool:
+        """True for the quarantine a finished session-package import leaves."""
+
+        from openai4s.server.session_package import session_import_quarantine_key
+
+        try:
+            raw = self.store.get_setting(session_import_quarantine_key(frame_id))
+            value = json.loads(raw) if isinstance(raw, str) else None
+        except Exception:  # noqa: BLE001 - unreadable: keep the card
+            return False
+        return (
+            isinstance(value, Mapping)
+            and value.get("reason") == "untrusted_session_package"
+        )
 
     def _compute_items(self, frame: Mapping[str, Any]) -> list[dict[str, Any]]:
         frame_id = str(frame.get("frame_id") or "")

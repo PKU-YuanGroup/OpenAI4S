@@ -17,6 +17,7 @@ import { api, apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { callLane } from "./host";
 import { iconEl } from "./icon";
+import { foldDownloadDecision } from "./step";
 import { stepTitleText } from "./step-title";
 
 const PERM_SCOPE_KEYS: Record<string, string> = {
@@ -38,6 +39,9 @@ type PermEvent = {
   target?: string;
   input?: Record<string, unknown>;
   sub_agent?: unknown;
+  /** SCI-21: which sub-agent asks -- its name and the first sentence of its task. */
+  sub_agent_name?: string;
+  sub_agent_task?: string;
   dangerous?: unknown;
   policy_review_kind?: string;
   resolved_file_path?: string;
@@ -62,6 +66,8 @@ type PermHandle = {
   relabel?: () => void;
   /** Re-say the title, which is composed from the request (`permTitle`). */
   retitle?: () => void;
+  /** What was asked: an allowed download folds into its download card (SCI-11). */
+  request?: PermEvent;
 };
 
 function rec(value: unknown): Record<string, unknown> {
@@ -187,6 +193,8 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     downloadTo: "Saves to the workspace as: {0}",
     downloadSize: "Size: {0}",
     downloadLimit: "Size is not known before the download; it stops at {0}.",
+    downloadWhy:
+      "A download asks first because it writes a file into this project; reading a web page writes nothing and does not ask.",
     installInto: "Installs into: {0}",
     installKeep:
       "Packages already in this environment keep their versions; an install that would change one is refused.",
@@ -201,11 +209,15 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     toolDescription: "What it does",
     toolCode: "Code that will run ({0} characters)",
     toolInput: "Input schema",
+    subAgentTask: "Asked by the sub-agent working on: {0}",
+    subAgentNamed: "Asked by the sub-agent {0}",
+    envReason: "The agent's reason: {0}",
   },
   zh: {
     downloadTo: "保存到工作区：{0}",
     downloadSize: "大小：{0}",
     downloadLimit: "下载前无法得知大小；超过 {0} 会中止。",
+    downloadWhy: "下载会把文件写进这个项目，所以要先询问；读取网页不写文件，不需要询问。",
     installInto: "安装到：{0}",
     installKeep: "这个环境里已安装的包保持原版本；需要改动它们的安装会被拒绝。",
     localEnv:
@@ -219,6 +231,9 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     toolDescription: "用途",
     toolCode: "将要运行的代码（{0} 个字符）",
     toolInput: "输入参数结构",
+    subAgentTask: "发起请求的子代理正在做：{0}",
+    subAgentNamed: "发起请求的子代理：{0}",
+    envReason: "智能体给出的原因：{0}",
   },
 };
 
@@ -239,6 +254,14 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
   const inp = rec(m.input);
   const lines: string[] = [];
   const code: Array<{ label: string; text: string }> = [];
+  // SCI-21: two sub-agents of one kind ran side by side; the card said only
+  // "Sub-agent". The request names which one, by its task.
+  if (m.sub_agent) {
+    const task = String(m.sub_agent_task || "").trim();
+    const name = String(m.sub_agent_name || "").trim();
+    if (task) lines.push(ctx("subAgentTask", name ? `${task} (${name})` : task));
+    else if (name) lines.push(ctx("subAgentNamed", name));
+  }
   if (m.tool === "web_download") {
     const target = workspaceTarget(inp.path);
     if (target) lines.push(ctx("downloadTo", target));
@@ -247,6 +270,8 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
     const limit = Number(inp.max_bytes);
     if (Number.isFinite(size) && size > 0) lines.push(ctx("downloadSize", bytes(size)));
     else if (Number.isFinite(limit) && limit > 0) lines.push(ctx("downloadLimit", bytes(limit)));
+    // SCI-11: reading a page went through, a download of the same site asked.
+    lines.push(ctx("downloadWhy"));
   } else if (m.tool === "env_setup") {
     const env = String(inp.environment || "");
     if (env) {
@@ -254,6 +279,9 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
     }
     lines.push(ctx("installKeep"));
   } else if (m.tool === "env_use") {
+    // SCI-21: the reason the model gave for the switch, in its own words.
+    const reason = String(inp.reason || "").trim();
+    if (reason) lines.push(ctx("envReason", reason));
     if (inp.local === true) lines.push(ctx("localEnv"));
   } else if (m.tool === "bash") {
     if (inp.environment) {
@@ -498,6 +526,8 @@ export function markPermCard(
     };
     h.card.appendChild(cont);
   }
+  // SCI-11: an allowed download is shown once, as its download card.
+  if (allowed && h.card.isConnected && h.request) foldDownloadDecision(h.card, h.request);
   // Not while a reopen paints history off-DOM: that registry is not the one
   // on screen until the paint swaps it in (messages/open.ts syncs then).
   if (h.card.isConnected) syncPendingApproval();
@@ -563,6 +593,8 @@ export function renderStoredPermission(
   registry()[id] = handle;
   const state = String(stored.state || "pending");
   if (state !== "pending") markPermCard(id, state === "allowed", stored.scope || null, stored);
+  // As the live card folded (SCI-11): its download was painted just before it.
+  if (state === "allowed" && foldDownloadDecision(handle.card, stored)) return handle.card;
   const host = target || (typeof document !== "undefined" ? document.getElementById("messages") : null);
   host?.appendChild(handle.card);
   return handle.card;
@@ -752,7 +784,7 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   btns.appendChild(allow);
   btns.appendChild(deny);
   card.appendChild(btns);
-  return { card, allow, deny, resolved: false, relabel: paintRule, retitle: paintTitle };
+  return { card, allow, deny, resolved: false, relabel: paintRule, retitle: paintTitle, request: m };
 }
 
 export function resolvePermissionCard(m: PermEvent): void {

@@ -10,6 +10,7 @@ import { loadModels, watchSessionModelPin } from "./models";
 import { customizeOpen, customizeTab } from "./state";
 import { telemetryRow } from "./telemetry";
 import { hint } from "./host";
+import { watchNotebookSwitch } from "./notebook-sync";
 
 export { api, ApiError, apiErrorText, API } from "./api";
 export { CUST_TABS, CUST_TAB_ALIASES, normalizeTab, isCustTab, CUST_TAB_I18N } from "./tabs";
@@ -89,6 +90,8 @@ export function bootCustomize(target: WindowBag = globalThis as unknown as Windo
   void loadModels();
   // And the open session's own pin, which the selector shows in its place.
   watchSessionModelPin();
+  // The daemon-wide Notebook switch, changed in another window (SYNC-27).
+  watchNotebookSwitch();
   onLanguageChange(() => {
     if (customizeOpen.value) custTab(customizeTab.value);
   });

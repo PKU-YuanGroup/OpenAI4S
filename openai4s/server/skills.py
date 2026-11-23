@@ -1,7 +1,7 @@
-"""Web Customize service for user-authored skill documents.
+"""Web Settings service for user-authored skill documents.
 
 This service intentionally stays separate from ``openai4s.host.skills``.  The
-Web Customize API writes whole user ``SKILL.md`` documents and uses soft
+Web Settings API writes whole user ``SKILL.md`` documents and uses soft
 dictionaries for domain errors, while the in-kernel host service has a richer
 file editor, origin transitions, and permission behavior.
 """
@@ -34,7 +34,7 @@ from openai4s.skills_loader.loader import _requirements, skill_readiness
 #: missing is that the *gateway* then answered 200, so these never reached
 #: `errors.public_failure` and carried neither a stable `code` nor the
 #: `request_id` that ties a user's report to a log line. Worse, `api()` in the
-#: web client only throws on a non-2xx, so the Customize skill editor reported
+#: web client only throws on a non-2xx, so the Settings skill editor reported
 #: "saved" and closed the modal on a save that had not happened.
 #:
 #: The code is the contract; the status is a projection of it. Callers branch
@@ -373,12 +373,18 @@ class SkillCustomizationService:
     def get(self, name: str) -> dict:
         skill = self._find_skill(name)
         if skill is not None:
-            _metadata, body = self.parse_document(
+            metadata, body = self.parse_document(
                 (skill.root / "SKILL.md").read_text("utf-8")
             )
+            # SCI-06: `description` is the catalog line, cut at 200 characters,
+            # and the cut-off half is usually the "use this skill when" part.
+            # The editor keeps reading `description`; the Skills tab's detail
+            # view reads the whole one.
+            full_description = " ".join(str(metadata.get("description") or "").split())
             return {
                 "name": skill.name,
                 "description": skill.description,
+                "full_description": full_description or skill.description,
                 "body": body,
                 "origin": skill.origin,
                 "editable": not skill.read_only,
@@ -441,7 +447,7 @@ class SkillCustomizationService:
         disabled_names = self.disabled_names if disabled is None else disabled
         try:
             catalog = self.loader.catalog(include_disabled=True)
-        except Exception:  # noqa: BLE001 - Customize degrades to an empty catalog
+        except Exception:  # noqa: BLE001 - Settings degrades to an empty catalog
             return []
 
         try:

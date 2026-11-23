@@ -9,10 +9,12 @@ vi.mock("preact/hooks", () => ({
 import { effect } from "@preact/signals";
 import {
   customizeLoad,
+  customizeNotice,
   customizeOpen,
   customizeTab,
   nestedEditor,
 } from "../../features/customize/state";
+import { teamUser } from "../../features/chrome/team-identity";
 import { currentId, projects, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { Customize } from "./Customize";
@@ -59,6 +61,68 @@ function renders(render: () => unknown): { count: () => number; stop: () => void
   });
   return { count: () => count, stop };
 }
+
+// TEAM-23: `hint()` writes under the composer, behind this modal, so a
+// refused save in Settings showed nothing at all.
+describe("Customize tab list", () => {
+  afterEach(() => {
+    teamUser.value = null;
+  });
+  const tabIds = () => {
+    const ids: string[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== "object") return;
+      const current = node as Node;
+      if (current.props?.class && String(current.props.class).startsWith("cust-tab") && current.props["data-tab"]) {
+        ids.push(String(current.props["data-tab"]));
+      }
+      walk(current.props?.children);
+    };
+    walk(Customize());
+    return ids;
+  };
+
+  it("offers Experimental and Diagnostics as pages of their own (M-22)", () => {
+    expect(tabIds().slice(-2)).toEqual(["experiments", "diagnostics"]);
+  });
+
+  it("does not offer a team member the operator's pages", () => {
+    teamUser.value = { username: "bob", role: "member" };
+    expect(tabIds()).not.toContain("experiments");
+    expect(tabIds()).not.toContain("diagnostics");
+    expect(tabIds()).toContain("models");
+  });
+});
+
+describe("Customize status line", () => {
+  afterEach(() => {
+    customizeNotice.value = null;
+  });
+  const notice = () => {
+    const slot = find(Customize(), (node) => typeof node.type === "function" && node.type.name === "Notice");
+    return slot ? ((slot.type as () => unknown)() as Node | null) : null;
+  };
+
+  it("shows what the last action reported, as an alert when it failed", () => {
+    customizeOpen.value = true;
+    expect(notice()).toBeNull();
+    customizeNotice.value = { text: "Only an administrator can change this setting.", error: true };
+    const line = notice()!;
+    expect(line.props!.role).toBe("alert");
+    expect(line.props!.class).toBe("cust-notice err");
+    expect(JSON.stringify(line.props!.children)).toContain("Only an administrator");
+    // Dismissable.
+    const close = find(line, (node) => node.type === "button")!;
+    (close.props!.onClick as () => void)();
+    expect(customizeNotice.value).toBeNull();
+  });
+
+  it("is not rendered while Settings is closed", () => {
+    customizeNotice.value = { text: "stale", error: false };
+    expect(find(Customize(), (node) => typeof node.type === "function" && node.type.name === "Notice")).toBeNull();
+  });
+});
 
 describe("Customize backdrops", () => {
   it("keeps Customize open when a selection drag ends on the backdrop", () => {

@@ -5,6 +5,7 @@
 
 import { invalidateDiagnostics } from "./state";
 import { CUST_LOAD_TIMEOUT_MS } from "./load";
+import { isAdminOnlyRefusal, roleT } from "./roles";
 
 export const API = "/api/v1";
 
@@ -30,6 +31,9 @@ export class ApiError extends Error {
 }
 
 export function apiErrorText(e: unknown): string {
+  // A refusal by role is not a fault: say who can do it, without the bare
+  // `admin only` and a request id to quote (TEAM-23).
+  if (isAdminOnlyRefusal(e)) return roleT("role.adminOnly");
   const err = e as { message?: unknown; requestId?: unknown } | null;
   const msg = err && err.message != null ? String(err.message) : String(e);
   return err && err.requestId ? `${msg} [${String(err.requestId)}]` : msg;

@@ -928,6 +928,72 @@
         "type": "object"
       }
     },
+    "DELETE /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /auth/me/replays [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /auth/redeem-invite [error]": {
       "schema": {
         "properties": {
@@ -2039,6 +2105,56 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/(?:branches/([^/]+)) [ok]": {
+      "schema": {
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "deleted_at": {
+            "type": "integer"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "root_frame_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch_id",
+          "deleted_at",
+          "ok",
+          "root_frame_id"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [error]": {
       "schema": {
         "properties": {
@@ -2968,6 +3084,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -7093,6 +7242,31 @@
         "type": "object"
       }
     },
+    "DELETE /team/users/([^/]+)/enable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /team/users/([^/]+)/reset-password [error]": {
       "schema": {
         "properties": {
@@ -7585,6 +7759,65 @@
         "type": "object"
       }
     },
+    "GET /agents/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          },
+          "skillsLocked": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "supportsPlanMode": {
+            "type": "boolean"
+          },
+          "systemPrompt": {
+            "type": "null"
+          },
+          "unrestricted": {
+            "type": "boolean"
+          },
+          "userHidden": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "description",
+          "enabled",
+          "healthy",
+          "mode",
+          "name",
+          "parameters",
+          "skillsLocked",
+          "source",
+          "supportsPlanMode",
+          "systemPrompt",
+          "unrestricted",
+          "userHidden"
+        ],
+        "type": "object"
+      }
+    },
     "GET /agents/([^/]+)/enabled [error]": {
       "schema": {
         "properties": {
@@ -8022,6 +8255,55 @@
             ],
             "type": "object"
           },
+          "download": {
+            "properties": {
+              "approval": {
+                "properties": {
+                  "how": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "how"
+                ],
+                "type": "object"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "downloaded_at": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              },
+              "tool": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "approval",
+              "content_type",
+              "downloaded_at",
+              "sha256",
+              "size_bytes",
+              "tool",
+              "url"
+            ],
+            "type": "object"
+          },
           "filename": {
             "type": [
               "null",
@@ -8084,7 +8366,10 @@
                 "type": "string"
               },
               "producing_cell_id": {
-                "type": "string"
+                "type": [
+                  "null",
+                  "string"
+                ]
               }
             },
             "required": [
@@ -9292,6 +9577,96 @@
         "type": "object"
       }
     },
+    "GET /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /auth/me/replays [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /auth/me/replays [ok]": {
+      "schema": {
+        "properties": {
+          "sessions": {
+            "items": {
+              "properties": {
+                "name": {
+                  "type": "null"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "session_id",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "type": "object"
+      }
+    },
     "GET /auth/redeem-invite [error]": {
       "schema": {
         "properties": {
@@ -9592,6 +9967,31 @@
         "type": "object"
       }
     },
+    "GET /compute/remote [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /compute/remote [ok]": {
       "schema": {
         "properties": {
@@ -9648,6 +10048,31 @@
           "error",
           "method",
           "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /compute/ssh-aliases [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
           "request_id",
           "status"
         ],
@@ -9972,6 +10397,9 @@
           "key_configured": {
             "type": "boolean"
           },
+          "model_key_available": {
+            "type": "boolean"
+          },
           "skill_enabled": {
             "type": "boolean"
           },
@@ -9984,6 +10412,7 @@
           "connector_enabled",
           "connector_id",
           "key_configured",
+          "model_key_available",
           "skill_enabled",
           "skill_name"
         ],
@@ -10199,6 +10628,9 @@
           "key_configured": {
             "type": "boolean"
           },
+          "model_key_available": {
+            "type": "boolean"
+          },
           "primary": {
             "type": "boolean"
           },
@@ -10209,6 +10641,7 @@
         "required": [
           "ark_key_reused",
           "key_configured",
+          "model_key_available",
           "primary",
           "provider"
         ],
@@ -11410,10 +11843,28 @@
         "type": "object"
       }
     },
-    "GET /frames/([^/]+) [ok]": {
+    "GET /frames/([^/]+) [error]": {
       "schema": {
-        "properties": {},
-        "required": [],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
         "type": "object"
       }
     },
@@ -11521,7 +11972,25 @@
             "type": "string"
           }
         },
-        "required": [],
+        "required": [
+          "conversation_type",
+          "created_at",
+          "folder_id",
+          "id",
+          "input_tokens",
+          "message_count",
+          "model",
+          "model_profile_id",
+          "model_profile_revision",
+          "name",
+          "output_tokens",
+          "parent_frame_id",
+          "project_id",
+          "root_frame_id",
+          "status",
+          "task_summary",
+          "updated_at"
+        ],
         "type": "object"
       }
     },
@@ -11649,7 +12118,10 @@
             "items": {
               "properties": {
                 "branch_id": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "cancel_reason": {
                   "type": "null"
@@ -11669,8 +12141,41 @@
                 "generation_id": {
                   "type": "null"
                 },
+                "held": {
+                  "type": "boolean"
+                },
                 "language": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "metadata": {
+                  "properties": {
+                    "model_profile_id": {
+                      "type": "string"
+                    },
+                    "model_profile_revision": {
+                      "type": "integer"
+                    },
+                    "preview": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "model_profile_id",
+                    "model_profile_revision",
+                    "preview",
+                    "reason",
+                    "request_id"
+                  ],
+                  "type": "object"
                 },
                 "owner": {
                   "properties": {
@@ -11694,6 +12199,9 @@
                   "type": "number"
                 },
                 "resource_keys": {
+                  "items": {
+                    "type": "string"
+                  },
                   "type": "array"
                 },
                 "root_frame_id": {
@@ -11717,6 +12225,7 @@
                 "execution_id",
                 "finished_at",
                 "generation_id",
+                "held",
                 "language",
                 "owner",
                 "queue_position",
@@ -11750,6 +12259,39 @@
           "queued_count",
           "root_frame_id",
           "session_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -15231,7 +15773,10 @@
             "type": "string"
           },
           "current_r": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "default": {
             "type": "string"
@@ -15513,7 +16058,10 @@
             "items": {
               "properties": {
                 "branch_id": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "cancel_reason": {
                   "type": "null"
@@ -15533,8 +16081,41 @@
                 "generation_id": {
                   "type": "null"
                 },
+                "held": {
+                  "type": "boolean"
+                },
                 "language": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "metadata": {
+                  "properties": {
+                    "model_profile_id": {
+                      "type": "string"
+                    },
+                    "model_profile_revision": {
+                      "type": "integer"
+                    },
+                    "preview": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "model_profile_id",
+                    "model_profile_revision",
+                    "preview",
+                    "reason",
+                    "request_id"
+                  ],
+                  "type": "object"
                 },
                 "owner": {
                   "properties": {
@@ -15558,6 +16139,9 @@
                   "type": "number"
                 },
                 "resource_keys": {
+                  "items": {
+                    "type": "string"
+                  },
                   "type": "array"
                 },
                 "root_frame_id": {
@@ -15581,6 +16165,7 @@
                 "execution_id",
                 "finished_at",
                 "generation_id",
+                "held",
                 "language",
                 "owner",
                 "queue_position",
@@ -15666,6 +16251,9 @@
                   },
                   "type": "array"
                 },
+                "finished_at": {
+                  "type": "integer"
+                },
                 "fork_checkpoint_id": {
                   "type": [
                     "null",
@@ -15746,6 +16334,9 @@
                 "stale_reasons": {
                   "type": "array"
                 },
+                "started_at": {
+                  "type": "integer"
+                },
                 "state_revision": {
                   "type": "integer"
                 },
@@ -15756,6 +16347,9 @@
                   "type": "string"
                 },
                 "stdout": {
+                  "type": "string"
+                },
+                "title": {
                   "type": "string"
                 },
                 "variable_deletes": {
@@ -15788,6 +16382,7 @@
                 "figures",
                 "files_read",
                 "files_written",
+                "finished_at",
                 "fork_checkpoint_id",
                 "generation_id",
                 "is_latest_attempt",
@@ -15804,10 +16399,12 @@
                 "source",
                 "stale",
                 "stale_reasons",
+                "started_at",
                 "state_revision",
                 "status",
                 "stderr",
                 "stdout",
+                "title",
                 "variable_deletes",
                 "variable_reads",
                 "variable_writes",
@@ -15955,7 +16552,10 @@
             "items": {
               "properties": {
                 "branch_id": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "cancel_reason": {
                   "type": "null"
@@ -15975,8 +16575,41 @@
                 "generation_id": {
                   "type": "null"
                 },
+                "held": {
+                  "type": "boolean"
+                },
                 "language": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "metadata": {
+                  "properties": {
+                    "model_profile_id": {
+                      "type": "string"
+                    },
+                    "model_profile_revision": {
+                      "type": "integer"
+                    },
+                    "preview": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "model_profile_id",
+                    "model_profile_revision",
+                    "preview",
+                    "reason",
+                    "request_id"
+                  ],
+                  "type": "object"
                 },
                 "owner": {
                   "properties": {
@@ -16000,6 +16633,9 @@
                   "type": "number"
                 },
                 "resource_keys": {
+                  "items": {
+                    "type": "string"
+                  },
                   "type": "array"
                 },
                 "root_frame_id": {
@@ -16023,6 +16659,7 @@
                 "execution_id",
                 "finished_at",
                 "generation_id",
+                "held",
                 "language",
                 "owner",
                 "queue_position",
@@ -16056,6 +16693,39 @@
           "queued_count",
           "root_frame_id",
           "session_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -16251,7 +16921,11 @@
       "schema": {
         "properties": {
           "feedback": {
-            "properties": {},
+            "properties": {
+              "m1": {
+                "type": "string"
+              }
+            },
             "required": [],
             "type": "object"
           }
@@ -16370,6 +17044,28 @@
           "quarantine_reason": {
             "type": "null"
           },
+          "r": {
+            "properties": {
+              "alive": {
+                "type": "boolean"
+              },
+              "generation_id": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "alive",
+              "generation_id",
+              "state"
+            ],
+            "type": "object"
+          },
           "repl_enabled": {
             "type": "boolean"
           },
@@ -16400,6 +17096,7 @@
           "last_activity_at",
           "manual_stop",
           "quarantine_reason",
+          "r",
           "repl_enabled",
           "state",
           "trust_state",
@@ -16823,6 +17520,24 @@
                   },
                   "type": "array"
                 },
+                "attachments": {
+                  "items": {
+                    "properties": {
+                      "artifact_id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "artifact_id",
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
                 "cancelled": {
                   "properties": {
                     "execution_id": {
@@ -16868,6 +17583,28 @@
                     "null",
                     "string"
                   ]
+                },
+                "memories": {
+                  "items": {
+                    "properties": {
+                      "block": {
+                        "type": "string"
+                      },
+                      "memory_id": {
+                        "type": "string"
+                      },
+                      "preview": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "block",
+                      "memory_id",
+                      "preview"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
                 },
                 "message_id": {
                   "type": "string"
@@ -17631,19 +18368,50 @@
                 "type": "integer"
               },
               "generation_id": {
-                "type": "string"
+                "type": [
+                  "null",
+                  "string"
+                ]
               },
               "generation_ordinal": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "last_activity_at": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "manual_stop": {
                 "type": "boolean"
               },
               "quarantine_reason": {
                 "type": "null"
+              },
+              "r": {
+                "properties": {
+                  "alive": {
+                    "type": "boolean"
+                  },
+                  "generation_id": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "alive",
+                  "generation_id",
+                  "state"
+                ],
+                "type": "object"
               },
               "repl_enabled": {
                 "type": "boolean"
@@ -17675,6 +18443,7 @@
               "last_activity_at",
               "manual_stop",
               "quarantine_reason",
+              "r",
               "repl_enabled",
               "state",
               "trust_state",
@@ -17687,7 +18456,10 @@
             "type": "boolean"
           },
           "status": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           }
         },
         "required": [
@@ -17728,7 +18500,10 @@
                     "environment",
                     "files"
                   ],
-                  "type": "object"
+                  "type": [
+                    "null",
+                    "object"
+                  ]
                 },
                 "kind": {
                   "type": "string"
@@ -17761,7 +18536,10 @@
                   "required": [
                     "artifacts"
                   ],
-                  "type": "object"
+                  "type": [
+                    "null",
+                    "object"
+                  ]
                 },
                 "seq": {
                   "type": "integer"
@@ -19167,6 +19945,9 @@
           "base_url": {
             "type": "string"
           },
+          "can_configure": {
+            "type": "boolean"
+          },
           "complete": {
             "type": "boolean"
           },
@@ -19603,6 +20384,7 @@
         "required": [
           "active_id",
           "base_url",
+          "can_configure",
           "complete",
           "contacted",
           "environment",
@@ -19658,6 +20440,72 @@
       "schema": {
         "properties": {
           "jobs": {
+            "items": {
+              "properties": {
+                "backend": {
+                  "type": "string"
+                },
+                "command": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "desired_state": {
+                  "type": "string"
+                },
+                "execution_epoch": {
+                  "type": "integer"
+                },
+                "exit_code": {
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "owner_user_id": {
+                  "type": "string"
+                },
+                "phase": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "null"
+                },
+                "reason": {
+                  "type": "null"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "backend",
+                "command",
+                "created_at",
+                "desired_state",
+                "execution_epoch",
+                "exit_code",
+                "id",
+                "kind",
+                "owner_user_id",
+                "phase",
+                "profile",
+                "project_id",
+                "reason",
+                "updated_at"
+              ],
+              "type": "object"
+            },
             "type": "array"
           }
         },
@@ -19766,6 +20614,9 @@
             "type": "string"
           },
           "execution_epoch": {
+            "type": "integer"
+          },
+          "exit_code": {
             "type": "integer"
           },
           "id": {
@@ -21847,6 +22698,9 @@
                 },
                 "task_summary": {
                   "type": "null"
+                },
+                "updated_at": {
+                  "type": "integer"
                 }
               },
               "required": [
@@ -21855,7 +22709,8 @@
                 "name",
                 "project_id",
                 "snippet",
-                "task_summary"
+                "task_summary",
+                "updated_at"
               ],
               "type": "object"
             },
@@ -22196,6 +23051,9 @@
                 "revoked_at": {
                   "type": "null"
                 },
+                "root_frame_id": {
+                  "type": "string"
+                },
                 "share_id": {
                   "type": "string"
                 },
@@ -22225,6 +23083,7 @@
                 "expires_at",
                 "projection_id",
                 "revoked_at",
+                "root_frame_id",
                 "share_id",
                 "size_bytes",
                 "snapshot_id",
@@ -22347,6 +23206,9 @@
           "editable": {
             "type": "boolean"
           },
+          "full_description": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -22358,6 +23220,7 @@
           "body",
           "description",
           "editable",
+          "full_description",
           "name",
           "origin"
         ],
@@ -23543,7 +24406,10 @@
                   "type": "boolean"
                 },
                 "display_name": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "id": {
                   "type": "string"
@@ -23575,6 +24441,31 @@
       }
     },
     "GET /team/users/([^/]+)/disable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /team/users/([^/]+)/enable [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -23891,7 +24782,110 @@
             "type": "object"
           },
           "model_profile": {
-            "type": "null"
+            "properties": {
+              "base_url": {
+                "type": "string"
+              },
+              "capability_receipt": {
+                "type": "null"
+              },
+              "credential_source": {
+                "type": "string"
+              },
+              "effective_capabilities": {
+                "properties": {
+                  "streaming": {
+                    "properties": {
+                      "source": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "value"
+                    ],
+                    "type": "object"
+                  },
+                  "tool_calling": {
+                    "properties": {
+                      "source": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "value"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "streaming",
+                  "tool_calling"
+                ],
+                "type": "object"
+              },
+              "has_api_key": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "readiness": {
+                "properties": {
+                  "checked_endpoint": {
+                    "type": "boolean"
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "checked_endpoint",
+                  "detail",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "base_url",
+              "capability_receipt",
+              "credential_source",
+              "effective_capabilities",
+              "has_api_key",
+              "id",
+              "model",
+              "name",
+              "provider",
+              "readiness",
+              "revision"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
           },
           "plans": {
             "type": "array"
@@ -25122,6 +26116,72 @@
       }
     },
     "PATCH /auth/me/llm-key [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /auth/me/replays [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -26685,6 +27745,39 @@
         "type": "object"
       }
     },
+    "PATCH /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [error]": {
       "schema": {
         "properties": {
@@ -27763,6 +28856,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -31949,6 +33075,31 @@
         "type": "object"
       }
     },
+    "PATCH /team/users/([^/]+)/enable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /team/users/([^/]+)/reset-password [error]": {
       "schema": {
         "properties": {
@@ -33610,6 +34761,64 @@
         "type": "object"
       }
     },
+    "POST /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /auth/me/replays [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /auth/redeem-invite [error]": {
       "schema": {
         "properties": {
@@ -34307,6 +35516,9 @@
           "key_configured": {
             "type": "boolean"
           },
+          "model_key_available": {
+            "type": "boolean"
+          },
           "ok": {
             "type": "boolean"
           },
@@ -34322,6 +35534,7 @@
           "connector_enabled",
           "connector_id",
           "key_configured",
+          "model_key_available",
           "ok",
           "skill_enabled",
           "skill_name"
@@ -34495,6 +35708,9 @@
           "key_configured": {
             "type": "boolean"
           },
+          "model_key_available": {
+            "type": "boolean"
+          },
           "ok": {
             "type": "boolean"
           },
@@ -34508,6 +35724,7 @@
         "required": [
           "ark_key_reused",
           "key_configured",
+          "model_key_available",
           "ok",
           "primary",
           "provider"
@@ -36507,6 +37724,39 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [error]": {
       "schema": {
         "properties": {
@@ -38319,6 +39569,32 @@
                     "type": "boolean"
                   },
                   "issues": {
+                    "items": {
+                      "properties": {
+                        "language": {
+                          "type": "string"
+                        },
+                        "names": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "step_id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "type": "object"
+                    },
                     "type": "array"
                   },
                   "status": {
@@ -38438,7 +39714,110 @@
             "type": "string"
           },
           "recovery": {
-            "type": "null"
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "branch_id": {
+                "type": "string"
+              },
+              "checkpoint_id": {
+                "type": "string"
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "recovery_id": {
+                "type": "string"
+              },
+              "results": {
+                "items": {
+                  "properties": {
+                    "candidate_generation_id": {
+                      "type": "string"
+                    },
+                    "issues": {
+                      "items": {
+                        "properties": {
+                          "language": {
+                            "type": "string"
+                          },
+                          "names": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "step_id": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "manifest_id": {
+                      "type": "string"
+                    },
+                    "replayed_steps": {
+                      "type": "array"
+                    },
+                    "skipped_steps": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "source_generation_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "candidate_generation_id",
+                    "issues",
+                    "manifest_id",
+                    "replayed_steps",
+                    "skipped_steps",
+                    "source_generation_id",
+                    "status"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "branch_id",
+              "checkpoint_id",
+              "ok",
+              "recovery_id",
+              "results",
+              "root_frame_id",
+              "status"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
           },
           "root_frame_id": {
             "type": "string"
@@ -38506,6 +39885,9 @@
           "created_at": {
             "type": "integer"
           },
+          "deleted_at": {
+            "type": "null"
+          },
           "from_checkpoint_id": {
             "type": "string"
           },
@@ -38552,6 +39934,7 @@
           "base_checkpoint_id",
           "branch_id",
           "created_at",
+          "deleted_at",
           "from_checkpoint_id",
           "head_checkpoint_id",
           "name",
@@ -39172,6 +40555,31 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/execution-sources [error]": {
       "schema": {
         "properties": {
@@ -39284,11 +40692,32 @@
     "POST /frames/([^/]+)/kernel/env [ok]": {
       "schema": {
         "properties": {
+          "env": {
+            "type": "null"
+          },
           "error": {
+            "type": "string"
+          },
+          "frame_id": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "generation_id": {
+            "type": "null"
+          },
+          "language": {
             "type": "string"
           },
           "ok": {
             "type": "boolean"
+          },
+          "python_version": {
+            "type": "null"
+          },
+          "state": {
+            "type": "string"
           }
         },
         "required": [],
@@ -39593,6 +41022,31 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/message [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/message [ok]": {
       "schema": {
         "properties": {
@@ -39650,6 +41104,9 @@
           "queue_position": {
             "type": "integer"
           },
+          "reason": {
+            "type": "string"
+          },
           "request_id": {
             "type": "string"
           },
@@ -39662,7 +41119,6 @@
           "frame_id",
           "job_id",
           "owner",
-          "request_id",
           "status"
         ],
         "type": "object"
@@ -41726,7 +43182,10 @@
             "type": "string"
           },
           "checkpoint_id": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "code": {
             "type": "string"
@@ -41773,12 +43232,26 @@
                       "error": {
                         "type": "string"
                       },
+                      "language": {
+                        "type": "string"
+                      },
+                      "names": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "step_id": {
+                        "type": "string"
+                      },
                       "type": {
                         "type": "string"
                       }
                     },
                     "required": [
-                      "error",
                       "type"
                     ],
                     "type": "object"
@@ -41792,6 +43265,9 @@
                   "type": "array"
                 },
                 "skipped_steps": {
+                  "items": {
+                    "type": "string"
+                  },
                   "type": "array"
                 },
                 "source_generation_id": {
@@ -43269,6 +44745,9 @@
           "base_url": {
             "type": "string"
           },
+          "can_configure": {
+            "type": "boolean"
+          },
           "complete": {
             "type": "boolean"
           },
@@ -43602,6 +45081,7 @@
         "required": [
           "active_id",
           "base_url",
+          "can_configure",
           "complete",
           "contacted",
           "environment",
@@ -46552,10 +48032,16 @@
     "POST /team/users [ok]": {
       "schema": {
         "properties": {
+          "password": {
+            "type": "string"
+          },
           "user": {
             "properties": {
               "display_name": {
-                "type": "null"
+                "type": [
+                  "null",
+                  "string"
+                ]
               },
               "id": {
                 "type": "string"
@@ -46610,11 +48096,17 @@
     "POST /team/users/([^/]+)/disable [ok]": {
       "schema": {
         "properties": {
+          "llm_keys_cleared": {
+            "type": "integer"
+          },
           "ok": {
             "type": "boolean"
           },
           "user": {
             "properties": {
+              "disabled": {
+                "type": "boolean"
+              },
               "display_name": {
                 "type": "null"
               },
@@ -46629,6 +48121,74 @@
               }
             },
             "required": [
+              "disabled",
+              "display_name",
+              "id",
+              "role",
+              "username"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "llm_keys_cleared",
+          "ok",
+          "user"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /team/users/([^/]+)/enable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /team/users/([^/]+)/enable [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "user": {
+            "properties": {
+              "disabled": {
+                "type": "boolean"
+              },
+              "display_name": {
+                "type": "null"
+              },
+              "id": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "username": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "disabled",
               "display_name",
               "id",
               "role",
@@ -48133,6 +49693,72 @@
         "type": "object"
       }
     },
+    "PUT /auth/me/password [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /auth/me/replays [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /auth/redeem-invite [error]": {
       "schema": {
         "properties": {
@@ -49594,6 +51220,39 @@
         "type": "object"
       }
     },
+    "PUT /frames/([^/]+)/(?:branches/([^/]+)) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [error]": {
       "schema": {
         "properties": {
@@ -50523,6 +52182,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/execution-queue/resume [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -53944,6 +55636,38 @@
         "type": "object"
       }
     },
+    "PUT /share/settings [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "missing",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /share/settings [ok]": {
       "schema": {
         "properties": {
@@ -54599,6 +56323,31 @@
       }
     },
     "PUT /team/users/([^/]+)/disable [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /team/users/([^/]+)/enable [error]": {
       "schema": {
         "properties": {
           "code": {

@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../../features/chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 
 const hookState: unknown[] = [];
 let hookCursor = 0;
@@ -40,6 +47,7 @@ vi.mock("../../features/customize/actions", async (importOriginal) => ({
   custTab: () => undefined,
 }));
 
+import { teamUser } from "../../features/chrome/team-identity";
 import { CapabilityBadges } from "../onboarding/CapabilityBadges";
 import { LocalEndpointRow, ModelsTab, ProfileRow, profileKeyLabel } from "./ModelsTab";
 
@@ -219,6 +227,73 @@ describe("ModelsTab active configuration", () => {
   });
 });
 
+// TEAM-23: a member saw the admin's whole "Add model / API" form, key field
+// included, and Add answered 403 with nothing on screen.
+describe("ModelsTab for a team member", () => {
+  afterEach(() => {
+    teamUser.value = null;
+  });
+
+  const routes = {
+    "/model-profiles": () =>
+      response({
+        profiles: [{ id: "mp-1", name: "Lab model", provider: "ark", model: "m-1", base_url: "https://admin.example/v1", has_api_key: true }],
+        active_id: "mp-1",
+        protocols: ["ark"],
+      }),
+    "/config/llm": () => response(LIVE),
+  };
+  const classes = (tree: unknown): string[] => {
+    const out: string[] = [];
+    const walk = (current: unknown): void => {
+      if (Array.isArray(current)) return current.forEach(walk);
+      if (!current || typeof current !== "object") return;
+      const node = current as Node;
+      if (typeof node.props?.class === "string") out.push(node.props.class);
+      if (node.type === "input") out.push("input:" + String(node.props?.type || "text"));
+      walk(node.props?.children);
+    };
+    walk(tree);
+    return out;
+  };
+
+  it("lists the models read-only and says where a member's own key goes", async () => {
+    teamUser.value = { username: "bob", role: "member" };
+    const tree = await open(routes);
+    expect(tagged(tree, "data-admin-only")).toHaveLength(1);
+    expect(content(tree)).toMatch(/administrator/);
+    expect(content(tree)).toContain("My model keys");
+    expect(classes(tree)).not.toContain("skill-form");
+    expect(classes(tree)).not.toContain("input:password");
+    const rows = tagged(tree, "activeId");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.props!.readOnly).toBe(true);
+  });
+
+  it("keeps the form for an admin and in single-user mode", async () => {
+    teamUser.value = { username: "alice", role: "admin" };
+    let tree = await open(routes);
+    expect(tagged(tree, "data-admin-only")).toHaveLength(0);
+    expect(classes(tree)).toContain("skill-form");
+    teamUser.value = null;
+    hookState.length = 0;
+    tree = await open(routes);
+    expect(classes(tree)).toContain("input:password");
+  });
+
+  it("a read-only row offers no write and no endpoint", () => {
+    hookCursor = 0;
+    const p = { id: "mp-1", name: "Lab model", provider: "ark", model: "m-1", base_url: "https://admin.example/v1" };
+    const row = ProfileRow({ p, activeId: "", protocols: [], readOnly: true, onEdit: () => undefined }) as Node;
+    expect(tagged(row, "onClick")).toEqual([]);
+    expect(content(row)).not.toContain("admin.example");
+    hookCursor = 0;
+    const editable = ProfileRow({ p, activeId: "", protocols: [], onEdit: () => undefined }) as Node;
+    expect(tagged(editable, "onClick").length).toBeGreaterThanOrEqual(4);
+    expect(content(editable)).toContain("admin.example");
+  });
+});
+
 describe("local endpoint add", () => {
   it("adds a local model once however often Add is pressed while the write is in flight", async () => {
     let finish!: (value: Response) => void;
@@ -285,7 +360,7 @@ describe("composer model list after a profile change", () => {
   });
 
   it("re-reads the list after a profile that is not active is deleted", async () => {
-    vi.stubGlobal("window", { confirm: () => true });
+    dialogMock.answer = () => true;
     mocks.fetch.mockImplementation(() => Promise.resolve(response({})));
     hookCursor = 0;
     const row = ProfileRow({ p: { id: "mp-2", name: "Other" }, activeId: "mp-1", protocols: [], onEdit: () => {} });
@@ -394,13 +469,13 @@ describe("M2 model capability provenance", () => {
       }),
     );
     const text = badgeText(tree);
-    expect(text).toContain("Last test observation");
-    expect(text).toContain("Next request uses");
+    expect(text).toContain("Last test");
+    expect(text).toContain("In use");
     // A catalogue default is labelled as such; it is not a measured pass.
-    expect(text).toContain("on (catalogue default)");
-    expect(text).toContain("on (measured)");
-    expect(text).toContain("native tool call · unknown");
-    expect(text).toContain("observed ");
+    expect(text).toContain("on (model catalogue default, not tested)");
+    expect(text).toContain("on (from the last test)");
+    expect(text).toContain("Tool calling: not determined");
+    expect(text).toContain("tested ");
 
     const effective = tagged(badgeTree(tree), "data-effective-field");
     expect(effective.map((pill) => pill.props!["data-effective-field"])).toEqual([
@@ -430,7 +505,7 @@ describe("M2 model capability provenance", () => {
       },
     });
     let tree = renderProfile(p);
-    expect(badgeText(tree)).not.toContain("Next request uses");
+    expect(badgeText(tree)).not.toContain("In use");
 
     mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === "/api/v1/model-profiles/mp-1/probe" && init?.method === "POST") {
@@ -459,13 +534,13 @@ describe("M2 model capability provenance", () => {
     expect(test).toBeTruthy();
     await (test.props!.onClick as () => Promise<void>)();
     await vi.waitFor(() =>
-      expect(badgeText(renderProfile(p))).toContain("Next request uses"),
+      expect(badgeText(renderProfile(p))).toContain("In use"),
     );
 
     tree = renderProfile(p);
     const text = badgeText(tree);
-    expect(text).toContain("on (measured)");
-    expect(text).toContain("off (catalogue default)");
+    expect(text).toContain("on (from the last test)");
+    expect(text).toContain("off (model catalogue default, not tested)");
   });
 
   it("ignores a projection that is not the two-field B.3 shape", () => {
@@ -489,8 +564,8 @@ describe("M2 model capability provenance", () => {
       }),
     );
     const text = badgeText(tree);
-    expect(text).toContain("native tool call · true");
-    expect(text).not.toContain("Next request uses");
+    expect(text).toContain("Tool calling ✓");
+    expect(text).not.toContain("In use");
     expect(tagged(badgeTree(tree), "data-effective-field")).toHaveLength(0);
   });
 
@@ -514,7 +589,7 @@ describe("M2 model capability provenance", () => {
     });
     let tree = renderProfile(p);
     const before = badgeText(tree);
-    expect(before).toContain("on (explicit config)");
+    expect(before).toContain("on (set in the configuration)");
 
     mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === "/api/v1/model-profiles/mp-1/probe" && init?.method === "POST") {
@@ -527,9 +602,9 @@ describe("M2 model capability provenance", () => {
     const after = badgeText(tree);
     // The observation and the next-request decision are the old ones; only the
     // unknown observation row gains the reason the failed attempt reported.
-    expect(after).toContain("native tool call · true");
-    expect(after).toContain("on (explicit config)");
-    expect(after).toContain("off (catalogue default)");
+    expect(after).toContain("Tool calling ✓");
+    expect(after).toContain("on (set in the configuration)");
+    expect(after).toContain("off (model catalogue default, not tested)");
     expect(after).toContain("receipt could not be persisted");
     const effective = tagged(badgeTree(tree), "data-effective-field");
     expect(effective.map((pill) => pill.props!["data-source"])).toEqual([
@@ -557,9 +632,39 @@ describe("M2 model capability provenance", () => {
       }),
     );
     const text = badgeText(tree);
-    expect(text).toContain("native tool call · true");
-    expect(text).toContain("streaming · false");
-    expect(text).not.toContain("Next request uses");
+    expect(text).toContain("Tool calling ✓");
+    expect(text).toContain("Streaming output ✗ (not supported)");
+    expect(text).not.toContain("In use");
     expect(tagged(badgeTree(tree), "data-effective-field")).toHaveLength(0);
+  });
+});
+
+// M-24: the add form's model was a bare text box; the wizard offered the
+// endpoint's (or Ark Agent Plan's) model list.
+describe("ModelsTab add form model list", () => {
+  it("fetches the endpoint's models into suggestions and fills an empty model", async () => {
+    const posts: Array<[string, unknown]> = [];
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push([url, JSON.parse(String(init.body))]);
+        return Promise.resolve(response({ models: ["doubao-a", "doubao-b"], default_model: "doubao-b" }));
+      }
+      if (url === "/api/v1/model-profiles") return Promise.resolve(response({ profiles: [], active_id: "", protocols: ["ark"] }));
+      return Promise.resolve(response({}));
+    });
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    const find = (tree: unknown, key: string): Node => tagged(tree, key)[0]!;
+    const fetchRow = find(render(), "data-model-fetch");
+    const button = (fetchRow.props!.children as Node[]).find((node) => node?.type === "button")!;
+    await (button.props!.onClick as () => Promise<void>)();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(posts).toEqual([["/api/v1/model-profiles/discover", { provider: "chatgpt", base_url: "" }]]);
+    const tree = render();
+    const list = tagged(tree, "id").find((node) => node.props!.id === "cust-model-options")!;
+    expect((list.props!.children as Node[]).map((node) => node.props!.value)).toEqual(["doubao-a", "doubao-b"]);
+    const input = tagged(tree, "list")[0]!;
+    expect(input.props!.value).toBe("doubao-b");
   });
 });

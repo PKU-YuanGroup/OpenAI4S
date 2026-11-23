@@ -41,6 +41,8 @@ class SnapshotRepository(Protocol):
 
     def list_branches(self, root_frame_id: str) -> list[dict[str, Any]]: ...
 
+    def delete_branch(self, **fields: Any) -> dict[str, Any] | None: ...
+
     def list_checkpoints(
         self, root_frame_id: str, *, branch_id: str | None = None, limit: int = 100
     ) -> list[dict[str, Any]]: ...
@@ -61,6 +63,20 @@ SettingCompareDeleter = Callable[[str, str], bool]
 
 class RevertRecoveryRequiredError(RuntimeError):
     """A revert could not be completed or safely compensated."""
+
+
+class BranchDeletionRefused(RuntimeError):
+    """A branch cannot be deleted; ``code`` says why, for the route to map.
+
+    ``branch_not_found``: the Session has no such branch, or it was already
+    deleted. ``branch_main_line``: the Session's own first branch, which every
+    other branch descends from. ``branch_active``: the branch the Session is
+    on now; switch away first.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -172,6 +188,78 @@ class SessionBranchingService:
             }
         )
         return created
+
+    def check_delete(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str,
+        active_branch_id: str,
+    ) -> None:
+        """Raise `BranchDeletionRefused` unless `delete_branch` may proceed.
+
+        Read-only, so a route can refuse before it waits for the Session's
+        writer ticket; `delete_branch` makes the same check again under it.
+        """
+
+        if not isinstance(branch_id, str) or not branch_id.strip():
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        if branch_id == root_frame_id:
+            raise BranchDeletionRefused(
+                "branch_main_line", "the main line of a session cannot be deleted"
+            )
+        branch = self.repository.get_branch(branch_id)
+        if (
+            branch is None
+            or branch.get("root_frame_id") != root_frame_id
+            or branch.get("deleted_at") is not None
+        ):
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        if branch_id == active_branch_id:
+            raise BranchDeletionRefused(
+                "branch_active",
+                "the current branch cannot be deleted; switch to another branch first",
+            )
+
+    def delete_branch(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str,
+        active_branch_id: str,
+    ) -> dict[str, Any]:
+        """Delete a branch that is neither the main line nor the active one.
+
+        Deletion is a tombstone (M-73). The branch leaves every branch list and
+        can no longer be switched to, but nothing it recorded is removed: its
+        checkpoints, messages, Cells and Artifact versions stay in the append-
+        only history, because a branch forked from it projects them as its own
+        prefix. Its workspace directory is left in place for the same reason
+        the rows are: the Artifact versions written there still name it.
+        """
+
+        self.check_delete(
+            root_frame_id, branch_id=branch_id, active_branch_id=active_branch_id
+        )
+        deleted = self.repository.delete_branch(
+            root_frame_id=root_frame_id, branch_id=branch_id
+        )
+        if deleted is None:
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        self._emit(
+            {
+                "type": "branch_deleted",
+                "root_frame_id": root_frame_id,
+                "branch_id": branch_id,
+                "ok": True,
+            }
+        )
+        return {
+            "ok": True,
+            "root_frame_id": root_frame_id,
+            "branch_id": branch_id,
+            "deleted_at": deleted.get("deleted_at"),
+        }
 
     def _materialize_fork_workspace(
         self,
@@ -662,7 +750,14 @@ class SessionBranchingService:
         )
 
     def projection(self, root_frame_id: str) -> dict[str, Any]:
-        branches = self.repository.list_branches(root_frame_id)
+        # A deleted branch (M-73) is listed nowhere; its rows stay for the
+        # branches that inherit them. The tombstone column says nothing about
+        # a listed branch, so it is not part of this view.
+        branches = [
+            {key: value for key, value in branch.items() if key != "deleted_at"}
+            for branch in self.repository.list_branches(root_frame_id)
+            if branch.get("deleted_at") is None
+        ]
         return {
             "root_frame_id": root_frame_id,
             "branches": [
@@ -1492,9 +1587,55 @@ class SessionBranchingService:
             pass
 
 
+def project_branch_steps(
+    store: Any,
+    root_frame_id: str,
+    steps: list[dict[str, Any]],
+    *,
+    branch_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """The transcript's activity steps as one branch sees them.
+
+    Steps carry no branch and no cursor, so activating a branch forked at the
+    second question still showed every step card the original branch wrote
+    after that point. A step belongs to the branch of the latest user message
+    written before it (turns run one at a time per session, and every turn
+    starts with one), and it is part of a checkpoint's history when it was
+    written no later than that checkpoint: the same append-only projection the
+    messages and cells use, with the checkpoint's own time as the cursor.
+    """
+
+    import bisect
+
+    from openai4s.storage.branch_projection import project_branch_records
+
+    selected = branch_id or store.active_session_branch(root_frame_id)
+    users = sorted(
+        (int(message.get("created_at") or 0), str(message.get("branch_id") or ""))
+        for message in store.list_message_boundaries(root_frame_id, limit=None)
+        if message.get("role") == "user"
+    )
+    times = [at for at, _branch in users]
+    local: dict[str, list[dict[str, Any]]] = {}
+    for step in steps:
+        index = bisect.bisect_right(times, int(step.get("created_at") or 0)) - 1
+        owner = (users[index][1] if index >= 0 else "") or root_frame_id
+        local.setdefault(owner, []).append(step)
+    return project_branch_records(
+        store,
+        root_frame_id,
+        selected,
+        list_local=lambda branch: local.get(branch, []),
+        record_position=lambda step: int(step.get("created_at") or 0),
+        cursor_key="created_at",
+    )
+
+
 __all__ = [
+    "BranchDeletionRefused",
     "CheckpointRequest",
     "RevertRecoveryRequiredError",
     "SessionBranchingService",
     "SnapshotRepository",
+    "project_branch_steps",
 ]

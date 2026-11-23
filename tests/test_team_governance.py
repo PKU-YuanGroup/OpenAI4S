@@ -95,6 +95,7 @@ def test_frame_mutation_policy_is_owner_only_by_default():
         ("POST", "/frames/f-1/kernel/execute"),
         ("POST", "/frames/f-1/checkpoints"),
         ("POST", "/frames/f-1/branches/b-1/activate"),
+        ("DELETE", "/frames/f-1/branches/b-1"),
         ("POST", "/frames/f-1/recovery/actions/restart_fresh"),
         ("DELETE", "/frames/f-1"),
     ):

@@ -7,6 +7,69 @@ import { hint } from "./chrome";
 import { shareCopy } from "./copy";
 import { icon } from "./icon";
 import type { SessionLike } from "./paging";
+import { copyLookup } from "../../i18n/copy";
+
+/** Tunnel state and snapshot lines (TEAM-16, TEAM-17). */
+const shareStateCopy = copyLookup({
+  en: {
+    tunnelDown:
+      "The relay is not connected, so this link does not open yet. It starts working once OpenAI4S reaches the relay.",
+    lastError: "Last error: {0}",
+    snapshot: "Snapshot {0} · {1}",
+    counts: "{0} messages · {1} cells · {2} artifacts",
+    excluded: "{0} file(s) left out",
+    counting: "Counting what this link would publish…",
+    willPublish: "This link would publish {0}.",
+  },
+  zh: {
+    tunnelDown: "中转服务器（relay）未连接，这条链接暂时打不开；OpenAI4S 连上中转服务器后自动生效。",
+    lastError: "最近的错误：{0}",
+    snapshot: "快照 {0} · {1}",
+    counts: "{0} 条消息 · {1} 个单元 · {2} 个产物",
+    excluded: "排除了 {0} 个文件",
+    counting: "正在统计这条链接会公开的内容…",
+    willPublish: "这条链接将公开：{0}。",
+  },
+});
+
+/** `expires_at` is epoch milliseconds; a numeric string must not be parsed as a date string. */
+export function shareExpiry(value: unknown): Date | null {
+  if (value == null || value === "") return null;
+  const numeric = typeof value === "number" || /^\d+$/.test(String(value));
+  const date = numeric ? new Date(Number(value)) : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+export function tunnelDownText(lastError: unknown): string {
+  const detail = typeof lastError === "string" ? lastError.trim().slice(0, 200) : "";
+  return shareStateCopy("tunnelDown") + (detail ? " " + shareStateCopy("lastError", detail) : "");
+}
+
+/** "N messages · N cells · N artifacts · N file(s) left out", or "" without counts. */
+export function countsText(counts: Record<string, unknown>): string {
+  if (!["messages", "cells", "artifacts"].some((key) => typeof counts[key] === "number")) return "";
+  let text = shareStateCopy(
+    "counts",
+    Number(counts.messages || 0),
+    Number(counts.cells || 0),
+    Number(counts.artifacts || 0),
+  );
+  const excluded = counts.excluded;
+  const left =
+    excluded && typeof excluded === "object"
+      ? Object.values(excluded as Record<string, unknown>).reduce<number>((sum, n) => sum + (Number(n) || 0), 0)
+      : 0;
+  if (left) text += " · " + shareStateCopy("excluded", left);
+  return text;
+}
+
+/** "Snapshot <time> · N messages · N cells · N artifacts · N file(s) left out". */
+export function snapshotText(share: Record<string, unknown>): string {
+  const counts = countsText((share.counts || {}) as Record<string, unknown>);
+  if (!counts) return "";
+  const at = shareExpiry(share.updated_at);
+  return shareStateCopy("snapshot", at ? at.toLocaleString() : "", counts);
+}
 
 /** No relay is configured: the default install, where Share can only explain the setup. */
 function relayUnconfigured(status: Record<string, unknown>): boolean {
@@ -67,7 +130,11 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
   const box = document.createElement("div");
   box.className = "share-box";
   overlay.appendChild(box);
-  const close = () => overlay.remove();
+  let poll: ReturnType<typeof setInterval> | undefined;
+  const close = () => {
+    if (poll !== undefined) clearInterval(poll);
+    overlay.remove();
+  };
   overlay.onclick = (e) => {
     if (e.target === overlay) close();
   };
@@ -140,14 +207,40 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
     return;
   }
 
+  // TEAM-16: a link the relay cannot serve looked exactly like a working one.
+  // The tunnel's state is shown above the link, and re-read while the dialog
+  // stays open, so a relay that comes back (or drops) is reflected.
+  const tunnelNote = document.createElement("p");
+  tunnelNote.className = "share-tunnel";
+  tunnelNote.setAttribute("role", "status");
+  let statusLine: HTMLDivElement | null = null;
+  const paintTunnel = (current: Record<string, unknown>) => {
+    const down = String(current.state || "") !== "connected";
+    tunnelNote.hidden = !down;
+    tunnelNote.textContent = down ? tunnelDownText(current.last_error) : "";
+    if (statusLine) statusLine.className = down ? "share-status offline" : "share-status";
+  };
+  paintTunnel(status);
+  poll = setInterval(() => {
+    // Removed some other way than close(): stop reading.
+    if (!overlay.isConnected) return clearInterval(poll);
+    fetch(`${API}/share/status`)
+      .then((r) => r.json())
+      .then((next) => paintTunnel(next as Record<string, unknown>))
+      .catch(() => undefined);
+  }, 4000);
+
   const active = (shares.shares || []).find((s) => s.status === "ready" || s.status === "publishing");
   if (active) {
-    const statusLine = document.createElement("div");
+    statusLine = document.createElement("div");
     statusLine.className = "share-status";
-    statusLine.textContent = active.expires_at
-      ? t("share.expiresAt") + " " + new Date(String(active.expires_at)).toLocaleString()
+    const expires = shareExpiry(active.expires_at);
+    statusLine.textContent = expires
+      ? t("share.expiresAt") + " " + expires.toLocaleString()
       : t("share.neverExpires");
     head.appendChild(statusLine);
+    paintTunnel(status);
+    box.appendChild(tunnelNote);
     const label = document.createElement("label");
     label.className = "share-label";
     label.htmlFor = "share-url";
@@ -180,6 +273,13 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
     );
     row.appendChild(copyBtn);
     box.appendChild(row);
+    // TEAM-17: what this snapshot publishes, from the counts the server froze.
+    const published = snapshotText(active);
+    if (published) {
+      const snap = para(published);
+      snap.classList.add("share-snapshot");
+      box.appendChild(snap);
+    }
     box.appendChild(scopeNote());
     const rows = document.createElement("div");
     rows.className = "share-rows";
@@ -188,32 +288,67 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
         t("share.update"),
         shareCopy("updateDesc"),
         mkBtn(t("share.update"), async () => {
-          await shareCall("PUT", `${API}/shares/${encodeURIComponent(String(active.share_id))}`);
+          const updated = await shareCall("PUT", `${API}/shares/${encodeURIComponent(String(active.share_id))}`);
+          if (!updated) return;
           hint(t("share.updated"));
+          // Stays open on the fresh snapshot, so its counts and the link are
+          // right there to check and copy again.
           close();
+          void openShareDialog(fid, frame);
         }),
       ),
     );
-    rows.appendChild(
-      shareRow(
-        t("share.revoke"),
-        shareCopy("revokeDesc"),
-        mkBtn(
-          t("share.revoke"),
-          async () => {
-            if (!confirm(t("share.revokeConfirm"))) return;
-            await shareCall("DELETE", `${API}/shares/${encodeURIComponent(String(active.share_id))}`);
-            hint(t("share.revoked"));
-            close();
-          },
-          true,
-        ),
-      ),
+    const revokeRow = shareRow(
+      t("share.revoke"),
+      shareCopy("revokeDesc"),
+      mkBtn(t("share.revoke"), () => confirmRevoke(), true),
     );
+    rows.appendChild(revokeRow);
     box.appendChild(rows);
     finish(copyBtn);
+
+    // In-dialog confirmation instead of the browser's native confirm().
+    function confirmRevoke(): void {
+      const ask = document.createElement("div");
+      ask.className = "share-row share-confirm";
+      ask.setAttribute("role", "alertdialog");
+      const text = document.createElement("span");
+      text.className = "share-row-desc";
+      text.textContent = t("share.revokeConfirm");
+      const cancel = mkBtn(t("share.close"), () => {
+        ask.replaceWith(revokeRow);
+      });
+      const yes = mkBtn(
+        t("share.revoke"),
+        async () => {
+          const done = await shareCall("DELETE", `${API}/shares/${encodeURIComponent(String(active!.share_id))}`);
+          if (done === null) return;
+          hint(t("share.revoked"));
+          close();
+        },
+        true,
+      );
+      ask.appendChild(text);
+      ask.appendChild(actions(cancel, yes));
+      revokeRow.replaceWith(ask);
+      cancel.focus();
+    }
   } else {
+    box.appendChild(tunnelNote);
     box.appendChild(scopeNote());
+    // TEAM-17: what a link would publish, before it exists. The replay view
+    // is the same projection a share publishes, built without publishing.
+    const preview = para(shareStateCopy("counting"));
+    preview.classList.add("share-snapshot");
+    box.appendChild(preview);
+    fetch(`${API}/sessions/${encodeURIComponent(fid)}/replay`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((view) => {
+        const text = view ? countsText({ ...(view.counts || {}), excluded: view.excluded }) : "";
+        if (text) preview.textContent = shareStateCopy("willPublish", text);
+        else preview.remove();
+      })
+      .catch(() => preview.remove());
     const expRow = document.createElement("div");
     expRow.className = "share-expiry";
     const expLabel = document.createElement("span");

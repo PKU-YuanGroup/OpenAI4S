@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { t } from "../../i18n";
+import { apiErrorText } from "../../features/customize/api";
 import { hint } from "../../features/customize/host";
 import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { customizeRefresh } from "../../features/customize/state";
@@ -51,7 +52,12 @@ export function useTabRead(
 export type OptimisticHandlers<T> = {
   /** The write succeeded; `result` is what it answered. */
   done?: (next: T, result: unknown) => void;
-  /** The write failed; the control is already back on the confirmed value. */
+  /**
+   * The write failed; the control is already back on the confirmed value.
+   * Without one the failure is still said (`toast.failed`): a switch that
+   * only flipped back -- a member's refused memory, network or Skill switch
+   * -- read as nothing having happened (TEAM-23).
+   */
   failed?: (error: unknown, next: T) => void;
 };
 
@@ -109,7 +115,8 @@ export function useOptimistic<T>(
         s.busy = false;
         s.own = previous;
         bump();
-        handlers.failed?.(error, next);
+        if (handlers.failed) handlers.failed(error, next);
+        else hint(t("toast.failed", apiErrorText(error)), true);
       },
     );
   };

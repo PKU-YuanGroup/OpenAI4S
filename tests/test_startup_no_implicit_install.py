@@ -146,8 +146,12 @@ def test_missing_environments_are_explained_the_same_way_everywhere(
     httpd = gateway.build_app_server(Config(data_dir=tmp_path, port=0))
     httpd.server_close()
     banner = capsys.readouterr().err
-    assert "2 scientific package(s) are not installed: seaborn, statsmodels" in banner
-    assert f"startup does not install packages. {canonical}" in banner
+    # CLI-11: the whole list, said to be optional, then the one remedy.
+    assert (
+        "2 optional scientific package(s) are not installed in this Python: "
+        "seaborn, statsmodels. Nothing else is affected" in banner
+    )
+    assert f"Startup does not install packages. {canonical}" in banner
     assert "Customize → Compute" not in banner
 
     # The status the Compute tab shows.

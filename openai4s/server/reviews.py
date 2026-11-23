@@ -160,6 +160,43 @@ class ReviewPorts:
     # dispatched under (`.usable`, `.api_key`). Without it a profile the
     # Reviewer moves to is dispatched under its own key or none.
     profile_credential: Callable[[Mapping[str, Any]], Any] | None = None
+    # (status, message, error_code) -> the gateway's typed refusal, so a
+    # client can tell why a review was refused without matching on prose.
+    refusal_error: Callable[[int, str, str], Exception] | None = None
+
+
+#: Why an on-demand review cannot produce a result, decided before any model
+#: call (M-75). It used to run anyway and, ~40 s later, end as an empty
+#: "Review unavailable" card. The client words these in its own language by
+#: the error code ``review_<reason>``; the message is the English fallback.
+UNAVAILABLE_MESSAGES = {
+    "nothing_to_review": (
+        "there is nothing to review yet: this session has no message, Cell or "
+        "file; ask the agent something first"
+    ),
+}
+
+
+def failure_reason(error: BaseException) -> str:
+    """Why a review that did start ended without a verdict.
+
+    ``no_model`` / ``model_unreachable`` / ``model_error`` are the provider;
+    ``unusable_answer`` is a reply the reviewer contract cannot read;
+    ``internal`` is anything else. A client explains each in its language.
+    """
+
+    from openai4s.llm.models import LLMError, MissingCredentialError, TransportError
+    from openai4s.review import ReviewError
+
+    if isinstance(error, MissingCredentialError):
+        return "no_model"
+    if isinstance(error, ReviewError) or isinstance(error, ValueError):
+        return "unusable_answer"
+    if isinstance(error, (TransportError, TimeoutError, OSError)):
+        return "model_unreachable"
+    if isinstance(error, LLMError):
+        return "model_error"
+    return "internal"
 
 
 class ReviewService:
@@ -596,7 +633,12 @@ class ReviewService:
             )
             return result
         except Exception as error:  # noqa: BLE001 - review never fails main work
-            output = {"error": str(error)[:500], "verdict": "unavailable"}
+            output = {
+                "error": str(error)[:500],
+                "verdict": "unavailable",
+                # M-75: why, as a code the card explains in the UI language.
+                "reason": failure_reason(error),
+            }
             self.store.update_step(
                 step_id,
                 status="error",
@@ -634,8 +676,38 @@ class ReviewService:
             provider_call = self.provider_calls.get(root_frame_id)
             return bool(provider_call is not None and not provider_call.is_set())
 
+    def unavailable_reason(self, root_frame_id: str) -> str | None:
+        """Why a review of this session cannot produce a result, or None.
+
+        Cheap and store-only: no provider call and no session state, which is
+        deliberately acquired on the job thread (Stop must be able to cancel a
+        review that is still waiting for it). A missing reviewer key is not
+        decided here: the provider layer refuses it before any request, so the
+        card reports it at once as ``no_model``.
+        """
+
+        store = self.store
+        if int(store.message_count(root_frame_id) or 0) > 0:
+            return None
+        if store.list_cells(root_frame_id):
+            return None
+        if store.list_artifacts({"root_frame_id": root_frame_id}):
+            return None
+        return "nothing_to_review"
+
+    def _refuse(self, reason: str) -> Exception:
+        message = UNAVAILABLE_MESSAGES[reason]
+        if self.ports.refusal_error is not None:
+            return self.ports.refusal_error(409, message, f"review_{reason}")
+        return self.ports.busy_error(409, message)
+
     def submit(self, root_frame_id: str, project_id: str) -> ReviewJob:
         """Run an on-demand Reviewer without adding conversation messages."""
+        # M-75: refuse up front what cannot produce a result, instead of a
+        # card that says "Review unavailable" after the provider timeout.
+        reason = self.unavailable_reason(root_frame_id)
+        if reason is not None:
+            raise self._refuse(reason)
         job = self.ports.job_factory(
             f"review-job-{uuid.uuid4().hex[:12]}",
             root_frame_id,

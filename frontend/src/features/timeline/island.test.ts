@@ -10,6 +10,13 @@
 
 import { effect } from "@preact/signals";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 import { resetStoreFields } from "../../stores/signal-field";
 import { _kc, pendingReplIdentity } from "../../stores/notebook";
 import { delegationState, executionQueue } from "../../stores/timeline";
@@ -40,9 +47,10 @@ import {
   sanitizeActionTimeline,
   sanitizeBranches,
   sanitizeContext,
+  sanitizeRecoveryActions,
   sanitizeSecurity,
 } from "./sanitize";
-import { provenanceT } from "../execution/copy";
+import { branchT, provenanceT } from "../execution/copy";
 import { LANG, setLang, t } from "../../i18n/runtime";
 
 type Listener = (event: FakeEvent) => void;
@@ -523,6 +531,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  dialogMock.answer = () => false;
   // The island keeps its repaint scheduler in module state: end any press or
   // composition a failed test left open and let queued frames run, so the
   // next test's repaints are neither held nor already "queued".
@@ -587,6 +596,117 @@ describe("queue strip", () => {
     renderQueueStrip();
     doc.querySelector("#queue-strip .queue-send-now")!.click();
     expect(pressed).toHaveBeenCalledTimes(1);
+  });
+
+  it("every tab shows a queued message as a queued bubble, and a drop made elsewhere (M-21, SYNC-1)", () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    const hintLine = doc.createElement("div");
+    hintLine.id = "composer-hint";
+    doc.body.appendChild(hintLine);
+    const said = vi.fn((text: string) => {
+      hintLine.textContent = text;
+    });
+    vi.stubGlobal("hint", said);
+    // This tab sent "alpha" (its 202 has not named the execution yet); another tab sent "beta".
+    const own = doc.createElement("div");
+    own.className = "msg user queued";
+    own.dataset.requestId = "web-a";
+    host.appendChild(own);
+    const alpha = { ...queued("exec-a", "alpha"), metadata: { preview: "alpha", request_id: "web-a" } };
+    const beta = { ...queued("exec-b", "beta"), metadata: { preview: "beta", request_id: "web-b" } };
+    const running = { ...queued("exec-run"), status: "running" };
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: running, queue: [alpha, beta] };
+    renderQueueStrip();
+    renderQueueStrip();
+    const rows = () => (host.querySelectorAll(".msg.user") as unknown as HTMLElement[]).map((row) => row);
+    // Its own bubble is recognised by the request id; "beta" is drawn once, from the preview.
+    expect(rows()).toHaveLength(2);
+    expect(own.dataset.executionId).toBe("exec-a");
+    const drawn = rows()[1]!;
+    expect(drawn.dataset.executionId).toBe("exec-b");
+    expect(drawn.dataset.queuePreview).toBe("1");
+    expect(drawn.classList.contains("queued")).toBe(true);
+    expect(drawn.querySelector(".bubble")!.textContent).toBe("beta");
+    expect(drawn.querySelector(".msg-queued")!.textContent).toBe("Queued · not sent yet");
+
+    // "beta" is dropped in another tab; "alpha" starts. Only "beta" reads as dropped.
+    hintLine.textContent = t("queue.accepted");
+    S.executionQueue = { owner: { ...alpha, status: "running" }, queue: [] };
+    renderQueueStrip();
+    expect(drawn.classList.contains("cancelled")).toBe(true);
+    expect(own.classList.contains("cancelled")).toBe(false);
+    expect(said.mock.calls.at(-1)?.[0]).toBe(t("queue.cancelled"));
+  });
+
+  it("after a failed turn asks before the held messages run, and runs them on request (M-31)", async () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    const calls = stubApi(() => ({ ok: true, released: 2 }));
+    S.currentId = "frame-a";
+    S.executionQueue = {
+      owner: null,
+      queue: [{ ...queued("exec-h1", "KM by EGFR"), held: true }, { ...queued("exec-h2", "and by TP53"), held: true }],
+    };
+    renderQueueStrip();
+    expect(doc.querySelector("#queue-strip .queue-head-t")!.textContent).toBe(
+      "The last turn failed. Run the 2 queued messages?",
+    );
+    // Nothing is running, so "stop and send now" has nothing to stop.
+    expect(doc.querySelector("#queue-strip .queue-send-now")).toBeNull();
+    // Each one can still be dropped, and its bubble says it is on hold.
+    expect(doc.querySelectorAll("#queue-strip .queue-cancel")).toHaveLength(2);
+    expect(host.querySelector(".msg.user .msg-queued")!.textContent).toBe("On hold · the last turn failed");
+    // Stop would hand the session to none of them.
+    expect(queuedFollowUpCount()).toBe(0);
+    const run = doc.querySelector("#queue-strip .queue-resume") as unknown as HTMLButtonElement;
+    expect(run.textContent).toBe("Run them");
+    run.click();
+    run.click();
+    await flush();
+    expect(calls.map((call) => [call.method, call.path])).toEqual([
+      ["POST", "/frames/frame-a/execution-queue/resume"],
+    ]);
+    // One held message: the question counts it as one.
+    S.executionQueue = { owner: null, queue: [{ ...queued("exec-h1", "KM by EGFR"), held: true }] };
+    renderQueueStrip();
+    expect(doc.querySelector("#queue-strip .queue-head-t")!.textContent).toBe(
+      "The last turn failed. Run the queued message?",
+    );
+    expect(doc.querySelector("#queue-strip .queue-resume")!.textContent).toBe("Run it");
+  });
+
+  it("a queued bubble whose execution started is not marked dropped by a late queue event", () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: null, queue: [queued("exec-c", "gamma")] };
+    renderQueueStrip();
+    const drawn = host.querySelector(".msg.user")!;
+    // Started, and already finished, before the queue event that drops it arrived.
+    rememberExecutionState({ execution_id: "exec-c", owner: { kind: "agent", id: "turn-exec-c" }, status: "running" });
+    S.executionQueue = { owner: null, queue: [] };
+    renderQueueStrip();
+    expect(drawn.classList.contains("cancelled")).toBe(false);
+  });
+
+  it("does not offer to edit a queued message from a cut preview it drew", () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: null, queue: [queued("exec-d", "x".repeat(159) + "…")] };
+    renderQueueStrip();
+    expect(host.querySelector(".msg.user")!.dataset.queuePreview).toBe("1");
+    expect((doc.querySelector("#queue-strip .queue-edit") as unknown as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("cancels a queued row in the session that queued it, not the one now open", async () => {
@@ -1537,5 +1657,122 @@ describe("the timeline comes first; the technical panels share one disclosure", 
     expect(details.open).toBe(false);
     details.querySelector("summary")!.click();
     expect(() => details.dispatchEvent({ type: "toggle" })).not.toThrow();
+  });
+});
+
+// M-73: "Activate" dropped the kernel without asking, then said in red
+// "error: … inspect Recovery" when its variables could not all be rebuilt.
+describe("switching to another branch", () => {
+  const projection = (current: string) => ({
+    root_frame_id: "frame-b",
+    branch_id: current,
+    current_branch_id: current,
+    capabilities: { activate: { enabled: true }, checkpoint: { enabled: true } },
+    branches: [
+      { branch_id: "frame-b", head_checkpoint_id: "cp-root", activatable: true, checkpoints: [] },
+      {
+        branch_id: "br-fork1234567890",
+        name: "Fit the Cox model",
+        head_checkpoint_id: "cp-q2",
+        activatable: true,
+        checkpoints: [],
+      },
+    ],
+  });
+  const partial = {
+    ok: false,
+    status: "partial",
+    current_branch_id: "br-fork1234567890",
+    dimensions: {
+      namespace: { applied: false, status: "partial", issues: [{ type: "missing_symbols", names: ["df", "model"] }] },
+    },
+  };
+  const button = (label: string) =>
+    Array.from(renderBranchPanel().querySelectorAll("button")).find((node) => node.textContent === label) ||
+    null;
+
+  function onRootBranch(answer: boolean): { hints: Array<[string, unknown]>; asked: string[] } {
+    mountDocument();
+    S.currentId = "frame-b";
+    S.branchState = sanitizeBranches(projection("frame-b"));
+    const hints: Array<[string, unknown]> = [];
+    const asked: string[] = [];
+    vi.stubGlobal("hint", (message: string, error?: boolean) => hints.push([message, error]));
+    dialogMock.answer = (message: string) => {
+      asked.push(message);
+      return answer;
+    };
+    return { hints, asked };
+  }
+
+  it("asks first, saying the kernel's variables will be lost", async () => {
+    const { asked } = onRootBranch(false);
+    const calls = stubApi();
+    button(t("branch.activate"))!.click();
+    await flush();
+    expect(asked).toEqual([branchT("branch.activateConfirm", "Fit the Cox model")]);
+    expect(calls.filter((call) => call.method === "POST")).toEqual([]);
+  });
+
+  it("says which variables did not come back, as news rather than an error, and offers to restore", async () => {
+    const { hints } = onRootBranch(true);
+    const calls = stubApi((path, method) => {
+      if (method === "POST" && path.endsWith("/activate")) return partial;
+      if (method === "POST" && path.endsWith("/recovery/actions/restore")) return { ok: true, status: "active", results: [] };
+      return undefined;
+    });
+    button(t("branch.activate"))!.click();
+    await flush();
+    await flush();
+    expect(hints.at(-1)).toEqual([branchT("branch.switchedGap", "Fit the Cox model", "df, model"), undefined]);
+
+    // The conversation reload brings the new branch's projection.
+    S.branchState = sanitizeBranches(projection("br-fork1234567890"));
+    const notice = renderBranchPanel().querySelector(".branch-kernel-gap")!;
+    expect(notice.textContent).toContain(branchT("branch.kernelGap", "df, model"));
+
+    button(branchT("branch.restoreKernel"))!.click();
+    await flush();
+    await flush();
+    expect(calls.find((call) => call.path.endsWith("/recovery/actions/restore"))?.body).toEqual({
+      branch_id: "br-fork1234567890",
+      confirm: false,
+    });
+    expect(renderBranchPanel().querySelector(".branch-kernel-gap")!.textContent).toBe(branchT("branch.restored"));
+    expect(button(branchT("branch.restoreKernel"))).toBeNull();
+  });
+});
+
+// M-64: the recovery card printed "checkpoint has an invalid python bootstrap
+// manifest" beside "Restore", and "Ready" beside the one that could run.
+describe("kernel recovery card words", () => {
+  it("says why an action cannot run, and what an available one does, never the server's words", () => {
+    const doc = mountDocument();
+    stubFrames();
+    stubResizeObserver();
+    showTimeline("frame-k", [group("g-1", 1)], "frame-k");
+    S.branchState = sanitizeBranches({ root_frame_id: "frame-k", branch_id: "frame-k", branches: [] });
+    S.recoveryState = { status: "failed", log: [] };
+    S.recoveryActions = sanitizeRecoveryActions({
+      root_frame_id: "frame-k",
+      branch_id: "frame-k",
+      checkpoint_id: "cp-33f1aaaaaaaaaaaa",
+      state: "failed",
+      actions: [
+        { id: "restore", enabled: false, reason: "checkpoint has an invalid python bootstrap manifest" },
+        { id: "retry", enabled: false, reason: "checkpoint has an invalid python bootstrap manifest" },
+        { id: "restart_fresh", enabled: true, reason: null, requires_confirmation: true },
+      ],
+    });
+    renderActionTimeline();
+    const card = doc.querySelector(".kind-recovery")!;
+    const reasons = card.querySelectorAll(".recovery-action-reason").map((node) => node.textContent);
+    expect(reasons).toEqual([
+      branchT("recovery.why.checkpoint"),
+      branchT("recovery.why.checkpoint"),
+      branchT("recovery.what.restart_fresh"),
+    ]);
+    expect(card.textContent).not.toContain("bootstrap manifest");
+    expect(card.textContent).not.toContain("cp-33f1");
   });
 });

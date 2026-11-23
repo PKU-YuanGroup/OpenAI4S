@@ -1,8 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { annotationId, annotationIsHeld, annotationStatus, openAnnotations, renderAnnotatableImage, updateAnnotBadge } from "./annot";
+
+const hints = vi.hoisted(() => [] as Array<{ text: unknown; err: unknown }>);
+vi.mock("../features/sessions/chrome", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/sessions/chrome")>()),
+  hint: (text: unknown, err?: unknown) => {
+    hints.push({ text, err });
+  },
+}));
+
+import {
+  annotRefusalText,
+  annotationId,
+  annotationIsHeld,
+  annotationStatus,
+  openAnnotations,
+  renderAnnotatableImage,
+  updateAnnotBadge,
+} from "./annot";
 import { setArtifactsFetch } from "../features/artifacts/api";
 import { filesT } from "../features/artifacts/copy";
-import { annotations } from "../stores/session";
+import { LANG, i18nReady, setLang } from "../i18n/runtime";
+import { annotations, currentId } from "../stores/session";
 import { resetStoreFields } from "../stores/signal-field";
 
 describe("annotationStatus (app.js:9244-9253)", () => {
@@ -132,5 +150,137 @@ describe("composer comment list (AUDIT A47)", () => {
     expect(walk(body).some((node) => node.textContent === "plot.png" && (node.className || "").includes("annot-img"))).toBe(
       false,
     );
+  });
+});
+
+// M-66: an imported read-only copy offered "click the image to annotate", and
+// the save was refused by the server in English ("imported Session is
+// quarantined and view-only; ... before mutating the Session").
+describe("comments in a read-only session (M-66)", () => {
+  class Node {
+    children: Node[] = [];
+    parent: Node | null = null;
+    className = ""; id = ""; title = ""; textContent = ""; value = ""; placeholder = ""; alt = ""; src = "";
+    disabled = false; draggable = true; rows = 0; clientWidth = 200; clientHeight = 100;
+    isConnected = true;
+    style: Record<string, string> = {};
+    dataset: Record<string, string> = {};
+    listeners: Record<string, (event: unknown) => unknown> = {};
+    onclick: ((event?: unknown) => unknown) | null = null;
+    classList = { add() {}, remove() {}, contains: () => false };
+    set innerHTML(_value: string) { this.children = []; }
+    setAttribute(): void {}
+    addEventListener(type: string, fn: (event: unknown) => unknown): void { this.listeners[type] = fn; }
+    removeEventListener(): void {}
+    appendChild(child: Node): Node { child.parent = this; this.children.push(child); return child; }
+    remove(): void {
+      if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
+      this.parent = null;
+    }
+    focus(): void {}
+    scrollTo(): void {}
+    contains(node: unknown): boolean { return tree(this).includes(node as Node); }
+    querySelector(sel: string): Node | null {
+      const cls = sel.replace(/^\./, "");
+      return tree(this).find((node) => node !== this && node.className.split(" ").includes(cls)) ?? null;
+    }
+    querySelectorAll(): Node[] { return []; }
+    getBoundingClientRect() { return { left: 0, top: 0, width: 200, height: 100 }; }
+  }
+  const tree = (node: Node): Node[] => [node, ...node.children.flatMap(tree)];
+  const byClass = (root: Node, cls: string) => tree(root).find((node) => node.className === cls);
+
+  function mountImage(readOnlyCopy: boolean): { body: Node; layer: Node } {
+    const body = new Node();
+    const banner = readOnlyCopy ? new Node() : null;
+    vi.stubGlobal("document", {
+      createElement: () => new Node(),
+      addEventListener() {},
+      removeEventListener() {},
+      querySelectorAll: () => [],
+      querySelector: (sel: string) => (sel === "#imported-banner" ? banner : null),
+    });
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    // The image bytes never arrive: only the stage and its pin layer matter.
+    setArtifactsFetch(() => new Promise<Response>(() => {}));
+    renderAnnotatableImage(
+      body as unknown as HTMLElement,
+      { id: "pic", filename: "plot.png", content_type: "image/png" },
+      "/api/v1/artifacts/pic",
+    );
+    return { body, layer: byClass(body, "annot-layer")! };
+  }
+  const clickImage = (layer: Node) => layer.listeners.click!({ target: layer, clientX: 50, clientY: 50 });
+
+  afterEach(async () => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    resetStoreFields();
+    hints.length = 0;
+  });
+
+  it("does not open a comment draft on a read-only copy, and says why in the UI language", async () => {
+    await i18nReady();
+    const original = LANG;
+    try {
+      for (const lang of ["zh", "en"] as const) {
+        await setLang(lang);
+        const { body, layer } = mountImage(true);
+        clickImage(layer);
+        expect(byClass(layer, "annot-pop edit")).toBeUndefined();
+        expect(byClass(layer, "annot-pin draft")).toBeUndefined();
+        const said = String(hints[hints.length - 1]?.text || "");
+        expect(said).toMatch(lang === "zh" ? /只读副本/ : /read-only copy/);
+        // Nor does the image's own hint offer "click the image to annotate".
+        const zoomHint = byClass(body, "zoom-hint")!.textContent;
+        expect(zoomHint).toMatch(lang === "zh" ? /只读副本不能添加标注/ : /read-only copy takes no comments/);
+        vi.unstubAllGlobals();
+      }
+    } finally {
+      await setLang(original);
+    }
+  });
+
+  it("still opens the draft in an ordinary session", () => {
+    const { layer } = mountImage(false);
+    clickImage(layer);
+    expect(byClass(layer, "annot-pop edit")).toBeDefined();
+  });
+
+  it("says the server's read-only refusal in the UI language, not the server's English", async () => {
+    await i18nReady();
+    const original = LANG;
+    const refusal =
+      "imported Session is quarantined and view-only; use the confirmed restart_fresh recovery action before mutating the Session";
+    try {
+      for (const lang of ["zh", "en"] as const) {
+        await setLang(lang);
+        // The banner is not up yet (its kernel read is still out): the draft
+        // opens and the save reaches the server.
+        currentId.value = "frame-1";
+        const { layer } = mountImage(false);
+        clickImage(layer);
+        const pop = byClass(layer, "annot-pop edit")!;
+        byClass(pop, "annot-input")!.value = "the outlier at 3 o'clock";
+        setArtifactsFetch(async () =>
+          new Response(JSON.stringify({ error: refusal, code: "locked" }), { status: 423 }),
+        );
+        await byClass(pop, "annot-btn solid")!.onclick!();
+        const last = hints[hints.length - 1]!;
+        expect(last.err).toBe(true);
+        expect(String(last.text)).not.toContain("quarantined");
+        expect(String(last.text)).toBe(annotRefusalText({ status: 423, code: "locked" }, "save"));
+        expect(String(last.text)).toMatch(lang === "zh" ? /标注没有保存.*只读/ : /not saved.*read-only/);
+        vi.unstubAllGlobals();
+      }
+    } finally {
+      await setLang(original);
+    }
+  });
+
+  it("leaves any other failure its own text", () => {
+    expect(annotRefusalText({ status: 500, code: "internal_error" }, "save")).toBeNull();
+    expect(annotRefusalText({ status: 409, code: "annotation_reserved" }, "remove")).toBeNull();
+    expect(annotRefusalText(new Error("network"), "save")).toBeNull();
   });
 });

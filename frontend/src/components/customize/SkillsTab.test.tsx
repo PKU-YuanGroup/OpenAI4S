@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { searchSkills, skillNetworkDomains } from "./SkillsTab";
+import { setLang } from "../../i18n/runtime";
+import {
+  searchSkillCatalog,
+  searchSkills,
+  skillDetailFacts,
+  skillNetworkCopy,
+  skillNetworkDomains,
+  skillSearchCountText,
+} from "./SkillsTab";
 
-// Customize → Skills lists 612 skills; 561 of them sit inside one collection.
+// Settings → Skills lists 612 skills; 561 of them sit inside one collection.
 
 const LIT = {
   name: "literature-review",
@@ -40,6 +48,76 @@ describe("searching the skills tab", () => {
   it("finds nothing for a miss", () => {
     expect(names("zzzz-no-such-skill")).toEqual([]);
   });
+
+  // SCI-09: "bioskills" answered "No skill matches" over a list whose last row
+  // was the bioskills collection.
+  it("reaches a collection by its own name, and says what it holds", async () => {
+    await setLang("en");
+    for (const query of ["bioskills", "BioSkills", "bio skills"]) {
+      const found = searchSkillCatalog(CATALOG, query);
+      expect(found.named.map((c) => c.id)).toEqual(["bioskills"]);
+      expect(found.named[0]!.members.map((s) => s.name)).toEqual(["bio-clinical-bayesian-trials"]);
+      expect(skillSearchCountText(found, query)).toBe(
+        "The bioskills collection matches: 1 skill, listed when you show it.",
+      );
+    }
+    // Too short to name a collection: "bi" is a word start, not a collection.
+    expect(searchSkillCatalog(CATALOG, "bi").named).toEqual([]);
+    expect(skillSearchCountText(searchSkillCatalog(CATALOG, "zzzz"), "zzzz")).toBe("No skill matches “zzzz”");
+  });
+
+  it("counts how many hits sit inside a collection", async () => {
+    await setLang("en");
+    const both = [...CATALOG, { ...MEMBER, name: "bio-bayesian-networks", description: "Bayesian networks." }];
+    const found = searchSkillCatalog(both, "bayesian");
+    expect(found.inCollections).toEqual([{ id: "bioskills", count: 2 }]);
+    expect(skillSearchCountText(found, "bayesian")).toBe("2 matches, 2 of them in the bioskills collection.");
+    expect(skillSearchCountText(searchSkillCatalog(CATALOG, "literature"), "literature")).toBe("1 match");
+
+    await setLang("zh");
+    expect(skillSearchCountText(found, "bayesian")).toBe("2 个匹配，其中 2 个在 bioskills 合集里。");
+    await setLang("en");
+  });
+});
+
+// SCI-06: a row showed ~200 characters of the description and nothing opened.
+describe("a skill's expanded row", () => {
+  const ALPHAFOLD = {
+    name: "alphafold2",
+    description: "Predict protein structure with AlphaFold2. Reach for this sk...",
+    requirements: ["gpu"],
+    capabilities: {
+      network: {
+        mode: "raw_required",
+        domains: [],
+        ui: { label_en: "raw network required and currently blocked", label_zh: "需要 raw 网络且当前被阻止" },
+      },
+    },
+  };
+
+  it("shows the whole description once the document has answered, the catalog line until then", async () => {
+    await setLang("en");
+    expect(skillDetailFacts(ALPHAFOLD, null).description).toBe(ALPHAFOLD.description);
+    const whole = "Predict protein structure with AlphaFold2. Reach for this skill when: (1) a monomer …";
+    expect(
+      skillDetailFacts(ALPHAFOLD, { description: ALPHAFOLD.description, full_description: whole, body: "# AF2" })
+        .description,
+    ).toBe(whole);
+  });
+
+  it("says what the skill needs and its network mode in words", async () => {
+    await setLang("en");
+    const facts = skillDetailFacts(ALPHAFOLD, null);
+    expect(facts.needs).toBe("Needs: an NVIDIA GPU");
+    expect(facts.network).toBe("Network: raw network required and currently blocked");
+    expect(skillDetailFacts(FIGURE, null).needs).toBe("Needs: nothing declared beyond the kernel");
+    expect(skillDetailFacts(FIGURE, null).network).toBeNull();
+
+    await setLang("zh");
+    expect(skillDetailFacts(ALPHAFOLD, null).needs).toBe("需要：NVIDIA GPU");
+    expect(skillDetailFacts(ALPHAFOLD, null).network).toBe("联网：需要 raw 网络且当前被阻止");
+    await setLang("en");
+  });
 });
 
 describe("a skill's network limit", () => {
@@ -48,5 +126,35 @@ describe("a skill's network limit", () => {
     expect(skillNetworkDomains(FIGURE)).toBeNull();
     expect(skillNetworkDomains(MEMBER)).toBeNull();
     expect(skillNetworkDomains({ name: "bare" })).toBeNull();
+  });
+
+  // SCI-07: "Limits network · 0 domains" opened onto a sentence ending in a
+  // colon, and one domain read "1 domains".
+  it("says that no declared domain turns the session's network off, and how to get it back", async () => {
+    await setLang("en");
+    const off = skillNetworkCopy([]);
+    expect(off.summary).toBe("Turns network off");
+    expect(off.detail).toContain("turns network access off for the rest of this session");
+    expect(off.detail).toContain("Start a new session");
+    expect(off.detail).not.toMatch(/:\s*$/);
+
+    await setLang("zh");
+    const offZh = skillNetworkCopy([]);
+    expect(offZh.summary).toBe("加载后关闭联网");
+    expect(offZh.detail).toContain("请新开一个会话");
+  });
+
+  it("names the domains it keeps, with the count in the right number", async () => {
+    await setLang("en");
+    expect(skillNetworkCopy(["integrate.api.nvidia.com"]).summary).toBe("Limits network · 1 domain");
+    const two = skillNetworkCopy(["api.openalex.org", "doi.org"]);
+    expect(two.summary).toBe("Limits network · 2 domains");
+    expect(two.detail).toContain(
+      "Loading this Skill limits network access for the rest of this session to: api.openalex.org, doi.org.",
+    );
+
+    await setLang("zh");
+    expect(skillNetworkCopy(["api.openalex.org", "doi.org"]).summary).toBe("限定联网 · 2 个域名");
+    await setLang("en");
   });
 });

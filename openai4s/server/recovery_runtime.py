@@ -133,6 +133,21 @@ class SessionRecoveryRuntime:
         checkpoint = (
             self.ports.checkpoint(plan.checkpoint_id) if plan.checkpoint_id else None
         )
+        if checkpoint and str(checkpoint.get("branch_id") or "") != plan.branch_id:
+            # M-73: a fork's head is its parent's checkpoint, whose manifests
+            # name the parent's workspace. Branch activation rebinds them to
+            # the fork's own isolated workspace; Restore on that branch did
+            # not, and failed with "checkpoint working directory does not
+            # match this session workspace" every time.
+            import dataclasses
+
+            plan = dataclasses.replace(
+                plan,
+                manifests=tuple(
+                    dataclasses.replace(manifest, working_directory=str(self.workspace))
+                    for manifest in plan.manifests
+                ),
+            )
         allowed_tree = checkpoint.get("workspace_tree_id") if checkpoint else None
         allowed_versions = (
             {str(value) for value in (checkpoint.get("artifact_versions") or ())}

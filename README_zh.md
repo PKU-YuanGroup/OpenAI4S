@@ -169,7 +169,7 @@ git clone --recursive --branch v1.0.1 https://github.com/PKU-YuanGroup/OpenAI4S 
 ./start.sh     # 启动 Web UI(http://127.0.0.1:8760/)
 ```
 
-`setup.sh` 用 **uv** 创建轻量控制面 `.venv`。如需完整的 Python + R 科学计算内核，请先安装 `micromamba`、`mamba` 或 `conda`，然后改用 `./setup.sh --with-kernel-envs`；已有环境可用 `./setup.sh --update-kernel-envs` 同步，且不会删除用户自行安装的包。`start.sh` 从环境中启动守护进程 + Web UI。启动无需 API Key —— **在 UI 里设置你的模型**(Customize → Models)。不启动 UI 跑单个任务:`uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`。
+`setup.sh` 用 **uv** 创建轻量控制面 `.venv`。如需完整的 Python + R 科学计算内核，请先安装 `micromamba`、`mamba` 或 `conda`，然后改用 `./setup.sh --with-kernel-envs`；已有环境可用 `./setup.sh --update-kernel-envs` 同步，且不会删除用户自行安装的包。`start.sh` 从环境中启动守护进程 + Web UI，并打印实际监听的地址。`setup.sh` 把 `openai4s` 命令装在 `.venv` 里，不在 `PATH` 上：在本目录下用 `uv run openai4s <命令>` 运行（例如用 `uv run openai4s url` 获取登录链接），或先 `source .venv/bin/activate`。启动无需 API Key —— **在 UI 里设置你的模型**（侧栏 **设置**，或左下角 ⚙ → **模型**）。不启动 UI 跑单个任务:`uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`。
 
 ### macOS
 
@@ -196,8 +196,8 @@ openai4s serve                    # 启动守护进程，并用访问令牌打�
 
 **首次运行 —— 先配模型，再配搜索。** 启动不带任何 Key，所以打开工作台之后：
 
-1. **模型 API** —— **首次设置**向导会一步步引导；之后也可以在 **设置 ⚙ → 模型** 里修改。选协议（**ark 兼容协议** 对应豆包/GLM/Kimi/DeepSeek，或 **OpenAI 兼容协议**、**OpenAI Responses 协议**、**Anthropic 兼容协议**、**Gemini 兼容协议**，以及对应云端或本地模型的 **Ollama**），粘贴 **API Key**，保存并设为当前配置。在向导里点「从端点获取模型」，会列出你的接入点实际提供的模型 id。最省钱：用火山方舟 ¥9.9/月 套餐的 `ark` 协议。
-2. **搜索 API** *（可选、推荐）* —— 打开 **设置 ⚙ → 网络**，保持 **允许联网** 打开，把火山方舟 **Agent Plan Key** 粘进主选的**豆包搜索 Custom 版**卡片 → **保存凭证**。当前模型是火山方舟 **Agent Plan** 时可以跳过这一步：OpenAI4S 会把它的 Key 自动设为豆包搜索和 DataPro 专业数据库的默认凭证，之后换用别的模型也无需重新设置。Tavily、You.com 与内置免密钥引擎仍是可调整顺序的备用引擎，匿名 Parallel 可以手动开启；豆包专用健康检查不会把备用结果冒充豆包成功。
+1. **模型 API** —— **首次设置**向导会一步步引导；之后也可以在 **设置（⚙）→ 模型** 里修改。选协议（**ark 兼容协议** 对应豆包/GLM/Kimi/DeepSeek，或 **OpenAI 兼容协议**、**OpenAI Responses 协议**、**Anthropic 兼容协议**、**Gemini 兼容协议**，以及对应云端或本地模型的 **Ollama**），粘贴 **API Key**，保存并设为当前配置。在向导里点「从端点获取模型」，会列出你的接入点实际提供的模型 id。最省钱：用火山方舟 ¥9.9/月 套餐的 `ark` 协议。
+2. **搜索 API** *（可选、推荐）* —— 打开 **设置（⚙）→ 网络**，保持 **允许联网** 打开，把火山方舟 **Agent Plan Key** 粘进主选的**豆包搜索 Custom 版**卡片 → **保存凭证**。当前模型是火山方舟 **Agent Plan** 时可以跳过这一步：OpenAI4S 会把它的 Key 自动设为豆包搜索和 DataPro 专业数据库的默认凭证，之后换用别的模型也无需重新设置。Tavily、You.com 与内置免密钥引擎仍是可调整顺序的备用引擎，匿名 Parallel 可以手动开启；豆包专用健康检查不会把备用结果冒充豆包成功。
 
 1.0.1 完整流程（安装 → 模型 → 搜索 → R 内核）见：**[上手指南](docs/startup-guide.md#zh)**。
 

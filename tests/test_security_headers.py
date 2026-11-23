@@ -30,6 +30,7 @@ from openai4s.server.security_headers import (
     sandboxed_artifact_content_security_policy,
     sandboxed_artifact_security_headers,
     security_headers,
+    workbench_security_headers,
 )
 
 _WEBUI = None
@@ -326,7 +327,32 @@ def test_all_expected_headers_present():
     assert h["X-Frame-Options"] == "DENY"
     assert h["Referrer-Policy"] == "same-origin"
     assert "Content-Security-Policy" in h
-    assert "Permissions-Policy" in h
+    assert h["Permissions-Policy"] == "geolocation=(), microphone=(), camera=()"
+
+
+def test_only_the_workbench_document_may_use_the_microphone():
+    """M-80: voice input was refused `not-allowed` by our own header.
+
+    The workbench profile differs from the shell's in that one directive and
+    nothing else; every other profile keeps the microphone denied, and camera
+    and geolocation stay denied everywhere.
+    """
+    shell = security_headers(frame_src=("http://localhost:8760",))
+    workbench = workbench_security_headers(frame_src=("http://localhost:8760",))
+    assert workbench["Permissions-Policy"] == (
+        "geolocation=(), microphone=(self), camera=()"
+    )
+    assert {k: v for k, v in workbench.items() if k != "Permissions-Policy"} == {
+        k: v for k, v in shell.items() if k != "Permissions-Policy"
+    }
+    for profile in (
+        shell,
+        artifact_security_headers(),
+        embeddable_security_headers(),
+        ketcher_editor_security_headers(),
+        sandboxed_artifact_security_headers("http://127.0.0.1:8760"),
+    ):
+        assert "microphone=()" in profile["Permissions-Policy"]
 
 
 def test_the_policy_is_a_constant():
@@ -365,3 +391,66 @@ def test_artifact_disposition_bounds_a_long_name_but_keeps_its_extension():
     encoded = value.split("filename*=UTF-8''", 1)[1]
     assert encoded.endswith(".csv")
     assert len(encoded) <= 180
+
+
+def test_the_served_workbench_document_alone_gets_the_microphone(tmp_path):
+    """Through the real handler on a real socket: the shell at `/` and a
+    workbench deep link carry `microphone=(self)`; a satellite page, the
+    Ketcher frame and the API keep `microphone=()`."""
+    import http.client
+    import threading
+
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server import gateway as gateway_mod
+    from openai4s.server import local_auth
+    from tests._ports import bound_gateway_server
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    httpd, port = bound_gateway_server()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        host="127.0.0.1",
+        port=port,
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    httpd.RequestHandlerClass = gateway_mod.make_handler(cfg, _Hub(), runner)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    token = local_auth.load_or_mint(cfg.data_dir)
+
+    def policy(path: str) -> tuple[int, str | None]:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+        try:
+            conn.request(
+                "GET",
+                path,
+                headers={
+                    local_auth.TOKEN_HEADER: token,
+                    "Cookie": f"os_token={token}",
+                },
+            )
+            response = conn.getresponse()
+            response.read()
+            return response.status, response.getheader("Permissions-Policy")
+        finally:
+            conn.close()
+
+    try:
+        for path in ("/", "/projects/p-1/frames/f-1"):
+            status, value = policy(path)
+            assert status == 200, path
+            assert value == "geolocation=(), microphone=(self), camera=()", path
+        for path in ("/static/login.html", "/ketcher", "/api/v1/projects"):
+            status, value = policy(path)
+            assert status == 200, path
+            assert value is not None and "microphone=()" in value, (path, value)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        runner.close()

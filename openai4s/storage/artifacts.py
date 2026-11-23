@@ -94,6 +94,36 @@ ARTIFACT_KINDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         ),
         ("text/x-python", "text/x-r", "application/x-sh"),
     ),
+    # SCI-26: molecules, structures, sequences and alignments were all "other".
+    (
+        "structure",
+        (
+            "pdb",
+            "cif",
+            "mmcif",
+            "ent",
+            "xyz",
+            "mol",
+            "mol2",
+            "sdf",
+            "smi",
+            "smiles",
+            "fasta",
+            "fa",
+            "faa",
+            "fna",
+            "fastq",
+            "fq",
+            "aln",
+            "a2m",
+            "a3m",
+            "sto",
+            "stockholm",
+            "gb",
+            "gbk",
+        ),
+        ("chemical/",),
+    ),
 )
 ARTIFACT_KIND_NAMES = tuple(name for name, _ext, _ct in ARTIFACT_KINDS) + ("other",)
 
@@ -2393,6 +2423,23 @@ class ArtifactRepository:
         for row in rows:
             grouped.setdefault(str(row["artifact_id"]), []).append(dict(row))
         return grouped
+
+    def artifact_ids_versioned_since(
+        self, root_frame_id: str, since_ms: int
+    ) -> set[str]:
+        """The session's artifacts that gained a version at or after ``since_ms``.
+
+        A file created then has its first version then; one only rewritten
+        then has a later version than its row's ``created_at`` says (M-59).
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT DISTINCT v.artifact_id FROM artifact_versions v "
+                "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                "WHERE a.root_frame_id=? AND v.created_at>=?",
+                (root_frame_id, int(since_ms)),
+            ).fetchall()
+        return {str(row[0]) for row in rows}
 
     def list_versions(self, artifact_id: str) -> list[dict]:
         with self._lock:

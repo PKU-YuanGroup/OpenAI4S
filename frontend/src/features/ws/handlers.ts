@@ -7,6 +7,7 @@ import {
 } from "../../stores/artifacts";
 import { _openGen, currentId, project, sessions as sessionsSignal, type HistoryLoadResult } from "../../stores/session";
 import { _replayGap, _seqSeen, _streamEpoch } from "../../stores/stream";
+import { leaveDeletedSession } from "../sessions/deleted";
 import { eventFrameId, mine, tryLane } from "./guards";
 import { hasWsHandler, registerWsHandler } from "./registry";
 import type { WsHandler, WsMessage } from "./types";
@@ -268,6 +269,10 @@ function handleFrameUpdate(m: WsMessage): void {
  */
 function handleSessionStatus(m: WsMessage): void {
   patchSessionFromFrameUpdate(m);
+  // The session this tab shows was deleted elsewhere: leave it, with a notice.
+  if (m.status === "deleted" && typeof m.frame_id === "string") {
+    void leaveDeletedSession(m.frame_id, typeof m.project_id === "string" ? m.project_id : null);
+  }
   scheduleLoadSessions();
 }
 

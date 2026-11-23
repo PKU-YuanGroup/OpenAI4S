@@ -13,10 +13,11 @@
 import { currentId } from "../../stores/session";
 import { workbenchErrors } from "../../stores/timeline";
 import { isReady } from "../../compat/stub";
-import { t } from "../../i18n/runtime";
+import { LANG, t } from "../../i18n/runtime";
 import { historyT } from "../messages/copy";
 import { publicText } from "../scrub/scrub";
-import { api } from "./api";
+import { api, ApiError } from "./api";
+import { branchT } from "./copy";
 import {
   forkErrorDisplay,
   forkOnce,
@@ -159,6 +160,147 @@ export async function forkFromCheckpoint(
   if (attempt.ok) return null;
   applyForkPresentation(attempt.presentation);
   return attempt.presentation;
+}
+
+/** What an activation or a Restore left the kernel with (M-73). */
+export type KernelOutcome = {
+  /** active | partial | failed | cancelled, as the server said. */
+  status: string;
+  /** Variables the checkpoint had that the new kernel does not. */
+  missing: string[];
+  /** Why it stopped, when it failed outright. */
+  message: string;
+};
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function issueLists(result: Record<string, unknown>): unknown[] {
+  const lists: unknown[] = [record(record(result.dimensions).namespace).issues];
+  for (const holder of [result, record(result.recovery)]) {
+    if (Array.isArray(holder.results)) holder.results.forEach((item) => lists.push(record(item).issues));
+  }
+  return lists.flatMap((list) => (Array.isArray(list) ? list : []));
+}
+
+/**
+ * Read an activation result (`dimensions.namespace`, `recovery.results`) or a
+ * recovery result (`results[].issues`) as one outcome: which variables did
+ * not come back, and the first error when nothing ran.
+ */
+export function kernelOutcome(result: unknown): KernelOutcome {
+  const rec = record(result);
+  const status = publicText(rec.status, 32).toLowerCase() || "failed";
+  const missing: string[] = [];
+  let message = "";
+  for (const raw of issueLists(rec)) {
+    const issue = record(raw);
+    if (issue.type === "missing_symbols" && Array.isArray(issue.names)) {
+      for (const name of issue.names) {
+        const text = publicText(name, 80);
+        if (text && !missing.includes(text)) missing.push(text);
+      }
+    } else if (!message && issue.error) {
+      message = publicText(issue.error, 240);
+    }
+  }
+  return { status, missing, message };
+}
+
+/** The names a sentence lists: the first eight, then an ellipsis. */
+export function missingNames(outcome: KernelOutcome): string {
+  const shown = outcome.missing.slice(0, 8).join(LANG === "zh" ? "、" : ", ");
+  return outcome.missing.length > 8 ? shown + " …" : shown;
+}
+
+/**
+ * A branch's name; the session's own first line (its id is the session's) is
+ * the main branch; any other unnamed one shows its shortened id.
+ */
+export function branchDisplayName(branch: unknown, rootFrameId?: string | null): string {
+  const rec = record(branch);
+  const named = publicText(rec.name, 120);
+  if (named) return named;
+  const id = publicText(rec.branch_id, 96);
+  if (id && id === rootFrameId) return branchT("branch.main");
+  return id.length > 12 ? id.slice(0, 8) + "…" : id;
+}
+
+/** The hint after an activation: never an error, since the switch happened. */
+export function switchedText(name: string, outcome: KernelOutcome): string {
+  if (outcome.status === "active") return branchT("branch.switched", name);
+  return outcome.missing.length
+    ? branchT("branch.switchedGap", name, missingNames(outcome))
+    : branchT("branch.switchedGapAll", name);
+}
+
+/** What the branch panel says next to "Restart kernel and restore". */
+export function kernelGapText(outcome: KernelOutcome): string {
+  if (outcome.status === "active") return branchT("branch.restored");
+  if (outcome.status === "failed" && outcome.message && !outcome.missing.length)
+    return branchT("branch.restoreFailed", outcome.message);
+  return outcome.missing.length
+    ? branchT("branch.kernelGap", missingNames(outcome))
+    : branchT("branch.kernelGapAll");
+}
+
+/**
+ * M-64: what a recovery action does, or why it cannot run, in one sentence.
+ * The card printed the server's own words ("checkpoint has an invalid python
+ * bootstrap manifest") beside "Ready"; those are grouped here by what the
+ * reader can do about them, and never shown raw.
+ */
+export function recoveryActionWords(action: { id: string; enabled: boolean; reason?: string }): string {
+  if (action.enabled) return branchT("recovery.what." + action.id);
+  const reason = String(action.reason || "").toLowerCase();
+  const why = /already running/.test(reason)
+    ? "busy"
+    : /already active/.test(reason)
+      ? "active"
+      : /not partial or failed/.test(reason)
+        ? "notRetryable"
+        : /revert/.test(reason)
+          ? "revertFirst"
+          : /no checkpoint exists/.test(reason)
+            ? "noCheckpoint"
+            : /checkpoint/.test(reason)
+              ? "checkpoint"
+              : "other";
+  return branchT("recovery.why." + why);
+}
+
+/** M-64: a checkpoint row says when and why it was taken, not "cp-33f1… cursor_cell". */
+export function checkpointLabel(checkpoint: unknown): string {
+  const cp = record(checkpoint);
+  const at = Number(cp.created_at);
+  const when =
+    Number.isFinite(at) && at > 0
+      ? new Date(at).toLocaleTimeString(LANG === "zh" ? "zh-CN" : "en-US", { hour12: false })
+      : "";
+  const reason = publicText(cp.reason, 80);
+  if (reason === "cursor_message" || cp.source_kind === "message") return branchT("branch.cp.message", when);
+  if (reason === "cursor_cell" || cp.source_kind === "cell") return branchT("branch.cp.cell", when);
+  return when ? branchT("branch.cp.other", reason || "checkpoint", when) : reason || "checkpoint";
+}
+
+/**
+ * "Restart kernel and restore" (M-73): the Restore recovery action on the
+ * active branch. A partial or failed restore answers 409 with the same
+ * report as a 200, so both are read as an outcome rather than an error.
+ */
+export async function restoreBranchKernel(frameId: string, branchId: string): Promise<KernelOutcome> {
+  try {
+    const result = await api(
+      `/frames/${encodeURIComponent(frameId)}/recovery/actions/restore`,
+      { method: "POST", body: JSON.stringify({ branch_id: branchId, confirm: false }) },
+    );
+    return kernelOutcome(result);
+  } catch (error) {
+    const body = error instanceof ApiError ? record(error.body) : {};
+    if (typeof body.status === "string") return kernelOutcome(body);
+    return { status: "failed", missing: [], message: publicText((error as Error).message, 240) };
+  }
 }
 
 export async function postRecoveryAction(

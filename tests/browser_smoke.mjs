@@ -655,7 +655,7 @@ async function correctnessScenes(projectId) {
     await route.fulfill({ status: checkMode === "403" ? 403 : 200, contentType: "application/json", body: JSON.stringify(checkMode === "403" ? { error: "operator only", code: "forbidden" } : checkFixture) });
   });
   try {
-    await page.evaluate(() => window.openCust("general"));
+    await page.evaluate(() => window.openCust("diagnostics"));
     await page.locator("[data-diagnostics-run]").waitFor();
     assert.equal(checks, 0, "opening diagnostics must be passive");
     await page.locator("[data-diagnostics-run]").press("Enter");
@@ -672,14 +672,14 @@ async function correctnessScenes(projectId) {
     const received = await page.locator("[data-diagnostics-results] time").getAttribute("datetime");
     await model.locator('[data-diagnostic-setting="models"]').click();
     await page.locator('.cust-tab[data-tab="models"].active').waitFor();
-    await page.locator('.cust-tab[data-tab="general"]').click();
+    await page.locator('.cust-tab[data-tab="diagnostics"]').click();
     assert.equal(await page.locator("[data-diagnostics-results] time").getAttribute("datetime"), received);
     await page.locator('[data-diagnostic-setting="network"]').click();
     await page.locator('.cust-tab[data-tab="network"].active').waitFor();
     const configSaved = page.waitForResponse((response) => response.url().endsWith("/api/v1/network/status") && response.request().method() === "PUT");
     await page.locator("#cust .toggle").first().click();
     assert.ok((await configSaved).ok());
-    await page.locator('.cust-tab[data-tab="general"]').click();
+    await page.locator('.cust-tab[data-tab="diagnostics"]').click();
     await page.locator("[data-diagnostics-stale]").waitFor();
     assert.equal(checks, 1, "configuration changes do not run checks automatically");
     checkMode = "403";
@@ -694,7 +694,7 @@ async function correctnessScenes(projectId) {
     try {
       await page.evaluate(() => localStorage.setItem("os-lang", "zh"));
       await page.reload({ waitUntil: "networkidle" });
-      await page.evaluate(() => window.openCust("general"));
+      await page.evaluate(() => window.openCust("diagnostics"));
       await page.locator("[data-diagnostics-run]").waitFor();
       assert.equal(await page.locator("[data-diagnostics-run]").innerText(), "运行检查");
       assert.equal(checks, 2, "Chinese settings opening is also passive");
@@ -1996,6 +1996,10 @@ try {
     state.requestCount = 0; state.apiRequestCount = 0;
     overview.svg.addEventListener("contextmenu", (event) => { state.contextPrevented = event.defaultPrevented; });
     state.svg = overview.svg; state.queuePath = overview.queuePath; state.table = view.table; state.tbody = view.tbody;
+    // The timeline sits above the diagnostic panels (SET-4), and earlier steps
+    // that click those panels leave the pane scrolled past it: bring it back
+    // before measuring, or every hover lands outside the viewport.
+    overview.svg.scrollIntoView({ block: "center" });
     const point = (time, rank) => {
       const rect = overview.svg.getBoundingClientRect(), ratio = (time - base) / 6800;
       return { x: rect.left + ratio * rect.width, y: rect.top + (rank + .5) / 4 * rect.height };
@@ -2462,12 +2466,14 @@ try {
     });
   }
 
-  // Fork is a real mutation with a browser prompt. The new branch remains
-  // isolated until explicit activation reconstructs its own runtime state.
-  page.once("dialog", (dialog) => dialog.accept("Browser smoke fork"));
+  // Fork is a real mutation that asks for a name in the workbench's own
+  // dialog (M-45). The new branch remains isolated until explicit activation
+  // reconstructs its own runtime state.
   const forkButton = page.locator(".checkpoint-row button").filter({ hasText: /^(Fork|分叉)$/i }).first();
   if (await forkButton.isDisabled()) throw new Error("checkpoint Fork was unexpectedly disabled");
   await forkButton.click();
+  await page.locator(".app-dialog-modal .app-dialog-input").fill("Browser smoke fork");
+  await page.locator(".app-dialog-modal .app-dialog-ok").click();
   await page.locator(".branch-name").filter({ hasText: "Browser smoke fork" }).waitFor({ state: "visible" });
   await page.reload({ waitUntil: "networkidle" });
   await ensureDockOpen();

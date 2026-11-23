@@ -16,6 +16,7 @@ from .actions import (
     run_cell_tool_spec,
     tool_only_streak_note,
     unexecuted_cell_note,
+    user_cell_note,
 )
 from .events import (
     ActionRouted,
@@ -320,6 +321,8 @@ class AgentEngine:
                     circuit.announced_cell_streak,
                     run_cell_on_offer=circuit.run_cell_used,
                 )
+                # A cell the user wrote and the reply answered with tools.
+                or user_cell_note(action, state.messages)
             )
             # The circuit's first stage: what repeated, before it stops the
             # turn for it.

@@ -72,16 +72,23 @@ export function Toggle({
   on,
   disabled,
   title,
+  label,
   onClick,
 }: {
   on: boolean;
   disabled?: boolean;
   title?: string;
+  /** What the switch turns on or off; the switch has no text of its own (SYNC-12). */
+  label?: string;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
+      // On/off for assistive tech, not only by colour and knob (SYNC-22).
+      role="switch"
+      aria-checked={on ? "true" : "false"}
+      aria-label={label}
       class={"toggle" + (on ? " on" : "") + (disabled ? " off" : "")}
       disabled={disabled}
       title={title}
@@ -114,6 +121,27 @@ export function IconGhost({
 
 export function Note({ children }: { children: ComponentChildren }) {
   return <div class="cust-note">{children}</div>;
+}
+
+/** What an action in a Settings tab answered, said beside its control. */
+export type ActionNote = { text: string; err?: boolean } | null;
+
+/**
+ * SCI-04: an action's outcome beside the control that started it. Settings
+ * used to report installs, connector tests and saves on the session status
+ * line, under the dialog's scrim. The live region is always mounted, so a
+ * screen reader announces the first message too.
+ */
+export function ActionStatus({ note }: { note: ActionNote }) {
+  return (
+    <div
+      class={"cust-action-status" + (note ? (note.err ? " err" : " ok") : "")}
+      role="status"
+      aria-live="polite"
+    >
+      {note ? note.text : ""}
+    </div>
+  );
 }
 
 export function Subhead({ children }: { children: ComponentChildren }) {

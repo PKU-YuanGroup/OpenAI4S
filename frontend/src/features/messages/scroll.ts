@@ -247,6 +247,11 @@ function watchGrowth(m: HTMLElement): void {
   const watch = (node: Node): void => {
     if (node && node.nodeType === 1) resize.observe(node as Element);
   };
+  // M-12: the transcript's own box too. It gets shorter when the composer
+  // grows (a long draft, the queue or background strip, a status line) or a
+  // panel opens, which hid the newest row behind the composer while nothing
+  // in the transcript changed.
+  resize.observe(m);
   const kids = (m as { children?: ArrayLike<Node> }).children;
   if (kids) Array.from(kids).forEach(watch);
   if (typeof MutationObserver !== "function") return;

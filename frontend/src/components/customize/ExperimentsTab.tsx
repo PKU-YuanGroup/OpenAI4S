@@ -279,6 +279,7 @@ export function ExperimentsTab() {
             <span data-judgment-master={masterOn ? "on" : "off"}>
               <Toggle
                 on={masterOn}
+                label={t("judgment.master")}
                 disabled={updating || masterForced}
                 title={masterForced ? t(masterForcedOff ? "judgment.envOff" : "judgment.envOn") : undefined}
                 onClick={onMaster}
@@ -310,6 +311,7 @@ export function ExperimentsTab() {
                 <span data-judgment-cap={name} data-judgment-cap-on={flag.enabled ? "on" : "off"}>
                   <Toggle
                     on={flag.enabled}
+                    label={capLabel(name)}
                     disabled={updating || forced || !masterOn}
                     title={forced ? t(forcedLabel) : !masterOn ? t("judgment.source.master_off") : undefined}
                     onClick={() => onCap(name)}

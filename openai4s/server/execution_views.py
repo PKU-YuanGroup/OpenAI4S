@@ -16,6 +16,8 @@ from openai4s.execution.dependencies import (
     default_visibility,
     normalize_string_list,
 )
+from openai4s.server.cell_run import activity_title
+from openai4s.server.download_provenance import download_view
 from openai4s.server.execution_sources import output_artifact_bindings
 from openai4s.storage.branch_projection import project_branch_records
 
@@ -156,6 +158,16 @@ class ExecutionViewService:
                     "files_read": cell.get("files_read") or [],
                     "cpu_seconds": cell.get("cpu_s"),
                     "peak_rss_kb": cell.get("peak_rss_kb"),
+                    # The conversation's card for this Cell (M-69): its title as
+                    # the live card had it, and when it ran, so a reopened turn
+                    # puts the card where the live turn showed it. A record with
+                    # no attempt rows has only the time it was recorded.
+                    "title": activity_title(
+                        cell.get("code") or "",
+                        cell_index if cell_index is not None else ordinal,
+                    ),
+                    "started_at": cell.get("started_at") or cell.get("created_at"),
+                    "finished_at": cell.get("finished_at") or cell.get("created_at"),
                     # Retry metadata is a read-only projection. Every physical
                     # attempt remains a separate immutable execution-log row;
                     # the Notebook may collapse a group and let users expand it.
@@ -409,6 +421,10 @@ class ExecutionViewService:
             result["capture_observations"] = capture_observations
         if producer:
             result["producer"] = producer
+        # SCI-10: a file the download tool saved says where it came from.
+        download = download_view((version or {}).get("source"))
+        if download:
+            result["download"] = download
         return result
 
 

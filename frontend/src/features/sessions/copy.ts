@@ -135,7 +135,7 @@ export const projectHistoryCopy = copyLookup({
 /** Home dashboard strings the generated dictionaries do not carry (NAV-4). */
 export const dashCopy = copyLookup({
   en: {
-    "dash.example.runningNote": "The example analysis is running; it takes a minute or two. Open the session to watch it.",
+    "dash.example.runningNote": "The example analysis is running; it usually finishes in well under a minute. Its steps appear in the session as they run, and its code cells in the session's Notebook.",
     "dash.example.done": "The example analysis finished: all {0} cells ran without an error.",
     "dash.example.doneFailed": "The example analysis ended: {0} of {1} cells did not complete. The session says why.",
     "dash.example.doneStepFailed": "The example analysis finished: all {0} cells ran, but {1} step(s) failed along the way (a data source may be unreachable). The session says which.",
@@ -145,11 +145,16 @@ export const dashCopy = copyLookup({
     "dash.sessions.allAbove": "Running sessions and the ones waiting for you are listed above.",
     "dash.status.done": "Finished",
     "dash.status.failed": "Failed",
+    "dash.status.cancelled": "Stopped",
+    "dash.status.blocked_by_guardian": "Blocked",
+    "dash.status.failed.tip": "The last turn failed",
+    "dash.status.cancelled.tip": "The last turn was stopped before it finished",
+    "dash.status.blocked_by_guardian.tip": "The last turn was blocked by a safety check",
     "dash.example.project": "Example project",
     "dash.example.tag": "Example",
   },
   zh: {
-    "dash.example.runningNote": "示例分析正在运行，大约需要一两分钟。可以打开会话看它运行。",
+    "dash.example.runningNote": "示例分析正在运行，通常不到一分钟即可完成。各步骤会在会话里陆续出现，单元在该会话的 Notebook 里。",
     "dash.example.done": "示例分析已完成：{0} 个单元都运行完毕，没有出错。",
     "dash.example.doneFailed": "示例分析已结束：{1} 个单元中有 {0} 个没有完成，会话里写明了原因。",
     "dash.example.doneStepFailed": "示例分析已完成：{0} 个单元都运行完毕，但有 {1} 个步骤失败（可能是某个数据源连不上），会话里写明了是哪一步。",
@@ -159,6 +164,11 @@ export const dashCopy = copyLookup({
     "dash.sessions.allAbove": "正在运行和等你处理的会话显示在上方。",
     "dash.status.done": "已完成",
     "dash.status.failed": "失败",
+    "dash.status.cancelled": "已停止",
+    "dash.status.blocked_by_guardian": "已拦截",
+    "dash.status.failed.tip": "上一轮失败了",
+    "dash.status.cancelled.tip": "上一轮在完成前被停止",
+    "dash.status.blocked_by_guardian.tip": "上一轮被安全检查拦截",
     "dash.example.project": "示例项目",
     "dash.example.tag": "示例",
   },
@@ -188,10 +198,7 @@ export function sessionCopy(
     | "sessionsError"
     | "foldersError"
     | "retry"
-    | "exportWebPage"
-    | "exported"
-    | "exportedPathsLeft"
-    | "exportFailed",
+    | "exportWebPage",
   value?: string | number,
 ): string {
   const copy = LANG === "en" ? {
@@ -199,19 +206,11 @@ export function sessionCopy(
     foldersError: "Could not load folders.",
     retry: "Retry reading",
     exportWebPage: "Export read-only web page",
-    exported: "Session package exported.",
-    exportedPathsLeft:
-      "Session package exported. Messages and cell output still contain {0} path(s) of this computer (they are kept exactly as written so the package verifies); check before you share it.",
-    exportFailed: "Could not export the session package: {0}",
   } : {
     sessionsError: "无法读取会话列表，可重试读取。",
     foldersError: "无法读取文件夹。",
     retry: "重试读取",
     exportWebPage: "导出只读网页",
-    exported: "会话包已导出。",
-    exportedPathsLeft:
-      "会话包已导出。消息和单元输出里还留有 {0} 处本机路径（这些内容按原样保留，包才能通过校验），分享前请检查。",
-    exportFailed: "无法导出会话包：{0}",
   };
   return copy[key].replace("{0}", value == null ? "" : String(value));
 }
@@ -234,7 +233,18 @@ export function composerCopy(key: "usage" | "reviewing" | "on" | "off", ...args:
 
 /** Group headings and distinguishing lines for the composer's session-options menu. */
 export function optionsMenuCopy(
-  key: "groupModes" | "groupReview" | "groupSession" | "groupSettings" | "runtimeDesc" | "computeDesc",
+  key:
+    | "groupModes"
+    | "groupReview"
+    | "groupSession"
+    | "groupSettings"
+    | "runtimeDesc"
+    | "computeDesc"
+    | "delegationDesc"
+    | "autoReviewDesc"
+    | "reviewerModelDesc"
+    | "memoryDesc"
+    | "specialistDesc",
 ): string {
   const copy = LANG === "en" ? {
     groupModes: "How the agent works",
@@ -243,6 +253,12 @@ export function optionsMenuCopy(
     groupSettings: "Open Settings",
     runtimeDesc: "Pick the Python / R environment this session's code runs in",
     computeDesc: "Settings → Compute: environment status, installed packages, remote GPU, background jobs",
+    // SCI-34: every row says what it does, not only the two modes.
+    delegationDesc: "Hands parts of a task to sub-agents in parallel",
+    autoReviewDesc: "A second model checks each answer",
+    reviewerModelDesc: "The model that does that check",
+    memoryDesc: "What the agent keeps between sessions",
+    specialistDesc: "Roles the agent can hand work to",
   } : {
     groupModes: "工作方式",
     groupReview: "审阅",
@@ -250,6 +266,11 @@ export function optionsMenuCopy(
     groupSettings: "打开设置",
     runtimeDesc: "选择这个会话的代码在哪个 Python / R 环境里运行",
     computeDesc: "设置 → 计算：环境状态、已装的包、远程 GPU、后台任务",
+    delegationDesc: "把任务的一部分交给并行的子智能体",
+    autoReviewDesc: "由另一个模型检查每次回答",
+    reviewerModelDesc: "做这次检查的模型",
+    memoryDesc: "智能体在会话之间记住的内容",
+    specialistDesc: "智能体可以把工作交给的角色",
   };
   return copy[key];
 }
@@ -297,4 +318,86 @@ export function shareCopy(
     setupDocs: "完整步骤见 OpenAI4S 仓库里的 docs/webshare.md。",
   };
   return copy[key];
+}
+
+/**
+ * M-48: the project's activity record. It was called a "research map" and
+ * opened on raw tabs named Timeline / Lineage in every language, while it is
+ * a list, not a graph.
+ */
+export const projectActivityCopy = copyLookup({
+  en: {
+    menu: "Project activity",
+    title: "{0} · Project activity",
+    activity: "Activity",
+    files: "Files",
+    activitySummary: "{0} sessions · {1} actions",
+    filesSummary: "{0} files · {1} versions · {2} links",
+    versions: "{0} versions",
+    latest: "latest",
+    noFiles: "No files in this project yet.",
+    links: "Where each file came from ({0})",
+  },
+  zh: {
+    menu: "项目活动记录",
+    title: "{0} · 项目活动记录",
+    activity: "活动",
+    files: "文件",
+    activitySummary: "{0} 个会话 · {1} 个操作",
+    filesSummary: "{0} 个文件 · {1} 个版本 · {2} 条关联",
+    versions: "{0} 个版本",
+    latest: "最新",
+    noFiles: "这个项目还没有文件。",
+    links: "文件的来源（{0}）",
+  },
+});
+
+/**
+ * M-73: deleting a branch from the open session's sidebar list. Only a branch
+ * that is neither the current one nor the main line offers it, and it asks
+ * first: the branch cannot be switched to again.
+ */
+export const branchDeleteCopy = copyLookup({
+  en: {
+    "branchDelete.label": "Delete branch “{0}”",
+    "branchDelete.confirm":
+      "Delete branch “{0}”?\n\nIt is removed from this session's branches and can no longer be opened. Its own messages, Notebook cells and files are no longer shown; branches forked from it keep everything they share with it. This cannot be undone.",
+    "branchDelete.ok": "Delete branch",
+    "branchDelete.done": "Deleted branch “{0}”.",
+    "branchDelete.failed": "Could not delete branch “{0}”: {1}",
+    "branchDelete.active": "“{0}” is the current branch. Switch to another branch before deleting it.",
+    "branchDelete.mainLine": "The main line cannot be deleted.",
+    "branchDelete.busy": "The session is running. Delete the branch when it has finished.",
+    "branchDelete.notFound": "Branch “{0}” no longer exists.",
+  },
+  zh: {
+    "branchDelete.label": "删除分支「{0}」",
+    "branchDelete.confirm":
+      "删除分支「{0}」？\n\n它会从这个会话的分支中移除，之后无法再打开。只属于它的消息、Notebook 单元和产物不再显示；从它分出的分支仍保留与它共有的部分。此操作无法撤销。",
+    "branchDelete.ok": "删除分支",
+    "branchDelete.done": "已删除分支「{0}」。",
+    "branchDelete.failed": "没能删除分支「{0}」：{1}",
+    "branchDelete.active": "「{0}」是当前分支。请先切换到其他分支，再删除它。",
+    "branchDelete.mainLine": "主线不能删除。",
+    "branchDelete.busy": "会话正在运行，请等它结束后再删除分支。",
+    "branchDelete.notFound": "分支「{0}」已经不存在了。",
+  },
+});
+
+/**
+ * SCI-17 / SYNC-28: how a session's last turn ended, when it did not simply
+ * finish -- as words and an icon, never a colour alone. `null` for a finished,
+ * running or new session. Shared by the sidebar row and the home list.
+ */
+export function lastTurnOutcome(
+  status: string | null | undefined,
+): { kind: "failed" | "cancelled" | "blocked_by_guardian"; label: string; tip: string; icon: string } | null {
+  const icons = { failed: "alert-triangle", cancelled: "stop-square", blocked_by_guardian: "lock" } as const;
+  if (status !== "failed" && status !== "cancelled" && status !== "blocked_by_guardian") return null;
+  return {
+    kind: status,
+    label: dashCopy("dash.status." + status),
+    tip: dashCopy("dash.status." + status + ".tip"),
+    icon: icons[status],
+  };
 }

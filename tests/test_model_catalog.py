@@ -283,13 +283,44 @@ def test_profile_service_crud_activation_and_header_projection(tmp_path):
 
     header = service.models_payload("lab-model-v2")
     model_ids = [item["id"] for item in header["models"]["default"]]
-    assert model_ids[0] == "lab-model-v2"
+    # M-7: the active profile *is* the live configuration, so it is listed once,
+    # as itself, and the default that named the live model names the profile.
+    assert model_ids == [created["id"]]
+    assert header["default_model_id"] == created["id"]
     assert len(model_ids) == len(set(model_ids))
 
     service.delete(created["id"])
     assert store.get_setting("active_model_profile") == ""
     with pytest.raises(ModelProfileError, match="profile not found"):
         service.activate(created["id"])
+
+
+def test_the_environment_model_saved_by_the_wizard_is_listed_once(tmp_path):
+    """M-7: after the first-run wizard saved the environment's model as a
+    profile, the composer offered "doubao-seed" and "doubao-seed (environment)"
+    for the same configuration, and the selection moved from the first to the
+    second on the first send (which pins the profile)."""
+    store, service = _service(tmp_path)
+    live = service.models_payload("")["models"]["default"]
+    assert len(live) == 1 and not live[0].get("profile_id")
+    live_model = live[0]["id"]
+
+    saved = service.create(
+        {"name": f"{live_model} (environment)", "provider": "ark", "model": live_model}
+    )
+    service.activate(saved["id"])
+    header = service.models_payload(live_model)
+    assert [item["id"] for item in header["models"]["default"]] == [saved["id"]]
+    assert header["models"]["default"][0]["name"] == f"{live_model} (environment)"
+    assert header["default_model_id"] == saved["id"]
+    # An explicit choice of something else is left alone.
+    assert service.models_payload("other-id")["default_model_id"] == "other-id"
+
+    # The live settings changed after the activation: they are a configuration
+    # of their own again, listed as the live entry beside the profile.
+    store.set_setting("llm_model", "something-else")
+    entries = service.models_payload("something-else")["models"]["default"]
+    assert [item["id"] for item in entries] == ["something-else", saved["id"]]
 
 
 def test_provider_alias_migration_is_idempotent(tmp_path):

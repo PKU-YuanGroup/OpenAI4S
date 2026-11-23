@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { setLang } from "../../i18n/runtime";
-import { connectorDescription, specialistBadge, specialistDescription } from "./copy";
+import { connectorDescription, specialistBadge, specialistDescription, specialistName } from "./copy";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
@@ -26,10 +26,25 @@ describe("Settings describes specialists and connectors in the UI language (I18N
     expect(connectorDescription("fetch", fetchText, fetchText)).toMatch(/^抓取网址/);
     expect(connectorDescription("fetch", "our proxy fetcher", fetchText)).toBe("our proxy fetcher");
     expect(connectorDescription("lab-db", "Lab database")).toBe("Lab database");
+    // SYNC-21: the configured example row is seeded with other words than the catalog's.
+    const seeded = "Local demo MCP server: echo / now / calc / random_int.";
+    expect(connectorDescription("example", seeded, "Local demo MCP server (always available)")).toMatch(/^本地演示/);
     await setLang("en");
+    expect(connectorDescription("example", seeded, "Local demo MCP server (always available)")).toBe(seeded);
     expect(specialistDescription(scientist)).toBe("Primary research agent.");
     expect(connectorDescription("fetch", fetchText)).toBe(fetchText);
     expect(specialistBadge("subagent")).toBe("subagent");
+  });
+
+  it("names the read-only scout SCOUT, 侦察 in Chinese, and leaves a custom EXPLORE alone (decision 31)", async () => {
+    const scout = { name: "SCOUT", source: "bundled", description: "Read-only scout." };
+    await setLang("zh");
+    expect(specialistName(scout)).toBe("侦察（SCOUT）");
+    expect(specialistDescription(scout)).toMatch(/^只读侦察/);
+    expect(specialistName({ name: "EXPLORE", source: "custom" })).toBe("EXPLORE");
+    expect(specialistName({ name: "GENERAL", source: "bundled" })).toBe("GENERAL");
+    await setLang("en");
+    expect(specialistName(scout)).toBe("SCOUT");
   });
 
   it("has Chinese for every built-in specialist and catalog connector the daemon ships", async () => {

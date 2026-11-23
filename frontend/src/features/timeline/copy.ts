@@ -56,9 +56,17 @@ const QUEUE_COPY: CopyTable = {
     "queueRow.editBusy": "The composer already holds a draft: send or clear it first, then edit the queued message",
     "queueRow.editing": "Taken out of the queue: edit it and send it again (it rejoins at the end of the queue)",
     "queueRow.started": "Now running your queued message: “{0}”",
+    "queueRow.held": "The last turn failed. Run the {0} queued messages?",
+    "queueRow.heldOne": "The last turn failed. Run the queued message?",
+    "queueRow.resume": "Run them",
+    "queueRow.resumeOne": "Run it",
+    "queueRow.resumeTitle": "The messages queued behind the failed turn wait until you say so; they run in order",
+    "queueRow.resumeFailed": "Could not run the queued messages: {0}",
+    "queueRow.heldBadge": "On hold · the last turn failed",
     "queueRow.sendNow": "Stop and send now",
     "queueRow.sendNowTitle": "Stop the running turn; the first queued message starts right away",
-    "queueRow.stopping": "Stopping the current turn… {0} queued message(s) will run next",
+    "queueRow.stopping": "Stopping the current turn… then the {0} queued messages run, in order",
+    "queueRow.stoppingOne": "Stopping the current turn… then the queued message runs",
   },
   zh: {
     "queueRow.headNote": "当前任务结束或被停止后依次运行",
@@ -68,13 +76,32 @@ const QUEUE_COPY: CopyTable = {
     "queueRow.editBusy": "输入框里还有未发送的内容：先发送或清空它，再编辑排队的消息",
     "queueRow.editing": "已撤出队列：修改后重新发送即可（会重新排到队尾）",
     "queueRow.started": "开始处理你排队的消息：“{0}”",
+    "queueRow.held": "上一轮失败，是否继续执行排队的 {0} 条消息？",
+    "queueRow.heldOne": "上一轮失败，是否继续执行排队的 1 条消息？",
+    "queueRow.resume": "继续执行",
+    "queueRow.resumeOne": "继续执行",
+    "queueRow.resumeTitle": "排在失败回合之后的消息会等你确认后再按顺序运行",
+    "queueRow.resumeFailed": "无法继续执行排队的消息：{0}",
+    "queueRow.heldBadge": "已暂停 · 上一轮失败",
     "queueRow.sendNow": "停止并立即发送",
     "queueRow.sendNowTitle": "停止当前回合，排队的第一条消息随即开始",
-    "queueRow.stopping": "正在停止当前任务… 排队的 {0} 条消息会接着运行",
+    "queueRow.stopping": "正在停止当前任务… 排队的 {0} 条消息会接着依次运行",
+    "queueRow.stoppingOne": "正在停止当前任务… 排队的消息会接着运行",
   },
 };
 
-export const queueT = copyLookup(QUEUE_COPY);
+const queueLookup = copyLookup(QUEUE_COPY);
+
+/**
+ * The queue strip's words. "Stopping… 1 queued message(s) will run next" read
+ * as a machine's (SYNC-7): the stopping line names one message as one.
+ */
+export function queueT(key: string, ...args: unknown[]): string {
+  if (Number(args[0]) === 1 && ["queueRow.stopping", "queueRow.held"].includes(key)) {
+    return queueLookup(key + "One");
+  }
+  return queueLookup(key, ...args);
+}
 
 /**
  * NAV-6: the side panels in a scientist's words. The sandbox row showed the
@@ -105,6 +132,24 @@ const WORKBENCH: CopyTable = {
     "wb.technical.hint": "运行状态 · 内核恢复 · 分支与检查点 · 子代理 · 远程计算 · 诊断 · 沙盒",
     "wb.diagnostics": "诊断：模型上下文",
     "wb.diagnosticsHint": "这一轮发给模型的内容由哪些部分组成、各占多少 token。排查问题时才需要看。",
+    // SYNC-21: the context layers and statuses were the server's English words.
+    "wb.layer.system_prompt": "系统提示词",
+    "wb.layer.text": "对话文本",
+    "wb.layer.images": "图片",
+    "wb.layer.tool_schemas": "工具定义",
+    "wb.layer.tool_calls": "工具调用",
+    "wb.layer.tool_results": "工具结果",
+    "wb.layer.artifact_refs": "产物引用",
+    "wb.layer.wire_state": "协议状态",
+    "wb.status.active": "有内容",
+    "wb.status.empty": "空",
+    "wb.recovery.active": "可用",
+    "wb.recovery.none": "无",
+    "wb.recovery.not_started": "未开始",
+    "wb.recovery.partial": "部分恢复",
+    "wb.recovery.failed": "失败",
+    "wb.recovery.restored": "已恢复",
+    "wb.recovery.recovering": "恢复中",
   },
   en: {
     "wb.security.title": "Sandbox and permissions",
@@ -129,10 +174,25 @@ const WORKBENCH: CopyTable = {
     "wb.technical.hint": "runtime · kernel recovery · branches and checkpoints · sub-agents · remote compute · diagnostics · sandbox",
     "wb.diagnostics": "Diagnostics: model context",
     "wb.diagnosticsHint": "What this turn sent to the model, part by part, with token counts. Only needed when troubleshooting.",
+    "wb.layer.system_prompt": "System prompt",
+    "wb.layer.text": "Text",
+    "wb.layer.images": "Images",
+    "wb.layer.tool_schemas": "Tool schemas",
+    "wb.layer.tool_calls": "Tool calls",
+    "wb.layer.tool_results": "Tool results",
+    "wb.layer.artifact_refs": "Artifact references",
+    "wb.layer.wire_state": "Wire state",
   },
 };
 
 export const workbenchT = copyLookup(WORKBENCH);
+
+/** A server enum in the UI language when the table has it, else as sent. */
+export function workbenchWord(prefix: string, value: string): string {
+  const key = prefix + value;
+  const word = workbenchT(key);
+  return word === key ? value : word;
+}
 
 /**
  * I18N-1: the Timeline's words where the generated zh dictionary is English
@@ -155,6 +215,8 @@ const TIMELINE_OVERRIDES: CopyTable = {
     "timeline.replay": "重放",
     "timeline.tokens": "Token 用量",
     "timeline.turnBoundary": "回合",
+    "timeline.turn.collapse": "收起回合 {0}，{1} 条当前可见记录，总耗时 {2}",
+    "timeline.turn.expand": "展开回合 {0}，{1} 条当前可见记录，总耗时 {2}",
     "timeline.turn.summary": "回合 · 当前可见 {0} 条记录",
     "timeline.search.scope": "只搜索已加载的 {0} 条记录，更早的记录不在结果中。搜索时会暂时展开折叠的回合，清空后恢复。",
     "timeline.kind.native_tool": "工具调用",

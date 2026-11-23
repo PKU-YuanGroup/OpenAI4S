@@ -4430,6 +4430,92 @@ def test_a_moved_data_directory_does_not_ship_its_old_location(tmp_path, monkeyp
         store.close()
 
 
+def test_a_run_started_outside_home_and_data_dir_does_not_ship_its_directory(
+    tmp_path, monkeypatch
+):
+    """CLI-28: `openai4s run` works in the directory it was started from (an
+    HPC scratch, an external disk), not in the session workspace, and outside
+    the home and data directories nothing anchored it: the export carried it
+    in environment.json, snapshots.json and every cell printout."""
+    import tempfile
+
+    from openai4s.evidence import verify_package
+
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    # Not under this machine's temp root either, so only the new rule applies.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "other-tmp"))
+    scratch = tmp_path.parent / f"{tmp_path.name}-scratch" / "alice" / "run1"
+    scratch.mkdir(parents=True)
+    store, domain, project, root, _artifact, _checkpoint, _workspace = _source(tmp_path)
+    try:
+        environment = {
+            "runtime": "python",
+            "working_directory": str(scratch),
+            "sandbox": {"backend": "seatbelt", "workspace": str(scratch)},
+        }
+        generation = store.create_kernel_generation(
+            root_frame_id=root,
+            branch_id=root,
+            language="python",
+            environment=environment,
+            bootstrap={"working_directory": str(scratch), "status": "ready"},
+            state="active",
+        )
+        store.log_cell(
+            frame_id=root,
+            root_frame_id=root,
+            project_id=project["project_id"],
+            code="import os\nprint(os.getcwd())",
+            result={"id": "cell-cwd", "stdout": f"{scratch}/out.csv\n", "stderr": ""},
+            cell_index=2,
+            state_revision=2,
+            generation_id=generation["generation_id"],
+        )
+        group = store.append_action_group(
+            root_frame_id=root,
+            branch_id=root,
+            turn_id="turn-scratch-run",
+            kind="code",
+        )
+        printed = f"[Observation] stdout: {scratch}/out.csv"
+        store.append_action_event(
+            group_id=group["group_id"],
+            type="observation",
+            action_id=f"{group['group_id']}:action",
+            result={
+                "observation": printed,
+                "messages": [{"role": "user", "content": printed}],
+            },
+        )
+        store.log_host_call(
+            method="read_file",
+            args=[{"path": f"{scratch}/helper.py"}],
+            ok=True,
+            frame_id=root,
+        )
+        domain.create_checkpoint(root, metadata={"label": "after the run"})
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+
+        leaks = sorted(
+            name
+            for name, payload in files.items()
+            if str(scratch.parent).encode() in payload
+        )
+        assert leaks == []
+        generations = json.loads(files["environment.json"])["generations"]
+        assert {g["environment"]["working_directory"] for g in generations} == {"."}
+        notebook = files["notebook.json"].decode()
+        assert "./out.csv" in notebook
+        package = tmp_path / "scratch-run.openai4s-session.zip"
+        package.write_bytes(exported["data"])
+        assert verify_package(str(package))["ok"]
+    finally:
+        store.close()
+
+
 def test_a_redacted_package_still_verifies_inspects_and_imports(tmp_path, monkeypatch):
     from openai4s.evidence import verify_package
     from openai4s.package_diagnosis import diagnose, read_package
@@ -4492,3 +4578,253 @@ def test_download_names_are_human_and_survive_non_ascii_titles():
     assert download_content_disposition('a"/../evil.zip').startswith(
         'attachment; filename="evil.zip"'
     )
+
+
+# --- TEAM-19: what verify-package passes, the importer admits ------------------
+#
+# A file written by a background task named that task (`exec-...`) as its
+# producer, and the task was not a Notebook Cell. The exporter wrote the id as
+# it was, the importer refused it as an unknown identity, and `verify-package`
+# -- which only hashed -- had already said the package was fine.
+
+_BACKGROUND_TASK = "exec-a1e3fc96632d"
+
+
+def _add_produced(store, root, project, workspace_dir, filename, producer):
+    target = workspace_dir / filename
+    target.write_bytes(b"\x89PNG\r\n\x1a\nfigure from a background task")
+    return store.save_artifact(
+        path=str(target),
+        filename=filename,
+        content_type="image/png",
+        size_bytes=target.stat().st_size,
+        checksum=hashlib.sha256(target.read_bytes()).hexdigest(),
+        producing_cell_id=producer,
+        frame_id=root,
+        root_frame_id=root,
+        project_id=project["project_id"],
+    )
+
+
+def _versions_by_filename(files):
+    return {
+        version["filename"]: version
+        for artifact in json.loads(files["artifacts.json"])["artifacts"]
+        for version in artifact["versions"]
+    }
+
+
+def _verify(tmp_path, data: bytes) -> dict:
+    from openai4s.evidence import verify_package
+
+    package = tmp_path / "under-test.openai4s-session.zip"
+    package.write_bytes(data)
+    return verify_package(package)
+
+
+def test_an_artifact_from_an_unrecorded_background_task_imports_back(tmp_path):
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    try:
+        _add_produced(
+            store, root, project, workspace(root, root), "scatter.png", _BACKGROUND_TASK
+        )
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+        versions = _versions_by_filename(files)
+        # No Cell in the package answers to the task id, so none is named.
+        assert versions["scatter.png"]["producing_cell_id"] is None
+        assert versions["prediction.csv"]["producing_cell_id"] == "cell-source"
+        notes = files["REPRODUCE.md"].decode("utf-8")
+        assert "`1` artifact version(s) have no producing" in notes
+        assert "the `1` recorded cell(s), in order" in notes
+
+        report = _verify(tmp_path, exported["data"])
+        assert report["ok"] is True, report["problems"]
+        assert report["importable"] is True
+
+        imported = domain.session_import(exported["data"])
+        names = {
+            item["filename"]
+            for item in store.list_artifacts(
+                {"root_frame_id": imported["root_frame_id"]}
+            )
+        }
+        assert {"scatter.png", "prediction.csv"} <= names
+    finally:
+        store.close()
+
+
+def test_a_background_task_recorded_as_a_cell_travels_with_its_files(tmp_path):
+    """TEAM-11: the background job is a cell, so its files keep their producer."""
+
+    from types import SimpleNamespace
+
+    from openai4s.server.artifacts import BACKGROUND_KERNEL_ID, record_background_cell
+
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    try:
+        code = "import random\nrandom.seed(42)\nsave_scatter('scatter.png')\n"
+        session = SimpleNamespace(
+            root_frame_id=root,
+            project_id=project["project_id"],
+            workspace=workspace(root, root),
+        )
+        record_background_cell(
+            store,
+            session,
+            _BACKGROUND_TASK,
+            {"code": code, "stdout": "saved\n", "origin": "agent"},
+            [{"filename": "scatter.png"}],
+        )
+        _add_produced(
+            store, root, project, workspace(root, root), "scatter.png", _BACKGROUND_TASK
+        )
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+        versions = _versions_by_filename(files)
+        assert versions["scatter.png"]["producing_cell_id"] == _BACKGROUND_TASK
+        cells = json.loads(files["notebook.json"])["cells"]
+        background = next(
+            c for c in cells if c["producing_cell_id"] == _BACKGROUND_TASK
+        )
+        assert background["code"] == code
+        assert background["kernel_id"] == BACKGROUND_KERNEL_ID
+        assert "have no producing" not in files["REPRODUCE.md"].decode("utf-8")
+
+        assert _verify(tmp_path, exported["data"])["ok"] is True
+        imported = domain.session_import(exported["data"])
+        new_root = imported["root_frame_id"]
+        imported_cell = next(
+            cell for cell in store.list_cells(new_root) if cell["code"] == code
+        )
+        assert imported_cell["kernel_id"] == BACKGROUND_KERNEL_ID
+        figure = next(
+            item
+            for item in store.list_artifacts({"root_frame_id": new_root})
+            if item["filename"] == "scatter.png"
+        )
+        version = store.version_meta(figure["latest_version_id"])
+        assert version["producing_cell_id"] == imported_cell["producing_cell_id"]
+    finally:
+        store.close()
+
+
+def test_an_imported_session_keeps_its_generated_title(tmp_path):
+    """M-66: a session titled by its generated summary (no explicit name) was
+    imported as "Imported session"."""
+
+    store, domain, _project, root, _artifact, _checkpoint, _ws = _source(tmp_path)
+    try:
+        store.update_frame(root, name="", task_summary="Random points scatter")
+        imported = domain.session_import(domain.session_export(root)["data"])
+        frame = store.get_frame(imported["root_frame_id"])
+        assert frame["name"] == "Random points scatter"
+        assert frame["task_summary"] == "Random points scatter"
+
+        store.update_frame(root, name="Named run", task_summary="summary")
+        again = domain.session_import(domain.session_export(root)["data"])
+        assert store.get_frame(again["root_frame_id"])["name"] == "Named run"
+    finally:
+        store.close()
+
+
+def test_a_package_written_before_the_fix_still_imports(tmp_path):
+    """Built the way the old exporter wrote it: the task id kept as producer."""
+
+    store, domain, project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
+    try:
+        _add_produced(
+            store, root, project, workspace(root, root), "scatter.png", _BACKGROUND_TASK
+        )
+        files = _unpack(domain.session_export(root)["data"])
+        manifest = json.loads(files["artifacts.json"])
+        for artifact in manifest["artifacts"]:
+            if artifact["filename"] == "scatter.png":
+                for version in artifact["versions"]:
+                    version["producing_cell_id"] = _BACKGROUND_TASK
+        files["artifacts.json"] = _canonical(manifest)
+        old_package = _repack(files)
+
+        assert _verify(tmp_path, old_package)["ok"] is True
+        imported = domain.session_import(old_package)
+        figure = next(
+            item
+            for item in store.list_artifacts(
+                {"root_frame_id": imported["root_frame_id"]}
+            )
+            if item["filename"] == "scatter.png"
+        )
+        # Made outside any Cell: imported, with no producing Cell claimed.
+        version = store.version_meta(figure["latest_version_id"])
+        assert version["producing_cell_id"] is None
+    finally:
+        store.close()
+
+
+def test_a_producer_that_is_no_cell_and_no_background_task_is_refused_by_both(
+    tmp_path,
+):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        manifest = json.loads(files["artifacts.json"])
+        manifest["artifacts"][0]["versions"][0]["producing_cell_id"] = "c-not-packaged"
+        files["artifacts.json"] = _canonical(manifest)
+        dangling = _repack(files)
+
+        with pytest.raises(
+            SessionPackageError,
+            match="artifact version references an unknown identity",
+        ):
+            domain.session_import(dangling)
+        # The verifier runs the importer's own check: the hashes all match,
+        # and it still says no -- with the importer's reason.
+        report = _verify(tmp_path, dangling)
+        assert report["ok"] is False
+        assert report["importable"] is False
+        assert report["problems"] == [
+            "the importer would refuse this package: "
+            "artifact version references an unknown identity"
+        ]
+    finally:
+        store.close()
+
+
+def test_an_attempt_that_ended_before_its_cell_ran_does_not_strand_the_package(
+    tmp_path,
+):
+    """An R Cell on a machine without R: an attempt, and never a Cell row."""
+
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        group = store.append_action_group(
+            root_frame_id=root,
+            turn_id="turn-r-cell",
+            kind="cell",
+            assistant_content="Trying an R cell",
+        )
+        attempt = store.allocate_execution_attempt(
+            group_id=group["group_id"],
+            producing_cell_id="c-never-recorded",
+            state_revision=2,
+            allocated_at=20,
+        )
+        store.finish_execution_attempt(
+            attempt["attempt_id"], terminal_state="prepare_failed", finished_at=21
+        )
+
+        exported = domain.session_export(root)
+        ledger = json.loads(_unpack(exported["data"])["ledger.json"])
+        # The failed attempt stays in the ledger: it is what a diagnosis reads.
+        assert "c-never-recorded" in {
+            item["producing_cell_id"] for item in ledger["execution_attempts"]
+        }
+        report = _verify(tmp_path, exported["data"])
+        assert report["ok"] is True, report["problems"]
+        domain.session_import(exported["data"])  # must not raise
+    finally:
+        store.close()

@@ -395,3 +395,48 @@ it("conversation strip tiles open the latest tab rather than pinning the head at
     resetStoreFields();
   }
 });
+
+it("the example session's files strip starts open; another session's stays collapsed (G2 / SCI-02)", async () => {
+  const { artifacts } = await import("../../stores/artifacts");
+  const { currentId, projects, sessions } = await import("../../stores/session");
+  const { renderConversationArtifacts } = await import("./ui");
+  class Node {
+    children: Node[] = []; textContent = ""; className = ""; id = ""; src = ""; open = false; title = "";
+    onclick?: () => unknown;
+    ontoggle?: () => unknown;
+    appendChild(child: Node) { this.children.push(child); return child; }
+    insertBefore(child: Node) { this.children.push(child); return child; }
+    querySelector() { return null; }
+    remove() {}
+  }
+  resetStoreFields();
+  artifacts.value = [{ id: "art-1", filename: "report.md", content_type: "text/markdown", version_id: "v1" }];
+  projects.value = [{ id: "p-example", is_example: true }, { id: "p-mine", is_example: false }];
+  sessions.value = [{ id: "f-example", project_id: "p-example" }, { id: "f-mine", project_id: "p-mine" }];
+  const host = new Node();
+  vi.stubGlobal("document", {
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    getElementById: (id: string) => id === "messages" ? host : null,
+    createElement: () => new Node(),
+  });
+  const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+  const lastStrip = () => walk(host).filter((node) => node.className === "generated").at(-1);
+  try {
+    currentId.value = "f-mine";
+    renderConversationArtifacts();
+    expect(lastStrip()?.open).toBe(false);
+    currentId.value = "f-example";
+    renderConversationArtifacts();
+    expect(lastStrip()?.open).toBe(true);
+    expect(walk(host).some((node) => node.className === "tile")).toBe(true);
+    // The reader's own choice still wins.
+    lastStrip()!.open = false;
+    lastStrip()!.ontoggle?.();
+    renderConversationArtifacts();
+    expect(lastStrip()?.open).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  }
+});

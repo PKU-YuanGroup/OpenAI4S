@@ -46,6 +46,9 @@ import {
   type UploadCreation,
   type UploadResult,
 } from "../chrome/upload";
+import { restoreAttachments, takeAttachments, type ComposerAttachment } from "../chrome/attachments";
+import { clearDraft } from "../chrome/drafts";
+import { askConfirm } from "../chrome/dialog";
 import { loadSkillsCatalog } from "../autocomplete/catalog";
 import { acHoldSend, acPending } from "../autocomplete/composer";
 import {
@@ -67,6 +70,7 @@ import { hint } from "../sessions/chrome";
 import { enableComposer, grow } from "../sessions/dom";
 import { loadSessions } from "../sessions/load";
 import { renderProjectRefChips, stripProjectRefSyntax } from "../messages/list";
+import { renderSentAttachments } from "../messages/attachments";
 import { renderComposerRefChips, renderMessageRefChips } from "../sessions/transcript";
 import { sub } from "../ws/connect";
 import {
@@ -425,6 +429,9 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     w.classList.add("continue-seed");
     b.remove();
     w.appendChild(continueMarker());
+  } else if (text) {
+    // What a turn that fails before it runs anything gives back (turn.ts).
+    w.dataset.sentText = text;
   }
   // The same chips a reload draws from the stored `artifact_refs`.
   if (sentMentions.length) {
@@ -481,10 +488,21 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   // what this call sends: a programmatic send (a permission's Continue, a plan
   // approval) carries its own text, and the user's unrelated draft is theirs.
   const composer = $("#composer") as HTMLTextAreaElement | null;
+  // The files the composer showed as going with this message leave its tray
+  // with it (M-10), and come back with the text if the message is refused.
+  let sentAttachments: ComposerAttachment[] = [];
   if (composer && composer.value === composerDraft && composerDraft.trim() === text) {
     composer.value = "";
     clearMentions();
+    sentAttachments = takeAttachments(dispatchFrameId);
+    clearDraft(dispatchFrameId);
   }
+  // ...and stay under its bubble, as a reload shows them (the stored row's
+  // `attachments`).
+  const sentFiles = sentAttachments
+    .filter((a) => a.state === "ready" && a.artifactId)
+    .map((a) => ({ artifact_id: a.artifactId, name: a.name }));
+  renderSentAttachments(w, sentFiles);
   grow();
   renderComposerRefChips();
   if (annIds.length) {
@@ -510,6 +528,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         annotation_reservation_id: admissionId || undefined,
         // `{filename, version_id}` per `@` pin; the text carries the names only.
         mentions: sentMentions.length ? mentionsPayload(sentMentions) : undefined,
+        attachments: sentFiles.length ? sentFiles : undefined,
         wait: false,
       }),
     })) as {
@@ -550,6 +569,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     }
   } catch (e) {
     const refused = !!(e && Number.isInteger((e as { status?: number }).status) && (e as { status: number }).status >= 400);
+    if (refused && (e as { status: number }).status < 500) restoreAttachments(sentAttachments);
     // The refusal belongs to the session this message was sent from, and the
     // composer, the hint line and Customize are shared by every session. Once
     // the user has opened another one, putting this draft back or asking about
@@ -615,8 +635,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       err &&
       (err.code === "model_revision_unavailable" || err.code === "model_revision_ambiguous")
     ) {
-      const ask =
-        typeof globalThis.confirm === "function" ? globalThis.confirm(rebindConfirmText(err)) : false;
+      const ask = await askConfirm(rebindConfirmText(err));
       if (ask) {
         try {
           const rebound = await api(`/frames/${encodeURIComponent(dispatchFrameId)}/model-binding`, {
@@ -675,7 +694,7 @@ const REBIND_CONFIRM_COPY: Record<"en" | "zh", Record<RebindReason, string>> = {
     moved:
       "The model profile this session was pinned to now names a different provider or endpoint, so its key is not sent to the earlier configuration. Re-bind the session to the active configuration and continue?",
     keyless:
-      "The model profile this session was pinned to has no usable API key. Re-bind the session to the active configuration and continue? (Cancel to add the key in Customize → Models instead.)",
+      "The model profile this session was pinned to has no usable API key. Re-bind the session to the active configuration and continue? (Cancel to add the key in Settings → Models instead.)",
     unreadable:
       "The model configuration this session was pinned to could not be read. Re-bind it to the active configuration and continue?",
     ambiguous:
@@ -687,7 +706,7 @@ const REBIND_CONFIRM_COPY: Record<"en" | "zh", Record<RebindReason, string>> = {
     moved:
       "该会话固定的模型配置现在指向不同的提供商或端点，因此其密钥不会发往原先的配置。是否将该会话改绑到当前启用的配置以继续？",
     keyless:
-      "该会话固定的模型配置没有可用的 API 密钥。是否将该会话改绑到当前启用的配置以继续？（取消后可在 自定义 → 模型 中添加密钥。）",
+      "该会话固定的模型配置没有可用的 API 密钥。是否将该会话改绑到当前启用的配置以继续？（取消后可在 设置 → 模型 中添加密钥。）",
     unreadable: "无法读取该会话固定的模型配置。是否改绑到当前启用的配置以继续？",
     ambiguous:
       "有多个已保存的模型配置与该会话使用的模型匹配，无法确定它当时使用的是哪一个。是否改绑到当前启用的配置以继续？",

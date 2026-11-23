@@ -883,6 +883,18 @@ _CAPTURE_CONNECTOR_ID = "contract-capture-connector"
 _SEEDED_JOB_WAIT_S = 30.0
 
 
+def _wait_for_seeded_jobs(runner) -> None:
+    """Wait, bounded, until every background turn a seeded 202 started is done.
+
+    A job is marked done only after its execution ticket and the session's turn
+    lock are both released (`SessionRunner.submit_message`), so after this a
+    session the seeded pass wrote into is idle again.
+    """
+    deadline = time.monotonic() + _SEEDED_JOB_WAIT_S
+    for job in list(getattr(runner, "_jobs", {}).values()):
+        job.done.wait(max(0.0, deadline - time.monotonic()))
+
+
 #: The two listings whose entries carry `python_version`, driven a second time
 #: below with an environment that has no interpreter.
 _ENVIRONMENT_LISTING_ROUTES = ("/environments", "/frames/([^/]+)/environments")
@@ -1218,9 +1230,7 @@ def _drive_seeded_downloads(
     # "Directory not empty" -- the capture succeeding and the harness crashing
     # afterwards. Bounded, because a hung turn must not hang the gate; the turn
     # itself fails fast on the capture environment's absent provider.
-    deadline = time.monotonic() + _SEEDED_JOB_WAIT_S
-    for job in list(getattr(runner, "_jobs", {}).values()):
-        job.done.wait(max(0.0, deadline - time.monotonic()))
+    _wait_for_seeded_jobs(runner)
 
 
 def _drive_session_surface(
@@ -1470,6 +1480,21 @@ def _drive_session_surface(
             "below would wait on an admission that cannot arrive"
         )
 
+    # The seeded turns run on their own threads. A message queued behind the
+    # failed plan-approval turn is held (M-31) and then cancelled by the drain
+    # above, and its job stays not-done until that thread wakes. Meanwhile the
+    # session reads as running, so a rename or edit that lands in that window
+    # (seen on slower CI runners) is refused 409 as busy, and the refusal was
+    # recorded in place of the route's success. The writes below describe an
+    # idle session, so wait for those turns first, and say what still holds
+    # the session if it is not idle by then.
+    _wait_for_seeded_jobs(runner)
+    if runner._execution_active(frame_id):
+        recorder.drive_failures["session surface (idle before writes)"] = (
+            f"still busy after the seeded turns: running={runner.is_running(frame_id)} "
+            f"execution={runner.executions.snapshot(frame_id)!r}"
+        )
+
     writes: list[tuple[str, str, str, dict]] = [
         (
             "POST",
@@ -1560,6 +1585,10 @@ def _drive_session_surface(
     # activation and revert in between roll its versions back, so by the time
     # the restore ran there was again nothing historical to name. Adjacent, on
     # a private artifact, with nothing scheduled between them.
+    #
+    # The activation and the decision above can start or cancel a background
+    # turn of their own, so wait again: an edit needs an idle session.
+    _wait_for_seeded_jobs(runner)
     history_bytes = b"contract capture, versioned\n"
     history_artifact = runner.artifacts.upload(
         {

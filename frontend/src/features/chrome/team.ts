@@ -8,10 +8,15 @@
  */
 
 import { LANG } from "../../i18n/runtime";
-import { paintIcon } from "../icons/paths";
+import type { MenuItem } from "../sessions/chrome";
 import { API } from "./api";
-import { byId, el } from "./dom";
+import { byId, el, iconEl } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
+import { showNotice } from "./dialog";
+import { openChangePassword, openMyKeys } from "./team-account";
+import { auditActionLabel, renderUsersSection, userLabel } from "./team-admin";
+import { teamRoleLabel, teamT } from "./team-copy";
+import { teamFilesAvailable, teamUser, type TeamUser } from "./team-identity";
 
 /**
  * Admin-panel section headings. A local table: the generated
@@ -38,14 +43,6 @@ export function teamSectionTitle(key: string): string {
   return (SECTION_COPY[LANG] || SECTION_COPY.en)[key] || SECTION_COPY.en[key] || key;
 }
 
-type TeamUser = {
-  id?: string;
-  username?: string;
-  role?: string;
-  kind?: string;
-  disabled?: boolean;
-};
-
 type AuthMe = {
   team_mode?: boolean;
   user?: TeamUser;
@@ -71,47 +68,64 @@ export function teamFilesPath(): string {
   return tfState.path;
 }
 
-function pageLocation(): { pathname: string; replace: (url: string) => void } {
+function pageLocation(): { pathname: string; search?: string; replace: (url: string) => void } {
   if (typeof location !== "undefined") return location;
   return { pathname: "/", replace: () => undefined };
 }
 
-/** Inject contract DOM if F-13's shell has not painted it yet. Idempotent. */
+/**
+ * The login page, carrying this page as `?next=` so a session that expires
+ * under an open workbench comes back to where it was (TEAM-9). The login
+ * page decides whether `next` is a safe same-origin path before it goes there.
+ */
+export function loginUrl(): string {
+  const loc = pageLocation();
+  const here = (loc.pathname || "/") + (loc.search || "");
+  return here === "/" ? "/login" : "/login?next=" + encodeURIComponent(here);
+}
+
+/**
+ * The team modals. Idempotent.
+ *
+ * Only the modals: they are fixed overlays, so `<body>` is where they belong.
+ * The signed-in user, the admin entry and the Team files buttons used to be
+ * appended here too, which put them after the Shell in the page flow, under
+ * the dashboard, where nobody could see or click them. The Shell renders
+ * them now (`team-chip.tsx`).
+ */
 export function ensureTeamDom(): void {
   if (typeof document === "undefined") return;
-  if (!byId("team-user")) {
-    const chip = el("button", "outline-btn hidden");
-    chip.id = "team-user";
-    chip.title = "Signed in — click to sign out";
-    document.body.appendChild(chip);
-  }
-  if (!byId("team-admin")) {
-    const btn = el("button", "outline-btn hidden");
-    btn.id = "team-admin";
-    const ic = el("span", "ic");
-    paintIcon(ic, "users", 16);
-    btn.appendChild(ic);
-    btn.appendChild(el("span", null, "Team admin"));
-    document.body.appendChild(btn);
-  }
-  if (!byId("team-files-dash")) {
-    const btn = el("button", "outline-btn hidden");
-    btn.id = "team-files-dash";
-    btn.appendChild(el("span", null, "Team files"));
-    document.body.appendChild(btn);
-  }
-  if (!byId("team-files-btn")) {
-    const btn = el("button", "side-nav-item hidden");
-    btn.id = "team-files-btn";
-    btn.appendChild(el("span", null, "Team files"));
-    document.body.appendChild(btn);
-  }
   if (!byId("team-admin-modal")) {
     document.body.appendChild(buildAdminModal());
   }
   if (!byId("team-files-modal")) {
     document.body.appendChild(buildFilesModal());
   }
+}
+
+/**
+ * A modal's close control with its icon drawn here: these modals are built
+ * after `paintIcons()` ran, so a bare `icon-ghost` button stayed an empty,
+ * invisible square (TEAM-25).
+ */
+function closeButton(id: string): HTMLElement {
+  const close = el("button", "icon-ghost");
+  close.id = id;
+  close.setAttribute("type", "button");
+  close.setAttribute("aria-label", teamT("team.close"));
+  close.setAttribute("title", teamT("team.close"));
+  close.appendChild(iconEl("x", 16));
+  return close;
+}
+
+/** The admin modal's own words, again on each open: the language may have changed. */
+function labelAdminModal(): void {
+  const title = byId("team-admin-title");
+  if (title) title.textContent = teamT("team.admin.title");
+  const refresh = byId("team-admin-refresh");
+  if (refresh) refresh.textContent = teamT("team.admin.refresh");
+  const close = byId("team-admin-close");
+  if (close) close.setAttribute("aria-label", teamT("team.close"));
 }
 
 function buildAdminModal(): HTMLElement {
@@ -122,14 +136,12 @@ function buildAdminModal(): HTMLElement {
   modal.setAttribute("aria-labelledby", "team-admin-title");
   const box = el("div", "modal-box");
   const head = el("div", "modal-head");
-  const title = el("span", null, "Team admin");
+  const title = el("span", null, teamT("team.admin.title"));
   title.id = "team-admin-title";
   const actions = el("div", "modal-actions");
-  const refresh = el("button", "outline-btn small", "Refresh");
+  const refresh = el("button", "outline-btn small", teamT("team.admin.refresh"));
   refresh.id = "team-admin-refresh";
-  const close = el("button", "icon-ghost");
-  close.id = "team-admin-close";
-  close.setAttribute("aria-label", "Close");
+  const close = closeButton("team-admin-close");
   actions.appendChild(refresh);
   actions.appendChild(close);
   head.appendChild(title);
@@ -161,9 +173,7 @@ function buildFilesModal(): HTMLElement {
   input.id = "team-files-input";
   input.type = "file";
   input.style.display = "none";
-  const close = el("button", "icon-ghost");
-  close.id = "team-files-close";
-  close.setAttribute("aria-label", "Close");
+  const close = closeButton("team-files-close");
   actions.appendChild(upload);
   actions.appendChild(input);
   actions.appendChild(close);
@@ -190,34 +200,57 @@ export function fmtSize(n: number): string {
   return n + " B";
 }
 
-function applyIdentity(me: AuthMe | null): void {
-  if (!me || me.team_mode !== true || !me.user) return;
-  const chip = byId("team-user");
-  if (chip) {
-    chip.textContent =
-      (me.user.username || "") + (me.user.role === "admin" ? " (admin)" : "");
-    chip.classList.remove("hidden");
-    chip.onclick = () => {
-      if (!confirm("Sign out?")) return;
-      fetch(API + "/auth/logout", { method: "POST" })
-        .then(() => pageLocation().replace("/login"))
-        .catch(() => pageLocation().replace("/login"));
-    };
+/** What the signed-in user is called on screen: the display name when one is set. */
+export function teamUserName(user: TeamUser): string {
+  return String(user.display_name || user.username || "");
+}
+
+/** Ends the login session, then shows the login page whatever the server said. */
+export function signOut(): void {
+  const leave = () => pageLocation().replace("/login");
+  fetch(API + "/auth/logout", { method: "POST" }).then(leave, leave);
+}
+
+/**
+ * The user menu, as data. Who is signed in (never a button), then what that
+ * account may open: `Team admin` for an admin only, the account's own
+ * password and model keys for a person (not the CLI identity, which has
+ * neither, nor a replay-only guest, whose API is closed to both).
+ */
+export function teamMenuItems(user: TeamUser): MenuItem[] {
+  const head = el("div", "team-menu-head");
+  head.appendChild(el("div", "team-menu-name", teamUserName(user)));
+  // The login name is repeated only when a display name stands in for it above.
+  const login = user.display_name && user.username ? user.username + " · " : "";
+  head.appendChild(el("div", "team-menu-sub", login + teamRoleLabel(user.role)));
+  const own: MenuItem[] = [];
+  if (user.role === "admin" || user.kind === "service") {
+    own.push({ label: teamT("team.menu.admin"), icon: "users", onClick: () => openAdmin() });
   }
+  if (user.kind !== "service" && user.role !== "guest") {
+    own.push({ label: teamT("team.menu.password"), icon: "lock", onClick: () => openChangePassword() });
+    own.push({ label: teamT("team.menu.keys"), icon: "sparkles", onClick: () => openMyKeys() });
+  }
+  return [
+    { node: head },
+    { sep: true },
+    ...own,
+    ...(own.length ? [{ sep: true } as MenuItem] : []),
+    { label: teamT("team.menu.signOut"), icon: "arrow-left", onClick: () => signOut() },
+  ];
+}
+
+/** Opens the user menu under `anchor` (the chip the Shell renders). */
+export function openUserMenu(anchor: HTMLElement): void {
+  const user = teamUser.value;
+  if (!user) return;
+  void import("../sessions/chrome").then(({ openMenu }) => openMenu(anchor, teamMenuItems(user)));
 }
 
 function applyGovernance(me: AuthMe | null): void {
   if (!me || me.team_mode !== true || !me.user) return;
   if (me.user.role === "guest") {
     if (pageLocation().pathname === "/") pageLocation().replace("/replay");
-    return;
-  }
-  if (me.user.role === "admin" || me.user.kind === "service") {
-    const btn = byId("team-admin");
-    if (btn) {
-      btn.classList.remove("hidden");
-      btn.onclick = () => openAdmin();
-    }
   }
 }
 
@@ -226,11 +259,11 @@ export async function probeTeamAuth(): Promise<void> {
   try {
     const r = await fetch(API + "/auth/me");
     if (r.status === 401) {
-      pageLocation().replace("/login");
+      pageLocation().replace(loginUrl());
       return;
     }
     const me = r.ok ? ((await r.json()) as AuthMe) : null;
-    applyIdentity(me);
+    teamUser.value = me && me.team_mode === true && me.user ? me.user : null;
     applyGovernance(me);
   } catch {
     /* team mode off / network */
@@ -243,6 +276,10 @@ export function openTeamFilesPanel(): void {
 }
 
 export function openAdmin(): void {
+  labelAdminModal();
+  // A generated password from an earlier visit is not shown again.
+  adminStatus.text = "";
+  adminStatus.kind = "";
   openModalEl(byId("team-admin-modal"));
   void loadAdmin();
 }
@@ -251,14 +288,7 @@ function probeTeamFiles(): void {
   fetch(API + "/files")
     .then((r) => (r.ok ? r.json() : null))
     .then((d: { roots?: TeamFilesRoot[] } | null) => {
-      if (!d || !d.roots || !d.roots.length) return;
-      (["team-files-btn", "team-files-dash"] as const).forEach((id) => {
-        const b = byId(id);
-        if (b) {
-          b.classList.remove("hidden");
-          b.onclick = () => openTeamFilesPanel();
-        }
-      });
+      teamFilesAvailable.value = !!(d && d.roots && d.roots.length);
     })
     .catch(() => undefined);
 }
@@ -347,7 +377,7 @@ function renderTeamFiles(res: { ok: boolean; body: TeamFilesBody }): void {
     list.appendChild(row);
   });
   if (!(res.body.entries || []).length) {
-    const empty = el("div", "team-files-row", "(empty)");
+    const empty = el("div", "team-files-row", teamT("team.files.empty"));
     list.appendChild(empty);
   }
 }
@@ -381,10 +411,13 @@ function table(box: HTMLElement, headers: string[], rows: unknown[][]): void {
   });
   box.appendChild(t);
   if (!rows.length) {
-    const d = el("div", "team-admin-empty", "(none)");
+    const d = el("div", "team-admin-empty", teamT("team.admin.none"));
     box.appendChild(d);
   }
 }
+
+/** The users section's status line, kept across the repaint an action triggers. */
+const adminStatus: { text: string; kind: "ok" | "err" | "" } = { text: "", kind: "" };
 
 /**
  * Audit `ts` is epoch milliseconds (storage/team.py `_clock_ms`). As a string
@@ -403,7 +436,7 @@ function jget(path: string): Promise<unknown> {
 export async function loadAdmin(): Promise<void> {
   const body = byId("team-admin-body");
   if (!body) return;
-  body.textContent = "loading…";
+  body.textContent = teamT("team.loading");
   try {
     const res = await Promise.all([
       jget("/team/users"),
@@ -411,46 +444,64 @@ export async function loadAdmin(): Promise<void> {
       jget("/team/audit?limit=50"),
       jget("/team/invites"),
       jget("/team/quotas"),
+      // Only to put names beside project ids; the panel works without it.
+      jget("/projects").catch(() => null),
     ]);
     const users = ((res[0] as { users?: TeamUser[] } | null) || {}).users || [];
     const usage = ((res[1] as { usage?: Record<string, unknown>[] } | null) || {}).usage || [];
     const audit = ((res[2] as { audit?: Record<string, unknown>[] } | null) || {}).audit || [];
     const invites = ((res[3] as { invites?: Record<string, unknown>[] } | null) || {}).invites || [];
     const quotas = ((res[4] as { quotas?: Record<string, unknown>[] } | null) || {}).quotas || [];
+    const projects = ((res[5] as { projects?: Array<{ project_id?: string; name?: string }> } | null) || {}).projects || [];
     body.textContent = "";
-    const idName: Record<string, string> = {};
+    // TEAM-25: names, not internal ids, wherever a row points at a person or
+    // a project; the id stays when nothing better is known.
+    const byUserId: Record<string, TeamUser> = {};
     users.forEach((u) => {
-      if (u.id && u.username) idName[u.id] = u.username;
+      if (u.id) byUserId[u.id] = u;
     });
-    table(section(body, teamSectionTitle("users")), ["user", "role", "state", "id"],
-      users.map((u) => [u.username, u.role, u.disabled ? "disabled" : "active", u.id]));
-    table(section(body, teamSectionTitle("usage")), ["user", "project", "kind", "total", "events"],
+    const projectName: Record<string, string> = {};
+    projects.forEach((p) => {
+      if (p.project_id) projectName[p.project_id] = String(p.name || p.project_id);
+    });
+    const person = (id: unknown): string => userLabel(byUserId[String(id)], id);
+    const place = (id: unknown): string => (id == null || id === "" ? "" : projectName[String(id)] || String(id));
+    const col = (...keys: string[]): string[] => keys.map((key) => teamT("team.col." + key));
+    renderUsersSection(section(body, teamSectionTitle("users")), users, () => void loadAdmin(), adminStatus);
+    table(section(body, teamSectionTitle("usage")), col("user", "project", "kind", "total", "events"),
       usage.map((r) => [
-        idName[String(r.user_id)] || r.user_id,
-        r.project_id,
+        person(r.user_id),
+        place(r.project_id),
         r.kind,
         Math.round(Number(r.total) * 100) / 100,
         r.events,
       ]));
-    table(section(body, teamSectionTitle("quotas")), ["scope", "scope id", "kind", "limit", "window"],
-      quotas.map((r) => [r.scope, r.scope_id, r.kind, r.limit_amount, r.window]));
-    table(section(body, teamSectionTitle("invites")), ["prefix", "project", "by", "state"],
+    table(section(body, teamSectionTitle("quotas")), col("scope", "scopeId", "kind", "limit", "window"),
+      quotas.map((r) => [
+        r.scope,
+        r.scope === "user" ? person(r.scope_id) : r.scope === "project" ? place(r.scope_id) : r.scope_id,
+        r.kind,
+        r.limit_amount,
+        r.window,
+      ]));
+    table(section(body, teamSectionTitle("invites")), col("prefix", "project", "by", "state"),
       invites.map((r) => [
         r.token_prefix,
-        r.project_id,
+        place(r.project_id),
         r.created_by,
-        r.live ? "live" : (r.used_at ? "used/revoked" : "expired"),
+        teamT(r.live ? "team.invite.live" : (r.used_at ? "team.invite.used" : "team.invite.expired")),
       ]));
-    table(section(body, teamSectionTitle("audit")), ["when", "actor", "action", "target"],
+    table(section(body, teamSectionTitle("audit")), col("when", "actor", "action", "target"),
       audit.map((r) => [
         auditWhen(r.ts),
         r.actor,
-        r.action,
-        r.target || r.user_id || "",
+        auditActionLabel(r.action),
+        r.target ? (byUserId[String(r.target)] ? person(r.target) : r.target)
+          : r.user_id ? person(r.user_id) : place(r.project_id),
       ]));
   } catch {
     const failed = byId("team-admin-body");
-    if (failed) failed.textContent = "failed to load";
+    if (failed) failed.textContent = teamT("team.admin.failed");
   }
 }
 
@@ -485,14 +536,17 @@ function bindTeamChrome(): void {
       fetch(url, { method: "POST", body: file })
         .then((r) => {
           if (!r.ok) {
-            return r.json().then((b: { error?: string }) => {
-              alert((b && b.error) || "upload failed (" + r.status + ")");
-            });
+            const failed = (detail?: string) =>
+              void showNotice(teamT("team.files.uploadFailed", detail || "HTTP " + r.status));
+            return r.json().then(
+              (b: { error?: string }) => failed(b && b.error),
+              () => failed(),
+            );
           }
           loadTeamFiles(tfState.path);
         })
         .catch(() => {
-          alert("upload failed");
+          void showNotice(teamT("team.files.uploadUnreachable"));
         });
     };
   }

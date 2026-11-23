@@ -406,7 +406,7 @@ class DoubaoSearchService:
     def _check_network_policy() -> None:
         if not webtools.network_allowed():
             raise webtools.NetworkDisabled(
-                "networking is disabled (enable it in Customize \u2192 Network / set "
+                "networking is disabled (enable it in Settings \u2192 Network / set "
                 "OPENAI4S_ALLOW_NETWORK=1)"
             )
         egress.check_url(ENDPOINT)

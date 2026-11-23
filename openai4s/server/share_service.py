@@ -404,6 +404,9 @@ class ShareService:
             "share_id": row["share_id"],
             "url": self._public_url(str(row["share_id"])),
             "status": row["status"],
+            # The session a share publishes: without it `share list` could
+            # name only the share, not what went out (CLI-36).
+            "root_frame_id": row.get("root_frame_id"),
             "title": row.get("title"),
             "snapshot_id": row.get("snapshot_id"),
             "bundle_sha256": row.get("bundle_sha256"),

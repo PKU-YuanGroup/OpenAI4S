@@ -1001,6 +1001,7 @@ def test_gateway_config_and_dedicated_search_keep_the_strict_product_gate(
             {
                 "key_configured": False,
                 "ark_key_reused": False,
+                "model_key_available": False,
                 "provider": "doubao-search",
                 "primary": True,
             },
@@ -1014,6 +1015,7 @@ def test_gateway_config_and_dedicated_search_keep_the_strict_product_gate(
             "ok": True,
             "key_configured": True,
             "ark_key_reused": False,
+            "model_key_available": False,
             "provider": "doubao-search",
             "primary": True,
         }

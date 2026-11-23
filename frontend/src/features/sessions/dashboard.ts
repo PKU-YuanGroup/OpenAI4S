@@ -9,7 +9,8 @@ import { unsub } from "../ws/connect";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys, reportFailure } from "./chrome";
-import { dashCopy, displayProjectName, sessionCopy } from "./copy";
+import { dashCopy, displayProjectName, lastTurnOutcome, sessionCopy } from "./copy";
+import { iconEl } from "./icon";
 import { $, ago, el, navURL, syncMobileChrome } from "./dom";
 import {
   canLoadMoreProjects,
@@ -493,8 +494,14 @@ export function renderDashRecent(frames: SessionLike[]): void {
       b.appendChild(el("span", null, t("dash.badge.running")));
       row.appendChild(b);
     } else {
-      if (ended === "failed") {
-        row.appendChild(el("span", "d-status failed", dashCopy("dash.status.failed")));
+      // SYNC-28: failed, stopped and blocked each say so, with an icon.
+      const outcome = lastTurnOutcome(f.status);
+      if (outcome) {
+        const tag = el("span", "d-status " + outcome.kind);
+        tag.appendChild(iconEl(outcome.icon, 11));
+        tag.appendChild(el("span", null, outcome.label));
+        tag.title = outcome.tip;
+        row.appendChild(tag);
       }
       row.appendChild(el("div", "d-meta", ago(f.updated_at)));
     }

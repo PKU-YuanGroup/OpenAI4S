@@ -11,9 +11,10 @@ import { publicText } from "../scrub/scrub";
 import { cycleTheme, themeIsDark } from "../theme/theme";
 import { LANG, t } from "../../i18n/runtime";
 import { skillsCatalog } from "../../stores/customize";
-import { currentId } from "../../stores/session";
+import { currentId, projects } from "../../stores/session";
+import { displayProjectName } from "../sessions/copy";
 import { api } from "./api";
-import { $, el, grow, icon } from "./dom";
+import { $, agoMs, el, grow, icon } from "./dom";
 import { hostFn, invokeHost, isReady } from "./host";
 import { anyModalOpen } from "./modal";
 import { loadSkillsCatalog } from "../autocomplete/catalog";
@@ -66,6 +67,8 @@ export type PaletteState = {
   gen: number;
   /** The latest query's skills + /search read, while it is in flight. */
   pending: Promise<void> | null;
+  /** SYNC-9: what had focus when the palette opened; Escape and the scrim give it back. */
+  returnFocus?: Element | null;
 };
 
 /** app.js:10940 */
@@ -92,7 +95,26 @@ type SessionHit = {
   /** Where the query was found (`title`, `message`, `code`, `output`) and the text around it. */
   match?: string;
   snippet?: string | null;
+  /** Epoch ms the session was last active (M-47). */
+  updated_at?: number | null;
 };
+
+/**
+ * M-47: "Growth assay · KM analysis · 3d" -- the project, the session and how
+ * long ago, so a hit in a project's imported copy no longer looks exactly like
+ * the original. Each part is left out when unknown.
+ */
+export function hitPlace(projectId: string | null | undefined, sessionName?: string | null, updatedAt?: unknown): string {
+  const parts: string[] = [];
+  const rows = (projects.value as Array<{ project_id?: string; id?: string; name?: string }>) || [];
+  const row = projectId ? rows.find((p) => (p.project_id || p.id) === projectId) : undefined;
+  const project = row ? displayProjectName(row) : "";
+  if (project) parts.push(publicText(project, 60));
+  if (sessionName) parts.push(publicText(sessionName, 60));
+  const at = typeof updatedAt === "number" && updatedAt > 0 ? agoMs(updatedAt) : "";
+  if (at) parts.push(at);
+  return parts.join(" · ");
+}
 
 /** "Cell output · …B1 22.0 OVRFLW event" for a hit inside a session's content. */
 function sessionHitSub(hit: SessionHit): string | undefined {
@@ -110,6 +132,9 @@ type ArtifactHit = {
   project_id?: string | null;
   version_id?: string | null;
   latest_version_id?: string | null;
+  /** The session the file belongs to, and when it last changed (M-47). */
+  session_name?: string | null;
+  updated_at?: number | null;
 };
 type DataproHit = {
   artifact_id?: string;
@@ -252,7 +277,8 @@ export function palActions(): PaletteItem[] {
     },
     {
       group: t("palette.group.commands"),
-      label: t("palette.action.customize"),
+      // M-35: the sidebar entry and the gear open one modal, called Settings.
+      label: t("common.settings"),
       icon: "sliders",
       run: () => {
         invokeHost(hostFn("openCust"));
@@ -279,6 +305,7 @@ export function palActions(): PaletteItem[] {
 export function openPalette(): void {
   if (PAL.open) return;
   PAL.open = true;
+  PAL.returnFocus = typeof document !== "undefined" ? document.activeElement : null;
   const ov = el("div", "palette-ov");
   const box = el("div", "palette");
   const inp = el("input", "palette-input") as HTMLInputElement;
@@ -292,7 +319,7 @@ export function openPalette(): void {
   PAL.el = ov;
   PAL.listEl = list;
   ov.onclick = (e) => {
-    if (e.target === ov) closePalette();
+    if (e.target === ov) dismissPalette();
   };
   inp.addEventListener("input", () => {
     void palSearch(inp.value);
@@ -301,7 +328,7 @@ export function openPalette(): void {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       e.preventDefault();
-      closePalette();
+      dismissPalette();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
       PAL.idx = Math.min(PAL.idx + 1, PAL.items.length - 1);
@@ -341,6 +368,17 @@ export function closePalette(): void {
   PAL.items = [];
   PAL.idx = 0;
   PAL.pending = null;
+  PAL.returnFocus = null;
+}
+
+/**
+ * SYNC-9: Escape or the scrim closes the palette without picking anything, so
+ * focus goes back where it was (the composer, a button) instead of <body>.
+ */
+export function dismissPalette(): void {
+  const back = PAL.returnFocus as HTMLElement | null | undefined;
+  closePalette();
+  if (back && typeof back.focus === "function" && back.isConnected) back.focus();
 }
 
 export function resetPalette(): void {
@@ -421,7 +459,7 @@ async function palSearchRemote(
         items.push({
           group: t("conv.title.default"),
           label: s.name || s.task_summary || t("conv.title.default"),
-          sub: sessionHitSub(s),
+          sub: [hitPlace(s.project_id, null, s.updated_at), sessionHitSub(s)].filter(Boolean).join(" · ") || undefined,
           mark: q,
           icon: "message-square",
           run: () => {
@@ -434,7 +472,7 @@ async function palSearchRemote(
         items.push({
           group: t("palette.group.artifacts"),
           label: a.filename || "",
-          sub: a.content_type || "",
+          sub: [hitPlace(a.project_id, a.session_name, a.updated_at), a.content_type || ""].filter(Boolean).join(" · "),
           icon: "file",
           run: () => openPaletteArtifact(a),
         }),

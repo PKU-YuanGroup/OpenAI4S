@@ -36,6 +36,7 @@ import {
   stepNetworkLabel,
   stepNetworkMeta,
 } from "./skill-network";
+import { reviewFailureText } from "./review-copy";
 import { stepSummaryText, stepTitleText } from "./step-title";
 
 export type Step = {
@@ -400,6 +401,13 @@ export function stepBody(step: Step): HTMLElement {
     if (reason) box.appendChild(el("div", "s-note", reason));
     return box;
   }
+  // M-75: a review that ended without a verdict says why and what to do,
+  // in the UI language, above the provider's own words.
+  if (k === "review" && out.verdict === "unavailable") {
+    box.appendChild(el("div", "review-detail", reviewFailureText(out.reason)));
+    if (out.error) box.appendChild(clipPre(out.error, "d-del"));
+    return box;
+  }
   if (out.error) {
     box.appendChild(clipPre(out.error, "d-del"));
     return box;
@@ -607,53 +615,45 @@ export function stepBody(step: Step): HTMLElement {
         : arts.map((a) => a.filename)
     ).filter((fn) => !!fn && !shown.has(fn)) as unknown[];
     const env = inp.environment || "python";
-    const kvRow = (label: string, text: unknown): HTMLElement => {
-      const r = el("div", "s-kv");
-      r.appendChild(el("span", "s-k", label));
-      r.appendChild(el("div", "s-v", text == null ? "" : String(text)));
-      return r;
-    };
-    const kvNodeRow = (label: string, node: HTMLElement): HTMLElement => {
-      const r = el("div", "s-kv");
-      r.appendChild(el("span", "s-k", label));
-      const v = el("div", "s-v");
-      v.appendChild(node);
-      r.appendChild(v);
-      return r;
-    };
-    const fl = el("div", "s-files");
-    fl.appendChild(el("span", "s-brk", "["));
-    files.forEach((fn, i) => {
-      const meta = arts.find((a) => a.filename === fn);
-      const line = el("div", "s-frow");
-      const nm = el(
-        "span",
-        "s-fn" + (meta && meta.artifact_id ? " clk" : ""),
-        '"' + String(fn) + '"',
-      );
-      if (meta && meta.artifact_id) {
-        nm.title = t("step.artifact.openArtifact");
-        nm.onclick = () => openArt(meta);
-      }
-      line.appendChild(nm);
-      if (i < files.length - 1) line.appendChild(el("span", "s-comma", ","));
-      fl.appendChild(line);
-    });
-    fl.appendChild(el("span", "s-brk", "]"));
-    if (files.length) box.appendChild(kvNodeRow("files", fl));
-    box.appendChild(kvRow("environment", env));
+    // M-50: the files by name and size, each opening its viewer. The card
+    // used to read as a data dump -- `files ["a", "b"]`, `environment python`
+    // and the raw save receipt -- and the receipt named the file's absolute
+    // path on this computer.
+    const sizeOf = (meta: Record<string, unknown> | undefined): string =>
+      meta && typeof meta.size_bytes === "number" ? " · " + bytes(meta.size_bytes) : "";
+    if (files.length) {
+      const fl = el("div", "s-files");
+      files.forEach((fn) => {
+        const meta = arts.find((a) => a.filename === fn);
+        const line = el("div", "s-frow");
+        const nm = el("span", "s-fn" + (meta && meta.artifact_id ? " clk" : ""), String(fn));
+        if (meta && meta.artifact_id) {
+          nm.title = t("step.artifact.openArtifact");
+          nm.onclick = () => openArt(meta);
+        }
+        line.appendChild(nm);
+        const size = sizeOf(meta);
+        if (size) line.appendChild(el("span", "s-fsize", size));
+        fl.appendChild(line);
+      });
+      box.appendChild(fl);
+    }
     if (arts.length && (arts[0]?.artifact_id || arts[0]?.checksum)) {
+      // The receipt for whoever needs it, behind its own toggle; never the
+      // local storage path.
+      const receipt = arts.map((a) => {
+        const { storage_path: _local, ...rest } = a;
+        return rest;
+      });
       const wrap = el("div", "s-out");
-      const tgl = el("button", "s-out-tgl", t("step.artifact.showOutput"));
+      const tgl = el("button", "s-out-tgl", sendCopy("technicalDetails"));
       const json = el("div", "s-json");
-      json.textContent = JSON.stringify({ artifacts: arts }, null, 2);
+      json.textContent = JSON.stringify({ environment: env, artifacts: receipt }, null, 2);
       json.style.display = "none";
       tgl.onclick = () => {
         const show = json.style.display === "none";
         json.style.display = show ? "block" : "none";
-        tgl.textContent = show
-          ? t("step.artifact.hideOutput")
-          : t("step.artifact.showOutput");
+        tgl.textContent = sendCopy(show ? "hideTechnicalDetails" : "technicalDetails");
       };
       wrap.appendChild(tgl);
       wrap.appendChild(json);
@@ -676,6 +676,7 @@ export function stepBody(step: Step): HTMLElement {
         im.loading = "lazy";
         fig.appendChild(im);
         if (a.filename) fig.appendChild(el("figcaption", "s-fig-cap", String(a.filename)));
+        if (typeof a.size_bytes === "number") fig.title += " · " + bytes(a.size_bytes);
         fig.onclick = () => openArt(a);
         figs.appendChild(fig);
       });
@@ -703,6 +704,34 @@ function paintStepBody(handle: StepHandle): void {
   handle.bodyStale = false;
 }
 
+/**
+ * The step's one-line summary. A Saving step stored before its summary was
+ * (SYNC-14) gets the count the live card showed, from the files it saved.
+ */
+function stepSummary(step: Step): string {
+  if (step.summary != null) return String(step.summary);
+  const saved = rec(step.output).artifacts;
+  if (step.kind !== "artifact" || !Array.isArray(saved) || !saved.length) return "";
+  return saved.length + (saved.length === 1 ? " artifact" : " artifacts");
+}
+
+/**
+ * SCI-22: a delegation is titled by its task ("Sub-agent · GC content of
+ * ATGC…"). Two parallel sub-agents of one kind were both "Delegating to
+ * GENERAL", and only expanding them told them apart.
+ */
+function delegateTitle(step: Step): string {
+  const request = rec(step.input).request;
+  if (step.kind !== "delegate" || typeof request !== "string" || !request.trim()) return "";
+  const flat = request.replace(/\s+/g, " ").trim();
+  const end = flat.search(/[.!?。！？](?:\s|$)/);
+  return sendCopy("subagentTask", publicText(end > 0 ? flat.slice(0, end + 1) : flat, 80));
+}
+
+function stepLabel(step: Step): string {
+  return delegateTitle(step) || stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+}
+
 function stepOutcome(step: Step) {
   const status = step.status || "running";
   // Refused by a loaded Skill's network limit: not a crash, and not "0 results".
@@ -728,11 +757,11 @@ function paintStepWords(handle: StepHandle): void {
         : ""
       : stepNetworkMeta(step) ||
         (declined ? declinedMeta(declined) : "") ||
-        (step.summary != null ? stepSummaryText(String(step.summary)) : "") ||
+        (stepSummary(step) ? stepSummaryText(stepSummary(step)) : "") ||
         (step.output && rec(step.output).error ? t("step.status.failed") : "");
   const label = card.querySelector(".s-lbl");
   // A loaded Skill's network limit: the server words these in English.
-  if (label) label.textContent = stepNetworkLabel(step) || stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+  if (label) label.textContent = stepNetworkLabel(step) || stepLabel(step);
 }
 
 /** Every step card on screen, in the language just applied. */
@@ -742,6 +771,7 @@ export function relabelStepCards(): void {
   for (const handle of Object.values(registry)) {
     if (!handle.card.isConnected) continue;
     paintStepWords(handle);
+    if (handle.step.kind === "delegate") paintChildCount(handle.card);
     // An open body is redrawn now; a closed one when it is next opened.
     if (handle.card.classList.contains("open")) paintStepBody(handle);
     else handle.bodyStale = true;
@@ -751,9 +781,13 @@ export function relabelStepCards(): void {
 export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
   const { card, ic, step } = handle;
   const { status, blocked, declined } = stepOutcome(step);
+  // SCI-22: a sub-agent's own failed attempt (a probe of a path that is not
+  // there) is amber, not the red of a failed turn: the sub-agent carried on,
+  // and its delegation card says how it ended.
+  const childSlip = status === "error" && !blocked && !declined && card.classList.contains("step-child");
   card.classList.toggle("running", status === "running");
-  card.classList.toggle("err", status === "error" && !blocked && !declined);
-  card.classList.toggle("warn", status === "warning" || blocked);
+  card.classList.toggle("err", status === "error" && !blocked && !declined && !childSlip);
+  card.classList.toggle("warn", status === "warning" || blocked || childSlip);
   card.classList.toggle("declined", !!declined);
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
@@ -766,7 +800,9 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
             ? "stop"
             : "lock"
           : status === "error"
-            ? "x"
+            ? childSlip
+              ? "alert-triangle"
+              : "x"
             : status === "warning"
               ? "alert-triangle"
               : stepIcon(step.kind),
@@ -776,7 +812,9 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
   // I18N-1: the host words titles in English; an update can retitle a card.
   paintStepWords(handle);
   card.classList.toggle("s-net-limited", marksNetworkLimit(step));
-  if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") {
+  // A Saving step stays collapsed (M-50): its title and "N artifacts" say what
+  // happened; the files, sizes and figures are one click away.
+  if (step.kind === "plan" && status !== "running") {
     card.classList.add("open");
   }
   if (step.kind === "review") {
@@ -812,13 +850,10 @@ export function buildStepCard(step: Step, paint: StepPaint = {}): StepHandle {
   const ic = el("span", "s-ic");
   h.appendChild(ic);
   if (hasDlg && Object.keys(dlg).length) {
-    h.appendChild(
-      el(
-        "span",
-        "s-child-tag",
-        publicText(dlg.child_name || shortRuntime(dlg.delegation_child_id), 60),
-      ),
-    );
+    // Which sub-agent: two of one kind ran side by side under one name.
+    const id = dlg.delegation_child_id ? shortRuntime(dlg.delegation_child_id) : "";
+    const name = dlg.child_name ? publicText(dlg.child_name, 60) : "";
+    h.appendChild(el("span", "s-child-tag", name && id ? name + " · " + id : name || id));
   }
   // `applyStepState` below writes its words (`paintStepWords`).
   h.appendChild(el("span", "s-lbl", ""));
@@ -840,6 +875,99 @@ export function buildStepCard(step: Step, paint: StepPaint = {}): StepHandle {
 }
 
 const LAZY_BODY: StepPaint = { lazyBody: true };
+
+/**
+ * SCI-22: the delegation card a sub-agent's step belongs under. Its steps
+ * (each `Reading x failed …` probe included) used to land in the main
+ * conversation between the parent's prose, two sub-agents' interleaved. The
+ * server names the card on every relayed step (`input.delegation
+ * .parent_step_id`, live and in the stored row), so the stream and a reload
+ * nest the same way. Null when that card is not on screen: the step stays flat.
+ */
+function delegationParent(step: Step): StepHandle | null {
+  const parentId = rec(rec(step.input).delegation).parent_step_id;
+  if (typeof parentId !== "string" || !parentId || parentId === step.step_id) return null;
+  const parent = stepRegistry()[parentId];
+  return parent && parent.step.kind === "delegate" ? parent : null;
+}
+
+/** Put a sub-agent's step inside its delegation card (shown when the card is open). */
+function nestUnderDelegation(parent: StepHandle, card: HTMLElement): void {
+  nestInStep(parent, card);
+  paintChildCount(parent.card);
+}
+
+function nestInStep(parent: StepHandle, card: HTMLElement): void {
+  let box = ownChild(parent.card, "s-children");
+  if (!box) {
+    box = el("div", "s-children");
+    parent.card.appendChild(box);
+  }
+  box.appendChild(card);
+}
+
+/**
+ * SCI-11: one download left three rows -- the download, its approval ("✓
+ * Allowed") and "Saving 1crn.pdb · 1 artifact". The file it saved is shown
+ * inside the download's card when that download is the step just before the
+ * Saving step and wrote that file; anything else is left as it was.
+ */
+function downloadThatSaved(step: Step): StepHandle | null {
+  if (step.kind !== "artifact") return null;
+  const files = rec(step.input).files;
+  if (!Array.isArray(files) || !files.length) return null;
+  const previous = Object.values(stepRegistry()).pop();
+  if (!previous || previous.step.kind !== "fetch") return null;
+  const saved = baseName(String(rec(previous.step.input).path || ""));
+  return saved && files.map(String).includes(saved) ? previous : null;
+}
+
+/**
+ * SCI-11: an allowed download's approval card goes inside the card of the
+ * download it allowed (same address), so the decision stays one click away
+ * and the conversation shows the download once. False when no such card is
+ * on screen: the approval stays where it is.
+ */
+export function foldDownloadDecision(card: HTMLElement, request: { tool?: unknown; input?: unknown }): boolean {
+  if (request.tool !== "web_download") return false;
+  const url = rec(request.input).url;
+  if (typeof url !== "string" || !url) return false;
+  const download = Object.values(stepRegistry())
+    .reverse()
+    .find((handle) => handle.step.kind === "fetch" && rec(handle.step.input).url === url);
+  if (!download) return false;
+  nestInStep(download, card);
+  // The decision came before what the download saved, whichever event this
+  // page saw first: a reload paints them in that order too.
+  const box = card.parentElement;
+  if (box) for (const kid of Array.from(box.children) as HTMLElement[]) if (kid !== card) box.appendChild(kid);
+  return true;
+}
+
+function ownChild(node: HTMLElement, cls: string): HTMLElement | undefined {
+  return (Array.from(node.children) as HTMLElement[]).find((kid) => kid.classList.contains(cls));
+}
+
+/** "3 steps inside" on a delegation card's head, beside its chevron. */
+function paintChildCount(card: HTMLElement): void {
+  const box = ownChild(card, "s-children");
+  const head = ownChild(card, "s-head");
+  if (!box || !head) return;
+  const count = (Array.from(box.children) as HTMLElement[]).filter((kid) => kid.classList.contains("step")).length;
+  let badge = ownChild(head, "s-child-count");
+  if (!badge) {
+    badge = el("span", "s-child-count");
+    head.appendChild(badge);
+    // The chevron stays last.
+    const chev = ownChild(head, "s-chev");
+    if (chev) head.appendChild(chev);
+  }
+  badge.textContent = count === 1 ? sendCopy("subagentStep") : sendCopy("subagentSteps", String(count));
+}
+
+function isNested(card: HTMLElement): boolean {
+  return !!card.parentElement && card.parentElement.classList.contains("s-children");
+}
 
 function stepRegistry(): Record<string, StepHandle> {
   let els = stepEls.value as Record<string, StepHandle> | null;
@@ -893,8 +1021,11 @@ export function addLiveStep(m: Record<string, unknown>): void {
     applyStepState(existing, LAZY_BODY);
     // A reopened running session rendered this stored step from REST before
     // the turn's replay reached its `step` event: it belongs here, between
-    // the prose before and after it, as it was shown live.
-    if (adoptIntoLiveStream(existing.card)) demoteToolCard(liveStream.value as DemotableStream);
+    // the prose before and after it, as it was shown live. A sub-agent's step
+    // stays in its delegation card, which is adopted with it.
+    if (!isNested(existing.card) && adoptIntoLiveStream(existing.card)) {
+      demoteToolCard(liveStream.value as DemotableStream);
+    }
     down();
     return;
   }
@@ -911,8 +1042,18 @@ export function addLiveStep(m: Record<string, unknown>): void {
     down();
     return;
   }
+  // Read before this step is registered: "the step just before" is not itself.
+  const delegation = delegationParent(step);
+  const download = delegation ? null : downloadThatSaved(step);
   const handle = buildStepCard(step, LAZY_BODY);
   if (m.step_id) stepRegistry()[String(m.step_id)] = handle;
+  if (delegation || download) {
+    if (delegation) nestUnderDelegation(delegation, handle.card);
+    else if (download) nestInStep(download, handle.card);
+    liveStream.value = st;
+    down();
+    return;
+  }
   placeInLiveStream(handle.card, st);
   demoteToolCard(st);
   liveStream.value = st;
@@ -935,9 +1076,20 @@ export function renderStoredStep(s: Step, target?: ParentNode | null): HTMLEleme
   // The history paint names the turn its card joins (`messages/list.ts`).
   const merged = mergePlanStep((target as { turn?: Element | null } | null | undefined)?.turn, s);
   if (merged) return merged.card;
+  const delegation = delegationParent(s);
+  const download = delegation ? null : downloadThatSaved(s);
   const handle = buildStepCard(s, LAZY_BODY);
   if (s.step_id) stepRegistry()[String(s.step_id)] = handle;
   handle.card.dataset.ts = String(s.created_at || 0);
+  // As the stream nested it (SCI-22, SCI-11).
+  if (delegation) {
+    nestUnderDelegation(delegation, handle.card);
+    return handle.card;
+  }
+  if (download) {
+    nestInStep(download, handle.card);
+    return handle.card;
+  }
   (target || (typeof document !== "undefined" ? document.getElementById("messages") : null))?.appendChild(
     handle.card,
   );

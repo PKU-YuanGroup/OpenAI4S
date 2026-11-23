@@ -5,7 +5,9 @@ import { beginNavigation, resetSessionDirectory } from "../sessions/navigation";
  * Recovery is GET-only and reports messages, steps and run state separately.
  */
 
+import { effect, untracked } from "@preact/signals";
 import { isReady } from "../../compat/stub";
+import { LANG, onLanguageChange } from "../../i18n/runtime";
 import { historyT as t } from "./copy";
 import { _tbl, dockArtifact, _projArtFor, _editing } from "../../stores/artifacts";
 import {
@@ -115,15 +117,17 @@ import {
   cancelFramedRender,
   chatStep,
   interleaveHistory,
+  lastStoredTurnKey,
   renderEmptySession,
   renderMissingSession,
   scheduleFramedRender,
   type StoredMessage,
 } from "./list";
 import { ApiError } from "../sessions/api";
+import { chatCells, type StoredCell } from "./cellCard";
 import { down, updateJumpPill } from "./scroll";
 import { flushRender, type LiveStream } from "./stream";
-import { notePassingHint } from "./turnStatus";
+import { noteResumingHint } from "./turnStatus";
 
 function callLane(name: string, ...args: unknown[]): unknown {
   const fn = (globalThis as Record<string, unknown>)[name];
@@ -252,6 +256,16 @@ async function fetchApprovals(fid: string): Promise<Array<Record<string, unknown
   const rows = recordRows(await apiGet(`/frames/${encodeURIComponent(fid)}/approvals`), "approvals");
   return rows.filter((row) => typeof row.decision_id === "string" && !!row.decision_id);
 }
+/**
+ * The session's Cells, for their cards in the conversation (M-69). Optional
+ * history like the approvals: without them the transcript is still complete
+ * prose and steps, as it was before the cards were restored.
+ */
+async function fetchCells(fid: string): Promise<StoredCell[]> {
+  const raw = await apiGet(`/frames/${encodeURIComponent(fid)}/execution-log`);
+  const entries = raw && typeof raw === "object" ? (raw as { entries?: unknown }).entries : null;
+  return chatCells(entries);
+}
 async function fetchRunState(fid: string): Promise<{ running: boolean; status?: string }> {
   const raw = await apiGet(`/frames/${encodeURIComponent(fid)}/status`);
   if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
@@ -298,11 +312,12 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
   // first, then fetch a fresh transcript after the authoritative stopped
   // response; a parallel transcript could still precede the final write.
   const historyReady = streamAtRead ? runStateRead.then(() => {}, () => {}) : null;
-  const [page, steps, runState, approvals] = await Promise.allSettled([
+  const [page, steps, runState, approvals, cellRead] = await Promise.allSettled([
     historyReady ? historyReady.then(() => fetchRecentMessages(fid, MESSAGE_PAGE_SIZE)) : fetchRecentMessages(fid, MESSAGE_PAGE_SIZE),
     historyReady ? historyReady.then(() => fetchSteps(fid)) : fetchSteps(fid),
     runStateRead,
     historyReady ? historyReady.then(() => fetchApprovals(fid)) : fetchApprovals(fid),
+    historyReady ? historyReady.then(() => fetchCells(fid)) : fetchCells(fid),
   ]);
   if (!current(fid, gen)) return obsolete();
   const result = {
@@ -349,13 +364,14 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
     const hasEarlier = prefix.length ? msgHasEarlier.value : !!page.value.has_earlier;
     const stepRows = steps.status === "fulfilled" ? steps.value : cached?.steps || [];
     const approvalRows = approvals.status === "fulfilled" ? approvals.value : cached?.approvals || [];
+    const cellRows = cellRead.status === "fulfilled" ? cellRead.value : cached?.cells || [];
     const chatSteps = stepRows.filter(chatStep);
     const stage = typeof document !== "undefined" ? document.createDocumentFragment() : null;
     const host = messagesHost();
     const stagedSteps: Record<string, unknown> = Object.create(null);
     const stagedPerms: Record<string, unknown> = Object.create(null);
     await new Promise<void>((resolve, reject) => {
-      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], chatSteps, approvalRows), {
+      scheduleFramedRender(interleaveHistory(messages as StoredMessage[], chatSteps, approvalRows, cellRows), {
         host: stage,
         stillCurrent: unchanged,
         onCancel: resolve,
@@ -384,16 +400,20 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
         // tile strips, plan cards and other transcript-hosted UI keep their
         // nodes: the GET-only paths (turn end, replay gap, Retry) never
         // repaint them, unlike a full openConversation.
-        const keep = (host.children ? Array.from(host.children) : []).filter((node) =>
+        // A message still waiting in the queue is not stored yet, so no
+        // history read can draw it again (timeline/queue.ts draws it).
+        const waiting = (node: Element): boolean =>
+          !!node.classList?.contains("queued") && !node.classList?.contains("cancelled");
+        const keep = (host.children ? Array.from(host.children) : []).filter((node) => waiting(node) || (
           !node.classList?.contains("msg") && !node.classList?.contains("step") &&
           !node.classList?.contains("perm-card") &&
           node.id !== "msgs-earlier" && !node.classList?.contains("empty-session") &&
-          node !== (streamAtRead as LiveStream | null)?.wrap);
+          node !== (streamAtRead as LiveStream | null)?.wrap));
         host.replaceChildren(stage, ...keep);
       }
       stepEls.value = stagedSteps;
       permCards.value = stagedPerms;
-      historyContent.value = { fid, messages, steps: stepRows, approvals: approvalRows };
+      historyContent.value = { fid, messages, steps: stepRows, approvals: approvalRows, cells: cellRows };
       msgCursor.value = earlierCursor;
       msgHasEarlier.value = hasEarlier;
       callLane("paintEarlierControl");
@@ -429,8 +449,9 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       const btn = typeof document !== "undefined" && document.getElementById("cancel-btn");
       if (btn) btn.classList.remove("hidden");
       hint(t("conv.resuming.hint"), false, true);
-      // True for a moment only: the status row takes over (turnStatus.ts).
-      notePassingHint();
+      // True for a moment only: the stream's first event, or the status
+      // row, takes over (turnStatus.ts).
+      noteResumingHint();
       resumeWatch(fid, gen);
     } else {
       closeTurnTicket(); hideCancel();
@@ -470,6 +491,30 @@ let idleRetries: { fid: string; gen: number; left: number } | null = null;
 const IDLE_RETRIES = 2;
 
 const idle = (): boolean => !liveStream.value && historyUnconfirmed.value === 0 && !running.value;
+
+/**
+ * SYNC-13: a turn whose live prose is not what was stored is shown as a reload
+ * would show it. Text streamed but never stored (a retry notice, a sentence cut
+ * by a Stop) stayed on screen until the next reload. At the turn's end the
+ * newest page is read, and only when the stored turn's prose differs from what
+ * streamed is the transcript re-read (one atomic swap, the reader's scroll
+ * position kept, as every GET-only re-read is). A turn that started meanwhile
+ * owns the screen, and nothing is repainted.
+ */
+export async function reconcileFinishedTurn(fid: string, gen: number, liveKey: string): Promise<boolean> {
+  if (!liveKey || !current(fid, gen) || !idle()) return false;
+  let page: Awaited<ReturnType<typeof fetchRecentMessages>>;
+  try {
+    page = await fetchRecentMessages(fid, MESSAGE_PAGE_SIZE);
+  } catch {
+    return false;
+  }
+  if (!current(fid, gen) || !idle()) return false;
+  const stored = lastStoredTurnKey(uniqueMessages(page.messages) as StoredMessage[]);
+  if (stored === null || stored === liveKey) return false;
+  await recoverConversation(fid, gen);
+  return true;
+}
 
 /** One terminal event can request one fresh read after an in-flight GET settles. */
 export function alignHistoryAfterTurn(fid: string, gen = _openGen.value): void {
@@ -515,6 +560,46 @@ export function recoverConversation(fid: string, gen = _openGen.value): Promise<
     }
   });
   return promise;
+}
+
+let transcriptLanguage: (() => void) | null = null;
+
+/**
+ * SYNC-20: a language switch repaints the open conversation from its stored
+ * history. The sidebar, composer and menus followed at once, but every card,
+ * status line and button the transcript had drawn ("Reading … · 201 lines",
+ * "Stopped by user", "Branch from this question", Continue, the action row)
+ * kept the old language until a reload -- which is exactly this read. A turn
+ * that is running is repainted when it ends: its live cards are not in the
+ * stored history yet. Idempotent; returns the unbinding.
+ */
+export function bindTranscriptLanguage(): () => void {
+  if (transcriptLanguage) return transcriptLanguage;
+  let painted = LANG;
+  let pending: string | null = null;
+  const repaint = (fid: string): void => {
+    if (currentId.value === fid && openedFrameId.value === fid) void recoverConversation(fid);
+  };
+  const stopHook = onLanguageChange((lang) => {
+    if (lang === painted) return;
+    painted = lang;
+    const fid = currentId.value;
+    if (!fid || openedFrameId.value !== fid) return;
+    if (running.value) pending = fid;
+    else repaint(fid);
+  });
+  const stopEffect = effect(() => {
+    if (running.value || !pending) return;
+    const fid = pending;
+    pending = null;
+    untracked(() => repaint(fid));
+  });
+  transcriptLanguage = () => {
+    stopHook();
+    stopEffect();
+    transcriptLanguage = null;
+  };
+  return transcriptLanguage;
 }
 
 /**

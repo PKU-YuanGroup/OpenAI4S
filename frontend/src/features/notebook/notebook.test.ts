@@ -1,7 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 
 const highlightCalls = vi.hoisted(() => vi.fn());
 
+// E / TEAM-13: the Notebook download reports through the session package's saver.
+const saved = vi.hoisted(() => ({ flashes: [] as string[], urls: [] as string[] }));
+vi.mock("../sessions/package", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sessions/package")>()),
+  saveExport: async (url: string, _name: string, onResponse?: (r: Response) => void) => {
+    saved.urls.push(url);
+    onResponse?.(
+      new Response("{}", {
+        headers: { "Content-Disposition": "attachment; filename=\"x.ipynb\"; filename*=UTF-8''Growth%20assay.ipynb" },
+      }),
+    );
+    return 2048;
+  },
+  flash: (text: string) => void saved.flashes.push(text),
+}));
 vi.mock("../md/highlight", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../md/highlight")>();
   return {
@@ -64,6 +86,7 @@ import {
   notebookExportHref,
   notebookExportLink,
   NOTEBOOK_EXPORTS,
+  notebookLanguages,
   relabelNotebookExports,
   resetHighlightMemo,
   resetNotebookCellCaches,
@@ -73,6 +96,7 @@ import { ReplHistory, caretOnFirstLine, caretOnLastLine, indent } from "./editor
 import { environmentMenuItems, envSelectable, envSourceLabel } from "./envmenu";
 import { nbT } from "./copy";
 import { installNotebook } from "./install";
+import { setExecutionFetch } from "../execution/api";
 import type { NotebookCell } from "./types";
 import {
   copyNotebookCell,
@@ -93,15 +117,18 @@ import {
   replEnabledNow,
   replHistory,
   replLoad,
+  replNotice,
   shortRuntime,
   syncKernel,
 } from "./kernel";
 import {
+  followStreamingOutput,
   isNearBottom,
   measureNotebookFollow,
   nbRender,
   onNotebookScroll,
   setNotebookRenderImpl,
+  takeJumpToLatest,
 } from "./scroll";
 
 function flushRaf(queue: Array<(t: number) => void>): void {
@@ -138,6 +165,7 @@ describe("F-14 Notebook", () => {
   });
 
   afterEach(() => {
+    dialogMock.answer = () => false;
     vi.unstubAllGlobals();
     setNotebookRenderImpl(null);
     setNotebookApi(null);
@@ -537,6 +565,31 @@ describe("F-14 Notebook", () => {
       expect(await first).toBe(true);
     });
 
+    it("says a refused manual run in the Notebook, not under the chat composer (SYNC-27)", async () => {
+      // The switch went off in another window: the refusal was written under
+      // the chat composer, away from the Notebook the code was typed in.
+      const hints: Array<[string, boolean | undefined]> = [];
+      vi.stubGlobal("hint", (msg: string, err?: boolean) => hints.push([msg, err]));
+      const paths: string[] = [];
+      setNotebookApi(async (path) => {
+        paths.push(path);
+        if (path.endsWith("/kernel/execute")) {
+          throw new Error("notebook REPL is disabled; turn on manual Notebook cells in Settings → General");
+        }
+        return { alive: true, repl_enabled: false };
+      });
+      expect(await executeNotebookCode("print(1)", "python")).toBe(false);
+      expect(replNotice.value).toEqual({
+        sid: "frame-1",
+        text: expect.stringContaining("notebook REPL is disabled"),
+      });
+      expect(hints.filter(([, err]) => err)).toEqual([]);
+      // The next accepted run clears it.
+      setNotebookApi(async () => ({ status: "accepted" }));
+      expect(await executeNotebookCode("print(2)", "python")).toBe(true);
+      expect(replNotice.value).toBeNull();
+    });
+
     it("a REPL execution whose terminal event was lost settles after a replay gap", async () => {
       // NB-2: a dropped socket lost `execution_state`; the input stayed
       // disabled until a reload because nothing else cleared the pending run.
@@ -572,7 +625,7 @@ describe("F-14 Notebook", () => {
     it("Restart interrupts the user's own running cell instead of queueing behind it", async () => {
       // NB-10: a restart waited for the running REPL cell, and the header kept
       // the old generation and "Busy" with nothing saying a restart was asked.
-      vi.stubGlobal("confirm", () => true);
+      dialogMock.answer = () => true;
       vi.stubGlobal("hint", () => undefined);
       executionQueue.value = {
         owner: { execution_id: "repl-1", owner: { kind: "user_repl", id: "repl-1" } },
@@ -753,6 +806,66 @@ describe("F-14 Notebook", () => {
       expect(notebookViewEntries().map(nbCellKey)).toEqual(["a", "b"]);
     });
 
+    // M-54: the Notebook opened at cell 1 and stayed there.
+    it("opens at the latest cell, once there is a cell to show", () => {
+      takeJumpToLatest(true);
+      activeTab.value = "files";
+      activeTab.value = "notebook";
+      expect(takeJumpToLatest(false)).toBe(false);
+      expect(takeJumpToLatest(true)).toBe(true);
+      expect(takeJumpToLatest(true)).toBe(false);
+      currentId.value = "frame-2";
+      expect(takeJumpToLatest(true)).toBe(true);
+    });
+
+    // M-57: streaming output pushed the end away by itself, after which no
+    // new cell was followed and the list could be held for the whole turn.
+    it("keeps a following reader at the end while output streams, and only them", () => {
+      const body = { scrollHeight: 3000, scrollTop: 0, clientHeight: 400 };
+      vi.stubGlobal("document", { getElementById: () => ({ parentElement: body }) });
+      running.value = true;
+      _nbReading.value = false;
+      followStreamingOutput();
+      followStreamingOutput();
+      expect(rafs).toHaveLength(1);
+      flushRaf(rafs);
+      expect(body.scrollTop).toBe(3000);
+      // The scroll event of our own move, after more output landed, is not
+      // the reader scrolling away.
+      body.scrollHeight = 3600;
+      onNotebookScroll(body);
+      expect(_nbReading.value).toBe(false);
+
+      // A reader who scrolled up is left where they are.
+      body.scrollTop = 0;
+      onNotebookScroll(body);
+      expect(_nbReading.value).toBe(true);
+      followStreamingOutput();
+      flushRaf(rafs);
+      expect(body.scrollTop).toBe(0);
+    });
+
+    // M-77: the variable list had to be refreshed by hand after every run.
+    it("reads a variable list the reader loaded again when the turn ends", async () => {
+      const reads: string[] = [];
+      setExecutionFetch(async (url) => {
+        reads.push(String(url));
+        return new Response(JSON.stringify({ available: false, state: "busy" }));
+      });
+      try {
+        running.value = true;
+        running.value = false;
+        await Promise.resolve();
+        expect(reads).toEqual([]);
+        variableInspector.value = { ...variableInspector.value, language: "python", results: { python: {} } };
+        running.value = true;
+        running.value = false;
+        await vi.waitFor(() => expect(reads).toHaveLength(1));
+      } finally {
+        setExecutionFetch(null);
+      }
+    });
+
     it("never holds back another session's list", () => {
       cells.value = [{ producing_cell_id: "a", cell_index: 1 }];
       notebookViewEntries();
@@ -856,6 +969,58 @@ describe("F-14 Notebook", () => {
         expect(label()).not.toEqual(english);
         relabelNotebookExports(doc as unknown as ParentNode);
         expect(label()).toHaveLength(NOTEBOOK_EXPORTS.length);
+      } finally {
+        await setLang(before);
+        vi.unstubAllGlobals();
+      }
+    });
+
+    // E / M-61 and TEAM-13: the label named both formats whatever the session
+    // held, and a click said nothing about whether anything arrived.
+    it("names .ipynb or .zip from the session's languages, and says what was downloaded", async () => {
+      expect(notebookLanguages(["python", "python — lab_env"])).toBe("python");
+      expect(notebookLanguages(["r — lab_env", "python"])).toBe("python r");
+      const made: Array<Record<string, any>> = [];
+      vi.stubGlobal("document", {
+        querySelectorAll: () => [],
+        documentElement: {},
+        createElement: (tag: string) => {
+          const attrs = new Map<string, string>();
+          const node: Record<string, any> = {
+            tagName: tag.toUpperCase(),
+            className: "",
+            textContent: "",
+            innerHTML: "",
+            href: "",
+            kids: [] as unknown[],
+            setAttribute: (k: string, v: string) => void attrs.set(k, v),
+            getAttribute: (k: string) => (attrs.has(k) ? attrs.get(k)! : null),
+            appendChild: (kid: unknown) => (node.kids.push(kid), kid),
+          };
+          made.push(node);
+          return node;
+        },
+      });
+      const before = LANG;
+      try {
+        await setLang("en");
+        const label = (languages: string) => {
+          made.length = 0;
+          notebookExportLink("f-lang", languages);
+          return made.find((n) => n.getAttribute("data-nb-export") === "0")!.textContent;
+        };
+        expect(label("python")).toBe("Download notebook (.ipynb)");
+        expect(label("r")).toBe("Download notebook (.ipynb)");
+        expect(label("python r")).toBe("Download notebooks (.zip: Python and R)");
+        made.length = 0;
+        notebookExportLink("f-lang", "python");
+        const primary = made.find((n) => n.className === "prov-dlbtn")!;
+        let prevented = false;
+        primary.onclick({ button: 0, preventDefault: () => (prevented = true) });
+        await vi.waitFor(() => expect(saved.flashes).toHaveLength(1));
+        expect(prevented).toBe(true);
+        expect(saved.urls).toEqual(["/api/v1/frames/f-lang/notebook/export?variant=clean"]);
+        expect(saved.flashes[0]).toBe("Downloaded Growth assay.ipynb (2.0 KB)");
       } finally {
         await setLang(before);
         vi.unstubAllGlobals();
@@ -1318,5 +1483,37 @@ describe("Session options environment picker (ENV-6)", () => {
     expect(
       headings({ envs: pythonOnly, current: "base", currentR: null, runtimes: { python, r: { ...r, environment: "" } } }),
     ).toContain(nbT("nb.env.group", "R", nbT("nb.env.default") + " → R installed on this computer · local · R 4.4.1"));
+  });
+
+  // SCI-20: no ticked "default" row in the R group, and no way back to it
+  // once a local R was picked.
+  it("offers a default R row that goes back, and says which key package it lacks", () => {
+    const python = { available: true, environment: "base", kind: "builtin", version: "3.13.1" };
+    const r = {
+      available: true,
+      selected: false,
+      checked: true,
+      environment: "lab_env",
+      kind: "local",
+      version: "4.4.1",
+      packages: [
+        { name: "jsonlite", available: false },
+        { name: "ggplot2", available: true },
+      ],
+    };
+    const backToDefault = vi.fn();
+    const labels = (currentR: string | null) =>
+      environmentMenuItems({ envs, current: "base", currentR, runtimes: { python, r } }, () => undefined, backToDefault);
+    const inUse = labels(null).find((item) => String(item.label || "").includes(nbT("nb.env.rDefaultRow", "")));
+    expect(inUse?.label).toBe(
+      "✓  " + nbT("nb.env.rDefaultRow", "lab_env · local · R 4.4.1 · jsonlite is not available"),
+    );
+    inUse?.onClick?.();
+    expect(backToDefault).not.toHaveBeenCalled();
+
+    const picked = labels("lab_env").find((item) => String(item.label || "").startsWith(nbT("nb.env.rDefaultRow", "")));
+    expect(picked?.label).toBe(nbT("nb.env.rDefaultRow", nbT("nb.env.rDefaultAuto")));
+    picked?.onClick?.();
+    expect(backToDefault).toHaveBeenCalledTimes(1);
   });
 });

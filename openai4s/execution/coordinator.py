@@ -271,6 +271,15 @@ class _SessionQueue:
     closed: bool = False
     close_reason: str | None = None
     remove_when_idle: bool = False
+    #: Agent tickets that were waiting when an agent turn failed. They keep
+    #: their places but are not admitted until `release_held`: a follow-up
+    #: typed during a turn usually builds on that turn's result, and starting
+    #: it on its own the moment the turn failed was the model's luck (M-31).
+    held: set[str] = field(default_factory=set)
+
+
+#: The owner kind whose failure holds the queue, and whose tickets it holds.
+HOLDING_OWNER_KIND = "agent"
 
 
 EventSink = Callable[[dict[str, Any]], None]
@@ -393,6 +402,7 @@ class SessionExecutionCoordinator:
                 # promoted between this check and its removal.
                 if ticket in session.queued:
                     session.queued.remove(ticket)
+                    session.held.discard(ticket.execution_id)
                     reason = "admission timed out"
                     ticket.cancellation._request(reason)
                     ticket._transition(TicketState.CANCELLED, at=self._clock())
@@ -508,6 +518,7 @@ class SessionExecutionCoordinator:
             if ticket is None:
                 return False
             session.queued.remove(ticket)
+            session.held.discard(ticket.execution_id)
             ticket.cancellation._request(reason)
             ticket._transition(TicketState.CANCELLED, at=self._clock())
             events.append(self._state_event(ticket, reason=reason))
@@ -516,6 +527,33 @@ class SessionExecutionCoordinator:
             self._condition.notify_all()
         self._emit(events)
         return True
+
+    def release_held(self, session_id: str) -> int:
+        """Let the tickets held after a failed agent turn run, in their order.
+
+        Returns how many were held. The first is admitted at once when the
+        session is idle; otherwise they run after the active execution.
+        """
+
+        events: list[dict[str, Any]] = []
+        with self._condition:
+            session = self._sessions.get(session_id)
+            if session is None or not session.held:
+                return 0
+            released = len(session.held)
+            session.held.clear()
+            self._promote_locked(session_id, session, events)
+            events.append(self._queue_event_locked(session_id, session))
+            self._condition.notify_all()
+        self._emit(events)
+        return released
+
+    def held_ids(self, session_id: str) -> frozenset[str]:
+        """The queued tickets of one session that wait for `release_held`."""
+
+        with self._condition:
+            session = self._sessions.get(session_id)
+            return frozenset(session.held) if session is not None else frozenset()
 
     def request_interrupt(
         self,
@@ -638,6 +676,12 @@ class SessionExecutionCoordinator:
                 terminal_error = error
             ticket._transition(state, at=self._clock(), error=terminal_error)
             session.active = None
+            if state is TicketState.FAILED and ticket.owner.kind == HOLDING_OWNER_KIND:
+                session.held.update(
+                    item.execution_id
+                    for item in session.queued
+                    if item.owner.kind == HOLDING_OWNER_KIND
+                )
             events.append(
                 self._state_event(ticket, reason=reason, error=terminal_error)
             )
@@ -688,6 +732,7 @@ class SessionExecutionCoordinator:
     ) -> None:
         session.closed = True
         session.close_reason = reason
+        session.held.clear()
         while session.queued:
             ticket = session.queued.popleft()
             ticket.cancellation._request(reason)
@@ -726,9 +771,15 @@ class SessionExecutionCoordinator:
     ) -> None:
         if session.closed or session.active is not None:
             return
-        if not session.queued:
+        # A held ticket keeps its place; anything behind it (a Notebook cell,
+        # a message sent after the failure) is not made to wait for it.
+        ticket = next(
+            (item for item in session.queued if item.execution_id not in session.held),
+            None,
+        )
+        if ticket is None:
             return
-        ticket = session.queued.popleft()
+        session.queued.remove(ticket)
         ticket._transition(TicketState.RUNNING, at=self._clock())
         session.active = ticket
         events.append(self._state_event(ticket, queue_position=0))
@@ -763,7 +814,10 @@ class SessionExecutionCoordinator:
                 else None
             ),
             "queue": [
-                ticket.snapshot(queue_position=position)
+                {
+                    **ticket.snapshot(queue_position=position),
+                    "held": ticket.execution_id in session.held,
+                }
                 for position, ticket in enumerate(session.queued, start=1)
             ],
             "queued_count": len(session.queued),

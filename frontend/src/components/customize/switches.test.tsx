@@ -60,9 +60,10 @@ vi.mock("../../features/customize/host", async (importOriginal) => ({
 
 vi.mock("../../features/notebook", () => ({ notebookOnTurnDone: mocks.notebookReread }));
 
+import { teamUser } from "../../features/chrome/team-identity";
 import { ConnectorRow } from "./ConnectorsTab";
 import { MemoryTab } from "./MemoryTab";
-import { NetworkTab } from "./NetworkTab";
+import { NetworkTab, egressRestartCommand } from "./NetworkTab";
 import { NotebookReplSetting } from "./NotebookReplSetting";
 import { SkillRow } from "./SkillsTab";
 import { BuiltinRow } from "./SpecialistsTab";
@@ -221,7 +222,23 @@ describe("Memory switch", () => {
     write.resolve(response({ error: "store is read-only" }, 500));
     await settle();
     expect(firstSwitch(render(MemoryTab)).props!.on).toBe(false);
-    expect(mocks.hint).not.toHaveBeenCalled();
+    // Said, not only flipped back (TEAM-23).
+    expect(mocks.hint).toHaveBeenCalledWith("toast.failed store is read-only", true);
+  });
+
+  it("says who may change it when a team member is refused (TEAM-23)", async () => {
+    routes({
+      "GET /memory/enabled": ok({ enabled: false }),
+      "PUT /memory/enabled": () => Promise.resolve(response({ error: "admin only", code: "admin_only" }, 403)),
+    });
+    render(MemoryTab);
+    await settle();
+    firstSwitch(render(MemoryTab)).props!.onClick!();
+    await settle();
+    expect(firstSwitch(render(MemoryTab)).props!.on).toBe(false);
+    const [message, error] = mocks.hint.mock.calls.at(-1)!;
+    expect(error).toBe(true);
+    expect(message).toMatch(/Only an administrator/);
   });
 });
 
@@ -245,5 +262,95 @@ describe.each([
     await settle();
     // The last read (off) is older than the write it did not see.
     expect(firstSwitch(render(() => row(false))).props!.on).toBe(true);
+  });
+});
+
+// TEAM-23: a member's server-wide switches answered 403 with nothing on screen.
+describe("server-wide switches for a team member", () => {
+  afterEach(() => {
+    teamUser.value = null;
+  });
+
+  it.each([
+    ["App networking", NetworkTab, { "GET /preferences/builtin-allowlist": ok({ enabled: true, groups: [] }) }],
+    ["Memory", MemoryTab, { "GET /memory/enabled": ok({ enabled: true }) }],
+  ] as const)("%s is shown, locked, and never written", async (_name, tab, table) => {
+    teamUser.value = { username: "bob", role: "member" };
+    routes(table);
+    render(tab);
+    await settle();
+    const toggle = firstSwitch(render(tab));
+    expect(toggle.props!.on).toBe(true);
+    expect(toggle.props!.disabled).toBe(true);
+    toggle.props!.onClick!();
+    await settle();
+    expect(writes()).toEqual([]);
+  });
+
+  it("stays usable for an admin", async () => {
+    teamUser.value = { username: "alice", role: "admin" };
+    routes({ "GET /memory/enabled": ok({ enabled: true }) });
+    render(MemoryTab);
+    await settle();
+    expect(firstSwitch(render(MemoryTab)).props!.disabled).toBe(false);
+  });
+});
+
+// M-26 (lead decision: no runtime switch): the page names the egress state and
+// hands over the exact restart command; a team member gets the admin wording.
+describe("egress allowlist restart command", () => {
+  afterEach(() => {
+    teamUser.value = null;
+  });
+  const text = (node: unknown): string => {
+    if (Array.isArray(node)) return node.map(text).join("");
+    if (node == null || typeof node === "boolean") return "";
+    if (typeof node !== "object") return String(node);
+    const current = node as Node;
+    if (typeof current.type === "function") return text((current.type as (p: unknown) => unknown)(current.props));
+    return text(current.props?.children);
+  };
+  const groups = [{ name: "Web search", domains: ["example.org"] }];
+
+  it("names the command that switches to the other mode", () => {
+    expect(egressRestartCommand("off")).toBe("openai4s stop && OPENAI4S_EGRESS=allowlist openai4s serve");
+    expect(egressRestartCommand("allowlist")).toBe("openai4s stop && OPENAI4S_EGRESS=off openai4s serve");
+  });
+
+  it("offers the command with a copy button, and only the reason to a member", async () => {
+    routes({ "GET /preferences/builtin-allowlist": ok({ enabled: true, groups, egress_mode: "off" }) });
+    render(NetworkTab);
+    await settle();
+    let page = text(render(NetworkTab));
+    expect(page).toContain("OPENAI4S_EGRESS=allowlist openai4s serve");
+    expect(page).toContain("Copy start command");
+    teamUser.value = { username: "bob", role: "member" };
+    page = text(render(NetworkTab));
+    expect(page).not.toContain("openai4s serve");
+    expect(page).toContain("only an administrator");
+  });
+});
+
+// SYNC-22: on a phone the switch read as a disc, on and off told apart by
+// colour alone; it says which it is to assistive tech too.
+describe("Toggle", () => {
+  it("is a switch that says whether it is on", () => {
+    const on = Toggle({ on: true, onClick: () => undefined }) as Node;
+    const off = Toggle({ on: false, onClick: () => undefined }) as Node;
+    expect(on.props!.role).toBe("switch");
+    expect(on.props!["aria-checked"]).toBe("true");
+    expect(off.props!["aria-checked"]).toBe("false");
+  });
+
+  // SYNC-12: the Skills / Specialists / Connectors list switches had no text,
+  // no title and no label -- a screen reader announced an unnamed switch.
+  it.each([
+    ["Skill", () => SkillRow({ s: { name: "fold", enabled: true }, pid: null }), "fold"],
+    ["specialist", () => BuiltinRow({ ag: { name: "planner", enabled: true } }), "planner"],
+    ["connector", () => ConnectorRow({ k: { connector_id: "c1", name: "Files", enabled: true } }), "Files"],
+  ] as const)("a %s row's switch is named after the row", (_kind, row, name) => {
+    const toggle = firstSwitch(render(row));
+    const button = Toggle(toggle.props as Parameters<typeof Toggle>[0]) as Node;
+    expect(button.props!["aria-label"]).toBe(name);
   });
 });

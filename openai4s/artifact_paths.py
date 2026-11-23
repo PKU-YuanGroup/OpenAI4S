@@ -19,7 +19,10 @@ _PROCESS_SUFFIXES = frozenset(
 _PROCESS_DIRS = ("project-inputs/", "inputs/", "__pycache__/", ".openai4s")
 
 
-def artifact_role(filename: str | None) -> str:
+_ROLES = frozenset({"internal", "process", "deliverable"})
+
+
+def artifact_role(filename: str | None, marked: str | None = None) -> str:
     """``internal``, ``process`` or ``deliverable`` -- decided here and only here.
 
     ``internal`` is the platform's own bookkeeping (context spill files): never
@@ -28,7 +31,13 @@ def artifact_role(filename: str | None) -> str:
     is four versions of one), logs, copies of inputs: kept and linked, folded
     away from the deliverables and left out of their count. Everything else is
     a ``deliverable``. The record itself is never changed by this answer.
+
+    ``marked`` is a role the server recorded for the artifact itself
+    (`Store.artifact_role_marks`: a plan's JSON is ``process``) and wins over
+    anything the filename suggests.
     """
+    if marked in _ROLES:
+        return str(marked)
     lower = str(filename or "").lower().replace("\\", "/")
     slash = lower.rfind("/")
     if _CONTEXT_SPILL.fullmatch(lower[slash + 1 :]):

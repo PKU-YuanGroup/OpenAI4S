@@ -328,7 +328,7 @@ list that names fixed things is as unreadable as one that omits broken ones.
 | Medium | `generation_confidence` and `provenance` were written by a migration and read by nothing | closed — read by `app.js` (the version pane gates on `=== "verified"`) and by `openai4s/benchmark/steps.py` |
 | Low | `Tool.dangerous` was declared on ten tools and read by no gate, audit or prompt | closed — `host_dispatch.py` carries it into the audit record, and `app.js` renders the high-risk permission badge and shortens the grant to once-only |
 | Low | `host.app_render` grew without bound (100 MB measured); a released idle session kept its history | closed — `MAX_APP_TILE_CHARS` refuses an oversized payload and `MAX_APP_TILES` evicts oldest-first, reporting `dropped` so a cell cannot mistake `tiles()` for the full history |
-| Low | model-profile `readiness` and the probe route had no UI call site | closed — Customize → Models renders the readiness card and the explicit probe; the protocol menu carries all five protocols including Gemini, verified in a real browser at this SHA |
+| Low | model-profile `readiness` and the probe route had no UI call site | closed — Settings → Models renders the readiness card and the explicit probe; the protocol menu carries all five protocols including Gemini, verified in a real browser at this SHA |
 
 ### Deliberately not fixed
 

@@ -79,7 +79,7 @@ CORE_PACKAGES: list[tuple[str, str]] = [
     ("regex", "regex"),
 ]
 
-# Opt-in catalog surfaced in the UI (Customize → Compute → "Install package").
+# Opt-in catalog surfaced in the UI (Settings → Compute → "Install package").
 # These are large / slow / may lack wheels on the newest CPython; the user (or
 # agent) installs them explicitly, then restarts the kernel.
 OPTIONAL_PACKAGES: list[dict] = [

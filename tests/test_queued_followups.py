@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import pytest
 
@@ -202,6 +203,26 @@ def test_a_queued_follow_up_carries_its_id_preview_and_position(client):
         finish()
 
 
+def test_a_queued_item_names_the_request_its_sender_sent(client):
+    """Every tab draws a queued item's bubble; the sender must not draw it twice.
+
+    The sending tab has its own bubble from before the POST, keyed by the
+    `X-Request-Id` it sent, and the queue event can reach it before the 202
+    names the execution. The request id in the queue is what lets that tab
+    recognise its own message (M-21).
+    """
+    _held, finish = _hold_the_head(client)
+    try:
+        accepted = _queue_three(client)
+        queue = client.queue()["queue"]
+        assert [item["metadata"]["request_id"] for item in queue] == [
+            body["request_id"] for body in accepted
+        ]
+        assert all(body["request_id"] for body in accepted)
+    finally:
+        finish()
+
+
 def test_a_queued_item_reports_the_profile_it_was_admitted_under(client):
     """Not the frame's pin. `POST /frames/{id}/model-binding` rewrites that
     while an item waits -- it is the documented answer to a dangling pin -- so a
@@ -323,3 +344,87 @@ def test_cancelling_a_queued_item_needs_that_item_s_own_owner(client):
         assert [item["queue_position"] for item in client.queue()["queue"]] == [1, 2, 3]
     finally:
         finish()
+
+
+# --------------------------------------------------------------------------
+# M-31: after a failed turn the queued follow-ups wait for the user
+# --------------------------------------------------------------------------
+
+
+def _agent_head_that_fails(client):
+    """An agent turn at the head that fails when told to."""
+
+    state = client.runner._state(client.frame_id, client.project_id)
+    ticket = client.runner._queue_execution(
+        state, owner="agent", owner_id="job-head", reason="test head"
+    )
+    running = threading.Event()
+    fail = threading.Event()
+
+    def _run():
+        try:
+            with client.runner.executions.admitted(ticket, cancel_event=state.cancel):
+                running.set()
+                fail.wait(30)
+                raise RuntimeError("the model call failed")
+        except RuntimeError:
+            pass
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    assert running.wait(5)
+
+    def _fail():
+        fail.set()
+        thread.join(10)
+        assert not thread.is_alive()
+
+    return _fail
+
+
+def _wait_for(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition was not reached before timeout")
+
+
+def test_follow_ups_queued_behind_a_failed_turn_wait_until_resumed(client):
+    """They used to start on their own the moment the turn failed (M-31).
+
+    Held, they keep their places, the session is not "running" (nothing is),
+    and `POST /frames/{id}/execution-queue/resume` runs them in order.
+    """
+    fail = _agent_head_that_fails(client)
+    accepted = _queue_three(client)
+    fail()
+
+    queue = client.queue()
+    assert queue["owner"] is None
+    assert [item["held"] for item in queue["queue"]] == [True, True, True]
+    assert [item["execution_id"] for item in queue["queue"]] == [
+        body["execution_id"] for body in accepted
+    ]
+    assert client.runner.is_running(client.frame_id) is False
+    # ...nor in the sidebar's session list.
+    assert client.frame_id not in client.runner.running_frames()
+
+    code, body = client._call(
+        "POST", f"/frames/{client.frame_id}/execution-queue/resume", {}
+    )
+    assert code == 200, body
+    assert body == {"ok": True, "frame_id": client.frame_id, "released": 3}
+    # Released, they run in order (the stubbed turns finish at once).
+    _wait_for(lambda: client.queue()["queued_count"] == 0)
+    _wait_for(lambda: client.queue()["owner"] is None)
+    code, body = client._call(
+        "POST", f"/frames/{client.frame_id}/execution-queue/resume", {}
+    )
+    assert body["released"] == 0
+
+
+def test_resuming_an_unknown_session_is_a_404(client):
+    code, _body = client._call("POST", "/frames/f-missing/execution-queue/resume", {})
+    assert code == 404

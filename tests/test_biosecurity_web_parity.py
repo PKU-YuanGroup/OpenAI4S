@@ -219,7 +219,7 @@ def test_the_screener_gets_the_key_the_web_install_actually_configures(
 
     Both LLM-backed screeners bail with "unconfigured; failed open" when
     `cfg.llm.api_key` is empty, and on the documented Web install it always is:
-    the key is entered in Customize → Models and lives in settings, which is
+    the key is entered in Settings → Models and lives in settings, which is
     the entire reason `_llm_cfg` exists. `_safety_refusal` handed them
     `self.cfg`, so the call was wired, the port was widened, and the screener
     still never looked at anything -- every biosecurity-relevant cell got ALLOW

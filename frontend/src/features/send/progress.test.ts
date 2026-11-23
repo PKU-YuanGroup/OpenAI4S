@@ -10,6 +10,7 @@ import { running } from "../../stores/stream";
 import { S } from "../timeline/s";
 import { actionTimeline } from "../../stores/timeline";
 import {
+  bindTurnProgress,
   formatElapsed,
   formatTokens,
   paintTurnClock,
@@ -93,7 +94,7 @@ describe("turn progress", () => {
     );
     await refreshSessionUsage();
     expect(usage.classList.contains("hidden")).toBe(false);
-    expect(usage.textContent).toBe("12k tokens");
+    expect(usage.textContent).toBe("12k token");
     expect(usage.title).toContain("10,123");
     expect(usage.title).toContain("2,201");
 
@@ -129,7 +130,7 @@ describe("turn progress", () => {
     };
     paintUsageTitle();
     expect(usage.title).toBe(
-      "本会话累计用量：新输入 211,763 · 缓存输入 3,869,032 · 输出 58,464（其中推理 23,720） tokens。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
+      "本会话累计用量：新输入 211,763 · 缓存输入 3,869,032 · 输出 58,464（其中推理 23,720） token。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
     );
     expect(usageBreakdown(actionTimeline.value, "f-u")).toEqual({
       fresh: 211_763,
@@ -140,5 +141,131 @@ describe("turn progress", () => {
     // Another session's timeline, or one with earlier pages not loaded, is not a breakdown of this one.
     expect(usageBreakdown(actionTimeline.value, "f-other")).toBeNull();
     expect(usageBreakdown({ ...(actionTimeline.value as object), has_earlier: true }, "f-u")).toBeNull();
+  });
+
+  it("the chip says what the latest turn added, not only the session's total (M-18)", async () => {
+    currentId.value = "f-t";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "f-t", input_tokens: 909_502, output_tokens: 26_578 }),
+      })),
+    );
+    const row = (turn: string, kind: string, input = 0, cached = 0, output = 0) => ({
+      turn_id: turn,
+      kind,
+      usage: input || output ? { input_tokens: input, cache_read: cached, output_tokens: output } : null,
+    });
+    actionTimeline.value = {
+      root_frame_id: "f-t",
+      has_earlier: true,
+      groups: [
+        row("turn-1", "code", 400_000, 380_000, 9_000),
+        row("turn-2", "user"),
+        row("turn-2", "code", 40_000, 30_000, 1_500),
+        row("turn-2", "finalize", 42_000, 40_000, 800),
+        row("turn-2", "terminal"),
+      ],
+    };
+    await refreshSessionUsage();
+    expect(usage.textContent).toBe("936k token · 本轮 +84k");
+    expect(usage.title).toContain("最近一轮：新输入 12,000 · 缓存输入 70,000 · 输出 2,300。");
+    // A turn whose start is in an earlier, unloaded page is not summed as a whole turn.
+    actionTimeline.value = { ...(actionTimeline.value as object), groups: [row("turn-2", "code", 40_000, 0, 1)] };
+    expect(usage.textContent).toBe("936k token · 本轮 +84k");
+    paintUsageTitle();
+    expect(usage.textContent).toBe("936k token");
+    await setLang("en");
+    actionTimeline.value = { root_frame_id: "f-t", has_earlier: false, groups: [row("turn-3", "code", 900, 0, 100)] };
+    paintUsageTitle();
+    expect(usage.textContent).toBe("936k tokens · +1k this turn");
+    // The frame's totals are re-read now and then; the timeline arrives live.
+    // The total is never below the turn it contains.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ id: "f-t" }) })),
+    );
+    await refreshSessionUsage();
+    expect(usage.textContent).toBe("1k tokens · +1k this turn");
+    expect(usage.classList.contains("hidden")).toBe(false);
+  });
+
+  it("turns amber past 200k tokens in the running turn and says Stop is there (SYNC-6)", async () => {
+    currentId.value = "f-h";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "f-h", input_tokens: 690_000, output_tokens: 2_300 }),
+      })),
+    );
+    const call = (input: number) => ({ turn_id: "turn-1", kind: "code", usage: { input_tokens: input, output_tokens: 100 } });
+    actionTimeline.value = { root_frame_id: "f-h", has_earlier: false, groups: [{ turn_id: "turn-1", kind: "user" }, call(150_000)] };
+    running.value = true;
+    await refreshSessionUsage();
+    expect(usage.classList.contains("heavy")).toBe(false);
+    expect(usage.title).not.toContain("■");
+    actionTimeline.value = { ...(actionTimeline.value as object), groups: [{ turn_id: "turn-1", kind: "user" }, call(150_000), call(60_000)] };
+    paintUsageTitle();
+    expect(usage.classList.contains("heavy")).toBe(true);
+    expect(usage.title.startsWith("本轮已用超过 200k token。")).toBe(true);
+    expect(usage.title).toContain("停止");
+    // A finished turn is history: no warning for a Stop that cannot be pressed.
+    running.value = false;
+    paintUsageTitle();
+    expect(usage.classList.contains("heavy")).toBe(false);
+  });
+
+  it("says the chip again in the new language after a switch (SYNC-20)", async () => {
+    currentId.value = "f-l";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "f-l", input_tokens: 300, output_tokens: 60 }),
+      })),
+    );
+    const row = { turn_id: "turn-1", kind: "code", usage: { input_tokens: 300, output_tokens: 60 } };
+    actionTimeline.value = { root_frame_id: "f-l", has_earlier: false, groups: [{ turn_id: "turn-1", kind: "user" }, row] };
+    bindTurnProgress();
+    await refreshSessionUsage();
+    expect(usage.textContent).toContain("本轮");
+    await setLang("en");
+    expect(usage.textContent).toContain("this turn");
+    expect(usage.textContent).not.toContain("本轮");
+  });
+
+  it("re-reads the totals for a timeline change only while a turn runs (M-18)", async () => {
+    // An idle timeline change -- the session opened, the timeline searched,
+    // folded or paged -- is not a model call: the browser gate holds those
+    // local interactions to zero requests.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: "f-r", input_tokens: 10, output_tokens: 1 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    currentId.value = "f-r";
+    bindTurnProgress();
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+    const call = (input: number) => ({ turn_id: "turn-1", kind: "code", usage: { input_tokens: input, output_tokens: 1 } });
+    const user = { turn_id: "turn-1", kind: "user" };
+    actionTimeline.value = { root_frame_id: "f-r", has_earlier: false, groups: [user, call(500)] };
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).not.toHaveBeenCalled();
+    running.value = true;
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+    actionTimeline.value = { root_frame_id: "f-r", has_earlier: false, groups: [user, call(500), call(900)] };
+    await vi.advanceTimersByTimeAsync(600);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    running.value = false;
+    vi.useRealTimers();
   });
 });

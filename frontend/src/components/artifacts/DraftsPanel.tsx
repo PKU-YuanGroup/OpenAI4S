@@ -1,3 +1,4 @@
+import { askConfirm } from "../../features/chrome/dialog";
 import { filesT } from "../../features/artifacts/copy";
 import { artifactDraftRevision, artifactEditors } from "../../features/artifacts/state";
 
@@ -13,8 +14,9 @@ export function DraftsPanel() {
       <strong>{draft.artifact.filename || draft.artifact.id}</strong>
       <p>{filesT("editor.draftIdentity", draft.sessionId, draft.baseline?.versionId || "—")}</p>
       <textarea readOnly value={draft.text} aria-label={filesT("editor.copy")} />
-      <button class="outline-btn small" disabled={draft.phase === "saving"} onClick={() => {
-        if (confirm(filesT("editor.discardCloseConfirm"))) artifactEditors.discard(draft);
+      <button class="outline-btn small" disabled={draft.phase === "saving"} onClick={async () => {
+        if (!(await askConfirm(filesT("editor.discardCloseConfirm"), { danger: true }))) return;
+        if (draft.phase !== "saving") artifactEditors.discard(draft);
       }}>{filesT("editor.discard")}</button>
     </div>)}
   </details>;

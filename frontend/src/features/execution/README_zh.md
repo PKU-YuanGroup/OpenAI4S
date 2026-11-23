@@ -17,16 +17,16 @@ F-14 已用 `isReady` 门控 `toggleExecutedCode` / `buildExecutedCodeView`。F-
 | [`conflict.ts`](conflict.ts) | Fork 409 呈现：不重试，保留服务端原句。 |
 | [`lineage.ts`](lineage.ts) | Provenance 链变换（cell / captures / 环境诚实性三态）。记录中的包列表从未读取（有 `packages_unavailable` 且无包）时，`envPackageCount` 返回 null。 |
 | [`exec.ts`](exec.ts) | `execSourcesState` / `toggleExecutedCode` / `buildExecutedCodeView`（app.js:10148-10229）。 |
-| [`inspector.ts`](inspector.ts) | 变量检查器（app.js:10265-10332）。 文案通过 Notebook 的 `nbLabelT` 获取（中文显示「变量查看器」）。 |
-| [`provenance.ts`](provenance.ts) | Provenance tab（app.js:10631-10833）。未读取的包列表显示为"Packages 未知"（非 Python kernel 为"不适用"），不显示"没有可报告的包"；原因仍作为警告说明保留。 |
-| [`branch.ts`](branch.ts) | Fork / recovery REST 与 409 呈现。 |
+| [`branch.ts`](branch.ts) | Fork / recovery REST 与 409 呈现。切换分支后内核的结果（`kernelOutcome`：哪些变量没有恢复）和「重启内核并恢复」（`restoreBranchKernel`，把 409 的部分恢复报告当作结果读取）。 内核恢复卡片与分支面板的用语：`recoveryActionWords`（操作做什么，或为什么不能执行，从不显示服务端的原始原因）和 `checkpointLabel`（检查点何时、因何创建）（M-64）。 |
+| [`inspector.ts`](inspector.ts) | 变量检查器（app.js:10265-10332）。 文案通过 Notebook 的 `nbLabelT` 获取（中文显示「变量查看器」）。 读者加载过的变量列表在一次运行结束后会重新读取（`refreshLoadedInspector`，M-77）。 |
+| [`provenance.ts`](provenance.ts) | Provenance tab（app.js:10631-10833）。未读取的包列表显示为"Packages 未知"（非 Python kernel 为"不适用"），不显示"没有可报告的包"；原因仍作为警告说明保留。下载工具保存的文件（lineage 的 `download`，SCI-10）在代码与审查页显示「由下载工具保存，未经过代码」，以及来源网址（仅 http/https 时是链接）、下载时间、大小、SHA-256 和批准方式，不再显示「未包含生产代码」和「non-Cell action」。 |
 | [`boot.ts`](boot.ts) | window 名 + notebook/viewer 组合。 |
 | [`index.ts`](index.ts) | 对外再导出。 |
 | [`lineage.test.ts`](lineage.test.ts) | Provenance 链数据变换；针对 0.2.x 遗留快照、确实为空的 Python 列表和 R kernel 渲染 Environment 面板。 |
-| [`conflict.test.ts`](conflict.test.ts) | 409 呈现；`forkOnce` 只打一次；分支错误横幅以新对象发布。 |
+| [`conflict.test.ts`](conflict.test.ts) | 409 呈现；`forkOnce` 只打一次；分支错误横幅以新对象发布；切换分支 / 恢复后的内核结果。 |
 | [`exec.test.ts`](exec.test.ts) | Notebook 侧栏外壳：打开「已执行代码」时移除变量检查器；每次打开、每个 cell 完成后都重新读取快照。 |
 | [`inspector.test.ts`](inspector.test.ts) | 变量检查器刷新时，加载中与结果都以新的状态对象发布。 |
 
-- [`copy.ts`](copy.ts): 溯源读取状态与证据边界的双语文案。
+- [`copy.ts`](copy.ts): 溯源读取状态与证据边界的双语文案；切换分支的确认、结果与恢复文案（`branchT`）。
 - [`validation.ts`](validation.ts): 溯源／环境网络响应严格校验，保留历史可空字段。
-- [`provenance.test.ts`](provenance.test.ts): 只读重试、乱序响应、产物归属与精确 Cell 跳转测试。
+- [`provenance.test.ts`](provenance.test.ts): 只读重试、乱序响应、产物归属与精确 Cell 跳转测试；下载文件的网址、大小、摘要与批准方式（SCI-10）。

@@ -543,7 +543,11 @@ describe("run-location read tri-state", () => {
   it("does not read a missing session as a daemon without the feature", async () => {
     failingApi(404, { error: "session not found" });
     await refreshComputeStatus("f");
-    expect(computeStatus.value?.phase).toBe("unavailable");
+    expect(computeStatus.value?.phase).not.toBe("unsupported");
+    // TEAM-26: nor as a second failure beside "Session not found" -- a
+    // session this login cannot see has no run location to report.
+    expect(computeStatus.value).toBeNull();
+    expect(byId("compute-badge")).toBeNull();
   });
 
   it("keeps a malformed 200 payload as a failed read, not a capability answer", async () => {

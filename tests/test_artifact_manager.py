@@ -1521,6 +1521,49 @@ def test_figure_capture_still_saves_and_closes_a_pyplot_figure(tmp_path):
     assert open_figures["stdout"].strip() == "[]"
 
 
+def test_an_auto_captured_figure_is_named_after_its_title(tmp_path):
+    """SCI-28: auto-captured figures were all `figure_cellN_k.png`, so a report
+    that cited "the hydropathy profile" could not be matched to its file. The
+    suptitle, else the first axes title, is appended; an untitled figure keeps
+    the plain name, and the `figure_cellN_` prefix stays for annotations."""
+    _require_matplotlib_in_the_kernel()
+    harness = ArtifactHarness(tmp_path)
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        before = harness.manager.snapshot(harness.workspace)
+        plotted = kernel.execute(
+            "import matplotlib\nmatplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "fig, ax = plt.subplots()\nax.plot([1, 2])\n"
+            "ax.set_title('Kyte-Doolittle hydropathy (window 9)')\n"
+            "fig2, (a, b) = plt.subplots(1, 2)\na.plot([1])\n"
+            "a.set_title('left')\nfig2.suptitle('OD600 vs dose / by strain')\n"
+            "fig3, c = plt.subplots()\nc.plot([3])\n"
+            "fig4, d = plt.subplots()\nd.plot([4])\nd.set_title('生长曲线')\n",
+            cell_id="cell-titled",
+        )
+        captured = harness.manager.capture(
+            harness.session,
+            3,
+            "cell-titled",
+            before,
+            lambda event: None,
+            language="python",
+            run_system_cell=kernel.execute,
+        )
+
+    assert plotted["error"] is None
+    assert captured.figures == [
+        "figure_cell3_1_Kyte_Doolittle_hydropathy_window_9.png",
+        "figure_cell3_2_OD600_vs_dose_by_strain.png",
+        "figure_cell3_3.png",
+        "figure_cell3_4_生长曲线.png",
+    ]
+    for name in captured.figures:
+        assert (harness.workspace / name).is_file()
+
+
 def test_figure_capture_skips_saved_figures_and_failed_cells(tmp_path):
     """ART-7: a figure the Cell saved itself was saved again as
     figure_cellN_k.png, and a Cell that failed mid-plot left its half-drawn
@@ -1572,7 +1615,8 @@ def test_figure_capture_skips_saved_figures_and_failed_cells(tmp_path):
             3,
             "plt.plot([5, 6])\nplt.savefig('fig3.png')\nplt.title('later')\n",
         )
-        assert changed.figures == ["figure_cell3_1.png"]
+        # Named after its title (SCI-28).
+        assert changed.figures == ["figure_cell3_1_later.png"]
 
         # Saved only into a buffer (an inline display): still captured.
         _result, buffered = run(
@@ -1657,7 +1701,7 @@ def test_a_figure_saved_with_fig_savefig_is_not_captured_again(tmp_path):
             "fig, ax = plt.subplots()\nax.plot([5, 6])\n"
             "fig.savefig('Fig3.png')\nax.set_title('later')\n",
         )
-        assert changed.figures == ["figure_cell3_1.png"]
+        assert changed.figures == ["figure_cell3_1_later.png"]
 
         # Never saved to a file: captured.
         unsaved = run(kernel, 4, "fig, ax = plt.subplots()\nax.plot([7, 8])\n")
@@ -2116,3 +2160,114 @@ def test_a_background_cell_s_files_are_captured_when_it_finishes(tmp_path):
         "results/ddct.csv": launched["exec_id"],
     }
     assert len(harness.store.list_versions(already["artifact_id"])) == 1
+
+
+def test_a_finished_background_job_is_a_notebook_cell(tmp_path):
+    """TEAM-11: the code an exec_background job ran was in no Notebook, .ipynb
+    or session package -- only the files it wrote were captured, naming a
+    producer no cell answered to. The finished job is now a cell of its own:
+    its id is the job id the files name, its source and output are the job's,
+    it is shown under a background runtime and never replayed, and its
+    revision is past every revision the session already used."""
+    import threading
+    from contextlib import nullcontext
+
+    from openai4s.kernel.background import BackgroundExecutor
+    from openai4s.server.artifacts import (
+        BACKGROUND_KERNEL_ID,
+        BackgroundCaptureLifetime,
+    )
+
+    harness = ArtifactHarness(tmp_path)
+    workspace = harness.workspace
+    session = harness.session
+    session.cell_index = 4  # foreground cells already ran this far
+    go = threading.Event()
+    code = "import random\nrandom.seed(42)\nmake_scatter('scatter.png')\n"
+
+    class _WritingKernel:
+        def execute(self, code, origin="agent", on_chunk=None):
+            go.wait(5)
+            (workspace / "scatter.png").write_bytes(b"\x89PNG\r\n\x1a\nscatter")
+            on_chunk("50 points written\n")
+            return {"stdout": "50 points written\n", "error": None}
+
+        def interrupt(self):
+            return None
+
+        def shutdown(self):
+            return None
+
+    events: list[dict] = []
+    executor = BackgroundExecutor(
+        lambda: _WritingKernel(),
+        dispatcher=None,
+        lifetime_factory=lambda: BackgroundCaptureLifetime(
+            harness.manager, session, nullcontext(), events.append
+        ),
+    )
+    launched = executor.launch(code)
+    exec_id = launched["exec_id"]
+    go.set()
+    executor._get(exec_id)._thread.join(5)
+    assert executor.peek(exec_id)["status"] == "done"
+
+    cells = harness.store.list_cells(harness.frame_id)
+    assert [cell["producing_cell_id"] for cell in cells] == [exec_id]
+    cell = cells[0]
+    assert cell["code"] == code
+    assert cell["stdout"] == "50 points written\n"
+    assert cell["status"] == "ok"
+    assert cell["kernel_id"] == BACKGROUND_KERNEL_ID
+    assert cell["language"] == "python"
+    assert cell["origin"] == "agent"
+    assert cell["replay_policy"] == "never"
+    assert cell["files_written"] == ["scatter.png"]
+    assert cell["state_revision"] == 5 and session.cell_index == 5
+    figure = next(
+        row
+        for row in harness.store.list_artifacts({"root_frame_id": harness.frame_id})
+        if row["filename"] == "scatter.png"
+    )
+    version = harness.store.version_meta(figure["latest_version_id"])
+    assert version["producing_cell_id"] == exec_id
+    finished = [e for e in events if e.get("type") == "notebook_cell_finished"]
+    assert len(finished) == 1
+    assert finished[0]["producing_cell_id"] == exec_id
+    assert finished[0]["source"] == code
+
+
+def test_a_failed_background_job_is_recorded_with_its_error(tmp_path):
+    from contextlib import nullcontext
+
+    from openai4s.kernel.background import BackgroundExecutor
+    from openai4s.server.artifacts import BackgroundCaptureLifetime
+
+    harness = ArtifactHarness(tmp_path)
+
+    class _FailingKernel:
+        def execute(self, code, origin="agent", on_chunk=None):
+            on_chunk("starting\n")
+            return {"stdout": "starting\n", "error": "ZeroDivisionError: boom"}
+
+        def interrupt(self):
+            return None
+
+        def shutdown(self):
+            return None
+
+    executor = BackgroundExecutor(
+        lambda: _FailingKernel(),
+        dispatcher=None,
+        lifetime_factory=lambda: BackgroundCaptureLifetime(
+            harness.manager, harness.session, nullcontext(), lambda event: None
+        ),
+    )
+    launched = executor.launch("1/0", origin="user")
+    executor._get(launched["exec_id"])._thread.join(5)
+
+    (cell,) = harness.store.list_cells(harness.frame_id)
+    assert cell["status"] == "error"
+    assert cell["error"] == "ZeroDivisionError: boom"
+    assert cell["origin"] == "user"
+    assert cell["state_revision"] == 1

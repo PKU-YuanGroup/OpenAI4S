@@ -607,15 +607,18 @@ def test_the_clean_notebook_is_one_a_person_can_read_and_rerun():
         return _PNG
 
     service = NotebookExportService(_CleanStore(), read_version_bytes=read)
-    exported = service.export("root-1", variant="clean", title="Age QC / 年龄")
+    exported = service.export(
+        "root-1", language="python", variant="clean", title="Age QC / 年龄"
+    )
     document = json.loads(exported["data"])
 
     assert exported["filename"] == "Age QC _ 年龄.ipynb"
     assert exported["content_type"] == "application/x-ipynb+json"
     kinds = [cell["cell_type"] for cell in document["cells"]]
-    assert kinds == ["markdown", "markdown", "code", "code", "markdown"]
-    header, plan, plot, fetch, final = document["cells"]
+    assert kinds == ["markdown", "code", "markdown", "code", "code", "markdown"]
+    header, stub, plan, plot, fetch, final = document["cells"]
     assert "1 failed and 2 diagnostic" in "".join(header["source"])
+    assert stub["metadata"]["openai4s"] == {"stub": "host"}
     assert "".join(plan["source"]).startswith("First I plot")
     # Progress lines and the user's own words are not narration.
     text = json.dumps(document)
@@ -675,7 +678,9 @@ def test_the_clean_notebook_leaves_out_cells_that_only_keep_the_books():
     kept = [
         cell["metadata"]["openai4s"]["producing_cell_id"]
         for cell in document["cells"]
+        # M-61's `host` stub cell leads the code cells; it was produced by no cell.
         if cell["cell_type"] == "code"
+        and "producing_cell_id" in cell["metadata"]["openai4s"]
     ]
     assert kept == ["c-plot", "c-fetch", "c-mixed"]
     assert document["metadata"]["openai4s"]["left_out"] == {
@@ -696,7 +701,11 @@ def test_the_clean_notebook_leaves_out_cells_that_only_keep_the_books():
 def test_the_clean_notebook_lists_a_figure_it_cannot_embed():
     service = NotebookExportService(_CleanStore(), read_version_bytes=lambda _v: None)
     document = service.clean_notebook("root-1")
-    plot = next(c for c in document["cells"] if c["cell_type"] == "code")
+    plot = next(
+        c
+        for c in document["cells"]
+        if c["cell_type"] == "code" and "stub" not in c["metadata"]["openai4s"]
+    )
     assert not [o for o in plot["outputs"] if o["output_type"] == "display_data"]
     assert "[OpenAI4S artifacts] plot.png" in json.dumps(plot["outputs"])
 
@@ -708,6 +717,111 @@ def test_raw_exports_are_unchanged_by_the_clean_variant():
     )
     assert len(raw["cells"]) == 6  # every python cell, including the failed one
     assert "variant" not in raw["metadata"]["openai4s"]
+
+
+def test_the_default_download_is_one_ipynb_unless_both_languages_remain():
+    """M-61: the default download was a zip with an empty r.ipynb. One
+    language gives one .ipynb; a zip only when Python and R cells both
+    remain after cleaning."""
+    store = _CleanStore()
+    both = NotebookExportService(store).export(
+        "root-1", variant="clean", title="Age QC"
+    )
+    assert both["filename"] == "Age QC.notebooks.zip"
+    assert both["content_type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(both["data"])) as archive:
+        assert sorted(archive.namelist()) == [
+            "Age QC.python.ipynb",
+            "Age QC.r.ipynb",
+            "manifest.json",
+        ]
+        r_doc = json.loads(archive.read("Age QC.r.ipynb"))
+        assert "summary(cars)" in json.dumps(r_doc["cells"])
+
+    store.cells = [cell for cell in store.cells if cell["language"] == "python"]
+    single = NotebookExportService(store).export(
+        "root-1", variant="clean", title="Age QC"
+    )
+    assert single["filename"] == "Age QC.ipynb"
+    assert json.loads(single["data"])["metadata"]["openai4s"]["language"] == "python"
+
+    # An R cell that failed leaves nothing to re-run: no R notebook either.
+    store.cells.append(
+        {
+            "producing_cell_id": "c-r-failed",
+            "cell_index": 11,
+            "language": "r",
+            "status": "error",
+            "code": "stop('x')\n",
+            "error": "Error: x",
+            "created_at": 4600,
+        }
+    )
+    assert (
+        NotebookExportService(store)
+        .export("root-1", variant="clean")["filename"]
+        .endswith(".ipynb")
+    )
+
+
+def test_the_raw_bundle_has_no_empty_r_notebook():
+    store = _CleanStore()
+    store.cells = [cell for cell in store.cells if cell["language"] == "python"]
+    with zipfile.ZipFile(
+        io.BytesIO(NotebookExportService(store).bundle("root-1"))
+    ) as archive:
+        assert sorted(archive.namelist()) == ["manifest.json", "root-1.python.ipynb"]
+
+
+def test_the_clean_notebook_runs_outside_openai4s():
+    """M-61: the first cell calling host.* stopped the notebook with a
+    NameError outside OpenAI4S. The stub cell turns those calls into no-ops,
+    and leaves a real `host` alone."""
+    store = _CleanStore()
+    store.cells = [
+        cell for cell in store.cells if cell["producing_cell_id"] == "c-fetch"
+    ] + [
+        {
+            "producing_cell_id": "c-env",
+            "cell_index": 12,
+            "language": "python",
+            "status": "ok",
+            # Uses what it read, so NB-4 keeps it (a bare listing is left out).
+            "code": "envs = host.env.list(kind='python')\n"
+            "names = [e for e in (envs or [])]\nprint(len(names))\n",
+            "created_at": 3100,
+        }
+    ]
+    document = NotebookExportService(store).clean_notebook("root-1", "python")
+    namespace: dict = {}
+    for cell in document["cells"]:
+        if cell["cell_type"] == "code":
+            exec("".join(cell["source"]), namespace)  # noqa: S102 - our own export
+    assert namespace["page"] is None and namespace["envs"] is None
+
+    real = object()
+    kept = {"host": real}
+    exec("".join(document["cells"][1]["source"]), kept)  # noqa: S102
+    assert kept["host"] is real
+
+
+def test_a_background_cell_is_marked_in_the_clean_notebook():
+    store = _CleanStore()
+    store.cells = [
+        {
+            "producing_cell_id": "exec-a1e3fc96632d",
+            "cell_index": 3,
+            "language": "python",
+            "kernel_id": "python — background",
+            "status": "ok",
+            "code": "print('fit done')\n",
+            "stdout": "fit done\n",
+            "created_at": 900,
+        }
+    ]
+    document = NotebookExportService(store).clean_notebook("root-1", "python")
+    code = next(c for c in document["cells"] if c["cell_type"] == "code")
+    assert "".join(code["source"]).startswith("# Ran as a background task")
 
 
 def test_the_route_serves_the_clean_notebook_under_the_session_title(tmp_path):

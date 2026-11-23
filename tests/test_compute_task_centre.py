@@ -647,9 +647,15 @@ def test_page_load_and_ordinary_stop_never_post_cancel():
     assert "/cancel" not in load_fn
     assert "/cancel" not in read_fn
     assert "confirm: true" not in load_fn
-    # The cancel helper itself is the only POST, and it is behind confirm().
+    # The cancel helper itself is the only POST, and it is behind a
+    # confirmation (the in-app dialog since M-45, no longer a native confirm),
+    # awaited before the POST is built.
     assert "function cancelComputeTask" in island
-    assert "globalThis.confirm" in island
+    cancel_fn = island.split("async function cancelComputeTask", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    assert "await askConfirm(" in cancel_fn
+    assert cancel_fn.index("await askConfirm(") < cancel_fn.index("/cancel")
     assert "computeCancelInFlight" in island
     assert "JSON.stringify({ confirm: true })" in island
     assert "may still be running and billing" in island

@@ -166,7 +166,7 @@ derived from the data directory's real path — so a Secret written against one
 volume stops resolving if the volume moves. The plain name is the portable one.
 
 The backend is **read-only by design**: if the environment owns the secret, the
-app must not overwrite it behind the operator's back. **Customize → Models
+app must not overwrite it behind the operator's back. **Settings → Models
 therefore cannot save an API key** — it refuses, naming the exact variable to
 set. That is the intended boundary, not a limitation to work around. Clearing a
 key from the UI does not unset an injected one either; the settings route
@@ -492,7 +492,7 @@ cookie 也随之失效。
 那个。
 
 这个后端**按设计是只读的**：既然环境拥有这个密钥，应用就不该背着运维把它覆盖掉。
-因此 **Customize → Models 无法保存 API key**——它会拒绝，并告诉你该设哪个变量。
+因此 **Settings → Models 无法保存 API key**——它会拒绝，并告诉你该设哪个变量。
 这是有意划下的边界，不是需要绕开的限制。从 UI 清除一个注入的 key 同样不会真的取消
 它；设置路由回报的是它写完之后重新读到的 `has_api_key`，而不是宣称清除生效了。
 

@@ -12,7 +12,7 @@ capabilities:
 metadata:
   # Experimental text_features: user-selected data-row text is sent to
   # TypeSafe Jev at api.typesafe.ai when the capability is enabled in
-  # Customize → Experimental. info_url. verified 2026-09-20
+  # Settings → Experimental. info_url. verified 2026-09-20
   third_party:
     - kind: service
       name: TypeSafe
@@ -33,7 +33,7 @@ you want calibrated numeric features instead of bag-of-words. The main model
 proposes operationalizable questions; Jev answers each row; the sidecar fits a
 model on a development split and scores the frozen test split once.
 
-This is experimental. Turn on `text_features` under Customize → Experimental
+This is experimental. Turn on `text_features` under Settings → Experimental
 (the master experimental-judgment switch must also be on). Headless: set
 `OPENAI4S_EXPERIMENTAL_JUDGMENT=1` and `OPENAI4S_JUDGMENT_TEXT_FEATURES=1`.
 When the capability is off, the helpers return `status: "disabled"` and do

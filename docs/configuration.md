@@ -1,29 +1,31 @@
 # Configuration
 
-Config is via env vars (all have working defaults), read from the environment or a git-ignored `.env` at the repo root. **You rarely need to touch files** — set your model from the UI (**Customize → Models**). To configure by env instead, copy `.env.example` to `.env`. `OPENAI4S_SKIP_DOTENV=1` skips the `.env` loader entirely — the offline test suite sets it so a developer's real `.env` can never configure the tests.
+Config is via env vars (all have working defaults), read from the environment or a git-ignored `.env` at the repo root. **You rarely need to touch files** — set your model from the UI (**Settings → Models**). To configure by env instead, copy `.env.example` to `.env`. `OPENAI4S_SKIP_DOTENV=1` skips the `.env` loader entirely — the offline test suite sets it so a developer's real `.env` can never configure the tests.
 
 ## Model providers
 
 One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_url` and `model`, so usually you only set the key. Four wire formats live behind one normalized `host.llm`: OpenAI-compatible `/chat/completions`, OpenAI `/responses`, Anthropic `/v1/messages`, and Gemini `generateContent`.
 
-| provider | wire | default model | vision |
-|---|---|---|:---:|
-| `ark` | openai | `doubao-seed-2.1-pro` (+11 more via plan/v3) | ✅ |
-| `chatgpt` | openai | `gpt-5` | ✅ |
-| `openai_responses` | responses | `gpt-5` | — |
-| `claude` | anthropic | `claude-sonnet-4-5` | ✅ |
-| `gemini` | gemini | `gemini-2.5-flash` | ✅ |
-| `ollama` | openai | `gemma4:31b` (cloud) | ✅ |
+| provider | name in the UI | wire | default model | vision |
+|---|---|---|---|:---:|
+| `ark` | Ark-compatible | openai | `doubao-seed-2.1-pro` (+11 more via plan/v3) | ✅ |
+| `chatgpt` | OpenAI-compatible | openai | `gpt-5` | ✅ |
+| `openai_responses` | OpenAI Responses | responses | `gpt-5` | — |
+| `claude` | Anthropic-compatible | anthropic | `claude-sonnet-4-5` | ✅ |
+| `gemini` | Gemini-compatible | gemini | `gemini-2.5-flash` | ✅ |
+| `ollama` | Ollama | openai | `gemma4:31b` (cloud) | ✅ |
+
+The provider id is what `OPENAI4S_LLM_PROVIDER` and `openai4s init --provider` take; `chatgpt` is the id of the OpenAI-compatible `/chat/completions` protocol, so it is also the one for DeepSeek, vLLM, OpenRouter and similar endpoints (set the base URL). `openai4s init` lists each id with its UI name and accepts either.
 
 `ark` is Volcengine's Agent Plan gateway (the provider's default endpoint) — one endpoint + key serving the plan's text models: `doubao-seed-2.1-pro`, `doubao-seed-evolving`, `doubao-seed-2.1-lite`, `doubao-seed-2.0-mini`, `glm-5.3`, `glm-5.3-flash`, `kimi-k3.1-pro`, `kimi-k2.8-preview`, `deepseek-v4-{pro,flash}` and `deepseek-v4.1-flash` (plus its `-economy` variant), as listed in [the plan's model table](https://www.volcengine.com/docs/82379/2366394). The gateway answers any other id with HTTP 404 `UnsupportedModel`; 1.0.0's `doubao-seed-2.0-{pro,code,lite}` and `minimax-*` presets are no longer served. These are catalog presets, not saved profiles: no profile is pre-registered, so save one for each model you want to switch to. The plan gateway has no model-listing route, so First-run setup's **Fetch models** offers this catalog for it; other endpoints are asked for the ids they actually serve. Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
 
-Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
+Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). **A saved setting wins over all three:** whatever Settings → Models or `openai4s init` stored in the settings database (provider, model, base URL, key) is used before any environment variable is read, so editing `.env` does not change a model that was saved once — change it where it was saved, or run `openai4s init --model <id>`. `openai4s doctor` says where the model it reports came from and names an environment variable that a saved value overrides. The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
 
 The `openai` and `anthropic` wires stream token by token whenever the caller supplies a delta callback, and allow one blocking compatibility request only after HTTP 400/422 explicitly reports `streaming_not_supported`, or `unsupported_parameter` / `unknown_parameter` with structured `param: "stream"`. Authentication failures, empty streams, timeouts and uncertain read failures do not trigger compatibility requests. All transports share one send ceiling (`OPENAI4S_LLM_MAX_RETRIES` + 1, never below two, three by default) and one backoff budget per logical call; the compatibility POST itself is attempted only once, and because it is a fallback rather than a retry, `OPENAI4S_LLM_MAX_RETRIES=0` still leaves room for it. Cancellation before a send prevents it, and received text, reasoning, tool fragments or usage veto transparent replay. `responses` is always SSE; `gemini` is always blocking. `OPENAI4S_LLM_STREAM=0` (also `false`/`no`/`off`) forces the blocking path on the two that choose — worth reaching for behind a proxy that mishandles SSE, at the cost of the reply arriving as one blob per turn.
 
 ### Ollama models and web tools / Ollama 模型与网页工具
 
-In **Customize → Models**, choose **Ollama (cloud or local)**. For cloud
+In **Settings → Models**, choose **Ollama (cloud or local)**. For cloud
 inference, leave Base URL and model empty to use `https://ollama.com/v1` and
 `gemma4:31b`, and enter your Ollama API key. Environment configuration uses
 `OPENAI4S_LLM_PROVIDER=ollama` and `OLLAMA_API_KEY` (or
@@ -38,7 +40,7 @@ to `http://127.0.0.1:11434/v1` and the model to its installed name, for example
 requests carry no cloud credential; unknown local tool capabilities remain
 conservative until a successful capability probe.
 
-To use Ollama web tools with **any main model**, open **Customize → Network →
+To use Ollama web tools with **any main model**, open **Settings → Network →
 Ollama web tools**, enter the API key once and choose **Save key**. This
 independent credential enables `host.web_search` and `host.web_fetch`,
 including their native tool equivalents, without switching the main model or
@@ -117,7 +119,7 @@ JSON bodies are capped at 32 MiB and error bodies at 64 KiB. SSE limits are 1 Mi
 
 ### Retries / 重试
 
-A failure is replayed only when it is retryable (HTTP 408/425/429/500/502/503/504, a structured capacity error inside a stream before any output, or a connect that failed before the request was sent) **and** nothing has reached the caller yet. Three settings shape that replay; like the timeouts they are read at startup, so restart the daemon after changing them:
+A failure is replayed only when it is retryable (HTTP 408/425/429/500/502/503/504, a structured capacity error inside a stream before any output, or a connect, including a TLS handshake the peer dropped, that failed before the request was sent) **and** nothing has reached the caller yet. One more case is replayed, once per call: a stream that opened and then delivered no event for the whole `OPENAI4S_LLM_TIMEOUT`. Three settings shape that replay; like the timeouts they are read at startup, so restart the daemon after changing them:
 
 | env | default | range | meaning |
 |---|---|---|---|
@@ -127,7 +129,7 @@ A failure is replayed only when it is retryable (HTTP 408/425/429/500/502/503/50
 
 A positive server-sent `Retry-After` is honoured exactly: it is never shortened to the per-wait ceiling, because re-sending inside the window the server just named only spends an attempt. On a 429, `Retry-After: 0` (or a date already past) is treated as absent. When it does not fit in the retry budget, or the next wait does not fit in what is left of `OPENAI4S_LLM_TOTAL_TIMEOUT`, the call gives up immediately with the provider's error (`llm_rate_limited` for a 429) instead of sleeping, and the message names the setting that stopped it. Otherwise a 429 waits `U(b/2, b)` with `b = min(RETRY_MAX_DELAY, 4 × 2^(n−1))` seconds — about 2–4 s, then 4–8 s by default — and other failures wait `U(0, min(RETRY_MAX_DELAY, 0.5 × 2^(n−1)))`. Behind a relay with a requests-per-minute limit, `6 / 180 / 60` lets one call ride out a whole minute window. Auto Mode budgets and team quotas reserve one full request per possible send, so a larger `MAX_RETRIES` reserves proportionally more. A per-request attempt limit (including the one-shot compatibility POST) is reported separately from the configured retry limit. For a relay that refuses streaming, set `OPENAI4S_LLM_STREAM=0` to let blocking calls use the full retry policy. The TypeSafe judgment backend keeps its own retry policy.
 
-仅当失败可重试（HTTP 408/425/429/500/502/503/504、尚无输出时的流内结构化容量错误，或请求发出前的连接失败）**且**尚未向调用方交付任何内容时才会重发。三项设置决定重发方式；与超时设置一样在启动时读取，修改后需重启守护进程：`OPENAI4S_LLM_MAX_RETRIES`（默认 2，整数 0–20，发送失败后的重试次数，0 表示不重试；流式请求被直接拒绝时仍会发出那一次兼容请求）、`OPENAI4S_LLM_RETRY_BUDGET`（默认 30，0–3600 秒，一次逻辑调用在各次发送之间累计等待的上限）、`OPENAI4S_LLM_RETRY_MAX_DELAY`（默认 8，1–600 秒，单次计算退避的上限）。服务端给出的正数 `Retry-After` 原样遵守、不会被截短到单次上限（429 上的 `Retry-After: 0` 或已过去的日期视为未给出）；若它超出重试预算，或下一次等待超出 `OPENAI4S_LLM_TOTAL_TIMEOUT` 的剩余时间，调用会立即以供应商错误结束（429 对应 `llm_rate_limited`），而不是先睡到期限，提示中会指明是哪项设置限制了它。其余情况下，429 按 `U(b/2, b)`、`b = min(RETRY_MAX_DELAY, 4 × 2^(n−1))` 秒退避（默认约 2–4 秒、再 4–8 秒），其他失败按 `U(0, min(RETRY_MAX_DELAY, 0.5 × 2^(n−1)))` 退避。使用限制 RPM 的中转或公益服务时，可设为 `6 / 180 / 60`，让一次调用撑过完整的一分钟窗口。Auto Mode 预算与团队配额按每次可能的发送预留一次完整请求，因此 `MAX_RETRIES` 越大预留越多。单次请求的发送上限（包括仅发送一次的兼容 POST）与配置的重试次数上限分别报告。若中转服务拒绝流式响应，可设置 `OPENAI4S_LLM_STREAM=0`，让非流式调用使用完整重试策略。TypeSafe 判定后端保留自己的重试策略。
+仅当失败可重试（HTTP 408/425/429/500/502/503/504、尚无输出时的流内结构化容量错误，或请求发出前的连接失败，含对端中断的 TLS 握手）**且**尚未向调用方交付任何内容时才会重发。另有一种情况每次调用只重发一次：流已建立，但在整个 `OPENAI4S_LLM_TIMEOUT` 内没有收到任何事件。三项设置决定重发方式；与超时设置一样在启动时读取，修改后需重启守护进程：`OPENAI4S_LLM_MAX_RETRIES`（默认 2，整数 0–20，发送失败后的重试次数，0 表示不重试；流式请求被直接拒绝时仍会发出那一次兼容请求）、`OPENAI4S_LLM_RETRY_BUDGET`（默认 30，0–3600 秒，一次逻辑调用在各次发送之间累计等待的上限）、`OPENAI4S_LLM_RETRY_MAX_DELAY`（默认 8，1–600 秒，单次计算退避的上限）。服务端给出的正数 `Retry-After` 原样遵守、不会被截短到单次上限（429 上的 `Retry-After: 0` 或已过去的日期视为未给出）；若它超出重试预算，或下一次等待超出 `OPENAI4S_LLM_TOTAL_TIMEOUT` 的剩余时间，调用会立即以供应商错误结束（429 对应 `llm_rate_limited`），而不是先睡到期限，提示中会指明是哪项设置限制了它。其余情况下，429 按 `U(b/2, b)`、`b = min(RETRY_MAX_DELAY, 4 × 2^(n−1))` 秒退避（默认约 2–4 秒、再 4–8 秒），其他失败按 `U(0, min(RETRY_MAX_DELAY, 0.5 × 2^(n−1)))` 退避。使用限制 RPM 的中转或公益服务时，可设为 `6 / 180 / 60`，让一次调用撑过完整的一分钟窗口。Auto Mode 预算与团队配额按每次可能的发送预留一次完整请求，因此 `MAX_RETRIES` 越大预留越多。单次请求的发送上限（包括仅发送一次的兼容 POST）与配置的重试次数上限分别报告。若中转服务拒绝流式响应，可设置 `OPENAI4S_LLM_STREAM=0`，让非流式调用使用完整重试策略。TypeSafe 判定后端保留自己的重试策略。
 
 JSON / 错误体分别上限 32 MiB / 64 KiB；SSE 单行 / 单事件 / 总输入分别为 1 MiB / 4 MiB / 64 MiB，心跳也计入总输入；文本队列最多 1 MiB UTF-8 字节。错误码分别为 `llm_deadline_exceeded` 与 `llm_response_too_large`。原始完整用量独立于显示补零保留，缺失或畸形计量按未知处理。Auto Mode 保留未知预算预留；现有接入团队 token 配额的调用路径记录未知调用，受影响的配额窗口到期前拒绝继续调用。未启用团队配额的安装不受这一配额限制影响。停止后的计费排空仍受原期限限制，晚到用量只记一次且归属原调用。
 
@@ -184,7 +186,7 @@ Starting the daemon never modifies your Python environment. `serve` only *report
 openai4s setup            # provision the kernel environments
 ```
 
-or Customize → Compute → **Install additional packages** in the UI.
+or Settings → Compute → **Install additional packages** in the UI.
 
 This used to be implicit: `serve` resolved ~23 *unpinned* package names against PyPI on a background thread and installed them with `--break-system-packages`. That made booting the daemon mutate the user's interpreter, made two cold starts a week apart produce different environments, and made an offline cold start fail where nobody was looking. Diagnosis and mutation are now separate.
 
@@ -209,7 +211,7 @@ status transition, while plan drafting remains available. `openai4s run`
 applies the same typed check at its first Code Cell; `serve` and `doctor` report
 it without installing anything.
 
-The persistent workbench banner and Customize → Compute card show the complete
+The persistent workbench banner and Settings → Compute card show the complete
 missing-environment/package list. Remediation remains an explicit, managed
 transaction:
 
@@ -446,10 +448,10 @@ into that table.
 
 `api.typesafe.ai` is **not** a built-in egress group. In allowlist mode grant
 it with `host.request_network_access(domain="api.typesafe.ai")`. Status:
-Customize → General → Experimental, `openai4s doctor` (check name `judgment`),
+Settings → General → Experimental, `openai4s doctor` (check name `judgment`),
 and audit events `judgment` / `judgment_shadow`.
 
-Workbench: Customize → General. REST under `/api/v1/experimental/judgment`
+Workbench: Settings → General. REST under `/api/v1/experimental/judgment`
 (`GET` status, `PUT` flags/ack/key, `POST …/test` probe).
 
 ## Optional Jupyter adapter
@@ -471,21 +473,53 @@ Host-RPC limitations.
 
 ## CLI
 
+Every subcommand, in the order a new installation meets them. `openai4s
+<command> --help` has the details. In a checkout set up by `./setup.sh` the
+command lives in `.venv/bin`, which is not on `PATH`: run it as `uv run
+openai4s …` from that folder, or `source .venv/bin/activate` first.
+
 ```bash
+# get started
 openai4s init      # guided first-run model configuration (headless-friendly)
+openai4s doctor    # can this install do the work? model, runtime, sandbox, disk,
+                   # connectors; no daemon needed; exit 0 ok / 1 degraded / 2 failed.
+                   # --network: one small request verifies the API key and model, and
+                   # each built-in science host gets one HEAD; without it nothing is sent
 openai4s serve     # daemon + web UI (foreground; --detached to background,
                    # plus --host/--port/--no-browser; the detached parent waits
                    # up to 60s for /health, OPENAI4S_DETACHED_READY_TIMEOUT overrides)
-openai4s status    # is it up? (plain URL, never the access token)
 openai4s url       # the sign-in URL; it carries the access token, so keep it out of logs
+openai4s status    # is it up? (plain URL, never the access token; --json for scripts)
 openai4s stop      # stop the daemon; waits up to --timeout (default 30s), --force to SIGKILL
-openai4s run "…"   # one Code-as-Action task in-process, no daemon
-openai4s setup --profile standard          # build Python + R
+
+# work without the web UI
+openai4s run "…"   # one task in this terminal, no daemon; stored as a session the web UI shows
+openai4s cluster submit|list|cancel|logs|profiles   # batch jobs through the daemon
+openai4s share create|update|list|revoke|enable|disable|status|import
+                   # read-only session shares through a relay (docs/webshare.md)
+openai4s relay serve|gen-token                       # the public share relay, on a VPS
+
+# environments
+openai4s setup --profile standard          # build the Python + R conda envs in place
 openai4s setup --profile standard --update # sync Python + R, no pruning
 openai4s setup                             # build all four environments
+openai4s env plan|apply|list|rollback|recover
+                   # the same envs/*.yml specs as verified generations under the
+                   # data dir, with rollback; the agent finds envs made either way
 openai4s jupyter describe               # inspect optional bridge availability
 openai4s jupyter export ./kernel-specs  # pure-stdlib KernelSpec export
 openai4s jupyter install                # install user KernelSpecs
+
+# support and evidence
+openai4s diagnostics -o bundle.zip   # redacted support bundle; its report.json has
+                                     # versions, postures, doctor's verdicts, recent runs
+openai4s verify-package <file>.openai4s-session.zip   # an exported session's hashes
+openai4s inspect-package <file>.openai4s-session.zip  # how that session's run behaved
+openai4s benchmark                   # the workflow benchmark against the real subsystems
+
+# team server and lab
+openai4s user add|list|disable|reset-password   # team-mode accounts
+openai4s lab …     # the simulated OpenMHS lab (`openai4s lab --help`)
 ```
 
 `openai4s run` exits with a status a script can branch on:
@@ -496,6 +530,7 @@ openai4s jupyter install                # install user KernelSpecs
 | 1 | An unhandled error; a Python traceback is on stderr. |
 | 2 | Refused before or at the first Code Cell: a usage error (an empty task, `empty_task`; an invalid `--allow-test-command`, `invalid_allow_test_command`), an explicit `--mode reusable_pipeline\|codebase_change` whose test command nothing can authorize (`code_mode_test_runner_unauthorized`), the standard environment is not ready, the database schema is newer than this build (`future_schema`), or an upgrade of an older database failed and was rolled back (`migration_failed`; the error line names the kept backup). `--json` prints the error and its code on stdout; the two database refusals also keep their `error:` line on stderr. |
 | 3 | The run ended without completing: `stop_reason` is `max_turns`, `no_progress`, `cancelled`, or any other value. |
+| 4 | The model call failed: no API key (`llm_not_configured`), a key the provider rejected (`llm_auth_failed`), a model or endpoint it does not have (`llm_model_not_found`), a rate limit (`llm_rate_limited`), an endpoint that could not be reached (`llm_unreachable`), or another `llm_*` code. One `error:` line on stderr says what failed and what to check; `--json` prints the error and its code on stdout; `--debug` (or `OPENAI4S_DEBUG=1`) adds the Python traceback. |
 
 `--json` prints the full result, `stop_reason` included, for exit 0 and 3
 alike. With `--auto` the status still follows `stop_reason` alone; the review
@@ -505,14 +540,42 @@ verdict is `auto_mode.terminal`.
 OpenAI4S settings database. Interactive API-key input is hidden; automation may
 pipe one line to `openai4s init --api-key-stdin --non-interactive`. An API key
 is never accepted as a command-line value or returned by `--json`, keeping it
-out of shell history and structured command output.
+out of shell history and structured command output. In the `--json` result
+`complete` only says the first-run setup was saved; `needs_api_key` is true
+while no key is stored for a provider that needs one (a keyless local endpoint
+does not). With stdin not a terminal and no `--non-interactive`, `init` asks
+nothing and says so on stderr before it saves the options given and the
+provider defaults.
 
 The same command makes one web-search choice. Interactively it asks after the
 model; `--search doubao|tavily|you|builtin|parallel` makes it non-interactively, with
 `--search-key-stdin` supplying the Agent Plan, Tavily or You.com key (stdin
 carries one key per run, so not together with `--api-key-stdin`). `doubao`
 stores the Agent Plan key; any other choice moves that engine to the front of
-the backup list, and `builtin` keeps only the keyless engines.
+the backup list, and `builtin` keeps only the keyless engines as backups.
+Doubao is not a backup: whenever an Agent Plan key is stored (an Ark Agent Plan
+model key counts) it is tried before the backups, whichever one is chosen.
+
+**CLI language.** `openai4s init`, `openai4s doctor` and `openai4s setup` print
+their prose in Chinese or English; the other subcommands are English for now.
+`OPENAI4S_LANG` decides when it is set: `zh` (also `zh_CN`, `zh-CN`,
+`zh_CN.UTF-8`) or `en`, and any other value means English. Unset, the locale
+decides: the first non-empty one of `LC_ALL`, `LC_MESSAGES` and `LANG`, so a
+`zh_CN.UTF-8` terminal gets Chinese. No locale, `C`/`POSIX`, or another
+language gets English; the variables are only read, nothing asks the
+operating system. Only the prose changes: `--json` output (always English,
+byte for byte), exit codes, command names, flags, environment variable names,
+paths and package names are the same in both languages. Messages another
+component raises (an exception, the sandbox's own reason) are printed as
+raised.
+
+**CLI 语言。** `openai4s init`、`openai4s doctor` 和 `openai4s setup` 的说明文字可以用中文或
+英文输出；其他子命令暂时仍是英文。设置了 `OPENAI4S_LANG` 时以它为准：`zh`（也接受 `zh_CN`、
+`zh-CN`、`zh_CN.UTF-8`）或 `en`，其他值一律按英文。未设置时看系统区域设置：`LC_ALL`、
+`LC_MESSAGES`、`LANG` 中第一个非空的那个决定，所以 `zh_CN.UTF-8` 的终端会得到中文；没有区域
+设置、`C`/`POSIX` 或其他语言都按英文。这里只读取环境变量，不会去询问操作系统。变的只有说明文字：
+`--json` 输出（始终是英文，逐字节不变）、退出码、命令名、参数、环境变量名、路径和包名在两种语言下
+都一样。其他组件抛出的消息（异常、沙箱自己给出的原因）按原样输出。
 
 ## Platform support
 

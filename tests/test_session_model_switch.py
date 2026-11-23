@@ -218,8 +218,12 @@ def test_the_live_entry_means_the_global_configuration(api):
         call("POST", f"/frames/{frame}/model-binding", {"model_id": b})["code"] == 200
     )
     assert _pin(runner, frame)[0] == b
-    live = call("GET", "/models")["body"]["models"]["default"][0]["id"]
-    assert live not in (a, b)
+    # M-7: with A active the selector lists A once, without a bare twin of it;
+    # the bare live model name posted here still means the global configuration.
+    entries = call("GET", "/models")["body"]["models"]["default"]
+    assert [e["id"] for e in entries if not e.get("profile_id")] == []
+    live = runner.store.get_setting("llm_model")
+    assert live and live not in (a, b)
 
     back = call("POST", f"/frames/{frame}/model-binding", {"model_id": live})
 
@@ -365,7 +369,8 @@ def test_a_session_deleted_during_a_model_switch_cannot_report_success(
 ):
     runner, call = api
     frame, _a, b = _two_profiles(runner, call)
-    live = call("GET", "/models")["body"]["models"]["default"][0]["id"]
+    # The bare live model name (the selector lists the active profile instead, M-7).
+    live = runner.store.get_setting("llm_model")
     body = (
         {"model_id": b if selection == "profile" else live}
         if selection != "bodiless"

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from openai4s.tools.artifacts import (
@@ -356,6 +356,76 @@ def parse_fence_delimiter(line: str) -> tuple[str, int, str] | None:
     return fence[0], len(fence), (m.group("info") or "").strip().lower()
 
 
+# Fence infos whose block is a Code-as-Action cell, and the language its
+# string literals are read in (a bare fence is Python; see ``agent/actions.py``).
+_CELL_LANGUAGES = {"": "python", "python": "python", "py": "python", "r": "r"}
+_R_RAW_STRING = re.compile(r"""[rR](["'])(-*)([(\[{])""")
+_R_RAW_CLOSERS = {"(": ")", "[": "]", "{": "}"}
+
+
+class _StringTracker:
+    """Whether the cell source read so far ends inside an open string literal.
+
+    A lexer for exactly that question and nothing else: quotes, escapes and
+    comments, fed one line at a time. Python strings span lines only when
+    triple-quoted; R strings always may, and R raw strings (``r"(...)"``) end
+    at their bracket-and-dash closer with no escapes.
+    """
+
+    def __init__(self, language: str) -> None:
+        self._r = language == "r"
+        self._closer: str | None = None
+        self._raw = False
+
+    @property
+    def in_string(self) -> bool:
+        return self._closer is not None
+
+    def feed(self, line: str) -> None:
+        index, end = 0, len(line)
+        while index < end:
+            char = line[index]
+            closer = self._closer
+            if closer is not None:
+                if char == "\\" and not self._raw:
+                    index += 2
+                elif line.startswith(closer, index):
+                    self._closer = None
+                    self._raw = False
+                    index += len(closer)
+                elif char == "\n" and self._ends_at_newline(closer):
+                    self._closer = None
+                    index += 1
+                else:
+                    index += 1
+                continue
+            if char == "#":
+                return
+            if self._r:
+                raw = _R_RAW_STRING.match(line, index) if char in "rR" else None
+                if raw and not (
+                    index and (line[index - 1].isalnum() or line[index - 1] in "._")
+                ):
+                    self._closer = (
+                        _R_RAW_CLOSERS[raw.group(3)] + raw.group(2) + raw.group(1)
+                    )
+                    self._raw = True
+                    index = raw.end()
+                    continue
+                if char in "\"'`":
+                    self._closer = char
+            elif char in "\"'":
+                triple = char * 3
+                self._closer = triple if line.startswith(triple, index) else char
+                index += len(self._closer) - 1
+            index += 1
+
+    def _ends_at_newline(self, closer: str) -> bool:
+        # A Python one-line string and an R backtick name cannot span lines; a
+        # stray quote must not swallow the rest of the cell.
+        return closer == "`" if self._r else len(closer) == 1
+
+
 def scan_fenced_blocks(text: str) -> list[FencedBlock]:
     """Return top-level fenced blocks using a small, nesting-aware scanner.
 
@@ -364,10 +434,19 @@ def scan_fenced_blocks(text: str) -> list[FencedBlock]:
     than CommonMark: models often place a literal ```tool example inside a
     ```python triple-quoted string, and the outer Python cell must remain whole.
     Only blocks whose outer delimiter reaches a matching close are executable.
+
+    Inside a Python or R cell, a fence line that falls within a string literal
+    of that cell is content, not a delimiter: a report template holding a
+    Markdown code block (a bare ``` line in a triple-quoted string) used to
+    end the cell right there, and the truncated half then ran and failed with
+    an unterminated-string error.
     """
     if not isinstance(text, str) or not text:
         return []
+    return _scan_fences(text, string_aware=True)
 
+
+def _scan_fences(text: str, *, string_aware: bool) -> list[FencedBlock]:
     blocks: list[FencedBlock] = []
     stack: list[tuple[str, int]] = []
     top_info = ""
@@ -376,9 +455,17 @@ def scan_fenced_blocks(text: str) -> list[FencedBlock]:
     top_start = 0
     body_start = 0
     offset = 0
+    strings: _StringTracker | None = None
+    literal_fences = False
     for line in text.splitlines(keepends=True):
         delimiter = parse_fence_delimiter(line)
-        if delimiter is not None:
+        if delimiter is not None and strings is not None and strings.in_string:
+            delimiter = None
+            literal_fences = True
+        if delimiter is None:
+            if strings is not None:
+                strings.feed(line)
+        else:
             fence_char, fence_length, info = delimiter
             if not stack:
                 stack.append((fence_char, fence_length))
@@ -387,6 +474,11 @@ def scan_fenced_blocks(text: str) -> list[FencedBlock]:
                 top_length = fence_length
                 top_start = offset
                 body_start = offset + len(line)
+                language = _CELL_LANGUAGES.get(info) if fence_char == "`" else None
+                strings = (
+                    _StringTracker(language) if string_aware and language else None
+                )
+                literal_fences = False
             elif fence_char != stack[-1][0] or fence_length < stack[-1][1]:
                 # A shorter or alternate-character delimiter is literal body
                 # (e.g. ```tool inside a ````python documentation cell).
@@ -398,6 +490,7 @@ def scan_fenced_blocks(text: str) -> list[FencedBlock]:
             else:
                 stack.pop()
                 if not stack:
+                    strings = None
                     blocks.append(
                         FencedBlock(
                             info=top_info,
@@ -411,6 +504,15 @@ def scan_fenced_blocks(text: str) -> list[FencedBlock]:
                     )
         offset += len(line)
 
+    if stack and literal_fences:
+        # Reading fence lines as string content never closed this cell (a
+        # reply cut off inside the string, or a quote this lexer misjudged).
+        # Fall back to the plain reading from the cell's opening fence on, so
+        # the outcome is never worse than it was without the string rule.
+        return blocks + [
+            replace(block, start=block.start + top_start, end=block.end + top_start)
+            for block in _scan_fences(text[top_start:], string_aware=False)
+        ]
     if stack:
         blocks.append(
             FencedBlock(

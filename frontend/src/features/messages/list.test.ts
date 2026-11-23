@@ -455,13 +455,42 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.hint.textContent).toContain(copyFailedText());
   });
 
-  it.each(ROW_RENDERERS)("%s: Edit fills the composer and grows it to fit", (_name, render) => {
-    const row = render({ role: "assistant", content: "Edit me." }) as unknown as RowEl;
-    const edit = row.querySelector(".msg-actions")!.children[3]!;
-    edit.onclick!();
-    expect(doc.composer.value).toBe("Edit me.");
-    expect(doc.composer.style.height).toBe("64px");
-    expect(doc.composer.focused).toBe(1);
+  it.each(ROW_RENDERERS)("%s: an answer offers Copy and a rating, not Edit (M-71, SYNC-26)", (_name, render) => {
+    doc.composer.value = "my draft";
+    const row = render({ role: "assistant", content: "An answer." }) as unknown as RowEl;
+    const buttons = row.querySelector(".msg-actions")!.children;
+    expect(buttons.map((b) => b.attrs["data-icon"])).toEqual(["copy", "thumbs-up", "thumbs-down"]);
+    expect(buttons.map((b) => b.attrs["aria-label"])).toEqual(buttons.map((b) => b.title));
+    expect(buttons.slice(1).map((b) => b.attrs["aria-pressed"])).toEqual(["false", "false"]);
+    // Nothing on the row writes into the composer.
+    expect(doc.composer.value).toBe("my draft");
+  });
+
+  it.each(ROW_RENDERERS)("%s: a 👎 asks why, optionally, and says the feedback stays on this computer (M-72)", (_name, render) => {
+    currentId.value = "frame-1";
+    const posts: Array<{ key?: string; rating?: unknown; reason?: unknown }> = [];
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {
+      posts.push(JSON.parse(String(init?.body || "{}")));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") });
+    });
+    const row = render({ role: "assistant", content: "Answer B." }) as unknown as RowEl;
+    const [, up, down] = row.querySelector(".msg-actions")!.children as [RowEl, RowEl, RowEl];
+    down.onclick!();
+    expect(down.attrs["aria-pressed"]).toBe("true");
+    expect(doc.hint.textContent).toContain("Saved on this computer");
+    const box = row.querySelector(".msg-feedback")!;
+    expect(box.querySelector(".mf-note")!.textContent).toContain("not sent anywhere");
+    (box.querySelector(".mf-reason") as unknown as { value: string }).value = "  used the wrong column ";
+    box.querySelector(".outline-btn")!.onclick!();
+    expect(posts.at(-1)).toEqual({ key: posts[0]!.key, rating: "down", reason: "used the wrong column" });
+    expect(row.querySelector(".msg-feedback")).toBeNull();
+    // A 👍 instead closes the question; the rating is all it sends.
+    down.onclick!();
+    up.onclick!();
+    expect(row.querySelector(".msg-feedback")).toBeNull();
+    expect(posts.at(-1)).toEqual({ key: posts[0]!.key, rating: "up" });
+    expect(up.attrs["aria-pressed"]).toBe("true");
+    expect(down.attrs["aria-pressed"]).toBe("false");
   });
 
   it("the first page, load-earlier and the live turn share one row implementation", () => {
@@ -907,5 +936,16 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.composer.value).not.toBe("");
     expect(doc.composer.style.height).toBe("64px");
     expect(doc.composer.focused).toBe(1);
+  });
+
+  it("offers no starters under a read-only imported copy's banner (M-66)", () => {
+    const banner = new RowEl("div");
+    banner.id = "imported-banner";
+    doc.body.appendChild(banner);
+    renderEmptySession();
+    expect(doc.messages.querySelector(".es-chip")).toBeNull();
+    const note = doc.messages.querySelector(".empty-session")!;
+    expect(note.textContent).toContain(historyT("history.importedEmpty.title"));
+    expect(note.textContent).toContain(historyT("history.importedEmpty.sub"));
   });
 });

@@ -154,8 +154,11 @@ def write_kernelspecs(
                 f"KernelSpec destination must not be a symlink: {target}"
             )
         if target.exists() and not replace:
+            # Worded for the `openai4s jupyter export|install` user first: the
+            # Python keyword alone read as a typo in a shell.
             raise KernelSpecError(
-                f"KernelSpec destination already exists: {target}; use replace=True"
+                f"KernelSpec destination already exists: {target}; pass "
+                "--replace to rewrite its kernel.json (replace=True from Python)"
             )
         if target.exists() and not target.is_dir():
             raise KernelSpecError(

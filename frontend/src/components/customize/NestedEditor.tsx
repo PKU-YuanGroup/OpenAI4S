@@ -13,6 +13,7 @@ import {
   hint,
 } from "../../features/customize/host";
 import { scheduleTimeout } from "../../features/customize/timers";
+import { buildSkillBody, skillDraftT } from "../../features/sessions/skill-draft";
 import { useAlive, useTimerLease } from "./use-timer-lease";
 import { Icon } from "./icons";
 
@@ -166,6 +167,10 @@ function SkillForm({ name, seed }: { name: string | null; seed?: SkillSeed }) {
   const [desc, setDesc] = useState(seed?.description || "");
   const [body, setBody] = useState(seed?.body || "");
   const [saving, setSaving] = useState(false);
+  // M-84: "Save as Skill" seeds the steps the session ran; each can be left out.
+  const draft = seed?.draft;
+  const [kept, setKept] = useState<ReadonlySet<string>>(() => new Set((draft?.steps || []).map((step) => step.id)));
+  const [handEdited, setHandEdited] = useState(false);
   const read = useEditorRead(name ? `/skills/${encodeURIComponent(name)}` : null, (cur) => {
     setNm(asString(cur.name, name || ""));
     setDesc(asString(cur.description));
@@ -191,13 +196,41 @@ function SkillForm({ name, seed }: { name: string | null; seed?: SkillSeed }) {
         disabled={!read.loaded}
         onInput={(e) => setDesc((e.target as HTMLInputElement).value)}
       />
+      {draft && draft.steps.length ? (
+        <fieldset class="skill-steps">
+          <legend class="skill-lbl">{skillDraftT("skillDraft.steps", draft.steps.length)}</legend>
+          <div class="cust-note">{skillDraftT(handEdited ? "skillDraft.edited" : "skillDraft.stepsHelp")}</div>
+          {draft.steps.map((step, index) => (
+            <label key={step.id} class="skill-step">
+              <input
+                type="checkbox"
+                checked={kept.has(step.id)}
+                disabled={handEdited}
+                onChange={(e) => {
+                  const next = new Set(kept);
+                  if ((e.target as HTMLInputElement).checked) next.add(step.id);
+                  else next.delete(step.id);
+                  setKept(next);
+                  setBody(buildSkillBody(draft, next));
+                }}
+              />
+              <span>
+                {index + 1}. {step.summary}
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      ) : null}
       <label class="skill-lbl">{t("skill.label.body")}</label>
       <textarea
         class="skill-body"
         placeholder={t("skill.bodyPlaceholder")}
         value={body}
         disabled={!read.loaded}
-        onInput={(e) => setBody((e.target as HTMLTextAreaElement).value)}
+        onInput={(e) => {
+          setBody((e.target as HTMLTextAreaElement).value);
+          if (draft) setHandEdited(true);
+        }}
       />
       <div class="form-actions">
         <button
@@ -393,9 +426,9 @@ function SkillHistory({
                     class="outline-btn small"
                     onClick={async () => {
                       if (
-                        !confirmAction(
+                        !(await confirmAction(
                           t("skill.rollbackConfirm", name, versionId.slice(0, 18)),
-                        )
+                        ))
                       )
                         return;
                       try {

@@ -14,6 +14,13 @@ const wsMock = vi.hoisted(() => ({ sub: vi.fn(), unsub: vi.fn() }));
 const loadMock = vi.hoisted(() => ({ loadSessions: vi.fn(async () => {}) }));
 vi.mock("../ws/connect", () => wsMock);
 vi.mock("../sessions/load", () => loadMock);
+// M-45: the rebind question is the workbench's own dialog; each test answers it.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 
 import { setLang, t } from "../../i18n/runtime";
 import { _openGen, currentId, project } from "../../stores/session";
@@ -21,6 +28,8 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
 import { clearMentions, composerMentions, rememberMention } from "../autocomplete/mentions";
 import { UPLOAD_STATE, type UploadBatch, type UploadResult } from "../chrome/upload";
+import { _resetAttachments, addAttachment, composerAttachments, settleAttachment } from "../chrome/attachments";
+import { draftFor, saveDraft } from "../chrome/drafts";
 import { chooseComposerModel, modelT, resetSessionModelState, sessionModelPin } from "../customize/models";
 import { rebindConfirmText, rebindDoneText, send } from "./send";
 import { closeTurnTicket } from "./ticket";
@@ -56,6 +65,10 @@ function fakeEl(): FakeEl {
       node.children.push(child);
       return child;
     },
+    insertBefore(child: unknown) {
+      node.children.push(child);
+      return child;
+    },
     remove() {
       node.removed = true;
     },
@@ -71,7 +84,7 @@ function fakeEl(): FakeEl {
 }
 
 const NEEDS_KEY =
-  "model profile 'claude-nokey' has no API key: add one in Customize -> Models, " +
+  "model profile 'claude-nokey' has no API key: add one in Settings -> Models, " +
   "set OPENAI4S_CLAUDE_API_KEY for the daemon, or activate another profile";
 
 function refusal(code: string, error: string) {
@@ -84,7 +97,8 @@ describe("send(): a message the server refuses before admission", () => {
   let routes: Record<string, { status: number; body: unknown }> = {};
 
   function lastHint(): string {
-    const spans = nodes["composer-hint"]!.children as FakeEl[];
+    // An error line ends with its dismiss icon (SYNC-29); the text is the span before it.
+    const spans = (nodes["composer-hint"]!.children as FakeEl[]).filter((n) => n.className !== "hint-dismiss");
     const last = spans[spans.length - 1];
     return last ? String(last.textContent) : "";
   }
@@ -132,6 +146,7 @@ describe("send(): a message the server refuses before admission", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    dialogMock.answer = () => false;
   });
 
   it.each(["before sending", "during preflight"])("keeps the draft when a model choice starts %s", async (timing) => {
@@ -204,12 +219,52 @@ describe("send(): a message the server refuses before admission", () => {
     clearMentions();
   });
 
+  it("M-10/SYNC-24: an accepted message takes the files and the draft its composer showed; a refused one puts the files back", async () => {
+    _resetAttachments();
+    const attached = addAttachment({ name: "cohort.csv", size: 10 }, "frame_1", "proj_1");
+    settleAttachment(attached, { ok: true, frameId: "frame_1", artifactId: "a-1", created: true });
+    routes["/frames/frame_1/message"] = refusal("model_profile_needs_key", NEEDS_KEY);
+    await send("hello");
+    expect(composerAttachments()).toEqual([attached]);
+
+    routes["/frames/frame_1/message"] = { status: 202, body: { request_id: "r2" } };
+    closeTurnTicket();
+    running.value = false;
+    saveDraft("frame_1", "hello");
+    await send("hello");
+    expect(composerAttachments()).toEqual([]);
+    // SYNC-24: the sent text is no longer the session's draft.
+    expect(draftFor("frame_1")).toBe("");
+  });
+
+  it("M-10: the files go with the message and stay under its bubble", async () => {
+    _resetAttachments();
+    const attached = addAttachment({ name: "cohort.csv", size: 10 }, "frame_1", "proj_1");
+    settleAttachment(attached, { ok: true, frameId: "frame_1", artifactId: "a-1", created: true });
+    const failed = addAttachment({ name: "broken.csv", size: 1 }, "frame_1", "proj_1");
+    settleAttachment(failed, { ok: false, frameId: "frame_1" });
+    const posted: Array<Record<string, unknown>> = [];
+    const answer = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/message")) posted.push(JSON.parse(String(init?.body)));
+      return answer(url, init);
+    });
+    routes["/frames/frame_1/message"] = { status: 202, body: { request_id: "r2" } };
+    await send("hello");
+
+    // Only the file that is in the session, as `{artifact_id, name}`.
+    expect(posted.map((body) => body.attachments)).toEqual([[{ artifact_id: "a-1", name: "cohort.csv" }]]);
+    const row = (userBubble()!.children as FakeEl[]).find((child) => child.className === "msg-refs");
+    const chips = (row?.children || []) as FakeEl[];
+    expect(chips.map((chip) => (chip.dataset as Record<string, string>).artifactId)).toEqual(["a-1"]);
+  });
+
   it("keeps the text when the rebind prompt for model_revision_unavailable is dismissed", async () => {
     routes["/frames/frame_1/message"] = refusal(
       "model_revision_unavailable",
       "this session is pinned to a model configuration that is no longer usable; rebind it to continue",
     );
-    vi.stubGlobal("confirm", () => false);
+    dialogMock.answer = () => false;
     await send("hello");
 
     expect(nodes.composer!.value).toBe("hello");
@@ -230,10 +285,10 @@ describe("send(): a message the server refuses before admission", () => {
         "different provider or endpoint; its credential is not sent to the old one. Rebind the session to continue",
     );
     const asked: string[] = [];
-    vi.stubGlobal("confirm", (text: string) => {
+    dialogMock.answer = (text: string) => {
       asked.push(text);
       return false;
-    });
+    };
     await send("hello");
 
     expect(asked).toHaveLength(1);
@@ -250,7 +305,7 @@ describe("send(): a message the server refuses before admission", () => {
       status: 200,
       body: { ok: true, binding: { model_profile_id: "", model_profile_revision: 0, bound: false } },
     };
-    vi.stubGlobal("confirm", () => true);
+    dialogMock.answer = () => true;
     await send("hello");
 
     expect(nodes.composer!.value).toBe("hello");
@@ -265,7 +320,7 @@ describe("send(): a message the server refuses before admission", () => {
       status: 200,
       body: { ok: true, binding: { model_profile_id: "mp-b", model_profile_revision: 3, bound: true } },
     };
-    vi.stubGlobal("confirm", () => true);
+    dialogMock.answer = () => true;
     const bodies: unknown[] = [];
     const routed = globalThis.fetch;
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
@@ -283,9 +338,9 @@ describe("send(): a message the server refuses before admission", () => {
     routes["/frames/frame_1/message"] = refusal("model_revision_unavailable", "no longer usable; rebind it");
     routes["/frames/frame_1/model-binding"] = refusal(
       "model_profile_needs_active",
-      "no model profile is active and more than one matches 'gpt-4o'; activate the one this session continues under in Customize -> Models, then send again",
+      "no model profile is active and more than one matches 'gpt-4o'; activate the one this session continues under in Settings -> Models, then send again",
     );
-    vi.stubGlobal("confirm", () => true);
+    dialogMock.answer = () => true;
     await send("hello");
 
     expect(nodes.composer!.value).toBe("hello");
@@ -384,10 +439,10 @@ describe("send(): a message the server refuses before admission", () => {
     let answer: (value: unknown) => void = () => {};
     const paths: string[] = [];
     const asked: string[] = [];
-    vi.stubGlobal("confirm", (text: string) => {
+    dialogMock.answer = (text: string) => {
       asked.push(text);
       return true;
-    });
+    };
     vi.stubGlobal("fetch", (url: string) => {
       const path = String(url).replace("/api/v1", "");
       paths.push(path);
@@ -442,7 +497,7 @@ describe("rebindConfirmText", () => {
     for (const message of [
       "this session is pinned to a model configuration that is no longer usable; rebind it to continue",
       "this session's pinned model configuration could not be read; rebind it to continue",
-      "this session is pinned to a model profile whose credential is not available; add its API key in Customize -> Models or rebind the session to continue",
+      "this session is pinned to a model profile whose credential is not available; add its API key in Settings -> Models or rebind the session to continue",
       "this session is pinned to an earlier configuration of its model profile, and the profile now names a different provider or endpoint; its credential is not sent to the old one. Rebind the session to continue",
       "",
     ]) {

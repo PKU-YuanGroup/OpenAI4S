@@ -167,7 +167,13 @@ class SessionActivationRepository:
                 "SELECT * FROM session_branches WHERE branch_id=?",
                 (branch_id,),
             ).fetchone()
-            if branch is None or branch["root_frame_id"] != root_frame_id:
+            if (
+                branch is None
+                or branch["root_frame_id"] != root_frame_id
+                # M-73: a deleted branch is gone for every purpose but the
+                # history its descendants inherit.
+                or ("deleted_at" in branch.keys() and branch["deleted_at"] is not None)
+            ):
                 raise KeyError(f"unknown branch {branch_id!r} for this session")
             checkpoint = self._connection.execute(
                 "SELECT * FROM session_checkpoints WHERE checkpoint_id=?",

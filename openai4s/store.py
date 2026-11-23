@@ -53,7 +53,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from openai4s.capabilities import CapabilityStateService, SpecialistProfileService
 from openai4s.execution.dependencies import (
@@ -4063,6 +4063,9 @@ class Store:
     def fork_session_branch(self, **fields: Any) -> dict:
         return self._session_snapshots.fork_branch(**fields)
 
+    def delete_session_branch(self, **fields: Any) -> dict | None:
+        return self._session_snapshots.delete_branch(**fields)
+
     def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
         return self._session_snapshots.get_checkpoint(checkpoint_id)
 
@@ -4536,6 +4539,11 @@ class Store:
     def set_version_source(self, version_id: str, source: Any) -> None:
         self._artifacts.set_version_source(version_id, source)
 
+    def artifact_ids_versioned_since(
+        self, root_frame_id: str, since_ms: int
+    ) -> set[str]:
+        return self._artifacts.artifact_ids_versioned_since(root_frame_id, since_ms)
+
     def list_versions(self, artifact_id: str) -> list[dict]:
         return self._artifacts.list_versions(artifact_id)
 
@@ -4881,6 +4889,19 @@ class Store:
     def list_plans(self, frame_id: str, *, limit: int = 50) -> list[dict]:
         return self._plans.list_for_frame(frame_id, limit=limit)
 
+    def artifact_role_marks(self, artifact_ids: Iterable[str]) -> dict[str, str]:
+        """The role the server recorded for an artifact, where it recorded one.
+
+        A plan's JSON is the plan service's own record of the plan, not a
+        result: `process` (owner decision 33), known from `plans.artifact_id`
+        rather than guessed from a `plan_*.json` name. Everything else is
+        classified by `artifact_paths.artifact_role` from its filename.
+        """
+        return {
+            artifact_id: "process"
+            for artifact_id in self._plans.artifact_ids(artifact_ids)
+        }
+
     def update_plan(
         self,
         plan_id: str,
@@ -5001,8 +5022,10 @@ class Store:
         return self._memories.blocks(project_id)
 
     # --- feedback (per message) -----------------------------------------
-    def set_feedback(self, frame_id: str, key: str, rating: str | None) -> None:
-        self._settings.set_feedback(frame_id, key, rating)
+    def set_feedback(
+        self, frame_id: str, key: str, rating: str | None, reason: str | None = None
+    ) -> None:
+        self._settings.set_feedback(frame_id, key, rating, reason)
 
     def list_feedback(self, frame_id: str) -> dict:
         return self._settings.list_feedback(frame_id)
@@ -5565,12 +5588,29 @@ class Store:
                 (q, q, *frame_params, limit),
             ).fetchall()
             arts = self._conn.execute(
-                "SELECT artifact_id,filename,content_type,root_frame_id,project_id "
+                "SELECT artifact_id,filename,content_type,root_frame_id,project_id,"
+                "updated_at "
                 f"FROM artifacts WHERE filename LIKE ?{artifact_scope} "
                 "ORDER BY created_at DESC "
                 "LIMIT ?",
                 (q, *artifact_params, limit),
             ).fetchall()
+            # M-47: an artifact hit names its session, so two copies of one
+            # file in two projects' sessions are told apart.
+            roots = sorted({r["root_frame_id"] for r in arts if r["root_frame_id"]})
+            session_names = {
+                r["frame_id"]: r["name"] or r["task_summary"]
+                for r in (
+                    self._conn.execute(
+                        "SELECT frame_id,name,task_summary FROM frames WHERE frame_id IN ("
+                        + ",".join("?" * len(roots))
+                        + ")",
+                        tuple(roots),
+                    ).fetchall()
+                    if roots
+                    else []
+                )
+            }
         # EXP-2: a word in a final answer, a cell or its output finds the
         # session too, with the text around it. Title matches stay first.
         sessions = {
@@ -5581,6 +5621,8 @@ class Store:
                 "task_summary": r["task_summary"],
                 "match": "title",
                 "snippet": None,
+                # M-47: when the session was last active, for the result row.
+                "updated_at": r["updated_at"],
             }
             for r in frames
         }
@@ -5602,6 +5644,8 @@ class Store:
                     "content_type": r["content_type"],
                     "root_frame_id": r["root_frame_id"],
                     "project_id": r["project_id"],
+                    "session_name": session_names.get(r["root_frame_id"]),
+                    "updated_at": r["updated_at"],
                 }
                 for r in arts
             ],

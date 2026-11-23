@@ -157,7 +157,8 @@ def fetch(
     target.parent.mkdir(parents=True, exist_ok=True)
     if not quiet:
         print(
-            f"· downloading OpenMHS {ref} (about 35 MB) into {target} …",
+            f"· downloading OpenMHS {ref} (about 35 MB to download, about 150 MB "
+            f"on disk) into {target} …",
             file=sys.stderr,
             flush=True,
         )

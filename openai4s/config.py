@@ -544,7 +544,7 @@ class SecurityConfig:
       proxy-403 soft error and the agent must call ``request_network_access``.
 
     ``egress_allowlist`` is the grouped, host-owned base allowlist (the canonical
-    ``egress.EGRESS_GROUPS``); the gateway's Customize → Network panel renders it.
+    ``egress.EGRESS_GROUPS``); the gateway's Settings → Network panel renders it.
     The hot-path check in :mod:`openai4s.egress` reads ``OPENAI4S_EGRESS``
     fresh on each call so a UI toggle or a test takes effect without rebuilding
     this singleton — this dataclass is the declarative surface, egress.py the

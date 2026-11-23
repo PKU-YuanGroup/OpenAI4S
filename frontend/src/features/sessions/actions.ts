@@ -10,8 +10,11 @@ import { artifacts } from "../../stores/artifacts";
 import { defaultModelName, models } from "../../stores/customize";
 import { _openGen, _titleName, currentId, folders, project, sessions } from "../../stores/session";
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
-import { API, ApiError, api, apiErrorText } from "./api";
+import { API, api, apiErrorText } from "./api";
 import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
+import { askConfirm, askText } from "../chrome/dialog";
+import { expectOwnDeletion, forgetOwnDeletion } from "./deleted";
+import { buildSkillBody, procedureSteps } from "./skill-draft";
 import { openRunLocationDialog } from "./compute";
 import { composerCopy, optionsMenuCopy, sessionCopy, shareCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
@@ -22,16 +25,30 @@ import { openConversation, resumeWatch } from "./conversation";
 // hoisted function declaration, so the sessions<->send cycle resolves at call time.
 import { noteForStop, turnDone } from "../send/turn";
 import { sendCopy } from "../send/copy";
+import { reviewRefusalText, reviewT } from "../send/review-copy";
 import { backgroundStoppedHint, refreshBackgroundCells } from "../send/background";
 import { scopedExecutionRequest } from "../timeline/execution-request";
-import { queueT } from "../timeline/copy";
+import { queueT, timelineT } from "../timeline/copy";
 import { queuedFollowUpCount } from "../timeline/queue";
 import { $, clearConversationChrome, el, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
-import { assignFolder, invalidateFolders, loadProjects, loadSessions, renderSessions } from "./load";
+import { assignFolder, invalidateFolders, loadSessions, renderSessions } from "./load";
 import { fetchAllMessages, fetchRecentMessages } from "./messages";
-import { publicText } from "../scrub/scrub";
 import { openShareDialog, shareNeedsSetup } from "./share";
+import {
+  byteSize,
+  downloadSessionArtifacts,
+  exportSessionPackage as exportPackageBytes,
+  flash,
+  importSessionPackage as importPackageWithDialog,
+} from "./package";
+import {
+  buildSessionMarkdown,
+  embedImages,
+  imageType,
+  type MarkdownCell,
+  type MarkdownMessage,
+} from "./markdown-export";
 import type { SessionLike } from "./paging";
 
 export async function commitTitle(): Promise<void> {
@@ -52,6 +69,11 @@ export async function commitTitle(): Promise<void> {
   }
 }
 
+/**
+ * "+ Add to message": only what adds to the message. Request review, Save as
+ * skill and Context usage act on the session, not on the message being
+ * written, and live in the session menu (M-9).
+ */
 export function addToMessageMenu(anchor: Element): void {
   openMenu(anchor, [
     { label: t("composer.menu.attachFiles"), icon: "plus", onClick: () => $("#file-input")?.click() },
@@ -62,10 +84,6 @@ export function addToMessageMenu(anchor: Element): void {
         callLane("setActiveTab", "files");
       },
     },
-    { label: t("composer.menu.requestReview"), icon: "eye-context", onClick: () => void requestReview() },
-    { label: t("composer.menu.saveAsSkill"), icon: "book", onClick: () => void saveCurrentAsSkill() },
-    { sep: true },
-    { label: t("composer.menu.contextUsage"), icon: "circle-dot", onClick: () => void showContextUsage() },
   ]);
 }
 
@@ -108,7 +126,7 @@ export async function showContextUsage(): Promise<void> {
   card.className = "prov-card";
   const h = document.createElement("div");
   h.className = "prov-h";
-  h.textContent = t("context.tokens", (input + output).toLocaleString());
+  h.textContent = timelineT("context.tokens", (input + output).toLocaleString());
   card.appendChild(h);
   const meta = document.createElement("div");
   meta.className = "prov-meta";
@@ -120,7 +138,7 @@ export async function showContextUsage(): Promise<void> {
 
 
 /**
- * The new-skill editor of Customize → Skills, opened over that tab. app.js
+ * The new-skill editor of Settings → Skills, opened over that tab. app.js
  * drew a second copy of the skill form in #modal (`skillEditor`); this port
  * called that name, which nothing defines, so the menu entry did nothing. The
  * seed travels on the editor state for the form to start from.
@@ -141,13 +159,16 @@ export async function saveCurrentAsSkill(): Promise<void> {
     await openSkillEditor();
     return;
   }
+  const frameId = currentId.value;
   let messages: Array<{ role?: string; content?: unknown }> = [];
-  try {
-    const data = await fetchRecentMessages(currentId.value, 500);
-    messages = data.messages || [];
-  } catch {
-    messages = [];
-  }
+  // M-84: the code that actually ran, not only the question.
+  let entries: unknown[] = [];
+  const [read, log] = await Promise.allSettled([
+    fetchRecentMessages(frameId, 500),
+    api(`/frames/${encodeURIComponent(frameId)}/execution-log`),
+  ]);
+  if (read.status === "fulfilled") messages = read.value.messages || [];
+  if (log.status === "fulfilled") entries = ((log.value as { entries?: unknown[] }) || {}).entries || [];
   const latestUser = [...messages].reverse().find((m) => m.role === "user");
   const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const title =
@@ -158,10 +179,12 @@ export async function saveCurrentAsSkill(): Promise<void> {
       .slice(0, 48) || "research-workflow";
   const request = String((latestUser && latestUser.content) || "").trim();
   const result = String((latestAssistant && latestAssistant.content) || "").trim();
+  const draft = { purpose: request, outcome: result, steps: procedureSteps(entries) };
   await openSkillEditor({
     name: title,
     description: request.replace(/\s+/g, " ").slice(0, 180),
-    body: `# Purpose\n\n${request || "Describe when this workflow should be used."}\n\n# Procedure\n\n1. Reproduce the evidence-gathering and analysis workflow.\n2. Preserve data provenance, code, and generated artifacts.\n3. State uncertainty and do not overclaim beyond the evidence.\n\n# Example outcome\n\n${result.slice(0, 6000)}`,
+    body: buildSkillBody(draft, new Set(draft.steps.map((step) => step.id))),
+    draft,
   });
 }
 
@@ -176,7 +199,8 @@ export async function requestReview(): Promise<void> {
     resumeWatch(currentId.value, _openGen.value);
   } catch (e) {
     turnDone("failed");
-    hint((e as Error).message, true);
+    // M-75: a refusal says why in the UI language, not the server's English.
+    hint(reviewRefusalText(e), true);
   }
 }
 
@@ -213,6 +237,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     heading("groupModes"),
     {
       label: checked(review.delegation_enabled !== false) + t("composer.option.delegation"),
+      desc: optionsMenuCopy("delegationDesc"),
       icon: "users",
       onClick: async () => {
         const on = review.delegation_enabled === false;
@@ -246,6 +271,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     heading("groupReview"),
     {
       label: checked(!!review.auto_review) + t("composer.option.autoReview"),
+      desc: optionsMenuCopy("autoReviewDesc"),
       icon: "eye-context",
       onClick: async () => {
         try {
@@ -261,6 +287,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     },
     {
       label: t("composer.option.reviewerModel") + (review.reviewer_model ? ` · ${review.reviewer_model}` : ""),
+      desc: optionsMenuCopy("reviewerModelDesc"),
       icon: "sliders",
       onClick: () => reviewerModelMenu(anchor, review.reviewer_model),
     },
@@ -277,8 +304,18 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     },
     { sep: true },
     heading("groupSettings"),
-    { label: t("composer.option.memory"), icon: "book", onClick: () => callLane("openCust", "memory") },
-    { label: t("composer.option.specialist"), icon: "users", onClick: () => callLane("openCust", "specialists") },
+    {
+      label: t("composer.option.memory"),
+      desc: optionsMenuCopy("memoryDesc"),
+      icon: "book",
+      onClick: () => callLane("openCust", "memory"),
+    },
+    {
+      label: t("composer.option.specialist"),
+      desc: optionsMenuCopy("specialistDesc"),
+      icon: "users",
+      onClick: () => callLane("openCust", "specialists"),
+    },
     {
       label: t("composer.option.compute"),
       desc: optionsMenuCopy("computeDesc"),
@@ -326,7 +363,8 @@ export function sessionMenu(anchor: Element, fid: string): void {
   const items: MenuItem[] = [{ label: t("folder.menu.rename"), icon: "pencil", onClick: () => void renameFrame(fid) }];
   if (frame.running || (fid === currentId.value && running.value)) {
     items.push({
-      label: t("sessionMenu.cancel"),
+      // M-35: the composer's button says Stop; this is the same action.
+      label: t("nb.kernel.stopLabel"),
       icon: "stop",
       onClick: async () => {
         try {
@@ -356,10 +394,7 @@ export function sessionMenu(anchor: Element, fid: string): void {
       label: t("sessionMenu.downloadArtifacts"),
       icon: "files",
       onClick: () =>
-        downloadArtifactBundle(
-          `${API}/frames/${encodeURIComponent(fid)}/artifacts.zip`,
-          `${frame.name || frame.task_summary || "session"}-artifacts.zip`,
-        ),
+        void downloadSessionArtifacts(fid, `${frame.name || frame.task_summary || "session"}-artifacts.zip`),
     },
     {
       label: t("sessionMenu.viewNotebook"),
@@ -369,6 +404,21 @@ export function sessionMenu(anchor: Element, fid: string): void {
         callLane("setActiveTab", "notebook");
       },
     },
+    // M-9: these act on the open conversation (they read `currentId`), so a
+    // sidebar row of another session does not offer them.
+    ...(fid === currentId.value
+      ? [
+          // M-75: say what it does and what it costs before it starts.
+          {
+            label: reviewT("review.menuLabel"),
+            desc: reviewT("review.menuDesc"),
+            icon: "eye-context",
+            onClick: () => void requestReview(),
+          },
+          { label: t("composer.menu.saveAsSkill"), icon: "book", onClick: () => void saveCurrentAsSkill() },
+          { label: t("composer.menu.contextUsage"), icon: "circle-dot", onClick: () => void showContextUsage() },
+        ]
+      : []),
     {
       label: t("compute.menu.runLocation"),
       icon: "server",
@@ -383,46 +433,17 @@ export function sessionMenu(anchor: Element, fid: string): void {
       label: t("common.delete"),
       icon: "trash-2",
       danger: true,
-      onClick: () => {
-        if (confirm(t("confirm.deleteSession"))) void deleteSession(fid);
+      onClick: async () => {
+        if (await askConfirm(t("confirm.deleteSession"), { danger: true, okLabel: t("common.delete") }))
+          void deleteSession(fid);
       },
     },
   );
   openMenu(anchor, items);
 }
 
-/**
- * Downloads through `fetch`, not a bare link, so the page can read how many
- * local paths the export left as written (message text and cell output are
- * kept byte-exact) and say so before the file is shared, and so a refused
- * export shows its reason instead of saving an error page as a .zip.
- */
-export async function exportSessionPackage(fid: string, frame: SessionLike = {}): Promise<void> {
-  const label = frame.name || frame.task_summary || "session";
-  let response: Response;
-  try {
-    response = await fetch(`${API}/frames/${encodeURIComponent(fid)}/session/export`, {
-      credentials: "same-origin",
-    });
-  } catch (error) {
-    hint(sessionCopy("exportFailed", apiErrorText(error)), true);
-    return;
-  }
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as { error?: string };
-    hint(sessionCopy("exportFailed", publicText(body.error || String(response.status), 160)), true);
-    return;
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  downloadArtifactBundle(url, label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip");
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  const left = Number(response.headers.get("X-OpenAI4S-Local-Paths-Left") || 0);
-  hint(
-    Number.isSafeInteger(left) && left > 0
-      ? sessionCopy("exportedPathsLeft", left)
-      : sessionCopy("exported"),
-  );
+export function exportSessionPackage(fid: string, frame: SessionLike = {}): Promise<void> {
+  return exportPackageBytes(fid, frame.name || frame.task_summary || "session");
 }
 
 /** One self-contained `.html` of the session, in the UI language (EXP-3). */
@@ -438,49 +459,8 @@ export function chooseSessionPackage(): void {
   $("#session-package-input")?.click();
 }
 
-export async function importSessionPackage(file: File | null | undefined): Promise<void> {
-  if (!file) return;
-  if (file.size > 128 * 1024 * 1024) {
-    hint(t("sessionPackage.tooLarge"), true);
-    return;
-  }
-  try {
-    const checked = await fetch(API + "/sessions/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
-      body: file,
-    });
-    const verdict = (await checked.json().catch(() => ({}))) as {
-      ok?: boolean;
-      problems?: string[];
-      error?: string;
-      files_verified?: unknown[];
-    };
-    if (!checked.ok || !verdict.ok) {
-      const first = (verdict.problems || [])[0] || verdict.error || "";
-      hint(t("sessionPackage.verifyFailed", publicText(first, 160)), true);
-      return;
-    }
-    hint(t("sessionPackage.verified", (verdict.files_verified || []).length));
-    const response = await fetch(API + "/sessions/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
-      body: file,
-    });
-    const result = (await response.json().catch(() => ({}))) as {
-      root_frame_id?: string;
-      project_id?: string;
-    };
-    if (!response.ok || !result.root_frame_id || !result.project_id) {
-      throw new ApiError(result, response.status);
-    }
-    await loadProjects();
-    hint(t("sessionPackage.imported"));
-    await openConversation(result.root_frame_id, result.project_id);
-  } catch (error) {
-    hint(t("toast.importFailed", apiErrorText(error)), true);
-  }
-}
+/** TEAM-20: the import runs in a dialog of its own (package.ts). */
+export const importSessionPackage = importPackageWithDialog;
 
 export function downloadArtifactBundle(url: string, filename: string): void {
   const link = document.createElement("a");
@@ -504,7 +484,7 @@ export function moveToFolderAt(anchor: Element, fid: string): void {
     label: t("moveFolder.newFolderAndMove"),
     icon: "plus",
     onClick: async () => {
-      const n = prompt(t("folder.new.prompt"));
+      const n = await askText(t("folder.new.prompt"));
       if (!n || !project.value) return;
       let r: { folder_id: string };
       try {
@@ -530,26 +510,32 @@ export async function exportSession(fid: string): Promise<void> {
   const frame = (sessions.value as SessionLike[]).find((x) => x.id === fid);
   const title = frame?.name || frame?.task_summary || t("conv.title.default");
   try {
-    const [d, arts] = await Promise.all([
+    const [d, arts, log] = await Promise.all([
       fetchAllMessages(fid),
       api(`/frames/${encodeURIComponent(fid)}/artifacts`).then((value) => validateSessionArtifacts(value, fid)),
+      api(`/frames/${encodeURIComponent(fid)}/execution-log`),
     ]);
-    let md = "# " + title + "\n\n";
-    if (d.complete === false) md += "> " + t("conv.exportTruncated") + "\n\n";
-    (d.messages || []).forEach((m) => {
-      const who = m.role === "user" ? "🧑 User" : "🤖 Assistant";
-      const txt = Array.isArray(m.content)
-        ? (m.content as Array<{ text?: string }>).map((b) => b.text || "").join("")
-        : (m.content as string) || "";
-      md += `## ${who}\n\n${txt}\n\n`;
+    // TEAM-12: one section per turn, the code and output that ran, and the
+    // figures embedded -- a file that reads the same outside the app.
+    const entries = log && typeof log === "object" ? (log as { entries?: unknown }).entries : null;
+    const images = await embedImages(
+      arts,
+      async (id) => {
+        const response = await fetch(`${API}/artifacts/${encodeURIComponent(id)}`);
+        return response.ok ? response.arrayBuffer() : null;
+      },
+      byteSize,
+    );
+    const md = buildSessionMarkdown({
+      title,
+      truncatedNote: d.complete === false ? t("conv.exportTruncated") : null,
+      messages: (d.messages || []) as MarkdownMessage[],
+      cells: (Array.isArray(entries) ? entries : []) as MarkdownCell[],
+      images,
+      otherArtifacts: arts
+        .filter((a) => a.filename && !imageType(String(a.filename), a.content_type))
+        .map((a) => ({ filename: String(a.filename), content_type: a.content_type })),
     });
-    const artList = arts;
-    if (artList.length) {
-      md += "## 产物 Artifacts\n\n";
-      artList.forEach((a) => {
-        md += `- ${a.filename} (${a.content_type || ""})\n`;
-      });
-    }
     const blob = new Blob([md], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -557,7 +543,7 @@ export async function exportSession(fid: string): Promise<void> {
     link.download = title.replace(/[^\w一-龥-]+/g, "_") + ".md";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-    hint(t("toast.exportedMarkdown"));
+    flash(t("toast.exportedMarkdown"));
   } catch (e) {
     hint(t("toast.exportFailed", apiErrorText(e)), true);
   }
@@ -572,9 +558,12 @@ export async function renameFrame(fid: string): Promise<void> {
 }
 
 export async function deleteSession(fid: string): Promise<void> {
+  // This tab moves on itself; its own deletion's event is not "deleted elsewhere".
+  expectOwnDeletion(fid);
   try {
     await api("/frames/" + fid, { method: "DELETE" });
   } catch (e) {
+    forgetOwnDeletion(fid);
     hint(t("toast.deleteFailed", apiErrorText(e)), true);
     return;
   }

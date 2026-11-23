@@ -96,7 +96,7 @@ def _capability_on(cfg: Config) -> bool:
 
         # Settings and disclosure may change while the daemon is running.
         # A cache keyed only by environment/database path would retain an old
-        # off decision after the user enables the capability in Customize.
+        # off decision after the user enables the capability in Settings.
         flags = resolve(cfg, get_store(cfg.db_path))
         return bool(flags.master.enabled and flags.safety_shadow.enabled)
     except Exception:

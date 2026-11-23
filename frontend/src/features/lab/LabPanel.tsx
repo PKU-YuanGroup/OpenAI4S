@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { LANG, languageRevision } from "../../i18n/runtime";
 import { api, apiErrorText } from "../timeline/api";
+import { askConfirm } from "../chrome/dialog";
 import { categoryLabel, MarketPanel } from "./MarketPanel";
 import type {
   ActivityItem,
@@ -21,7 +22,7 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     sub: "OpenAI4S 通过 OpenMHS 标准接入的模拟实验设备：内置 3 台演示设备，另可从市场一键安装 746 台。端点强制安全，每条回执哈希链存证。",
     setupTitle: "实验室（可选）",
     setupBody: "让智能体操作模拟的实验仪器（例如加样器、流动反应器、机械臂），每一步都留下可核查的记录。不做仪器相关的实验，可以不管这个标签，或者把它隐藏。",
-    setupNeeds: "使用前需要下载 OpenMHS 仪器组件（约 35 MB，存放在数据目录，之后都在本机运行）。",
+    setupNeeds: "使用前需要下载 OpenMHS 仪器组件（下载约 35 MB，解压后在数据目录占约 150 MB，之后都在本机运行）。",
     setupBtn: "下载并准备实验室",
     settingUp: "正在下载 OpenMHS…",
     manual: "也可以在终端运行：",
@@ -97,7 +98,7 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     sub: "Simulated instruments reached through the OpenMHS standard: three built-in demo devices, plus 746 more from the market in one click. The endpoint enforces safety; every receipt is hash-chained.",
     setupTitle: "Lab (optional)",
     setupBody: "Lets the agent operate simulated lab instruments (liquid handlers, flow reactors, a robot arm), keeping a verifiable record of every step. If you do not run instrument experiments, ignore this tab or hide it.",
-    setupNeeds: "It needs the OpenMHS instrument components first (about 35 MB, stored in your data directory; everything then runs on this machine).",
+    setupNeeds: "It needs the OpenMHS instrument components first (about 35 MB to download, about 150 MB in your data directory; everything then runs on this machine).",
     setupBtn: "Download and set up the lab",
     settingUp: "Downloading OpenMHS…",
     manual: "Or in a terminal:",
@@ -655,8 +656,9 @@ export function LabPanel() {
   }, []);
 
   const act = async (action: string, endpoint: string) => {
-    if (action === "reset" && !window.confirm(tr("confirmReset"))) return;
-    if (action === "estop" && endpoint === "all" && !window.confirm(tr("confirmEstop"))) return;
+    if (action === "reset" && !(await askConfirm(tr("confirmReset"), { danger: true }))) return;
+    if (action === "estop" && endpoint === "all" && !(await askConfirm(tr("confirmEstop"), { danger: true })))
+      return;
     setBusy(true);
     try {
       await api(`/mhs-lab/${action}`, {
@@ -684,8 +686,8 @@ export function LabPanel() {
     }
   };
 
-  const remove = (id: string) => {
-    if (!window.confirm(tr("confirmRemove"))) return;
+  const remove = async (id: string) => {
+    if (!(await askConfirm(tr("confirmRemove"), { danger: true }))) return;
     void operate("remove", `/mhs-lab/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
   };
 

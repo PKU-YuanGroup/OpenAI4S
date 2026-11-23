@@ -6,6 +6,10 @@ import json
 import sqlite3
 from typing import Any, Callable
 
+#: Suffix of the settings key that holds a 👎's optional reason (M-72). A
+#: rating key is a hash of the turn's text, which never contains a colon.
+_FEEDBACK_REASON = ":reason"
+
 
 class SettingsRepository:
     """Own the ``settings`` key/value table and its structured projections."""
@@ -72,7 +76,9 @@ class SettingsRepository:
             self.set_model_profiles(profiles)
             return result
 
-    def set_feedback(self, frame_id: str, key: str, rating: str | None) -> None:
+    def set_feedback(
+        self, frame_id: str, key: str, rating: str | None, reason: str | None = None
+    ) -> None:
         setting_key = f"fb:{frame_id}:{key}"
         if rating:
             self.set(setting_key, rating)
@@ -81,6 +87,14 @@ class SettingsRepository:
                 "DELETE FROM settings WHERE key=?",
                 (setting_key,),
             )
+        # M-72: the optional reason a 👎 can carry. It lives under the same
+        # session prefix, so deleting the session deletes it too; any other
+        # rating (or none) leaves no reason behind.
+        reason_key = setting_key + _FEEDBACK_REASON
+        if rating == "down" and reason:
+            self.set(reason_key, reason)
+        elif rating != "down":
+            self._execute("DELETE FROM settings WHERE key=?", (reason_key,))
 
     def list_feedback(self, frame_id: str) -> dict:
         prefix = f"fb:{frame_id}:"
@@ -89,7 +103,11 @@ class SettingsRepository:
                 "SELECT key,value FROM settings WHERE key LIKE ?",
                 (f"{prefix}%",),
             ).fetchall()
-        return {row["key"][len(prefix) :]: row["value"] for row in rows}
+        return {
+            row["key"][len(prefix) :]: row["value"]
+            for row in rows
+            if not row["key"].endswith(_FEEDBACK_REASON)
+        }
 
     def _execute(self, sql: str, params: tuple = ()) -> None:
         with self._lock:

@@ -131,6 +131,37 @@ def test_validation_builtin_collision_and_read_only_delete_contract(tmp_path):
     }
 
 
+def test_read_carries_the_whole_description_beside_the_catalog_line(tmp_path):
+    """SCI-06: the Skills tab's detail view needs what the catalog cut off.
+
+    The catalog description stops at 200 characters, and for most bundled
+    Skills the cut-off half is the "use this skill when" part.
+    """
+    _config, service = _service(tmp_path, with_builtin=False)
+    bundled = tmp_path / "bundled-skills"
+    whole = "Predict a structure. " + "Use this skill when: (1) one; (2) two. " * 8
+    (bundled / "long").mkdir()
+    (bundled / "long" / "SKILL.md").write_text(
+        f"---\nname: long\ndescription: >\n  {whole}\norigin: openai4s\n---\n\n# Long\n",
+        "utf-8",
+    )
+    # No frontmatter description: the summary the loader derived is the whole one.
+    (bundled / "bare").mkdir()
+    (bundled / "bare" / "SKILL.md").write_text(
+        "# Bare\n\nA short first paragraph.\n", "utf-8"
+    )
+
+    read = service.get("long")
+    assert len(read["description"]) == 200
+    assert read["description"].endswith("...")
+    assert read["full_description"] == " ".join(whole.split())
+    assert read["body"].strip() == "# Long"
+
+    fetched = service.get("bare")
+    assert fetched["description"] == "A short first paragraph."
+    assert fetched["full_description"] == fetched["description"]
+
+
 def test_declared_builtin_name_collision_is_rejected_when_slug_differs(tmp_path):
     config, service = _service(tmp_path, with_builtin=False)
     bundled = config.skills_dir / "trusted-directory"

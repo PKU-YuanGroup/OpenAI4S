@@ -94,6 +94,14 @@ export function setSidebar(collapsed: boolean): void {
     scrim.className = "mobile-scrim hidden";
     scrim.onclick = () => setSidebar(true);
     document.body.appendChild(scrim);
+    // SYNC-29: the phone overlay closes on Escape as it does on a tap outside,
+    // unless a menu, dialog or the palette above it takes that Escape.
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || e.defaultPrevented || !scrim || scrim.classList.contains("hidden")) return;
+      if (document.querySelector(".ctx-menu, .palette-ov, .modal:not(.hidden)")) return;
+      setSidebar(true);
+      ($("#sidebar-reopen") as HTMLElement | null)?.focus();
+    });
   }
   const mobile = typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches;
   scrim.classList.toggle("hidden", collapsed || !mobile);

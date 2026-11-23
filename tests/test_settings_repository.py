@@ -115,6 +115,25 @@ def test_feedback_projection_and_falsy_delete(tmp_path):
     assert rows == [("fb:frame-b:1", "up")]
 
 
+def test_a_dislike_keeps_its_optional_reason_with_the_session(tmp_path):
+    """M-72: a 👎 can say why. The reason sits under the session's feedback
+    prefix (so deleting the session deletes it), is not a rating, and goes
+    when the 👎 does."""
+    store, repository = _repository(tmp_path)
+    repository.set_feedback("frame-a", "m1", "down", "used the wrong column")
+    assert repository.list_feedback("frame-a") == {"m1": "down"}
+    assert repository.get("fb:frame-a:m1:reason") == "used the wrong column"
+
+    repository.set_feedback("frame-a", "m1", "up", "ignored for a like")
+    assert repository.list_feedback("frame-a") == {"m1": "up"}
+    assert repository.get("fb:frame-a:m1:reason") is None
+
+    repository.set_feedback("frame-a", "m1", "down", "again")
+    repository.set_feedback("frame-a", "m1", None)
+    assert repository.list_feedback("frame-a") == {}
+    assert repository.get("fb:frame-a:m1:reason") is None
+
+
 def test_store_facade_and_permission_seed_share_settings_repository(tmp_path):
     store = get_store(Config(data_dir=tmp_path).db_path)
     assert isinstance(store._settings, SettingsRepository)

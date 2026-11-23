@@ -789,3 +789,115 @@ def test_reopening_a_session_still_shows_the_reference_was_partial(
     assert ref["truncated"] is True
     assert ref["sent_bytes"] == 200_000
     assert ref["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# M-10: the files a message was sent with
+# ---------------------------------------------------------------------------
+
+_COHORT = {"artifact_id": "a-0123456789ab", "name": "cohort.csv"}
+
+
+def _get_messages(runner, frame_id: str) -> dict:
+    """GET /frames/{id}/messages over real HTTP: reopen reads nothing else."""
+    httpd, port = bound_gateway_server()
+    runner.cfg.port = port
+    httpd.RequestHandlerClass = gateway_mod.make_handler(runner.cfg, runner.hub, runner)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    token = local_auth.load_or_mint(runner.cfg.data_dir)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+        try:
+            conn.request(
+                "GET",
+                f"/api/v1/frames/{frame_id}/messages",
+                headers={local_auth.TOKEN_HEADER: token},
+            )
+            response = conn.getresponse()
+            assert response.status == 200
+            return json.loads(response.read() or b"{}")
+        finally:
+            conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_files_a_message_was_sent_with_come_back_after_a_reload(
+    monkeypatch, tmp_path
+):
+    """The composer's chip went with the live bubble only: after a reload the
+    message no longer said which uploads it had been sent with. The list is
+    stored on the user row and both the reopen route and the live event carry
+    it; a message sent without files gains no field."""
+    runner = _runner(monkeypatch, tmp_path)
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+    runner.run_message(frame_id, "default", "summarise this", attachments=[_COHORT])
+    runner.run_message(frame_id, "default", "and now without files")
+
+    body = _get_messages(runner, frame_id)
+
+    users = [m for m in body["messages"] if m["role"] == "user"]
+    assert users[0]["attachments"] == [_COHORT]
+    assert "attachments" not in users[1]
+    live = [e for e in runner.hub.events if e.get("type") == "user_message"]
+    assert live[0]["attachments"] == [_COHORT]
+    assert "attachments" not in live[1]
+
+
+@pytest.mark.stubbed_backend
+def test_the_route_keeps_only_ids_and_names_and_refuses_a_malformed_list(
+    monkeypatch, tmp_path
+):
+    """Over real HTTP: the field the workbench posts reaches the stored row as
+    `{artifact_id, name}` and nothing else, and a malformed list is a 400
+    before any row is written.
+
+    `stubbed_backend`: the turn behind the 200 runs on a stubbed model."""
+    httpd, port = bound_gateway_server()
+    runner = _runner(monkeypatch, tmp_path)
+    runner.cfg.port = port
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+    httpd.RequestHandlerClass = gateway_mod.make_handler(runner.cfg, runner.hub, runner)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    token = local_auth.load_or_mint(runner.cfg.data_dir)
+    try:
+        for bad in (
+            "cohort.csv",
+            [{"artifact_id": "../../etc", "name": "cohort.csv"}],
+            [{"artifact_id": "a-1", "name": ""}],
+            [{"artifact_id": "a-1", "name": "line\nbreak.csv"}],
+            [_COHORT] * (artifact_refs.MAX_ATTACHMENTS + 1),
+        ):
+            status, body = _post_message(
+                port,
+                frame_id,
+                token,
+                {"input_data": {"request": "rows?"}, "attachments": bad},
+            )
+            assert status == 400, bad
+            assert body.get("code") == "invalid_attachments"
+        assert store.list_messages(frame_id) == []
+
+        status, body = _post_message(
+            port,
+            frame_id,
+            token,
+            {
+                "input_data": {"request": "rows?"},
+                "attachments": [
+                    {**_COHORT, "size": 3355, "path": "/elsewhere/cohort.csv"},
+                    _COHORT,
+                ],
+            },
+        )
+        assert status == 200, body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    user = [m for m in store.list_messages(frame_id) if m["role"] == "user"][0]
+    assert user["content"] == "rows?"
+    assert json.loads(user["metadata"] or "{}")["attachments"] == [_COHORT]

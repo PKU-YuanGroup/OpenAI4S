@@ -26,7 +26,14 @@ import { markNotebookSeen, notebookDisplayEntries } from "./cells";
 import { onNotebookScroll } from "./scroll";
 import type { NotebookCell } from "./types";
 import { activeTab, dock } from "../../stores/ui";
-import { forkPending, invalidateKernelCache, kernelView, runtimeStatusText } from "./kernel";
+import {
+  forkPending,
+  invalidateKernelCache,
+  kernelView,
+  replNotice,
+  runtimeSummary,
+  runtimeStatusText,
+} from "./kernel";
 import {
   CellActions,
   CellList,
@@ -36,12 +43,14 @@ import {
   NotebookDock,
   StatusStrip,
   kernelExitText,
+  missingPackage,
   kernelStatusLine,
   outputIsLong,
   outputLabel,
   writtenImages,
 } from "./Notebook";
 import { nbLabelT, nbT } from "./copy";
+import { kernelLabel } from "./labels";
 
 type VNode = {
   type?: unknown;
@@ -76,6 +85,17 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetStoreFields();
+});
+
+// SCI-35: one chip read "Python", the other "r"; cells said "python [1]" / "r [2]".
+describe("Notebook language names", () => {
+  it("names Python and R the same way in chips and cell labels", () => {
+    expect(kernelLabel("python")).toBe("Python");
+    expect(kernelLabel("r")).toBe("R");
+    expect(kernelLabel("python — lab_env")).toBe("Python — lab_env");
+    expect(kernelLabel("r — lab_env")).toBe("R — lab_env");
+    expect(kernelLabel("rust")).toBe("rust");
+  });
 });
 
 describe("Notebook output judged binary", () => {
@@ -239,6 +259,55 @@ describe("Notebook cell actions", () => {
   });
 });
 
+// M-54 / SCI-23: nearly every cell wore "Current"; a stale one said why only
+// in a tooltip, as "… superseded by c-4653d2c179b5 (S3)".
+describe("Notebook cell state", () => {
+  const stateText = (cell: NotebookCell) =>
+    textOf(CellList({ entries: [cell] })).replace(/\s+/g, " ");
+
+  it("shows no badge on a cell whose results hold", () => {
+    const text = stateText({ producing_cell_id: "a", cell_index: 1, source: "x = 1", status: "ok" });
+    expect(text).not.toContain(nbLabelT("nb.cell.current"));
+  });
+
+  it("says why a cell is stale, naming cells the way the Notebook does", () => {
+    cells.value = [
+      { producing_cell_id: "c-a", cell_index: 2, language: "python", source: "y = x" },
+      { producing_cell_id: "c-b", cell_index: 5, language: "python", source: "x = 2" },
+    ];
+    const stale: NotebookCell = {
+      producing_cell_id: "c-c",
+      cell_index: 3,
+      source: "z = y",
+      stale: true,
+      stale_reasons: ["depends on c-a (S2): variable 'x' was superseded by c-b (S5)"],
+    };
+    const text = stateText(stale);
+    expect(text).toContain(nbLabelT("nb.cell.stale"));
+    expect(text).toContain(
+      nbT("nb.stale.via", "Python [2]", nbT("nb.stale.superseded", "Python [5]", "x")),
+    );
+    expect(text).not.toContain("c-b");
+  });
+
+  it("says where the manual cells switch is when Rerun is grey", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { repl_enabled: false }, envs: null, cur: null };
+    const titles = JSON.stringify(CellActions({ cell: { producing_cell_id: "c", source: "x = 1" } }));
+    expect(titles).toContain(nbT("nb.action.needsManual"));
+    expect(titles).not.toContain(t("nb.action.unavailable"));
+  });
+
+  it("shows a refused manual run in the Notebook, for the session it belongs to (SYNC-27)", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { repl_enabled: false }, envs: null, cur: null };
+    replNotice.value = { sid: "frame-1", text: "Execution failed: notebook REPL is disabled" };
+    expect(textOf(NotebookDock({ entries: [] }))).toContain("Execution failed: notebook REPL is disabled");
+    replNotice.value = { sid: "frame-2", text: "Execution failed: another session" };
+    expect(textOf(NotebookDock({ entries: [] }))).not.toContain("another session");
+  });
+});
+
 describe("Notebook reading gate", () => {
   it("CellList paints the entries it is handed and subscribes to no cell store", () => {
     const entries = [{ producing_cell_id: "shown", cell_index: 1, status: "error" }];
@@ -310,6 +379,27 @@ describe("Notebook after a kernel crash", () => {
     const segv = oom.replace(/\(exit code -9[^)]*\)/, "(killed by signal 11 (SIGSEGV))");
     expect(kernelExitText(segv)).toBe(nbT("nb.crash.notice", nbT("nb.crash.signal", "11 (SIGSEGV)")));
     expect(kernelExitText("NameError: name 'x' is not defined")).toBeNull();
+  });
+
+  // SCI-32: `No module named 'Bio'` under a manual cell, and nothing said what to install.
+  it("says which package a failed cell lacks and where to install it", () => {
+    const failed = (error: string, language = "python") =>
+      textOf(
+        CellList({ entries: [{ producing_cell_id: "m", cell_index: 1, language, status: "error", source: "x", error }] }),
+      ).replace(/\s+/g, " ");
+    const bio = failed(
+      "Traceback (most recent call last):\n  File \"<kernel:1>\", line 1\nModuleNotFoundError: No module named 'Bio'",
+    );
+    expect(bio).toContain(nbT("nb.missing.renamed", "Bio", "biopython"));
+    expect(bio).toContain(nbT("nb.missing.open"));
+    expect(failed("ModuleNotFoundError: No module named 'statsmodels.api'")).toContain(
+      nbT("nb.missing.plain", "statsmodels"),
+    );
+    const seurat = failed("Error in library(Seurat) : there is no package called ‘Seurat’", "r");
+    expect(seurat).toContain(nbT("nb.missing.r", "Seurat"));
+    expect(seurat).not.toContain(nbT("nb.missing.open"));
+    expect(failed("NameError: name 'x' is not defined")).not.toContain(nbT("nb.missing.python"));
+    expect(missingPackage("ImportError: cannot import name 'foo' from 'bar'")).toBeNull();
   });
 
   it("marks where a new kernel generation starts, per language", () => {
@@ -419,5 +509,44 @@ describe("Notebook read-only mode (NB-5)", () => {
     for (const mode of ["live", "busy", "ended", "restoring", "partial", "failed"]) {
       expect(runtimeStatusText(mode, null)).not.toMatch(/view only|仅供查看/);
     }
+  });
+});
+
+// SCI-35 #5: the kernel read's own fields are the Python slot's. A session
+// that only ever ran R cells said "not started" while its R kernel was live.
+describe("Notebook status in an R-only session", () => {
+  const env = { python_version: "3.11" };
+  const rLive = { state: "none", alive: false, env, r: { state: "running", alive: true, generation_id: "g-r1" } };
+
+  it("reads a live R kernel as live, in the status line, the badge and the summary", () => {
+    expect(kernelStatusLine(rLive)).toEqual({ text: t("nb.status.ready", "R"), cls: "ready" });
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: rLive, envs: null, cur: null };
+    const badge = byClass(KernelChips({ entries: [] }), "nb-live-badge")!;
+    expect(String(badge.props?.class)).toContain("live");
+    expect(textOf(badge)).toBe(nbT("nb.runtime.live"));
+    expect(textOf(badge)).not.toBe(nbT("nb.kernel.notStarted"));
+    // The R generation is shown when Python never started.
+    expect(runtimeSummary().r).toBe("g-r1");
+    expect(runtimeSummary().status).toBe("live");
+  });
+
+  it("describes an R kernel that ran and is gone, not a Python one that never started", () => {
+    const rEnded = { state: "none", env, r: { state: "ended", alive: false, generation_id: "g-r1" } };
+    expect(kernelStatusLine(rEnded).text).toBe(t("nb.status.ended", "R"));
+    const rExited = { state: "none", env, r: { state: "none", alive: false, generation_id: "g-r1" } };
+    expect(kernelStatusLine(rExited).text).toBe(nbT("nb.status.exited", "R"));
+    expect(runtimeStatusText("ended", rExited)).toBe(nbT("nb.kernel.stateExited"));
+  });
+
+  it("leaves a Python session as it was", () => {
+    const pythonLive = { state: "running", alive: true, env, r: { state: "none", alive: false, generation_id: null } };
+    expect(kernelStatusLine(pythonLive)).toEqual({ text: t("nb.status.ready", "Python 3.11"), cls: "ready" });
+    const neither = { state: "none", env, r: { state: "none", alive: false, generation_id: null } };
+    expect(kernelStatusLine(neither).text).toBe(nbT("nb.status.notStarted", "Python 3.11"));
+    expect(runtimeStatusText("ended", neither)).toBe(nbT("nb.kernel.notStarted"));
+    // Python ran and ended; R is idle too: Python's state is the one described.
+    const pythonEnded = { state: "ended", generation_id: "g-py", env, r: { state: "ended", generation_id: "g-r" } };
+    expect(kernelStatusLine(pythonEnded).text).toBe(t("nb.status.ended", "Python 3.11"));
   });
 });

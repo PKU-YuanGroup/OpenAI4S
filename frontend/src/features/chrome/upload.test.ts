@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
+import { _resetAttachments, composerAttachments } from "./attachments";
 import {
   UPLOAD_STATE,
   UPLOAD_TIMING,
@@ -411,6 +412,27 @@ describe("F-20 composer uploads (app.js:11049-11199)", () => {
       const [result] = await uploadFiles([file("a.csv")]);
       expect(calls.filter((c) => c.path === "/uploads").map((c) => c.body.if_exists)).toEqual(["error", "version"]);
       expect(result).toMatchObject({ ok: true, filename: "a.csv" });
+    });
+
+    it("M-10: each upload shows in the composer tray, named as stored, until the message is sent", async () => {
+      _resetAttachments();
+      conflict.answer = "rename";
+      stubTakenName("a-2.csv");
+      const pending = uploadFiles([file("a.csv")]);
+      // Shown while it uploads, before any answer arrived.
+      expect(composerAttachments().map((a) => [a.name, a.state, a.frameId])).toEqual([["a.csv", "uploading", "frame_a"]]);
+      await pending;
+      expect(composerAttachments().map((a) => [a.name, a.state, a.artifactId, a.created])).toEqual([
+        ["a-2.csv", "ready", "a-1", true],
+      ]);
+    });
+
+    it("M-10: a replaced file is a new version of an existing Artifact, not one × may delete", async () => {
+      _resetAttachments();
+      conflict.answer = "version";
+      stubTakenName("unused");
+      await uploadFiles([file("a.csv")]);
+      expect(composerAttachments().map((a) => [a.name, a.created])).toEqual([["a.csv", false]]);
     });
 
     it("cancel writes nothing, is not a failure, and does not hold a send", async () => {

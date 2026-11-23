@@ -161,9 +161,12 @@ def startup_auth_banner(host: str, port: int, *, team_mode: bool) -> str:
     authority = f"[{reachable}]" if ":" in reachable else reachable
     if team_mode:
         return f"[openai4s] team mode: sign in at http://{authority}:{port}/login"
+    # The same sentence `openai4s serve` used to print again right below it,
+    # with the fallback for a checkout whose .venv is not on PATH.
     return (
         "[openai4s] access token required.\n"
-        "  sign in: run `openai4s url` on this host to print a sign-in link"
+        "  sign in: run `openai4s url` to print a sign-in link "
+        "(in the OpenAI4S folder without it on PATH: `uv run openai4s url`)"
     )
 
 

@@ -10,6 +10,8 @@ vi.mock("../artifacts/ui", async (importOriginal) => ({
 import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
 import { startStream } from "../messages/stream";
+import { reviewFailureText, reviewRefusalText } from "./review-copy";
+import { continueInNewSession } from "./skill-network";
 import { addLiveStep, buildStepCard, relabelStepCards, renderStoredStep, updateLiveStep } from "./step";
 
 /** Just enough DOM for step cards (no jsdom here). */
@@ -233,12 +235,12 @@ describe("a collapsed step card builds its body on first expand", () => {
 
   it("a card that opens itself builds at once, and the window contract stays eager", () => {
     const host = new El("div");
-    const artifact = renderStoredStep(
-      { step_id: "h-3", kind: "artifact", status: "done", output: { artifacts: [{ filename: "a.csv" }] } },
+    const plan = renderStoredStep(
+      { step_id: "h-3", kind: "plan", status: "done", output: { todos: [{ content: "Load", status: "completed" }] } },
       host as never,
     ) as unknown as El;
-    expect(artifact.classes.has("open")).toBe(true);
-    expect(artifact.querySelector(".s-body")!.children).toHaveLength(1);
+    expect(plan.classes.has("open")).toBe(true);
+    expect(plan.querySelector(".s-body")!.children).toHaveLength(1);
     // tests/browser_p1_controls.mjs reads a fresh buildStepCard's body unopened.
     const eager = buildStepCard({ step_id: "w-1", status: "done", ...CODE });
     expect((eager.body as unknown as El).children).toHaveLength(1);
@@ -329,7 +331,7 @@ describe("artifact step card", () => {
       },
     });
     const card = handle.card as unknown as El;
-    expect(card.querySelectorAll(".s-fn").map((node) => node.textContent)).toEqual(['"table.csv"']);
+    expect(card.querySelectorAll(".s-fn").map((node) => node.textContent)).toEqual(["table.csv"]);
     expect(card.querySelectorAll(".s-fig-cap").map((node) => node.textContent)).toEqual(["fit.png", "fit.svg"]);
     // Figures only: no empty "files [ ]" row.
     const figures = buildStepCard({
@@ -340,6 +342,240 @@ describe("artifact step card", () => {
     }).card as unknown as El;
     expect(figures.querySelectorAll(".s-files")).toEqual([]);
     expect(figures.querySelectorAll(".s-fig-cap")).toHaveLength(1);
+  });
+
+  it("a Saving step is collapsed, lists files by name and size, and never shows the local path (M-50)", () => {
+    const host = new El("div");
+    const step = {
+      step_id: "s-6",
+      kind: "artifact",
+      title: "Load data",
+      status: "done",
+      summary: "2 artifacts",
+      input: { files: ["summary.csv", "notes.md"], environment: "python" },
+      output: {
+        artifacts: [
+          { filename: "summary.csv", artifact_id: "a-1", version_id: "v-1", size_bytes: 96, storage_path: "/home/alice/work/summary.csv" },
+          { filename: "notes.md", artifact_id: "a-2", version_id: "v-2", size_bytes: 17, storage_path: "/home/alice/work/notes.md" },
+        ],
+      },
+    };
+    const card = renderStoredStep(step, host as never) as unknown as El;
+    expect(card.classes.has("open")).toBe(false);
+    open({ card: card as unknown as HTMLElement });
+    expect(card.querySelectorAll(".s-frow").map((row) => row.textContent)).toEqual(["summary.csv · 96 B", "notes.md · 17 B"]);
+    const details = card.querySelector(".s-out-tgl")!;
+    expect(details.textContent).toBe("Technical details");
+    expect(card.querySelector(".s-json")!.style.display).toBe("none");
+    expect(card.textContent).not.toContain("/home/alice");
+    expect(card.textContent).not.toContain("storage_path");
+    details.onclick!();
+    expect(details.textContent).toBe("Hide technical details");
+    expect(card.querySelector(".s-json")!.textContent).toContain('"version_id": "v-1"');
+  });
+
+  it("a Saving step stored without its summary still shows the count (SYNC-14)", async () => {
+    const stored = {
+      step_id: "s-5",
+      kind: "artifact",
+      title: "Load data",
+      status: "done",
+      summary: null as unknown as string,
+      output: { artifacts: [{ filename: "a.csv", artifact_id: "a-1" }, { filename: "b.md", artifact_id: "a-2" }] },
+    };
+    const meta = (step: typeof stored): string =>
+      ((buildStepCard(step).card as unknown as El).querySelector(".s-meta")?.textContent || "");
+    expect(meta(stored)).toBe("2 artifacts");
+    expect(meta({ ...stored, output: { artifacts: [stored.output.artifacts[0]!] } })).toBe("1 artifact");
+    await setLang("zh");
+    expect(meta(stored)).toBe("2 个产物");
+    await setLang("en");
+  });
+});
+
+describe("sub-agents side by side (SCI-22)", () => {
+  it("a delegation is titled by its task, a child step names its sub-agent, and a child's slip is amber", async () => {
+    const delegate = (id: string, request: string) =>
+      buildStepCard({
+        step_id: id,
+        kind: "delegate",
+        title: "Delegating to general",
+        input: { specialist: "general", request },
+        status: "running",
+      }).card as unknown as El;
+    const gc = delegate("d-1", "Compute the GC content of ATGCGC. Report it as a percentage.");
+    const mw = delegate("d-2", "Estimate the peptide MW of MKTAYIAK");
+    expect(gc.querySelector(".s-lbl")!.textContent).toBe("Sub-agent · Compute the GC content of ATGCGC.");
+    expect(mw.querySelector(".s-lbl")!.textContent).toBe("Sub-agent · Estimate the peptide MW of MKTAYIAK");
+
+    const child = (childId: string, status: string) =>
+      buildStepCard({
+        step_id: "c-" + childId + status,
+        kind: "read",
+        title: "Reading placeholder",
+        input: { path: "placeholder", delegation: { delegation_child_id: childId, child_name: "general", depth: 1 } },
+        status,
+        output: status === "error" ? { error: "FileNotFoundError: placeholder" } : {},
+      }).card as unknown as El;
+    const a = child("child-aaaa1111", "error");
+    const b = child("child-bbbb2222", "done");
+    const tagA = a.querySelector(".s-child-tag")!.textContent;
+    const tagB = b.querySelector(".s-child-tag")!.textContent;
+    expect(tagA).toContain("general");
+    expect(tagA).not.toBe(tagB);
+    // The sub-agent's probe failed and it carried on: amber, not a red failure.
+    expect(a.classes.has("err")).toBe(false);
+    expect(a.classes.has("warn")).toBe(true);
+    // A failure of the delegation itself stays red.
+    const failed = buildStepCard({
+      step_id: "d-3",
+      kind: "delegate",
+      title: "Delegating to general",
+      input: { specialist: "general", request: "x" },
+      status: "error",
+      output: { error: "RuntimeError: kernel died" },
+    }).card as unknown as El;
+    expect(failed.classes.has("err")).toBe(true);
+
+    await setLang("zh");
+    expect(delegate("d-4", "计算 ATGC 的 GC 含量。").querySelector(".s-lbl")!.textContent).toBe("子代理 · 计算 ATGC 的 GC 含量。");
+    await setLang("en");
+  });
+});
+
+describe("a sub-agent's steps inside its delegation card (SCI-22)", () => {
+  const child = (id: string, kind: string, extra: Record<string, unknown> = {}) => ({
+    step_id: id,
+    kind,
+    title: kind === "read" ? "Reading placeholder" : "Loading skill",
+    input: {
+      path: "placeholder",
+      delegation: { delegation_child_id: "child-aaaa1111", child_name: "general", depth: 1, parent_step_id: "d-1" },
+    },
+    ...extra,
+  });
+  const delegation = {
+    step_id: "d-1",
+    kind: "delegate",
+    title: "Delegating to general",
+    input: { specialist: "general", request: "Compute the GC content of ATGCGC." },
+  };
+
+  /** Each card's id and the id of the card it sits in ("" = the conversation). */
+  const layout = (root: El): string[] =>
+    root.querySelectorAll(".step").map((card) => {
+      let up = card.parent;
+      while (up && !up.classes.has("step")) up = up.parent;
+      return `${card.dataset.stepId || card.querySelector(".s-lbl")!.textContent}<${up ? up.querySelector(".s-lbl")!.textContent : ""}`;
+    });
+
+  it("nests them under the card live, and a reload nests them the same way", () => {
+    addLiveStep({ ...delegation, status: "running" });
+    addLiveStep(child("c-1", "read", { status: "running" }));
+    updateLiveStep({ step_id: "c-1", status: "error", output: { error: "FileNotFoundError: placeholder" } });
+    addLiveStep(child("c-2", "skill", { status: "done" }));
+    // The parent's own step after the delegation stays in the conversation.
+    addLiveStep({ step_id: "s-x", kind: "read", title: "Reading plate.csv", status: "done" });
+    updateLiveStep({ step_id: "d-1", status: "done", summary: "completed", output: {} });
+    const live = layout(messages);
+    const card = messages.querySelectorAll(".step-delegate")[0]!;
+    expect(card.querySelector(".s-child-count")!.textContent).toBe("2 steps inside");
+    // Folded with the card: the sub-agent's probes do not fill the conversation.
+    expect(card.querySelector(".s-children")).not.toBeNull();
+    expect(card.classes.has("open")).toBe(false);
+
+    resetStoreFields();
+    const history = new El("div");
+    for (const row of [
+      { ...delegation, status: "done", summary: "completed", output: {}, created_at: 1 },
+      { ...child("c-1", "read"), status: "error", output: { error: "FileNotFoundError: placeholder" }, created_at: 2 },
+      { ...child("c-2", "skill"), status: "done", created_at: 3 },
+      { step_id: "s-x", kind: "read", title: "Reading plate.csv", status: "done", created_at: 4 },
+    ]) {
+      renderStoredStep(row, history as unknown as ParentNode);
+    }
+    expect(layout(history)).toEqual(live);
+    expect(live).toEqual([
+      "Sub-agent · Compute the GC content of ATGCGC.<",
+      "Reading placeholder<Sub-agent · Compute the GC content of ATGCGC.",
+      "Loading skill<Sub-agent · Compute the GC content of ATGCGC.",
+      "Reading plate.csv<",
+    ]);
+  });
+
+  it("leaves a step flat when its delegation card is not on screen", () => {
+    const history = new El("div");
+    renderStoredStep({ ...child("c-9", "read"), status: "done" }, history as unknown as ParentNode);
+    expect(history.children.map((node) => node.classes.has("step"))).toEqual([true]);
+  });
+});
+
+describe("one download, one row (SCI-11)", () => {
+  const url = "https://files.rcsb.org/download/1CRN.pdb";
+  const download = {
+    step_id: "dl-1",
+    kind: "fetch",
+    title: "Downloading from files.rcsb.org",
+    input: { url, path: "1crn.pdb", max_bytes: 67108864 },
+  };
+  const saving = { step_id: "sv-1", kind: "artifact", title: "Saving 1crn.pdb", input: { files: ["1crn.pdb"] } };
+  const ask = {
+    decision_id: "perm-1",
+    frame_id: "f-1",
+    tool: "web_download",
+    title: "Downloading from files.rcsb.org",
+    target: "files.rcsb.org",
+    input: { url, path: "1crn.pdb", max_bytes: 67108864 },
+  };
+
+  /** Each card (step or approval) and the step card it sits in ("" = the conversation). */
+  const rows = (root: El): string[] => {
+    const out: string[] = [];
+    const walk = (node: El, inside: string): void => {
+      for (const kid of node.children) {
+        const kind = kid.classes.has("perm-card") ? "approval" : kid.classes.has("step") ? [...kid.classes].find((c) => c.startsWith("step-"))! : "";
+        if (kind) out.push(`${kind}<${inside}`);
+        walk(kid, kid.classes.has("step") ? [...kid.classes].find((c) => c.startsWith("step-"))! : inside);
+      }
+    };
+    walk(root, "");
+    return out;
+  };
+
+  it("folds the allowed approval and the saved file into the download's card, live and after a reload", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const { markPermCard, renderPermissionCard, renderStoredPermission } = await import("./permission");
+    addLiveStep({ ...download, status: "running" });
+    renderPermissionCard(ask);
+    // Waiting on the user: the card is in the conversation.
+    expect(rows(messages)).toContain("approval<");
+    // As seen live: the download and its Saving step can stream in before
+    // this page's own decision request returns.
+    updateLiveStep({ step_id: "dl-1", status: "done", summary: "49,152 bytes", output: {} });
+    addLiveStep({ ...saving, status: "done" });
+    updateLiveStep({ step_id: "sv-1", status: "done", summary: "1 artifact", output: {} });
+    markPermCard("perm-1", true, "once", {});
+    const live = rows(messages);
+    expect(live).toEqual(["step-fetch<", "approval<step-fetch", "step-artifact<step-fetch"]);
+
+    resetStoreFields();
+    const history = messages.appendChild(new El("div"));
+    renderStoredStep({ ...download, status: "done", summary: "49,152 bytes", output: {}, created_at: 1 }, history as unknown as ParentNode);
+    renderStoredPermission({ ...ask, state: "allowed", scope: "once", created_at: "2026-11-20T00:00:02Z" }, history as unknown as ParentNode);
+    renderStoredStep({ ...saving, status: "done", summary: "1 artifact", output: {}, created_at: 3 }, history as unknown as ParentNode);
+    expect(rows(history)).toEqual(live);
+  });
+
+  it("leaves a denied download's card, and a file the download did not write, where they are", async () => {
+    const { renderStoredPermission } = await import("./permission");
+    const history = messages.appendChild(new El("div"));
+    renderStoredStep({ ...download, status: "error", output: { error: "denied" }, created_at: 1 }, history as unknown as ParentNode);
+    renderStoredPermission({ ...ask, state: "denied", created_at: "2026-11-20T00:00:02Z" }, history as unknown as ParentNode);
+    renderStoredStep(
+      { ...saving, step_id: "sv-2", title: "Saving notes.md", input: { files: ["notes.md"] }, status: "done", created_at: 3 },
+      history as unknown as ParentNode,
+    );
+    expect(rows(history)).toEqual(["step-fetch<", "approval<", "step-artifact<"]);
   });
 });
 
@@ -435,6 +671,33 @@ describe("a loaded Skill's network limit", () => {
     expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
   });
 
+  it("the load card names the built-in connectors the limit takes away (SCI-14)", async () => {
+    await setLang("en");
+    const card = buildStepCard({
+      step_id: "l-2",
+      kind: "skill",
+      title: "Loading literature-review skill guidance",
+      status: "done",
+      summary: "loaded · network limited to 3 domains",
+      input: { name: "literature-review" },
+      output: {
+        name: "literature-review",
+        content: "# Literature review",
+        session_network: {
+          skills: ["literature-review"],
+          domains: DOMAINS,
+          unavailable_connectors: ["UniProtKB", "RCSB Protein Data Bank"],
+        },
+      },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-net-lost")!.textContent).toBe(
+      "This session can no longer use these built-in connectors: UniProtKB, RCSB Protein Data Bank.",
+    );
+    // An older step with no list says nothing rather than "none".
+    const old = buildStepCard({ ...NOTICE }).card as unknown as El;
+    expect(old.querySelector(".s-net-lost")).toBeNull();
+  });
+
   it("a shell command the limit refused says so instead of a bare failure", async () => {
     await setLang("zh");
     const reason =
@@ -464,6 +727,66 @@ describe("a loaded Skill's network limit", () => {
     expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
     // The server's own words stay available below the explanation.
     expect(card.querySelector(".s-net-blocked")!.querySelector("pre")!.textContent).toBe(reason);
+    // SCI-14: and what to do now, with the way out as a button.
+    expect(card.querySelector(".s-net-next")!.querySelector(".s-net-text")!.textContent).toContain("请在新会话中继续");
+    expect(card.querySelector(".s-net-new")!.textContent).toBe("在新会话中继续");
+  });
+
+  it("an unavailable review says why and what to do, not an empty card (M-75)", async () => {
+    await setLang("zh");
+    const card = buildStepCard({
+      step_id: "r-1",
+      kind: "review",
+      title: "Reviewer",
+      status: "error",
+      summary: "Review unavailable",
+      input: { mode: "manual" },
+      output: { verdict: "unavailable", reason: "model_unreachable", error: "LLM request timed out after 45s" },
+    }).card as unknown as El;
+    expect(card.querySelector(".s-lbl")!.textContent).toBe("审阅");
+    expect(card.querySelector(".s-meta")!.textContent).toBe("审阅未完成");
+    expect(card.querySelector(".review-detail")!.textContent).toBe(reviewFailureText("model_unreachable"));
+    expect(card.querySelector(".review-detail")!.textContent).toContain("审阅模型没有及时回应");
+    expect(card.querySelector("pre")!.textContent).toContain("timed out after 45s");
+  });
+
+  it("a refused review request is worded in the UI language (M-75)", async () => {
+    await setLang("en");
+    expect(reviewRefusalText({ code: "review_nothing_to_review", message: "there is nothing to review yet" })).toBe(
+      "Nothing to review yet: this session has no message, code or file. Ask the agent something first.",
+    );
+    expect(reviewRefusalText(new Error("a previous review call is still finishing"))).toBe(
+      "a previous review call is still finishing",
+    );
+    // An unknown reason still explains itself rather than staying silent.
+    expect(reviewFailureText("something new")).toBe(reviewFailureText("internal"));
+  });
+
+  it("Continue in a new session opens one and carries the last request over (SCI-14)", async () => {
+    const composer = { value: "", focus: vi.fn(), dispatchEvent: vi.fn() };
+    const bubbles = [{ textContent: "find 2 papers" }, { textContent: " re-check crambin on rest.uniprot.org " }];
+    const order: string[] = [];
+    vi.stubGlobal("Event", class { constructor(readonly type: string) {} });
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => new El(tag),
+      getElementById: (id: string) => (id === "composer" ? composer : null),
+      querySelectorAll: (sel: string) => (sel === "#messages .msg.user .bubble" ? bubbles : []),
+    });
+    vi.stubGlobal("newSession", async () => {
+      // The draft is read before the new session replaces the transcript.
+      order.push("new");
+      bubbles.length = 0;
+    });
+    await continueInNewSession();
+    expect(order).toEqual(["new"]);
+    expect(composer.value).toBe("re-check crambin on rest.uniprot.org");
+    expect(composer.focus).toHaveBeenCalled();
+
+    // Something already typed there is the user's, and stays.
+    composer.value = "my own words";
+    bubbles.push({ textContent: "older request" });
+    await continueInNewSession();
+    expect(composer.value).toBe("my own words");
   });
 
   it("a search the limit refused reads as blocked, not as 0 results", async () => {

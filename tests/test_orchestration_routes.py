@@ -148,6 +148,30 @@ def test_a_failing_job_ends_failed_not_completed(daemon):
     assert status == 202
     final = _await_phase(daemon, _body(raw)["id"], cookie)
     assert final["phase"] == Phase.FAILED.value
+    # The status it ended with is part of the job, in the detail and the list.
+    assert final["exit_code"] == 7
+    assert final["reason"] is None
+    status, raw = _get(daemon.port, "/api/v1/orchestration/jobs", cookie=cookie)
+    assert [job["exit_code"] for job in _body(raw)["jobs"]] == [7]
+
+
+def test_a_command_that_never_started_says_so(daemon):
+    """`cluster submit "echo hi"` asks for a program named `echo hi`. It was
+    FAILED with `reason: null` and empty logs -- nothing said why."""
+    cookie = _login(daemon, "root", "fake-pw-r")
+    status, raw = _submit(daemon, cookie, ["echo hi"])
+    assert status == 202
+    job_id = _body(raw)["id"]
+
+    final = _await_phase(daemon, job_id, cookie)
+
+    assert final["phase"] == Phase.FAILED.value
+    assert final["reason"] == "BOOTSTRAP_FAILED"
+    assert final["exit_code"] == 127
+    status, raw = _get(
+        daemon.port, f"/api/v1/orchestration/jobs/{job_id}/logs", cookie=cookie
+    )
+    assert "openai4s: cannot start 'echo hi'" in _body(raw)["stderr"]
 
 
 def test_cancel_reaches_terminal(daemon):
@@ -342,6 +366,34 @@ def test_an_unknown_backend_is_refused_with_the_available_ones(daemon):
     payload = _body(raw)
     assert payload["code"] == "unknown_backend"
     assert "local" in payload["available"]
+
+
+def test_an_unknown_profile_is_refused_when_no_cluster_is_configured(daemon):
+    """`--profile nosuch` ran on the local backend anyway and was recorded
+    under a profile that exists nowhere."""
+    cookie = _login(daemon, "root", "fake-pw-r")
+    status, raw = _submit(
+        daemon, cookie, [sys.executable, "-c", "pass"], profile="nosuch"
+    )
+    assert status == 400
+    payload = _body(raw)
+    assert payload["code"] == "unknown_profile"
+    assert "'nosuch'" in payload["error"] and "cluster.toml" in payload["error"]
+    assert daemon.store.workloads.list_workloads(limit=50) == []
+
+
+def test_the_cluster_backend_without_cluster_toml_says_where_it_goes(daemon):
+    """`--backend cluster` (a value the help lists) answered "unknown backend
+    'cluster'", as if it were a typo."""
+    cookie = _login(daemon, "root", "fake-pw-r")
+    status, raw = _submit(
+        daemon, cookie, [sys.executable, "-c", "pass"], backend="cluster"
+    )
+    assert status == 400
+    payload = _body(raw)
+    assert payload["code"] == "unknown_backend"
+    assert "not configured" in payload["error"]
+    assert "cluster.toml" in payload["error"]
 
 
 def test_profiles_route_reports_no_cluster_when_unconfigured(daemon):

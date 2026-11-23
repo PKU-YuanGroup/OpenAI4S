@@ -2636,7 +2636,7 @@ def test_streamed_deltas_hide_fences_and_precede_tool_and_terminal_events(
     visible = "".join(event["chunk"] for event in text_events)
     # Anything after the action fence was generated before the cell ran and
     # therefore cannot be a trustworthy result narration.
-    assert visible == "Before.\n"
+    assert visible == "Before.\n\n"
     assert "host.submit_output" not in visible
 
     reset_index = next(
@@ -2962,7 +2962,10 @@ def test_native_finalize_after_streamed_prose_starts_a_new_paragraph(
     assert result["status"] == "completed"
     live = _live_text(hub)
     assert "gradient.Printed" not in live
-    assert "gradient.\n\nPrinted mean petal length" in live
+    # A blank line (or more -- the renderer skips extras) before the completion.
+    assert re.search(r"gradient\.\n[ \t]*\n\s*Printed mean petal length", live), repr(
+        live
+    )
     contents = [m["content"] for m in runner.store.list_messages(frame_id)]
     assert contents[-2] == _GRADIENT_PROSE
     assert contents[-1].startswith("Printed mean petal length")

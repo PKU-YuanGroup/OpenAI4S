@@ -10,7 +10,7 @@ Crossref, an arXiv id via the arXiv API); fetch downloads a URL and converts
 HTML to readable markdown/text.
 
 Networking can be globally gated by ``OPENAI4S_ALLOW_NETWORK`` (default on);
-the daemon's Customize → Network panel flips this.
+the daemon's Settings → Network panel flips this.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ class SSRFBlocked(RuntimeError):
 def _require_network() -> None:
     if not network_allowed():
         raise NetworkDisabled(
-            "networking is disabled (enable it in Customize → Network / set "
+            "networking is disabled (enable it in Settings → Network / set "
             "OPENAI4S_ALLOW_NETWORK=1)"
         )
 

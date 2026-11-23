@@ -26,7 +26,7 @@ import base64
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import unquote
 
 from openai4s.artifact_paths import artifact_role
@@ -52,8 +52,12 @@ def _iso(ms: int | float | None) -> str | None:
         return None
 
 
-def artifact_row_json(row: dict) -> dict:
-    """The same Artifact DTO the legacy array route already publishes."""
+def artifact_row_json(row: dict, marks: Mapping[str, str] | None = None) -> dict:
+    """The same Artifact DTO the legacy array route already publishes.
+
+    ``marks`` is `Store.artifact_role_marks` for the page: a role the server
+    recorded for an artifact wins over its filename (a plan's JSON is process).
+    """
     return {
         "id": row["artifact_id"],
         "artifact_id": row["artifact_id"],
@@ -67,7 +71,9 @@ def artifact_row_json(row: dict) -> dict:
         "priority": row.get("priority", 0),
         "created_at": _iso(row.get("created_at")),
         "is_user_upload": bool(row.get("is_user_upload", 0)),
-        "role": artifact_role(row.get("filename")),
+        "role": artifact_role(
+            row.get("filename"), (marks or {}).get(str(row["artifact_id"]))
+        ),
     }
 
 
@@ -234,10 +240,12 @@ def browse_index(
             artifact_id=str(tail["artifact_id"]),
             fingerprint=fingerprint,
         )
+    offered = offered_artifacts(page)
+    marks = store.artifact_role_marks(row["artifact_id"] for row in offered)
     return {
         # Dropped after the cursor is cut from the full page, so `has_more`
         # and the next page stay sound; this page is merely shorter.
-        "artifacts": [artifact_row_json(row) for row in offered_artifacts(page)],
+        "artifacts": [artifact_row_json(row, marks) for row in offered],
         "next_cursor": next_cursor,
         "has_more": has_more,
     }

@@ -225,7 +225,8 @@ type QueryRoot = {
   querySelectorAll: (selector: string) => ArrayLike<Element> | NodeListOf<Element>;
 };
 
-// Apply translations to static HTML carrying data-i18n / data-i18n-title / data-i18n-ph / data-i18n-val.
+// Apply translations to static HTML carrying data-i18n / data-i18n-title / data-i18n-ph / data-i18n-val /
+// data-i18n-aria.
 // A node with no translation (yet) keeps what it has: the markup carries a
 // readable fallback, and t()'s key fallback would replace "Projects" with
 // "dash.col.projects" whenever this runs before the dictionaries load.
@@ -244,6 +245,12 @@ export function applyStaticI18n(root?: QueryRoot): void {
   });
   each("data-i18n-title", (e, value) => {
     (e as HTMLElement).title = value;
+    // SYNC-12: an icon-only control is named by its tooltip for a screen
+    // reader too, in the interface language.
+    if (!(e.textContent || "").trim()) e.setAttribute?.("aria-label", value);
+  });
+  each("data-i18n-aria", (e, value) => {
+    e.setAttribute?.("aria-label", value);
   });
   each("data-i18n-ph", (e, value) => {
     (e as HTMLInputElement).placeholder = value;

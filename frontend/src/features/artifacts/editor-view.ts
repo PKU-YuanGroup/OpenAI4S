@@ -1,5 +1,6 @@
 import { bindEditorAutocomplete } from "../autocomplete/editor";
 import { copyText } from "../chrome/clipboard";
+import { askConfirm } from "../chrome/dialog";
 import { el } from "./api";
 import { filesT } from "./copy";
 import { artifactEditors } from "./state";
@@ -101,14 +102,14 @@ export function renderArtifactEditor(body: HTMLElement, artifact: ArtifactRow, o
     if (editor.problem === "load") void editor.load();
     else void editor.check();
   };
-  discardClose.onclick = () => {
-    if (!options.active() || editor.phase === "saving") return;
-    if (typeof confirm !== "function" || !confirm(filesT("editor.discardCloseConfirm"))) return;
-    if (artifactEditors.discard(editor)) options.close();
+  // The editor may have closed or started saving while the dialog was open.
+  const idle = () => options.active() && editor.phase !== "saving";
+  discardClose.onclick = async () => {
+    if (!idle() || !(await askConfirm(filesT("editor.discardCloseConfirm"), { danger: true }))) return;
+    if (idle() && artifactEditors.discard(editor)) options.close();
   };
-  discard.onclick = () => {
-    if (!options.active() || editor.phase === "saving") return;
-    if (typeof confirm !== "function" || !confirm(filesT("editor.discardConfirm"))) return;
-    if (artifactEditors.discard(editor)) options.reload();
+  discard.onclick = async () => {
+    if (!idle() || !(await askConfirm(filesT("editor.discardConfirm"), { danger: true }))) return;
+    if (idle() && artifactEditors.discard(editor)) options.reload();
   };
 }

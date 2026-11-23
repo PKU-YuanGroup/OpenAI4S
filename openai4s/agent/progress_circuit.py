@@ -37,6 +37,7 @@ PROGRESS_REASON_MALFORMED = "consecutive_malformed"
 PROGRESS_REASON_TOOL_ERROR = "similar_tool_error"
 PROGRESS_REASON_LONG_TEXT = "long_text_repeat"
 PROGRESS_REASON_EMPTY_REPLY = "empty_reply_repeat"
+PROGRESS_REASON_UNSENT_CELL = "announced_cell_repeat"
 PROGRESS_REASONS = frozenset(
     {
         PROGRESS_REASON_SAME_ACTION,
@@ -45,6 +46,7 @@ PROGRESS_REASONS = frozenset(
         PROGRESS_REASON_TOOL_ERROR,
         PROGRESS_REASON_LONG_TEXT,
         PROGRESS_REASON_EMPTY_REPLY,
+        PROGRESS_REASON_UNSENT_CELL,
     }
 )
 
@@ -80,6 +82,15 @@ LONG_TEXT_THRESHOLD = 3
 #: nothing, so GLM 5.3 on the Ark Agent Plan looped, each turn costing a full
 #: budget, until the turn limit.
 EMPTY_REPLY_THRESHOLD = 2
+# Replies since the last executed cell that promised a cell and sent tool
+# calls instead (each drew the announced-cell note). The notes and the
+# tool-less call they lead to are the first stage; a model that ignored the
+# note four times and two tool-less calls in between is stopped on the fifth.
+# A stubborn reply to the tool-less call is prose, which resets the
+# consecutive count that withholds tools, so without this the cycle "promise,
+# promise, prose" ran 59 model calls on one turn, ended only by an unrelated
+# rule. Not consecutive: prose in between does not clear it, a cell does.
+UNSENT_CELL_THRESHOLD = 5
 LONG_TEXT_MIN_CHARS = 400
 LONG_TEXT_NEAR_RATIO = 0.97
 LONG_TEXT_COMPARE_CHARS = 8000
@@ -301,6 +312,9 @@ class ProgressCircuit:
     #: results the model read, so a restart rebuilds it and that call is
     #: neither lost nor made twice.
     announced_cell_streak: int = 0
+    #: The same notes counted since the last executed cell, prose replies in
+    #: between included. This one trips (``UNSENT_CELL_THRESHOLD``).
+    unsent_cell_count: int = 0
     #: Whether the session has sent a cell through ``run_cell``. Unlike the
     #: counts it is not the epoch's and it never resets: once set, every
     #: later call offers ``run_cell`` beside the other tools. A restore reads
@@ -332,6 +346,7 @@ class ProgressCircuit:
             PROGRESS_REASON_TOOL_ERROR: self.error_streak,
             PROGRESS_REASON_LONG_TEXT: self.long_text_streak,
             PROGRESS_REASON_EMPTY_REPLY: self.empty_reply_streak,
+            PROGRESS_REASON_UNSENT_CELL: self.unsent_cell_count,
         }.get(self.trip_reason or "", 0)
 
     def reminder_note(self) -> str:
@@ -481,6 +496,7 @@ class ProgressCircuit:
         self.long_text_normalized = None
         self.long_text_streak = 0
         self.tool_only_streak = 0
+        self.unsent_cell_count = 0
         self.target_calls = {}
         self.same_target_streak = 0
         self.same_target_tool = None
@@ -605,6 +621,8 @@ class ProgressCircuit:
             if isinstance(message, Mapping)
         ):
             self.announced_cell_streak += 1
+            self.unsent_cell_count += 1
+            self._maybe_trip()
         else:
             self.announced_cell_streak = 0
 
@@ -638,6 +656,9 @@ class ProgressCircuit:
             return
         if self.empty_reply_streak >= EMPTY_REPLY_THRESHOLD:
             self.trip_reason = PROGRESS_REASON_EMPTY_REPLY
+            return
+        if self.unsent_cell_count >= UNSENT_CELL_THRESHOLD:
+            self.trip_reason = PROGRESS_REASON_UNSENT_CELL
 
 
 @dataclass(frozen=True)
@@ -816,11 +837,13 @@ __all__ = [
     "PROGRESS_REASON_SAME_ACTION",
     "PROGRESS_REASON_SAME_TARGET",
     "PROGRESS_REASON_TOOL_ERROR",
+    "PROGRESS_REASON_UNSENT_CELL",
     "SAME_ACTION_GRACE",
     "SAME_ACTION_THRESHOLD",
     "SAME_TARGET_GRACE",
     "SAME_TARGET_THRESHOLD",
     "SIMILAR_ERROR_THRESHOLD",
+    "UNSENT_CELL_THRESHOLD",
     "ProgressCircuit",
     "attach_progress_circuit",
     "canonical_arguments",

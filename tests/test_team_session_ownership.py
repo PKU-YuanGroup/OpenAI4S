@@ -322,6 +322,8 @@ def test_search_finds_words_in_answers_code_and_output_with_a_snippet(daemon):
         "task_summary": hit("Gompertz")["task_summary"],
         "match": "code",
         "snippet": "params = fit_gompertz_curve(od)",
+        # M-47: the result row says when the session was last active.
+        "updated_at": daemon.store.get_frame(fid)["updated_at"],
     }
     overflow = hit("OVRFLW")
     assert overflow["match"] == "output"

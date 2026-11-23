@@ -71,15 +71,23 @@ await admin.goto(BASE + "/", { waitUntil: "domcontentloaded" });
 await admin.waitForURL("**/login", { timeout: 10000 });
 check(true, "anonymous root redirects to /login");
 await login(admin, ADMIN);
-await admin.waitForSelector("#team-user:not(.hidden)", { timeout: 10000 });
+await admin.waitForSelector("#team-user", { state: "visible", timeout: 10000 });
 const chip = await admin.textContent("#team-user");
 check(chip.includes(ADMIN.u) && chip.includes("admin"), "chip names the admin");
-await admin.waitForSelector("#team-admin:not(.hidden)", { timeout: 10000 });
-check(true, "admin sees the Team admin button");
+// The chip is a real, clickable control in the dashboard header (TEAM-21):
+// an ordinary click -- no force, no scroll -- opens the user menu.
+await admin.click("#team-user");
+const adminEntry = admin.locator(".ctx-menu .ctx-item", { hasText: "Team admin" });
+await adminEntry.waitFor({ state: "visible", timeout: 5000 });
+check(true, "admin sees the Team admin entry in the user menu");
+check(
+  (await admin.locator(".ctx-menu .ctx-item", { hasText: "Sign out" }).count()) === 1,
+  "the user menu offers Sign out",
+);
 
 // -- 2. the governance panel renders live data ------------------------------
 console.log("2. governance panel");
-await admin.click("#team-admin");
+await adminEntry.click();
 await admin.waitForSelector("#team-admin-modal:not(.hidden)", { timeout: 5000 });
 await admin.waitForSelector(".team-admin-table", { timeout: 8000 });
 const panel = await admin.textContent("#team-admin-body");
@@ -122,18 +130,47 @@ const created = await member.evaluate(async () => {
 });
 check(!!created.fid, "member created a session");
 
+// -- 3b. a session link opened signed-out comes back after the login ---------
+// TEAM-9: the 303 used to drop the target and every login landed on "/".
+console.log("3b. deep link through the login");
+const linkCtx = await browser.newContext();
+const linkPage = await linkCtx.newPage();
+const deepLink = `/projects/${encodeURIComponent(created.pid)}/frames/${encodeURIComponent(created.fid)}`;
+await linkPage.goto(BASE + deepLink, { waitUntil: "domcontentloaded" });
+await linkPage.waitForURL("**/login?next=**", { timeout: 10000 });
+await linkPage.fill("#u", MEMBER.u);
+await linkPage.fill("#p", MEMBER.p);
+await linkPage.click("#b");
+await linkPage.waitForURL(BASE + deepLink, { timeout: 10000 });
+check(true, "login returns to the session link it was opened from");
+// A hand-written next= that leaves the origin is ignored, not followed.
+await linkPage.evaluate(() => fetch("/api/v1/auth/logout", { method: "POST" }));
+await linkPage.goto(BASE + "/login?next=" + encodeURIComponent("//example.invalid/x"), {
+  waitUntil: "domcontentloaded",
+});
+await linkPage.fill("#u", MEMBER.u);
+await linkPage.fill("#p", MEMBER.p);
+await linkPage.click("#b");
+await linkPage.waitForURL(BASE + "/", { timeout: 10000 });
+check(true, "an off-origin next= lands on the home page instead");
+await linkCtx.close();
+
 // -- 4. governance is admin-only --------------------------------------------
 console.log("4. governance is admin-only");
 const memberAdminStatus = await member.evaluate(
   async () => (await fetch("/api/v1/team/users")).status,
 );
 check(memberAdminStatus === 403, `member gets 403 on /team/users (${memberAdminStatus})`);
+await member.waitForSelector("#team-user", { state: "visible", timeout: 10000 });
+await member.click("#team-user");
+await member
+  .locator(".ctx-menu .ctx-item", { hasText: "Sign out" })
+  .waitFor({ state: "visible", timeout: 5000 });
 check(
-  await member.evaluate(() =>
-    document.getElementById("team-admin").classList.contains("hidden"),
-  ),
-  "member does not see the Team admin button",
+  (await member.locator(".ctx-menu .ctx-item", { hasText: "Team admin" }).count()) === 0,
+  "member's user menu has no Team admin entry",
 );
+await member.keyboard.press("Escape");
 
 // -- 5. admin visibility -----------------------------------------------------
 console.log("5. admin visibility");
@@ -179,9 +216,31 @@ const redeem = await guest.evaluate(async (t) => {
   return r.status;
 }, token);
 check(redeem === 201, `invite redeemed into a guest account (${redeem})`);
+// TEAM-28: the server sends a guest's page load to the viewer -- the
+// workbench (and its run of 403s) never loads -- and the viewer lists what
+// the guest may read, with who is signed in and a way out.
+const guestApi = [];
+guest.on("request", (req) => {
+  if (req.url().includes("/api/v1/")) guestApi.push(new URL(req.url()).pathname);
+});
 await guest.goto(BASE + "/", { waitUntil: "domcontentloaded" });
 await guest.waitForURL("**/replay", { timeout: 10000 });
 check(true, "a guest landing on / is sent to /replay");
+await guest
+  .locator(`#list a[data-session="${created.fid}"]`)
+  .waitFor({ state: "visible", timeout: 10000 });
+check(true, "the guest's replay page lists the project's session");
+check(
+  (await guest.locator("#who button").count()) === 1,
+  "the guest's replay page names the guest and offers Sign out",
+);
+check(
+  guestApi.every((path) => path.startsWith("/api/v1/auth/")),
+  `a guest's landing reads only its own auth routes (${[...new Set(guestApi)].join(", ")})`,
+);
+await guest.goto(BASE + deepLink, { waitUntil: "domcontentloaded" });
+await guest.waitForURL(`**/replay#${created.fid}`, { timeout: 10000 });
+check(true, "a session link opens that session in the guest's viewer");
 const guestBlocked = await guest.evaluate(async () => ({
   frames: (await fetch("/api/v1/frames")).status,
   files: (await fetch("/api/v1/files")).status,

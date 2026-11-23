@@ -59,6 +59,17 @@ describe("session navigation owns every response", () => {
     expect(foldersLoadError.value).toBe(true);
     expect(sessionsLoadError.value).toBe(false);
   });
+  it("a project this login cannot see has no folders, not a failed read (TEAM-26)", async () => {
+    project.value = "theirs";
+    vi.mocked(api).mockImplementation(async (path) => {
+      if (path.includes("/folders")) throw Object.assign(new Error("not found"), { status: 404 });
+      return page("theirs", "");
+    });
+    await loadFolders();
+    expect(foldersLoadError.value).toBe(false);
+    expect(folders.value).toEqual([]);
+    expect(_foldersFor.value).toBe("theirs");
+  });
   it.each(["success", "failure"])("same-visit refresh rejects earlier %s without invalidating navigation", async (outcome) => {
     project.value = "A";
     const generation = _openGen.value;

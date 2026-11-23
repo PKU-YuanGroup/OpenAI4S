@@ -5,7 +5,8 @@
 
 export function kernelLabel(k: string | null | undefined): string {
   k = k || "python";
-  return k.replace(/^python\b/i, "Python");
+  // SCI-35: the chips read "Python" and "r", the cells "python [1]" / "r [2]".
+  return k.replace(/^python\b/i, "Python").replace(/^r\b/i, "R");
 }
 
 /** Stored kernel_id from a kernel-status env object. app.js:10067-10075. */

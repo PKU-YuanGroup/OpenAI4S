@@ -18,7 +18,7 @@ connector manager used for other custom MCP servers.
 
 It is not a bundled model runtime. Merely placing this package in the source
 tree does not install RFdiffusion, ProteinMPNN, ColabFold, PyRosetta, ESM-2,
-OpenMM, checkpoints or GPU drivers. Register it in **Customize → Connectors**
+OpenMM, checkpoints or GPU drivers. Register it in **Settings → Connectors**
 and bring up the backend settings below. Every path that spawns this server —
 an Agent tool call and the connector probe/call endpoints alike — applies the
 same confinement step, so the default path root is the caller's session
@@ -32,7 +32,7 @@ GPU backend remains an operator deployment acceptance check.
 
 ## Connector setup
 
-In **Customize → Connectors**, add **Protein Design** from the
+In **Settings → Connectors**, add **Protein Design** from the
 connector directory. This explicitly enables the capability but starts no
 process yet: OpenAI4S launches the MCP server lazily on the first tool-discovery
 or tool-call request. The equivalent custom stdio command uses the Python

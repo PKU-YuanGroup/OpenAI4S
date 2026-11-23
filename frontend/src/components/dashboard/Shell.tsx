@@ -6,6 +6,8 @@ import { routesToWorkspace } from "../../features/sessions/dom";
 import { projectFilesCopy } from "../../features/sessions/copy";
 import { browseProjectFolder } from "../../features/sessions/project-files";
 import { callLane } from "../../features/send/host";
+import { TeamChip } from "../../features/chrome/team-chip";
+import { a11yT, skipToContent } from "../../features/chrome/a11y-copy";
 import { DashHeroText } from "./DashHero";
 import { ModelKeyNotice, ModelSelect } from "./ModelSelect";
 import "./dashboard.css";
@@ -56,8 +58,8 @@ export function Shell() {
   return (
     <>
       <div id="conn-banner" role="status" aria-live="polite" hidden />
-      <a class="skip-link" href="#messages">
-        Skip to content
+      <a class="skip-link" href="#messages" onClick={skipToContent}>
+        {a11yT("a11y.skip")}
       </a>
       <div id="dashboard" class={pendingRoute ? "dashboard hidden" : "dashboard"}>
         <header class="dash-head">
@@ -96,6 +98,7 @@ export function Shell() {
               data-icon-size="20"
               type="button"
             />
+            <TeamChip placement="dash" />
           </div>
         </header>
         {/* The attention stream (features/attention/boot.ts) mounts beside the
@@ -192,7 +195,7 @@ export function Shell() {
             </button>
             <button id="customize-btn" class="side-nav-item" type="button">
               <span class="ic" data-icon="sliders" data-icon-size="16" />
-              <span data-i18n="palette.action.customize">Customize</span>
+              <span data-i18n="common.settings">Settings</span>
             </button>
             <button id="files-btn" class="side-nav-item" type="button">
               <span class="ic" data-icon="files" data-icon-size="16" />
@@ -220,6 +223,7 @@ export function Shell() {
               aria-label="Theme"
               type="button"
             />
+            <TeamChip placement="side" />
             <div class="lang-seg" role="group" aria-label="Language / 语言">
               <button class="lang-btn" data-lang="zh" type="button">
                 中文
@@ -243,8 +247,12 @@ export function Shell() {
                 data-icon-size="20"
                 type="button"
               />
+              {/* M-41: the open session's name, renamable in place. This bar
+                  never held more than one session, so it is no longer drawn
+                  as tabs: no "New session" pseudo-tab beside it (New is in
+                  the sidebar) and no × that only went Home. */}
               <div class="tabbar" id="tabbar">
-                <div class="tab active" id="tab-session">
+                <div class="conv-title-wrap" id="tab-session">
                   <input
                     id="conv-title"
                     class="conv-title"
@@ -255,28 +263,7 @@ export function Shell() {
                     data-i18n-title="conv.title.rename"
                     title="重命名会话（回车保存）"
                   />
-                  <button
-                    class="t-close"
-                    id="tab-close"
-                    type="button"
-                    data-i18n-title="common.close"
-                    title="关闭"
-                    data-icon="x"
-                    data-icon-size="14"
-                    aria-label="Close"
-                  />
                 </div>
-                <button
-                  class="tab"
-                  id="tab-new"
-                  type="button"
-                  data-i18n-title="palette.action.newSession"
-                  title="新建会话"
-                >
-                  <span class="t-name" data-i18n="palette.action.newSession">
-                    New session
-                  </span>
-                </button>
               </div>
               <div class="conv-head-actions">
                 {/* The session's token use so far (send/progress.ts); opens the
@@ -338,6 +325,13 @@ export function Shell() {
                       not this node exists, so without it they were sent with
                       nothing on screen saying so and no way to discard them. */}
                   <div id="annot-bar" class="annot-bar hidden" />
+                  {/* Files chosen with + / paste / drop, until the message
+                      they go with is sent (chrome/attachments.ts, M-10). */}
+                  <div id="composer-attachments" class="composer-attach hidden" />
+                  {/* "Run in Notebook" for a code block pasted into the
+                      composer, while manual cells are on (notebook/pasted.ts,
+                      SYNC-15). */}
+                  <div id="composer-run" class="composer-attach composer-run hidden" />
                   <textarea
                     id="composer"
                     rows={1}
@@ -485,7 +479,15 @@ export function Shell() {
                 <span class="ic" data-icon="download" data-icon-size="14" />
                 <span data-i18n="common.download">下载</span>
               </a>
-              <button id="modal-close" class="icon-ghost" data-icon="x" data-icon-size="16" aria-label="Close" type="button" />
+              <button
+                id="modal-close"
+                class="icon-ghost"
+                data-icon="x"
+                data-icon-size="16"
+                aria-label="Close"
+                data-i18n-aria="common.close"
+                type="button"
+              />
             </div>
           </div>
           <div id="modal-body" class="modal-body" />
@@ -510,6 +512,7 @@ export function Shell() {
               data-icon="x"
               data-icon-size="16"
               aria-label="Close"
+              data-i18n-aria="common.close"
               type="button"
             />
           </div>

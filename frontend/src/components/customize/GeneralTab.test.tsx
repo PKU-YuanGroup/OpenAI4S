@@ -67,7 +67,10 @@ vi.mock("../../features/customize/layout", () => ({
   },
 }));
 
+import { DiagnosticsTab } from "./DiagnosticsTab";
+import { ExperimentsTab } from "./ExperimentsTab";
 import { GeneralTab } from "./GeneralTab";
+import { NotebookReplSetting } from "./NotebookReplSetting";
 import { Seg } from "./ui";
 import { UpdateCheck } from "./UpdateCheck";
 
@@ -115,7 +118,6 @@ describe("General theme and layout", () => {
   it("move their own segment without remounting or re-reading the tab", async () => {
     render();
     effects.splice(0).forEach((effect) => effect());
-    await vi.waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
 
     const [theme, layout] = segments(render());
     theme!.props!.onPick!("dark");
@@ -126,7 +128,8 @@ describe("General theme and layout", () => {
     expect(shownLayout!.props!.value).toBe("compact");
     expect(mocks.custTab).not.toHaveBeenCalled();
     expect(effects).toHaveLength(0);
-    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+    // Every row is this browser's own setting: the tab reads nothing.
+    expect(mocks.fetch).not.toHaveBeenCalled();
   });
 });
 
@@ -148,26 +151,24 @@ describe("General language", () => {
   });
 });
 
-describe("General update card", () => {
-  it("shows the check-for-updates card and opening settings issues no check", async () => {
+// M-22: General mixed appearance with the model key, the update check, an
+// experimental third-party judgment layer and raw daemon posture.
+describe("General is appearance and language", () => {
+  it("leaves updates, experiments and diagnostics to their own pages", () => {
     const tree = render();
     const found: unknown[] = [];
     const walk = (node: unknown): void => {
       if (Array.isArray(node)) return node.forEach(walk);
       if (!node || typeof node !== "object") return;
       const current = node as Node;
-      if (current.type === UpdateCheck) found.push(current);
+      if (typeof current.type === "function") found.push(current.type);
       walk(current.props?.children);
     };
     walk(tree);
-    expect(found).toHaveLength(1);
-
-    effects.splice(0).forEach((effect) => effect());
-    await vi.waitFor(() => expect(mocks.fetch).toHaveBeenCalled());
-    // Only the tab's own local config read happens on open; the update card
-    // does not contact the release index until its button is pressed.
-    expect(
-      mocks.fetch.mock.calls.every(([, init]) => (init?.method || "GET") === "GET"),
-    ).toBe(true);
+    expect(found).not.toContain(UpdateCheck);
+    expect(found).not.toContain(ExperimentsTab);
+    expect(found).not.toContain(DiagnosticsTab);
+    expect(found).toContain(NotebookReplSetting);
+    expect(JSON.stringify(tree)).not.toContain("cust.general.modelKeyName");
   });
 });

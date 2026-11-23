@@ -9,7 +9,11 @@ from openai4s.host.delegation_policy import (
     DelegationPolicyError,
     child_execution_policy,
 )
-from openai4s.specialists import BUILTIN_SPECIALISTS, builtin_specialist
+from openai4s.specialists import (
+    BUILTIN_SPECIALISTS,
+    builtin_specialist,
+    canonical_specialist_name,
+)
 
 
 class AgentProfileStore(Protocol):
@@ -108,24 +112,17 @@ class DelegationService:
             raise RuntimeError("host.delegate not available: no sub-agent runner wired")
         name = spec.get("specialist") or spec.get("name")
         if name:
+            agent = self._stored_agent(str(name))
+            if agent is None and canonical_specialist_name(str(name)) != name:
+                # EXPLORE is SCOUT now (owner decision 31). A row a user saved
+                # under the former name still overrides it, so the stored
+                # spelling is asked first.
+                name = canonical_specialist_name(str(name))
+                agent = self._stored_agent(name)
             if not self._specialist_enabled(str(name)):
                 raise RuntimeError(
                     f"specialist {name!r} is disabled by capability policy"
                 )
-            try:
-                scope = self._capability_scope()
-                try:
-                    agent = self._store().get_agent(
-                        name,
-                        project_id=scope.get("project_id"),
-                        session_id=scope.get("session_id"),
-                    )
-                except TypeError:
-                    # Lightweight embedders/test doubles can retain the
-                    # historical one-argument Store protocol.
-                    agent = self._store().get_agent(name)
-            except Exception:  # noqa: BLE001 - optional profile lookup
-                agent = None
             builtin = builtin_specialist(str(name))
             builtin_prompt = builtin.system_prompt if builtin is not None else None
             system_prompt = (
@@ -156,8 +153,31 @@ class DelegationService:
                     f"You are acting as the specialist **{name}**.\n"
                     f"{system_prompt}\n\n"
                 )
-                spec = {**spec, "request": _with_persona(request, persona)}
+                spec = {
+                    **spec,
+                    "request": _with_persona(request, persona),
+                    # SCI-21: how much of each request is the persona, so the
+                    # child is named by what was asked (`_task_headline`).
+                    # Outside the request digest's keys.
+                    "_persona_chars": len(persona),
+                }
         return delegate(spec)
+
+    def _stored_agent(self, name: str) -> Any:
+        try:
+            scope = self._capability_scope()
+            try:
+                return self._store().get_agent(
+                    name,
+                    project_id=scope.get("project_id"),
+                    session_id=scope.get("session_id"),
+                )
+            except TypeError:
+                # Lightweight embedders/test doubles can retain the
+                # historical one-argument Store protocol.
+                return self._store().get_agent(name)
+        except Exception:  # noqa: BLE001 - optional profile lookup
+            return None
 
     def children(self) -> Any:
         function = self._steering().get("children")

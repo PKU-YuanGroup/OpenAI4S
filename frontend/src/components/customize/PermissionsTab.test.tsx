@@ -69,6 +69,7 @@ vi.mock("../../features/customize/host", async (importOriginal) => ({
   hint: mocks.hint,
 }));
 
+import { teamUser } from "../../features/chrome/team-identity";
 import { currentId } from "../../stores/session";
 import { PermissionsTab } from "./PermissionsTab";
 
@@ -254,5 +255,48 @@ describe("PermissionsTab without a session", () => {
       "cust.perm.scope.project",
       "cust.perm.scope.global",
     ]);
+  });
+});
+
+// TEAM-23: Restore defaults and the global tier answered a member with 403
+// `admin_only` and nothing on screen.
+describe("PermissionsTab for a team member", () => {
+  beforeEach(() => {
+    currentId.value = null;
+    serve(() => Promise.resolve(response({ error: "admin only", code: "admin_only" }, 403)));
+  });
+  afterEach(() => {
+    teamUser.value = null;
+  });
+  const selects = (tree: unknown) =>
+    findAll(tree, (node) => node.type === "select" && node.props?.class === "perm-dec");
+
+  const resetButton = (tree: unknown) =>
+    find(tree, (node) => node.type === "button" && text(node) === "cust.perm.resetBtn")!;
+
+  it("locks the global tier and Restore defaults, with the reason", async () => {
+    teamUser.value = { username: "bob", role: "member" };
+    render();
+    await settle();
+    const tree = render();
+    expect(resetButton(tree).props!.disabled).toBe(true);
+    expect(text(tree)).toMatch(/Only an administrator can restore/);
+    // The two global rules are shown, locked, with no delete and no add row.
+    expect(selects(tree).map((node) => !!node.props!.disabled)).toEqual([true, true]);
+    expect(withClass(tree, "icon-ghost")).toHaveLength(0);
+    expect(withClass(tree, "perm-rule perm-add")).toHaveLength(0);
+    expect(findAll(tree, (node) => "data-admin-only" in (node.props || {}))).toHaveLength(1);
+  });
+
+  it("leaves everything editable for an admin", async () => {
+    teamUser.value = { username: "alice", role: "admin" };
+    render();
+    await settle();
+    const tree = render();
+    expect(resetButton(tree).props!.disabled).toBe(false);
+    expect(selects(tree).map((node) => !!node.props!.disabled)).toEqual([false, false, false]);
+    expect(withClass(tree, "icon-ghost")).toHaveLength(2);
+    expect(withClass(tree, "perm-rule perm-add")).toHaveLength(1);
+    expect(findAll(tree, (node) => "data-admin-only" in (node.props || {}))).toHaveLength(0);
   });
 });

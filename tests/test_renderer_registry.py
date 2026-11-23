@@ -43,6 +43,31 @@ from openai4s.server.renderers import Renderer, RendererRegistry
             "content_type",
         ),
         ({"filename": "weights.unknown"}, "download", "fallback"),
+        # SCI-27: a generic type does not outrank the extension. A `.fasta` is
+        # served as text/plain, and that used to route it to the plain-text
+        # viewer instead of the sequence viewer.
+        (
+            {"filename": "1crn.fasta", "content_type": "text/plain; charset=utf-8"},
+            "sequence",
+            "extension",
+        ),
+        (
+            {"filename": "query.a2m", "content_type": "application/octet-stream"},
+            "msa",
+            "extension",
+        ),
+        # ...and still decides when the extension names nothing.
+        (
+            {"filename": "notes.unknown", "content_type": "text/plain"},
+            "text",
+            "content_type",
+        ),
+        # A specific type still wins over the extension, as before.
+        (
+            {"filename": "table.txt", "content_type": "text/csv"},
+            "table",
+            "content_type",
+        ),
     ],
 )
 def test_renderer_selection_is_deterministic(artifact, renderer_id, matched_by):
@@ -87,3 +112,39 @@ def test_notebook_renderer_is_read_only_and_declares_view_copy_only():
     assert notebook.interactive is False
     assert ".ipynb" in notebook.extensions
     assert "application/x-ipynb+json" in notebook.content_types
+
+
+@pytest.mark.parametrize("name", ["cox_crosscheck.R", "model.r", "fit.jl"])
+def test_r_and_julia_sources_are_text_shown_as_text(name):
+    """M-62: an R script was stored as application/octet-stream."""
+    from openai4s.server.gateway import _guess_ctype
+
+    content_type = _guess_ctype(name)
+    assert content_type == "text/plain; charset=utf-8"
+    selected = RendererRegistry().select(
+        {"filename": name, "content_type": content_type}
+    )
+    assert selected["renderer"]["renderer_id"] == "text"
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type"),
+    [
+        ("aspirin.smi", "chemical/x-daylight-smiles"),
+        ("library.smiles", "chemical/x-daylight-smiles"),
+        ("ethanol.mol", "chemical/x-mdl-molfile"),
+        ("aspirin_2d.sdf", "chemical/x-mdl-sdfile"),
+        ("ligand.mol2", "chemical/x-mol2"),
+    ],
+)
+def test_chemistry_files_are_typed_as_the_format_they_are(name, content_type):
+    """SCI-26: `.smi` was registered as `application/smil+xml` (SMIL
+    multimedia) and `.mol` as an SD file. Each still opens in the 2D
+    chemistry viewer under its own type."""
+    from openai4s.server.gateway import _guess_ctype
+
+    assert _guess_ctype(name) == content_type
+    selected = RendererRegistry().select(
+        {"filename": name, "content_type": content_type}
+    )
+    assert selected["renderer"]["renderer_id"] == "chemistry-2d"

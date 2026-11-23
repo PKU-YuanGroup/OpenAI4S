@@ -167,7 +167,13 @@ class SpecialistProfileService:
         )
 
     def enabled(self, name: str) -> bool:
-        return self.capabilities.is_enabled("specialist", name)
+        from openai4s.specialists import specialist_state_names
+
+        # A builtin's former name keeps its switch (EXPLORE is SCOUT now).
+        return all(
+            self.capabilities.is_enabled("specialist", state_name)
+            for state_name in specialist_state_names(name)
+        )
 
     def filter_profiles(
         self,

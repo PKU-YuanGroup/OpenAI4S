@@ -29,6 +29,49 @@ import type { AutoModeView } from "./types";
 let mounted: HTMLElement | null = null;
 let stopListening: (() => void) | null = null;
 
+/**
+ * SCI-34: the block is one line ("Auto Mode status · Off") until the reader
+ * opens it. Internal terms -- storage, saved override, deployment ceilings --
+ * filled the lower half of a menu of everyday switches. The reader's choice
+ * is kept for this browser (`os-automode-open`, a convenience only).
+ */
+const OPEN_KEY = "os-automode-open";
+
+function blockOpen(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(OPEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberBlockOpen(open: boolean): void {
+  try {
+    if (open) globalThis.localStorage?.setItem(OPEN_KEY, "1");
+    else globalThis.localStorage?.removeItem(OPEN_KEY);
+  } catch {
+    /* a convenience only */
+  }
+}
+
+function needsAttention(view: AutoModeView): boolean {
+  const model = budgetModel(view);
+  return (
+    !!model.exhausted ||
+    !!model.circuit ||
+    model.rows.some((row) => (row.flag === "near" || row.flag === "at") && row.meter !== null)
+  );
+}
+
+/** The closed block's one line: the saved preset, or why there is none to show. */
+function summaryValue(status: AutoModeStatus): string {
+  if (status.phase === "ready") return autoModeT("autoMode.preset." + status.view.selection.preset);
+  if (status.phase === "failed") {
+    return autoModeT(status.failure === "not_found" ? "autoMode.notFound" : "autoMode.unavailable");
+  }
+  return autoModeT("autoMode.loading");
+}
+
 /** Whether the block is on screen, so a hint is worth a GET. */
 export function autoModeStatusVisible(): boolean {
   if (!mounted) return false;
@@ -182,8 +225,18 @@ export function paintAutoModeBlock(node: HTMLElement, status: AutoModeStatus = a
   node.innerHTML = "";
   node.dataset.phase = status.phase;
   node.setAttribute("aria-busy", status.phase === "loading" ? "true" : "false");
-  node.appendChild(el("div", "am-title", autoModeT("autoMode.block")));
-  for (const child of bodyFor(status)) node.appendChild(child);
+  const box = el("details", "am-collapse") as HTMLDetailsElement;
+  box.appendChild(el("summary", "am-title", autoModeT("autoMode.block") + " · " + summaryValue(status)));
+  for (const child of bodyFor(status)) box.appendChild(child);
+  // What needs attention -- a meter near or at its ceiling, the exhausted
+  // list, a tripped circuit -- is never folded away.
+  box.open = blockOpen() || (status.phase === "ready" && needsAttention(status.view));
+  box.ontoggle = () => {
+    rememberBlockOpen(box.open);
+    // Opening or closing changes the menu's height under its anchor.
+    repositionMenu();
+  };
+  node.appendChild(box);
 }
 
 /** Repaint the block in place if it is on screen. */

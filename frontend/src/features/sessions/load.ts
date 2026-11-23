@@ -35,10 +35,12 @@ import {
 import { approvalCopy, approvalPendingFor } from "../messages/approval";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
+import { paintSessionBranches } from "./branches";
 import { ensureActivateKeys, hint, openMenu, reportFailure } from "./chrome";
+import { askConfirm, askText } from "../chrome/dialog";
 import { $, el, setTitle } from "./dom";
 import { icon, iconEl } from "./icon";
-import { sessionCopy } from "./copy";
+import { lastTurnOutcome, sessionCopy } from "./copy";
 import { resetSessionDirectory } from "./navigation";
 import {
   DATE_BUCKET_KEYS,
@@ -316,8 +318,16 @@ export async function loadFolders(options: { render?: boolean } = {}): Promise<v
     }
     folders.value = data.folders;
     _foldersFor.value = pid;
-  } catch {
+  } catch (error) {
     if (!current()) return;
+    if ((error as { status?: unknown } | null)?.status === 404) {
+      // The project is not there for this login (a teammate's link to a
+      // project it is not in, TEAM-26): it has no folders to show, and
+      // "Could not load folders. Retry" would only invite a retry that 404s.
+      folders.value = [];
+      _foldersFor.value = pid;
+      return;
+    }
     // An unread list is not an empty one: keep whatever was confirmed and say
     // the read failed, so renderSessions can offer Retry instead of "no rows".
     foldersLoadError.value = true;
@@ -463,10 +473,22 @@ export function sessionRow(f: SessionLike): HTMLElement {
     const b = el("span", "s-badge run", t("dash.badge.running"));
     b.title = t("session.badge.runningTip");
     d.appendChild(b);
-  } else if (f.kernel_alive) {
-    const b = el("span", "s-badge live");
-    b.title = t("session.badge.liveTip");
-    d.appendChild(b);
+  } else {
+    // SCI-17 / SYNC-28: a stopped or failed last turn says so on the row,
+    // apart from the kernel dot (which is about the kernel, not the turn).
+    const outcome = lastTurnOutcome(f.status);
+    if (outcome) {
+      const b = el("span", "s-badge outcome " + outcome.kind);
+      b.appendChild(iconEl(outcome.icon, 11));
+      b.appendChild(el("span", null, outcome.label));
+      b.title = outcome.tip;
+      d.appendChild(b);
+    }
+    if (f.kernel_alive) {
+      const b = el("span", "s-badge live");
+      b.title = t("session.badge.liveTip");
+      d.appendChild(b);
+    }
   }
   const menu = el("button", "s-menu");
   menu.type = "button";
@@ -590,6 +612,7 @@ export function renderSessions(): void {
     frag.appendChild(more);
   }
   list.appendChild(frag);
+  paintSessionBranches();
 }
 
 /**
@@ -619,7 +642,7 @@ function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string
       label: t("folder.menu.rename"),
       icon: "pencil",
       onClick: async () => {
-        const n = prompt(t("folder.rename.prompt"), fold.name);
+        const n = await askText(t("folder.rename.prompt"), fold.name);
         if (!n) return;
         await folderWrite(() =>
           api(`/folders/${fold.folder_id}`, {
@@ -634,7 +657,11 @@ function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string
       icon: "trash-2",
       danger: true,
       onClick: async () => {
-        if (!confirm(t("folder.delete.confirm", fold.name))) return;
+        const yes = await askConfirm(t("folder.delete.confirm", fold.name), {
+          danger: true,
+          okLabel: t("common.delete"),
+        });
+        if (!yes) return;
         await folderWrite(() => api(`/folders/${fold.folder_id}`, { method: "DELETE" }));
       },
     },

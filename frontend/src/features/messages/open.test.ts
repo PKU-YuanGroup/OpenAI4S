@@ -3,7 +3,8 @@ import { resetStoreFields } from "../../stores/signal-field";
 import * as session from "../../stores/session";
 import { _replayGap, running, stream, _seqSeen, _resumeTimer, ws } from "../../stores/stream";
 import { apiGet, fetchRecentMessages, fetchOlderMessages } from "./fetch";
-import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
+import { openConversation, recoverConversation, alignHistoryAfterTurn, bindTranscriptLanguage } from "./open";
+import { setLang } from "../../i18n/runtime";
 import { loadEarlierMessages } from "../sessions/messages";
 import { showDashboard, stopDashPoll } from "../sessions/dashboard";
 import { routeInitialView } from "../sessions/conversation";
@@ -189,12 +190,12 @@ describe("history reads", () => {
     ]));
     expect(paint.empty).not.toHaveBeenCalled();
     expect(_replayGap.value).toBe("f");
-    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenCalledTimes(5);
     for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
     const retry = server((path) => path.endsWith("/steps") ? response({ steps: [storedStep] }) : undefined);
     expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(_replayGap.value).toBeNull();
-    expect(retry).toHaveBeenCalledTimes(4);
+    expect(retry).toHaveBeenCalledTimes(5);
     for (const [, init] of retry.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
   });
   it.each([
@@ -258,7 +259,7 @@ describe("history reads", () => {
     const one = recoverConversation("f");
     const two = recoverConversation("f");
     expect(two).toBe(one);
-    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenCalledTimes(5);
     gate.resolve(response({ steps: [] }));
     expect(await one).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(fetcher.mock.calls.map(([path]) => String(path))).toEqual(expect.arrayContaining([
@@ -355,7 +356,7 @@ describe("history reads", () => {
     gate.resolve(response({ messages: [] }));
     expect(await reading).toMatchObject({ messagesLoaded: false });
     await vi.waitFor(() => expect(session.historyLoad.value?.status).toBe("loaded"));
-    expect(fetcher).toHaveBeenCalledTimes(8);
+    expect(fetcher).toHaveBeenCalledTimes(10);
   });
 
   it("an old admission cannot settle a submission after navigating away and back", () => {
@@ -909,7 +910,10 @@ describe("a newly created session's Notebook", () => {
 
   it("an execution-log read of the previous session that lands late adds nothing", async () => {
     const lateA = deferred<Response>();
-    logServer((path) => (path.endsWith("/frames/f/execution-log") ? lateA.promise : undefined));
+    // The conversation reads the log for its cell cards when it opens; the
+    // Notebook's own read below is the one that lands late.
+    let reads = 0;
+    logServer((path) => (path.endsWith("/frames/f/execution-log") && ++reads > 1 ? lateA.promise : undefined));
     await openConversation("f");
     cells.value = A_CELLS;
     const inflight = loadExecutionLog("f");
@@ -964,5 +968,47 @@ describe("where a committed transcript leaves the scroll", () => {
     expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true });
     flushScrollNow();
     expect(host.scrollTop).toBe(100);
+  });
+});
+
+/**
+ * SYNC-20. A language switch left every card, status line and button the
+ * transcript had drawn in the old language until a reload; it now re-reads
+ * the open conversation (GET only), and a running turn's when it ends.
+ */
+describe("a language switch", () => {
+  afterEach(async () => {
+    await setLang("en");
+  });
+
+  it("repaints the open conversation from its history, a running one when its turn ends", async () => {
+    await setLang("en");
+    const stop = bindTranscriptLanguage();
+    const fetcher = server();
+    await openConversation("f");
+    const reads = (): number => fetcher.mock.calls.filter(([path]) => String(path).includes("/messages?")).length;
+    const quiet = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+    await quiet();
+    const opened = reads();
+
+    await setLang("zh");
+    await vi.waitFor(() => expect(reads()).toBeGreaterThan(opened));
+    await quiet();
+    const switched = reads();
+    // The same language again changes nothing.
+    await setLang("zh");
+    await quiet();
+    expect(reads()).toBe(switched);
+
+    running.value = true;
+    await setLang("en");
+    await quiet();
+    expect(reads()).toBe(switched);
+    running.value = false;
+    await vi.waitFor(() => expect(reads()).toBeGreaterThan(switched));
+    for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) {
+      expect(init?.method ?? "GET").toBe("GET");
+    }
+    stop();
   });
 });

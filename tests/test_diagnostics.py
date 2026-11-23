@@ -801,6 +801,7 @@ def test_the_bundle_says_how_the_recent_turns_ended(cfg, tmp_path):
             "progress_reason": "consecutive_malformed",
             "wire": "openai",
         },
+        "frames": {"processing": 1},
     }
     # Codes from a set written down in source travel; names an operator or a
     # model chose do not, and neither does anything the turn was about.

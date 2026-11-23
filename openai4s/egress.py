@@ -38,7 +38,7 @@ from typing import Any
 
 # --------------------------------------------------------------------------- #
 #  Canonical allowlist — the single source of truth for both enforcement and
-#  the Customize → Network display in the gateway. Entries are BASE domains by
+#  the Settings → Network display in the gateway. Entries are BASE domains by
 #  default; subdomains match by suffix (see `_host_matches`), so eutils./
 #  sra-download./rest. hosts are covered without listing every one. Managed
 #  authenticated origins opt into exact matching below.

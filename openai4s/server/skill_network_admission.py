@@ -356,10 +356,31 @@ def narrowing_summary(frame_id: str | None = None) -> dict[str, Any] | None:
     host_only = _declared_host_only(bindings_for(key))
     if not host_only:
         return None
+    domains = host_only_declared_domains_from(host_only)
     return {
         "skills": list(dict.fromkeys(item.skill_id for item in host_only)),
-        "domains": list(host_only_declared_domains_from(host_only)),
+        "domains": list(domains),
+        "unavailable_connectors": unavailable_connectors(domains),
     }
+
+
+def unavailable_connectors(domains: Sequence[str]) -> list[str]:
+    """The built-in science connectors a limit to ``domains`` takes away.
+
+    SCI-14: the load card said the network was limited to N domains, and the
+    first sign that this meant "no UniProt / PDB in this session" was a
+    refused search. A connector is unavailable when any host its requests go
+    to is outside the limit. Labels, in catalog order.
+    """
+
+    from openai4s.host.science import DATABASES, REQUEST_HOSTS
+
+    lost: list[str] = []
+    for database in DATABASES:
+        hosts = REQUEST_HOSTS.get(database.id, ())
+        if hosts and not all(domain_in_declared(host, domains) for host in hosts):
+            lost.append(database.label)
+    return lost
 
 
 def narrowing_notice(
@@ -393,6 +414,7 @@ def narrowing_notice(
         "skill_domains": list(candidate.capability.domains),
         "skills": skills,
         "domains": list(union),
+        "unavailable_connectors": unavailable_connectors(union),
     }
 
 

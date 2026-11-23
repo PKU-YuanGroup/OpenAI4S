@@ -36,7 +36,7 @@ const COPY: CopyTable = {
     "search.lastUsable": "至少要保留一个可用的搜索引擎",
     "search.saved": "搜索引擎顺序已保存",
     "search.setup.title": "网页搜索",
-    "search.setup.desc": "Ollama 网页工具已配置时会自动优先使用。这里选择其他搜索方式，可在「设置 → 网络」里调整。可跳过。",
+    "search.setup.desc": "选择智能体联网搜索的方式，之后可在「设置 → 网络」里修改。可跳过。",
     "search.setup.doubao": "豆包搜索（Agent Plan Key）",
     "search.setup.tavily": "Tavily（需要 API Key）",
     "search.setup.you": "You.com（免费，API Key 可选）",
@@ -78,7 +78,7 @@ const COPY: CopyTable = {
     "search.saved": "Search engine order saved",
     "search.setup.title": "Web search",
     "search.setup.desc":
-      "Configured Ollama web tools are used automatically. Choose other search options here or later in Settings → Network. Optional.",
+      "Choose how the agent searches the web; you can change it later in Settings → Network. Optional.",
     "search.setup.doubao": "Doubao Search (Agent Plan Key)",
     "search.setup.tavily": "Tavily (API key required)",
     "search.setup.you": "You.com (free; API key optional)",

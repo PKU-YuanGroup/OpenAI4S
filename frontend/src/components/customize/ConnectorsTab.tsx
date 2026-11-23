@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { t } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
@@ -9,11 +9,10 @@ import {
   asList,
   asString,
   confirmAction,
-  hint,
 } from "../../features/customize/host";
 import { markCustomizeLoaded } from "../../features/customize/load";
 import { useOptimisticToggle, useTabRead } from "./hooks";
-import { Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
+import { ActionStatus, Hdr, IconGhost, Pill, Subhead, Toggle, type ActionNote } from "./ui";
 import { DataProCard } from "./vendors/datapro";
 
 export function ConnectorsTab() {
@@ -26,6 +25,9 @@ export function ConnectorsTab() {
   }>({ config: null, error: null });
   const [name, setName] = useState("");
   const [cmd, setCmd] = useState("");
+  // SCI-04: adding from the directory and adding a custom server answer here.
+  const [dirNote, setDirNote] = useState<ActionNote>(null);
+  const [customNote, setCustomNote] = useState<ActionNote>(null);
 
   useTabRead(
     "connectors",
@@ -68,6 +70,7 @@ export function ConnectorsTab() {
           />
         ))}
       <Subhead>{t("cust.connectors.fromDirectory")}</Subhead>
+      <ActionStatus note={dirNote} />
       {directory.map((item) => {
         if (
           item.id === DATAPRO_CONNECTOR_ID ||
@@ -98,10 +101,10 @@ export function ConnectorsTab() {
                     method: "POST",
                     body: JSON.stringify(request),
                   });
-                  hint(t("toast.connectors.added", asString(item.name)));
+                  setDirNote({ text: t("toast.connectors.added", asString(item.name)) });
                   refreshCustTab("connectors");
                 } catch (e) {
-                  hint(t("toast.addFailed", apiErrorText(e)), true);
+                  setDirNote({ text: t("toast.addFailed", apiErrorText(e)), err: true });
                 }
               }}
             >
@@ -130,6 +133,8 @@ export function ConnectorsTab() {
             <button
               type="button"
               class="solid-btn small"
+              // Both fields are required; an empty Add used to do nothing visible.
+              disabled={!name.trim() || !cmd.trim()}
               onClick={async () => {
                 const nm = name.trim();
                 const command = cmd.trim();
@@ -141,15 +146,17 @@ export function ConnectorsTab() {
                   });
                   setName("");
                   setCmd("");
+                  setCustomNote({ text: t("toast.connectors.added", nm) });
                   refreshCustTab("connectors");
                 } catch (e) {
-                  hint(t("toast.addFailed", apiErrorText(e)), true);
+                  setCustomNote({ text: t("toast.addFailed", apiErrorText(e)), err: true });
                 }
               }}
             >
               {t("common.add")}
             </button>
           </div>
+          <ActionStatus note={customNote} />
         </div>
       </div>
     </div>
@@ -164,6 +171,8 @@ export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catal
     }),
   );
   const [testing, setTesting] = useState(false);
+  // SCI-04: a test's answer (the tools it found, or why it failed) in the row.
+  const [note, setNote] = useState<ActionNote>(null);
   return (
     <div class="cust-row">
       <div class="info">
@@ -171,6 +180,7 @@ export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catal
           <span>{asString(k.name)}</span> <Pill>{asString(k.connector_id)}</Pill>
         </div>
         <div class="ds">{connectorDescription(k.connector_id, k.description, catalog)}</div>
+        <ActionStatus note={note} />
       </div>
       <IconGhost
         name="pencil"
@@ -185,33 +195,34 @@ export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catal
         disabled={testing}
         onClick={async () => {
           setTesting(true);
+          setNote(null);
           try {
             const r = await api(`/connectors/${k.connector_id}/probe`, { method: "POST" });
             const tools = asList(r.tools) as Array<{ name?: string }>;
-            hint(
+            setNote(
               r.ok
-                ? t("toast.connectors.probeOk", tools.map((x) => x.name).join("、"))
-                : t("toast.failed", asString(r.error)),
+                ? { text: t("toast.connectors.probeOk", tools.map((x) => x.name).join(LANG === "en" ? ", " : "、")) }
+                : { text: t("toast.failed", asString(r.error)), err: true },
             );
           } catch (e) {
-            hint(t("toast.connectors.testFailed", apiErrorText(e)), true);
+            setNote({ text: t("toast.connectors.testFailed", apiErrorText(e)), err: true });
           }
           setTesting(false);
         }}
       >
         {testing ? t("cust.connectors.testing") : t("cust.connectors.test")}
       </button>
-      <Toggle on={enabled.on} onClick={enabled.toggle} />
+      <Toggle on={enabled.on} label={asString(k.name)} onClick={enabled.toggle} />
       <IconGhost
         name="trash-2"
         title={t("common.delete")}
         onClick={async () => {
-          if (!confirmAction(t("cust.connectors.deleteConfirm", asString(k.name)))) return;
+          if (!(await confirmAction(t("cust.connectors.deleteConfirm", asString(k.name))))) return;
           try {
             await api(`/connectors/${k.connector_id}`, { method: "DELETE" });
             refreshCustTab("connectors");
-          } catch {
-            /* original swallowed */
+          } catch (e) {
+            setNote({ text: t("toast.deleteFailed", apiErrorText(e)), err: true });
           }
         }}
       />

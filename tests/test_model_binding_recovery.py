@@ -16,7 +16,7 @@ session never sendable again.
 Two triggers, and only one of them involves a delete click. The other is a
 profile that still exists whose bound *revision* does not: a database predating
 the revision history, a rebuilt profile, or seeded builtin profiles dropped the
-first time an upgraded database opens Customize → Models.
+first time an upgraded database opens Settings → Models.
 
 So: deleting a profile releases what pointed at it, and
 `POST /frames/{id}/model-binding` answers the 409 for everything else.
@@ -603,7 +603,7 @@ def test_a_profile_keyed_by_the_environment_is_ready_bound_and_dispatched(
 
 @pytest.mark.stubbed_backend
 def test_a_keyless_local_profile_dispatches_without_borrowing_any_key(api, monkeypatch):
-    """The profile Customize → Models' local-discovery "Add" button creates.
+    """The profile Settings → Models' local-discovery "Add" button creates.
 
     Keyless, and it must stay keyless: `replace()` re-runs `LLMConfig`'s env
     resolution, which would otherwise hand the daemon's generic key -- set by

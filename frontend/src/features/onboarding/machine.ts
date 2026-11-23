@@ -4,6 +4,8 @@
  * Provider requests stay 0 until Test or a model-list fetch; both are counted.
  */
 
+import { ot } from "./copy";
+
 export const REQUIRED_STEPS = ["path", "test", "readiness", "project"] as const;
 export type RequiredStep = (typeof REQUIRED_STEPS)[number];
 
@@ -65,7 +67,12 @@ export const INITIAL_WIZARD: WizardState = {
 
 export type WizardAction =
   | { type: "hydrate"; complete: boolean }
-  | { type: "choosePath"; path: PathChoice }
+  /**
+   * `saved`: the choice is already a saved, active profile, so step 1 is done.
+   * A radio click is only a selection; step 1 is ticked once Continue saved it
+   * (TEAM-10: a refused Continue left "Choose a model" ticked).
+   */
+  | { type: "choosePath"; path: PathChoice; saved?: boolean }
   | { type: "goto"; step: RequiredStep }
   | { type: "next" }
   | { type: "skip" }
@@ -119,7 +126,10 @@ export function formatWizardError(error: WizardError | null): string {
 }
 
 export function wizardErrorFromUnknown(e: unknown): WizardError {
-  const err = e as { message?: unknown; requestId?: unknown } | null;
+  const err = e as { message?: unknown; requestId?: unknown; code?: unknown } | null;
+  // A refusal by role is not a fault to report with a request id: say who can
+  // do it instead of the bare server text (TEAM-10).
+  if (err && err.code === "admin_only") return { message: ot("onboarding.adminOnly"), requestId: "" };
   return {
     message: err && err.message != null ? String(err.message) : String(e),
     requestId: err && err.requestId != null ? String(err.requestId) : "",
@@ -153,7 +163,9 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
       return {
         ...state,
         path,
-        decided: withDecided(state, "path").filter((step) => !changed || step !== "test"),
+        decided: (action.saved ? withDecided(state, "path") : state.decided).filter(
+          (step) => !changed || step !== "test",
+        ),
         receipt: changed ? null : state.receipt,
         probeDetail: changed ? "" : state.probeDetail,
         testClicked: changed ? false : state.testClicked,

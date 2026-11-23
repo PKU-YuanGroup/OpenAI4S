@@ -20,11 +20,11 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
     # design: the zero-argument call is the catalog overview and
     # `collection`/`offset` enumerate one bundled collection. Argument
     # validation still runs on every call; only the provider-side constrained
-    # decoding is given up.
+    # decoding is given up. `env_use` left the set for the same reason when it
+    # gained the optional `reason` (owner decision 32, SCI-21).
     assert strict_names == {
         "search_capabilities",
         "write_file",
-        "env_use",
         "load_skill",
         "skill_status",
         "rollback_skill_version",

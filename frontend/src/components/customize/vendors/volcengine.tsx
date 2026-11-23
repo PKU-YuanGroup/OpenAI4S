@@ -1,6 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { t } from "../../../i18n";
+import { copyLookup } from "../../../i18n/copy";
 import { publicText } from "../../../features/scrub/scrub";
 import { api, apiErrorText, ApiError } from "../../../features/customize/api";
 import { refreshCustTab } from "../../../features/customize/actions";
@@ -392,7 +393,7 @@ export function VolcenginePanel() {
 }
 
 async function disconnect(): Promise<void> {
-  if (!confirmAction(t("cust.volc.disconnectConfirm"))) return;
+  if (!(await confirmAction(t("cust.volc.disconnectConfirm")))) return;
   try {
     await api("/volcengine/disconnect", {
       method: "POST",
@@ -406,9 +407,24 @@ async function disconnect(): Promise<void> {
   }
 }
 
+/** Feature-local: the generated `i18n/en.ts` / `zh.ts` are byte-checked extracts. */
+const volcT = copyLookup({
+  zh: {
+    "volc.notInstalledWhy":
+      "可选。Ark Connector 是火山引擎的命令行工具 arkcli。装在这台机器上以后，可以在这里登录火山引擎，OpenAI4S 会自动取得你的 Agent Plan key；不装也没关系，直接在下面「添加模型」里填 Ark 的 API key 即可。",
+  },
+  en: {
+    "volc.notInstalledWhy":
+      "Optional. Ark Connector is Volcengine's command-line tool, arkcli. With it installed on this machine you can sign in to Volcengine here and OpenAI4S picks up your Agent Plan key; without it, add an Ark model with its API key in the form below.",
+  },
+});
+
 function NotInstalled() {
   return (
     <div class="volc-actions">
+      <div class="ds" data-volc-why="">
+        {volcT("volc.notInstalledWhy")}
+      </div>
       <VolcBtn
         label={t("cust.volc.getConnector")}
         icon="globe"

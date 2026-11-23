@@ -20,6 +20,7 @@ production was unwired — proving the seam, not the plumbing, is the point.
 import io
 import json
 import socket
+import ssl
 import urllib.error
 
 import pytest
@@ -550,8 +551,7 @@ def _sends_for(monkeypatch, reason):
         # Prose is not evidence: a provider that *says* "connection refused"
         # has not proved the request never left this machine.
         "connection refused",
-        # A reset can land after the write, so a replay could duplicate it.
-        ConnectionResetError("uncertain write"),
+        # A bare OSError names no phase, so it proves nothing either.
         OSError("uncertain write"),
     ],
 )
@@ -567,6 +567,11 @@ def test_uncertain_url_error_is_not_replayed(monkeypatch, reason):
         # A *connect* timeout. `state.sent` is what separates it from a read
         # timeout: nothing was written, so the request is replayable.
         TimeoutError(60, "Operation timed out"),
+        # M-36: a reset before the first request byte is a dropped connect or
+        # TLS handshake. `state.sent` separates it from a reset after the
+        # write, which `test_llm_transport_typed` pins as a single attempt.
+        ConnectionResetError(54, "Connection reset by peer"),
+        ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
     ],
 )
 def test_a_connect_phase_failure_is_still_replayed(monkeypatch, reason):

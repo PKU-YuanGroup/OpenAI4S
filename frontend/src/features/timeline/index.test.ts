@@ -1,4 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 import { resetStoreFields } from "../../stores/signal-field";
 import { renderBranchPanel } from "./island";
 import { S } from "./s";
@@ -28,7 +35,7 @@ class BranchNode {
   walk(): BranchNode[] { return [this, ...this.children.flatMap((child) => child.walk())]; }
 }
 
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); dialogMock.answer = () => false; });
 
 describe("branch actions replace scoped history", () => {
   it.each(["activate", "revert", "undo"])("%s requests replacement instead of merging cached earlier rows", async (action) => {
@@ -46,6 +53,8 @@ describe("branch actions replace scoped history", () => {
     });
     const open = vi.fn(async () => {});
     vi.stubGlobal("openConversation", open);
+    // M-73: activation asks first.
+    dialogMock.answer = () => true;
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true, status: 200, text: async () => JSON.stringify({ status: "active", ok: true }),
     })));
@@ -69,4 +78,19 @@ it.each(["branch_projection_restored", "branch_activation_state"])("%s refresh a
   onEvent({ type, frame_id: "f", branch_id: "b" });
   await vi.advanceTimersByTimeAsync(120);
   expect(open).toHaveBeenCalledWith("f", "p", { resetHistory: true });
+});
+
+// Owner decision 24: a branch deleted in another tab leaves this tab's list too.
+it("branch_deleted re-reads the branch list of the open session", async () => {
+  resetStoreFields(); vi.useFakeTimers();
+  S.currentId = "f"; S.project = "p";
+  installTimeline({});
+  const urls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    urls.push(String(url));
+    return { ok: true, status: 200, text: async () => "{}" };
+  }));
+  onEvent({ type: "branch_deleted", root_frame_id: "f", branch_id: "b", ok: true });
+  await vi.advanceTimersByTimeAsync(200);
+  expect(urls.some((url) => url.endsWith("/frames/f/branches"))).toBe(true);
 });

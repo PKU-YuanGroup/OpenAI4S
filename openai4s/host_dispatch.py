@@ -53,6 +53,7 @@ from openai4s.host.remote_science import RemoteScienceService
 from openai4s.host.session import SessionControlService
 from openai4s.host.skills import SkillService
 from openai4s.llm import chat
+from openai4s.observability import reset_delegate_step, set_delegate_step
 from openai4s.rl.host_events import HostCallLifecycle
 from openai4s.rl.models import Episode, ExecutionEvent, Segment
 from openai4s.storage.memories import MemoryLimitError
@@ -386,10 +387,16 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
         from openai4s.tools.env_use import EnvUseTool
 
         local = EnvUseTool.is_local(name)
+        view = {"name": name, "local": local}
+        # SCI-21: the model's own reason for the switch, shown on the approval
+        # card beside the environment (bounded like the schema says).
+        reason = " ".join(str(a.get("reason") or "").split())[:300]
+        if reason:
+            view["reason"] = reason
         return (
             "env",
             f"Switching to the {'local ' if local else ''}{name} environment",
-            {"name": name, "local": local},
+            view,
         )
     if method == "env_setup":
         # ``name`` is the caller's free-text label, not the environment the
@@ -2346,10 +2353,14 @@ class HostDispatcher:
         }
 
     def _specialist_enabled(self, name: str) -> bool:
+        from openai4s.specialists import specialist_state_names
+
         scope = self._current_capability_scope()
-        return self.store.capability_state(**scope).is_enabled(
-            "specialist",
-            name,
+        state = self.store.capability_state(**scope)
+        # A builtin's former name keeps its switch (EXPLORE is SCOUT now).
+        return all(
+            state.is_enabled("specialist", state_name)
+            for state_name in specialist_state_names(name)
         )
 
     def _invoke_control_behavior(self, method: str, *arguments: Any) -> Any:
@@ -2529,6 +2540,7 @@ class HostDispatcher:
         # Python. The matching "end" is emitted in the finally with the result.
         view = None
         step_id = None
+        delegate_step_token = None
         if self.on_step is not None:
             try:
                 view = _step_begin(method, args)
@@ -2554,6 +2566,10 @@ class HostDispatcher:
                     )
                 except Exception:  # noqa: BLE001
                     step_id = None
+                if step_id is not None and view[0] == "delegate":
+                    # SCI-22: the children this call starts relay their steps
+                    # under this card (`_ChildStepForwarder`).
+                    delegate_step_token = set_delegate_step(step_id)
         ok = True
         # A structured result that declares its own failure (a failed child's
         # delegate envelope). ``ok`` keeps the soft-fail meaning the Step card
@@ -2877,6 +2893,8 @@ class HostDispatcher:
             raised_exception = exc
             raise
         finally:
+            if delegate_step_token is not None:
+                reset_delegate_step(delegate_step_token)
             self._rl_call_end(
                 rl_handle,
                 ok=ok and not declared_failed,
@@ -3702,7 +3720,7 @@ class HostDispatcher:
 
     def _m_remember(self, spec: dict) -> dict:
         """Persist a durable memory the daemon injects into future sessions
-        (only when memory is enabled in Customize → Memory)."""
+        (only when memory is enabled in Settings → Memory)."""
         content = (spec.get("content") or "").strip()
         if not content:
             return {"error": "remember: empty content"}
