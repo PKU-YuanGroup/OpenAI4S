@@ -635,6 +635,42 @@ def test_a_member_reads_the_active_model_but_not_the_admins_endpoint(daemon):
         assert status == 200 and saved.encode() in raw, path
 
 
+def test_a_member_reading_the_volcengine_connection_gets_no_endpoint(daemon):
+    """The fifth projection of a saved profile: `GET /volcengine/connection`
+    is member-readable (its mutations are admin-only) and embeds the linked Ark
+    profile, `base_url` included, through the same `public_profile` the other
+    four routes blank for a member (decision 25)."""
+    bob = _login(daemon, "bob", "fake-pw-b")
+    root = _login(daemon, "root", "fake-pw-r")
+    gateway_url = "https://ark-relay.internal.example/api/v3"
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/model-profiles",
+        {
+            "name": "Ark relay",
+            "provider": "ark",
+            "model": "ark-test-model",
+            "base_url": gateway_url,
+            "api_key": "fake-test-credential",
+        },
+        cookie=root,
+    )
+    assert status == 201, _body(raw)
+    daemon.store.set_setting("volcengine_model_profile_id", _body(raw)["id"])
+
+    status, raw = _get(daemon.port, "/api/v1/volcengine/connection", cookie=bob)
+    assert status == 200, raw[:200]
+    member = _body(raw)
+    assert member["linked"] is True
+    assert member["model_profile"]["name"] == "Ark relay"
+    assert member["model_profile"]["base_url"] == ""
+    assert b"internal.example" not in raw.split(b"\r\n\r\n", 1)[1]
+
+    status, raw = _get(daemon.port, "/api/v1/volcengine/connection", cookie=root)
+    assert status == 200
+    assert _body(raw)["model_profile"]["base_url"] == gateway_url
+
+
 def test_shares_are_scoped_to_the_session_they_project(daemon):
     """A share URL is a capability: anyone holding it reads the session. So
     listing every share in the org hands them out, and revoking one is

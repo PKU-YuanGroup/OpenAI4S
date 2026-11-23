@@ -14990,8 +14990,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             "primary": True,
         }
 
-    def _volcengine_connection_payload(*, force: bool = False) -> dict[str, Any]:
-        """Add OpenAI4S profile state to the Ark CLI's public projection."""
+    def _volcengine_connection_payload(
+        *, force: bool = False, hide_endpoint: bool = False
+    ) -> dict[str, Any]:
+        """Add OpenAI4S profile state to the Ark CLI's public projection.
+
+        ``hide_endpoint`` blanks the linked profile's ``base_url`` for a team
+        member, as every other route that projects a profile does (owner
+        decision 25, `team_policy.hides_instance_endpoint`).
+        """
 
         payload = (
             volcengine_connector.refresh()
@@ -15026,7 +15033,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             "configured": configured,
             "configured_plan_key": configured_plan_key,
             "model_profile": (
-                model_profiles.public_profile(profile) if linked and profile else None
+                model_profiles.public_profile(profile, hide_endpoint=hide_endpoint)
+                if linked and profile
+                else None
             ),
         }
 
@@ -17567,7 +17576,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
             # ---- Volcengine account connection through the official Ark CLI ----
             if sub == "/volcengine/connection" and method == "GET":
-                payload = _volcengine_connection_payload()
+                payload = _volcengine_connection_payload(
+                    hide_endpoint=team_policy.hides_instance_endpoint(self)
+                )
                 if self._team_visibility_filter() is not None:
                     # Non-admin team members may see the connector state, but
                     # never the live login envelope: authorize_url carries the
