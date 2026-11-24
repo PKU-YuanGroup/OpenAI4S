@@ -893,7 +893,9 @@ export function StatusStrip() {
   return (
     <div class="nb-status">
       <div class={"nb-status-line" + (line ? " " + line.cls : "")}>{line ? line.text : "…"}</div>
-      <div class="nb-status-hint">{t("nb.status.hint")}</div>
+      {/* NB-2: "send a message to continue" is the idle line; under "running"
+          it told the reader to do what the agent was still doing. */}
+      <div class="nb-status-hint">{st && st.turn_running ? nbT("nb.status.runningHint") : t("nb.status.hint")}</div>
       <div class="nb-status-hint nb-readonly-hint">
         {nbT("nb.readonly.hint")}{" "}
         <button type="button" class="nbc-action" data-action="open-notebook-settings" onClick={() => void openCustomize("general")}>

@@ -27,6 +27,8 @@ const COPY: CopyTable = {
     "nb.status.notStarted": "{0} · 未启动 — 第一次运行代码时启动",
     "nb.status.stopped": "{0} · 已停止 — 内存中的变量已释放，再次运行代码会启动新的内核",
     "nb.status.exited": "{0} · 已退出 — 下一次运行代码会启动新的内核",
+    // NB-2: the hint under the status line while the agent's turn runs.
+    "nb.status.runningHint": "智能体正在这个环境里运行单元，输出会实时显示在下面。",
     "nb.kernel.notStarted": "未启动",
     "nb.kernel.stateExited": "已退出",
     "nb.cell.status.ok": "完成",
@@ -112,6 +114,7 @@ const COPY: CopyTable = {
     "nb.status.notStarted": "{0} · not started — it starts with the first cell",
     "nb.status.stopped": "{0} · stopped — in-memory variables were released; running code starts a fresh kernel",
     "nb.status.exited": "{0} · exited — the next cell starts a fresh kernel",
+    "nb.status.runningHint": "The agent is running cells in this environment; their output appears below as it arrives.",
     "nb.kernel.notStarted": "Not started",
     "nb.kernel.stateExited": "Exited",
     "nb.cell.status.ok": "ok",

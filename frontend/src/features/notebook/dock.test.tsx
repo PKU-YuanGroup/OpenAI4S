@@ -159,6 +159,23 @@ describe("Notebook kernel status line", () => {
     expect(textOf(line())).toBe("…");
   });
 
+  // NB-2: "运行中 · Python 3.13" sat above "发送消息即可继续…", the idle copy.
+  it("says the agent is running instead of the idle 'send a message' line during a turn", () => {
+    currentId.value = "frame-1";
+    kernelView.value = {
+      sid: "frame-1",
+      st: { alive: true, turn_running: true, env: { python_version: "3.13" } },
+      envs: null,
+      cur: null,
+    };
+    const hint = (): string => textOf(byClass(StatusStrip(), "nb-status-hint"));
+    expect(textOf(byClass(StatusStrip(), "nb-status-line"))).toBe(t("nb.status.live", "Python 3.13"));
+    expect(hint()).toBe(nbT("nb.status.runningHint"));
+    expect(hint()).not.toBe(t("nb.status.hint"));
+    kernelView.value = { sid: "frame-1", st: { alive: true, env: { python_version: "3.13" } }, envs: null, cur: null };
+    expect(hint()).toBe(t("nb.status.hint"));
+  });
+
   it("a kernel read that leaves the REPL mode alone does not re-render the whole dock", () => {
     currentId.value = "frame-1";
     kernelView.value = { sid: "frame-1", st: { alive: true }, envs: null, cur: null };
