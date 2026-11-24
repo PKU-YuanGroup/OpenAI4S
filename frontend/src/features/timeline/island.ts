@@ -148,6 +148,8 @@ export function timelineKind(group: any): string {
     group.language || (linkedCell && linkedCell.language) || "",
   ).toLowerCase();
   if (/final/.test(kind + " " + eventKinds)) return "finalize";
+  // VIEW-1b: an approval decided across a restart is a record, not a pause.
+  if (group && group.restart_decision && !timelinePermissionPending(group)) return "permission_record";
   if (/permission|approval/.test(kind) || timelinePermissionPending(group)) return "permission";
   if (/recover|restore|bootstrap/.test(kind + " " + eventKinds)) return "recovery";
   if (/delegat|subagent/.test(kind + " " + eventKinds)) return "delegate";
@@ -179,7 +181,7 @@ export function timelineGroupTitle(group: any): string {
 
 function timelineKindIcon(kind: string): string {
   if (kind === "delegate") return "users";
-  if (kind === "permission") return "lock";
+  if (kind === "permission" || kind === "permission_record") return "lock";
   if (kind === "recovery") return "refresh";
   if (kind === "finalize") return "check";
   if (kind === "native_tool" || kind === "dynamic_tool") return "sliders";

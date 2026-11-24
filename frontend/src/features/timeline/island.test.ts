@@ -1607,6 +1607,10 @@ describe("tool rows in the chat's words", () => {
       // A tool the permission table does not know keeps its own name.
       expect(title("g-unknown")).toBe("重启后已拒绝：lab_robot");
       expect(title("g-resolved")).toBe("重启后已处理批准请求");
+      // A decided request is a record, not a pause waiting for approval.
+      const kindLabel = (id: string) =>
+        doc.querySelector(`.timeline-ledger-row[data-group-id="${id}"] .timeline-kind-label`)?.textContent;
+      expect(kindLabel("g-denied")).toBe("审批记录");
 
       await setLang("en");
       renderActionTimeline();

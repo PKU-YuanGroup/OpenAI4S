@@ -130,7 +130,7 @@ const WORKBENCH: CopyTable = {
     "wb.security.kernel": "内核",
     "wb.security.kernelEnded": "{0} 内核已结束：{1}",
     "wb.details": "技术细节",
-    "wb.technical.hint": "运行状态 · 内核恢复 · 分支与检查点 · 子代理 · 远程计算 · 诊断 · 沙盒",
+    "wb.technical.hint": "运行状态 · 内核恢复 · 分支与检查点 · 子智能体 · 远程计算 · 诊断 · 沙盒",
     "wb.diagnostics": "诊断：模型上下文",
     "wb.diagnosticsHint": "这一轮发给模型的内容由哪些部分组成、各占多少 token。排查问题时才需要看。",
     // SYNC-21: the context layers and statuses were the server's English words.
@@ -224,13 +224,21 @@ const TIMELINE_OVERRIDES: CopyTable = {
     "timeline.kind.python": "Python 单元",
     "timeline.kind.r": "R 单元",
     "timeline.kind.dynamic_tool": "动态工具",
-    "timeline.kind.delegate": "子代理",
+    "timeline.kind.delegate": "子智能体",
     "timeline.kind.background": "后台 / 远程任务",
     "timeline.kind.permission": "等待批准",
+    // VIEW-1b: a request decided across a restart is a record, not a pause.
+    "timeline.kind.permission_record": "审批记录",
     "timeline.kind.recovery": "恢复事件",
     "timeline.kind.finalize": "最终回复",
     "timeline.kind.action": "行动",
     "timeline.panel.branches": "分支与检查点",
+    // I18N-4: the generated dictionary says 子代理 for these.
+    "timeline.panel.delegation": "子智能体树",
+    "timeline.noDelegation": "本会话尚未创建子智能体。",
+    "delegation.stop": "停止这个子智能体及其下级",
+    "delegation.steerPrompt": "要在下一个回合边界告诉这个子智能体什么？",
+    "delegation.steerQueued": "已排队，将在该子智能体的下一个回合边界送达。",
     "branch.actionFailed": "分支操作失败：{0}",
     "branch.checkpoint": "创建检查点",
     "branch.diff": "消息 {0} · Notebook {1} · 文件写入 {2} / 删除 {3} · 产物 +{4}/-{5}",
@@ -262,6 +270,7 @@ const TIMELINE_OVERRIDES: CopyTable = {
     "timeline.noBranch": "No branch or checkpoint information yet.",
     "timeline.noContext": "No context information yet.",
     "timeline.noSecurity": "No sandbox or permission information yet.",
+    "timeline.kind.permission_record": "Approval record",
   },
 };
 
