@@ -160,6 +160,33 @@ def test_an_answered_reply_still_gets_its_findings_and_artifacts():
     assert f"[results.csv]({API_ROOT}/artifacts/a-1)" in with_files
 
 
+def test_without_removed_files_judges_only_this_workspace(tmp_path):
+    from openai4s.server.completions import without_removed_files
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "kept.csv").write_text("x", encoding="utf-8")
+    paths = {
+        "v-kept": str(workspace / "kept.csv"),
+        "v-deleted": str(workspace / "deleted.csv"),
+        "v-elsewhere": str(tmp_path / "other" / "gone.csv"),
+    }
+    artifacts = [
+        {"artifact_id": "a-1", "latest_version_id": "v-kept"},
+        {"artifact_id": "a-2", "latest_version_id": "v-deleted"},
+        {"artifact_id": "a-3", "version_id": "v-elsewhere"},
+        {"artifact_id": "a-4", "latest_version_id": "v-unknown"},
+        {"artifact_id": "a-5"},
+    ]
+
+    kept = without_removed_files(artifacts, workspace, paths.get)
+    assert [a["artifact_id"] for a in kept] == ["a-1", "a-3", "a-4", "a-5"]
+
+    # A workspace this machine does not have (a remote workload) is not judged.
+    remote = without_removed_files(artifacts, tmp_path / "remote", paths.get)
+    assert remote == artifacts
+
+
 def test_completion_message_has_bounded_json_fallback_and_completion_fallback():
     rendered = completion_message(
         {"output": {"metrics": {"accuracy": 0.93}}}, language="en"

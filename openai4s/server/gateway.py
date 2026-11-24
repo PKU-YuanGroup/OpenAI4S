@@ -11733,6 +11733,15 @@ class SessionRunner:
                         produced_artifacts.append(
                             {**candidate, "version_id": version_id}
                         )
+                # NB-6: a file the turn wrote and then deleted is not one of
+                # its deliverables.
+                from openai4s.server.completions import without_removed_files
+
+                produced_artifacts = without_removed_files(
+                    produced_artifacts,
+                    st.workspace,
+                    lambda vid: (self.store.version_meta(vid) or {}).get("path"),
+                )
                 prior_text = "\n\n".join(
                     str(block.get("text") or "") for block in assistant_visible
                 ).strip()

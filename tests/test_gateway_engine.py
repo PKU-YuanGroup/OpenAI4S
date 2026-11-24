@@ -3011,6 +3011,41 @@ def test_a_finalize_reply_that_answered_is_stored_once(monkeypatch, tmp_path):
     assert assistant == [prose]
 
 
+def test_the_completion_leaves_out_files_the_turn_deleted(monkeypatch, tmp_path):
+    """NB-6: the agent cleaned up its intermediate files, and the completion
+    still listed them under 表与数据 / 过程文件."""
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, _hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+
+    def finish_after_cleanup(state, emit, visible):
+        del visible
+        for name in ("final_table.csv", "scratch_table.csv"):
+            target = state.workspace / name
+
+            def write(target=target):
+                target.write_text("gene,value\nA,1\n", encoding="utf-8")
+                return "ok", True
+
+            runner._invoke_control_with_artifacts(
+                state, SimpleNamespace(name="write_file"), emit, write
+            )
+        (state.workspace / "scratch_table.csv").unlink()
+        state.last_engine_completion = {
+            "output": {"summary": "Kept the final table.", "findings": ["A is 1"]}
+        }
+        state.last_model_prose = ""
+        return "submitted"
+
+    monkeypatch.setattr(runner, "_loop", finish_after_cleanup)
+
+    result = runner.run_message(frame_id, "default", "clean up the intermediates")
+
+    assert result["status"] == "completed"
+    final = runner.store.list_messages(frame_id)[-1]["content"]
+    assert "final_table.csv" in final
+    assert "scratch_table.csv" not in final
+
+
 def test_submit_output_cell_after_single_newline_prose_starts_a_new_paragraph(
     monkeypatch, tmp_path
 ):

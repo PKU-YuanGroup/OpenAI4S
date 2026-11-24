@@ -6,7 +6,7 @@ import ast
 import json
 import re
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from openai4s.agent.actions import (
     Action,
@@ -1143,6 +1143,39 @@ def _deliverable_group(name: str) -> str:
         if suffix in extensions:
             return kind if kind in {"report", "image", "table"} else "other"
     return "other"
+
+
+def without_removed_files(
+    artifacts: Iterable[dict],
+    workspace: str | Path,
+    version_path: Callable[[str], str | None],
+) -> list[dict]:
+    """Leave out artifacts whose workspace file is gone at completion time.
+
+    NB-6: the agent said it was cleaning up intermediate scripts and tables,
+    deleted them, and the completion still listed them as this turn's files.
+    ``version_path`` maps a version id to the path it was captured from. Only
+    a path inside ``workspace`` is judged, and only when that workspace is on
+    this machine; an unknown path, or one elsewhere, keeps its artifact.
+    """
+
+    root = Path(workspace).resolve()
+    local = root.is_dir()
+    kept: list[dict] = []
+    for artifact in artifacts:
+        version_id = artifact.get("version_id") or artifact.get("latest_version_id")
+        path = None
+        if local and version_id:
+            try:
+                path = version_path(str(version_id))
+            except Exception:  # noqa: BLE001 - an unreadable row keeps its artifact
+                path = None
+        if path:
+            captured = Path(path).resolve()
+            if captured.is_relative_to(root) and not captured.exists():
+                continue
+        kept.append(artifact)
+    return kept
 
 
 def _artifact_lines(
