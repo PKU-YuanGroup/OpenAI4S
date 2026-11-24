@@ -164,8 +164,7 @@ def reconcile_completion_claims(
         + "; ".join(claims)
         + ". No code cell and no tool ran this turn. Either perform the "
         "claimed work first (run a cell or call a tool), or restate the "
-        "completion without execution claims — e.g. 'Explained…' or "
-        "'Answered…' bullets, and omit artifacts/metrics."
+        "completion without execution claims and omit artifacts/metrics."
     )
 
 
@@ -177,7 +176,12 @@ _FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
             "type": "string",
             "minLength": 1,
             "maxLength": 4_000,
-            "description": "A concise answer grounded in work that actually completed.",
+            "description": (
+                "The answer, grounded in work that actually completed. Shown "
+                "only when this reply has no text of its own: when the reply "
+                "text already answers, the user reads that text, so never "
+                "recap, restate or describe the reply here."
+            ),
         },
         "findings": {
             "type": "array",
@@ -216,7 +220,10 @@ _FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
             "items": {"type": "string", "minLength": 1, "maxLength": 500},
             "minItems": 1,
             "maxItems": 4,
-            "description": "One to four completed-action phrases.",
+            "description": (
+                "One to four short phrases naming the work this turn completed, "
+                "kept for the record. Not a recap of the reply."
+            ),
         },
         "source_files": {
             "type": "array",

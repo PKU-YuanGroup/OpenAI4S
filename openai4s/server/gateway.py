@@ -11731,9 +11731,17 @@ class SessionRunner:
                 prior_text = "\n\n".join(
                     str(block.get("text") or "") for block in assistant_visible
                 ).strip()
+                cell_output = getattr(st.dispatcher, "last_output", None)
+                # CHAT-1: a cell's `host.submit_output` IS `last_output`; a
+                # `finalize_response` record is built by the engine instead.
+                # Only the latter's reply prose is the answer itself -- the
+                # prose before a submitting cell is narration of that cell.
+                finalized = (
+                    st.last_engine_completion is not None
+                    and st.last_engine_completion is not cell_output
+                )
                 final_text = completion_message(
-                    st.last_engine_completion
-                    or getattr(st.dispatcher, "last_output", None),
+                    st.last_engine_completion or cell_output,
                     produced_artifacts,
                     previous_text=prior_text,
                     language=response_language(user_text),
@@ -11743,6 +11751,7 @@ class SessionRunner:
                         str(a.get("artifact_id") or a.get("id") or "")
                         for a in produced_artifacts
                     ),
+                    answered_in_reply=finalized and bool(st.last_model_prose.strip()),
                 )
                 if final_text:
                     delivered_at = int(time.time() * 1000)

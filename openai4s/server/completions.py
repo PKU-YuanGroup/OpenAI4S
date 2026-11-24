@@ -707,11 +707,17 @@ def completion_message(
     require_fallback: bool = True,
     trusted_delivery: bool = False,
     role_marks: Mapping[str, str] | None = None,
+    answered_in_reply: bool = False,
 ) -> str:
     """Render a submitted result into a durable, human-facing final message.
 
     ``role_marks`` is `Store.artifact_role_marks` for ``artifacts``: a role the
     server recorded wins over the filename (a plan's JSON is a process file).
+
+    ``answered_in_reply`` says the reply that completed (a ``finalize_response``
+    call) already streamed its own user-visible answer. Its summary and bullets
+    can then only restate that answer, so nothing is rendered unless the
+    completion carries findings, metrics, limitations or artifacts.
     """
     spec = completion if isinstance(completion, dict) else {}
     output = spec.get("output", completion)
@@ -757,6 +763,12 @@ def completion_message(
     artifact_lines = _artifact_lines(
         artifacts, trusted_delivery=trusted_delivery, role_marks=role_marks
     )
+    if answered_in_reply and not structured and not artifact_lines:
+        # CHAT-1: "你好，你是谁？" was answered in 819 characters and then
+        # followed by a second message, "向用户介绍了 openai4s ...": the
+        # summary paraphrased the reply in the third person, so no substring
+        # check could catch it. The structured completion stays for audit.
+        return ""
     # ART-8: scripts, logs and copies of inputs are how the result was made,
     # not the result; listing them with the figures and tables buried the
     # deliverables. They stay linked, on one line after the deliverables.

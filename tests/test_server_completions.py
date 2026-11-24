@@ -99,6 +99,67 @@ def test_completion_message_deduplicates_existing_closing_prose():
     assert text == ""
 
 
+#: CHAT-1, as recorded: the greeting's reply carried an 819-character answer
+#: and a `finalize_response` whose summary paraphrased it in the third person.
+_GREETING_REPLY = (
+    "你好！我是 **openai4s**，一个自主科学研究助手。我能帮你查资料、跑分析、"
+    "出图表、写报告。\n\n你现在手头有什么任务或数据？告诉我就可以直接开始。"
+)
+_GREETING_COMPLETION = {
+    "output": {
+        "summary": (
+            "向用户介绍了 openai4s 自主科学研究助手的身份与核心能力（生物信息、"
+            "结构生物学、单细胞分析、机器学习、文献检索、化学信息学等），并说明"
+            "使用方式：直接提供任务、数据文件或 accession 编号即可开始真实分析。"
+        )
+    },
+    "completion_bullets": [
+        "介绍了助手身份与运行环境",
+        "梳理了可提供的科研能力范围",
+        "说明了发起任务的方式并邀请用户提出具体需求",
+    ],
+}
+
+
+def test_a_reply_that_answered_is_not_followed_by_its_recap():
+    text = completion_message(
+        _GREETING_COMPLETION,
+        previous_text=_GREETING_REPLY,
+        language="zh",
+        require_fallback=False,
+        answered_in_reply=True,
+    )
+
+    assert text == ""
+    # Without the flag the paraphrase slips past the substring dedupe; this is
+    # the second message the review saw.
+    assert completion_message(
+        _GREETING_COMPLETION,
+        previous_text=_GREETING_REPLY,
+        language="zh",
+        require_fallback=False,
+    ).startswith("向用户介绍了")
+
+
+def test_an_answered_reply_still_gets_its_findings_and_artifacts():
+    with_findings = completion_message(
+        {**_GREETING_COMPLETION, "output": {"summary": "s", "findings": ["F1 holds"]}},
+        previous_text=_GREETING_REPLY,
+        language="zh",
+        answered_in_reply=True,
+    )
+    assert "关键发现：\n- F1 holds" in with_findings
+
+    with_files = completion_message(
+        _GREETING_COMPLETION,
+        [{"artifact_id": "a-1", "filename": "results.csv"}],
+        previous_text=_GREETING_REPLY,
+        language="zh",
+        answered_in_reply=True,
+    )
+    assert f"[results.csv]({API_ROOT}/artifacts/a-1)" in with_files
+
+
 def test_completion_message_has_bounded_json_fallback_and_completion_fallback():
     rendered = completion_message(
         {"output": {"metrics": {"accuracy": 0.93}}}, language="en"
