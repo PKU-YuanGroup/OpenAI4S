@@ -321,6 +321,28 @@ def test_the_final_answer_is_printed_once(tmp_path, monkeypatch, capsys):
     assert status == 0
     assert out.count("two") == 1
     assert "final:" not in out
+    # The rendered answer, not the raw completion document.
+    assert "submitted_output:" not in out
+    assert "Computed 1+1" in out
+
+
+def test_verbose_run_prints_the_rendered_answer_before_the_raw_json(
+    tmp_path, monkeypatch, capsys
+):
+    """CLI-1: `run -v` ended on `submitted_output: {...}` and never printed the
+    answer the way the session stores it."""
+
+    module, _cfg = _real_run(tmp_path, monkeypatch, _scripted_chat([_SUBMIT_REPLY]))
+
+    status = module.main(["run", "-v", "Compute 1+1 and submit it."])
+
+    out = capsys.readouterr().out
+    assert status == 0
+    header = out.index("=== stop_reason: submitted ===")
+    rendered = out.index("two", header)
+    raw = out.index("submitted_output:", header)
+    assert header < rendered < raw
+    assert '"summary": "two"' in out[raw:]
 
 
 def _trace_of(events):

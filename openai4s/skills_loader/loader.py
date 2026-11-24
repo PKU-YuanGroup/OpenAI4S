@@ -269,11 +269,70 @@ def _requirements(value: object) -> tuple[str, ...]:
     return tuple(sorted({part.lower() for part in parts if part}))
 
 
+#: A hyphenated compound (``chia-pet``, ``hi-c``, ``rna-seq``, ``t-test``).
+_COMPOUND = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
+#: CJK ideographs (Extension A, the unified block, compatibility ideographs).
+_CJK_RUN = re.compile(r"[㐀-䶿一-鿿豈-﫿]+")
+#: Compound fragments this short are not evidence of what a Skill is about.
+_SHORT_FRAGMENT = 3
+
+
+def _cjk_bigrams(text: str) -> set[str]:
+    """Chinese has no spaces, so a run is indexed as overlapping character
+    pairs (a lone character stays itself): ``面板数据`` -> 面板, 板数, 数据."""
+
+    grams: set[str] = set()
+    for run in _CJK_RUN.findall(text):
+        if len(run) == 1:
+            grams.add(run)
+        grams.update(run[index : index + 2] for index in range(len(run) - 1))
+    return grams
+
+
 def _tokenize(*texts: str) -> set[str]:
+    """ASCII words, whole hyphenated compounds, and CJK character bigrams.
+
+    SKL-3: tokens were ``[a-z0-9]+`` only, so every Chinese query tokenized
+    to nothing; and a compound kept only its parts, so a query naming the
+    compound itself could not prefer the Skill that names it.
+    """
+
     toks: set[str] = set()
     for t in texts:
-        toks.update(_WORD.findall(t.lower()))
+        lowered = t.lower()
+        toks.update(_WORD.findall(lowered))
+        toks.update(_COMPOUND.findall(lowered))
+        toks.update(_cjk_bigrams(lowered))
     return toks
+
+
+def _summary_tokens(name: str, description: str) -> frozenset[str]:
+    """The tokens that earn a Skill the name/description boost.
+
+    A short fragment of a hyphenated compound in the description is left out:
+    the ``pet`` of ``ChIA-PET`` is not a claim to be about PET, and with its
+    high IDF it put a Hi-C loop caller first for a PETase structure query.
+    The compound itself, longer fragments, and every standalone word still
+    count, so ``PDB`` or ``RNA`` written as a word keeps its boost. The name
+    is hyphen-separated words throughout and is tokenized whole.
+    """
+
+    lowered = description.lower()
+    standalone = _WORD.findall(_COMPOUND.sub(" ", lowered))
+    compounds = _COMPOUND.findall(lowered)
+    long_parts = {
+        part
+        for compound in compounds
+        for part in compound.split("-")
+        if len(part) > _SHORT_FRAGMENT
+    }
+    return frozenset(
+        _tokenize(name)
+        | set(standalone)
+        | set(compounds)
+        | long_parts
+        | _cjk_bigrams(lowered)
+    )
 
 
 #: A query term found in a Skill's name or description is stronger evidence
@@ -960,7 +1019,7 @@ class _SearchIndex:
             corpus=corpus,
             document_frequency=dict(frequency),
             summary_tokens={
-                key: frozenset(_tokenize(skill.name, skill.description))
+                key: _summary_tokens(skill.name, skill.description)
                 for key, skill in corpus.items()
             },
         )
@@ -1587,7 +1646,7 @@ class SkillLoader:
                 continue
             summary = index.summary_tokens.get(key)
             if summary is None or index.corpus.get(key) is not s:
-                summary = frozenset(_tokenize(s.name, s.description))
+                summary = _summary_tokens(s.name, s.description)
             body = sum(weight for token, weight in weights if token in s.keywords)
             boost = sum(weight for token, weight in weights if token in summary)
             score = body + _SUMMARY_BOOST * boost

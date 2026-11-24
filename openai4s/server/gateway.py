@@ -2715,9 +2715,6 @@ not a user-facing analysis.
 skill load, one download, one figure, one edit. The timeline then reads as a clean \
 sequence of steps, exactly like the reference. A leading `# gerund comment` on a \
 pure-compute cell titles that card.
-- Run code AS a cell. Do not write a .py / .R file in order to exec() or source() \
-it from a later cell: every file you write appears in the user's files, and nothing \
-runs until a cell runs it. Write files for deliverables (reports, tables, figures).
 - Produce real result FILES for anything worth keeping (save plots with matplotlib \
 `savefig`, tables with `df.to_csv`, reports via `host.write_file`). Every file you \
 create in the working directory is AUTOMATICALLY captured as an artifact the user can \
@@ -2837,8 +2834,8 @@ or the DB API). If a fetch genuinely fails, report the failure and proceed with 
 DID retrieve — never GENERATE a synthetic dataset to stand in for real data.
 - Genuinely-real CPU tools are NOT fabrication — run them for real: MAFFT / IQ-TREE / \
 trimAl / FastTree (`host.env.use("phylo")`), and scanpy/Leiden/UMAP/DE on REAL fetched data.
-- `host` is already injected as a global — call `host.fold(...)` etc. directly; NEVER \
-write `import host` (there is no such module). `host.submit_output(...)` takes \
+- `host` is already injected as a global — call `host.fold(...)` etc. directly; no \
+import is needed (`import host` returns the same object). `host.submit_output(...)` takes \
 `completion_bullets` as a list of 1–4 short strings.
 - Deliverables: generate the FULL set of figures (publication-quality matplotlib PNGs), \
 CSV/JSON tables, a Markdown or HTML report, and any structure/sequence files the task \
@@ -6422,6 +6419,14 @@ class SessionRunner:
                 python_env_name=st.env_name or envmod.default_env_name(),
                 r_env_name=getattr(st, "r_env_name", None),
             )
+        except Exception:  # noqa: BLE001
+            pass
+        # CHAT-9: the local GPU and the key packages, as Settings → Compute
+        # sees them, so a self-introduction does not promise what is absent.
+        try:
+            from openai4s.prompts import local_capability_note
+
+            ctx += "\n\n" + local_capability_note(st.env_name)
         except Exception:  # noqa: BLE001
             pass
         # The Action Ledger, rather than UI prose/execution-log projections,
@@ -11729,12 +11734,29 @@ class SessionRunner:
                         produced_artifacts.append(
                             {**candidate, "version_id": version_id}
                         )
+                # NB-6: a file the turn wrote and then deleted is not one of
+                # its deliverables.
+                from openai4s.server.completions import without_removed_files
+
+                produced_artifacts = without_removed_files(
+                    produced_artifacts,
+                    st.workspace,
+                    lambda vid: (self.store.version_meta(vid) or {}).get("path"),
+                )
                 prior_text = "\n\n".join(
                     str(block.get("text") or "") for block in assistant_visible
                 ).strip()
+                cell_output = getattr(st.dispatcher, "last_output", None)
+                # CHAT-1: a cell's `host.submit_output` IS `last_output`; a
+                # `finalize_response` record is built by the engine instead.
+                # Only the latter's reply prose is the answer itself -- the
+                # prose before a submitting cell is narration of that cell.
+                finalized = (
+                    st.last_engine_completion is not None
+                    and st.last_engine_completion is not cell_output
+                )
                 final_text = completion_message(
-                    st.last_engine_completion
-                    or getattr(st.dispatcher, "last_output", None),
+                    st.last_engine_completion or cell_output,
                     produced_artifacts,
                     previous_text=prior_text,
                     language=response_language(user_text),
@@ -11744,6 +11766,7 @@ class SessionRunner:
                         str(a.get("artifact_id") or a.get("id") or "")
                         for a in produced_artifacts
                     ),
+                    answered_in_reply=finalized and bool(st.last_model_prose.strip()),
                 )
                 if final_text:
                     delivered_at = int(time.time() * 1000)
