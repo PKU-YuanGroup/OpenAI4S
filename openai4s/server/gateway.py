@@ -3180,6 +3180,7 @@ class SessionRunner:
             llm_config_for=lambda state: self._llm_cfg(state),
             pending_for=self._pending_permissions,
             context_window_fallback=self.cfg.context_window_tokens,
+            compaction_trigger_ratio=self.cfg.compaction_trigger_ratio,
             tool_schemas_for=lambda state: (
                 state.dispatcher.tool_catalog().specs_for(state.messages)
                 if state is not None and state.dispatcher is not None

@@ -168,6 +168,7 @@ class SessionWorkbenchStateService:
         pending_for: PendingProvider,
         context_window_fallback: int,
         tool_schemas_for: ToolSchemaProvider | None = None,
+        compaction_trigger_ratio: float = 0.75,
     ) -> None:
         self.store = store
         self._state_for = state_for
@@ -176,6 +177,9 @@ class SessionWorkbenchStateService:
         self._pending_for = pending_for
         self._context_window_fallback = max(1, int(context_window_fallback))
         self._tool_schemas_for = tool_schemas_for or (lambda _state: ())
+        # `Config.compaction_trigger_ratio`: the runtime compacts once the
+        # prompt passes this share of the window (`CompactionPolicy`).
+        self._compaction_trigger_ratio = max(0.0, float(compaction_trigger_ratio))
 
     def context(self, root_frame_id: str) -> dict[str, Any]:
         self._root_frame(root_frame_id)
@@ -236,6 +240,11 @@ class SessionWorkbenchStateService:
             "root_frame_id": root_frame_id,
             "token_count": estimate.total,
             "token_limit": token_limit,
+            # SET-5: when older turns get compacted, against the same window
+            # the runtime's compaction budget uses (usable, else raw, else the
+            # configured fallback).
+            "compaction_trigger_ratio": self._compaction_trigger_ratio,
+            "compaction_threshold": int(token_limit * self._compaction_trigger_ratio),
             "output_reserve": output_reserve,
             "message_count": len(messages),
             "handoff": handoff,

@@ -51,8 +51,9 @@ import {
   actionTimelineSelectionOverlaps,
   latestActionTimelineAttempt,
   timelineCost,
-  timelineDuration,
+  timelineDurationValue,
   timelineEpochMs,
+  timelineGroupDurationMs,
   timelineLocalClock,
   timelineOverviewExactDuration,
   timelineOverviewExactTime,
@@ -67,7 +68,8 @@ import { S } from "./s";
 import { ago, localDateTime } from "../chrome/dom";
 import { askConfirm, askText } from "../chrome/dialog";
 import { nbLabelT } from "../notebook/copy";
-import { computeRecordsT, timelineT, workbenchT, workbenchWord } from "./copy";
+import { computeRecordsT, timelineStatusText, timelineT, workbenchT, workbenchWord } from "./copy";
+import { stepTitleText } from "../send/step-title";
 
 /**
  * The island's lookup: the dictionary, except where the Timeline's own table
@@ -108,10 +110,30 @@ import type {
 type View = any;
 type Group = TimelineGroup & Record<string, any>;
 
+/**
+ * VIEW-1: an approval is waited for only while it is. The permission events
+ * stay in a row's ledger after the decision, and an install the user had
+ * declined still read "Permission Pause". The sanitized `permission` is
+ * "state · scope"; a raw one is `{state, scope}`.
+ */
+function timelinePermissionPending(group: any): boolean {
+  const permission = group && group.permission;
+  const state =
+    typeof permission === "string"
+      ? permission.split("·")[0]
+      : permission && typeof permission === "object"
+        ? permission.state
+        : "";
+  const status = String((group && group.status) || "").toLowerCase();
+  return String(state || "").trim().toLowerCase() === "pending" && ["pending", "running"].includes(status);
+}
+
 export function timelineKind(group: any): string {
   const kind = String((group && group.kind) || "").toLowerCase();
+  // The permission events are the request's history, not the row's kind.
   const eventKinds = ((group && group.events) || [])
     .map((event: any) => String(event.type || "").toLowerCase())
+    .filter((type: string) => !type.startsWith("permission_"))
     .join(" ");
   const latestAttempt = latestActionTimelineAttempt(group),
     linkedCell = latestAttempt && nbFindCell(latestAttempt.producing_cell_id);
@@ -119,7 +141,7 @@ export function timelineKind(group: any): string {
     group.language || (linkedCell && linkedCell.language) || "",
   ).toLowerCase();
   if (/final/.test(kind + " " + eventKinds)) return "finalize";
-  if (/permission|approval/.test(kind + " " + eventKinds)) return "permission";
+  if (/permission|approval/.test(kind) || timelinePermissionPending(group)) return "permission";
   if (/recover|restore|bootstrap/.test(kind + " " + eventKinds)) return "recovery";
   if (/delegat|subagent/.test(kind + " " + eventKinds)) return "delegate";
   if (/background|remote|compute|job/.test(kind + " " + eventKinds)) return "background";
@@ -128,6 +150,19 @@ export function timelineKind(group: any): string {
   if (/code|python|cell/.test(kind)) return "python";
   if (/tool/.test(kind + " " + eventKinds)) return "native_tool";
   return "action";
+}
+
+/**
+ * VIEW-1: the row's title in the chat's words. A tool batch's calls come as
+ * the step cards' English titles ("Listing .", "Installing pydeseq2"),
+ * translated by the chat's own table; anything else keeps its title.
+ */
+export function timelineGroupTitle(group: any): string {
+  const steps: string[] = Array.isArray(group && group.step_titles)
+    ? group.step_titles.filter((title: unknown) => typeof title === "string" && title)
+    : [];
+  if (steps.length) return steps.map((title) => stepTitleText(title)).join(" · ");
+  return (group && group.title) || t("timeline.kind." + timelineKind(group || {}));
 }
 
 function timelineKindIcon(kind: string): string {
@@ -735,7 +770,7 @@ function actionTimelineDetails(group: Group): any {
       group.permission ||
       (group.events || []).map((event: any) => event.side_effect_class).filter(Boolean),
     replay: group.replay_policy || (latest && latest.replayed_from_cell_id ? "replayed" : "original"),
-    duration: timelineDuration(latest),
+    duration: timelineDurationValue(timelineGroupDurationMs(group)),
     tokens: t(
       "timeline.tokensValue",
       (group.usage || {}).input_tokens || 0,
@@ -776,9 +811,11 @@ export function actionTimelineCard(group: Group): HTMLElement {
   kindLabel.appendChild(iconEl(timelineKindIcon(kind), 14));
   kindLabel.appendChild(el("span", null, t("timeline.kind." + kind)));
   head.appendChild(kindLabel);
-  head.appendChild(el("span", "timeline-status " + status, publicText(status || "completed", 32)));
+  head.appendChild(
+    el("span", "timeline-status " + status, timelineStatusText(publicText(status || "completed", 32))),
+  );
   card.appendChild(head);
-  card.appendChild(el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)));
+  card.appendChild(el("div", "timeline-card-title", timelineGroupTitle(group)));
   appendActionTimelineDetails(card, group);
   return card;
 }
@@ -812,12 +849,10 @@ function actionTimelineInspector(group: Group): HTMLElement {
   kindLabel.appendChild(el("span", null, t("timeline.kind." + kind)));
   cardHead.appendChild(kindLabel);
   cardHead.appendChild(
-    el("span", "timeline-status " + status, publicText(status || "completed", 32)),
+    el("span", "timeline-status " + status, timelineStatusText(publicText(status || "completed", 32))),
   );
   panel.appendChild(cardHead);
-  panel.appendChild(
-    el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)),
-  );
+  panel.appendChild(el("div", "timeline-card-title", timelineGroupTitle(group)));
   appendActionTimelineDetails(panel, group);
   appendActionTimelineTimingDetails(panel, group);
   (panel as any)._timelineGroup = group;
@@ -856,7 +891,13 @@ function normalizeActionTimelineSearch(value: unknown): string {
 
 function actionTimelineSearchDocument(group: Group): string {
   const kind = timelineKind(group || {});
-  const fields = [group && group.title, group && group.kind, kind, t("timeline.kind." + kind)];
+  const fields = [
+    group && group.title,
+    group && timelineGroupTitle(group),
+    group && group.kind,
+    kind,
+    t("timeline.kind." + kind),
+  ];
   ((group && group.events) || []).forEach((event: any) => {
     (event.resource_keys || []).forEach((value: string) => fields.push(value));
     (event.artifacts || []).forEach((value: string) => fields.push(value));
@@ -997,7 +1038,7 @@ function showActionTimelineOverviewTooltip(
     item = overview && overview.model && overview.model.byId.get(groupId);
   if (!overview || !item || overview.hoverCandidateId !== groupId) return;
   const ordinal = timelineOrdinal(item.group.ordinal),
-    title = item.group.title || t("timeline.kind." + timelineKind(item.group));
+    title = timelineGroupTitle(item.group);
   const head = el(
     "div",
     "timeline-overview-tooltip-title",
@@ -1955,9 +1996,9 @@ function actionTimelineLedgerRow(
   kindCell.appendChild(kindIcon);
   kindCell.appendChild(el("span", "timeline-kind-label", t("timeline.kind." + kind)));
   row.appendChild(kindCell);
-  const title = group.title || t("timeline.kind." + kind),
+  const title = timelineGroupTitle(group),
     titleCell = cell("timeline-ledger-title");
-  const statusText = publicText(status || "completed", 32);
+  const statusText = timelineStatusText(publicText(status || "completed", 32));
   const statusNoteworthy = statusClass !== "completed" && statusClass !== "recorded";
   if (statusNoteworthy)
     titleCell.appendChild(
@@ -1982,7 +2023,7 @@ function actionTimelineLedgerRow(
   titleCell.appendChild(titleButton);
   row.appendChild(titleCell);
   const durationCell = cell("timeline-ledger-duration");
-  durationCell.textContent = timelineDuration(latest) || "—";
+  durationCell.textContent = timelineDurationValue(timelineGroupDurationMs(group)) || "—";
   row.appendChild(durationCell);
   const tokens = cell("timeline-ledger-tokens");
   tokens.textContent = group.usage ? String(timelineTokenTotal(group.usage)) : "—";
@@ -3087,26 +3128,40 @@ async function restoreActivatedBranch(): Promise<void> {
   renderActionTimeline();
 }
 
-export async function activateSessionBranch(branchId: string): Promise<void> {
+/**
+ * Switch the open session to one of its branches. True once the switch
+ * happened. `confirmed`: the caller already asked this confirm (VIEW-2: a
+ * fork from a question asks before the branch exists), and `name` is the
+ * branch's name when the branch list does not have it yet.
+ */
+export async function activateSessionBranch(
+  branchId: string,
+  options: { confirmed?: boolean; name?: string } = {},
+): Promise<boolean> {
   branchId = publicText(branchId, 96);
-  if (!S.currentId || !branchId || !branchCapability("activate") || S._branchActionLoading) return;
+  if (!S.currentId || !branchId || !branchCapability("activate") || S._branchActionLoading) return false;
   const target = ((S.branchState && S.branchState.branches) || []).find(
     (branch: any) => branch && branch.branch_id === branchId,
   );
-  const name = branchDisplayName(target || { branch_id: branchId }, S.currentId);
+  const name =
+    publicText(options && options.name, 120) ||
+    branchDisplayName(target || { branch_id: branchId }, S.currentId);
   // M-73: the kernel stopped and its variables were gone without a word.
   const frameId = S.currentId;
-  if (!(await askConfirm(branchT("branch.activateConfirm", name)))) return;
-  if (S.currentId !== frameId || S._branchActionLoading) return;
+  if (!(options && options.confirmed === true) && !(await askConfirm(branchT("branch.activateConfirm", name))))
+    return false;
+  if (S.currentId !== frameId || S._branchActionLoading) return false;
   S._branchActionLoading = "activate:" + branchId;
   delete S.workbenchErrors.branchAction;
   renderActionTimeline();
+  let switched = false;
   try {
     const result = await api(
       `/frames/${encodeURIComponent(frameId)}/branches/${encodeURIComponent(branchId)}/activate`,
       { method: "POST", body: "{}" },
     );
-    if (S.currentId !== frameId) return;
+    if (S.currentId !== frameId) return false;
+    switched = true;
     invalidateKernelCache();
     S.cells = [];
     S.liveCells = [];
@@ -3127,6 +3182,7 @@ export async function activateSessionBranch(branchId: string): Promise<void> {
       laneCall("renderNotebook");
     }
   }
+  return switched;
 }
 
 async function previewSessionRevert(checkpointId: string): Promise<void> {

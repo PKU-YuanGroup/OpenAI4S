@@ -265,3 +265,66 @@ const TIMELINE_OVERRIDES: CopyTable = {
 };
 
 export const timelineT = overrideLookup(TIMELINE_OVERRIDES);
+
+/**
+ * VIEW-1: a row's status in the UI language. The badge printed the server's
+ * word ("failed", "pending"), and an install the user declined read "failed".
+ */
+const TIMELINE_STATUS: CopyTable = {
+  zh: {
+    "timeline.status.running": "运行中",
+    "timeline.status.pending": "等待中",
+    "timeline.status.completed": "已完成",
+    "timeline.status.failed": "失败",
+    "timeline.status.cancelled": "已取消",
+    "timeline.status.interrupted": "已中断",
+    "timeline.status.recorded": "已记录",
+    "timeline.status.denied": "已拒绝",
+    "timeline.status.timed_out": "已超时",
+  },
+  en: {
+    "timeline.status.running": "Running",
+    "timeline.status.pending": "Pending",
+    "timeline.status.completed": "Completed",
+    "timeline.status.failed": "Failed",
+    "timeline.status.cancelled": "Cancelled",
+    "timeline.status.interrupted": "Interrupted",
+    "timeline.status.recorded": "Recorded",
+    "timeline.status.denied": "Declined",
+    "timeline.status.timed_out": "Timed out",
+  },
+};
+
+const timelineStatusLookup = copyLookup(TIMELINE_STATUS);
+
+/**
+ * SET-5: the session menu's "Context usage" beyond the totals -- the model's
+ * window, how full the latest request left it, and when compaction kicks in.
+ */
+const CONTEXT_USAGE: CopyTable = {
+  zh: {
+    "contextUsage.window": "模型上下文窗口：{0} token",
+    "contextUsage.latest": "最近一次请求发给模型 {0} token，占窗口的 {1}%",
+    "contextUsage.estimate": "当前上下文约 {0} token，占窗口的 {1}%",
+    "contextUsage.threshold": "上下文超过 {0} token（窗口的 {1}%）时，较早的对话会自动压缩",
+    "contextUsage.compacted": "；本会话已压缩 {0} 次",
+    "contextUsage.compactedOnce": "；本会话已压缩 1 次",
+  },
+  en: {
+    "contextUsage.window": "Model context window: {0} tokens",
+    "contextUsage.latest": "Latest request sent to the model: {0} tokens, {1}% of the window",
+    "contextUsage.estimate": "Current context: about {0} tokens, {1}% of the window",
+    "contextUsage.threshold": "Past {0} tokens ({1}% of the window), older turns are compacted automatically",
+    "contextUsage.compacted": "; compacted {0} times in this session",
+    "contextUsage.compactedOnce": "; compacted once in this session",
+  },
+};
+
+export const contextUsageT = copyLookup(CONTEXT_USAGE);
+
+/** A server status word in the UI language when the table has it, else as sent. */
+export function timelineStatusText(status: string): string {
+  const key = "timeline.status." + status;
+  const word = timelineStatusLookup(key);
+  return word === key ? status : word;
+}

@@ -387,13 +387,21 @@ function forkMessageControl(messageId: string): HTMLElement {
     if (messageForkPending(frameId, messageId)) return;
     const busy = historyT("history.forkMessage.busy");
     const owner = frameId + "\0" + messageId;
-    button.setAttribute("aria-disabled", "true");
-    button.setAttribute("aria-busy", "true");
-    button.textContent = busy;
-    button.title = busy;
-    hint(busy, false, true);
-    busyHintOwner = owner;
-    return forkFromMessage(frameId, messageId).then(
+    // VIEW-2: the question as its bubble shows it names the branch and goes
+    // back into the composer once the branch is open.
+    const wrap = row.parentNode as HTMLElement | null;
+    const shown = wrap && typeof wrap.querySelector === "function" ? wrap.querySelector(".bubble") : null;
+    const question = String((shown && shown.textContent) || (wrap && wrap.dataset && wrap.dataset.sentText) || "");
+    // Busy once the request really goes out: a switch asks its confirm first.
+    const creating = () => {
+      button.setAttribute("aria-disabled", "true");
+      button.setAttribute("aria-busy", "true");
+      button.textContent = busy;
+      button.title = busy;
+      hint(busy, false, true);
+      busyHintOwner = owner;
+    };
+    return forkFromMessage(frameId, messageId, { question, onCreating: creating }).then(
       (result) => {
         settleForkButton(button, frameId, owner, busy, label, result);
         return result;

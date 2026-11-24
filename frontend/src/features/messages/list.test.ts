@@ -815,9 +815,10 @@ describe("stored rows, first page and older page alike", () => {
     expect(button.getAttribute("aria-label")).toBeNull();
     expect(doc.hint.getAttribute("aria-live")).toBe("polite");
     expect(doc.hint.textContent).toContain(historyT("history.forkMessage.busy"));
+    // VIEW-2: the branch is named with the question's first 20 characters.
     expect(posts).toEqual([{
       url: "/api/v1/frames/frame-1/branches/fork",
-      body: { from_message_id: "msg-exact" },
+      body: { from_message_id: "msg-exact", name: "Why does the control…" },
     }]);
     release(new Response(JSON.stringify({ branch_id: "br-new", name: "alt" }), { status: 200 }));
     await first;
