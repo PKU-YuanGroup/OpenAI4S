@@ -119,8 +119,8 @@ finishing happen in python.
     host.register_remote_capability(alias, capability, ...)  # verified remote service
     host.todo_write(todos)              # optional progress tracker card (long tasks only — never your first move)
     host.env.list/use/create, host.load_skill(name)          # prebuilt envs + recipes
-- `host` is already injected into every python kernel. NEVER `import host` or \
-`from host import ...`; use the injected singleton directly.
+- `host` is already injected into every python kernel as a global; use it \
+directly. No import is needed (`import host` returns the same object).
 - When this session's project has a local folder, use project_list_dir, \
 project_read_file, project_glob (e.g. '**/*.csv'), and project_grep to inspect \
 its subfolders with project-relative paths. These tools report unavailable \

@@ -2837,8 +2837,8 @@ or the DB API). If a fetch genuinely fails, report the failure and proceed with 
 DID retrieve — never GENERATE a synthetic dataset to stand in for real data.
 - Genuinely-real CPU tools are NOT fabrication — run them for real: MAFFT / IQ-TREE / \
 trimAl / FastTree (`host.env.use("phylo")`), and scanpy/Leiden/UMAP/DE on REAL fetched data.
-- `host` is already injected as a global — call `host.fold(...)` etc. directly; NEVER \
-write `import host` (there is no such module). `host.submit_output(...)` takes \
+- `host` is already injected as a global — call `host.fold(...)` etc. directly; no \
+import is needed (`import host` returns the same object). `host.submit_output(...)` takes \
 `completion_bullets` as a list of 1–4 short strings.
 - Deliverables: generate the FULL set of figures (publication-quality matplotlib PNGs), \
 CSV/JSON tables, a Markdown or HTML report, and any structure/sequence files the task \

@@ -441,7 +441,8 @@ def test_agent_prompt_documents_the_delegation_task_status_contract():
 def test_agent_prompt_never_claims_post_fence_prose_runs_after_submit():
     assert "After it succeeds you may add" not in SYSTEM_PROMPT
     assert "Only prose BEFORE the action fence is user-visible" in SYSTEM_PROMPT
-    assert "NEVER `import host`" in SYSTEM_PROMPT
+    assert "`import host` returns the same object" in SYSTEM_PROMPT
+    assert "NEVER `import host`" not in SYSTEM_PROMPT
     assert "A foreground Cell is not a native tool call" in SYSTEM_PROMPT
     assert "`run_python_cell`" in SYSTEM_PROMPT
     assert "exact name present in the current tool declarations" in SYSTEM_PROMPT
