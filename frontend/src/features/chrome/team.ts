@@ -157,6 +157,19 @@ function buildAdminModal(): HTMLElement {
   return modal;
 }
 
+/** I18N-5: the files modal's own words, again on each open, as the admin modal's. */
+function labelFilesModal(): void {
+  const title = byId("team-files-title");
+  if (title) title.textContent = teamT("team.files");
+  const upload = byId("team-files-upload");
+  if (upload) upload.textContent = teamT("team.files.upload");
+  const close = byId("team-files-close");
+  if (close) {
+    close.setAttribute("aria-label", teamT("team.close"));
+    close.setAttribute("title", teamT("team.close"));
+  }
+}
+
 function buildFilesModal(): HTMLElement {
   const modal = el("div", "modal hidden");
   modal.id = "team-files-modal";
@@ -165,10 +178,10 @@ function buildFilesModal(): HTMLElement {
   modal.setAttribute("aria-labelledby", "team-files-title");
   const box = el("div", "modal-box small-box");
   const head = el("div", "modal-head");
-  const title = el("span", null, "Team files");
+  const title = el("span", null, teamT("team.files"));
   title.id = "team-files-title";
   const actions = el("div", "modal-actions");
-  const upload = el("button", "outline-btn small", "Upload");
+  const upload = el("button", "outline-btn small", teamT("team.files.upload"));
   upload.id = "team-files-upload";
   const input = document.createElement("input");
   input.id = "team-files-input";
@@ -272,6 +285,7 @@ export async function probeTeamAuth(): Promise<void> {
 }
 
 export function openTeamFilesPanel(): void {
+  labelFilesModal();
   openModalEl(byId("team-files-modal"));
   void loadTeamFiles(tfState.path);
 }
@@ -321,7 +335,8 @@ function renderTeamFiles(res: { ok: boolean; body: TeamFilesBody }): void {
   crumbs.textContent = "";
   list.textContent = "";
   if (!res.ok) {
-    list.textContent = (res.body && res.body.error) || "unavailable";
+    const reason = res.body && res.body.error;
+    list.textContent = reason ? teamT("team.files.failed", reason) : teamT("team.files.unavailable");
     // Nothing is listed, so there is no directory on screen to upload into.
     const upBtn = byId("team-files-upload");
     if (upBtn) upBtn.style.display = "none";
@@ -329,7 +344,7 @@ function renderTeamFiles(res: { ok: boolean; body: TeamFilesBody }): void {
   }
   const home = document.createElement("a");
   home.href = "#";
-  home.textContent = "roots";
+  home.textContent = teamT("team.files.roots");
   home.onclick = (e) => {
     e.preventDefault();
     loadTeamFiles("");

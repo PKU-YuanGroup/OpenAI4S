@@ -745,6 +745,40 @@ describe("F-20 team surface", () => {
     expect(team.teamFilesPath()).toBe("/data/small");
   });
 
+  it("the Team files panel speaks the interface language, relabelled on each open (I18N-5)", async () => {
+    team.bootTeam();
+    let ok = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () =>
+        ok
+          ? { status: 200, ok: true, json: async () => ({ roots: [{ path: "/data" }] }) }
+          : { status: 503, ok: false, json: async () => ({}) },
+      ),
+    );
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("zh");
+    team.openTeamFilesPanel();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(doc.getElementById("team-files-title")?.textContent).toBe("团队文件");
+    expect(doc.getElementById("team-files-upload")?.textContent).toBe("上传");
+    expect(doc.getElementById("team-files-close")?.getAttribute("aria-label")).toBe("关闭");
+    expect(doc.getElementById("team-files-crumbs")?.textContent).toBe("所有文件夹");
+    ok = false;
+    team.openTeamFilesPanel();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(doc.getElementById("team-files-list")?.textContent).toBe("无法读取团队文件。");
+    // The modal was built once; a language switch shows on the next open.
+    await runtime.setLang("en");
+    ok = true;
+    team.openTeamFilesPanel();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(doc.getElementById("team-files-title")?.textContent).toBe("Team files");
+    expect(doc.getElementById("team-files-upload")?.textContent).toBe("Upload");
+    expect(doc.getElementById("team-files-crumbs")?.textContent).toBe("All folders");
+    await runtime.setLang("system");
+  });
+
   it("section headings follow the interface language", async () => {
     team.bootTeam();
     vi.stubGlobal(
