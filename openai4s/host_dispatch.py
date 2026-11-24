@@ -3689,7 +3689,10 @@ class HostDispatcher:
         )
         notice = narrowing_notice(self.frame_id, candidate)
         bind_skill_load(frame_id=self.frame_id, **binding)
-        if notice is not None:
+        # SKL-4: a load card already says this (`session_network` below, when
+        # it lists domains); a second card repeated it. Announce only for a
+        # binding whose card does not (a Skill file read).
+        if notice is not None and (source != "load_skill" or not notice["domains"]):
             self._announce_skill_network(notice)
         loaded_dict = loaded if isinstance(loaded, dict) else None
         if loaded_dict is not None:
@@ -3711,9 +3714,8 @@ class HostDispatcher:
         """Put "this Skill's helpers may reach only N domains" on the timeline.
 
         A host_only manifest holds the requests that Skill's own helper code
-        makes to its domains (owner decision 34), and nothing told the user:
-        the load card said "loaded". Emitted by every path that binds (native
-        load, a Cell's load, a Skill file read).
+        makes to its domains (owner decision 34). A load card says so itself;
+        this card is for a binding whose card does not (a Skill file read).
         """
 
         if self.on_step is None:

@@ -85,30 +85,25 @@ def test_literature_review_declares_the_services_its_recipe_sends_the_model_to()
     assert domain_in_declared("export.arxiv.org", declared)
 
 
-def test_loading_a_host_only_skill_puts_the_limit_on_the_timeline_once(tmp_path):
+def _notices(steps: list[dict]) -> list[dict]:
+    return [
+        step
+        for step in steps
+        if step.get("phase") == "end"
+        and (step.get("output") or {}).get("notice") == "skill_network"
+    ]
+
+
+def test_loading_a_host_only_skill_says_so_on_one_card(tmp_path):
+    """SKL-4: the load card and a notice card used to say the same thing."""
+
     disp, steps = _dispatcher(tmp_path, "frame-notice")
     with disp.bind_sandbox_status(_ENFORCED):
         loaded = disp("load_skill", [{"name": "literature-review"}])
     assert loaded.get("name") == "literature-review", loaded
     domains = list(SkillLoader().get("literature-review").network.domains)
 
-    notices = [
-        step
-        for step in steps
-        if step.get("phase") == "end"
-        and (step.get("output") or {}).get("notice") == "skill_network"
-    ]
-    assert len(notices) == 1
-    notice = notices[0]
-    assert notice["status"] == "done"
-    assert notice["output"]["skill"] == "literature-review"
-    assert notice["output"]["skills"] == ["literature-review"]
-    assert notice["output"]["domains"] == sorted(domains)
-    assert notice["summary"] == f"helpers limited to {len(domains)} domains"
-    begin = next(step for step in steps if step.get("step_id") == notice["step_id"])
-    assert begin["kind"] == "network"
-
-    # The load card itself says what it did to the session.
+    # The load card itself says what the Skill's helpers may reach ...
     load_end = [
         step
         for step in steps
@@ -116,26 +111,52 @@ def test_loading_a_host_only_skill_puts_the_limit_on_the_timeline_once(tmp_path)
         and "session_network" in (step.get("output") or {})
     ]
     assert len(load_end) == 1
-    assert load_end[0]["summary"] == (
-        f"loaded · network limited to {len(domains)} domains"
-    )
-    # No built-in connector is "lost": the limit is on the Skill's helpers.
-    assert "unavailable_connectors" not in notice["output"]
     assert loaded["session_network"] == {
         "skills": ["literature-review"],
         "domains": sorted(domains),
     }
+    # ... so no second card repeats it.
+    assert _notices(steps) == []
+    assert not [step for step in steps if step.get("kind") == "network"]
 
     # A second load binds the same manifest again and announces nothing new.
     steps.clear()
     with disp.bind_sandbox_status(_ENFORCED):
         disp("load_skill", [{"name": "literature-review"}])
-    assert not [
-        step
-        for step in steps
-        if (step.get("output") or {}).get("notice") == "skill_network"
-    ]
+    assert _notices(steps) == []
     assert len(bindings_for("frame-notice")) == 2
+    disp.store.close()
+
+
+def test_a_binding_without_a_load_card_puts_the_limit_on_the_timeline_once(
+    tmp_path,
+):
+    """A Skill file read binds the manifest; its card says nothing about it."""
+
+    disp, steps = _dispatcher(tmp_path, "frame-read-notice")
+    with disp.bind_sandbox_status(_ENFORCED):
+        read = disp("skills_read", [{"name": "literature-review"}])
+    assert isinstance(read, str) and "# Literature review" in read
+    domains = list(SkillLoader().get("literature-review").network.domains)
+
+    notices = _notices(steps)
+    assert len(notices) == 1
+    notice = notices[0]
+    assert notice["status"] == "done"
+    assert notice["output"]["skill"] == "literature-review"
+    assert notice["output"]["skills"] == ["literature-review"]
+    assert notice["output"]["domains"] == sorted(domains)
+    assert notice["summary"] == f"helpers limited to {len(domains)} domains"
+    # No built-in connector is "lost": the limit is on the Skill's helpers.
+    assert "unavailable_connectors" not in notice["output"]
+    begin = next(step for step in steps if step.get("step_id") == notice["step_id"])
+    assert begin["kind"] == "network"
+    assert begin["title"] == "literature-review limits its own helpers' network"
+
+    steps.clear()
+    with disp.bind_sandbox_status(_ENFORCED):
+        disp("skills_read", [{"name": "literature-review"}])
+    assert _notices(steps) == []
     disp.store.close()
 
 
