@@ -187,6 +187,22 @@ export function latestTurnUsage(timeline: unknown, fid: string | null): TurnUsag
   };
 }
 
+/**
+ * SET-5: the whole prompt of this session's latest model call (`input_tokens`
+ * includes what was read from the cache), from the loaded action timeline;
+ * null when the timeline is another session's or holds no model call.
+ */
+export function latestPromptTokens(fid: string | null, timeline: unknown = actionTimeline.value): number | null {
+  const view = timeline as { root_frame_id?: unknown; groups?: unknown } | null;
+  if (!view || !fid || view.root_frame_id !== fid || !Array.isArray(view.groups)) return null;
+  const rows = view.groups as TimelineRow[];
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const input = Number(rows[index]?.usage?.input_tokens) || 0;
+    if (input > 0) return input;
+  }
+  return null;
+}
+
 /** The tooltip's line for the latest turn: its calls, its input split, its output. */
 function turnLine(turn: TurnUsage): string {
   const calls = turn.calls === 1 ? copy("turnCall") : turn.calls > 1 ? copy("turnCalls", turn.calls) : "";

@@ -297,6 +297,31 @@ const TIMELINE_STATUS: CopyTable = {
 
 const timelineStatusLookup = copyLookup(TIMELINE_STATUS);
 
+/**
+ * SET-5: the session menu's "Context usage" beyond the totals -- the model's
+ * window, how full the latest request left it, and when compaction kicks in.
+ */
+const CONTEXT_USAGE: CopyTable = {
+  zh: {
+    "contextUsage.window": "模型上下文窗口：{0} token",
+    "contextUsage.latest": "最近一次请求发给模型 {0} token，占窗口的 {1}%",
+    "contextUsage.estimate": "当前上下文约 {0} token，占窗口的 {1}%",
+    "contextUsage.threshold": "上下文超过 {0} token（窗口的 {1}%）时，较早的对话会自动压缩",
+    "contextUsage.compacted": "；本会话已压缩 {0} 次",
+    "contextUsage.compactedOnce": "；本会话已压缩 1 次",
+  },
+  en: {
+    "contextUsage.window": "Model context window: {0} tokens",
+    "contextUsage.latest": "Latest request sent to the model: {0} tokens, {1}% of the window",
+    "contextUsage.estimate": "Current context: about {0} tokens, {1}% of the window",
+    "contextUsage.threshold": "Past {0} tokens ({1}% of the window), older turns are compacted automatically",
+    "contextUsage.compacted": "; compacted {0} times in this session",
+    "contextUsage.compactedOnce": "; compacted once in this session",
+  },
+};
+
+export const contextUsageT = copyLookup(CONTEXT_USAGE);
+
 /** A server status word in the UI language when the table has it, else as sent. */
 export function timelineStatusText(status: string): string {
   const key = "timeline.status." + status;

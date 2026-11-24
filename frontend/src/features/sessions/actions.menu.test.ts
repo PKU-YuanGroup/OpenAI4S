@@ -21,6 +21,7 @@ import { LANG, setLang, t } from "../../i18n";
 import { customizeOpen, customizeTab, nestedEditor } from "../customize/state";
 import { _titleName, currentId, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
+import { actionTimeline } from "../../stores/timeline";
 import { nbT } from "../notebook/copy";
 import { reviewT } from "../send/review-copy";
 import { addToMessageMenu, saveCurrentAsSkill, sessionMenu, sessionOptionsMenu, showContextUsage } from "./actions";
@@ -177,6 +178,69 @@ describe("Context usage", () => {
       currentId.value = "f";
       await showContextUsage();
       expect(body.texts()).toEqual(["150 个 token", "输入 120 · 输出 30 · 审阅 42"]);
+    } finally {
+      vi.unstubAllGlobals();
+      await setLang(previous);
+    }
+  });
+
+  // SET-5: "17,235 个 token · 输入 16,331 · 输出 904 · 审阅 0" said nothing
+  // about the window, how full it is, or when compaction kicks in.
+  it("says the model's window, how much of it the latest request took, and when compaction kicks in", async () => {
+    const previous = LANG;
+    await setLang("zh");
+    const body = new FakeNode();
+    const nodes: Record<string, FakeNode> = { "#modal-body": body, "#modal-title": new FakeNode(), "#modal-download": new FakeNode(), "#modal": new FakeNode() };
+    vi.stubGlobal("document", {
+      createElement: () => new FakeNode(),
+      querySelector: (sel: string) => nodes[sel] ?? null,
+      // A language switch repaints the static labels.
+      querySelectorAll: () => [],
+    });
+    const context = {
+      token_count: 15_000,
+      token_limit: 256_000,
+      compaction_trigger_ratio: 0.75,
+      compaction_threshold: 192_000,
+      compaction_count: 2,
+    };
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith("/steps")) return new Response(JSON.stringify({ steps: [] }));
+      if (url.endsWith("/context")) return new Response(JSON.stringify(context));
+      return new Response(JSON.stringify({ input_tokens: 16_331, output_tokens: 904 }));
+    });
+    try {
+      currentId.value = "f";
+      // The latest model call of this session's timeline: its whole prompt.
+      actionTimeline.value = {
+        root_frame_id: "f",
+        groups: [
+          { kind: "code", usage: { input_tokens: 12_000, output_tokens: 300 } },
+          { kind: "native_tools", usage: { input_tokens: 25_600, cache_read: 20_000, output_tokens: 200 } },
+          { kind: "terminal", usage: null },
+        ],
+      };
+      await showContextUsage();
+      expect(body.texts()).toEqual([
+        "17,235 个 token",
+        "输入 16,331 · 输出 904 · 审阅 0",
+        "模型上下文窗口：256,000 token",
+        "最近一次请求发给模型 25,600 token，占窗口的 10%",
+        "上下文超过 192,000 token（窗口的 75%）时，较早的对话会自动压缩；本会话已压缩 2 次",
+      ]);
+
+      // Another session's timeline is not this one's latest request: the
+      // context's own estimate stands in, and says it is one.
+      await setLang("en");
+      actionTimeline.value = { root_frame_id: "other", groups: [{ kind: "code", usage: { input_tokens: 9 } }] };
+      context.compaction_count = 0;
+      await showContextUsage();
+      expect(body.texts().slice(2)).toEqual([
+        "Model context window: 256,000 tokens",
+        "Current context: about 15,000 tokens, 6% of the window",
+        "Past 192,000 tokens (75% of the window), older turns are compacted automatically",
+      ]);
     } finally {
       vi.unstubAllGlobals();
       await setLang(previous);

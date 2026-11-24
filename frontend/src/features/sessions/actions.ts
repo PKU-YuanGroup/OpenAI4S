@@ -28,7 +28,8 @@ import { sendCopy } from "../send/copy";
 import { reviewRefusalText, reviewT } from "../send/review-copy";
 import { backgroundStoppedHint, refreshBackgroundCells } from "../send/background";
 import { scopedExecutionRequest } from "../timeline/execution-request";
-import { queueT, timelineT } from "../timeline/copy";
+import { contextUsageT, queueT, timelineT } from "../timeline/copy";
+import { latestPromptTokens } from "../send/progress";
 import { queuedFollowUpCount } from "../timeline/queue";
 import { $, clearConversationChrome, el, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
@@ -87,19 +88,62 @@ export function addToMessageMenu(anchor: Element): void {
   ]);
 }
 
+/** "12", or "<1" for a share too small to round to a whole percent. */
+function sharePercent(part: number, whole: number): string {
+  const share = (part / whole) * 100;
+  return share > 0 && share < 0.5 ? "<1" : String(Math.round(share));
+}
+
+/**
+ * SET-5: the window, how full the latest request left it, and when the older
+ * turns get compacted (`GET /frames/{id}/context`). Nothing when the window
+ * is unknown: a share of an unknown window is no number at all.
+ */
+function contextWindowLines(context: Record<string, unknown> | null, fid: string): string[] {
+  const limit = Number(context && context.token_limit);
+  if (!context || !Number.isFinite(limit) || limit <= 0) return [];
+  const lines = [contextUsageT("contextUsage.window", limit.toLocaleString())];
+  const latest = latestPromptTokens(fid);
+  const estimate = Number(context.token_count);
+  if (latest) {
+    lines.push(contextUsageT("contextUsage.latest", latest.toLocaleString(), sharePercent(latest, limit)));
+  } else if (Number.isFinite(estimate) && estimate > 0) {
+    lines.push(contextUsageT("contextUsage.estimate", estimate.toLocaleString(), sharePercent(estimate, limit)));
+  }
+  const threshold = Number(context.compaction_threshold);
+  const ratio = Number(context.compaction_trigger_ratio);
+  if (Number.isFinite(threshold) && threshold > 0 && Number.isFinite(ratio) && ratio > 0) {
+    const count = Number(context.compaction_count) || 0;
+    const done =
+      count === 1
+        ? contextUsageT("contextUsage.compactedOnce")
+        : count > 1
+          ? contextUsageT("contextUsage.compacted", count)
+          : "";
+    lines.push(
+      contextUsageT("contextUsage.threshold", threshold.toLocaleString(), Math.round(ratio * 100)) + done,
+    );
+  }
+  return lines;
+}
+
 export async function showContextUsage(): Promise<void> {
   if (!currentId.value) return;
+  const fid = currentId.value;
   let frame: Record<string, unknown>;
   let steps: Array<Record<string, unknown>> = [];
+  let context: Record<string, unknown> | null = null;
   try {
     const data = await Promise.all([
-      api(`/frames/${currentId.value}`),
-      api(`/frames/${currentId.value}/steps`).catch(() => ({ steps: [] })),
+      api(`/frames/${fid}`),
+      api(`/frames/${fid}/steps`).catch(() => ({ steps: [] })),
+      api(`/frames/${fid}/context`).catch(() => null),
     ]);
     frame = data[0] as Record<string, unknown>;
     steps = ((data[1] as { steps?: Array<Record<string, unknown>> }).steps || []) as Array<
       Record<string, unknown>
     >;
+    context = data[2] && typeof data[2] === "object" ? (data[2] as Record<string, unknown>) : null;
   } catch (e) {
     hint((e as Error).message, true);
     return;
@@ -132,6 +176,12 @@ export async function showContextUsage(): Promise<void> {
   meta.className = "prov-meta";
   meta.textContent = composerCopy("usage", input.toLocaleString(), output.toLocaleString(), reviewer.toLocaleString());
   card.appendChild(meta);
+  for (const line of contextWindowLines(context, fid)) {
+    const row = document.createElement("div");
+    row.className = "prov-meta";
+    row.textContent = line;
+    card.appendChild(row);
+  }
   body.appendChild(card);
   $("#modal")?.classList.remove("hidden");
 }

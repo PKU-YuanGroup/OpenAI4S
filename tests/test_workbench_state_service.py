@@ -59,6 +59,32 @@ def test_context_projects_components_without_message_content():
     ), "a projection that lists only what is present reads as complete"
 
 
+def test_context_says_when_compaction_kicks_in():
+    """SET-5. "Context usage" showed totals only: nothing said how big the
+    model's window is or at what size older turns get compacted. The runtime
+    compacts past ``window * compaction_trigger_ratio``; the projection says
+    both, against the same window it already reports as ``token_limit``."""
+    result = _service().context("root")
+    assert result["token_limit"] > 0
+    assert result["compaction_trigger_ratio"] == 0.75
+    assert result["compaction_threshold"] == int(result["token_limit"] * 0.75)
+
+    service = SessionWorkbenchStateService(
+        _Store(),
+        state_for=lambda _root: None,
+        history_for=lambda _root: [],
+        llm_config_for=lambda _state: LLMConfig(
+            provider="custom", model="no-such-model", api_key="test"
+        ),
+        pending_for=lambda _root: (),
+        context_window_fallback=10_000,
+        compaction_trigger_ratio=0.5,
+    )
+    other = service.context("root")
+    assert other["compaction_trigger_ratio"] == 0.5
+    assert other["compaction_threshold"] == int(other["token_limit"] * 0.5)
+
+
 def test_context_projects_safe_persistent_compaction_history(tmp_path):
     store = Store(tmp_path / "workbench-context.db")
     root_frame_id = store.new_frame(project_id="science")
