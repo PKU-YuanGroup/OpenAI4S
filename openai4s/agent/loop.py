@@ -186,6 +186,11 @@ Rules:
 (```python or ```r). Keep cells small and incremental. Before an action you may \
 give one short user-facing sentence describing the intended step; never expose \
 private chain-of-thought.
+- Run analysis code AS a cell. Do not write a .py / .R file in order to exec(), \
+runpy or source() it from a later cell: every file you write appears in the \
+user's files, nothing runs until a cell runs it, and the Notebook records only \
+the code a cell contains. Write files for deliverables (reports, tables, \
+figures) and for code the task asks you to deliver.
 - Only prose BEFORE the action fence is user-visible. It may summarize results \
 from PRIOR Observations, but must not predict or claim outputs from the cell that \
 has not run yet. Raw tables, matrices, and tracebacks belong in the Notebook; \

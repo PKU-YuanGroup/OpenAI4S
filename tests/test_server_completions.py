@@ -241,12 +241,16 @@ def test_the_web_prompt_says_to_run_code_as_a_cell_not_a_scratch_script():
     # M-15: qc_run_cell.py (`exec(open(...).read())`), qc_audit2.py, qc_audit.py
     # and qc_deep.py were written one by one, each became a project file, and
     # the Notebook stayed empty for four minutes.
-    assert "Run code AS a cell." in _GATEWAY_PROMPT_EXTRA
-    assert (
-        "Do not write a .py / .R file in order to exec() or source() it from a "
-        "later cell" in _GATEWAY_PROMPT_EXTRA
-    )
-    assert "every file you write appears in the user's files" in _GATEWAY_PROMPT_EXTRA
+    # NB-1: the rule lives in the shared prompt, so the CLI says it too.
+    web = SYSTEM_PROMPT + _GATEWAY_PROMPT_EXTRA
+    for prompt in (SYSTEM_PROMPT, web):
+        assert "Run analysis code AS a cell." in prompt
+        assert (
+            "Do not write a .py / .R file in order to exec(), runpy or source() it "
+            "from a later cell" in prompt
+        )
+        assert "the Notebook records only the code a cell contains" in prompt
+    assert web.count("Run analysis code AS a cell.") == 1
 
 
 def test_the_web_prompt_says_to_run_a_users_cell_as_written():

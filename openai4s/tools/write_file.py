@@ -44,26 +44,30 @@ class WriteFileTool(Tool):
         stopped the turn. Nothing but a cell runs a script, and the result
         gave no sign that it had not. A Python cell still receives the plain
         ``{path, bytes}``.
+
+        NB-1: this hint used to suggest `exec(open(path).read())`, and the
+        model followed it -- the Notebook and the exported .ipynb then held a
+        one-line exec and none of the analysis. The code itself goes in the
+        cell.
         """
         path = result.get("path") if isinstance(result, dict) else None
         if not isinstance(path, str):
             return None
         lowered = path.lower()
         if lowered.endswith(".py"):
-            run = f"exec(open({path!r}).read())"
-            fence = "python"
+            fence, loader = "python", "exec() or runpy"
         elif lowered.endswith(".r"):
-            run = f"source({path!r})"
-            fence = "r"
+            fence, loader = "r", "source()"
         else:
             return None
         from openai4s.tools.registry import _render_result_body
 
         return (
             f"{_render_result_body(result)}\n"
-            "The file is written; nothing has run it. To run it now, reply "
-            f"with one fenced ```{fence} cell and no tool calls, for example "
-            f"`{run}`."
+            "The file is written; nothing has run it. Analysis code belongs "
+            f"directly in a cell: to run it now, reply with one fenced ```{fence} "
+            f"cell and no tool calls that contains the code itself, not {loader} "
+            "of this file. The Notebook records only the code a cell contains."
         )
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:

@@ -587,10 +587,14 @@ def test_a_written_script_says_that_nothing_has_run_it():
     assert py.startswith('[Tool: write_file]\n{\n  "path": "scratch_parse.py"')
     assert "nothing has run it" in py
     assert "reply with one fenced ```python cell and no tool calls" in py
-    assert "exec(open('scratch_parse.py').read())" in py
+    # NB-1: the hint taught `exec(open(...).read())`, so the Notebook held a
+    # one-line exec and none of the analysis. The code itself is the cell.
+    assert "contains the code itself, not exec() or runpy of this file" in py
+    assert "exec(open(" not in py
 
     r = format_tool_result(tool, {"path": "dir/fit.R", "bytes": 9})
-    assert "```r cell" in r and "source('dir/fit.R')" in r
+    assert "```r cell" in r and "not source() of this file" in r
+    assert "source('dir/fit.R')" not in r
 
     # Data files and every other result keep their plain rendering.
     notes = format_tool_result(tool, {"path": "notes.txt", "bytes": 3})
