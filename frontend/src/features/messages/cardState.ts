@@ -22,6 +22,7 @@ import { nbT } from "../notebook/copy";
 import type { WsMessage } from "../ws/types";
 import { declinedCell, declinedMeta, type Declined } from "./declined";
 import { messagesHost } from "./dom";
+import { noteTurnActivity } from "./turnStatus";
 
 /** Feature-local copy: en.ts / zh.ts are generated extracts. */
 type CardCopyKey = "cardTitle" | "runningTitle" | "stopped" | "failed" | "noR" | "rJsonlite";
@@ -96,6 +97,11 @@ export function cardSettled(card: HTMLElement): boolean {
 
 function settle(card: HTMLElement, state: string, icon: string): void {
   paintElapsed(card);
+  // When it ended: the recorded end for a Cell the execution log has, so a
+  // reopened turn's model wait counts from it (CHAT-7, `turnStatus.ts`).
+  const recordedStart = Number(card.dataset.recordedStart);
+  const recordedMs = card.dataset.recordedMs ? Number(card.dataset.recordedMs) : NaN;
+  noteTurnActivity(recordedStart > 0 && Number.isFinite(recordedMs) ? recordedStart + recordedMs : Date.now());
   card.classList.remove("running");
   card.classList.add(state);
   card.dataset.state = state;

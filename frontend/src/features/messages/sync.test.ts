@@ -40,9 +40,11 @@ import { turnTextKey } from "./turnGroup";
 import { bindTurnStatus, notePassingHint, noteResumingHint, resetTurnStatus } from "./turnStatus";
 import { reconcileFinishedTurn } from "./open";
 import { settleLiveCellCard } from "./cardState";
+import { renderStoredCell } from "./cellCard";
 import { turnDone } from "../send/turn";
 import { t } from "../../i18n/runtime";
 import { _liveCell } from "../../stores/notebook";
+import { executionQueue } from "../../stores/timeline";
 import { _messagesFollow } from "../../stores/ui";
 
 // --------------------------------------------------------------------------
@@ -1328,7 +1330,7 @@ describe("the running turn's status row", () => {
     renderStored({ role: "user", content: "Fold change?", message_id: "m-1" });
     running.value = true;
     // Before the turn's first event: under the question.
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
     expect(messages().lastElementChild).toBe(row());
     expect(row()?.getAttribute("aria-live")).toBe("polite");
 
@@ -1344,17 +1346,17 @@ describe("the running turn's status row", () => {
     _liveCell.value = { status: "running", source: "print(1)" };
     expect(label()).toBe("Running the cell");
     _liveCell.value = null;
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
 
     onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "fetch", title: "Fetching", status: "running" });
     expect(label()).toBe("Waiting for the tool");
     onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-1", status: "done" });
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
 
     onEvent({ type: "await_permission", root_frame_id: "f-1", frame_id: "f-1", decision_id: "perm-s", tool: "bash", title: "Run" });
     expect(label()).toBe("Waiting for your approval");
     onEvent({ type: "permission_resolved", root_frame_id: "f-1", decision_id: "perm-s", allow: true, scope: "once" });
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
     // Still the row after the live turn, whatever the turn appended.
     expect(wrap.nextSibling).toBe(row());
 
@@ -1370,13 +1372,57 @@ describe("the running turn's status row", () => {
     vi.advanceTimersByTime(45_000);
     expect(detail()).toBe("45 s");
     expect(row()?.querySelector(".ts-detail")?.getAttribute("aria-hidden")).toBe("true");
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
     // A new phase starts its own count.
     _liveCell.value = { status: "running", source: "x" };
     vi.advanceTimersByTime(3_000);
     expect(detail()).toBe("3 s");
     vi.advanceTimersByTime(62_000);
     expect(detail()).toBe("1 min 5 s");
+  });
+
+  it("tells waiting for the model from the model writing, and says a retry (CHAT-7)", () => {
+    running.value = true;
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    expect(label()).toBe("Waiting for the model");
+    onEvent(chunk("Loading the plate"));
+    expect(label()).toBe("The model is writing");
+    // A cell ran: the next model call waits for its first words again.
+    _liveCell.value = { status: "running", source: "x = 1" };
+    _liveCell.value = null;
+    expect(label()).toBe("Waiting for the model");
+    // The server streams a notice before it sends a request again.
+    onEvent(chunk("\n\n_The model service is busy; retrying (attempt 2)…_\n\n"));
+    expect(label()).toBe("Retrying (attempt 2)");
+    onEvent(chunk("\n\n_模型长时间没有返回数据，正在重新请求（第 3 次）…_\n\n"));
+    expect(label()).toBe("Retrying (attempt 3)");
+    onEvent(chunk("Back to the fit."));
+    expect(label()).toBe("The model is writing");
+  });
+
+  it("counts the model wait from the turn's server start and the last recorded cell, not the reload (CHAT-7)", () => {
+    const now = Date.now();
+    // A turn the server started two minutes ago, reopened now with one cell that ended 30 s ago.
+    executionQueue.value = { owner: { owner: { kind: "agent", id: "exec-1" }, started_at: (now - 120_000) / 1000 } };
+    running.value = true;
+    expect(label()).toBe("Waiting for the model");
+    expect(detail()).toBe("2 min 0 s");
+    // The reopen draws the turn's recorded cell (`renderStoredCell`, as the history paint does).
+    renderStoredCell({
+      producing_cell_id: "c-1", cell_index: 1, origin: "agent", title: "Load", source: "x = 1",
+      stdout: "", status: "ok", started_at: now - 33_000, finished_at: now - 30_000,
+    });
+    vi.advanceTimersByTime(1_000);
+    expect(detail()).toBe("31 s");
+    // A recorded tool step after it; its replayed events do not move the start to the replay.
+    renderStoredStep({ step_id: "s-r", kind: "fetch", title: "Fetching", status: "done", created_at: now - 10_000 });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-r", kind: "fetch", title: "Fetching", status: "running" });
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-r", status: "done" });
+    vi.advanceTimersByTime(1_000);
+    expect(label()).toBe("Waiting for the model");
+    expect(detail()).toBe("12 s");
+    executionQueue.value = null;
   });
 
   it("replaces a status line that described one moment once the turn moves on", () => {

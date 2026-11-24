@@ -18,6 +18,7 @@ import { declinedMeta, declinedReason, declinedStep } from "../messages/declined
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
 import { adoptIntoLiveStream, ensure, placeInLiveStream, type LiveStream } from "../messages/stream";
+import { noteTurnActivity } from "../messages/turnStatus";
 import { shortRuntime } from "../notebook/kernel";
 import { publicText } from "../scrub/scrub";
 import { apiErrorText } from "../sessions/api";
@@ -1142,12 +1143,38 @@ export function addLiveStep(m: Record<string, unknown>): void {
   down();
 }
 
+/** A server time in ms (`created_at` is stored as ms; an ISO string is read too). */
+function serverMs(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (Number.isFinite(n) && n > 0) return n;
+  const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Tell the turn's status row that this step ended (CHAT-7): the model is
+ * asked again from then on. The first end a card records is kept, so a
+ * reopened session's replayed update of a step that ended before the reload
+ * does not move the model wait's start to the reload.
+ */
+function noteStepEnded(handle: StepHandle, at: number): void {
+  const recorded = Number(handle.card.dataset.endedAt);
+  if (recorded > 0) {
+    noteTurnActivity(recorded);
+    return;
+  }
+  if (!(at > 0)) return;
+  handle.card.dataset.endedAt = String(at);
+  noteTurnActivity(at);
+}
+
 export function updateLiveStep(m: Record<string, unknown>): void {
   const h = stepRegistry()[String(m.step_id || "")];
   if (!h) return;
   h.step.status = m.status != null ? String(m.status) : h.step.status;
   h.step.output = rec(m.output);
   if (m.summary != null) h.step.summary = String(m.summary);
+  if (h.step.status !== "running") noteStepEnded(h, Date.now());
   applyStepState(h, LAZY_BODY);
   if (h.step.kind === "review" && m.status !== "running") hint("");
   down();
@@ -1162,6 +1189,9 @@ export function renderStoredStep(s: Step, target?: ParentNode | null): HTMLEleme
   const handle = buildStepCard(s, LAZY_BODY);
   if (s.step_id) stepRegistry()[String(s.step_id)] = handle;
   handle.card.dataset.ts = String(s.created_at || 0);
+  // A stored step that finished: when it began is the latest time the server
+  // recorded for it (CHAT-7).
+  if ((s.status || "running") !== "running") noteStepEnded(handle, serverMs(s.created_at));
   // As the stream nested it (SCI-22, SCI-11).
   if (delegation) {
     nestUnderDelegation(delegation, handle.card);

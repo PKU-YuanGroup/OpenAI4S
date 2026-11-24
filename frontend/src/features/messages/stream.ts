@@ -36,6 +36,7 @@ import { embedArtifactFigures } from "./figures";
 import { resayProgress } from "./progress";
 import { _messagesFollow } from "../../stores/ui";
 import { dropTurnGroupIfEmpty, openTurnGroup, placeCardInTurn } from "./turnGroup";
+import { noteModelText } from "./turnStatus";
 
 export const TOOL_LABELS: Record<string, string> = {
   run_python: "toolLabel.runPython",
@@ -362,6 +363,8 @@ export function feed(
     // sent, as the stored row does (Copy, the rating key, the reconcile).
     st.text += resayProgress(chunk);
     st.full += chunk;
+    // The status row tells waiting for the model from the model writing (CHAT-7).
+    noteModelText(chunk);
     st.md.classList.add("cursor");
     if (
       event &&
