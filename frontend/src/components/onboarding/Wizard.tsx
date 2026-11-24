@@ -523,6 +523,7 @@ function ProjectStep({
   const [name, setName] = useState("");
   const [selected, setSelected] = useState("");
   const list = projects.value as Array<{ project_id?: string; id?: string; name?: string }>;
+  const create = (typed: string) => onCreate(typed.trim() || t("palette.action.newProject"));
   return (
     <div class="onb-list">
       {list.length ? (
@@ -552,15 +553,25 @@ function ProjectStep({
       <label class="skill-lbl">{t("projModal.name.placeholder")}</label>
       <input
         class="cust-input"
+        data-onboarding-project-name=""
         value={name}
         onInput={(e) => setName((e.currentTarget as HTMLInputElement).value)}
+        onKeyDown={(e) => {
+          // Enter creates, as in the dashboard's project dialog. Not while an
+          // IME is composing: that Enter confirms a candidate (229 is what
+          // Safari reports for it, with isComposing already false).
+          if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+          e.preventDefault();
+          if (busy) return;
+          create((e.currentTarget as HTMLInputElement).value);
+        }}
         placeholder={t("projModal.name.placeholder")}
       />
       <button
         type="button"
         class="solid-btn"
         disabled={busy}
-        onClick={() => onCreate(name.trim() || t("palette.action.newProject"))}
+        onClick={() => create(name)}
       >
         {t("projModal.create")}
       </button>
