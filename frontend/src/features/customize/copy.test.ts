@@ -5,7 +5,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { setLang } from "../../i18n/runtime";
 import { projectFolderOf } from "../../components/artifacts/ProjectFolderSection";
 import { projects } from "../../stores/session";
-import { connectorDescription, specialistBadge, specialistDescription, specialistName } from "./copy";
+import {
+  connectorDescription,
+  connectorIdBadge,
+  settingsT,
+  specialistBadge,
+  specialistDescription,
+  specialistName,
+} from "./copy";
 import { projectName } from "./host";
 import { memScopeLabel } from "./memory";
 
@@ -87,5 +94,29 @@ describe("the seeded example project's name outside the dashboard", () => {
     expect(memScopeLabel("p2")).toBe("Example project");
     projects.value = [{ project_id: "proj_example", name: "Assays", folder_path: "/data/example" }];
     expect(memScopeLabel("proj_example")).toBe("Assays");
+  });
+});
+
+// SET-4: Settings explained two tabs in the agent's API ("call with
+// host.delegate(task, name=…)", "the agent calls them with
+// host.mcp.call(id, tool, args)"), and listed the example connector as
+// "Example example" (its name, then its id).
+describe("Settings speaks in the user's words, not the agent's API", () => {
+  it("describes the specialists and connectors tabs without host.* calls", async () => {
+    for (const lang of ["zh", "en"] as const) {
+      await setLang(lang);
+      for (const key of ["cust.specialists.desc", "cust.connectors.desc"]) {
+        expect(settingsT(key)).not.toMatch(/host\.|\(task|\(id/);
+      }
+    }
+    await setLang("zh");
+    expect(settingsT("cust.specialists.desc")).toContain("可以把子任务交给这些专家");
+    expect(settingsT("cust.connectors.desc")).toContain("智能体可以调用这些外部工具");
+  });
+
+  it("shows a connector's id beside its name only when it says something the name does not", () => {
+    expect(connectorIdBadge("Example", "example")).toBe("");
+    expect(connectorIdBadge("Sequential thinking", "sequential-thinking")).toBe("");
+    expect(connectorIdBadge("Files", "c1")).toBe("c1");
   });
 });
