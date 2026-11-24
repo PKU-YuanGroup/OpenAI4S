@@ -205,15 +205,6 @@ export function Shell() {
           <div id="session-list" class="session-list" />
           <div class="side-foot">
             <button
-              id="settings-gear"
-              class="icon-ghost"
-              data-i18n-title="common.settings"
-              title="设置"
-              data-icon="settings"
-              data-icon-size="20"
-              type="button"
-            />
-            <button
               id="ws-theme"
               class="icon-ghost"
               data-i18n-title="theme.toggle"

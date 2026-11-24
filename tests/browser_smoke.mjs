@@ -2693,7 +2693,7 @@ try {
       throw new Error(`${selector} renders an empty icon (data-icon=${await page.locator(selector).getAttribute("data-icon")})`);
     }
   }
-  for (const selector of ["#ws-theme", "#sidebar-collapse", "#dock-toggle", "#settings-gear"]) {
+  for (const selector of ["#ws-theme", "#sidebar-collapse", "#dock-toggle"]) {
     await requireDrawnIcon(selector);
   }
   const themeDrawingBefore = await page.locator("#ws-theme svg").innerHTML();

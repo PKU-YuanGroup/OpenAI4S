@@ -67,6 +67,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// SET-1 (owner decision 38): the session sidebar had two entries called
+// Settings opening the same modal on the same tab -- the labelled nav item
+// and an unlabelled gear at the bottom. The gear is gone; the nav item and
+// the dashboard's own Settings button stay.
+describe("one Settings entry per view", () => {
+  it("keeps the sidebar's labelled Settings item and the dashboard's, without the bottom gear", () => {
+    const tree = paintAt("/");
+    expect(byId(tree, "settings-gear")).toBeNull();
+    expect(byId(tree, "customize-btn")).not.toBeNull();
+    expect(byId(tree, "dash-settings")).not.toBeNull();
+  });
+});
+
 describe("the Shell repainted after a language switch", () => {
   it("offers an unbound project-folder input and an inline directory picker", () => {
     const tree = paintAt("/");

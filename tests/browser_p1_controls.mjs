@@ -963,7 +963,8 @@ try {
   // rather than assumed: a daemon with no profiles configured renders an empty
   // panel *correctly*, and a check that passed on whatever the developer's
   // database held would be measuring the database.
-  for (const entry of ["#customize-btn", "#settings-gear"]) {
+  // SET-1: the bottom gear duplicated #customize-btn and was removed.
+  for (const entry of ["#customize-btn"]) {
     await page.locator(entry).click();
     await page.locator("#cust:not(.hidden)").waitFor({ state: "visible" });
     // The rendered heading is the shell-agnostic signal that a renderer ran.
