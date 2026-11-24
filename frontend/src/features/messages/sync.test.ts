@@ -1224,6 +1224,31 @@ describe("a turn's code cells, live and reopened", () => {
     );
   });
 
+  it("keeps a recorded Cell's duration when the replay streams into its reopened card (NB-4)", async () => {
+    const started = Date.parse(at(1));
+    await paintHistory(
+      interleaveHistory(
+        [{ role: "user", content: "Fit it", message_id: "m-1", created_at: at(0) }],
+        [],
+        [],
+        [{
+          producing_cell_id: "c-2", cell_index: 2, origin: "agent", title: "Running analysis · cell 2", source: CODE_1,
+          stdout: "row 0\n", status: "ok", started_at: started, finished_at: started + 3000,
+        }],
+      ),
+      true,
+    );
+    const time = () => messages().querySelector(".activity .a-time")?.textContent;
+    expect(time()).toBe("0:03");
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    streamCell("c-2", 2, "Running analysis · cell 2", CODE_1, "row 0\n");
+    // While the replay runs, the card says the recorded time, not the time since the Cell began.
+    expect(time()).toBe("0:03");
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-2", cell_index: 2, status: "ok" });
+    expect(messages().querySelectorAll(".activity")).toHaveLength(1);
+    expect(time()).toBe("0:03");
+  });
+
   it("says in the UI language where to choose another R when the R kernel refused, live and reopened (M-58)", async () => {
     await setLang("zh");
     const NO_R =

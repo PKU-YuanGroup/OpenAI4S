@@ -64,7 +64,9 @@ export function resetActivityCard(card: HTMLElement, label: string): ActivityCar
   const lbl = card.querySelector(".lbl") as HTMLElement | null;
   if (lbl) lbl.textContent = label;
   meta.textContent = "";
-  head.querySelector(".a-time")?.remove();
+  // The recorded time stays until the replayed outcome repaints it, from the
+  // recorded duration (`dataset.recordedMs`, NB-4) rather than the replay's.
+  if (!card.dataset.recordedMs) head.querySelector(".a-time")?.remove();
   for (const state of ["ok", "failed", "stopped", "ended", "declined", "running"]) card.classList.remove(state);
   delete card.dataset.state;
   delete card.dataset.generatedCell;
