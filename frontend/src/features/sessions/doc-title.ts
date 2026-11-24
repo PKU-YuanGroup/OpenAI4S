@@ -15,6 +15,7 @@ import { _titleName, currentId, project, projects } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { approvalCopy, approvalPendingFor } from "../messages/approval";
 import { displayProjectName } from "./copy";
+import { clipTitle } from "./dom";
 
 export const APP_TITLE = "OpenAI4S";
 export const RUNNING_MARK = "⏳ ";
@@ -27,7 +28,9 @@ export function documentTitle(state: {
   awaiting: boolean;
 }): string {
   if (!state.open) return APP_TITLE;
-  const where = state.project ? `${state.name} · ${state.project}` : state.name;
+  // Until the automatic title arrives the name is the whole first message.
+  const name = clipTitle(state.name);
+  const where = state.project ? `${name} · ${state.project}` : name;
   const mark = state.awaiting ? approvalCopy("title") : state.running ? RUNNING_MARK : "";
   return `${mark}${where} — ${APP_TITLE}`;
 }

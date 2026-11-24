@@ -18,6 +18,7 @@ import { declinedMeta, declinedReason, declinedStep } from "../messages/declined
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
 import { adoptIntoLiveStream, ensure, placeInLiveStream, type LiveStream } from "../messages/stream";
+import { noteTurnActivity } from "../messages/turnStatus";
 import { shortRuntime } from "../notebook/kernel";
 import { publicText } from "../scrub/scrub";
 import { apiErrorText } from "../sessions/api";
@@ -37,7 +38,7 @@ import {
   stepNetworkMeta,
 } from "./skill-network";
 import { reviewFailureText } from "./review-copy";
-import { stepSummaryText, stepTitleText } from "./step-title";
+import { stepSummaryFromParts, stepSummaryText, stepTitleText } from "./step-title";
 
 export type Step = {
   step_id?: string;
@@ -592,22 +593,11 @@ export function stepBody(step: Step): HTMLElement {
     return box;
   }
   if (k === "artifact") {
-    const artsRaw = Array.isArray(out.artifacts)
-      ? out.artifacts
-      : out.filename
-        ? [{ filename: out.filename, version_id: out.version_id }]
-        : [];
-    const arts = artsRaw.map(rec);
-    const imgArts = arts.filter((a) => {
-      const nm = String(a.filename || "").toLowerCase();
-      const ct = String(a.content_type || "");
-      return (
-        a.artifact_id &&
-        (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm))
-      );
-    });
-    // A figure is shown below with its name as the caption; listing it here
-    // too put every file name on the card twice (three times with the title).
+    const arts = savedArtifacts(step);
+    const imgArts = savedFigures(step);
+    // A figure is shown in the card's strip with its name as the caption;
+    // listing it here too put every file name on the card twice (three times
+    // with the title).
     const shown = new Set(imgArts.map((a) => a.filename));
     const files = (
       Array.isArray(inp.files) && inp.files.length
@@ -659,29 +649,6 @@ export function stepBody(step: Step): HTMLElement {
       wrap.appendChild(json);
       box.appendChild(wrap);
     }
-    if (imgArts.length) {
-      const figs = el("div", "s-figs");
-      imgArts.forEach((a) => {
-        const fig = el("figure", "s-fig");
-        fig.title = t("step.artifact.openArtifact");
-        const im = el("img") as HTMLImageElement;
-        // ART-4: the head URL plus a cache-buster served the LATEST bytes, so
-        // an old card silently changed once the figure was redrawn.
-        im.src = artUrl(
-          (typeof a.version_id === "string" && a.version_id
-            ? { id: String(a.artifact_id), version_id: a.version_id, _exactVersion: true }
-            : { id: String(a.artifact_id) }) as ArtifactRow,
-        );
-        im.alt = String(a.filename || t("step.fig.altFallback"));
-        im.loading = "lazy";
-        fig.appendChild(im);
-        if (a.filename) fig.appendChild(el("figcaption", "s-fig-cap", String(a.filename)));
-        if (typeof a.size_bytes === "number") fig.title += " · " + bytes(a.size_bytes);
-        fig.onclick = () => openArt(a);
-        figs.appendChild(fig);
-      });
-      box.appendChild(figs);
-    }
     return box;
   }
   if (k === "delegate" || k === "mcp") {
@@ -693,9 +660,82 @@ export function stepBody(step: Step): HTMLElement {
     }
     return box;
   }
-  const dump = out && Object.keys(out).length ? out : inp;
+  // The structured summary (CHAT-6) is the head's, not the body's.
+  const { summary_parts: _summaryParts, ...shown } = out;
+  const dump = Object.keys(shown).length ? shown : inp;
   box.appendChild(clipPre(JSON.stringify(dump, null, 2)));
   return box;
+}
+
+/** What a Saving step saved: its artifact rows (one row for a single-file save). */
+function savedArtifacts(step: Step): Record<string, unknown>[] {
+  const out = rec(step.output);
+  const rows = Array.isArray(out.artifacts)
+    ? out.artifacts
+    : out.filename
+      ? [{ filename: out.filename, version_id: out.version_id }]
+      : [];
+  return rows.map(rec);
+}
+
+/** The saved files that are images and can be opened. */
+function savedFigures(step: Step): Record<string, unknown>[] {
+  if (step.kind !== "artifact") return [];
+  return savedArtifacts(step).filter((a) => {
+    const nm = String(a.filename || "").toLowerCase();
+    const ct = String(a.content_type || "");
+    return a.artifact_id && (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm));
+  });
+}
+
+function figureThumb(a: Record<string, unknown>): HTMLElement {
+  const fig = el("figure", "s-fig");
+  fig.title = t("step.artifact.openArtifact");
+  const im = el("img") as HTMLImageElement;
+  // ART-4: the head URL plus a cache-buster served the LATEST bytes, so an
+  // old card silently changed once the figure was redrawn.
+  im.src = artUrl(
+    (typeof a.version_id === "string" && a.version_id
+      ? { id: String(a.artifact_id), version_id: a.version_id, _exactVersion: true }
+      : { id: String(a.artifact_id) }) as ArtifactRow,
+  );
+  im.alt = String(a.filename || t("step.fig.altFallback"));
+  im.loading = "lazy";
+  fig.appendChild(im);
+  if (a.filename) fig.appendChild(el("figcaption", "s-fig-cap", String(a.filename)));
+  if (typeof a.size_bytes === "number") fig.title += " · " + bytes(a.size_bytes);
+  fig.onclick = (event?: Event) => {
+    // The strip sits outside the head: a thumbnail opens its figure, never toggles the card.
+    event?.stopPropagation?.();
+    openArt(a);
+  };
+  return fig;
+}
+
+/**
+ * CHAT-4: the figures a step saved, under its head whether the card is open
+ * or not. A PCA plot and a volcano plot saved mid-run were behind a collapsed
+ * "Saving 2 artifacts" card, and only expanding it showed them. Other files
+ * stay in the body's list.
+ */
+function paintFigureStrip(handle: StepHandle): void {
+  const { card, step } = handle;
+  const figures = step.status === "running" ? [] : savedFigures(step);
+  let strip = ownChild(card, "s-thumbs");
+  if (!figures.length) {
+    strip?.remove();
+    return;
+  }
+  const key = figures.map((a) => String(a.artifact_id) + "@" + String(a.version_id || "")).join("|");
+  if (strip && strip.dataset.figures === key) return;
+  if (!strip) {
+    strip = el("div", "s-figs s-thumbs");
+    // Under the head, above the body.
+    card.insertBefore(strip, handle.body);
+  }
+  strip.innerHTML = "";
+  strip.dataset.figures = key;
+  figures.forEach((a) => strip!.appendChild(figureThumb(a)));
 }
 
 function paintStepBody(handle: StepHandle): void {
@@ -716,6 +756,18 @@ function stepSummary(step: Step): string {
 }
 
 /**
+ * The summary in the UI language: the structured parts the host sends beside
+ * its English line (CHAT-6), else that line translated by pattern (a record
+ * stored before the parts, or a step the gateway wrote itself).
+ */
+function stepSummaryWords(step: Step): string {
+  const structured = stepSummaryFromParts(rec(step.output).summary_parts);
+  if (structured) return structured;
+  const legacy = stepSummary(step);
+  return legacy ? stepSummaryText(legacy) : "";
+}
+
+/**
  * SCI-22: a delegation is titled by its task ("Sub-agent · GC content of
  * ATGC…"). Two parallel sub-agents of one kind were both "Delegating to
  * GENERAL", and only expanding them told them apart.
@@ -728,8 +780,30 @@ function delegateTitle(step: Step): string {
   return sendCopy("subagentTask", publicText(end > 0 ? flat.slice(0, end + 1) : flat, 80));
 }
 
+/** Up to this many characters of a search's query on its collapsed card; the rest is in the tooltip. */
+const QUERY_SHOWN = 40;
+
+/**
+ * CHAT-5: what a search looked for. Three collapsed "Searching the web · 6
+ * results" cards in a row did not say which search was which, nor did a grep
+ * card. The query (or the pattern a file search matched) is on the step's
+ * input from its first event, so a running card says it too.
+ */
+export function stepQuery(step: Step): string {
+  if (step.kind !== "search" && step.kind !== "files" && step.kind !== "skill") return "";
+  const input = rec(step.input);
+  const raw = typeof input.query === "string" ? input.query : step.kind === "files" ? input.pattern : "";
+  return typeof raw === "string" ? publicText(raw.replace(/\s+/g, " ").trim(), 400) : "";
+}
+
 function stepLabel(step: Step): string {
-  return delegateTitle(step) || stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+  const delegated = delegateTitle(step);
+  if (delegated) return delegated;
+  const title = stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+  const query = stepQuery(step);
+  if (!query) return title;
+  const shown = query.length > QUERY_SHOWN ? query.slice(0, QUERY_SHOWN - 1).trimEnd() + "…" : query;
+  return sendCopy("stepQuery", title, shown);
 }
 
 function stepOutcome(step: Step) {
@@ -757,11 +831,18 @@ function paintStepWords(handle: StepHandle): void {
         : ""
       : stepNetworkMeta(step) ||
         (declined ? declinedMeta(declined) : "") ||
-        (stepSummary(step) ? stepSummaryText(stepSummary(step)) : "") ||
+        stepSummaryWords(step) ||
         (step.output && rec(step.output).error ? t("step.status.failed") : "");
-  const label = card.querySelector(".s-lbl");
+  const label = card.querySelector(".s-lbl") as HTMLElement | null;
   // A loaded Skill's network limit: the server words these in English.
-  if (label) label.textContent = stepNetworkLabel(step) || stepLabel(step);
+  if (label) {
+    const network = stepNetworkLabel(step);
+    label.textContent = network || stepLabel(step);
+    // The whole query when the label shows only its start (CHAT-5).
+    const query = network ? "" : stepQuery(step);
+    if (query) label.title = query;
+    else label.removeAttribute?.("title");
+  }
 }
 
 /** Every step card on screen, in the language just applied. */
@@ -811,6 +892,7 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
   }
   // I18N-1: the host words titles in English; an update can retitle a card.
   paintStepWords(handle);
+  paintFigureStrip(handle);
   card.classList.toggle("s-net-limited", marksNetworkLimit(step));
   // A Saving step stays collapsed (M-50): its title and "N artifacts" say what
   // happened; the files, sizes and figures are one click away.
@@ -1061,12 +1143,38 @@ export function addLiveStep(m: Record<string, unknown>): void {
   down();
 }
 
+/** A server time in ms (`created_at` is stored as ms; an ISO string is read too). */
+function serverMs(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (Number.isFinite(n) && n > 0) return n;
+  const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Tell the turn's status row that this step ended (CHAT-7): the model is
+ * asked again from then on. The first end a card records is kept, so a
+ * reopened session's replayed update of a step that ended before the reload
+ * does not move the model wait's start to the reload.
+ */
+function noteStepEnded(handle: StepHandle, at: number): void {
+  const recorded = Number(handle.card.dataset.endedAt);
+  if (recorded > 0) {
+    noteTurnActivity(recorded);
+    return;
+  }
+  if (!(at > 0)) return;
+  handle.card.dataset.endedAt = String(at);
+  noteTurnActivity(at);
+}
+
 export function updateLiveStep(m: Record<string, unknown>): void {
   const h = stepRegistry()[String(m.step_id || "")];
   if (!h) return;
   h.step.status = m.status != null ? String(m.status) : h.step.status;
   h.step.output = rec(m.output);
   if (m.summary != null) h.step.summary = String(m.summary);
+  if (h.step.status !== "running") noteStepEnded(h, Date.now());
   applyStepState(h, LAZY_BODY);
   if (h.step.kind === "review" && m.status !== "running") hint("");
   down();
@@ -1081,6 +1189,9 @@ export function renderStoredStep(s: Step, target?: ParentNode | null): HTMLEleme
   const handle = buildStepCard(s, LAZY_BODY);
   if (s.step_id) stepRegistry()[String(s.step_id)] = handle;
   handle.card.dataset.ts = String(s.created_at || 0);
+  // A stored step that finished: when it began is the latest time the server
+  // recorded for it (CHAT-7).
+  if ((s.status || "running") !== "running") noteStepEnded(handle, serverMs(s.created_at));
   // As the stream nested it (SCI-22, SCI-11).
   if (delegation) {
     nestUnderDelegation(delegation, handle.card);

@@ -52,6 +52,12 @@ const COPY = {
     approvalProject: "You allowed {0} for this project",
     approvalGlobal: "You always allow {0}",
     approvalNoPrompt: "Not asked: an existing rule or the network settings allowed it",
+    // I18N-3: the environment tab's chips and package table.
+    envKind: "Environment",
+    envName: "Env",
+    envPackages: "Packages",
+    envPackage: "Package",
+    envVersion: "Version",
   },
   zh: {
     invalid: "响应未包含有效的溯源记录。",
@@ -103,6 +109,11 @@ const COPY = {
     approvalProject: "你允许本项目访问 {0}",
     approvalGlobal: "你始终允许访问 {0}",
     approvalNoPrompt: "未询问：已有规则或联网设置允许了它",
+    envKind: "运行环境",
+    envName: "环境名",
+    envPackages: "软件包",
+    envPackage: "软件包",
+    envVersion: "版本",
   },
 };
 

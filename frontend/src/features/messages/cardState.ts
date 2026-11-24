@@ -22,6 +22,7 @@ import { nbT } from "../notebook/copy";
 import type { WsMessage } from "../ws/types";
 import { declinedCell, declinedMeta, type Declined } from "./declined";
 import { messagesHost } from "./dom";
+import { noteTurnActivity } from "./turnStatus";
 
 /** Feature-local copy: en.ts / zh.ts are generated extracts. */
 type CardCopyKey = "cardTitle" | "runningTitle" | "stopped" | "failed" | "noR" | "rJsonlite";
@@ -96,6 +97,11 @@ export function cardSettled(card: HTMLElement): boolean {
 
 function settle(card: HTMLElement, state: string, icon: string): void {
   paintElapsed(card);
+  // When it ended: the recorded end for a Cell the execution log has, so a
+  // reopened turn's model wait counts from it (CHAT-7, `turnStatus.ts`).
+  const recordedStart = Number(card.dataset.recordedStart);
+  const recordedMs = card.dataset.recordedMs ? Number(card.dataset.recordedMs) : NaN;
+  noteTurnActivity(recordedStart > 0 && Number.isFinite(recordedMs) ? recordedStart + recordedMs : Date.now());
   card.classList.remove("running");
   card.classList.add(state);
   card.dataset.state = state;
@@ -110,6 +116,15 @@ function settle(card: HTMLElement, state: string, icon: string): void {
  * stays as the cell's duration once it ends. Shown from two seconds on.
  */
 function paintElapsed(card: HTMLElement, now: number = Date.now()): void {
+  // NB-4: a Cell the execution log already recorded shows its recorded
+  // duration. Reopening a running session replays the turn into the card the
+  // reload drew, and the replayed finish lands a moment after the replayed
+  // start: timed on this page, "0:03" became nothing.
+  const recorded = card.dataset.recordedMs ? Number(card.dataset.recordedMs) : NaN;
+  if (Number.isFinite(recorded)) {
+    paintDuration(card, recorded);
+    return;
+  }
   const started = Number(card.dataset.startedAt || 0);
   if (!started) return;
   paintDuration(card, Math.max(0, now - started));
@@ -167,7 +182,10 @@ export function markCardRunning(card: HTMLElement, event?: WsMessage | null): vo
   if (event && event.cell_index != null) card.dataset.cellIndex = String(event.cell_index).slice(0, 32);
   const glyph = glyphOf(card);
   if (glyph) paintIcon(glyph, "loader", 16);
-  card.dataset.startedAt = String(Date.now());
+  // A recorded Cell replayed into its reopened card counts from when it
+  // really started, not from the replay (NB-4).
+  const recordedStart = Number(card.dataset.recordedStart);
+  card.dataset.startedAt = String(recordedStart > 0 ? recordedStart : Date.now());
   if (!elapsedTimer && typeof setInterval === "function") elapsedTimer = setInterval(tickElapsed, 1000);
 }
 
@@ -287,7 +305,13 @@ export function settleStoredCellCard(
   if (cell.cell_index != null) card.dataset.cellIndex = String(cell.cell_index).slice(0, 32);
   const started = Number(cell.started_at) || 0;
   const finished = Number(cell.finished_at) || 0;
-  if (started && finished >= started) paintDuration(card, finished - started);
+  // Kept on the card for a replay of this Cell (`resetActivityCard` leaves
+  // them): the duration it shows is the recorded one (NB-4).
+  if (started) card.dataset.recordedStart = String(started);
+  if (started && finished >= started) {
+    card.dataset.recordedMs = String(finished - started);
+    paintDuration(card, finished - started);
+  }
   applyCellOutcome(card, String(cell.status || (cell.error ? "error" : "ok")), cell.error);
   // A record whose outcome none of the above names claims nothing.
   if (!cardSettled(card)) markCardEnded(card);

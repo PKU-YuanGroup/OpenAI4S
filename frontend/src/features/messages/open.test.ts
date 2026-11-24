@@ -974,17 +974,23 @@ describe("where a committed transcript leaves the scroll", () => {
 /**
  * SYNC-20. A language switch left every card, status line and button the
  * transcript had drawn in the old language until a reload; it now re-reads
- * the open conversation (GET only), and a running turn's when it ends.
+ * the open conversation (GET only). I18N-1: a running session no longer waits
+ * for its turn to end -- for minutes the transcript mixed both languages, in
+ * this tab and in every other tab that follows the pick -- it is rebuilt at
+ * once, as a reload builds it.
  */
 describe("a language switch", () => {
   afterEach(async () => {
     await setLang("en");
   });
 
-  it("repaints the open conversation from its history, a running one when its turn ends", async () => {
+  it("repaints the open conversation from its history, and rebuilds a running one at once", async () => {
     await setLang("en");
     const stop = bindTranscriptLanguage();
-    const fetcher = server();
+    let busy = false;
+    const fetcher = server((path) => (path.endsWith("/status") && busy ? response({ running: true, status: "running" }) : undefined));
+    const sent: Array<Record<string, unknown>> = [];
+    ws.value = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)), onopen: null, onclose: null, onmessage: null };
     await openConversation("f");
     const reads = (): number => fetcher.mock.calls.filter(([path]) => String(path).includes("/messages?")).length;
     const quiet = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
@@ -999,13 +1005,22 @@ describe("a language switch", () => {
     await setLang("zh");
     await quiet();
     expect(reads()).toBe(switched);
+    // An idle repaint is a history read: the live subscription is untouched.
+    expect(sent.filter((m) => m.type === "unview_session")).toEqual([]);
 
+    // A running turn: the view is rebuilt now, not when the turn ends.
+    busy = true;
     running.value = true;
+    _seqSeen.value.f = 42;
+    sent.length = 0;
     await setLang("en");
-    await quiet();
-    expect(reads()).toBe(switched);
-    running.value = false;
     await vi.waitFor(() => expect(reads()).toBeGreaterThan(switched));
+    await quiet();
+    // The live subscription is dropped and taken again from the start, so the
+    // daemon replays the running turn into the rebuilt view (as on a reload).
+    expect(sent.map((m) => m.type)).toEqual(["unview_session", "view_session"]);
+    expect(sent[1]).toMatchObject({ root_frame_id: "f", since_seq: 0 });
+    expect(running.value).toBe(true);
     for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) {
       expect(init?.method ?? "GET").toBe("GET");
     }

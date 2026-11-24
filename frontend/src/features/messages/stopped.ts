@@ -13,7 +13,10 @@
  * cell was still running.
  */
 
+import { isReady } from "../../compat/stub";
 import { LANG } from "../../i18n/runtime";
+import { currentId } from "../../stores/session";
+import { hint } from "../sessions/chrome";
 import { markCardStopped } from "./cardState";
 import { el } from "./dom";
 import type { LiveStream } from "./stream";
@@ -27,10 +30,18 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
   en: {
     "turn.stopped.user": "Stopped by user",
     "turn.stopped.autoBudget": "Stopped: the Auto Mode budget was reached",
+    "turn.continue": "Continue",
+    "turn.continue.title": "Ask the agent to carry on from where it stopped",
+    "turn.continue.message": "Continue",
+    "turn.continue.draft": "Send or clear the draft in the composer first: this button sends its own message.",
   },
   zh: {
     "turn.stopped.user": "已由用户停止",
     "turn.stopped.autoBudget": "已停止：已达到自动模式预算",
+    "turn.continue": "继续",
+    "turn.continue.title": "让智能体从停下的地方接着做",
+    "turn.continue.message": "继续",
+    "turn.continue.draft": "请先发送或清空输入框里的草稿：这个按钮会发送它自己的消息。",
   },
 };
 
@@ -60,6 +71,47 @@ export function cancelledIdentity(value: unknown): StoppedIdentity | null {
   return out;
 }
 
+/**
+ * CHAT-8: after a Stop the user had to type "继续" to carry on. The marker
+ * offers it: one click sends "Continue" in the UI language to this session
+ * through the composer's own send, which queues it behind a running turn as
+ * it would any message. Only the newest row may continue: once a newer
+ * message follows the stopped turn the button is hidden (messages.css), and a
+ * click on an older one retires it. A draft in the composer is the user's, so
+ * the button refuses while there is one (as failure.ts's Continue does).
+ */
+function continueButton(box: HTMLElement): HTMLButtonElement {
+  const frame = currentId.value;
+  const button = el("button", "outline-btn small msg-continue", stoppedT("turn.continue")) as HTMLButtonElement;
+  button.type = "button";
+  button.title = stoppedT("turn.continue.title");
+  button.onclick = async () => {
+    if (button.disabled) return;
+    const rows = document.getElementById("messages")?.querySelectorAll(".msg");
+    const last = rows && rows.length ? rows[rows.length - 1] : null;
+    const stale = !frame || currentId.value !== frame || !last || last.querySelector(".msg-stopped") !== box;
+    if (stale) {
+      button.remove();
+      return;
+    }
+    const composer = document.getElementById("composer") as HTMLTextAreaElement | null;
+    if (composer?.value.trim()) {
+      composer.focus();
+      hint(stoppedT("turn.continue.draft"), false);
+      return;
+    }
+    const send = (globalThis as Record<string, unknown>).send;
+    if (!isReady(send)) return;
+    button.disabled = true;
+    try {
+      await (send as (text: string) => unknown)(stoppedT("turn.continue.message"));
+    } finally {
+      button.disabled = false;
+    }
+  };
+  return button;
+}
+
 export function stoppedMarker(identity: StoppedIdentity): HTMLElement {
   const box = el("div", "msg-stopped");
   box.dataset.stopReason = identity.reason;
@@ -75,6 +127,7 @@ export function stoppedMarker(identity: StoppedIdentity): HTMLElement {
       stoppedT(identity.reason === "auto_budget" ? "turn.stopped.autoBudget" : "turn.stopped.user"),
     ),
   );
+  box.appendChild(continueButton(box));
   return box;
 }
 

@@ -85,6 +85,13 @@ class El {
     this.children.push(child);
     return child;
   }
+  insertBefore(child: El, ref: El | null): El {
+    if (!ref) return this.appendChild(child);
+    child.remove();
+    child.parent = this;
+    this.children.splice(this.children.indexOf(ref), 0, child);
+    return child;
+  }
   remove(): void {
     if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
     this.parent = null;
@@ -201,6 +208,81 @@ describe("step card copy follows the UI language", () => {
     await setLang("zh");
     relabelStepCards();
     expect(words(read)).toEqual(["读取项目文件 cohort.csv", "12 条结果"]);
+  });
+
+  it("a step's structured summary is worded in the UI language, its English line kept for the fallback (CHAT-6)", async () => {
+    await setLang("zh");
+    const envs = renderStoredStep({
+      step_id: "e-1",
+      kind: "env",
+      status: "done",
+      title: "Listing runtime environments",
+      summary: "4 envs, 3 missing",
+      output: {
+        environments: [],
+        summary_parts: [
+          { key: "count", unit: "env", n: 4 },
+          { key: "missing", n: 3 },
+        ],
+      },
+    }) as unknown as El;
+    const meta = (card: El) => card.querySelector(".s-meta")!.textContent;
+    expect(meta(envs)).toBe("4 个运行环境 · 缺少 3 个软件包");
+    // A part this build does not know: the English line, translated by pattern.
+    const future = renderStoredStep({
+      step_id: "e-2",
+      kind: "skill",
+      status: "done",
+      title: "Loading figure-style skill guidance",
+      summary: "loaded",
+      output: { summary_parts: [{ key: "somethingNew" }] },
+    }) as unknown as El;
+    expect(meta(future)).toBe("已加载");
+    await setLang("en");
+    relabelStepCards();
+    expect(meta(envs)).toBe("4 envs · 3 missing");
+  });
+
+  it("a search card says what it searched for, truncated, with the whole query in its tooltip (CHAT-5)", async () => {
+    await setLang("zh");
+    const query = "CRISPR base editing off-target effects in primary human T cells 2023";
+    const web = renderStoredStep({
+      step_id: "q-1",
+      kind: "search",
+      status: "done",
+      title: "Searching the web",
+      input: { query },
+      summary: "6 results · you.com",
+    }) as unknown as El;
+    const label = web.querySelector(".s-lbl")!;
+    expect(label.textContent).toBe("搜索网页：“CRISPR base editing off-target effects…”");
+    expect(label.title).toBe(query);
+    const grep = renderStoredStep({
+      step_id: "q-2",
+      kind: "files",
+      status: "done",
+      title: "Searching in files",
+      input: { pattern: "padj < 0.05" },
+      summary: "0 items",
+    }) as unknown as El;
+    expect(grep.querySelector(".s-lbl")!.textContent).toBe("在文件中搜索：“padj < 0.05”");
+    // A running card says it too: the query is on the step's first event.
+    startStream();
+    addLiveStep({ step_id: "q-3", kind: "search", title: "Searching the web", input: { query: "PETase" }, status: "running" });
+    await setLang("en");
+    relabelStepCards();
+    expect(label.textContent).toBe("Searching the web “CRISPR base editing off-target effects…”");
+    // A card with no query keeps its plain title.
+    const read = renderStoredStep({ step_id: "q-4", kind: "read", status: "done", title: "Reading a.csv" }) as unknown as El;
+    expect(read.querySelector(".s-lbl")!.textContent).toBe("Reading a.csv");
+  });
+
+  it("a generic step body does not dump the structured summary", () => {
+    const card = open(
+      buildStepCard({ step_id: "g-1", kind: "tool", status: "done", output: { result: "ok", summary_parts: [{ key: "done" }] } }),
+    );
+    expect(card.querySelector(".s-pre")!.textContent).toContain('"result": "ok"');
+    expect(card.querySelector(".s-pre")!.textContent).not.toContain("summary_parts");
   });
 });
 
@@ -342,6 +424,48 @@ describe("artifact step card", () => {
     }).card as unknown as El;
     expect(figures.querySelectorAll(".s-files")).toEqual([]);
     expect(figures.querySelectorAll(".s-fig-cap")).toHaveLength(1);
+  });
+
+  it("shows the figures a step saved under its head without expanding it; other files stay in the body (CHAT-4)", () => {
+    const step = {
+      step_id: "s-7",
+      kind: "artifact",
+      title: "Saving 3 artifacts",
+      status: "done",
+      summary: "3 artifacts",
+      input: { files: ["pca.png", "volcano.png", "de.csv"] },
+      output: {
+        artifacts: [
+          { filename: "pca.png", artifact_id: "a-1", version_id: "v-1" },
+          { filename: "volcano.png", artifact_id: "a-2", version_id: "v-2", content_type: "image/png" },
+          { filename: "de.csv", artifact_id: "a-3", version_id: "v-3" },
+        ],
+      },
+    };
+    const card = renderStoredStep(step, new El("div") as never) as unknown as El;
+    // Collapsed: the body is not built, the strip is there.
+    expect(card.classes.has("open")).toBe(false);
+    expect(card.querySelectorAll(".s-frow")).toEqual([]);
+    const strip = card.querySelector(".s-thumbs")!;
+    expect(card.children.map((node) => node.className)).toEqual(["s-head", "s-figs s-thumbs", "s-body"]);
+    expect(strip.querySelectorAll(".s-fig-cap").map((node) => node.textContent)).toEqual(["pca.png", "volcano.png"]);
+    expect(String((strip.querySelector("img") as unknown as { src?: string }).src)).toContain("/artifacts/versions/v-1");
+    // Open: the other file is listed once, the figures are not drawn a second time.
+    open({ card: card as unknown as HTMLElement });
+    expect(card.querySelectorAll(".s-fn").map((node) => node.textContent)).toEqual(["de.csv"]);
+    expect(card.querySelectorAll(".s-fig")).toHaveLength(2);
+    // A save with no figure has no strip; a running one has none yet.
+    const csv = renderStoredStep(
+      { step_id: "s-8", kind: "artifact", status: "done", output: { artifacts: [{ filename: "de.csv", artifact_id: "a-3" }] } },
+      new El("div") as never,
+    ) as unknown as El;
+    expect(csv.querySelector(".s-thumbs")).toBeNull();
+    startStream();
+    addLiveStep({ step_id: "s-9", kind: "artifact", title: "Saving pca.png", input: { files: ["pca.png"] }, status: "running" });
+    const live = messages.querySelectorAll(".step").pop()!;
+    expect(live.querySelector(".s-thumbs")).toBeNull();
+    updateLiveStep({ step_id: "s-9", status: "done", output: { artifacts: [{ filename: "pca.png", artifact_id: "a-1" }] } });
+    expect(live.querySelector(".s-thumbs")!.querySelectorAll(".s-fig")).toHaveLength(1);
   });
 
   it("a Saving step is collapsed, lists files by name and size, and never shows the local path (M-50)", () => {

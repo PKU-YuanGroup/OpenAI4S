@@ -244,10 +244,10 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   };
   const pkgs = env.packages || [];
   const chips = el("div", "env-chips");
-  chips.appendChild(chip("Environment", env.kind || provenanceT("unknownEnvironment")));
+  chips.appendChild(chip(provenanceT("envKind"), env.kind || provenanceT("unknownEnvironment")));
   const py = envPythonChip(env);
   if (py) chips.appendChild(chip(py.label, py.value));
-  if (env.environment_name) chips.appendChild(chip("Env", publicText(env.environment_name, 48)));
+  if (env.environment_name) chips.appendChild(chip(provenanceT("envName"), publicText(env.environment_name, 48)));
   // An explicit `package_count: null` is a record saying the count is unknown,
   // which `envPackageCount` would otherwise answer with the length of an empty
   // `packages` list -- a measured zero the row never claimed.
@@ -255,7 +255,7 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   const pythonKind = String(env.kind || "python").toLowerCase() === "python";
   chips.appendChild(
     chip(
-      "Packages",
+      provenanceT("envPackages"),
       packageCount != null
         ? String(packageCount)
         : filesT(pythonKind ? "prov.env.packagesUnknown" : "prov.env.packagesNotApplicable"),
@@ -349,8 +349,8 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   const tbl = el("table", "env-table");
   const thead = el("thead");
   const htr = el("tr");
-  htr.appendChild(el("th", null, "Package"));
-  htr.appendChild(el("th", null, "Version"));
+  htr.appendChild(el("th", null, provenanceT("envPackage")));
+  htr.appendChild(el("th", null, provenanceT("envVersion")));
   thead.appendChild(htr);
   tbl.appendChild(thead);
   const tb = el("tbody");

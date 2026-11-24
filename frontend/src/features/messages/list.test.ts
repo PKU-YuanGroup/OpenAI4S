@@ -5,7 +5,7 @@ import { copyFailedText } from "../chrome/clipboard";
 import * as transcript from "../sessions/transcript";
 import { renderStored as renderOlderPage } from "../sessions/transcript";
 import * as messageComponents from "./components";
-import { currentId, _openGen, historyContent, historyLoad, msgCursor, msgHasEarlier } from "../../stores/session";
+import { currentId, _openGen, historyContent, historyLoad, msgCursor, msgHasEarlier, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { branchState } from "../../stores/timeline";
 import { loadEarlierMessages } from "../sessions/messages";
@@ -937,6 +937,61 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.composer.value).not.toBe("");
     expect(doc.composer.style.height).toBe("64px");
     expect(doc.composer.focused).toBe(1);
+  });
+
+  it("示例项目's empty session offers the example until it has been run, and opens it once started (ONB-4)", async () => {
+    const opened: unknown[][] = [];
+    vi.stubGlobal("openConversation", (...args: unknown[]) => {
+      opened.push(args);
+    });
+    let seeded = false;
+    const posts: unknown[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(JSON.parse(String(init.body || "{}")));
+        return new Response(JSON.stringify({ seeded: false, running: true, frame_id: "f-example", project_id: "proj_example" }));
+      }
+      return new Response(JSON.stringify({ seeded, running: false, frame_id: seeded ? "f-example" : null }));
+    });
+    const settle = async () => {
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    // Another project: no example card.
+    project.value = "p-other";
+    renderEmptySession();
+    await settle();
+    expect(doc.messages.querySelector(".es-example")).toBeNull();
+    // 示例项目, not run yet: the card, which starts it and opens its session.
+    doc.messages.children.length = 0;
+    project.value = "proj_example";
+    renderEmptySession();
+    await settle();
+    const card = doc.messages.querySelector(".es-example")!;
+    expect(card).not.toBeNull();
+    const button = card.querySelector(".solid-btn")!;
+    button.onclick!();
+    await settle();
+    expect(posts).toEqual([expect.objectContaining({ confirm: true })]);
+    expect(opened).toEqual([["f-example", "proj_example"]]);
+    // Already run: the empty session is the generic one.
+    seeded = true;
+    doc.messages.children.length = 0;
+    renderEmptySession();
+    await settle();
+    expect(doc.messages.querySelector(".es-example")).toBeNull();
+  });
+
+  it("the literature starter does not name an internal tool (SET-4)", async () => {
+    for (const lang of ["zh", "en"] as const) {
+      await setLang(lang);
+      doc.messages.children.length = 0;
+      renderEmptySession();
+      const prompts = doc.messages.querySelectorAll(".es-chip-p").map((node) => node.textContent);
+      expect(prompts.some((text) => text.includes("web_search"))).toBe(false);
+      expect(prompts[0]).toBe(historyT("starter.litReview.prompt"));
+      expect(prompts[0]).toMatch(lang === "zh" ? /^在网上检索/ : /^Search the web for/);
+    }
   });
 
   it("offers no starters under a read-only imported copy's banner (M-66)", () => {

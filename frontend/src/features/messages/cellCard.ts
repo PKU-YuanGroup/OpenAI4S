@@ -64,7 +64,9 @@ export function resetActivityCard(card: HTMLElement, label: string): ActivityCar
   const lbl = card.querySelector(".lbl") as HTMLElement | null;
   if (lbl) lbl.textContent = label;
   meta.textContent = "";
-  head.querySelector(".a-time")?.remove();
+  // The recorded time stays until the replayed outcome repaints it, from the
+  // recorded duration (`dataset.recordedMs`, NB-4) rather than the replay's.
+  if (!card.dataset.recordedMs) head.querySelector(".a-time")?.remove();
   for (const state of ["ok", "failed", "stopped", "ended", "declined", "running"]) card.classList.remove(state);
   delete card.dataset.state;
   delete card.dataset.generatedCell;
@@ -139,7 +141,6 @@ export function renderStoredCell(cell: StoredCell, target?: ParentNode | null): 
   // The live line count: lines after the divider, under the same cap, painted
   // while the cell ran (so one printed line shows no count, as it did live).
   const probe = bindStreamingPre({ appendData() {} }, "");
-  probe.append(title + "\n");
   probe.append(code);
   probe.append(output);
   meta.textContent = toolMetaLabel(probe.outputLines, true);
@@ -148,7 +149,7 @@ export function renderStoredCell(cell: StoredCell, target?: ParentNode | null): 
   head.onclick = () => {
     if (!filled) {
       filled = true;
-      handle.append(title + "\n");
+      // The title is the head's; the body starts with the code, as live (CHAT-6).
       handle.append(code);
       handle.append(output);
     }

@@ -379,3 +379,25 @@ describe("a package list that was never read is unknown, not empty", () => {
     expect(out.notes.some((n) => n.includes("does not apply"))).toBe(true);
   });
 });
+
+describe("the environment tab speaks the UI language (I18N-3)", () => {
+  it("names its chips in Chinese in the Chinese UI", async () => {
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("zh");
+    try {
+      const out = await renderEnvironmentPanel({
+        kind: "python",
+        environment_name: "base",
+        package_count: 2,
+        packages: [{ name: "numpy", version: "2.0" }],
+        source: "captured",
+      });
+      expect(out.chips).toContain("运行环境 python");
+      expect(out.chips).toContain("环境名 base");
+      expect(out.chips).toContain("软件包 2");
+      expect(out.chips.some((chip) => /Environment|Env |Packages/.test(chip))).toBe(false);
+    } finally {
+      await runtime.setLang("system");
+    }
+  });
+});

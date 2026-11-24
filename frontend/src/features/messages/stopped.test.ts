@@ -442,6 +442,50 @@ describe("stopped turn marker", () => {
       expect(node.querySelectorAll(".md")).toHaveLength(1);
     }
   });
+
+  it("offers Continue beside the stop marker, which sends 继续 to this session (CHAT-8)", async () => {
+    await setLang("zh");
+    currentId.value = "stopped-frame";
+    const send = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("send", send);
+    startStream();
+    feed("text", marker.chunk, marker);
+    const wrap = live().wrap as unknown as FakeEl;
+    const button = wrap.querySelector(".msg-continue")!;
+    expect(button.textContent).toBe("继续");
+    expect(button.classList.contains("outline-btn")).toBe(true);
+    const click = button.onclick as () => Promise<void>;
+    // A draft in the composer is the user's: the button refuses, visibly.
+    const composer = new FakeEl("textarea") as FakeEl & { value: string; focus: () => void };
+    composer.id = "composer";
+    composer.value = "half a sentence";
+    composer.focus = vi.fn();
+    doc.body.appendChild(composer);
+    await click();
+    expect(send).not.toHaveBeenCalled();
+    expect(composer.focus).toHaveBeenCalledTimes(1);
+    composer.value = "";
+    await click();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toBe("继续");
+    // A newer message follows: the old marker's button no longer sends, and retires.
+    renderStored({ role: "user", content: "next question", message_id: "m-2" });
+    await click();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(wrap.querySelectorAll(".msg-continue")).toHaveLength(0);
+    // Reopened, the stored marker offers it too, in English in the English UI.
+    await setLang("en");
+    const stored = renderStored({
+      role: "assistant",
+      content: "_Stopped by user._",
+      cancelled: { reason: "user", request_id: "req-2" },
+    }) as unknown as FakeEl;
+    const again = stored.querySelector(".msg-continue")!;
+    expect(again.textContent).toBe("Continue");
+    await (again.onclick as () => Promise<void>)();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]![0]).toBe("Continue");
+  });
 });
 
 /**

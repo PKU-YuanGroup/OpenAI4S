@@ -63,6 +63,14 @@
   flex: none;
 }
 
+/* CHAT-8: "Continue" beside the stopped marker; only the newest row may continue. */
+.msg-stopped .msg-continue {
+  margin-inline-start: 0.75rem;
+}
+.msg:has(~ .msg) .msg-continue {
+  display: none;
+}
+
 /*
  * The running turn's status row (messages/turnStatus.ts). It takes exactly
  * the room the turn's action row takes once the turn ends (8px above, 30px
@@ -290,3 +298,10 @@
 
 /* ART-8: a finished answer's key figures, under their links. */
 .md img.msg-fig{display:block;max-width:min(100%,520px);max-height:360px;margin:8px 0 4px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-000)}
+
+/* CHAT-4: the figures a Saving step made, under its head even while the card
+   is collapsed: thumbnails, each opening its figure (send/step.ts). */
+.step > .s-thumbs{padding:0 12px 10px 36px;gap:8px}
+.step > .s-thumbs .s-fig{max-width:180px}
+.step > .s-thumbs .s-fig img{max-height:120px}
+.step > .s-thumbs .s-fig-cap{padding:4px 8px}

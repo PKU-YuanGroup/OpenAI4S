@@ -353,6 +353,14 @@ function resayFinished(body: string, target: Lang): string | null {
   return out.join("\n");
 }
 
+/** True when `text` is wholly one of the server's progress templates, in either language. */
+export function isProgressLine(text: string): boolean {
+  const body = String(text ?? "").trim();
+  if (!body) return false;
+  if (!body.includes("\n") && matchWhole(body, tables().whole)) return true;
+  return resayBookkeeping(body, LANG) != null || resayFinished(body, LANG) != null;
+}
+
 /**
  * `text` in `lang` (the UI language) when it is wholly one of the server's
  * progress templates, in either language; otherwise `text` unchanged.
