@@ -199,6 +199,8 @@ export function sanitizeActionTimeline(payload: unknown): ActionTimeline {
         provider: publicText(group.provider, 48),
         model: publicText(group.model, 96),
         title: publicText(group.title, 260),
+        // VIEW-1: each tool call in the step card's words (`stepTitleText`).
+        step_titles: publicList(group.step_titles, 32, 160),
         status: publicText(group.status, 32),
         owner: publicText(group.owner || group.owner_kind, 80),
         permission: permission(group.permission || group.permission_state),

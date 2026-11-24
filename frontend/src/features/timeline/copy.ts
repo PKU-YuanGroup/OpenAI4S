@@ -265,3 +265,41 @@ const TIMELINE_OVERRIDES: CopyTable = {
 };
 
 export const timelineT = overrideLookup(TIMELINE_OVERRIDES);
+
+/**
+ * VIEW-1: a row's status in the UI language. The badge printed the server's
+ * word ("failed", "pending"), and an install the user declined read "failed".
+ */
+const TIMELINE_STATUS: CopyTable = {
+  zh: {
+    "timeline.status.running": "运行中",
+    "timeline.status.pending": "等待中",
+    "timeline.status.completed": "已完成",
+    "timeline.status.failed": "失败",
+    "timeline.status.cancelled": "已取消",
+    "timeline.status.interrupted": "已中断",
+    "timeline.status.recorded": "已记录",
+    "timeline.status.denied": "已拒绝",
+    "timeline.status.timed_out": "已超时",
+  },
+  en: {
+    "timeline.status.running": "Running",
+    "timeline.status.pending": "Pending",
+    "timeline.status.completed": "Completed",
+    "timeline.status.failed": "Failed",
+    "timeline.status.cancelled": "Cancelled",
+    "timeline.status.interrupted": "Interrupted",
+    "timeline.status.recorded": "Recorded",
+    "timeline.status.denied": "Declined",
+    "timeline.status.timed_out": "Timed out",
+  },
+};
+
+const timelineStatusLookup = copyLookup(TIMELINE_STATUS);
+
+/** A server status word in the UI language when the table has it, else as sent. */
+export function timelineStatusText(status: string): string {
+  const key = "timeline.status." + status;
+  const word = timelineStatusLookup(key);
+  return word === key ? status : word;
+}

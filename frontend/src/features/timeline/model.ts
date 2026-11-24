@@ -50,6 +50,33 @@ export function timelineDurationMs(attempt: TimelineAttempt | null | undefined):
   return end - start;
 }
 
+/**
+ * VIEW-1: how long one row took. A Cell's from its execution attempt; a tool
+ * call has no attempt, so every tool row read "—" -- its proposal and its
+ * results carry their own `created_at`, and the row took from the first to
+ * the last (only once every proposed call has a result).
+ */
+export function timelineGroupDurationMs(group: TimelineGroup | null | undefined): number | "" {
+  const attempt = latestActionTimelineAttempt(group);
+  if (attempt) return timelineDurationMs(attempt);
+  let start: number | null = null,
+    end: number | null = null,
+    proposed = 0,
+    results = 0;
+  for (const event of (group && group.events) || []) {
+    const at = timelineEpochMs(event.created_at);
+    if (event.type === "proposed") {
+      proposed += 1;
+      if (at != null) start = start == null ? at : Math.min(start, at);
+    } else if (event.type === "result") {
+      results += 1;
+      if (at != null) end = end == null ? at : Math.max(end, at);
+    }
+  }
+  if (!proposed || results < proposed || start == null || end == null || end < start) return "";
+  return end - start;
+}
+
 export function timelineDurationValue(ms: number | ""): string {
   return ms === "" || !Number.isFinite(+ms) || +ms < 0
     ? ""
@@ -281,7 +308,7 @@ export function actionTimelineTurnStats(groups: TimelineGroup[]): {
     hasRunning = false;
   groups.forEach((group) => {
     const attempt = latestActionTimelineAttempt(group),
-      duration = timelineDurationMs(attempt);
+      duration = timelineGroupDurationMs(group);
     if (duration !== "") {
       totalMs += duration;
       hasDuration = true;

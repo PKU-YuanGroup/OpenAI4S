@@ -53,6 +53,8 @@ export type TimelineGroup = {
   provider: string;
   model: string;
   title: string;
+  /** VIEW-1: a tool batch's calls, each in the step card's (English) words. */
+  step_titles: string[];
   status: string;
   owner: string;
   permission: string;

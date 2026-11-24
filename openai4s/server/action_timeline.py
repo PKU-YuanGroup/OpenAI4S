@@ -124,6 +124,11 @@ class ActionTimelineService:
         public_attempts.sort(
             key=lambda item: (item["attempt_ordinal"], item["allocated_at"])
         )
+        step_titles = (
+            _step_titles(title_events)
+            if str(group.get("kind") or "") == "native_tools"
+            else []
+        )
         return {
             "group_id": group.get("group_id"),
             "root_frame_id": group.get("root_frame_id"),
@@ -133,8 +138,17 @@ class ActionTimelineService:
             "kind": group.get("kind"),
             "provider": group.get("provider"),
             "model": group.get("model"),
-            "title": _safe_text(_title(group, title_events), 160),
-            "status": _status(group, events, public_attempts),
+            "title": _safe_text(
+                ", ".join(step_titles) if step_titles else _title(group, title_events),
+                160,
+            ),
+            # VIEW-1: each tool call in the step card's own (English) words,
+            # which the client translates the way the chat does; the joined
+            # `title` above is the fallback and the search text.
+            "step_titles": [_safe_text(title, 160) for title in step_titles],
+            "status": _status(
+                group, events, public_attempts, denied=_denied(raw_events)
+            ),
             "owner": _owner(group),
             "permission": _permission_summary(raw_events),
             "usage": _public_usage(group.get("usage")),
@@ -391,10 +405,69 @@ def _title(group: Mapping[str, Any], events: Sequence[Mapping[str, Any]]) -> str
     return _one_line(group.get("assistant_content")) or kind.replace("_", " ").title()
 
 
+_MAX_STEP_TITLES = 32
+
+
+def _step_titles(events: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One title per proposed tool call, worded as its step card is.
+
+    The chat's step cards say "Installing pydeseq2" / "Listing ." where the
+    ledger has `env_create` / `list_dir`: the host words a visible call from
+    its method and arguments (`host_dispatch._step_begin`). The same wording
+    is used here, so the Timeline and the chat name one call alike; a call
+    with no step card keeps its tool name.
+    """
+    # Imported here: the gateway has loaded both by then, and this read-only
+    # projection keeps no module-level import of the dispatcher.
+    from openai4s.host_dispatch import _step_begin
+    from openai4s.tools.registry import get_tool
+
+    titles: list[str] = []
+    for event in events:
+        if event.get("type") != "proposed" or len(titles) >= _MAX_STEP_TITLES:
+            continue
+        canonical = event.get("arguments")
+        if not isinstance(canonical, Mapping):
+            continue
+        name = str(canonical.get("name") or "").strip()
+        if not name:
+            continue
+        arguments = canonical.get("arguments")
+        tool = get_tool(name)
+        method = (tool.host_method if tool is not None else "") or name
+        try:
+            view = _step_begin(
+                method, [dict(arguments) if isinstance(arguments, Mapping) else {}]
+            )
+        except Exception:  # noqa: BLE001 - a title never breaks the projection
+            view = None
+        title = _one_line(view[1]) if view and view[1] else ""
+        titles.append(title or name)
+    return titles
+
+
+def _denied(events: Sequence[Mapping[str, Any]]) -> bool:
+    """A person declined this action: live, or after a daemon restart."""
+    for event in events:
+        event_type = event.get("type")
+        result = event.get("result")
+        if event_type == "denied":
+            return True
+        if (
+            event_type == "permission_resolved"
+            and isinstance(result, Mapping)
+            and str(result.get("state") or "") == "denied"
+        ):
+            return True
+    return False
+
+
 def _status(
     group: Mapping[str, Any],
     events: Sequence[Mapping[str, Any]],
     attempts: Sequence[Mapping[str, Any]],
+    *,
+    denied: bool = False,
 ) -> str:
     if any(attempt.get("terminal_state") is None for attempt in attempts):
         return "running"
@@ -414,7 +487,11 @@ def _status(
             if all(state == "completed" for state in terminal_states)
             else "failed"
         )
-    if any(event.get("type") in {"failed", "denied", "timed_out"} for event in events):
+    # VIEW-1: a declined request reaches the tool as an error result; it is a
+    # decision, not a failure.
+    if denied:
+        return "denied"
+    if any(event.get("type") in {"failed", "timed_out"} for event in events):
         return "failed"
     if any(event.get("type") == "cancelled" for event in events):
         return "cancelled"
