@@ -203,9 +203,14 @@ export function notebookExportHref(frameId: string, option: NotebookExportOption
   return `${base}/notebook/export?language=${option.language}`;
 }
 
-/** The saved name: the server's (the session title) for the clean notebook. */
-function exportDownloadName(frameId: string, option: NotebookExportOption): string {
-  return option.variant === "clean" ? "" : `${frameId}.${option.suffix}`;
+/**
+ * The saved name. CLI-2: every Notebook export takes the server's name, the
+ * session title, as the clean notebook did; the Markdown and raw forms were
+ * forced to `<frame id>.md` here even once the server named them. The
+ * execution-sources archive is another route and keeps the frame-id name.
+ */
+export function exportDownloadName(frameId: string, option: NotebookExportOption): string {
+  return option.path ? `${frameId}.${option.suffix}` : "";
 }
 
 /**

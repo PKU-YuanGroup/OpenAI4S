@@ -631,8 +631,12 @@ class NotebookExportService:
         """Return immutable bytes plus the exact HTTP descriptor Gateway needs."""
 
         stem = self._safe_stem(root_frame_id)
+        # CLI-2: every form is named after the session, as the clean notebook
+        # already was; the Markdown and raw forms said `f-7f16ab70f984.md`
+        # beside `RNA-seq质控与差异分析.ipynb`. The frame id stays the fallback.
+        human = _human_stem(title)
+        base = human or stem
         if variant is not None and str(variant).lower() == "clean":
-            human = _human_stem(title)
             automatic = language is None or str(language).lower() == "auto"
             # M-61: one .ipynb for a one-language session; both clean
             # notebooks in a zip only when Python and R cells both remain.
@@ -642,7 +646,6 @@ class NotebookExportService:
                 else {}
             )
             if len(both) == 2:
-                base = human or stem
                 data = self._zip(
                     {
                         f"{base}.{name}.ipynb": self._encode(document)
@@ -663,18 +666,18 @@ class NotebookExportService:
                 content_type = "application/x-ipynb+json"
         elif language is not None and str(language).lower() == "markdown":
             data = self.markdown(root_frame_id, branch_id=branch_id)
-            filename = f"{stem}.md"
+            filename = f"{base}.md"
             content_type = "text/markdown; charset=utf-8"
         elif language is None or str(language).lower() == "bundle":
             data = self.bundle(root_frame_id, branch_id=branch_id)
-            filename = f"{stem}.notebooks.zip"
+            filename = f"{base}.notebooks.zip"
             content_type = "application/zip"
         else:
             normalized = str(language).lower()
             data = self._encode(
                 self.notebook(root_frame_id, normalized, branch_id=branch_id)
             )
-            filename = f"{stem}.{normalized}.ipynb"
+            filename = f"{base}.{normalized}.ipynb"
             content_type = "application/x-ipynb+json"
         return {
             "filename": filename,
