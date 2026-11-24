@@ -7,7 +7,7 @@
  */
 
 import { LANG, t } from "../../i18n/runtime";
-import { permCards, running } from "../../stores/stream";
+import { permCards, running, stepEls } from "../../stores/stream";
 import { bytes } from "../artifacts/api";
 import { syncPendingApproval } from "../messages/approval";
 import { el } from "../messages/dom";
@@ -35,6 +35,8 @@ type PermEvent = {
   decision_id?: string;
   frame_id?: string;
   tool?: string;
+  /** The step view the request was asked from: its card's kind, title and input. */
+  kind?: string;
   title?: string;
   target?: string;
   input?: Record<string, unknown>;
@@ -485,6 +487,47 @@ function registry(): Record<string, PermHandle> {
   return reg;
 }
 
+type StepTwin = { card: HTMLElement; step: { kind?: unknown; title?: unknown; input?: unknown; status?: unknown } };
+
+/**
+ * The step card this request was asked from: the same view (kind, title and
+ * input) the Host projected both from, newest first, and not one that ran.
+ */
+function stepTwin(request: PermEvent): StepTwin | null {
+  if (!request.kind || !request.title) return null;
+  const input = JSON.stringify(request.input ?? null);
+  const handles = Object.values((stepEls.value || {}) as Record<string, StepTwin | undefined>);
+  for (let i = handles.length - 1; i >= 0; i--) {
+    const handle = handles[i];
+    if (!handle || !handle.card || !handle.step) continue;
+    const step = handle.step;
+    if (step.kind !== request.kind || step.title !== request.title || step.status === "done") continue;
+    if (JSON.stringify(step.input ?? null) === input) return handle;
+  }
+  return null;
+}
+
+/**
+ * PERM-2: a request that was not allowed left two cards saying the same
+ * thing -- its step ("You declined · not run", with the reason) and the
+ * decided approval ("Denied · Reason: …"). The approval goes inside its step
+ * card, one click away, as an allowed download's does (SCI-11). False when no
+ * such step card is on screen: the approval stays where it is.
+ */
+function foldRefusedDecision(card: HTMLElement, request: PermEvent): boolean {
+  const parent = card.parentElement;
+  if (parent && parent.classList.contains("s-children")) return true;
+  const twin = stepTwin(request);
+  if (!twin) return false;
+  let box = (Array.from(twin.card.children) as HTMLElement[]).find((kid) => kid.classList.contains("s-children"));
+  if (!box) {
+    box = el("div", "s-children");
+    twin.card.appendChild(box);
+  }
+  box.appendChild(card);
+  return true;
+}
+
 export function markPermCard(
   id: string,
   allowed: boolean,
@@ -544,6 +587,8 @@ export function markPermCard(
   }
   // SCI-11: an allowed download is shown once, as its download card.
   if (allowed && h.card.isConnected && h.request) foldDownloadDecision(h.card, h.request);
+  // PERM-2: so is a request that was not allowed, as its step card.
+  if (!allowed && h.card.isConnected && h.request) foldRefusedDecision(h.card, h.request);
   // Not while a reopen paints history off-DOM: that registry is not the one
   // on screen until the paint swaps it in (messages/open.ts syncs then).
   if (h.card.isConnected) syncPendingApproval();
@@ -611,6 +656,8 @@ export function renderStoredPermission(
   if (state !== "pending") markPermCard(id, state === "allowed", stored.scope || null, stored);
   // As the live card folded (SCI-11): its download was painted just before it.
   if (state === "allowed" && foldDownloadDecision(handle.card, stored)) return handle.card;
+  // PERM-2: likewise a refusal, inside the step card that says it was refused.
+  if (state !== "pending" && state !== "allowed" && foldRefusedDecision(handle.card, stored)) return handle.card;
   const host = target || (typeof document !== "undefined" ? document.getElementById("messages") : null);
   host?.appendChild(handle.card);
   return handle.card;
