@@ -592,22 +592,11 @@ export function stepBody(step: Step): HTMLElement {
     return box;
   }
   if (k === "artifact") {
-    const artsRaw = Array.isArray(out.artifacts)
-      ? out.artifacts
-      : out.filename
-        ? [{ filename: out.filename, version_id: out.version_id }]
-        : [];
-    const arts = artsRaw.map(rec);
-    const imgArts = arts.filter((a) => {
-      const nm = String(a.filename || "").toLowerCase();
-      const ct = String(a.content_type || "");
-      return (
-        a.artifact_id &&
-        (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm))
-      );
-    });
-    // A figure is shown below with its name as the caption; listing it here
-    // too put every file name on the card twice (three times with the title).
+    const arts = savedArtifacts(step);
+    const imgArts = savedFigures(step);
+    // A figure is shown in the card's strip with its name as the caption;
+    // listing it here too put every file name on the card twice (three times
+    // with the title).
     const shown = new Set(imgArts.map((a) => a.filename));
     const files = (
       Array.isArray(inp.files) && inp.files.length
@@ -659,29 +648,6 @@ export function stepBody(step: Step): HTMLElement {
       wrap.appendChild(json);
       box.appendChild(wrap);
     }
-    if (imgArts.length) {
-      const figs = el("div", "s-figs");
-      imgArts.forEach((a) => {
-        const fig = el("figure", "s-fig");
-        fig.title = t("step.artifact.openArtifact");
-        const im = el("img") as HTMLImageElement;
-        // ART-4: the head URL plus a cache-buster served the LATEST bytes, so
-        // an old card silently changed once the figure was redrawn.
-        im.src = artUrl(
-          (typeof a.version_id === "string" && a.version_id
-            ? { id: String(a.artifact_id), version_id: a.version_id, _exactVersion: true }
-            : { id: String(a.artifact_id) }) as ArtifactRow,
-        );
-        im.alt = String(a.filename || t("step.fig.altFallback"));
-        im.loading = "lazy";
-        fig.appendChild(im);
-        if (a.filename) fig.appendChild(el("figcaption", "s-fig-cap", String(a.filename)));
-        if (typeof a.size_bytes === "number") fig.title += " · " + bytes(a.size_bytes);
-        fig.onclick = () => openArt(a);
-        figs.appendChild(fig);
-      });
-      box.appendChild(figs);
-    }
     return box;
   }
   if (k === "delegate" || k === "mcp") {
@@ -698,6 +664,77 @@ export function stepBody(step: Step): HTMLElement {
   const dump = Object.keys(shown).length ? shown : inp;
   box.appendChild(clipPre(JSON.stringify(dump, null, 2)));
   return box;
+}
+
+/** What a Saving step saved: its artifact rows (one row for a single-file save). */
+function savedArtifacts(step: Step): Record<string, unknown>[] {
+  const out = rec(step.output);
+  const rows = Array.isArray(out.artifacts)
+    ? out.artifacts
+    : out.filename
+      ? [{ filename: out.filename, version_id: out.version_id }]
+      : [];
+  return rows.map(rec);
+}
+
+/** The saved files that are images and can be opened. */
+function savedFigures(step: Step): Record<string, unknown>[] {
+  if (step.kind !== "artifact") return [];
+  return savedArtifacts(step).filter((a) => {
+    const nm = String(a.filename || "").toLowerCase();
+    const ct = String(a.content_type || "");
+    return a.artifact_id && (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm));
+  });
+}
+
+function figureThumb(a: Record<string, unknown>): HTMLElement {
+  const fig = el("figure", "s-fig");
+  fig.title = t("step.artifact.openArtifact");
+  const im = el("img") as HTMLImageElement;
+  // ART-4: the head URL plus a cache-buster served the LATEST bytes, so an
+  // old card silently changed once the figure was redrawn.
+  im.src = artUrl(
+    (typeof a.version_id === "string" && a.version_id
+      ? { id: String(a.artifact_id), version_id: a.version_id, _exactVersion: true }
+      : { id: String(a.artifact_id) }) as ArtifactRow,
+  );
+  im.alt = String(a.filename || t("step.fig.altFallback"));
+  im.loading = "lazy";
+  fig.appendChild(im);
+  if (a.filename) fig.appendChild(el("figcaption", "s-fig-cap", String(a.filename)));
+  if (typeof a.size_bytes === "number") fig.title += " · " + bytes(a.size_bytes);
+  fig.onclick = (event?: Event) => {
+    // The strip sits outside the head: a thumbnail opens its figure, never toggles the card.
+    event?.stopPropagation?.();
+    openArt(a);
+  };
+  return fig;
+}
+
+/**
+ * CHAT-4: the figures a step saved, under its head whether the card is open
+ * or not. A PCA plot and a volcano plot saved mid-run were behind a collapsed
+ * "Saving 2 artifacts" card, and only expanding it showed them. Other files
+ * stay in the body's list.
+ */
+function paintFigureStrip(handle: StepHandle): void {
+  const { card, step } = handle;
+  const figures = step.status === "running" ? [] : savedFigures(step);
+  let strip = ownChild(card, "s-thumbs");
+  if (!figures.length) {
+    strip?.remove();
+    return;
+  }
+  const key = figures.map((a) => String(a.artifact_id) + "@" + String(a.version_id || "")).join("|");
+  if (strip && strip.dataset.figures === key) return;
+  if (!strip) {
+    strip = el("div", "s-figs s-thumbs");
+    // Under the head, above the body.
+    card.insertBefore(strip, handle.body);
+  }
+  strip.innerHTML = "";
+  strip.dataset.figures = key;
+  figures.forEach((a) => strip!.appendChild(figureThumb(a)));
 }
 
 function paintStepBody(handle: StepHandle): void {
@@ -854,6 +891,7 @@ export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void 
   }
   // I18N-1: the host words titles in English; an update can retitle a card.
   paintStepWords(handle);
+  paintFigureStrip(handle);
   card.classList.toggle("s-net-limited", marksNetworkLimit(step));
   // A Saving step stays collapsed (M-50): its title and "N artifacts" say what
   // happened; the files, sizes and figures are one click away.
