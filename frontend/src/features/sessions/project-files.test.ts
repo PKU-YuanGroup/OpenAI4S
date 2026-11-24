@@ -31,7 +31,14 @@ import { uploadFiles } from "../chrome/upload";
 import { loadArtifacts } from "../artifacts/load";
 import { presentViewer } from "../artifacts/ui";
 import { artifacts } from "../../stores/artifacts";
-import { createProject, openProject, openProjectModal, renderProjMenu, submitProjectModal } from "./projects";
+import {
+  browseTypedProjectFolder,
+  createProject,
+  openProject,
+  openProjectModal,
+  renderProjMenu,
+  submitProjectModal,
+} from "./projects";
 import { loadSessions, loadSessionsForScope } from "./load";
 import { _openGen, currentId, folders, project, projects, sessions } from "../../stores/session";
 import { recoverConversation } from "../messages/open";
@@ -54,6 +61,7 @@ class Node {
   children: Node[] = [];
   onclick: (() => void) | null = null;
   onchange: (() => void) | null = null;
+  onblur: (() => void) | null = null;
   scrollIntoView = vi.fn();
   onkeydown: ((event: { key: string; isComposing?: boolean; keyCode?: number; preventDefault: () => void }) => void) | null = null;
   constructor(public tag = "div") {}
@@ -205,6 +213,69 @@ describe("local project folder selection", () => {
     const shown = nodes["#pm-folder-picker"]!.texts().join(" ");
     expect(shown).toContain(copy("error", copy("outsideRoots")));
     expect(shown).not.toContain("project folders must be inside");
+  });
+});
+
+// ONB-6: typing an absolute path into the folder field left the open picker
+// at the home directory.
+describe("a typed project folder path moves the open picker", () => {
+  const field = () => nodes["#pm-folder"]!;
+  const picker = () => nodes["#pm-folder-picker"]!;
+  const enter = (over: Record<string, unknown> = {}) => {
+    const preventDefault = vi.fn();
+    field().onkeydown!({ key: "Enter", isComposing: false, keyCode: 13, preventDefault, ...over });
+    return preventDefault;
+  };
+
+  beforeEach(async () => {
+    openProjectModal(null);
+    vi.mocked(api).mockResolvedValueOnce(listing("/home/me", [{ name: "data", path: "/home/me/data" }]));
+    browseTypedProjectFolder();
+    await vi.waitFor(() => expect(picker().texts()).toContain("/home/me"));
+    vi.mocked(api).mockClear();
+  });
+
+  it("goes to the typed folder on Enter, but not on an IME's confirming Enter", async () => {
+    field().value = "/srv/lab";
+    enter({ isComposing: true });
+    enter({ keyCode: 229 });
+    expect(api).not.toHaveBeenCalled();
+    vi.mocked(api).mockResolvedValueOnce(listing("/srv/lab"));
+    expect(enter()).toHaveBeenCalled();
+    expect(api).toHaveBeenLastCalledWith("/local-folders?path=%2Fsrv%2Flab");
+    await vi.waitFor(() => expect(picker().texts()).toContain("/srv/lab"));
+  });
+
+  it("goes there when the field is left after an edit, and stays put when it was not edited", async () => {
+    // Clicked through to a subfolder; leaving the untouched field must not undo it.
+    vi.mocked(api).mockResolvedValueOnce(listing("/home/me/data", [], "/home/me"));
+    picker().click("data/");
+    await vi.waitFor(() => expect(picker().texts()).toContain("/home/me/data"));
+    vi.mocked(api).mockClear();
+    field().onblur!();
+    expect(api).not.toHaveBeenCalled();
+
+    field().value = "/srv/lab";
+    vi.mocked(api).mockResolvedValueOnce(listing("/srv/lab"));
+    field().onblur!();
+    expect(api).toHaveBeenLastCalledWith("/local-folders?path=%2Fsrv%2Flab");
+    await vi.waitFor(() => expect(picker().texts()).toContain("/srv/lab"));
+  });
+
+  it("says inline when the typed folder does not exist", async () => {
+    field().value = "/no/such/folder";
+    vi.mocked(api).mockRejectedValueOnce(refusal("project_folder", 404, "folder not found"));
+    enter();
+    await vi.waitFor(() => expect(picker().texts().join(" ")).toContain(copy("error", copy("folderNotFound"))));
+  });
+
+  it("leaves a closed picker closed", () => {
+    picker().click(copy("closePicker"));
+    field().value = "/srv/lab";
+    enter();
+    field().onblur!();
+    expect(api).not.toHaveBeenCalled();
+    expect(picker().classList.contains("hidden")).toBe(true);
   });
 });
 
