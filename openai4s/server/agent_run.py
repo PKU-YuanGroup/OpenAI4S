@@ -587,6 +587,7 @@ class WebActionExecutor:
                 action,
                 evidence=execution_evidence(state.metadata),
                 code_evidence=getattr(self.dispatcher(), "verify_code_evidence", None),
+                reply_content=reply.content,
             )
         if isinstance(action, NativeToolBatch):
             kwargs = {
