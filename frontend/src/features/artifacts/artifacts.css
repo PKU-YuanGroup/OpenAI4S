@@ -449,3 +449,14 @@ html[data-theme="dark"] .renderer-code .tok-str { color: #98c379; }
 html[data-theme="dark"] .renderer-code .tok-com { color: #8b909a; }
 html[data-theme="dark"] .renderer-code .tok-num { color: #d19a66; }
 html[data-theme="dark"] .renderer-code .tok-fn { color: #61afef; }
+
+/* VIEW-3: a pinned viewer whose file has a newer version says so beside the pin. */
+.renderer-newer:empty {
+  display: none;
+}
+.renderer-newer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn-text);
+}

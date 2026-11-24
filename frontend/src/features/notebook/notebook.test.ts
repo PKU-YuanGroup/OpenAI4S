@@ -78,6 +78,7 @@ import {
   similarCode,
 } from "./cells";
 import {
+  exportDownloadName,
   highlightCellSource,
   highlightTraceback,
   mountLiveNotebookFigure,
@@ -1024,6 +1025,17 @@ describe("F-14 Notebook", () => {
       } finally {
         await setLang(before);
         vi.unstubAllGlobals();
+      }
+    });
+
+    // CLI-2: the clean notebook saved as "RNA-seq质控与差异分析.ipynb" and the
+    // Markdown as "f-7f16ab70f984.md"; every Notebook export takes the server's
+    // (session-title) name now.
+    it("lets the server name every Notebook export, and only sources.zip by frame id", () => {
+      for (const option of NOTEBOOK_EXPORTS) {
+        const name = exportDownloadName("f-7f16ab70f984", option);
+        if (option.path) expect(name).toBe("f-7f16ab70f984.sources.zip");
+        else expect(name).toBe("");
       }
     });
 

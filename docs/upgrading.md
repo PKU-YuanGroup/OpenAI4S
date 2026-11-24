@@ -2,8 +2,9 @@
 
 [中文说明](upgrading_zh.md)
 
-An install that is already on 1.0.0 reads the next section before the first
-start of 1.0.1. An install that is already on 0.3.1 reads "Upgrading to 1.0.0"
+An install that is already on 1.0.1 reads the next section before the first
+start of the release after it. An install that is already on 1.0.0 reads
+"Upgrading to 1.0.1" before the first start of 1.0.1. An install that is already on 0.3.1 reads "Upgrading to 1.0.0"
 before the first start of 1.0.0; one that goes straight to 1.0.1 reads that
 section and "Upgrading to 1.0.1", and its first open migrates schema 35 to 43.
 An install that is already on 0.3.0 reads "Upgrading to 0.3.1" before the first
@@ -14,6 +15,27 @@ works the same way: the first open runs every migration in between, so read
 each section from the release after yours up to the one you install. A 0.3.0
 install that goes straight to 1.0.1 also crosses schema 33, which rewrites
 stored judge rows (see "Upgrading to 0.3.1").
+
+## Upgrading to the release after 1.0.1 (schema 43 → 44)
+
+Stop the daemon (`openai4s stop`, then check `openai4s status`) and copy the
+whole data directory while nothing is running, including any
+`openai4s.db-wal` or `openai4s.db-journal` file, exactly as for 1.0.1 below.
+
+The first command that opens the database migrates it from schema 43 to 44.
+Migration 44 adds one nullable column and records itself in
+`schema_migrations`; no row that 1.0.1 stored is rewritten or removed:
+
+| Version | Adds |
+| --- | --- |
+| 44 | `execution_log_inlined_script`: the `inlined_script` column of `execution_log`. A Cell whose code only runs a workspace script (`exec(open("x.py").read())`, `runpy.run_path`, `%run`, R `source("x.R")`) keeps that script as it was when it ran, up to 256 KB, so the Notebook and both `.ipynb` exports still show and re-run it after the file is edited or deleted. Cells recorded before the upgrade keep NULL |
+
+To go back to 1.0.1, stop the daemon and restore the copy you made: 1.0.1
+refuses a schema 44 database with `future_schema` before it writes anything.
+
+What an API client sees change: each entry of
+`GET /frames/{fid}/execution-log` and each `notebook_cell_finished` event
+carry `inlined_script`, which is null for every other Cell.
 
 ## Upgrading to 1.0.1 (schema 36 → 43)
 

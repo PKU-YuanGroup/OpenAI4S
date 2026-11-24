@@ -161,6 +161,30 @@ def test_the_export_descriptor_names_markdown_as_markdown():
     assert exported["data"] == service.markdown("root-1")
 
 
+def test_every_export_form_is_named_after_the_session():
+    """CLI-2: the clean notebook was "RNA-seq质控与差异分析.ipynb" and the
+    Markdown form of the same session "f-7f16ab70f984.md"."""
+    service = NotebookExportService(_Store())
+    title = "RNA-seq 质控/差异分析"
+    names = {
+        "markdown": service.export("root-1", language="markdown", title=title),
+        "bundle": service.export("root-1", language="bundle", title=title),
+        "python": service.export("root-1", language="python", title=title),
+        "r": service.export("root-1", language="r", title=title),
+    }
+    assert {key: value["filename"] for key, value in names.items()} == {
+        "markdown": "RNA-seq 质控_差异分析.md",
+        "bundle": "RNA-seq 质控_差异分析.notebooks.zip",
+        "python": "RNA-seq 质控_差异分析.python.ipynb",
+        "r": "RNA-seq 质控_差异分析.r.ipynb",
+    }
+    # Without a title the frame id still names it, as before.
+    assert service.export("root-1", language="markdown")["filename"] == "root-1.md"
+    assert service.export("root-1", language="r", title="  ")["filename"] == (
+        "root-1.r.ipynb"
+    )
+
+
 # --------------------------------------------------------------------------
 # the Inputs section, driven through the REAL Store
 # --------------------------------------------------------------------------

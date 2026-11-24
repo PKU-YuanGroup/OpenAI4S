@@ -2,6 +2,7 @@ import {
   _artBust,
   _artVer,
   _envSnapById,
+  artifacts as artifactsSignal,
   dockArtifact,
 } from "../../stores/artifacts";
 import { _lineageFor, _lineageReq, lineage } from "../../stores/notebook";
@@ -79,6 +80,21 @@ export function artUrl(a: ArtifactRow): string {
 
 export function artifactRendererVersion(a: ArtifactRow): string {
   return (a && (a.version_id || a.latest_version_id)) || "";
+}
+
+/**
+ * VIEW-3: the newest version id the workbench knows for a pinned tab's
+ * artifact when it is not the pinned one, else "". The versions seen on the
+ * wire first (`syncArtifactVersion` records each `artifact_created` head),
+ * then the session's artifact row, whose `version_id` is the head.
+ */
+export function newerVersionThan(a: ArtifactRow | null | undefined): string {
+  if (!a || !a._exactVersion || !a.version_id) return "";
+  const rows = (artifactsSignal.value as ArtifactRow[]) || [];
+  const row = rows.find((r) => !!r && r.id === a.id && !r._exactVersion);
+  const seen = _artVer.value && _artVer.value[a.id];
+  const head = String(seen || (row && (row.version_id || row.latest_version_id)) || "");
+  return head && head !== String(a.version_id) ? head : "";
 }
 
 /** Latest is a stable tab; each immutable version can coexist beside it. */

@@ -254,7 +254,11 @@ CREATE TABLE IF NOT EXISTS execution_log (
     -- cells derive theirs from execution_attempts; delegated children have
     -- no attempt row, so the log row itself may carry the binding. Last so
     -- fresh and ALTER-upgraded databases agree on column order.
-    generation_id TEXT
+    generation_id TEXT,
+    -- v44: the workspace script a run-this-file Cell executed, as it was when
+    -- it ran (JSON: path, content, size_bytes, truncated, sha256), so the
+    -- record survives the file being edited or deleted later. NULL otherwise.
+    inlined_script TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_exec_frame ON execution_log(frame_id);
 CREATE INDEX IF NOT EXISTS ix_exec_root  ON execution_log(root_frame_id);
@@ -1751,6 +1755,10 @@ class Store:
                     ),
                     42: ("rl_phase_bindings", self._apply_rl_phase_bindings),
                     43: ("rl_run_results", self._apply_rl_run_results),
+                    44: (
+                        "execution_log_inlined_script",
+                        self._apply_execution_log_inlined_script,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1791,6 +1799,21 @@ class Store:
         from openai4s.storage.rl_runs import create_rl_run_schema
 
         create_rl_run_schema(conn)
+
+    def _apply_execution_log_inlined_script(self, conn: sqlite3.Connection) -> None:
+        """Version 44: the script a run-this-file Cell executed, kept with it.
+
+        One nullable column. Historical rows keep NULL: what a file held when
+        an old Cell ran is not known now, and reading today's copy would be
+        provenance that is wrong rather than absent.
+        """
+        from openai4s.storage.migrations import _is_duplicate_column
+
+        try:
+            conn.execute("ALTER TABLE execution_log ADD COLUMN inlined_script TEXT")
+        except sqlite3.OperationalError as error:
+            if not _is_duplicate_column(error):
+                raise
 
     def _apply_rl_phase_bindings(self, conn: sqlite3.Connection) -> None:
         from openai4s.storage.rl import create_rl_phase_schema
@@ -3436,6 +3459,7 @@ class Store:
         files_read: list | None = None,
         files_written: list | None = None,
         generation_id: str | None = None,
+        inlined_script: dict | None = None,
     ) -> str:
         return self._frames.log_cell(
             frame_id=frame_id,
@@ -3456,6 +3480,7 @@ class Store:
             files_read=files_read,
             files_written=files_written,
             generation_id=generation_id,
+            inlined_script=inlined_script,
         )
 
     def list_cells(

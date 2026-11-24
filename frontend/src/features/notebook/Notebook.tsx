@@ -408,15 +408,31 @@ function CellFigures({ cell, names }: { cell: NotebookCell; names: string[] }) {
   })}</>;
 }
 
-function CellIo({ cell }: { cell: NotebookCell }) {
-  const written = cell.files_written || [];
-  const read = cell.files_read || [];
+/**
+ * NB-3: one chip per file. A cell that redraws `volcano.png` reads the old
+ * file and writes the new one, and the two lists painted "volcano.png
+ * volcano.png" side by side; a name listed twice in one list did the same.
+ * A file both read and written is shown once, as written, and says so.
+ */
+export function cellIoFiles(cell: NotebookCell): { written: string[]; read: string[]; readAndWritten: Set<string> } {
+  const written = [...new Set((cell.files_written || []).filter(Boolean))];
+  const writtenSet = new Set(written);
+  const readAll = [...new Set((cell.files_read || []).filter(Boolean))];
+  return {
+    written,
+    read: readAll.filter((f) => !writtenSet.has(f)),
+    readAndWritten: new Set(readAll.filter((f) => writtenSet.has(f))),
+  };
+}
+
+export function CellIo({ cell }: { cell: NotebookCell }) {
+  const { written, read, readAndWritten } = cellIoFiles(cell);
   if (!written.length && !read.length) return null;
   return (
     <div class="nbc-io">
       {written.map((f) => {
         const result = notebookArtifactState(cell, f);
-        return <span key={"w:" + f} class="io-w">
+        return <span key={"w:" + f} class="io-w" title={readAndWritten.has(f) ? nbT("nb.io.readAndWritten") : undefined}>
           {result.artifact ? <a href={result.artifact.url} download={f}>{f}</a> : <span>{f + " · " + filesT("nb.artifact." + result.state)}</span>}
         </span>;
       })}
@@ -552,6 +568,32 @@ function CellCode({ cell, live }: { cell: NotebookCell; live: boolean }) {
   );
 }
 
+/**
+ * NB-1: a cell whose code only runs a workspace script (`exec(open("x.py")
+ * .read())`, `%run`, R `source`) shows that script under it, as it was when
+ * the cell ran -- the cell's own source says nothing about what ran, and the
+ * file may since have been rewritten or deleted.
+ */
+export function InlinedScript({ cell }: { cell: NotebookCell }) {
+  const script = cell.inlined_script;
+  if (!script || typeof script.path !== "string" || typeof script.content !== "string") return null;
+  const lang = cell.language || cell.kernel_id || "python";
+  const html = highlightCellSource("script:" + nbCellKey(cell), script.content, lang);
+  return (
+    <details class="nbc-script" data-script-path={script.path}>
+      <summary>{nbT("nb.script.summary", script.path)}</summary>
+      <div class="nbc-script-note">
+        {script.truncated
+          ? nbT("nb.script.truncated", script.path, bytes(script.size_bytes))
+          : nbT("nb.script.note", script.path)}
+      </div>
+      <pre class="oc-src nbc-script-src">
+        <code dangerouslySetInnerHTML={{ __html: html }} />
+      </pre>
+    </details>
+  );
+}
+
 function CellFiguresSlot({ cell, live }: { cell: NotebookCell; live: boolean }) {
   const names = live ? cellOutput(nbCellKey(cell)).figures.value : cell.figures || [];
   return <CellFigures cell={cell} names={names} />;
@@ -567,7 +609,7 @@ const MAX_INLINE_IMAGES = 8;
  */
 export function writtenImages(cell: NotebookCell): string[] {
   const captured = new Set(cell.figures || []);
-  return (cell.files_written || [])
+  return [...new Set(cell.files_written || [])]
     .filter((name) => INLINE_IMAGE.test(name) && !captured.has(name))
     .slice(0, MAX_INLINE_IMAGES);
 }
@@ -585,6 +627,7 @@ function CellView({ cell }: { cell: NotebookCell }) {
   return (
     <CellShell cell={cell}>
       <CellCode cell={cell} live={live} />
+      <InlinedScript cell={cell} />
       <CellStream cell={cell} stream="stdout" live={live} />
       <CellStream cell={cell} stream="stderr" live={live} />
       {cell.error ? <KernelExitNotice error={cell.error} /> : null}
@@ -866,7 +909,9 @@ export function StatusStrip() {
   return (
     <div class="nb-status">
       <div class={"nb-status-line" + (line ? " " + line.cls : "")}>{line ? line.text : "…"}</div>
-      <div class="nb-status-hint">{t("nb.status.hint")}</div>
+      {/* NB-2: "send a message to continue" is the idle line; under "running"
+          it told the reader to do what the agent was still doing. */}
+      <div class="nb-status-hint">{st && st.turn_running ? nbT("nb.status.runningHint") : t("nb.status.hint")}</div>
       <div class="nb-status-hint nb-readonly-hint">
         {nbT("nb.readonly.hint")}{" "}
         <button type="button" class="nbc-action" data-action="open-notebook-settings" onClick={() => void openCustomize("general")}>
