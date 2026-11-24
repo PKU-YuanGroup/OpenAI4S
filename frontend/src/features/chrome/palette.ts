@@ -10,9 +10,11 @@
 import { publicText } from "../scrub/scrub";
 import { cycleTheme, themeIsDark } from "../theme/theme";
 import { LANG, t } from "../../i18n/runtime";
+import { artifacts, artifactsFrameId } from "../../stores/artifacts";
 import { skillsCatalog } from "../../stores/customize";
-import { currentId, projects } from "../../stores/session";
+import { currentId, projects, sessions } from "../../stores/session";
 import { displayProjectName } from "../sessions/copy";
+import { recentDashboardSessions, type SessionLike } from "../sessions/paging";
 import { api } from "./api";
 import { $, agoMs, el, grow, icon } from "./dom";
 import { hostFn, invokeHost, isReady } from "./host";
@@ -34,6 +36,16 @@ const FOUND_IN: Record<"en" | "zh", Record<string, string>> = {
   en: { message: "Conversation", code: "Cell code", output: "Cell output" },
   zh: { message: "对话", code: "单元代码", output: "单元输出" },
 };
+
+/** Feature-local copy (VIEW-5): the empty palette's own groups. */
+const RECENT_GROUPS: Record<"en" | "zh", Record<"sessions" | "files", string>> = {
+  en: { sessions: "Recent sessions", files: "Files in this session" },
+  zh: { sessions: "最近的会话", files: "本会话的文件" },
+};
+
+function recentGroup(key: "sessions" | "files"): string {
+  return RECENT_GROUPS[LANG === "zh" ? "zh" : "en"][key];
+}
 
 /**
  * `text` split around every case-insensitive occurrence of `needle`. The
@@ -412,11 +424,78 @@ function skillItems(q: string, sk: SkillRow[]): PaletteItem[] {
     }));
 }
 
+const RECENT_SESSIONS = 5;
+const RECENT_FILES = 3;
+
+function epochMs(value: unknown): number {
+  const ms = typeof value === "number" ? value : Date.parse(String(value || ""));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * VIEW-5: the sessions most recently worked on, from the list the sidebar
+ * already holds (no request): newest first, never the open one, and never
+ * an untouched empty session.
+ */
+function recentSessionItems(): PaletteItem[] {
+  const rows = ((sessions.value as SessionLike[]) || []).filter(
+    (row) => row && row.id && row.id !== currentId.value && !row.parent_frame_id,
+  );
+  return recentDashboardSessions(rows)
+    .slice(0, RECENT_SESSIONS)
+    .map((row) => ({
+      group: recentGroup("sessions"),
+      label: publicText(row.name || row.task_summary, 140) || t("conv.title.default"),
+      sub: hitPlace(row.project_id, null, epochMs(row.updated_at)) || undefined,
+      icon: "message-square",
+      run: () => {
+        closePalette();
+        invokeHost(hostFn("openConversation"), row.id, row.project_id || null);
+      },
+    }));
+}
+
+type FileRow = {
+  id?: string;
+  artifact_id?: string;
+  filename?: string | null;
+  content_type?: string | null;
+  project_id?: string | null;
+  created_at?: unknown;
+  role?: string | null;
+};
+
+/** VIEW-5: the open session's newest result files (its process files are not results). */
+function recentFileItems(): PaletteItem[] {
+  const fid = currentId.value;
+  if (!fid || artifactsFrameId.value !== fid) return [];
+  return ((artifacts.value as FileRow[]) || [])
+    .filter((row) => row && (row.id || row.artifact_id) && row.filename && row.role !== "process" && row.role !== "internal")
+    .sort((a, b) => epochMs(b.created_at) - epochMs(a.created_at))
+    .slice(0, RECENT_FILES)
+    .map((row) => ({
+      group: recentGroup("files"),
+      label: publicText(row.filename, 140),
+      sub: row.content_type || undefined,
+      icon: "file",
+      run: () =>
+        openPaletteArtifact({
+          id: String(row.id || row.artifact_id),
+          filename: row.filename || "",
+          content_type: row.content_type || "",
+          root_frame_id: fid,
+          project_id: row.project_id || null,
+        }),
+    }));
+}
+
 /** app.js:11015-11041 */
 export async function palSearch(query: string): Promise<void> {
   const q = (query || "").trim().toLowerCase();
   const gen = (PAL.gen = (PAL.gen || 0) + 1);
-  const items: PaletteItem[] = [];
+  // VIEW-5: an empty palette opens on what was worked on; the skills follow
+  // everything else (the catalogue's first six, in English, were the list).
+  const items: PaletteItem[] = q ? [] : [...recentSessionItems(), ...recentFileItems()];
   palActions().forEach((a) => {
     if (!q || a.label.toLowerCase().includes(q)) items.push(a);
   });

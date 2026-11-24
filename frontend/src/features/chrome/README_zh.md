@@ -29,8 +29,8 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`mic.test.ts`](mic.test.ts) | 错误码在两种界面语言下都翻成直白的提示；`aborted` 不提示。 |
 | [`modal.test.ts`](modal.test.ts) | 陷阱栈、Tab 循环、Esc、焦点恢复、团队 fallback 选择器、在遮罩上松开的拖选不会关闭弹窗，以及延后一帧的初始聚焦不会抢走弹窗内已获得焦点的控件。 |
 | [`modal.ts`](modal.ts) | 逐字焦点陷阱（栈 / Tab / Esc / 恢复）。初始聚焦延后一帧等内容渲染；若焦点在此之前已进入弹窗内部，则不再改动。只有按下也发生在遮罩上时，点击遮罩才会关闭。 |
-| [`palette.test.ts`](palette.test.ts) | M-03 Artifact 命中、M-47 每条结果的项目 / 会话 / 时间、stub 安全的 `isReady`、乱序 `PAL.gen`、技能目录读取失败时不缓存而是下次重试、会话打开失败被处理而不是留下未处理的 rejection、`/search` 未返回时回车作用于当前输入的查询。 |
-| [`palette.ts`](palette.ts) | ⌘K palette。Artifact 命中先开会话再 exact version。每条会话和文件结果都标出所属项目、会话和时间（M-47）。查询的本地命令立即显示；回车不会作用于上一次查询的列表。 |
+| [`palette.test.ts`](palette.test.ts) | M-03 Artifact 命中、M-47 每条结果的项目 / 会话 / 时间、stub 安全的 `isReady`、乱序 `PAL.gen`、技能目录读取失败时不缓存而是下次重试、会话打开失败被处理而不是留下未处理的 rejection、`/search` 未返回时回车作用于当前输入的查询、空查询时先列出最近的会话和本会话的文件、技能放在最后（VIEW-5）。 |
+| [`palette.ts`](palette.ts) | ⌘K palette。Artifact 命中先开会话再 exact version。每条会话和文件结果都标出所属项目、会话和时间（M-47）。查询的本地命令立即显示；回车不会作用于上一次查询的列表。没有输入时先列出侧栏里最近的会话（不含当前会话）和当前会话最新的结果文件，然后是命令，最后是技能；这些不发任何请求（VIEW-5）。 |
 | [`resizer.ts`](resizer.ts) | 侧栏 / dock 列宽拖拽。键 `os-side-w` / `os-dock-w`。拖拽柄的提示是静态 `data-i18n-title` 标签，字典加载后和切换语言时随之重绘。 |
 | [`resizer.i18n.test.ts`](resizer.i18n.test.ts) | 列宽拖拽柄的提示不会是裸键 `resizer.drag`，并随字典加载和语言切换更新。 |
 | [`team-account.ts`](team-account.ts) | 当前登录者自己的账号对话框，从用户菜单打开：修改密码（`POST /auth/me/password`，需要当前密码）与我的模型 key（`GET`/`PUT`/`DELETE /auth/me/llm-key`；保存后不再显示 key）。另有 `teamDialog`：带真实关闭图标的团队小模态。 |
