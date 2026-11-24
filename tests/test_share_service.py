@@ -354,3 +354,20 @@ def test_the_exported_page_says_what_its_budget_left_out(tmp_path, monkeypatch):
     assert "Long text was cut in" in page
     assert "(cut here to keep this file small)" in page
     assert '<div class="label">fig.png</div>' in page
+
+
+def test_the_exported_page_names_the_seeded_example_project_in_the_page_language():
+    """I18N-2: a Chinese export of the seeded example project's session said
+    "项目: Example project" while the workbench calls it 示例项目. The view
+    carries only the project's name, so the name the daemon seeds it with is
+    the one translated; any other name is shown as written."""
+    from openai4s.server.share_page import render_page
+
+    def header(project_name: str, language: str) -> str:
+        view = {"session": {"name": "S", "project_name": project_name}}
+        return render_page(view, {}, language=language).decode("utf-8")
+
+    assert "项目: 示例项目" in header("Example project", "zh")
+    assert "Example project" not in header("Example project", "zh")
+    assert "Project: Example project" in header("Example project", "en")
+    assert "项目: Assays" in header("Assays", "zh")

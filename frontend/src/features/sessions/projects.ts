@@ -338,7 +338,7 @@ export function renderProjMenu(): void {
   item(t("proj.menu.allProjects"), "arrow-left", showDashboard);
   (projects.value as ProjectLike[]).forEach((p) => {
     if ((p.project_id || p.id) !== project.value) {
-      item((p.name || t("proj.fallbackName")).slice(0, 26), "box", () => {
+      item((displayProjectName(p) || t("proj.fallbackName")).slice(0, 26), "box", () => {
         void openProject(p.project_id || p.id || "").catch(reportFailure);
       });
     }

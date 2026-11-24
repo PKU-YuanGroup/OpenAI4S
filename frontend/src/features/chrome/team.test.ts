@@ -588,6 +588,31 @@ describe("F-20 team surface", () => {
     await runtime.setLang("system");
   });
 
+  it("names the seeded example project in the UI language (I18N-2)", async () => {
+    team.bootTeam();
+    adminDaemon();
+    const daemon = globalThis.fetch as unknown as (url: string, init?: unknown) => Promise<unknown>;
+    const json = (body: unknown) => ({ status: 200, ok: true, json: async () => body });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string, init?: unknown) => {
+        const u = String(url);
+        if (u.includes("/team/usage")) {
+          return json({ usage: [{ user_id: "u2", project_id: "proj_example", kind: "llm_output_tokens", total: 3, events: 1 }] });
+        }
+        if (u.includes("/projects")) return json({ projects: [{ project_id: "proj_example", name: "Example project" }] });
+        return daemon(url, init);
+      }),
+    );
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("zh");
+    await team.loadAdmin();
+    const text = doc.getElementById("team-admin-body")?.textContent || "";
+    expect(text).toContain("示例项目");
+    expect(text).not.toContain("Example project");
+    await runtime.setLang("system");
+  });
+
   it("the users section disables, enables, resets and adds without the CLI (TEAM-25)", async () => {
     team.bootTeam();
     identity.teamUser.value = { id: "u1", username: "erika", role: "admin" };

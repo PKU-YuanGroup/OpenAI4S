@@ -456,6 +456,28 @@ describe("read-only project files", () => {
 });
 
 describe("project folder persistence", () => {
+  it("lists the seeded example project in the switch menu in the UI language (I18N-2)", async () => {
+    const previous = LANG;
+    vi.unstubAllGlobals();
+    await setLang("zh");
+    stubDom();
+    try {
+      project.value = "A";
+      projects.value = [
+        { project_id: "A", name: "Research", folder_path: "" },
+        { project_id: "proj_example", name: "Example project", folder_path: "" },
+      ];
+      renderProjMenu();
+      const labels = nodes["#proj-menu"]!.children.filter((node) => node.className === "proj-item").flatMap((node) => node.texts());
+      expect(labels).toContain("示例项目");
+      expect(labels).not.toContain("Example project");
+    } finally {
+      vi.unstubAllGlobals();
+      await setLang(previous);
+      stubDom();
+    }
+  });
+
   it("opens local history from the bound project's menu", async () => {
     project.value = "A";
     projects.value = [{ project_id: "A", name: "Research", folder_path: "/research" }];

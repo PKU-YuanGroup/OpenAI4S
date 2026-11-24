@@ -3,7 +3,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { setLang } from "../../i18n/runtime";
+import { projectFolderOf } from "../../components/artifacts/ProjectFolderSection";
+import { projects } from "../../stores/session";
 import { connectorDescription, specialistBadge, specialistDescription, specialistName } from "./copy";
+import { projectName } from "./host";
+import { memScopeLabel } from "./memory";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
@@ -59,5 +63,29 @@ describe("Settings describes specialists and connectors in the UI language (I18N
     const english = (text: string) => /^[\x20-\x7e]*$/.test(text);
     expect(names.filter((name) => english(specialistDescription({ name, source: "bundled", description: "x" })))).toEqual([]);
     expect(ids.filter((id) => english(connectorDescription(id, "x")))).toEqual([]);
+  });
+});
+
+// I18N-2: the seeded example project showed its stored English name in the
+// memory scope ("注入到 Example project") and the Files panel's project folder
+// while the dashboard and sidebar said 示例项目.
+describe("the seeded example project's name outside the dashboard", () => {
+  afterEach(() => {
+    projects.value = [];
+  });
+
+  it("is shown in the UI language until it is renamed", async () => {
+    projects.value = [
+      { project_id: "proj_example", name: "Example project", folder_path: "/data/example" },
+      { project_id: "p2", name: "Example project", folder_path: "/data/p2" },
+    ];
+    await setLang("zh");
+    expect(memScopeLabel("proj_example")).toBe("示例项目");
+    expect(projectName("proj_example")).toBe("示例项目");
+    expect(projectFolderOf("proj_example")?.name).toBe("示例项目");
+    // Another project that merely has the same name keeps it.
+    expect(memScopeLabel("p2")).toBe("Example project");
+    projects.value = [{ project_id: "proj_example", name: "Assays", folder_path: "/data/example" }];
+    expect(memScopeLabel("proj_example")).toBe("Assays");
   });
 });

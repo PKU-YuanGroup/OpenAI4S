@@ -9,6 +9,7 @@
 
 import { LANG } from "../../i18n/runtime";
 import type { MenuItem } from "../sessions/chrome";
+import { displayProjectName } from "../sessions/copy";
 import { API } from "./api";
 import { byId, el, iconEl } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
@@ -462,7 +463,7 @@ export async function loadAdmin(): Promise<void> {
     });
     const projectName: Record<string, string> = {};
     projects.forEach((p) => {
-      if (p.project_id) projectName[p.project_id] = String(p.name || p.project_id);
+      if (p.project_id) projectName[p.project_id] = String(displayProjectName(p) || p.project_id);
     });
     const person = (id: unknown): string => userLabel(byUserId[String(id)], id);
     const place = (id: unknown): string => (id == null || id === "" ? "" : projectName[String(id)] || String(id));

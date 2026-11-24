@@ -33,6 +33,7 @@ import {
   type WizardState,
 } from "../../features/onboarding/machine";
 import type { OnboardingStatus } from "../../features/onboarding/status";
+import { displayProjectName } from "../../features/sessions/copy";
 import { createProject, openProject } from "../../features/sessions/projects";
 import { loadProjects } from "../../features/sessions/load";
 import { projects } from "../../stores/session";
@@ -538,7 +539,7 @@ function ProjectStep({
                 disabled={busy}
                 onChange={() => setSelected(id)}
               />
-              <span>{row.name || id}</span>
+              <span>{displayProjectName(row) || id}</span>
             </label>
           );
         })

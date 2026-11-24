@@ -45,6 +45,8 @@ vi.mock("preact/hooks", () => ({
   useState: hooks.useState,
 }));
 
+import { LANG, setLang } from "../../i18n";
+import { projects } from "../../stores/session";
 import { EnvironmentCard } from "../../components/onboarding/ReadinessPanel";
 import { WizardHost, defaultPath } from "../../components/onboarding/Wizard";
 import { ot } from "./copy";
@@ -156,6 +158,23 @@ describe("first-run wizard steps (M-5)", () => {
     expect(onCreate).not.toHaveBeenCalled();
     expect(key({})).toHaveBeenCalled();
     expect(onCreate).toHaveBeenCalledWith("Lab A");
+  });
+
+  it("lists the seeded example project in the UI language (I18N-2)", async () => {
+    const before = LANG;
+    projects.value = [{ project_id: "proj_example", name: "Example project" }, { project_id: "p2", name: "Assays" }];
+    try {
+      await setLang("zh");
+      const host = shell({ step: "project" });
+      const stepNode = all(host, (node) => typeof node.props?.onCreate === "function")[0]!;
+      const text = textOf((stepNode.type as (props: unknown) => unknown)(stepNode.props));
+      expect(text).toContain("示例项目");
+      expect(text).not.toContain("Example project");
+      expect(text).toContain("Assays");
+    } finally {
+      projects.value = [];
+      await setLang(before);
+    }
   });
 
   it("keeps the environment's terminal steps behind one click", () => {
