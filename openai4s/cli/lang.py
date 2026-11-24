@@ -228,7 +228,7 @@ _COPY: dict[str, dict[str, str]] = {
             "Key，就会先用豆包搜索，再用备用引擎；2-5 选择备用引擎）："
         ),
         "init.search.menu1": (
-            "  1) 豆包搜索（Agent Plan Key）  2) Tavily 优先（需要 API Key）  "
+            "  1) 豆包搜索（需要 Agent Plan Key）  2) Tavily 优先（需要 API Key）  "
             "3) You.com 优先（免费，Key 可选）"
         ),
         "init.search.menu2": (
