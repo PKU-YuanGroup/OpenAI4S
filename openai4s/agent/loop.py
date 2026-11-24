@@ -602,6 +602,16 @@ class Agent:
             )
         except Exception:  # noqa: BLE001 - guidance must never block a run
             pass
+        # CHAT-9: local GPU yes/no and the key packages present or missing.
+        try:
+            from openai4s.prompts import local_capability_note
+
+            env = self.env
+            prompt += "\n\n" + local_capability_note(
+                env.env_name if env is not None else None
+            )
+        except Exception:  # noqa: BLE001 - guidance must never block a run
+            pass
         return prompt
 
     def _pre_exec_gate(self, code: str, messages: list[dict]) -> str | None:

@@ -6420,6 +6420,14 @@ class SessionRunner:
             )
         except Exception:  # noqa: BLE001
             pass
+        # CHAT-9: the local GPU and the key packages, as Settings → Compute
+        # sees them, so a self-introduction does not promise what is absent.
+        try:
+            from openai4s.prompts import local_capability_note
+
+            ctx += "\n\n" + local_capability_note(st.env_name)
+        except Exception:  # noqa: BLE001
+            pass
         # The Action Ledger, rather than UI prose/execution-log projections,
         # is the canonical provider history.  Rebuild complete action groups
         # after the freshly composed system prompt on every daemon resume.
