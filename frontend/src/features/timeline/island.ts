@@ -68,7 +68,14 @@ import { S } from "./s";
 import { ago, localDateTime } from "../chrome/dom";
 import { askConfirm, askText } from "../chrome/dialog";
 import { nbLabelT } from "../notebook/copy";
-import { computeRecordsT, timelineStatusText, timelineT, workbenchT, workbenchWord } from "./copy";
+import {
+  computeRecordsT,
+  restartDecisionTitle,
+  timelineStatusText,
+  timelineT,
+  workbenchT,
+  workbenchWord,
+} from "./copy";
 import { stepTitleText } from "../send/step-title";
 
 /**
@@ -158,6 +165,11 @@ export function timelineKind(group: any): string {
  * translated by the chat's own table; anything else keeps its title.
  */
 export function timelineGroupTitle(group: any): string {
+  // VIEW-1b: a decision made after a restart, in the UI language and with
+  // the tool's own name, not the server's English "…after restart: env_setup".
+  const decision = group && group.restart_decision;
+  if (decision && typeof decision === "object")
+    return restartDecisionTitle(String(decision.decision || ""), String(decision.tool || ""));
   const steps: string[] = Array.isArray(group && group.step_titles)
     ? group.step_titles.filter((title: unknown) => typeof title === "string" && title)
     : [];

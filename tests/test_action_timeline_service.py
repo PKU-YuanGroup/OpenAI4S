@@ -431,6 +431,51 @@ def test_a_restart_denial_is_denied(tmp_path):
     store.close()
 
 
+def test_a_restart_decision_row_carries_the_decision_and_tool(tmp_path):
+    """VIEW-1b. A decision made after a restart read "Approval denied after
+    restart: env_setup" in every UI language. The row now says what was
+    decided and for which tool, so the client words it in the UI language
+    with the tool's own name; the English `title` stays the fallback."""
+    store = Store(tmp_path / "openai4s.db")
+    for ordinal, (event_type, result) in enumerate(
+        (
+            ("denied", {"status": "denied", "allow": False, "tool": "env_setup"}),
+            (
+                "completed",
+                {"status": "requires_continue", "allow": True, "tool": "web_fetch"},
+            ),
+            (None, None),
+        )
+    ):
+        group = store.append_action_group(
+            root_frame_id="root",
+            turn_id=f"turn-{ordinal}",
+            kind="permission_resolution",
+            ordinal=ordinal,
+        )
+        if event_type:
+            store.append_action_event(
+                group_id=group["group_id"], type=event_type, result=result
+            )
+    store.append_action_group(
+        root_frame_id="root",
+        turn_id="turn-user",
+        kind="user",
+        assistant_message={"role": "user", "content": "hello"},
+    )
+
+    groups = ActionTimelineService(store).get("root")["groups"]
+
+    assert [group["restart_decision"] for group in groups] == [
+        {"decision": "denied", "tool": "env_setup"},
+        {"decision": "approved", "tool": "web_fetch"},
+        {"decision": "resolved", "tool": None},
+        None,
+    ]
+    assert groups[0]["title"] == "Approval denied after restart: env_setup"
+    store.close()
+
+
 def test_native_tool_rows_carry_the_step_titles_the_chat_shows(tmp_path):
     """VIEW-1. Timeline rows read `env_create`, `list_dir`, `write_file` where
     the chat's step cards read "Installing pydeseq2", "Listing .", "Writing
