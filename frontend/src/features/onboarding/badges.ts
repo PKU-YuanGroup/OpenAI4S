@@ -50,6 +50,8 @@ export type BadgeRow = {
   observedAt?: number;
   /** Next-request decision; present only on an "effective" row. */
   effective?: EffectiveCapability | null;
+  /** An "effective" row's profile has a probe receipt: a test has run. */
+  tested?: boolean;
 };
 
 type ObservationKey = "native_tool_call" | "streaming";
@@ -115,6 +117,7 @@ export function capabilityBadgeRows(
         unknownReason: "",
         observed: false,
         effective: next,
+        tested: !!receipt,
       });
     }
   }
@@ -127,6 +130,10 @@ export function capabilityEffectiveText(row: BadgeRow): string {
   if (!effective) return "";
   // Named: the two capabilities' rows used to read the same "on (catalogue
   // default)" side by side, with nothing saying which was which (M-24).
+  // SET-2: a test that agrees with a catalogue default leaves the source
+  // `catalog`, so "not tested" is said only while no test has run at all.
+  const source =
+    effective.source === "catalog" && row.tested ? "catalogTested" : effective.source;
   return ot(
     "onboarding.badge.effective",
     row.label,
@@ -135,7 +142,7 @@ export function capabilityEffectiveText(row: BadgeRow): string {
       effective.value
         ? modelT("model.effective.on")
         : modelT("model.effective.off"),
-      modelT("model.effective.source." + effective.source),
+      modelT("model.effective.source." + source),
     ),
   );
 }
