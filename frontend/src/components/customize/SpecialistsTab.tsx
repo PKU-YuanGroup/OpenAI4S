@@ -2,7 +2,7 @@ import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
-import { specialistBadge, specialistDescription, specialistName } from "../../features/customize/copy";
+import { settingsT, specialistBadge, specialistDescription, specialistName } from "../../features/customize/copy";
 import { nestedEditor } from "../../features/customize/state";
 import {
   asList,
@@ -33,7 +33,7 @@ export function SpecialistsTab() {
 
   return (
     <div>
-      <Hdr title={t("cust.tab.specialists")} sub={t("cust.specialists.desc")} />
+      <Hdr title={t("cust.tab.specialists")} sub={settingsT("cust.specialists.desc")} />
       <div class="cust-row">
         <div class="info">
           <div class="nm">{t("cust.specialists.yours")}</div>

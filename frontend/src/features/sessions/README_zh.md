@@ -40,7 +40,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`deleted.ts`](deleted.ts) | SYNC-17：离开在另一个标签页或窗口里被删除的会话。收到 `session_status` `deleted` 目录事件时先从列表里去掉这一行，再重新打开它——此时读取是 404，于是落到「会话不存在」视图，输入框被禁用但内容保留，提示行说明它已在别处删除。`deleteSession` 会标记本标签页自己发起的删除，免得把自己的删除事件说成是别处删的。 |
 | [`deleted.test.ts`](deleted.test.ts) | 当前打开的会话在别处被删除时会带着提示离开；别的会话被删、或本标签页自己删除时不会；用户已切走后不再弹出提示。 |
 | [`load.folders.test.ts`](load.folders.test.ts) | 服务端拒绝的文件夹重命名或删除（通常是 `404`，即文件夹已在另一个标签页被删除）会被报告出来，并且两个列表照样重新读取，让过期的那一行从侧栏消失。此前这个拒绝在重新读取之前就被吞掉，于是那一行一直留着，菜单项点了也没有任何反应。 |
-| [`load.render.test.ts`](load.render.test.ts) | 一次会话读取只重建侧栏两次（加载状态，以及两个列表都就绪之后），不会再因它带动的文件夹读取多重建一次。 |
+| [`load.render.test.ts`](load.render.test.ts) | 一次会话读取只重建侧栏两次（加载状态，以及两个列表都就绪之后），不会再因它带动的文件夹读取多重建一次。打开着一个尚未列出的会话时，空列表说明它会在第一条消息后出现，而不是「还没有会话」（ONB-5）。 |
 | [`load.replace.test.ts`](load.replace.test.ts) | 防抖搜索还在等回复时点击「加载更多」会被拒绝：此前它会拿到更新的代号却带着**旧**查询和旧游标发请求，搜索回复因此被当作过期丢弃，旧筛选的第二页落在了新输入的搜索框下面。 |
 | [`load.projects.test.ts`](load.projects.test.ts) | 项目列表查询串不含 `offset`；合并/去重；空态 / 重试 / 加载更多的视图状态。 |
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / 更早消息条。 |
@@ -60,11 +60,11 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`skill-draft.test.ts`](skill-draft.test.ts) | 步骤说明、哪些尝试算数、函数提取（含装饰器，后定义的覆盖先定义的）、按保留步骤生成的正文、一步不留时的通用回退，以及代码里含有围栏的情形。 |
 | [`skill-draft.ts`](skill-draft.ts) | M-84：用会话执行过的单元「另存为技能」。每个单元最新一次成功的尝试成为 Procedure 的一步（一句说明取自第一行注释，否则取它写出的文件，再附上代码）；保留步骤中的顶层 Python 函数放进 SKILL.md 的「kernel.py (draft)」一节——网页编辑器只保存 SKILL.md，不写任何可执行文件。`buildSkillBody` 按用户保留的步骤重建正文。 |
 | [`rejections.test.ts`](rejections.test.ts) | 「发起即不管」的操作失败时会提示，而不是留下未处理的 rejection：会话行菜单、项目菜单的导入与下载项，以及会话刷新触发的仪表盘重载。 |
-| [`projects.ts`](projects.ts) | 项目菜单/模态与项目活动记录视图（M-48：「项目活动记录」，活动 / 文件两个页签，经 `projectFiles` 每个文件一行并标出版本数；活动卡片：`projectTimelineCard`）、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。打开没有列出任何会话的项目时进入其最新的未使用会话（`reuseEmpty`），而不是每次进入都再建一个空会话。 |
+| [`projects.ts`](projects.ts) | 项目菜单/模态与项目活动记录视图（M-48：「项目活动记录」，活动 / 文件两个页签，经 `projectFiles` 每个文件一行并标出版本数；活动卡片：`projectTimelineCard`）、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。打开没有列出任何会话的项目时进入其最新的未使用会话（`reuseEmpty`），而不是每次进入都再建一个空会话。在对话框的文件夹输入框里输入路径后按 Enter，或编辑后离开输入框，已打开的文件夹选择器会跳到该路径（`browseTypedProjectFolder` 记下「浏览」打开的路径，未改动就离开输入框不会撤销已点进的文件夹；ONB-6）。 |
 | [`project-files.ts`](project-files.ts) | 本地源文件夹选择器与只读项目文件浏览器：子文件夹浏览、“显示隐藏文件夹”开关、限长文本预览、重试，以及避免过期读取覆盖界面的请求序号。`projectFolderErrorText` 按错误码把被拒绝的文件夹（保存或选择器）以界面语言说明。项目文件弹窗有自己的带内边距的面板，可直接在某个文件夹或文件处打开（UP-5）。 |
 | [`project-history.ts`](project-history.ts) | 本地 `.openai4s/` 保存状态、立即保存、历史对话与版本、纯文本对话/代码/设置视图、文件版本下载和遗漏文件提示。继续对话前重新检查当前数据库归属，不恢复内核内存。 |
 | [`project-history.test.ts`](project-history.test.ts) | 真实保存状态与失败、重试、仅有存档的对话、继续前重新检查、版本切换、安全文本/下载链接，以及过期或已关闭视图的响应。 |
-| [`project-files.test.ts`](project-files.test.ts) | 显式选择文件夹、新建/编辑/解除绑定持久化、嵌套文件导航、安全文本预览、读取失败与过期响应。项目切换同时打开该项目的会话；目录读取或首个会话 POST 失败时恢复原项目、源文件夹和侧栏范围，也覆盖连续切换多个项目的情况。 |
+| [`project-files.test.ts`](project-files.test.ts) | 显式选择文件夹、输入的路径让已打开的选择器跳转（Enter，不受输入法确认影响；编辑后离开输入框；不存在的文件夹在选择器里说明；关闭的选择器保持关闭）、新建/编辑/解除绑定持久化、嵌套文件导航、安全文本预览、读取失败与过期响应。项目切换同时打开该项目的会话；目录读取或首个会话 POST 失败时恢复原项目、源文件夹和侧栏范围，也覆盖连续切换多个项目的情况。 |
 | [`static-i18n-ownership.test.ts`](static-i18n-ownership.test.ts) | 代码写入会话标题或当前项目名之后，迟到的语言分块重绘和切换语言都不会把它改回“会话”/“项目”；标题输入框失焦即提交，那次重绘曾把服务端的会话名改掉。 |
 | [`transcript.ts`](transcript.ts) | 输入框的 @ 引用芯片：通过 `@` 菜单钉选的文件（`autocomplete/mentions.ts`）显示为已解析并带版本号，来自其他会话也一样；其余 `@name` 按本会话的文件匹配。已存消息行的名字（`renderStored`、`addMsgActions`、`insertMessageByTime`、`renderEmptySession`、`renderMessageRefChips`）从唯一实现 `messages/list.ts` 转导出。 |
 | [`transcript.test.ts`](transcript.test.ts) | 输入框引用芯片：`@` 钉选显示为已解析并给出版本号（以及来源的其他会话）；含空格的文件名只算一个芯片；钉选只在版本一致时才显示本会话那一行的校验和；未钉选的 `@name` 按本会话文件解析，解析不到则标为未解析；token 被删掉后不再显示芯片。 |

@@ -588,6 +588,31 @@ describe("F-20 team surface", () => {
     await runtime.setLang("system");
   });
 
+  it("names the seeded example project in the UI language (I18N-2)", async () => {
+    team.bootTeam();
+    adminDaemon();
+    const daemon = globalThis.fetch as unknown as (url: string, init?: unknown) => Promise<unknown>;
+    const json = (body: unknown) => ({ status: 200, ok: true, json: async () => body });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string, init?: unknown) => {
+        const u = String(url);
+        if (u.includes("/team/usage")) {
+          return json({ usage: [{ user_id: "u2", project_id: "proj_example", kind: "llm_output_tokens", total: 3, events: 1 }] });
+        }
+        if (u.includes("/projects")) return json({ projects: [{ project_id: "proj_example", name: "Example project" }] });
+        return daemon(url, init);
+      }),
+    );
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("zh");
+    await team.loadAdmin();
+    const text = doc.getElementById("team-admin-body")?.textContent || "";
+    expect(text).toContain("示例项目");
+    expect(text).not.toContain("Example project");
+    await runtime.setLang("system");
+  });
+
   it("the users section disables, enables, resets and adds without the CLI (TEAM-25)", async () => {
     team.bootTeam();
     identity.teamUser.value = { id: "u1", username: "erika", role: "admin" };
@@ -718,6 +743,40 @@ describe("F-20 team surface", () => {
     expect(text).toContain("b.csv");
     expect(text).not.toContain("a.csv");
     expect(team.teamFilesPath()).toBe("/data/small");
+  });
+
+  it("the Team files panel speaks the interface language, relabelled on each open (I18N-5)", async () => {
+    team.bootTeam();
+    let ok = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () =>
+        ok
+          ? { status: 200, ok: true, json: async () => ({ roots: [{ path: "/data" }] }) }
+          : { status: 503, ok: false, json: async () => ({}) },
+      ),
+    );
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("zh");
+    team.openTeamFilesPanel();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(doc.getElementById("team-files-title")?.textContent).toBe("团队文件");
+    expect(doc.getElementById("team-files-upload")?.textContent).toBe("上传");
+    expect(doc.getElementById("team-files-close")?.getAttribute("aria-label")).toBe("关闭");
+    expect(doc.getElementById("team-files-crumbs")?.textContent).toBe("所有文件夹");
+    ok = false;
+    team.openTeamFilesPanel();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(doc.getElementById("team-files-list")?.textContent).toBe("无法读取团队文件。");
+    // The modal was built once; a language switch shows on the next open.
+    await runtime.setLang("en");
+    ok = true;
+    team.openTeamFilesPanel();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(doc.getElementById("team-files-title")?.textContent).toBe("Team files");
+    expect(doc.getElementById("team-files-upload")?.textContent).toBe("Upload");
+    expect(doc.getElementById("team-files-crumbs")?.textContent).toBe("All folders");
+    await runtime.setLang("system");
   });
 
   it("section headings follow the interface language", async () => {

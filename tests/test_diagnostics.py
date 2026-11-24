@@ -979,3 +979,101 @@ def test_the_code_sets_track_their_sources():
 
     assert _PROGRESS_REASONS == set(PROGRESS_REASONS) | {"other"}
     assert _WIRE_FAMILIES == set(SUPPORTED_WIRES) | {"unknown"}
+
+
+# --------------------------------------------------------------------------
+# SET-3: the passive posture says what is in force, not only the env knobs
+# --------------------------------------------------------------------------
+#
+# Settings -> Diagnostics read "kernel_sandbox=(default) · egress=(default) ·
+# secret_store_mode=(default) · compute_confinement=(default)": the variables,
+# echoed. `resolved` says what they resolve to without a child process, a
+# network call or opening the Store.
+
+
+def test_the_passive_posture_resolves_the_sandbox_backend_without_running_it(
+    monkeypatch,
+):
+    from openai4s.diagnostics import _resolved_sandbox
+
+    monkeypatch.delenv("OPENAI4S_KERNEL_SANDBOX", raising=False)
+    found = {"sandbox-exec": "/usr/bin/sandbox-exec", "bwrap": "/usr/bin/bwrap"}
+    assert _resolved_sandbox("darwin", found.get) == {
+        "mode": "auto",
+        "backend": "seatbelt",
+        "self_test": "not_run",
+    }
+    assert _resolved_sandbox("linux", found.get)["backend"] == "bubblewrap"
+    assert _resolved_sandbox("linux", lambda _name: None)["backend"] == "none"
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "off")
+    assert _resolved_sandbox("darwin", found.get) == {
+        "mode": "off",
+        "backend": "none",
+        "self_test": "not_run",
+    }
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "sometimes")
+    assert _resolved_sandbox("darwin", found.get)["mode"] == "invalid"
+
+
+def test_the_passive_posture_reports_a_self_test_this_daemon_saw_fail(monkeypatch):
+    from openai4s.diagnostics import _resolved_sandbox
+    from openai4s.security import sandbox
+
+    monkeypatch.delenv("OPENAI4S_KERNEL_SANDBOX", raising=False)
+    monkeypatch.setattr(
+        sandbox,
+        "_failed_self_tests",
+        {("bubblewrap", "/usr/bin/bwrap", False): "operation not permitted"},
+    )
+    resolved = _resolved_sandbox("linux", {"bwrap": "/usr/bin/bwrap"}.get)
+    assert resolved["self_test"] == "failed"
+
+
+def test_the_passive_posture_names_egress_and_the_secret_store_without_opening_it(
+    cfg, monkeypatch
+):
+    import subprocess
+
+    from openai4s.diagnostics import passive_security_posture
+    from openai4s.store import get_store
+
+    monkeypatch.setenv("OPENAI4S_EGRESS", "allowlist")
+    monkeypatch.setenv("OPENAI4S_SECRET_STORE", "plaintext")
+
+    def refuse(*_a, **_k):
+        raise AssertionError("the passive posture ran a child process")
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    # No Store in this process: nothing to read, and none is opened.
+    monkeypatch.setattr(
+        "openai4s.store.get_store",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("store opened")),
+    )
+    resolved = passive_security_posture(cfg)["resolved"]
+    assert resolved["egress"] == {"mode": "allowlist"}
+    assert resolved["secret_store"] == {"mode": "plaintext", "backend": "not_resolved"}
+    monkeypatch.undo()
+
+    # The daemon's own Store, once its broker has resolved, is what it says.
+    monkeypatch.setenv("OPENAI4S_SECRET_STORE", "plaintext")
+    store = get_store(cfg.db_path)
+    store.secrets  # noqa: B018 - resolve the broker as the daemon does
+    resolved = passive_security_posture(cfg)["resolved"]["secret_store"]
+    assert resolved == {"mode": "plaintext", "backend": "plaintext-db", "secure": False}
+
+
+def test_the_resolved_posture_survives_the_archive_schema(cfg):
+    from openai4s.diagnostics import archive_safe, passive_security_posture
+
+    security = passive_security_posture(cfg)
+    archived = archive_safe({"security": security})["security"]
+    assert "fields_omitted" not in archived
+    assert "fields_omitted" not in archived["resolved"]
+    assert archived["resolved"] == security["resolved"]
+    assert archived["resolved"]["kernel_sandbox"]["mode"] in {
+        "auto",
+        "enforce",
+        "off",
+        "invalid",
+    }

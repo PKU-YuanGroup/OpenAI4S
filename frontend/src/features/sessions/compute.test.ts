@@ -212,6 +212,23 @@ describe("Run location", () => {
     await openRunLocationDialog("f");
     expect(modalBody.texts()).toContain(t("compute.profiles.empty"));
   });
+
+  it("says it in the user's words, not the daemon's (SET-4)", async () => {
+    const { LANG, setLang } = await import("../../i18n/runtime");
+    const before = LANG;
+    try {
+      for (const lang of ["zh", "en"] as const) {
+        await setLang(lang);
+        for (const key of ["compute.profiles.empty", "compute.status.unsupported"]) {
+          expect(t(key)).not.toMatch(/daemon/i);
+        }
+      }
+      await setLang("zh");
+      expect(t("compute.profiles.empty")).toBe("这台服务器还没有配置集群。");
+    } finally {
+      await setLang(before);
+    }
+  });
 });
 
 describe("compute read failures", () => {

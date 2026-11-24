@@ -140,7 +140,29 @@ describe("M2 observation and next-request rows", () => {
     const effective = rows[1]!;
     expect(effective.observed).toBe(false);
     expect(effective.effective).toEqual({ value: true, source: "catalog" });
-    expect(capabilityBadgeText(effective)).toBe("Tool calling: on (model catalogue default, not tested)");
+    // A test ran (it could not tell), so the default is not "not tested" (SET-2).
+    expect(capabilityBadgeText(effective)).toBe("Tool calling: on (model catalogue default)");
+  });
+
+  // SET-2: right after a passing test the panel read "Last test: Tool calling ✓"
+  // directly above "In use: on (model catalogue default, not tested)" -- a
+  // probe that agrees with a catalogue True leaves the source `catalog`.
+  it("does not claim 'not tested' for a catalogue default once a test has run", () => {
+    const passed: CapabilityReceipt = { ...RECEIPT, native_tool_call: "true", streaming: "true" };
+    const catalog: EffectiveCapabilities = {
+      tool_calling: { value: true, source: "catalog" },
+      streaming: { value: true, source: "catalog" },
+    };
+    const after = capabilityBadgeRows(passed, "", catalog).filter((row) => row.kind === "effective");
+    expect(after.map(capabilityBadgeText)).toEqual([
+      "Tool calling: on (model catalogue default)",
+      "Streaming output: on (model catalogue default)",
+    ]);
+    // Still a catalogue default, never worded as a measured pass.
+    expect(after.map(capabilityBadgeText).join(" ")).not.toContain("from the last test");
+    // With no test at all it still says so.
+    const before = capabilityBadgeRows(null, "", catalog);
+    expect(capabilityBadgeText(before[0]!)).toBe("Tool calling: on (model catalogue default, not tested)");
   });
 
   it("labels explicit-override and probe provenance, and never calls a catalogue default measured", () => {
@@ -176,7 +198,8 @@ describe("M2 observation and next-request rows", () => {
     const text = textOf(tree);
     expect(text).toContain("Last test");
     expect(text).toContain("In use");
-    expect(text).toContain("on (model catalogue default, not tested)");
+    expect(text).toContain("on (model catalogue default)");
+    expect(text).not.toContain("not tested");
     expect(text).toContain("off (from the last test)");
     const effectivePills = descendants(
       tree,

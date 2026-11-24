@@ -4,7 +4,7 @@ import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import { DATAPRO_CONNECTOR_ID } from "../../features/customize/vendors";
-import { connectorDescription } from "../../features/customize/copy";
+import { connectorDescription, connectorIdBadge, settingsT } from "../../features/customize/copy";
 import {
   asList,
   asString,
@@ -58,7 +58,7 @@ export function ConnectorsTab() {
 
   return (
     <div>
-      <Hdr title={t("cust.tab.connectors")} sub={t("cust.connectors.desc")} />
+      <Hdr title={t("cust.tab.connectors")} sub={settingsT("cust.connectors.desc")} />
       <DataProCard config={datapro.config} configError={datapro.error} />
       {conns
         .filter((k) => k.connector_id !== DATAPRO_CONNECTOR_ID)
@@ -173,11 +173,13 @@ export function ConnectorRow({ k, catalog }: { k: Record<string, unknown>; catal
   const [testing, setTesting] = useState(false);
   // SCI-04: a test's answer (the tools it found, or why it failed) in the row.
   const [note, setNote] = useState<ActionNote>(null);
+  const badge = connectorIdBadge(k.name, k.connector_id);
   return (
     <div class="cust-row">
       <div class="info">
         <div class="nm">
-          <span>{asString(k.name)}</span> <Pill>{asString(k.connector_id)}</Pill>
+          <span>{asString(k.name)}</span>
+          {badge ? <> <Pill>{badge}</Pill></> : null}
         </div>
         <div class="ds">{connectorDescription(k.connector_id, k.description, catalog)}</div>
         <ActionStatus note={note} />

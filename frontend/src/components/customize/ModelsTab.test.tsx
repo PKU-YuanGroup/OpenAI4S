@@ -471,8 +471,10 @@ describe("M2 model capability provenance", () => {
     const text = badgeText(tree);
     expect(text).toContain("Last test");
     expect(text).toContain("In use");
-    // A catalogue default is labelled as such; it is not a measured pass.
-    expect(text).toContain("on (model catalogue default, not tested)");
+    // A catalogue default is labelled as such; it is not a measured pass. A
+    // test has run, so it is not called "not tested" either (SET-2).
+    expect(text).toContain("on (model catalogue default)");
+    expect(text).not.toContain("not tested");
     expect(text).toContain("on (from the last test)");
     expect(text).toContain("Tool calling: not determined");
     expect(text).toContain("tested ");
@@ -540,7 +542,7 @@ describe("M2 model capability provenance", () => {
     tree = renderProfile(p);
     const text = badgeText(tree);
     expect(text).toContain("on (from the last test)");
-    expect(text).toContain("off (model catalogue default, not tested)");
+    expect(text).toContain("off (model catalogue default)");
   });
 
   it("ignores a projection that is not the two-field B.3 shape", () => {
@@ -604,7 +606,7 @@ describe("M2 model capability provenance", () => {
     // unknown observation row gains the reason the failed attempt reported.
     expect(after).toContain("Tool calling ✓");
     expect(after).toContain("on (set in the configuration)");
-    expect(after).toContain("off (model catalogue default, not tested)");
+    expect(after).toContain("off (model catalogue default)");
     expect(after).toContain("receipt could not be persisted");
     const effective = tagged(badgeTree(tree), "data-effective-field");
     expect(effective.map((pill) => pill.props!["data-source"])).toEqual([

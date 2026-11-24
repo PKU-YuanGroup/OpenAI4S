@@ -28,10 +28,18 @@ vi.mock("../../features/customize/api", () => ({
 }));
 vi.mock("../../features/customize/host", () => ({ hint: mocks.hint }));
 
-import { readSearchConfig } from "../../features/customize/search";
-import { SearchSetupCard, currentSearchChoice } from "./SearchSetupCard";
+import { readSearchConfig, searchT } from "../../features/customize/search";
+import { vendorKeyT } from "../customize/vendors/use-vendor-key";
+import { SearchSetupCard, currentSearchChoice, type SearchSetupHandle } from "./SearchSetupCard";
 
 type Node = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
+
+function textOf(node: unknown): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  return textOf((node as Node).props?.children);
+}
 
 function all(node: unknown, match: (node: Node) => boolean, out: Node[] = []): Node[] {
   if (Array.isArray(node)) {
@@ -108,6 +116,14 @@ describe("SearchSetupCard current choice", () => {
     expect(currentSearchChoice(readSearchConfig({ ...YOU_FIRST, doubao_configured: true }))).toBe("doubao");
   });
 
+  it("names Doubao one way, and says under it that it needs an Agent Plan Key", () => {
+    const tree = withConfig(YOU_FIRST);
+    const label = all(tree, (n) => n.props?.["data-search-choice"] === "doubao")[0]!;
+    expect(textOf(label)).toContain(searchT("search.doubao"));
+    expect(searchT("search.setup.doubao")).toBe(searchT("search.doubao"));
+    expect(textOf(label)).toContain(searchT("search.setup.doubao.sub"));
+  });
+
   it("explains why Doubao asks for the plan key when the model's key is not shared", () => {
     const tree = withConfig(YOU_FIRST);
     const doubao = all(tree, (n) => n.type === "input" && n.props?.value === "doubao")[0]!;
@@ -116,5 +132,111 @@ describe("SearchSetupCard current choice", () => {
     expect(all(next, (n) => n.props?.["data-search-doubao-note"] === "")).toHaveLength(1);
     expect(all(next, (n) => n.type === "input" && n.props?.type === "password")).toHaveLength(1);
     expect(all(next, (n) => n.props?.["data-action"] === "onboarding-search-apply")).toHaveLength(1);
+  });
+});
+
+// ONB-2: choosing Doubao and pressing Continue moved on with the search order
+// unchanged and nothing said: only the card's own Apply posted, and Apply's
+// "needs a key" went to the composer status line under the modal.
+describe("SearchSetupCard pending choice on Continue", () => {
+  beforeEach(() => {
+    hookState.length = 0;
+    mocks.api.mockReset();
+    mocks.hint.mockReset();
+  });
+
+  const YOU_FIRST = {
+    doubao_configured: false,
+    engines: [
+      { id: "you", enabled: true, usable: true },
+      { id: "builtin", enabled: true, usable: true },
+    ],
+  };
+
+  /** Render with a config read and the Doubao config's `model_key_available`. */
+  function setup(modelKeyAvailable = false) {
+    const handle: SearchSetupHandle = { current: null };
+    hookCursor = 0;
+    SearchSetupCard({ pendingRef: handle });
+    hookState[0] = readSearchConfig(YOU_FIRST);
+    hookState[5] = modelKeyAvailable;
+    const view = () => {
+      hookCursor = 0;
+      return SearchSetupCard({ pendingRef: handle });
+    };
+    return { handle, view };
+  }
+
+  const choose = (tree: unknown, id: string) =>
+    (all(tree, (n) => n.type === "input" && n.props?.value === id)[0]!.props?.onChange as () => void)();
+  const note = (tree: unknown) => all(tree, (n) => n.props?.["data-search-note"] !== undefined)[0];
+
+  it("has nothing to apply when the choice did not change", async () => {
+    const { handle, view } = setup();
+    view();
+    await expect(handle.current!()).resolves.toBe(true);
+    expect(mocks.api).not.toHaveBeenCalled();
+  });
+
+  it("blocks Continue with the reason in the card when Doubao has no key", async () => {
+    const { handle, view } = setup();
+    choose(view(), "doubao");
+    view();
+    await expect(handle.current!()).resolves.toBe(false);
+    expect(mocks.api).not.toHaveBeenCalled();
+    // In the card, not the composer status line behind the modal.
+    expect(mocks.hint).not.toHaveBeenCalled();
+    const shown = note(view())!;
+    expect(shown.props?.role).toBe("alert");
+    expect(textOf(shown)).toBe(searchT("search.setup.needKey"));
+  });
+
+  it("applies the pending choice on Continue", async () => {
+    const { handle, view } = setup();
+    choose(view(), "doubao");
+    const tree = view();
+    const field = all(tree, (n) => n.props?.["data-onboarding-search-key"] === "")[0]!;
+    (field.props?.onInput as (e: unknown) => void)({ target: { value: " plan-key " } });
+    view();
+    mocks.api.mockResolvedValue({ ...YOU_FIRST, doubao_configured: true });
+    await expect(handle.current!()).resolves.toBe(true);
+    expect(mocks.api).toHaveBeenCalledWith("/doubao-search/config", {
+      method: "POST",
+      body: JSON.stringify({ agent_plan_key: "plan-key" }),
+    });
+    expect(textOf(note(view()))).toBe(searchT("search.setup.applied"));
+  });
+
+  it("shows a refused save in the card and stays on the step", async () => {
+    const { handle, view } = setup();
+    choose(view(), "builtin");
+    view();
+    mocks.api.mockRejectedValue("quota");
+    await expect(handle.current!()).resolves.toBe(false);
+    expect(mocks.hint).not.toHaveBeenCalled();
+    const shown = note(view())!;
+    expect(shown.props?.role).toBe("alert");
+    expect(textOf(shown)).toBe("quota");
+  });
+
+  it("offers the current model's key when the server can share it", async () => {
+    const without = setup(false);
+    choose(without.view(), "doubao");
+    expect(all(without.view(), (n) => n.props?.["data-search-use-model-key"] !== undefined)).toEqual([]);
+
+    hookState.length = 0;
+    const { view } = setup(true);
+    choose(view(), "doubao");
+    const tree = view();
+    const button = all(tree, (n) => n.props?.["data-search-use-model-key"] !== undefined)[0]!;
+    expect(textOf(button)).toBe(vendorKeyT("vendor.useModelKey"));
+    mocks.api.mockResolvedValue({ ...YOU_FIRST, doubao_configured: true });
+    await (button.props?.onClick as () => Promise<void>)();
+    // The server reads and saves the key; it never comes to the browser.
+    expect(mocks.api).toHaveBeenCalledWith("/doubao-search/config", {
+      method: "POST",
+      body: JSON.stringify({ use_model_key: true }),
+    });
+    expect(textOf(note(view()))).toBe(searchT("search.setup.applied"));
   });
 });

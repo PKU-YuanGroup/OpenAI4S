@@ -147,6 +147,57 @@ describe("DiagnosticsTab request id copy", () => {
   });
 });
 
+// SET-3: the posture row read "kernel_sandbox=(default) · egress=(default) ·
+// secret_store_mode=(default) · compute_confinement=(default)" -- the
+// environment echoed. It now says what is in force; the knobs stay below.
+describe("DiagnosticsTab resolved posture", () => {
+  const RESOLVED = {
+    kernel_sandbox: { mode: "auto", backend: "seatbelt", self_test: "not_run" },
+    egress: { mode: "off" },
+    secret_store: { mode: "auto", backend: "macos-keychain", secure: true },
+  };
+  async function opened(security: Record<string, unknown>, lang = "en") {
+    hookState.length = 0; effects.length = 0;
+    mocks.lang = lang;
+    mocks.passive.mockImplementation(() => Promise.resolve(response({ security, environment: {}, request_id: "r" })));
+    render(); flushEffects();
+    await vi.waitFor(() => expect(tagged(render(), "data-diagnostics-posture")).not.toHaveLength(0));
+    return render();
+  }
+  const rows = (tree: unknown) => tagged(tree, "data-diagnostics-posture").map((node) => content(node));
+
+  it("says what the sandbox, egress and credential store resolve to, with the raw knobs secondary", async () => {
+    const tree = await opened({
+      kernel_sandbox: "(default)", egress: "(default)", secret_store_mode: "(default)", compute_confinement: "(default)",
+      resolved: RESOLVED,
+    });
+    const text = rows(tree);
+    expect(text[0]).toBe("Kernel sandboxAutomatic · macOS Seatbelt · its self-test runs with Run checks");
+    expect(text[1]).toBe("Network egressNot restricted");
+    expect(text[2]).toBe("Credential storemacOS Keychain (secure)");
+    // The environment knobs are still there, as a secondary detail line.
+    const raw = content(tagged(tree, "data-diagnostics-knobs")[0]);
+    expect(raw).toBe("Environment variableskernel_sandbox=(default) · egress=(default) · secret_store_mode=(default) · compute_confinement=(default)");
+  });
+
+  it("names a missing sandbox tool, a failed self-test, an allowlist and an unused store, in Chinese too", async () => {
+    const tree = await opened({
+      resolved: {
+        kernel_sandbox: { mode: "enforce", backend: "none", self_test: "not_run" },
+        egress: { mode: "allowlist" },
+        secret_store: { mode: "auto", backend: "not_resolved" },
+      },
+    }, "zh");
+    expect(rows(tree)).toEqual([
+      "内核沙箱必须启用 · 没有找到沙箱工具",
+      "网络出口只允许白名单里的域名",
+      "凭证存储尚未使用（自动选择）",
+    ]);
+    const failed = await opened({ resolved: { ...RESOLVED, kernel_sandbox: { mode: "auto", backend: "bubblewrap", self_test: "failed" } } });
+    expect(rows(failed)[0]).toBe("Kernel sandboxAutomatic · bubblewrap · its self-test failed on this machine");
+  });
+});
+
 describe("DiagnosticsTab", () => {
   it("opens with one passive GET and no full checks or bundle request", async () => {
     render(); flushEffects();

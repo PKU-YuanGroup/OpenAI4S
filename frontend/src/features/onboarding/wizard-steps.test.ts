@@ -45,6 +45,8 @@ vi.mock("preact/hooks", () => ({
   useState: hooks.useState,
 }));
 
+import { LANG, setLang } from "../../i18n";
+import { projects } from "../../stores/session";
 import { EnvironmentCard } from "../../components/onboarding/ReadinessPanel";
 import { WizardHost, defaultPath } from "../../components/onboarding/Wizard";
 import { ot } from "./copy";
@@ -135,6 +137,44 @@ describe("first-run wizard steps (M-5)", () => {
     expect(textOf(has(ok, "data-onboarding-test-ok")[0])).toBe(ot("onboarding.test.ok"));
     const failed = shell({ step: "test", testClicked: true, providerRequests: 1, receipt: { ...receipt, reachable: false } });
     expect(has(failed, "data-onboarding-test-ok")).toHaveLength(0);
+  });
+
+  it("creates the project on Enter in its name field, but not while an IME composes (ONB-3)", () => {
+    const host = shell({ step: "project" });
+    const stepNode = all(host, (node) => typeof node.props?.onCreate === "function")[0]!;
+    const onCreate = vi.fn();
+    const step = (stepNode.type as (props: unknown) => unknown)({ ...stepNode.props, onCreate });
+    const input = has(step, "data-onboarding-project-name")[0]!;
+    const onKeyDown = input.props!.onKeyDown as (e: unknown) => void;
+    const key = (over: Record<string, unknown>) => {
+      const preventDefault = vi.fn();
+      onKeyDown({ key: "Enter", isComposing: false, keyCode: 13, currentTarget: { value: "  Lab A  " }, preventDefault, ...over });
+      return preventDefault;
+    };
+    // An IME confirming a candidate: isComposing, or Safari's 229.
+    expect(key({ isComposing: true })).not.toHaveBeenCalled();
+    expect(key({ keyCode: 229 })).not.toHaveBeenCalled();
+    expect(key({ key: "a", keyCode: 65 })).not.toHaveBeenCalled();
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(key({})).toHaveBeenCalled();
+    expect(onCreate).toHaveBeenCalledWith("Lab A");
+  });
+
+  it("lists the seeded example project in the UI language (I18N-2)", async () => {
+    const before = LANG;
+    projects.value = [{ project_id: "proj_example", name: "Example project" }, { project_id: "p2", name: "Assays" }];
+    try {
+      await setLang("zh");
+      const host = shell({ step: "project" });
+      const stepNode = all(host, (node) => typeof node.props?.onCreate === "function")[0]!;
+      const text = textOf((stepNode.type as (props: unknown) => unknown)(stepNode.props));
+      expect(text).toContain("示例项目");
+      expect(text).not.toContain("Example project");
+      expect(text).toContain("Assays");
+    } finally {
+      projects.value = [];
+      await setLang(before);
+    }
   });
 
   it("keeps the environment's terminal steps behind one click", () => {

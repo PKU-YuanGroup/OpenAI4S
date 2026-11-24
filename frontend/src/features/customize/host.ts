@@ -10,6 +10,7 @@ import { _envSnapById } from "../../stores/artifacts";
 import { customizeNotice, customizeOpen } from "./state";
 import { t } from "../../i18n";
 import { askConfirm } from "../chrome/dialog";
+import { displayProjectName } from "../sessions/copy";
 
 export { loadModels } from "./models";
 
@@ -92,7 +93,8 @@ export function projectName(pid: string | null | undefined): string {
     name?: string;
   }>;
   const p = list.find((x) => (x.project_id || x.id) === pid);
-  return (p && p.name) || pid;
+  // I18N-2: the seeded example project in the UI language, as the dashboard shows it.
+  return (p && displayProjectName(p)) || pid;
 }
 
 export function dropSkillsCatalog(): void {

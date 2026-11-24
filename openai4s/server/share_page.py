@@ -40,6 +40,8 @@ _IMAGE_TYPES = {
     ".gif": "image/gif",
     ".svg": "image/svg+xml",
 }
+#: The name `gateway._seed_example_project` gives the example project.
+_SEEDED_EXAMPLE_PROJECT_NAME = "Example project"
 #: One inlined image, all of them together, one text field, all text together.
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_IMAGES_BYTES = 24 * 1024 * 1024
@@ -54,6 +56,7 @@ _COPY: dict[str, dict[str, str]] = {
         "runs, and it does not connect to the network.",
         "model": "Model",
         "project": "Project",
+        "example_project": "Example project",
         "user": "You",
         "assistant": "Assistant",
         "cell": "Cell {0}",
@@ -82,6 +85,7 @@ _COPY: dict[str, dict[str, str]] = {
         "也不会连接网络。",
         "model": "模型",
         "project": "项目",
+        "example_project": "示例项目",
         "user": "你",
         "assistant": "助手",
         "cell": "单元 {0}",
@@ -356,10 +360,16 @@ def render_page(
     session = view.get("session") if isinstance(view.get("session"), Mapping) else {}
     title = str(session.get("name") or session.get("task_summary") or "").strip()
     title = title or words["untitled"]
+    # I18N-2: the project the daemon seeds on first boot, in the page's
+    # language while it keeps the name it was seeded with (the workbench's
+    # `displayProjectName`). The view carries the name only, not the id.
+    project_name = session.get("project_name")
+    if project_name == _SEEDED_EXAMPLE_PROJECT_NAME:
+        project_name = words["example_project"]
     meta = " · ".join(
         f"{_esc(words[key])}: {_esc(value)}"
         for key, value in (
-            ("project", session.get("project_name")),
+            ("project", project_name),
             ("model", session.get("model")),
         )
         if value
