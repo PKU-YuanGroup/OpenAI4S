@@ -742,8 +742,30 @@ function delegateTitle(step: Step): string {
   return sendCopy("subagentTask", publicText(end > 0 ? flat.slice(0, end + 1) : flat, 80));
 }
 
+/** Up to this many characters of a search's query on its collapsed card; the rest is in the tooltip. */
+const QUERY_SHOWN = 40;
+
+/**
+ * CHAT-5: what a search looked for. Three collapsed "Searching the web · 6
+ * results" cards in a row did not say which search was which, nor did a grep
+ * card. The query (or the pattern a file search matched) is on the step's
+ * input from its first event, so a running card says it too.
+ */
+export function stepQuery(step: Step): string {
+  if (step.kind !== "search" && step.kind !== "files" && step.kind !== "skill") return "";
+  const input = rec(step.input);
+  const raw = typeof input.query === "string" ? input.query : step.kind === "files" ? input.pattern : "";
+  return typeof raw === "string" ? publicText(raw.replace(/\s+/g, " ").trim(), 400) : "";
+}
+
 function stepLabel(step: Step): string {
-  return delegateTitle(step) || stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+  const delegated = delegateTitle(step);
+  if (delegated) return delegated;
+  const title = stepTitleText(String(step.title || step.kind || t("step.card.defaultTitle")));
+  const query = stepQuery(step);
+  if (!query) return title;
+  const shown = query.length > QUERY_SHOWN ? query.slice(0, QUERY_SHOWN - 1).trimEnd() + "…" : query;
+  return sendCopy("stepQuery", title, shown);
 }
 
 function stepOutcome(step: Step) {
@@ -773,9 +795,16 @@ function paintStepWords(handle: StepHandle): void {
         (declined ? declinedMeta(declined) : "") ||
         stepSummaryWords(step) ||
         (step.output && rec(step.output).error ? t("step.status.failed") : "");
-  const label = card.querySelector(".s-lbl");
+  const label = card.querySelector(".s-lbl") as HTMLElement | null;
   // A loaded Skill's network limit: the server words these in English.
-  if (label) label.textContent = stepNetworkLabel(step) || stepLabel(step);
+  if (label) {
+    const network = stepNetworkLabel(step);
+    label.textContent = network || stepLabel(step);
+    // The whole query when the label shows only its start (CHAT-5).
+    const query = network ? "" : stepQuery(step);
+    if (query) label.title = query;
+    else label.removeAttribute?.("title");
+  }
 }
 
 /** Every step card on screen, in the language just applied. */

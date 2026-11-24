@@ -13,7 +13,8 @@ export type SendCopyKey =
   | "hideTechnicalDetails"
   | "subagentTask"
   | "subagentSteps"
-  | "subagentStep";
+  | "subagentStep"
+  | "stepQuery";
 
 /** Labels the generated F-07 dictionaries do not carry (app.js hard-coded them in English). */
 const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
@@ -32,6 +33,7 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
     subagentTask: "Sub-agent · {0}",
     subagentSteps: "{0} steps inside",
     subagentStep: "1 step inside",
+    stepQuery: "{0} “{1}”",
   },
   zh: {
     send: "发送",
@@ -47,6 +49,7 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
     subagentTask: "子代理 · {0}",
     subagentSteps: "内含 {0} 个步骤",
     subagentStep: "内含 1 个步骤",
+    stepQuery: "{0}：“{1}”",
   },
 };
 

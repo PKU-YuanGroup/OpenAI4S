@@ -236,6 +236,40 @@ describe("step card copy follows the UI language", () => {
     expect(meta(envs)).toBe("4 envs · 3 missing");
   });
 
+  it("a search card says what it searched for, truncated, with the whole query in its tooltip (CHAT-5)", async () => {
+    await setLang("zh");
+    const query = "CRISPR base editing off-target effects in primary human T cells 2023";
+    const web = renderStoredStep({
+      step_id: "q-1",
+      kind: "search",
+      status: "done",
+      title: "Searching the web",
+      input: { query },
+      summary: "6 results · you.com",
+    }) as unknown as El;
+    const label = web.querySelector(".s-lbl")!;
+    expect(label.textContent).toBe("搜索网页：“CRISPR base editing off-target effects…”");
+    expect(label.title).toBe(query);
+    const grep = renderStoredStep({
+      step_id: "q-2",
+      kind: "files",
+      status: "done",
+      title: "Searching in files",
+      input: { pattern: "padj < 0.05" },
+      summary: "0 items",
+    }) as unknown as El;
+    expect(grep.querySelector(".s-lbl")!.textContent).toBe("在文件中搜索：“padj < 0.05”");
+    // A running card says it too: the query is on the step's first event.
+    startStream();
+    addLiveStep({ step_id: "q-3", kind: "search", title: "Searching the web", input: { query: "PETase" }, status: "running" });
+    await setLang("en");
+    relabelStepCards();
+    expect(label.textContent).toBe("Searching the web “CRISPR base editing off-target effects…”");
+    // A card with no query keeps its plain title.
+    const read = renderStoredStep({ step_id: "q-4", kind: "read", status: "done", title: "Reading a.csv" }) as unknown as El;
+    expect(read.querySelector(".s-lbl")!.textContent).toBe("Reading a.csv");
+  });
+
   it("a generic step body does not dump the structured summary", () => {
     const card = open(
       buildStepCard({ step_id: "g-1", kind: "tool", status: "done", output: { result: "ok", summary_parts: [{ key: "done" }] } }),
