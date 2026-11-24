@@ -17,6 +17,11 @@ _PROCESS_SUFFIXES = frozenset(
     {".py", ".r", ".sh", ".bash", ".ipynb", ".log", ".pyc", ".tmp", ".bak", ".rds"}
 )
 _PROCESS_DIRS = ("project-inputs/", "inputs/", "__pycache__/", ".openai4s")
+#: NB-5: a top-level folder the agent keeps working files in. Everything under
+#: `scratch/`, `tmp/`, `temp/`, `tmp_lit/` or `scratch_2/` is how a result was
+#: made -- a fetched paper's XML, a helper CSV -- not a result. Only `temp`
+#: itself: `temp_curves/` is as likely to mean temperature.
+_SCRATCH_TOP_DIR = re.compile(r"(?:(?:scratch|tmp)(?:[_-][^/]*)?|temp)/")
 
 
 _ROLES = frozenset({"internal", "process", "deliverable"})
@@ -46,6 +51,8 @@ def artifact_role(filename: str | None, marked: str | None = None) -> str:
     if dot > slash and lower[dot:] in _PROCESS_SUFFIXES:
         return "process"
     if lower.startswith(_PROCESS_DIRS) or any(f"/{d}" in lower for d in _PROCESS_DIRS):
+        return "process"
+    if _SCRATCH_TOP_DIR.match(lower[2:] if lower.startswith("./") else lower):
         return "process"
     return "deliverable"
 
