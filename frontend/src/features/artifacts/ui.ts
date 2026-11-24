@@ -5,7 +5,7 @@ import {
 import { currentId, projects, sessions } from "../../stores/session";
 import { activeTab, dock, openTabs, provMode } from "../../stores/ui";
 import { api, apiErrorText, bytes, callWindow, el, icon, translate } from "./api";
-import { artifactTabKey } from "./cache";
+import { artifactTabKey, newerVersionThan } from "./cache";
 import { filesT } from "./copy";
 import {
   parseArtifactDeepLink,
@@ -55,6 +55,21 @@ function artIcon(a: ArtifactRow): string {
   return "file";
 }
 
+/**
+ * VIEW-3: a pinned tab read "pca.png · v-7331c85411a5". It says which kind of
+ * version it shows -- pinned, or an earlier one once the file has moved on --
+ * and keeps the id for the tooltip.
+ */
+export function dockTabLabel(a: ArtifactRow): { label: string; title: string } {
+  const name = String(a.filename || "artifact");
+  if (!a._exactVersion) return { label: name, title: name };
+  const kind = filesT(newerVersionThan(a) ? "viewer.tab.older" : "viewer.version.pinned");
+  return {
+    label: name + " · " + kind,
+    title: filesT("viewer.tab.versionTip", name, String(a.version_id || "")),
+  };
+}
+
 function tabBtn(kind: "div" | "button", iconName: string, label: string): HTMLElement {
   const node = el(kind, "dock-tab");
   const ic = el("span", "ic");
@@ -74,7 +89,9 @@ export function renderDockTabs(): void {
   // of them pushed Timeline and Files out of view.
   const fileTabs: HTMLElement[] = [];
   ((openTabs.value as ArtifactRow[]) || []).forEach((a) => {
-    const tab = tabBtn("div", artIcon(a), (a.filename || "artifact") + (a._exactVersion ? " · " + a.version_id : ""));
+    const named = dockTabLabel(a);
+    const tab = tabBtn("div", artIcon(a), named.label);
+    tab.title = named.title;
     if (activeTab.value === artifactTabKey(a)) tab.classList.add("active");
     const close = el("span", "t-close");
     close.innerHTML = icon("x", 14);

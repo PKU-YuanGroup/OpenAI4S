@@ -32,7 +32,7 @@ import {
   TEXT_SOURCE_PREVIEW_CHARACTERS,
 } from "./api";
 import { filesT, readFailureText, readRetryHelps } from "./copy";
-import { artifactMetadataTarget, artUrl, previewSlice } from "./cache";
+import { artifactMetadataTarget, artUrl, newerVersionThan, previewSlice } from "./cache";
 import {
   artifactRendererDescriptor,
   compatibilityRendererDescriptor,
@@ -810,6 +810,32 @@ export function rendererLabel(rendererId: string, serverLabel?: unknown): string
   return label !== key ? label : publicText(String(serverLabel || rendererId), 80);
 }
 
+/**
+ * VIEW-3: a pinned tab stayed on pca.png's first version while four newer
+ * ones arrived, and only a small "固定版本" said anything. Once the file has
+ * moved on, the viewer says so and offers the latest beside the pin. Painted
+ * into its own slot so a new version never re-reads the preview on screen.
+ */
+export function paintNewerVersion(slot: HTMLElement): void {
+  const artifactId = slot.dataset.artifactId || "";
+  const pinned: ArtifactRow = { id: artifactId, version_id: slot.dataset.versionId || "", _exactVersion: true };
+  slot.innerHTML = "";
+  if (!artifactId || !newerVersionThan(pinned)) return;
+  slot.appendChild(el("span", "renderer-newer-text", filesT("viewer.version.newer")));
+  const open = el("button", "outline-btn small", filesT("viewer.version.openLatest"));
+  open.setAttribute("type", "button");
+  open.onclick = () => {
+    void import("./ui").then((ui) => ui.applyArtifactDeepLink({ artifactId, versionId: null }));
+  };
+  slot.appendChild(open);
+}
+
+/** Repaint every pinned viewer's newer-version slot (a new version arrived). */
+export function paintNewerVersions(root: ParentNode | null = typeof document !== "undefined" ? document : null): void {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  root.querySelectorAll(".renderer-newer").forEach((slot) => paintNewerVersion(slot as HTMLElement));
+}
+
 export function renderArtifactDescriptor(
   body: HTMLElement,
   a: ArtifactRow,
@@ -864,6 +890,13 @@ export function renderArtifactDescriptor(
       if (versionHistoryOpener) versionHistoryOpener(a);
     };
     meta.appendChild(version);
+    if (a._exactVersion) {
+      const newer = el("span", "renderer-newer");
+      newer.dataset.artifactId = String(a.id);
+      newer.dataset.versionId = String(target.version_id);
+      paintNewerVersion(newer);
+      meta.appendChild(newer);
+    }
   } else {
     // No version identity: the preview reads latest, and this is visible.
     meta.appendChild(el("span", "renderer-version", filesT("viewer.preview.latest")));
