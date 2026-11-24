@@ -284,6 +284,7 @@ from openai4s.storage.governance import QuotaExceeded, record_session_llm_usage
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
 from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
 from openai4s.storage.memories import MemoryLimitError
+from openai4s.storage.permissions import InstallRuleRefused
 from openai4s.storage.snapshots import revert_recovery_setting_key
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs, get_tool
@@ -19126,13 +19127,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(scope_id), "changing Session permissions"
                     )
-                rid = store.set_permission_rule(
-                    scope=scope,
-                    scope_id=scope_id or "",
-                    tool=b.get("tool") or "*",
-                    pattern=b.get("pattern") or "*",
-                    decision=b.get("decision") or "ask",
-                )
+                try:
+                    rid = store.set_permission_rule(
+                        scope=scope,
+                        scope_id=scope_id or "",
+                        tool=b.get("tool") or "*",
+                        pattern=b.get("pattern") or "*",
+                        decision=b.get("decision") or "ask",
+                    )
+                except InstallRuleRefused as exc:
+                    # PERM-1: package installs ask every time (owner decision
+                    # 1), so a standing allow for one is refused -- with its
+                    # reason, not as a 500.
+                    raise GatewayError(400, str(exc), InstallRuleRefused.code) from exc
                 self._json({"ok": True, "rule_id": rid})
                 return
             if sub == "/permissions/reset" and method == "POST":

@@ -2767,3 +2767,56 @@ def test_a_sub_agents_request_names_the_sub_agent_and_its_task(tmp_path):
         )
         t.join(timeout=5)
     assert out["res"]["allow"] is False
+
+
+def test_the_add_rule_route_refuses_a_standing_install_allow_with_its_reason(tmp_path):
+    # PERM-1: installs ask every time; POST /permissions used to let the
+    # storage refusal escape as a 500 instead of saying why.
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+        def has_subscriber(self, root_frame_id):
+            return False
+
+        def drop_frame(self, root_frame_id):
+            return None
+
+    cfg = Config(data_dir=tmp_path, llm=LLMConfig(provider="deepseek", api_key="k"))
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    try:
+        runner.store.seed_default_permission_rules()
+        handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+        replies: list[tuple[int, dict]] = []
+        handler._query = lambda: {}
+        handler._json = lambda value, code=200: replies.append((code, value))
+
+        handler._body = lambda: {
+            "scope": "global",
+            "tool": "env_setup",
+            "pattern": "*",
+            "decision": "allow",
+        }
+        with pytest.raises(gateway_mod.GatewayError) as refused:
+            handler._api("POST", "/permissions")
+        assert refused.value.code == 400
+        assert refused.value.error_code == "install_rule_refused"
+        assert "ask" in refused.value.message
+        assert replies == []
+
+        # An ask (or deny) rule for installs is still accepted.
+        handler._body = lambda: {
+            "scope": "global",
+            "tool": "env_setup",
+            "pattern": "numpy",
+            "decision": "deny",
+        }
+        handler._api("POST", "/permissions")
+        assert replies[-1][0] == 200 and replies[-1][1]["ok"] is True
+    finally:
+        runner.store.close()
