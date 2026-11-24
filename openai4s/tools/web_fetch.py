@@ -33,6 +33,14 @@ class WebFetchTool(Tool):
                 "maximum": 1000000,
                 "description": "Truncate the returned content to this many characters.",
             },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": (
+                    "Start this many characters into the document, to read on "
+                    "from a truncated result's next_offset."
+                ),
+            },
             "timeout": {
                 "type": "number",
                 "minimum": 1,
@@ -76,7 +84,9 @@ class WebFetchTool(Tool):
         ``max_chars`` asks for, and the shared renderer cut a long page with a
         bare marker. Kimi K3.1 Pro then repeated the identical call, asking for
         a million characters each time, until the progress circuit stopped the
-        turn. A Python cell's ``host.web_fetch`` receives the whole content.
+        turn. The note names the character the shown text stops at, of how
+        many, and the ``offset`` that reads on (CLI-3); a Python cell's
+        ``host.web_fetch`` can also take the whole content at once.
         """
         if not isinstance(result, dict) or not isinstance(result.get("content"), str):
             return None
@@ -102,21 +112,40 @@ class WebFetchTool(Tool):
         body = _render_result_body(result)
         if header + len(body) <= self.output_limit and not result.get("truncated"):
             return None
+        content = result["content"]
+        start = int(result.get("offset") or 0)
+        total = result.get("total_chars")
         size = result.get("raw_bytes")
-        whole = f"The response is {size:,} bytes. " if isinstance(size, int) else ""
-        note = (
-            f"\n… [truncated. {whole}A tool result holds at most "
-            f"{self.output_limit:,} characters whatever max_chars asks, so "
-            "repeating this call returns the same text. To use the whole "
-            "document, call host.web_fetch(url, format=..., max_chars=...) in a "
-            "```python cell and parse it there.]"
-        )
-        overflow = header + len(body) + len(note) - self.output_limit
+
+        def note_for(shown: int) -> str:
+            # CLI-3: where the text the model actually sees stops, of how
+            # much, and the offset that reads on from there.
+            end = start + shown
+            of = f" of {total}" if isinstance(total, int) else ""
+            whole = f" The response is {size:,} bytes." if isinstance(size, int) else ""
+            return (
+                f"\n… [truncated at {end}{of} chars.{whole} Call web_fetch again "
+                f"with offset={end} to read on; a tool result holds at most "
+                f"{self.output_limit:,} characters whatever max_chars asks. To "
+                "use the whole document at once, call host.web_fetch(url, "
+                "format=..., max_chars=...) in a ```python cell and parse it "
+                "there.]"
+            )
+
+        keep = len(content)
+        overflow = header + len(body) + len(note_for(keep)) - self.output_limit
         if overflow > 0:
-            content = result["content"]
             keep = max(0, len(content) - overflow)
+            # The note can only grow by a digit or two as `keep` shrinks.
+            while keep and (
+                header
+                + len(_render_result_body({**result, "content": content[:keep]}))
+                + len(note_for(keep))
+                > self.output_limit
+            ):
+                keep -= 1
             body = _render_result_body({**result, "content": content[:keep]})
-        return body + note
+        return body + note_for(keep)
 
     def execute(self, runtime: Any, arguments: dict) -> dict:
         from openai4s import egress, webtools
@@ -129,6 +158,7 @@ class WebFetchTool(Tool):
                 max_chars=int(arguments.get("max_chars") or 20000),
                 method=arguments.get("method") or "GET",
                 user_agent=arguments.get("user_agent") or None,
+                offset=int(arguments.get("offset") or 0),
             )
         except (
             webtools.NetworkDisabled,

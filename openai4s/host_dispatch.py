@@ -2435,6 +2435,7 @@ class HostDispatcher:
                 fmt=options.get("fmt", "markdown"),
                 timeout=options.get("timeout", 30.0),
                 max_chars=options.get("max_chars", 20000),
+                offset=options.get("offset", 0),
             )
         return webtools.web_fetch(url, **options)
 

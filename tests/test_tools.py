@@ -522,7 +522,11 @@ def test_a_long_web_fetch_result_says_how_to_read_the_rest():
     cut_by_max_chars = format_tool_result(
         tool, {"content": "short", "truncated": True, "raw_bytes": 900}
     )
-    assert cut_by_max_chars.startswith("[Tool: web_fetch]\nshort\n… [truncated.")
+    # CLI-3: where it stops and the offset that reads on.
+    assert cut_by_max_chars.startswith(
+        "[Tool: web_fetch]\nshort\n… [truncated at 5 chars. The response is 900 "
+        "bytes. Call web_fetch again with offset=5 to read on;"
+    )
 
     whole = format_tool_result(tool, {"content": "short", "truncated": False})
     assert whole == "[Tool: web_fetch]\nshort"
@@ -530,6 +534,80 @@ def test_a_long_web_fetch_result_says_how_to_read_the_rest():
         tool, {"content": "[SECURITY WARNING — x]\n\n" + page, "raw_bytes": 1}
     )
     assert flagged.startswith("[Tool: web_fetch]\n[SECURITY WARNING — x]")
+
+
+def _stub_fetched_text(monkeypatch, body: str) -> None:
+    from openai4s import webtools
+
+    def fake(url, *, timeout=30.0, headers=None, method="GET", _max_redirects=5):
+        return body.encode("utf-8"), url, "text/plain"
+
+    monkeypatch.setattr(webtools, "_http_get", fake)
+
+
+def test_a_truncated_fetch_says_where_it_was_cut_and_how_to_read_on(monkeypatch):
+    """CLI-3: a PMC full text came back exactly 20,000 chars; the model searched
+    it for "Tm", found nothing, and changed course. Nothing said it was a part."""
+
+    from openai4s import webtools
+
+    body = "x" * 19_990 + " Tm 56.8 C " + "y" * 4_000
+    _stub_fetched_text(monkeypatch, body)
+
+    first = webtools.web_fetch("https://example.org/pmc", fmt="text")
+    assert first["truncated"] is True
+    assert len(first["content"]) == 20_000
+    assert first["total_chars"] == len(body)
+    assert first["next_offset"] == 20_000
+    assert first["note"] == (
+        f"truncated at 20000 of {len(body)} chars; "
+        "call web_fetch again with offset=20000 for the rest"
+    )
+    assert "offset" not in first
+
+    rest = webtools.web_fetch("https://example.org/pmc", fmt="text", offset=20_000)
+    assert rest["offset"] == 20_000
+    assert rest["truncated"] is False
+    assert "note" not in rest and "next_offset" not in rest
+    assert first["content"] + rest["content"] == body
+
+    # The whole page says nothing extra; an offset past the end is empty.
+    _stub_fetched_text(monkeypatch, "short page")
+    page = webtools.web_fetch("https://example.org/a", fmt="text")
+    assert page == {**page, "content": "short page", "truncated": False}
+    assert page["total_chars"] == 10 and "note" not in page
+    past = webtools.web_fetch("https://example.org/a", fmt="text", offset=99)
+    assert past["content"] == "" and past["truncated"] is False
+
+
+def test_the_fetch_tool_reads_on_from_an_offset(monkeypatch):
+    """The native tool takes the offset and its result says how to read on."""
+
+    from openai4s import webtools
+
+    body = "a" * 30_000
+    _stub_fetched_text(monkeypatch, body)
+    tool = get_tool("web_fetch")
+    assert tool.parameters["properties"]["offset"]["minimum"] == 0
+
+    class Runtime:
+        def fetch_web(self, url, **options):
+            return webtools.web_fetch(url, **options)
+
+    part = tool.execute(Runtime(), {"url": "https://example.org/a", "format": "text"})
+    obs = format_tool_result(tool, part)
+    assert len(obs) <= tool.output_limit
+    # Cut by the tool limit, not by max_chars: the offset is where the text
+    # the model actually saw stops, not where max_chars would have.
+    shown = obs.split("\n", 1)[1].split("\n… [", 1)[0]
+    assert f"offset={len(shown)}" in obs
+    assert f"of {len(body)} chars" in obs
+
+    more = tool.execute(
+        Runtime(), {"url": "https://example.org/a", "format": "text", "offset": 20_000}
+    )
+    assert more["offset"] == 20_000 and len(more["content"]) == 10_000
+    assert more["truncated"] is False
 
 
 def test_a_fetched_pdf_says_what_it_is_instead_of_dumping_its_bytes():

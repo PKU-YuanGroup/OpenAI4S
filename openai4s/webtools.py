@@ -697,6 +697,34 @@ def _strip_tags(html_text: str) -> str:
     return text.strip()
 
 
+def content_window(content: str, *, offset: int = 0, max_chars: int = 20000) -> dict:
+    """One part of a fetched document, and how to ask for the next one.
+
+    CLI-3: a PMC full text came back exactly 20,000 characters with only
+    ``truncated: True``; the model searched it for "Tm", found nothing, and
+    changed course. A cut document now says where it was cut, of how much,
+    and the ``offset`` that reads on.
+    """
+
+    total = len(content)
+    start = min(max(0, int(offset or 0)), total)
+    end = min(total, start + max(0, int(max_chars)))
+    window: dict = {
+        "truncated": end < total,
+        "content": content[start:end],
+        "total_chars": total,
+    }
+    if start:
+        window["offset"] = start
+    if end < total:
+        window["next_offset"] = end
+        window["note"] = (
+            f"truncated at {end} of {total} chars; "
+            f"call web_fetch again with offset={end} for the rest"
+        )
+    return window
+
+
 def web_fetch(
     url: str,
     fmt: str = "markdown",
@@ -705,6 +733,7 @@ def web_fetch(
     *,
     method: str = "GET",
     user_agent: str | None = None,
+    offset: int = 0,
 ) -> dict:
     """Fetch a URL and return its content. fmt ∈ {markdown, text, html, json}.
 
@@ -714,6 +743,10 @@ def web_fetch(
     pool" only to callers who send one, and without these two options three
     bundled skills used raw ``urllib`` instead, which meant their requests were
     subject to neither the egress allowlist nor the SSRF guard.
+
+    ``content`` is at most ``max_chars`` characters starting at ``offset`` in
+    the converted document (``content_window``); a cut one carries
+    ``next_offset`` and a one-line ``note`` saying how to read on.
     """
     if not re.match(r"^https?://", url, re.I):
         url = "https://" + url
@@ -748,12 +781,10 @@ def web_fetch(
         content = _html_to_markdown(raw) if fmt == "markdown" else _strip_tags(raw)
     else:
         content = raw
-    truncated = len(content) > max_chars
     return {
         "url": final_url,
         "content_type": ctype,
-        "truncated": truncated,
-        "content": content[:max_chars],
+        **content_window(content, offset=offset, max_chars=max_chars),
         # The response exactly as it came off the wire, before decoding and
         # before any reformatting. `content` above has been through
         # `decode(errors="replace")` — which maps every invalid byte sequence

@@ -280,6 +280,7 @@ class OllamaWebService:
         fmt: str = "markdown",
         timeout: float = 30.0,
         max_chars: int = 20000,
+        offset: int = 0,
     ) -> dict:
         if fmt not in ("markdown", "text") or not 1 <= max_chars <= 1_000_000:
             raise OllamaWebError(
@@ -307,9 +308,9 @@ class OllamaWebService:
             content += "\n\n" + "\n".join(links)
         return {
             "url": request["url"],
-            "content": content[:max_chars],
             "content_type": "text/markdown" if fmt == "markdown" else "text/plain",
-            "truncated": len(content) > max_chars,
+            # The same window and "how to read on" as the direct fetch (CLI-3).
+            **webtools.content_window(content, offset=offset, max_chars=max_chars),
             "source": "ollama",
             # These describe the provider response, not the origin page bytes.
             "raw_sha256": hashlib.sha256(raw).hexdigest(),

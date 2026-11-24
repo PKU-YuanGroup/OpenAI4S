@@ -1250,6 +1250,7 @@ class _Host:
         max_chars: int = 20000,
         method: str = "GET",
         user_agent: str | None = None,
+        offset: int = 0,
     ) -> dict:
         """Fetch a URL and return its content as markdown/text/html/json.
 
@@ -1259,6 +1260,10 @@ class _Host:
         their polite pool. Both exist because without them a skill that needed
         either used raw ``urllib``, and such a request is subject to neither the
         egress allowlist nor the SSRF guard.
+
+        A result cut at ``max_chars`` has ``truncated: True``, ``total_chars``,
+        ``next_offset`` and a ``note``; pass ``offset=result["next_offset"]``
+        to read on.
         """
         return self._call(
             "web_fetch",
@@ -1270,6 +1275,8 @@ class _Host:
                     "max_chars": max_chars,
                     "method": method,
                     "user_agent": user_agent,
+                    # Omitted at 0, so a default call's wire spec is unchanged.
+                    "offset": offset or None,
                 }
             ],
         )
