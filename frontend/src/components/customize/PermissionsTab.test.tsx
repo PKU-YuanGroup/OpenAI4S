@@ -258,6 +258,33 @@ describe("PermissionsTab without a session", () => {
   });
 });
 
+// PERM-3: 30+ rows of raw tool names became collapsible groups.
+describe("PermissionsTab groups", () => {
+  beforeEach(() => {
+    currentId.value = null;
+    serve(() => Promise.resolve(response({ ok: true })));
+  });
+
+  it("groups a scope's rules by what they govern, with what they amount to", async () => {
+    render();
+    await settle();
+    const tree = render();
+    const groups = withClass(tree, "perm-grp");
+    expect(groups.map((node) => node.type)).toEqual(["details", "details"]);
+    expect(groups.map((node) => node.props!["data-category"])).toEqual(["write", "install"]);
+    expect(withClass(tree, "perm-grp-h").map(text)).toEqual([
+      "Writing files · All allowed · 1 rule",
+      "Packages and environments · Needs approval · 1 rule",
+    ]);
+    // The raw tool name and pattern are inside the group, not on its header.
+    expect(withClass(groups[1], "perm-rtool").map(text)).toEqual(["env_setup"]);
+    expect(withClass(groups[1], "perm-rpat mono").map(text)).toEqual(["*"]);
+    // The add-rule form and Restore defaults stay.
+    expect(withClass(tree, "perm-rule perm-add")).toHaveLength(1);
+    expect(find(tree, (node) => node.type === "button" && text(node) === "cust.perm.resetBtn")).not.toBeNull();
+  });
+});
+
 // PERM-1: package installs ask every time, so no allow rule is written for one.
 describe("PermissionsTab and package installs", () => {
   beforeEach(() => {

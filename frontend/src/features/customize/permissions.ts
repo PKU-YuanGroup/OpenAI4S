@@ -65,6 +65,22 @@ const COPY: CopyTable = {
     "permrules.installOnce":
       "Package installs ask every time, so an allow rule for them is not saved; approve each install on its own card.",
     "permrules.installIgnored": "Ignored: package installs ask every time.",
+    "permrules.cat.read": "Reading files",
+    "permrules.cat.write": "Writing files",
+    "permrules.cat.network": "Network",
+    "permrules.cat.install": "Packages and environments",
+    "permrules.cat.command": "Shell and background commands",
+    "permrules.cat.connector": "Connectors",
+    "permrules.cat.skills": "Skills",
+    "permrules.cat.credentials": "Credentials",
+    "permrules.cat.delegate": "Sub-agents",
+    "permrules.cat.other": "Other tools",
+    "permrules.dec.allow": "All allowed",
+    "permrules.dec.ask": "Needs approval",
+    "permrules.dec.deny": "All refused",
+    "permrules.dec.mixed": "Mixed",
+    "permrules.count.one": "1 rule",
+    "permrules.count": "{0} rules",
   },
   zh: {
     "permrules.desc":
@@ -119,8 +135,93 @@ const COPY: CopyTable = {
     "permrules.tool.skills_publish": "发布技能",
     "permrules.installOnce": "装包每次都会询问，所以不会保存针对装包的“允许”规则；请在每次安装的卡片上批准。",
     "permrules.installIgnored": "不生效：装包每次都会询问。",
+    "permrules.cat.read": "读文件",
+    "permrules.cat.write": "写文件",
+    "permrules.cat.network": "联网",
+    "permrules.cat.install": "装包与环境",
+    "permrules.cat.command": "shell 与后台命令",
+    "permrules.cat.connector": "连接器",
+    "permrules.cat.skills": "技能",
+    "permrules.cat.credentials": "凭据",
+    "permrules.cat.delegate": "子智能体",
+    "permrules.cat.other": "其他工具",
+    "permrules.dec.allow": "全部允许",
+    "permrules.dec.ask": "需要批准",
+    "permrules.dec.deny": "全部拒绝",
+    "permrules.dec.mixed": "混合",
+    "permrules.count.one": "1 条规则",
+    "permrules.count": "{0} 条规则",
   },
 };
+
+/**
+ * PERM-3: the Permissions tab listed 30+ rules by raw tool name. They are
+ * grouped by what they govern, each group headed by what its rules amount to;
+ * the tool names and patterns are inside the group.
+ */
+const CATEGORIES: ReadonlyArray<readonly [string, readonly string[]]> = [
+  [
+    "read",
+    [
+      "read_file",
+      "glob",
+      "grep",
+      "list_dir",
+      "project_list_dir",
+      "project_read_file",
+      "project_glob",
+      "project_grep",
+    ],
+  ],
+  ["write", ["write_file", "edit_file", "save_artifact", "project_import_file", "materialise_artifact"]],
+  ["network", ["web_fetch", "web_search", "science_search", "web_download", "request_network_access"]],
+  ["install", ["env_setup", "env_use", "env_create"]],
+  ["command", ["bash", "exec_background"]],
+  ["connector", ["mcp_call", "mcp_resource_read", "mcp_prompt_get"]],
+  ["skills", ["skills_edit", "skills_delete", "skills_publish"]],
+  ["credentials", ["credentials_set"]],
+  ["delegate", ["delegate"]],
+];
+
+/** The category a rule's tool belongs to; "other" for anything unlisted (and `*`). */
+export function ruleCategory(tool: string): string {
+  for (const [category, tools] of CATEGORIES) if (tools.includes(tool)) return category;
+  return "other";
+}
+
+/** A scope's rules by category, in a fixed order; empty categories are left out. */
+export function groupRules(rules: readonly PermRule[]): Array<{ category: string; rules: PermRule[] }> {
+  const order = [...CATEGORIES.map(([category]) => category), "other"];
+  const by = new Map<string, PermRule[]>();
+  for (const rule of rules) {
+    const category = ruleCategory(rule.tool);
+    by.set(category, [...(by.get(category) || []), rule]);
+  }
+  return order.filter((category) => by.has(category)).map((category) => ({ category, rules: by.get(category)! }));
+}
+
+/**
+ * What a group's rules amount to: one decision, or "mixed". An install allow
+ * never answers (PERM-1), so it counts as asking.
+ */
+export function groupDecision(rules: readonly PermRule[]): string {
+  const decisions = new Set(
+    rules.map((rule) => (rule.decision === "allow" && installRule(rule.tool, rule.pattern) ? "ask" : rule.decision)),
+  );
+  return decisions.size === 1 ? [...decisions][0]! : "mixed";
+}
+
+export function categoryLabel(category: string): string {
+  return permT("permrules.cat." + category);
+}
+
+export function decisionLabel(decision: string): string {
+  return permT("permrules.dec." + decision);
+}
+
+export function ruleCount(n: number): string {
+  return n === 1 ? permT("permrules.count.one") : permT("permrules.count", n);
+}
 
 /**
  * The server's `installs_packages` (openai4s/storage/permissions.py): a shell

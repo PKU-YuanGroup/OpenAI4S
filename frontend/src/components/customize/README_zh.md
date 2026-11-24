@@ -28,7 +28,7 @@ F-19 Customize 模态。十一个 tab、嵌套编辑层，以及 `vendors/` 卡�
 | [`NestedEditor.test.tsx`](NestedEditor.test.tsx) | Skill 或 specialist 读取失败时显示错误和重试并禁止保存，空白字段不会覆盖服务端内容。 |
 | [`SkillImport.test.tsx`](SkillImport.test.tsx) | 导入审阅在启用前展示 requirements、网络模式与 readiness；导入一落地，背后的 Skills 列表就重新读取，不管审阅面板用哪种方式关闭。 |
 | [`NetworkTab.tsx`](NetworkTab.tsx) | 豆包卡、allowlist、Tavily 备份、telemetry drain。白名单部分说明这些域名分组是什么、当前是否生效（`egress_mode` 为 off 或 `allowlist`），给出切换到另一种模式的完整重启命令和复制按钮（`egressRestartCommand`；模式在启动时读取，没有运行时开关），列出已批准的域名，按界面语言显示分组名（`allowlistGroupName`），超过 12 个域名时给出剩余数量而不是悄悄截掉。 页头和开关区分应用联网（智能体的网页搜索、读取网页、科学数据库和下载；不影响模型服务）与内核联网（单元里的代码，默认被沙盒阻止，这一页的设置不会放开它）。团队成员只能查看：没有 Ollama / 豆包 key 卡片，开关锁定并写明原因。 |
-| [`PermissionsTab.tsx`](PermissionsTab.tsx) | 按作用域的审批规则。没有打开会话时读取 `GET /permissions`，只列出全局规则。每条规则写明工具的用途，标题下的摘要从全局规则读出。规则的决定是乐观更新，服务端拒绝时回到原值。团队成员看到全局规则被锁定、「恢复默认」不可用，并各自写明原因。 |
+| [`PermissionsTab.tsx`](PermissionsTab.tsx) | 按作用域的审批规则。没有打开会话时读取 `GET /permissions`，只列出全局规则。每条规则写明工具的用途，标题下的摘要从全局规则读出。规则的决定是乐观更新，服务端拒绝时回到原值。团队成员看到全局规则被锁定、「恢复默认」不可用，并各自写明原因。PERM-3：每个作用域的规则按类别（读文件、写文件、联网、装包与环境……）分成可折叠的组，组标题写明这些规则的实际效果（全部允许 / 需要批准 / 全部拒绝 / 混合），工具名和模式在组内。PERM-1：装包规则不能设为允许，添加规则的表单会说明原因。 |
 | [`SearchEngines.tsx`](SearchEngines.tsx) | 「网络」页的搜索引擎顺序：豆包固定置顶，备用引擎可拖动或用箭头排序、可开关，并可填写 Tavily / You.com key；`readOnly` 时只显示列表，没有 key 输入框，也不能修改。 |
 | [`PermissionsTab.test.tsx`](PermissionsTab.test.tsx) | 服务端接受的决定保持显示；被拒绝的决定回到规则原来的值（会触发重新渲染，下拉框随之复位）。没有会话时读取并列出全局规则及其说明和摘要；有会话时列出三个作用域。 |
 | [`refresh.test.tsx`](refresh.test.tsx) | 写入返回前用户已切到别的 tab 或打开了另一个嵌套编辑器，返回后不把用户拉回去；写入时 tab 仍在显示的，原地重读，不重新挂载。 |

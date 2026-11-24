@@ -4,9 +4,14 @@ import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { confirmAction, hint } from "../../features/customize/host";
 import {
+  categoryLabel,
+  decisionLabel,
   globalRulesSummary,
+  groupDecision,
+  groupRules,
   installRule,
   permT,
+  ruleCount,
   toolDescription,
   type PermRule,
 } from "../../features/customize/permissions";
@@ -146,6 +151,38 @@ function RuleRow({ g, r, locked }: { g: ScopeMeta; r: Rule; locked: boolean }) {
   );
 }
 
+/**
+ * PERM-3: one collapsible group of a scope's rules -- what they govern and
+ * what they amount to on the header, the tool names and patterns inside.
+ */
+function RuleGroup({
+  g,
+  category,
+  rules,
+  locked,
+}: {
+  g: ScopeMeta;
+  category: string;
+  rules: Rule[];
+  locked: boolean;
+}) {
+  const decision = groupDecision(rules);
+  return (
+    <details class="perm-grp" data-category={category} data-decision={decision}>
+      <summary class="perm-grp-h">
+        <span class="perm-grp-name">{categoryLabel(category)}</span>
+        {" · "}
+        <span class="perm-grp-dec">{decisionLabel(decision)}</span>
+        {" · "}
+        <span class="perm-grp-n">{ruleCount(rules.length)}</span>
+      </summary>
+      {rules.map((r) => (
+        <RuleRow key={r.rule_id} g={g} r={r} locked={locked} />
+      ))}
+    </details>
+  );
+}
+
 function AddRow({ g }: { g: ScopeMeta }) {
   const [tool, setTool] = useState("");
   const [pat, setPat] = useState("*");
@@ -267,8 +304,14 @@ export function PermissionsTab() {
                   </div>
                 ) : null}
                 {!rules.length ? <Note>{t("cust.perm.noRules")}</Note> : null}
-                {rules.map((r) => (
-                  <RuleRow key={r.rule_id} g={g} r={r} locked={locked} />
+                {groupRules(rules).map((group) => (
+                  <RuleGroup
+                    key={group.category}
+                    g={g}
+                    category={group.category}
+                    rules={group.rules}
+                    locked={locked}
+                  />
                 ))}
                 {locked ? null : <AddRow g={g} />}
               </div>
