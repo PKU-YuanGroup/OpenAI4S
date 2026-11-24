@@ -1384,6 +1384,21 @@ conn.close()
     );
     // The composer is this session's draft now; leave it empty for the scenes below.
     await page.locator("#composer").fill("");
+    // VIEW-2b: the session now sits on the new branch, which ends just before
+    // the question. Put it back on its main line so the capability scenes below
+    // find the question (and its fork button) where they left it.
+    await api(
+      `/frames/${encodeURIComponent(capableId)}/branches/${encodeURIComponent(capableId)}/activate`,
+      { method: "POST", data: {} },
+    );
+    await waitUntil(
+      "the capable session back on its main line",
+      async () => {
+        const projection = await api(`/frames/${encodeURIComponent(capableId)}/branches`);
+        return projection.current_branch_id === capableId ? true : null;
+      },
+      15000,
+    );
 
     const blocked = await api("/frames", { method: "POST", data: { project_id: projectId } });
     const blockedId = blocked.id || blocked.frame_id;
