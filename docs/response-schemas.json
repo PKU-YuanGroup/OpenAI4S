@@ -10593,6 +10593,64 @@
                 ],
                 "type": "object"
               },
+              "resolved": {
+                "properties": {
+                  "egress": {
+                    "properties": {
+                      "mode": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "mode"
+                    ],
+                    "type": "object"
+                  },
+                  "kernel_sandbox": {
+                    "properties": {
+                      "backend": {
+                        "type": "string"
+                      },
+                      "mode": {
+                        "type": "string"
+                      },
+                      "self_test": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "backend",
+                      "mode",
+                      "self_test"
+                    ],
+                    "type": "object"
+                  },
+                  "secret_store": {
+                    "properties": {
+                      "backend": {
+                        "type": "string"
+                      },
+                      "mode": {
+                        "type": "string"
+                      },
+                      "secure": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "backend",
+                      "mode"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "egress",
+                  "kernel_sandbox",
+                  "secret_store"
+                ],
+                "type": "object"
+              },
               "secret_store_mode": {
                 "type": "string"
               },
@@ -10605,6 +10663,7 @@
               "egress",
               "kernel_sandbox",
               "permissions",
+              "resolved",
               "secret_store_mode",
               "structured_logs"
             ],
@@ -12453,6 +12512,9 @@
                 },
                 "metadata": {
                   "properties": {
+                    "boundary": {
+                      "type": "string"
+                    },
                     "cursor_checkpoint": {
                       "type": "boolean"
                     },
@@ -12927,11 +12989,17 @@
                 "replay_policy": {
                   "type": "string"
                 },
+                "restart_decision": {
+                  "type": "null"
+                },
                 "root_frame_id": {
                   "type": "string"
                 },
                 "status": {
                   "type": "string"
+                },
+                "step_titles": {
+                  "type": "array"
                 },
                 "title": {
                   "type": "string"
@@ -12958,8 +13026,10 @@
                 "permission",
                 "provider",
                 "replay_policy",
+                "restart_decision",
                 "root_frame_id",
                 "status",
+                "step_titles",
                 "title",
                 "turn_id",
                 "usage"
@@ -14416,6 +14486,9 @@
                       },
                       "metadata": {
                         "properties": {
+                          "boundary": {
+                            "type": "string"
+                          },
                           "cursor_checkpoint": {
                             "type": "boolean"
                           },
@@ -15224,6 +15297,12 @@
           "compaction_history": {
             "type": "array"
           },
+          "compaction_threshold": {
+            "type": "integer"
+          },
+          "compaction_trigger_ratio": {
+            "type": "number"
+          },
           "compressed": {
             "type": "boolean"
           },
@@ -15282,6 +15361,8 @@
         "required": [
           "compaction_count",
           "compaction_history",
+          "compaction_threshold",
+          "compaction_trigger_ratio",
           "compressed",
           "handoff",
           "layers",
@@ -16266,6 +16347,9 @@
                     "string"
                   ]
                 },
+                "inlined_script": {
+                  "type": "null"
+                },
                 "is_latest_attempt": {
                   "type": "boolean"
                 },
@@ -16385,6 +16469,7 @@
                 "finished_at",
                 "fork_checkpoint_id",
                 "generation_id",
+                "inlined_script",
                 "is_latest_attempt",
                 "kernel_id",
                 "language",
@@ -21152,6 +21237,9 @@
                 "replay_policy": {
                   "type": "string"
                 },
+                "restart_decision": {
+                  "type": "null"
+                },
                 "root_frame_id": {
                   "type": "string"
                 },
@@ -21172,6 +21260,9 @@
                 },
                 "status": {
                   "type": "string"
+                },
+                "step_titles": {
+                  "type": "array"
                 },
                 "title": {
                   "type": "string"
@@ -21198,9 +21289,11 @@
                 "permission",
                 "provider",
                 "replay_policy",
+                "restart_decision",
                 "root_frame_id",
                 "session",
                 "status",
+                "step_titles",
                 "title",
                 "turn_id",
                 "usage"
