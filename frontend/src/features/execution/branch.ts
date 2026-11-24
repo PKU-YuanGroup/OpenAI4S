@@ -188,8 +188,11 @@ export async function forkFromMessage(
       if (!stillOnFrame(frameId)) return null;
     }
     if (options.onCreating) options.onCreating();
-    const body: Record<string, string> = { from_message_id: messageId };
+    const body: Record<string, string | boolean> = { from_message_id: messageId };
     if (name) body.name = name;
+    // VIEW-2b: the question goes back into the composer to be asked again, so
+    // the branch ends just before it rather than already holding it.
+    if (activate && question) body.before_source = true;
     const attempt = await forkOnce(() =>
       api(`/frames/${encodeURIComponent(frameId)}/branches/fork`, {
         method: "POST",
@@ -353,6 +356,8 @@ export function checkpointLabel(checkpoint: unknown): string {
       ? new Date(at).toLocaleTimeString(LANG === "zh" ? "zh-CN" : "en-US", { hour12: false })
       : "";
   const reason = publicText(cp.reason, 80);
+  // VIEW-2b: the boundary a question branch starts from, taken with the question.
+  if (reason === "cursor_message_before") return branchT("branch.cp.beforeMessage", when);
   if (reason === "cursor_message" || cp.source_kind === "message") return branchT("branch.cp.message", when);
   if (reason === "cursor_cell" || cp.source_kind === "cell") return branchT("branch.cp.cell", when);
   return when ? branchT("branch.cp.other", reason || "checkpoint", when) : reason || "checkpoint";

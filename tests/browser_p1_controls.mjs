@@ -1322,11 +1322,14 @@ conn.close()
       );
       await capableBtn.click({ force: true });
       await new Promise((resolve) => setTimeout(resolve, 250));
+      // VIEW-2b: the question goes back into the composer, so the branch
+      // ends just before it (`before_source`) instead of already holding it.
       check(
-        "one fork POST, body exactly {from_message_id, name} with the short name",
+        "one fork POST, body exactly {before_source, from_message_id, name} with the short name",
         forkPosts.length === 1 &&
           forkPosts[0] &&
-          Object.keys(forkPosts[0]).sort().join(",") === "from_message_id,name" &&
+          Object.keys(forkPosts[0]).sort().join(",") === "before_source,from_message_id,name" &&
+          forkPosts[0].before_source === true &&
           forkPosts[0].from_message_id === capableMessageId &&
           forkPosts[0].name === shortName,
         JSON.stringify(forkPosts),
@@ -1360,6 +1363,12 @@ conn.close()
       "the question back in the composer",
       () => page.locator("#composer").inputValue().then((value) => value === capableText ? value : null),
       15000,
+    );
+    const branchConversation = await api(`/frames/${encodeURIComponent(capableId)}/messages`);
+    check(
+      "the new branch's conversation does not already hold the question",
+      !(branchConversation.messages || []).some((message) => message.content === capableText),
+      JSON.stringify((branchConversation.messages || []).map((message) => message.content)),
     );
     await page.evaluate(() => {
       setActiveTab("timeline");

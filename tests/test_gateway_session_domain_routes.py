@@ -959,6 +959,102 @@ def test_fork_from_second_message_keeps_earlier_file_and_leaves_root_active(tmp_
         runner.close()
 
 
+def test_fork_before_a_question_ends_just_before_it(tmp_path):
+    """VIEW-2b: "branch from this question" puts the question back in the
+    composer to be asked again, so the branch must not already hold it."""
+
+    runner, handler, frame_id = _setup(tmp_path)
+    runner.store.update_frame(frame_id, name="question branch")
+    written = {"n": 0}
+
+    def loop(st, _emit, _visible):
+        written["n"] += 1
+        name = "A.txt" if written["n"] == 1 else "B.txt"
+        (st.workspace / name).write_text(name + "\n", encoding="utf-8")
+        st.dispatcher.last_output = {"output": "done"}
+        return "submitted"
+
+    runner._loop = loop
+    try:
+        for text in ("message one", "message two"):
+            response = runner.run_message(frame_id, "project-domain", text)
+            assert response["status"] == "completed"
+        code, messages = _call(handler, "GET", f"/frames/{frame_id}/messages")
+        assert code == 200
+        original = [(item["role"], item["content"]) for item in messages["messages"]]
+        question = next(
+            item for item in messages["messages"] if item["content"] == "message two"
+        )
+
+        code, fork = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/fork",
+            body={
+                "from_message_id": question["message_id"],
+                "name": "message two",
+                "before_source": True,
+            },
+        )
+        assert code == 200
+        assert fork["source_kind"] == "message"
+        assert fork["source_id"] == question["message_id"]
+        assert fork["from_checkpoint_id"] != question["fork_checkpoint_id"]
+        assert fork["active"] is False
+
+        code, branch_messages = _call(
+            handler,
+            "GET",
+            f"/frames/{frame_id}/messages",
+            query={"branch_id": [fork["branch_id"]]},
+        )
+        assert code == 200
+        before = original[: original.index(("user", "message two"))]
+        assert before and before[0] == ("user", "message one")
+        assert [
+            (item["role"], item["content"]) for item in branch_messages["messages"]
+        ] == before
+        # The same workspace as the question's own checkpoint.
+        message_checkpoint = runner.store.get_session_checkpoint(
+            question["fork_checkpoint_id"]
+        )
+        boundary = runner.store.get_session_checkpoint(fork["from_checkpoint_id"])
+        assert boundary["workspace_tree_id"] == message_checkpoint["workspace_tree_id"]
+        fork_workspace = runner.workspace_for_branch(frame_id, fork["branch_id"])
+        assert (fork_workspace / "A.txt").read_text(encoding="utf-8") == "A.txt\n"
+        assert not (fork_workspace / "B.txt").exists()
+        # The main line is unchanged and still active.
+        code, after = _call(handler, "GET", f"/frames/{frame_id}/messages")
+        assert [(item["role"], item["content"]) for item in after["messages"]] == (
+            original
+        )
+        assert runner.store.active_session_branch(frame_id) == frame_id
+
+        for body, reason in (
+            (
+                {"from_message_id": question["message_id"], "before_source": "yes"},
+                "before_source must be a boolean",
+            ),
+            (
+                {"from_cell_id": "cell-1", "before_source": True},
+                "before_source applies only to from_message_id",
+            ),
+            (
+                {
+                    "from_checkpoint_id": question["fork_checkpoint_id"],
+                    "before_source": True,
+                },
+                "before_source applies only to from_message_id",
+            ),
+        ):
+            with pytest.raises(gateway_mod.GatewayError) as refused:
+                _call(handler, "POST", f"/frames/{frame_id}/branches/fork", body=body)
+            assert refused.value.code == 400
+            assert refused.value.message == reason
+    finally:
+        runner.close()
+
+
 def test_message_snapshot_failure_does_not_fail_message_or_advertise_fork(tmp_path):
     runner, handler, frame_id = _setup(tmp_path)
     runner.store.update_frame(frame_id, name="snapshot failure")

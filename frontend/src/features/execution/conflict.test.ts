@@ -370,7 +370,9 @@ describe("forking from a question opens the branch", () => {
     const name = questionBranchName(QUESTION);
     expect(dialogMock.asked).toEqual([branchT("branch.activateConfirm", name)]);
     expect(creating).toHaveBeenCalledTimes(1);
-    expect(posts).toEqual([{ from_message_id: "msg-9", name }]);
+    // VIEW-2b: the question is asked again from the composer, so the branch
+    // must end just before it, not already hold it.
+    expect(posts).toEqual([{ from_message_id: "msg-9", name, before_source: true }]);
     expect(activate).toHaveBeenCalledWith("br-q", { confirmed: true, name });
     expect(result).toEqual({ ok: true, branch_id: "br-q", name, activated: true });
     expect(composer.value).toBe(QUESTION);
@@ -419,7 +421,8 @@ describe("forking from a question opens the branch", () => {
     branchState.value = { capabilities: { activate: false, fork_from_message: true } };
     const result = await forkFromMessage("frame-1", "msg-9", { question: QUESTION });
     expect(dialogMock.asked).toEqual([]);
-    expect(posts).toHaveLength(1);
+    // Nothing is put back in the composer here, so the branch keeps the question.
+    expect(posts).toEqual([{ from_message_id: "msg-9", name: questionBranchName(QUESTION) }]);
     expect(activate).not.toHaveBeenCalled();
     expect(result).toMatchObject({ ok: true, branch_id: "br-q" });
     expect(composer.value).toBe("");
@@ -521,5 +524,9 @@ describe("recovery and checkpoint words", () => {
       branchT("branch.cp.cell", new Date(at).toLocaleTimeString("en-US", { hour12: false })),
     );
     expect(checkpointLabel({ reason: "before cleanup" })).toBe("before cleanup");
+    // VIEW-2b: the boundary a question branch starts from, not "cursor_message_before · …".
+    expect(checkpointLabel({ reason: "cursor_message_before", created_at: at })).toBe(
+      branchT("branch.cp.beforeMessage", new Date(at).toLocaleTimeString("en-US", { hour12: false })),
+    );
   });
 });
