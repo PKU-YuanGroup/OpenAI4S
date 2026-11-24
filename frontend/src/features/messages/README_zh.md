@@ -27,6 +27,7 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`delta.ts`](delta.ts) | `liveOutputDelta`、`bindStreamingPre`（`appendData`；每块只检查该块本身，经 `liveOutputIncrement`）、`toolMetaLabel`（功能内文案：按界面语言显示 "N 行" / "完成"）。 |
 | [`delta.test.ts`](delta.test.ts) | 1MB 截断幂等；换行只数增量；`append` 不搜索也不切片已有输出；元信息行的中英文。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `#messages` / `ensureMessageDom`（Shell 渲染后是空操作；不得在 `render()` 之前调用）；`keepStripsLast` 在回合新增内容时让会话的两条文件条（“本会话输入 / 本会话产物”）始终排在转录末尾，两条遵循同一条位置规则。 |
+| [`example.ts`](example.ts) | ONB-4（负责人决定 37）：`GET /example/session` 表明示例尚未运行时，示例项目的空会话提供「运行示例」，用与首页相同的请求启动它，并在示例会话一出现就打开它。`readExampleSeed` / `requestExampleSeed` 与 `sessions/dashboard.ts` 共用；放在这里是为了不让转录内容模块导入首页模块。 |
 | [`fetch.ts`](fetch.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages`（6926-6961）。 |
 | [`handlers.ts`](handlers.ts) | `text_reset` / `text_chunk` / `user_message` WS handler。 |
 | [`handlers.test.ts`](handlers.test.ts) | mine / 陈旧 turn 守卫；重复注册幂等。 |

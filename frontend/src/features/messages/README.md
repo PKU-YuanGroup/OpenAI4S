@@ -27,6 +27,7 @@ F-10 message stream. Framed history paint (40 rows per rAF + one fragment), dual
 | [`delta.ts`](delta.ts) | `liveOutputDelta`, `bindStreamingPre` (`appendData`; each chunk is examined alone, via `liveOutputIncrement`), `toolMetaLabel` (feature-local copy: "N lines" / "done" in the UI language). |
 | [`delta.test.ts`](delta.test.ts) | 1MB truncation idempotent; newlines counted on the increment only; `append` neither searches nor slices the output it holds; the meta line in both languages. |
 | [`dom.ts`](dom.ts) | `$` / `el` / `#messages` / `ensureMessageDom` (a no-op once the Shell has rendered; never before `render()`); `keepStripsLast` keeps the session's two file strips ("This session's inputs / files") last in the transcript when a turn adds a row, so both follow one placement rule. |
+| [`example.ts`](example.ts) | ONB-4 (owner decision 37): the empty session of 示例项目 offers "Run the example" while `GET /example/session` says it has not been run, starts it with the request the home page sends, and opens the example's session as soon as it exists. `readExampleSeed` / `requestExampleSeed` are shared with `sessions/dashboard.ts`; kept here so the transcript does not import the dashboard. |
 | [`fetch.ts`](fetch.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` (6926-6961). |
 | [`handlers.ts`](handlers.ts) | `text_reset` / `text_chunk` / `user_message` WS handlers. |
 | [`handlers.test.ts`](handlers.test.ts) | mine / stale-turn guards; idempotent register. |
