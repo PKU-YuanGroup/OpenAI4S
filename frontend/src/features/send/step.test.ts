@@ -202,6 +202,47 @@ describe("step card copy follows the UI language", () => {
     relabelStepCards();
     expect(words(read)).toEqual(["读取项目文件 cohort.csv", "12 条结果"]);
   });
+
+  it("a step's structured summary is worded in the UI language, its English line kept for the fallback (CHAT-6)", async () => {
+    await setLang("zh");
+    const envs = renderStoredStep({
+      step_id: "e-1",
+      kind: "env",
+      status: "done",
+      title: "Listing runtime environments",
+      summary: "4 envs, 3 missing",
+      output: {
+        environments: [],
+        summary_parts: [
+          { key: "count", unit: "env", n: 4 },
+          { key: "missing", n: 3 },
+        ],
+      },
+    }) as unknown as El;
+    const meta = (card: El) => card.querySelector(".s-meta")!.textContent;
+    expect(meta(envs)).toBe("4 个运行环境 · 缺少 3 个软件包");
+    // A part this build does not know: the English line, translated by pattern.
+    const future = renderStoredStep({
+      step_id: "e-2",
+      kind: "skill",
+      status: "done",
+      title: "Loading figure-style skill guidance",
+      summary: "loaded",
+      output: { summary_parts: [{ key: "somethingNew" }] },
+    }) as unknown as El;
+    expect(meta(future)).toBe("已加载");
+    await setLang("en");
+    relabelStepCards();
+    expect(meta(envs)).toBe("4 envs · 3 missing");
+  });
+
+  it("a generic step body does not dump the structured summary", () => {
+    const card = open(
+      buildStepCard({ step_id: "g-1", kind: "tool", status: "done", output: { result: "ok", summary_parts: [{ key: "done" }] } }),
+    );
+    expect(card.querySelector(".s-pre")!.textContent).toContain('"result": "ok"');
+    expect(card.querySelector(".s-pre")!.textContent).not.toContain("summary_parts");
+  });
 });
 
 describe("a collapsed step card builds its body on first expand", () => {

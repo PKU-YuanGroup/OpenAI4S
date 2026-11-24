@@ -324,7 +324,9 @@ export function feed(
       const { card, meta, pre, handle } = stored
         ? resetActivityCard(stored, label)
         : buildActivityCard(label, suba);
-      handle.append(raw + "\n");
+      // The header is the card's title, already on its head and in the UI
+      // language there; echoed as the body's first line it read "Running
+      // analysis · cell 2" in English above the code (CHAT-6).
       // Not a success check until the cell says so (cardState.ts).
       if (!suba) markCardRunning(card, event);
       if (!stored || !adoptIntoLiveStream(card)) {

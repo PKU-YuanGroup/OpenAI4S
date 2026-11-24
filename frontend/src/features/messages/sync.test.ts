@@ -1218,8 +1218,9 @@ describe("a turn's code cells, live and reopened", () => {
     // One card, in the live turn, after the prose the replay put before it.
     expect(messages().querySelectorAll(".activity")).toHaveLength(1);
     expect(transcriptShape()).toEqual(["msg user", "turn:md,activity ok,md"]);
+    // The title is on the head, not echoed as the body's first line (CHAT-6).
     expect(messages().querySelector(".activity pre")?.textContent).toBe(
-      "Load the plate\n" + CODE_1 + "\n----- output -----\nrow 0\nrow 1\nrow 2\n",
+      CODE_1 + "\n----- output -----\nrow 0\nrow 1\nrow 2\n",
     );
   });
 

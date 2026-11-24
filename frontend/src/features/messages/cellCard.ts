@@ -139,7 +139,6 @@ export function renderStoredCell(cell: StoredCell, target?: ParentNode | null): 
   // The live line count: lines after the divider, under the same cap, painted
   // while the cell ran (so one printed line shows no count, as it did live).
   const probe = bindStreamingPre({ appendData() {} }, "");
-  probe.append(title + "\n");
   probe.append(code);
   probe.append(output);
   meta.textContent = toolMetaLabel(probe.outputLines, true);
@@ -148,7 +147,7 @@ export function renderStoredCell(cell: StoredCell, target?: ParentNode | null): 
   head.onclick = () => {
     if (!filled) {
       filled = true;
-      handle.append(title + "\n");
+      // The title is the head's; the body starts with the code, as live (CHAT-6).
       handle.append(code);
       handle.append(output);
     }

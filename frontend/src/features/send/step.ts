@@ -37,7 +37,7 @@ import {
   stepNetworkMeta,
 } from "./skill-network";
 import { reviewFailureText } from "./review-copy";
-import { stepSummaryText, stepTitleText } from "./step-title";
+import { stepSummaryFromParts, stepSummaryText, stepTitleText } from "./step-title";
 
 export type Step = {
   step_id?: string;
@@ -693,7 +693,9 @@ export function stepBody(step: Step): HTMLElement {
     }
     return box;
   }
-  const dump = out && Object.keys(out).length ? out : inp;
+  // The structured summary (CHAT-6) is the head's, not the body's.
+  const { summary_parts: _summaryParts, ...shown } = out;
+  const dump = Object.keys(shown).length ? shown : inp;
   box.appendChild(clipPre(JSON.stringify(dump, null, 2)));
   return box;
 }
@@ -713,6 +715,18 @@ function stepSummary(step: Step): string {
   const saved = rec(step.output).artifacts;
   if (step.kind !== "artifact" || !Array.isArray(saved) || !saved.length) return "";
   return saved.length + (saved.length === 1 ? " artifact" : " artifacts");
+}
+
+/**
+ * The summary in the UI language: the structured parts the host sends beside
+ * its English line (CHAT-6), else that line translated by pattern (a record
+ * stored before the parts, or a step the gateway wrote itself).
+ */
+function stepSummaryWords(step: Step): string {
+  const structured = stepSummaryFromParts(rec(step.output).summary_parts);
+  if (structured) return structured;
+  const legacy = stepSummary(step);
+  return legacy ? stepSummaryText(legacy) : "";
 }
 
 /**
@@ -757,7 +771,7 @@ function paintStepWords(handle: StepHandle): void {
         : ""
       : stepNetworkMeta(step) ||
         (declined ? declinedMeta(declined) : "") ||
-        (stepSummary(step) ? stepSummaryText(stepSummary(step)) : "") ||
+        stepSummaryWords(step) ||
         (step.output && rec(step.output).error ? t("step.status.failed") : "");
   const label = card.querySelector(".s-lbl");
   // A loaded Skill's network limit: the server words these in English.

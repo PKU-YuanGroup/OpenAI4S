@@ -1069,16 +1069,82 @@ def _delegate_step_projection(result: Any, ok: bool) -> tuple[dict, str, str]:
     return ({"raw": _short(safe, 2000)}, "malformed result", "error")
 
 
+#: One part of a step's structured summary: ``{"key": <copy key>, **args}``.
+#: The Web card words it in the UI language from a copy table and joins the
+#: parts with " · "; the English ``summary`` string stays beside it for the
+#: legacy ``app.js`` shell and for records stored before (CHAT-6).
+SummaryPart = dict[str, Any]
+
+
+def _count_part(n: int, unit: str) -> SummaryPart:
+    return {"key": "count", "unit": unit, "n": int(n)}
+
+
+def _failure_parts(reason: str) -> list[SummaryPart]:
+    return [{"key": "failed", "reason": reason[:160]}]
+
+
+def _delegate_summary_parts(result: Any, ok: bool) -> list[SummaryPart]:
+    """The parts of ``_delegate_step_projection``'s one-line summary."""
+    if not ok:
+        err = result.get("error") if isinstance(result, dict) else None
+        return _failure_parts(" ".join(str(err).split()) if err else "")
+    if isinstance(result, list):
+        if not result:
+            return [_count_part(0, "child")]
+        counts: dict[str, int] = {}
+        for item in result:
+            word = _delegate_result_word(item)
+            counts[word] = counts.get(word, 0) + 1
+        return [_count_part(len(result), "child")] + [
+            {"key": "delegateCount", "status": word, "n": n}
+            for word, n in counts.items()
+        ]
+    return [{"key": "delegate", "status": _delegate_result_word(result)}]
+
+
+def _read_summary_parts(result: Mapping[str, Any]) -> list[SummaryPart]:
+    """``read_step_summary``'s line as parts: the lines this read returned."""
+    total = int(result.get("total_lines") or 0)
+    whole = [_count_part(total, "line")]
+    offset = result.get("offset")
+    if type(offset) is not int or total <= 0:
+        return whole
+    content = str(result.get("content") or "")
+    shown = content.count("\n") + 1 if content else 0
+    if shown == 0:
+        return whole if offset == 0 else [{"key": "pastEnd", "total": total}]
+    if offset == 0 and shown >= total:
+        return whole
+    return [{"key": "lines", "from": offset + 1, "to": offset + shown, "total": total}]
+
+
 def _step_end(
     method: str, kind: str, result: Any, ok: bool, *, frame_id: str | None = None
 ) -> tuple[dict, str]:
     """(output, one-line summary) for a finished step."""
+    output, summary, _parts = _step_end_view(
+        method, kind, result, ok, frame_id=frame_id
+    )
+    return (output, summary)
+
+
+def _step_end_view(
+    method: str, kind: str, result: Any, ok: bool, *, frame_id: str | None = None
+) -> tuple[dict, str, list[SummaryPart]]:
+    """(output, English one-line summary, structured summary parts).
+
+    The summary used to be English only, and the Web card translated it by
+    pattern: anything outside a closed set ("4 envs, 3 missing", "6 results ·
+    you.com", "loaded") stayed English in a Chinese UI. The parts carry the
+    same facts as keys and values the card can word itself (CHAT-6).
+    """
     if kind == "delegate":
         # Before the generic declared-failure read: a max_turns envelope
         # carries a top-level ``error`` beside its structured fields, and the
         # card must keep the structure rather than collapse to the error.
         output, summary, _status = _delegate_step_projection(result, ok)
-        return (output, summary)
+        return (output, summary, _delegate_summary_parts(result, ok))
     err = _declared_failure_reason(result)
     if not ok or err is not None:
         # Carry the reason onto the card. This used to collapse every failure
@@ -1095,7 +1161,7 @@ def _step_end(
         blocked = refusal_view(reason, frame_id)
         if blocked is not None:
             failure["blocked"] = blocked
-        return (failure, summary)
+        return (failure, summary, _failure_parts(reason))
     r = result if isinstance(result, dict) else {}
     if kind == "search":
         raw = result if isinstance(result, list) else r.get("results")
@@ -1112,33 +1178,51 @@ def _step_end(
         n = len(raw) if isinstance(raw, list) else int(r.get("count") or 0)
         note = r.get("note")
         src = r.get("source")
+        parts = [_count_part(n, "result")]
+        if src:
+            parts.append({"key": "text", "text": str(src)})
         return (
             {"results": items, "note": note, "source": src},
             _plural(n, "result") + (f" · {src}" if src else ""),
+            parts,
         )
     if method == "web_download":
         # A download returns no text: counted as characters it read
         # "0 chars" for a file of any size. The result's path is the resolved
         # local one, so the card keeps the request's workspace-relative path.
+        size = int(r.get("bytes") or 0)
         return (
             {"bytes": r.get("bytes"), "url": r.get("url")},
-            f"{int(r.get('bytes') or 0):,} bytes",
+            f"{size:,} bytes",
+            [_count_part(size, "byte")],
         )
     if kind == "fetch":
         text = r.get("content") or r.get("text") or r.get("markdown") or ""
-        return ({"content": text[:8000], "url": r.get("url")}, f"{len(text):,} chars")
+        return (
+            {"content": text[:8000], "url": r.get("url")},
+            f"{len(text):,} chars",
+            [_count_part(len(text), "char")],
+        )
     if kind == "science":
         databases = r.get("databases") or []
-        return ({"databases": databases}, _plural(len(databases), "database"))
+        return (
+            {"databases": databases},
+            _plural(len(databases), "database"),
+            [_count_part(len(databases), "database")],
+        )
     if kind == "edit":
+        replaced = int(r.get("replaced") or 0)
         return (
             {"path": r.get("path"), "replaced": r.get("replaced")},
-            _plural(int(r.get("replaced") or 0), "change"),
+            _plural(replaced, "change"),
+            [_count_part(replaced, "change")],
         )
     if kind == "write":
+        size = int(r.get("bytes") or 0)
         return (
             {"path": r.get("path"), "bytes": r.get("bytes")},
-            f"{int(r.get('bytes') or 0):,} bytes",
+            f"{size:,} bytes",
+            [_count_part(size, "byte")],
         )
     if kind == "read":
         return (
@@ -1148,14 +1232,23 @@ def _step_end(
                 "content": (r.get("content") or "")[:6000],
             },
             read_step_summary(r),
+            _read_summary_parts(r),
         )
     if kind == "files":
         rows = r.get("matches") or r.get("entries") or []
         n = int(r.get("count") or len(rows))
-        return ({"matches": rows[:200], "count": n}, _plural(n, "item"))
+        return (
+            {"matches": rows[:200], "count": n},
+            _plural(n, "item"),
+            [_count_part(n, "item")],
+        )
     if kind == "plan":
         todos = r.get("todos", [])
-        return ({"todos": todos}, _plural(len(todos), "step"))
+        return (
+            {"todos": todos},
+            _plural(len(todos), "step"),
+            [_count_part(len(todos), "step")],
+        )
     if kind == "skill":
         if method == "search_skills":
             # Two shapes reach this card. With the experimental skill_suggest
@@ -1168,6 +1261,11 @@ def _step_end(
             names = [s.get("name") for s in rows if isinstance(s, dict)]
             card: dict[str, Any] = {"skills": names}
             summary = ", ".join(n for n in names[:4] if n) or "no match"
+            parts = (
+                [{"key": "text", "text": summary}]
+                if any(names[:4])
+                else [{"key": "noMatch"}]
+            )
             status = r.get("semantic_status")
             suggestions = r.get("semantic_suggestions")
             if status is not None or suggestions:
@@ -1175,8 +1273,10 @@ def _step_end(
                 card["semantic_suggestions"] = list(suggestions or [])
                 if not names and suggestions:
                     summary = _plural(len(suggestions), "suggestion")
-            return (card, summary)
+                    parts = [_count_part(len(suggestions), "suggestion")]
+            return (card, summary, parts)
         if method == "skills_status":
+            active = bool(r.get("active"))
             return (
                 {
                     "name": r.get("name"),
@@ -1184,7 +1284,8 @@ def _step_end(
                     "active_version_id": r.get("active_version_id"),
                     "read_only": r.get("read_only"),
                 },
-                "active" if r.get("active") else "not installed",
+                "active" if active else "not installed",
+                [{"key": "active" if active else "notInstalled"}],
             )
         if method == "skills_history":
             versions = r.get("versions") or []
@@ -1194,11 +1295,13 @@ def _step_end(
                     "versions": versions,
                 },
                 _plural(len(versions), "version"),
+                [_count_part(len(versions), "version")],
             )
         if method == "skills_rollback":
             return (
                 {"name": r.get("name"), "version_id": r.get("version_id")},
                 "rolled back",
+                [{"key": "rolledBack"}],
             )
         if method == "skills_read":
             # A reference read returns bytes, not a Skill record: the generic
@@ -1208,6 +1311,7 @@ def _step_end(
             return (
                 {"content": text[:24000], "chars": len(text)},
                 _plural(len(text), "char") + " read",
+                [{"key": "charsRead", "n": len(text)}],
             )
         card = {
             "name": r.get("name"),
@@ -1220,41 +1324,67 @@ def _step_end(
         if isinstance(session_network, dict) and session_network.get("domains"):
             card["session_network"] = session_network
             count = len(session_network["domains"])
-            return (card, f"loaded · network limited to {_plural(count, 'domain')}")
-        return (card, "loaded")
+            return (
+                card,
+                f"loaded · network limited to {_plural(count, 'domain')}",
+                [{"key": "loaded"}, {"key": "networkLimited", "n": count}],
+            )
+        return (card, "loaded", [{"key": "loaded"}])
     if kind == "env":
         used = r.get("env")
         if isinstance(used, dict) and used.get("name"):  # env_use → switch
-            return (r, "→ " + used["name"])
+            return (
+                r,
+                "→ " + used["name"],
+                [{"key": "switched", "name": str(used["name"])}],
+            )
         envs = r.get("environments")
         if envs is not None:
             rec = r.get("recommend")
             summ = _plural(len(envs), "env")
+            parts = [_count_part(len(envs), "env")]
             if rec:
                 summ += f" · use {rec}"
+                parts.append({"key": "recommend", "name": str(rec)})
             elif r.get("missing"):
                 summ += f", {len(r['missing'])} missing"
-            return (r, summ)
+                parts.append({"key": "missing", "n": len(r["missing"])})
+            return (r, summ, parts)
         installed = r.get("installed") or []
-        return (r, ("installed " + ", ".join(installed[:4])) if installed else "ready")
+        if installed:
+            names = [str(name) for name in installed[:4]]
+            return (
+                r,
+                "installed " + ", ".join(installed[:4]),
+                [{"key": "installed", "names": names}],
+            )
+        return (r, "ready", [{"key": "ready"}])
     if kind == "artifact":
         if method == "list_artifact_versions":
             versions = r.get("versions") or []
+            n = int(r.get("count") or len(versions))
             return (
                 {
                     "artifact_id": r.get("artifact_id"),
                     "versions": versions,
                 },
-                _plural(int(r.get("count") or len(versions)), "version"),
+                _plural(n, "version"),
+                [_count_part(n, "version")],
             )
         if method == "get_artifact_metadata":
             version = r.get("version") or {}
+            version_id = version.get("version_id")
             return (
                 {
                     "artifact": r.get("artifact"),
                     "version": version,
                 },
-                str(version.get("version_id") or "inspected"),
+                str(version_id or "inspected"),
+                (
+                    [{"key": "text", "text": str(version_id)}]
+                    if version_id
+                    else [{"key": "inspected"}]
+                ),
             )
         if method == "restore_artifact_version":
             return (
@@ -1264,15 +1394,27 @@ def _step_end(
                     "restored_from_version_id": r.get("restored_from_version_id"),
                 },
                 "restored as new version",
+                [{"key": "restored"}],
             )
         return (
             {"filename": r.get("filename"), "version_id": r.get("version_id")},
             "saved",
+            [{"key": "saved"}],
         )
     if kind == "mcp":
         if method == "mcp_call":
-            return call_step_output(result)
-        return ({"result": _short(result, 2000)}, "done")
+            output, summary = call_step_output(result)
+            # A short answer is the summary itself; anything else said "done".
+            return (
+                output,
+                summary,
+                (
+                    [{"key": "done"}]
+                    if summary == "done"
+                    else [{"key": "text", "text": summary}]
+                ),
+            )
+        return ({"result": _short(result, 2000)}, "done", [{"key": "done"}])
     if kind == "fold":
         n_plddt = len((r.get("plddt_csv") or "").splitlines())
         out = {
@@ -1288,12 +1430,15 @@ def _step_end(
             "plddt_rows": max(0, n_plddt - 1),
         }
         bits = []
+        parts = []
         if r.get("length"):
             bits.append(f"{r['length']} aa")
+            parts.append({"key": "text", "text": f"{r['length']} aa"})
         if r.get("mean_plddt") is not None:
             bits.append(f"mean pLDDT {r['mean_plddt']}")
-        return (out, " · ".join(bits) or "folded")
-    return ({"result": _short(result)}, "done")
+            parts.append({"key": "text", "text": f"mean pLDDT {r['mean_plddt']}"})
+        return (out, " · ".join(bits) or "folded", parts or [{"key": "folded"}])
+    return ({"result": _short(result)}, "done", [{"key": "done"}])
 
 
 class HostDispatcher:
@@ -2924,9 +3069,13 @@ class HostDispatcher:
                     step_result = result
                     if step_result is None and raised_error is not None:
                         step_result = {"error": raised_error}
-                    output, summary = _step_end(
+                    output, summary, parts = _step_end_view(
                         method, view[0], step_result, ok, frame_id=self.frame_id
                     )
+                    # CHAT-6: the structured summary travels inside the
+                    # output (stored with it and replayed on reopen), beside
+                    # the English ``summary`` the legacy shell still reads.
+                    output = {**output, "summary_parts": parts}
                     if view[0] == "delegate":
                         # Delegate-specific status read at the decision site:
                         # the envelope's task_status is authoritative, and the
