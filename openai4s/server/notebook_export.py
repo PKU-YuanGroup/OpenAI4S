@@ -133,6 +133,55 @@ def _suffix(filename: str) -> str:
     return filename[dot:].lower() if dot >= 0 else ""
 
 
+def _inlined_script(cell: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    script = cell.get("inlined_script")
+    if (
+        not isinstance(script, Mapping)
+        or type(script.get("path")) is not str
+        or not script.get("path")
+        or type(script.get("content")) is not str
+    ):
+        return None
+    return script
+
+
+def _export_source(cell: Mapping[str, Any], *, zh: bool = False) -> str:
+    """NB-1: a run-this-file Cell exports the script it ran, not the call.
+
+    The call stays above it as a comment, so the notebook says what the Cell
+    was and still runs top to bottom once the file is gone. A script that was
+    too long to keep whole is not inlined -- half a script that runs is worse
+    than a call that fails -- and the comment says why.
+    """
+
+    code = str(cell.get("code") or "")
+    script = _inlined_script(cell)
+    if script is None:
+        return code
+    path = str(script["path"])
+    original = "".join(
+        f"# {line}\n" for line in code.strip("\n").splitlines() if line.strip()
+    )
+    if script.get("truncated"):
+        size = script.get("size_bytes")
+        note = (
+            f"# {path} 运行时有 {size} 字节，只记录了开头部分，所以这里没有内联它。\n"
+            if zh
+            else f"# {path} was {size} bytes when it ran; only its beginning was "
+            "recorded, so it is not inlined here.\n"
+        )
+        return note + code
+    header = (
+        f"# 内联自 {path}（运行时内容）；单元原文：\n"
+        if zh
+        else f"# inlined from {path} as it was when run; the cell itself was:\n"
+    )
+    content = str(script["content"])
+    if content and not content.endswith("\n"):
+        content += "\n"
+    return header + original + content
+
+
 def _cell_failed(cell: Mapping[str, Any]) -> bool:
     return bool(
         str(cell.get("error") or "").strip()
@@ -523,6 +572,24 @@ class NotebookExportService:
             lines.append(source.rstrip("\n"))
             lines.append("```")
             lines.append("")
+            script = _inlined_script(cell)
+            if script is not None:
+                # NB-1: the file this Cell ran, as it was when it ran.
+                cut = " (truncated: only its beginning was recorded)"
+                lines.append(
+                    f"Script `{script['path']}` as it ran"
+                    + (cut if script.get("truncated") else "")
+                    + ":"
+                )
+                lines.append("")
+                body = str(script["content"]).rstrip("\n")
+                ticks = "```"
+                while ticks in body:
+                    ticks += "`"
+                lines.append(f"{ticks}{fence}")
+                lines.append(body)
+                lines.append(ticks)
+                lines.append("")
             # The same three fields `_cell` reads, so the two exports cannot
             # disagree about what a cell produced.
             for name, label in (("stdout", "Output"), ("stderr", "Stderr")):
@@ -685,7 +752,7 @@ class NotebookExportService:
         )
         header = _clean_header(title, language, failed, diagnostic, zh=zh)
         needs_stub = language == "python" and any(
-            _HOST_CALL.search(str(cell.get("code") or "")) for cell in kept
+            _HOST_CALL.search(_export_source(cell)) for cell in kept
         )
         if needs_stub:
             header += "\n\n" + _HOST_STUB_NOTE["zh" if zh else "en"]
@@ -719,6 +786,7 @@ class NotebookExportService:
                     count,
                     bindings.get(str(item.get("producing_cell_id") or ""), []),
                     budget,
+                    zh=zh,
                 )
             )
         document = self.notebook(root_frame_id, language, branch_id=branch_id)
@@ -786,6 +854,8 @@ class NotebookExportService:
         count: int,
         bindings: list[dict[str, str]],
         budget: dict[str, int],
+        *,
+        zh: bool = False,
     ) -> dict[str, Any]:
         outputs: list[dict[str, Any]] = []
         for name in ("stdout", "stderr"):
@@ -842,7 +912,7 @@ class NotebookExportService:
                     ],
                 }
             )
-        source = str(cell.get("code") or "")
+        source = _export_source(cell, zh=zh)
         uses = sorted(set(_HOST_CALL.findall(source)))
         if uses:
             source = (
@@ -938,28 +1008,35 @@ class NotebookExportService:
                 }
             )
         cell_id = str(cell.get("producing_cell_id") or f"export-{revision}")
+        metadata: dict[str, Any] = {
+            "producing_cell_id": cell_id,
+            "cell_index": cell.get("cell_index"),
+            "kernel_id": cell.get("kernel_id"),
+            "origin": cell.get("origin"),
+            "status": cell.get("status"),
+            "state_revision": revision,
+            "generation_id": cell.get("generation_id"),
+            "created_at": cell.get("created_at"),
+            "figures": figures,
+            "files_read": list(cell.get("files_read") or ()),
+            "files_written": list(cell.get("files_written") or ()),
+            "history_is_read_only": True,
+        }
+        script = _inlined_script(cell)
+        if script is not None:
+            # The source below carries the content; this says where it came
+            # from and whether it is whole.
+            metadata["inlined_script"] = {
+                key: script.get(key)
+                for key in ("path", "size_bytes", "sha256", "truncated")
+            }
         return {
             "cell_type": "code",
             "execution_count": cls._execution_count(cell, revision),
             "id": cls._jupyter_id(cell_id),
-            "metadata": {
-                "openai4s": {
-                    "producing_cell_id": cell_id,
-                    "cell_index": cell.get("cell_index"),
-                    "kernel_id": cell.get("kernel_id"),
-                    "origin": cell.get("origin"),
-                    "status": cell.get("status"),
-                    "state_revision": revision,
-                    "generation_id": cell.get("generation_id"),
-                    "created_at": cell.get("created_at"),
-                    "figures": figures,
-                    "files_read": list(cell.get("files_read") or ()),
-                    "files_written": list(cell.get("files_written") or ()),
-                    "history_is_read_only": True,
-                }
-            },
+            "metadata": {"openai4s": metadata},
             "outputs": outputs,
-            "source": cls._lines(str(cell.get("code") or "")),
+            "source": cls._lines(_export_source(cell)),
         }
 
     @staticmethod

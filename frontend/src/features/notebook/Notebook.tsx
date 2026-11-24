@@ -552,6 +552,32 @@ function CellCode({ cell, live }: { cell: NotebookCell; live: boolean }) {
   );
 }
 
+/**
+ * NB-1: a cell whose code only runs a workspace script (`exec(open("x.py")
+ * .read())`, `%run`, R `source`) shows that script under it, as it was when
+ * the cell ran -- the cell's own source says nothing about what ran, and the
+ * file may since have been rewritten or deleted.
+ */
+export function InlinedScript({ cell }: { cell: NotebookCell }) {
+  const script = cell.inlined_script;
+  if (!script || typeof script.path !== "string" || typeof script.content !== "string") return null;
+  const lang = cell.language || cell.kernel_id || "python";
+  const html = highlightCellSource("script:" + nbCellKey(cell), script.content, lang);
+  return (
+    <details class="nbc-script" data-script-path={script.path}>
+      <summary>{nbT("nb.script.summary", script.path)}</summary>
+      <div class="nbc-script-note">
+        {script.truncated
+          ? nbT("nb.script.truncated", script.path, bytes(script.size_bytes))
+          : nbT("nb.script.note", script.path)}
+      </div>
+      <pre class="oc-src nbc-script-src">
+        <code dangerouslySetInnerHTML={{ __html: html }} />
+      </pre>
+    </details>
+  );
+}
+
 function CellFiguresSlot({ cell, live }: { cell: NotebookCell; live: boolean }) {
   const names = live ? cellOutput(nbCellKey(cell)).figures.value : cell.figures || [];
   return <CellFigures cell={cell} names={names} />;
@@ -585,6 +611,7 @@ function CellView({ cell }: { cell: NotebookCell }) {
   return (
     <CellShell cell={cell}>
       <CellCode cell={cell} live={live} />
+      <InlinedScript cell={cell} />
       <CellStream cell={cell} stream="stdout" live={live} />
       <CellStream cell={cell} stream="stderr" live={live} />
       {cell.error ? <KernelExitNotice error={cell.error} /> : null}

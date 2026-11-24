@@ -38,6 +38,7 @@ import {
   CellActions,
   CellList,
   CellOutput,
+  InlinedScript,
   KernelChips,
   NewCellsPill,
   NotebookDock,
@@ -449,6 +450,57 @@ describe("Notebook images a cell wrote", () => {
     expect(writtenImages(cell)).toEqual(["plots/volcano.png", "Rplot_2_01.png"]);
     const many = { files_written: Array.from({ length: 20 }, (_, i) => `p${i}.png`) };
     expect(writtenImages(many)).toHaveLength(8);
+  });
+});
+
+// NB-1: `exec(open("qc_analysis.py").read())` said nothing about what ran, and
+// the file was later deleted.
+describe("Notebook script a cell ran", () => {
+  const script = {
+    path: "qc_analysis.py",
+    content: "import math\nprint(math.sqrt(16))\n",
+    size_bytes: 36,
+    truncated: false,
+  };
+
+  it("folds the recorded script under the cell, named by its file", () => {
+    const tree = InlinedScript({
+      cell: { producing_cell_id: "c-qc", language: "python", inlined_script: script },
+    });
+    expect((tree as VNode).type).toBe("details");
+    const text = textOf(tree);
+    expect(text).toContain(nbT("nb.script.summary", "qc_analysis.py"));
+    expect(text).toContain(nbT("nb.script.note", "qc_analysis.py"));
+    const code = byClass(tree, "nbc-script-src") as VNode;
+    const inner = (code.props?.children as VNode).props?.dangerouslySetInnerHTML as { __html: string };
+    expect(inner.__html).toContain("sqrt");
+  });
+
+  it("says when only the head of a long script was kept", () => {
+    const text = textOf(
+      InlinedScript({
+        cell: {
+          producing_cell_id: "c-long",
+          inlined_script: { ...script, truncated: true, size_bytes: 900 * 1024 },
+        },
+      }),
+    );
+    expect(text).toContain(nbT("nb.script.truncated", "qc_analysis.py", "900.0 KB"));
+  });
+
+  it("shows nothing for a cell that ran no script", () => {
+    expect(InlinedScript({ cell: { producing_cell_id: "c-plain" } })).toBeNull();
+    expect(InlinedScript({ cell: { producing_cell_id: "c-null", inlined_script: null } })).toBeNull();
+  });
+
+  it("names the block in Chinese as 脚本内容", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      expect(nbT("nb.script.summary", "x.py")).toBe("脚本内容 · x.py");
+    } finally {
+      await setLang(original);
+    }
   });
 });
 

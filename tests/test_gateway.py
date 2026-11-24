@@ -5527,6 +5527,7 @@ def test_execution_log_route_serializer_contract(tmp_path):
         "figures",
         "files_written",
         "files_read",
+        "inlined_script",
         "cpu_seconds",
         "peak_rss_kb",
         "title",
@@ -5538,6 +5539,7 @@ def test_execution_log_route_serializer_contract(tmp_path):
         "is_latest_attempt",
         "attempt_count",
     }
+    assert e1["inlined_script"] is None  # NB-1: only a run-this-file Cell has one
     assert e1["producing_cell_id"] == "cell-1"
     assert e1["fork_checkpoint_id"] is None
     assert e1["state_revision"] == 1
