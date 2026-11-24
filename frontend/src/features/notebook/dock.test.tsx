@@ -36,6 +36,7 @@ import {
 } from "./kernel";
 import {
   CellActions,
+  CellIo,
   CellList,
   CellOutput,
   InlinedScript,
@@ -48,6 +49,7 @@ import {
   kernelStatusLine,
   outputIsLong,
   outputLabel,
+  cellIoFiles,
   writtenImages,
 } from "./Notebook";
 import { nbLabelT, nbT } from "./copy";
@@ -518,6 +520,27 @@ describe("Notebook script a cell ran", () => {
     } finally {
       await setLang(original);
     }
+  });
+});
+
+// NB-3: a cell that redrew volcano.png showed "volcano.png volcano.png".
+describe("Notebook file chips under a cell", () => {
+  it("shows a file the cell read and wrote once, as written", () => {
+    const cell = {
+      producing_cell_id: "c-redraw",
+      files_written: ["volcano.png", "volcano.png"],
+      files_read: ["volcano.png", "counts.csv", "counts.csv"],
+    };
+    const files = cellIoFiles(cell);
+    expect(files.written).toEqual(["volcano.png"]);
+    expect(files.read).toEqual(["counts.csv"]);
+    expect([...files.readAndWritten]).toEqual(["volcano.png"]);
+    const tree = CellIo({ cell });
+    const text = textOf(tree);
+    expect(text.split("volcano.png")).toHaveLength(2);
+    expect(text.split("counts.csv")).toHaveLength(2);
+    expect(byClass(tree, "io-w")?.props?.title).toBe(nbT("nb.io.readAndWritten"));
+    expect(writtenImages(cell)).toEqual(["volcano.png"]);
   });
 });
 

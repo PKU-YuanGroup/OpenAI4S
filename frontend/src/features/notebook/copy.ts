@@ -86,6 +86,8 @@ const COPY: CopyTable = {
     // SYNC-15: code pasted into the chat composer (pasted.ts).
     "nb.composerRun.label": "在 Notebook 中运行 · {0}",
     "nb.composerRun.title": "把消息里的这段 {0} 代码作为手动单元在 Notebook 中运行，并从消息中移除",
+    // NB-3: one chip for a file the cell both read and wrote.
+    "nb.io.readAndWritten": "这个单元读取并写入了这个文件",
     // NB-1: the script a run-this-file cell ran, kept with the cell.
     "nb.script.summary": "脚本内容 · {0}",
     "nb.script.note": "这是 {0} 在这个单元运行时的内容；之后改动或删除这个文件不会改变这里，导出的 .ipynb 也会内联它。",
@@ -170,6 +172,7 @@ const COPY: CopyTable = {
       "This R environment does not have the “{0}” package. R packages cannot be installed from a session: run openai4s setup to build the managed R environment, or install it in your own R and pick that R under Runtime environment in the session options.",
     "nb.composerRun.label": "Run in Notebook · {0}",
     "nb.composerRun.title": "Run this {0} code from your message as a manual Notebook cell, and take it out of the message",
+    "nb.io.readAndWritten": "This cell both read and wrote this file",
     "nb.script.summary": "Script contents · {0}",
     "nb.script.note": "{0} as it was when this cell ran. Editing or deleting the file later does not change this, and the .ipynb export inlines it.",
     "nb.script.truncated": "{0} was {1} when this cell ran; only its beginning is recorded here, and the .ipynb export does not inline it.",

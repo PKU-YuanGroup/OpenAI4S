@@ -408,15 +408,31 @@ function CellFigures({ cell, names }: { cell: NotebookCell; names: string[] }) {
   })}</>;
 }
 
-function CellIo({ cell }: { cell: NotebookCell }) {
-  const written = cell.files_written || [];
-  const read = cell.files_read || [];
+/**
+ * NB-3: one chip per file. A cell that redraws `volcano.png` reads the old
+ * file and writes the new one, and the two lists painted "volcano.png
+ * volcano.png" side by side; a name listed twice in one list did the same.
+ * A file both read and written is shown once, as written, and says so.
+ */
+export function cellIoFiles(cell: NotebookCell): { written: string[]; read: string[]; readAndWritten: Set<string> } {
+  const written = [...new Set((cell.files_written || []).filter(Boolean))];
+  const writtenSet = new Set(written);
+  const readAll = [...new Set((cell.files_read || []).filter(Boolean))];
+  return {
+    written,
+    read: readAll.filter((f) => !writtenSet.has(f)),
+    readAndWritten: new Set(readAll.filter((f) => writtenSet.has(f))),
+  };
+}
+
+export function CellIo({ cell }: { cell: NotebookCell }) {
+  const { written, read, readAndWritten } = cellIoFiles(cell);
   if (!written.length && !read.length) return null;
   return (
     <div class="nbc-io">
       {written.map((f) => {
         const result = notebookArtifactState(cell, f);
-        return <span key={"w:" + f} class="io-w">
+        return <span key={"w:" + f} class="io-w" title={readAndWritten.has(f) ? nbT("nb.io.readAndWritten") : undefined}>
           {result.artifact ? <a href={result.artifact.url} download={f}>{f}</a> : <span>{f + " · " + filesT("nb.artifact." + result.state)}</span>}
         </span>;
       })}
@@ -593,7 +609,7 @@ const MAX_INLINE_IMAGES = 8;
  */
 export function writtenImages(cell: NotebookCell): string[] {
   const captured = new Set(cell.figures || []);
-  return (cell.files_written || [])
+  return [...new Set(cell.files_written || [])]
     .filter((name) => INLINE_IMAGE.test(name) && !captured.has(name))
     .slice(0, MAX_INLINE_IMAGES);
 }
