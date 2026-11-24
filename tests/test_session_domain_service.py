@@ -969,3 +969,54 @@ def test_a_long_checkpoint_chain_projects_without_recursing_per_checkpoint():
 
     assert projected == rows
     assert len(reads) == depth
+
+
+def test_first_message_checkpoint_does_not_repeat_the_action_history(tmp_path):
+    # Found while integrating VIEW-2b (2026-11-23): a checkpoint taken before
+    # its branch had any action group (every session's first message) has
+    # action_cursor None, and the projection read None as "no upper bound" --
+    # it took every later group, and the next same-branch checkpoint added
+    # them again. The provider history rebuilt on resume held each group twice.
+    from openai4s.agent.ledger import branch_action_groups
+
+    store = Store(tmp_path / "openai4s.db")
+    root = store.new_frame(project_id="default", kind="turn", status="ready")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = SessionDomainService(
+        store, data_dir=tmp_path, workspace=lambda _root, _branch: workspace
+    )
+    question = store.add_message(
+        root_frame_id=root, frame_id=root, role="user", content="q1"
+    )
+    first = service.capture_cursor_checkpoint(
+        root, source_kind="message", source_id=question["message_id"]
+    )
+    assert first["action_cursor"] is None
+    store.append_action_group(
+        root_frame_id=root,
+        branch_id=root,
+        turn_id="t1",
+        kind="user",
+        assistant_message={"role": "user", "content": "q1"},
+    )
+    store.append_action_group(
+        root_frame_id=root,
+        branch_id=root,
+        turn_id="t1",
+        kind="cell",
+        assistant_content="cell",
+    )
+    cell = store.log_cell(
+        frame_id=root,
+        root_frame_id=root,
+        code="x = 1",
+        result={"stdout": "", "stderr": "", "error": None},
+        cell_index=1,
+        state_revision=1,
+    )
+    service.capture_cursor_checkpoint(root, source_kind="cell", source_id=cell)
+
+    groups = branch_action_groups(store, root, branch_id=root, include_events=False)
+    assert [group["ordinal"] for group in groups] == [0, 1]
+    store.close()

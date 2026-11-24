@@ -225,7 +225,17 @@ def project_branch_records(
                 else None
             )
         current = normalize_cursor(checkpoint.get(cursor_key))
-        result = ([*base, *segment(selected, after=resume, upto=current)], current)
+        if current is None:
+            # No local record existed when it was taken (every session's first
+            # message checkpoint has no action group yet): it adds none of its
+            # branch's rows. An open-ended segment here took the later rows
+            # too, and every later same-branch checkpoint added them again, so
+            # the provider history rebuilt on resume or branch activation held
+            # each action group twice. A same-branch child continues where its
+            # parent did.
+            result = (list(base), resume)
+        else:
+            result = ([*base, *segment(selected, after=resume, upto=current)], current)
         checkpoint_cache[checkpoint_id] = result
         return (list(result[0]), result[1])
 
