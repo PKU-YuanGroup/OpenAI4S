@@ -62,6 +62,9 @@ const COPY: CopyTable = {
     "permrules.tool.skills_edit": "Change a skill",
     "permrules.tool.skills_delete": "Delete a skill",
     "permrules.tool.skills_publish": "Publish a skill",
+    "permrules.installOnce":
+      "Package installs ask every time, so an allow rule for them is not saved; approve each install on its own card.",
+    "permrules.installIgnored": "Ignored: package installs ask every time.",
   },
   zh: {
     "permrules.desc":
@@ -114,8 +117,32 @@ const COPY: CopyTable = {
     "permrules.tool.skills_edit": "修改技能",
     "permrules.tool.skills_delete": "删除技能",
     "permrules.tool.skills_publish": "发布技能",
+    "permrules.installOnce": "装包每次都会询问，所以不会保存针对装包的“允许”规则；请在每次安装的卡片上批准。",
+    "permrules.installIgnored": "不生效：装包每次都会询问。",
   },
 };
+
+/**
+ * The server's `installs_packages` (openai4s/storage/permissions.py): a shell
+ * command that asks a package manager to install, or R's installers. Kept in
+ * step with that pattern; the server refuses the rule either way.
+ */
+const PACKAGE_INSTALL = new RegExp(
+  "(?:^|[\\s;&|()`])(?:\\S*/)?(?:python[\\d.]*\\s+-m\\s+)?" +
+    "(?:pip[\\d.]*|pipx|uv(?:\\s+pip)?|poetry|conda|mamba|micromamba|npm|pnpm|yarn" +
+    "|gem|cargo|apt|apt-get|brew)" +
+    "(?:\\s+-\\S+)*\\s+(?:(?:env|tool)\\s+)?(?:install|add|sync|create|ci|i)(?=\\s|$)" +
+    "|install\\.packages\\s*\\(|BiocManager::install\\s*\\(|(?:remotes|devtools)::install_",
+);
+
+/**
+ * True for a rule about package installs. Installs ask every time (owner
+ * decision 1): no allow rule is saved for one and an existing one is ignored.
+ */
+export function installRule(tool: string, pattern: string): boolean {
+  if (tool === "env_setup") return true;
+  return tool === "bash" && PACKAGE_INSTALL.test(pattern || "");
+}
 
 export const permT = copyLookup(COPY);
 
@@ -162,7 +189,12 @@ export function globalRulesSummary(rules: readonly PermRule[]): string {
   const everything = catchAll.get("*");
   const byStanding: Record<string, string[]> = { allow: [], ask: [], mixed: [], deny: [] };
   for (const [group, tools] of GROUPS) {
-    const decisions = new Set(tools.map((tool) => catchAll.get(tool) ?? everything ?? "ask"));
+    // No allow rule answers for a package install: it asks.
+    const standingOf = (tool: string): string => {
+      const decision = catchAll.get(tool) ?? everything ?? "ask";
+      return decision === "allow" && installRule(tool, "*") ? "ask" : decision;
+    };
+    const decisions = new Set(tools.map(standingOf));
     const standing = decisions.size === 1 ? [...decisions][0]! : "mixed";
     (byStanding[standing] || byStanding.mixed!).push(permT("permrules.group." + group));
   }

@@ -198,6 +198,7 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     installInto: "Installs into: {0}",
     installKeep:
       "Packages already in this environment keep their versions; an install that would change one is refused.",
+    installOnce: "Every install asks; this approval is not remembered.",
     localEnv:
       "This is one of your own conda environments, not one OpenAI4S set up. If you allow it, the following cells run with its interpreter.",
     runsIn: "Runs in the {0} environment (python → {1})",
@@ -220,6 +221,7 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     downloadWhy: "下载会把文件写进这个项目，所以要先询问；读取网页不写文件，不需要询问。",
     installInto: "安装到：{0}",
     installKeep: "这个环境里已安装的包保持原版本；需要改动它们的安装会被拒绝。",
+    installOnce: "每次安装都会询问；这次批准不会被记住。",
     localEnv:
       "这是你本机的 conda 环境，不是 OpenAI4S 自带的环境。允许后，后续单元会用它的解释器运行。",
     runsIn: "运行环境：{0}（python → {1}）",
@@ -278,6 +280,7 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
       lines.push(ctx("installInto", inp.interpreter ? `${env} (${String(inp.interpreter)})` : env));
     }
     lines.push(ctx("installKeep"));
+    lines.push(ctx("installOnce"));
   } else if (m.tool === "env_use") {
     // SCI-21: the reason the model gave for the switch, in its own words.
     const reason = String(inp.reason || "").trim();
@@ -322,6 +325,19 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
  */
 export function defaultRememberScope(_m: PermEvent): string {
   return "once";
+}
+
+const ALL_SCOPES = ["once", "conversation", "project", "global"];
+
+/**
+ * The scopes a card offers. A package install asks every time (owner decision
+ * 1): the server sends only "once" for it and refuses a wider allow. A request
+ * stored before that rule still carries every scope, so an install is held to
+ * "once" here as well.
+ */
+export function rememberScopes(m: PermEvent): string[] {
+  if (m.tool === "env_setup") return ["once"];
+  return m.scopes && m.scopes.length ? m.scopes : ALL_SCOPES;
 }
 
 /**
@@ -670,11 +686,14 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   }
 
   let scope = defaultRememberScope(m);
-  card.appendChild(labelEl("div", "perm-lbl", "perm.lbl.rememberScope"));
+  const scopes = rememberScopes(m);
+  // With "once" the only choice there is nothing to remember: no row at all.
+  const remember = scopes.length > 1;
+  if (remember) card.appendChild(labelEl("div", "perm-lbl", "perm.lbl.rememberScope"));
   const scRow = el("div", "perm-scope");
   const segs: Record<string, HTMLElement> = {};
   const patWrap = el("div", "perm-pat");
-  (m.scopes || ["once", "conversation", "project", "global"]).forEach((s) => {
+  scopes.forEach((s) => {
     const b = PERM_SCOPE_KEYS[s]
       ? labelEl("button", "perm-seg" + (s === scope ? " active" : ""), PERM_SCOPE_KEYS[s])
       : el("button", "perm-seg" + (s === scope ? " active" : ""), permScopeCn(s));
@@ -687,7 +706,7 @@ function buildPermissionCard(m: PermEvent): PermHandle {
     segs[s] = b;
     scRow.appendChild(b);
   });
-  card.appendChild(scRow);
+  if (remember) card.appendChild(scRow);
   // With choices the remembered rule's pattern IS the choice, so no free text.
   patWrap.style.display = scope === "once" || choices.length ? "none" : "";
 
@@ -725,7 +744,7 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   patIn.oninput = paintRule;
   patWrap.appendChild(note);
   paintRule();
-  card.appendChild(patWrap);
+  if (remember) card.appendChild(patWrap);
 
   const fb = el("input", "perm-fb") as HTMLInputElement;
   fb.type = "text";

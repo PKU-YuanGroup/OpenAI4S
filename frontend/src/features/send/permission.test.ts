@@ -307,6 +307,53 @@ describe("what a card remembers", () => {
     expect(seen.bodies[0]).toMatchObject({ scope: "conversation", pattern: "python3 -c *" });
   });
 
+  it("an install offers no remember row: every install asks (PERM-1)", async () => {
+    const seen = captureDecision();
+    renderPermissionCard({
+      decision_id: "d-r3",
+      frame_id: "f-1",
+      tool: "env_setup",
+      target: "pydeseq2",
+      input: { packages: ["pydeseq2"], environment: "base" },
+      scopes: ["once"],
+      suggested_patterns: [],
+    });
+    const { card: node, allow } = card();
+    expect(node.querySelectorAll(".perm-scope")).toHaveLength(0);
+    expect(node.querySelectorAll(".perm-pat")).toHaveLength(0);
+    expect(node.querySelectorAll(".perm-lbl").map((l) => l.textContent)).not.toContain(t("perm.lbl.rememberScope"));
+    expect(node.querySelectorAll(".perm-ctx").map((l) => l.textContent).join("\n")).toContain("Every install asks");
+    allow.onclick!();
+    await settle();
+    expect(seen.bodies[0]).toMatchObject({ scope: "once" });
+    expect(seen.bodies[0]).not.toHaveProperty("pattern");
+  });
+
+  it("a stored install request from before the fix still offers only once", async () => {
+    renderPermissionCard({
+      decision_id: "d-r4",
+      frame_id: "f-1",
+      tool: "env_setup",
+      target: "pydeseq2",
+      input: { packages: ["pydeseq2"] },
+      scopes: ["once", "conversation", "project", "global"],
+    });
+    expect(card().card.querySelectorAll(".perm-scope")).toHaveLength(0);
+  });
+
+  it("a shell install the server marks once-only hides the row too", async () => {
+    renderPermissionCard({
+      decision_id: "d-r5",
+      frame_id: "f-1",
+      tool: "bash",
+      target: "pip install pydeseq2",
+      input: { command: "pip install pydeseq2" },
+      scopes: ["once"],
+      suggested_patterns: [],
+    });
+    expect(card().card.querySelectorAll(".perm-scope")).toHaveLength(0);
+  });
+
   it("falls back to the exact command when the server offers no prefix (a chained command)", async () => {
     const { defaultRememberPattern } = await import("./permission");
     expect(

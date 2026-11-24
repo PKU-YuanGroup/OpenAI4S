@@ -5,6 +5,7 @@ import { refreshCustTab } from "../../features/customize/actions";
 import { confirmAction, hint } from "../../features/customize/host";
 import {
   globalRulesSummary,
+  installRule,
   permT,
   toolDescription,
   type PermRule,
@@ -18,13 +19,16 @@ type ScopeMeta = { scope: string; scope_id: string; label: string };
 type ScopeKey = "conversation" | "project" | "global";
 type Rule = PermRule;
 
+/** `installs`: a rule about package installs, which may not allow (PERM-1). */
 function DecSelect({
   value,
   disabled,
+  installs,
   onChange,
 }: {
   value: string;
   disabled?: boolean;
+  installs?: boolean;
   onChange: (v: string) => void;
 }) {
   return (
@@ -34,7 +38,13 @@ function DecSelect({
       disabled={disabled}
       onChange={(e) => onChange((e.target as HTMLSelectElement).value)}
     >
-      <option value="allow">{t("perm.btn.allow")}</option>
+      <option
+        value="allow"
+        disabled={!!installs}
+        title={installs ? permT("permrules.installOnce") : undefined}
+      >
+        {t("perm.btn.allow")}
+      </option>
       <option value="ask">{t("cust.perm.decision.ask")}</option>
       <option value="deny">{t("perm.btn.deny")}</option>
     </select>
@@ -101,16 +111,21 @@ function RuleRow({ g, r, locked }: { g: ScopeMeta; r: Rule; locked: boolean }) {
     },
   );
   const what = toolDescription(r.tool);
+  const installs = installRule(r.tool, r.pattern);
   return (
     <div class="perm-rule">
       <span class="perm-rtool">{r.tool}</span>
       <span class="perm-rwhat">
         {what ? <span class="perm-rdesc">{what}</span> : null}
         <span class="perm-rpat mono">{r.pattern}</span>
+        {installs && r.decision === "allow" ? (
+          <span class="perm-rdesc">{permT("permrules.installIgnored")}</span>
+        ) : null}
       </span>
       <DecSelect
         value={decision.value ?? r.decision}
         disabled={decision.busy || locked}
+        installs={installs}
         onChange={decision.set}
       />
       {locked ? null : (
@@ -135,6 +150,8 @@ function AddRow({ g }: { g: ScopeMeta }) {
   const [tool, setTool] = useState("");
   const [pat, setPat] = useState("*");
   const [dec, setDec] = useState("ask");
+  const installs = installRule(tool.trim(), pat.trim() || "*");
+  const refused = installs && dec === "allow";
   return (
     <div class="perm-rule perm-add">
       <input
@@ -149,13 +166,19 @@ function AddRow({ g }: { g: ScopeMeta }) {
         value={pat}
         onInput={(e) => setPat((e.target as HTMLInputElement).value)}
       />
-      <DecSelect value={dec} onChange={setDec} />
+      <DecSelect value={dec} installs={installs} onChange={setDec} />
+      {refused ? <span class="perm-rdesc">{permT("permrules.installOnce")}</span> : null}
       <button
         type="button"
         class="outline-btn small"
         onClick={async () => {
           if (!tool.trim()) {
             hint(t("toast.perm.enterTool"), true);
+            return;
+          }
+          if (refused) {
+            // The server refuses it too; say why here instead of a failed save.
+            hint(permT("permrules.installOnce"), true);
             return;
           }
           try {

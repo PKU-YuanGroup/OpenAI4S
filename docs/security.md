@@ -223,7 +223,13 @@ This is guidance, not enforcement: what a Cell can actually read or reach is
 still decided only by the OS sandbox.
 
 That install route asks every time (`env_setup` defaults to `ask`), and the
-card names the packages and the environment they go into. It installs into
+card names the packages and the environment they go into. An install is never
+remembered: its card offers only "once", an allow sent with a wider scope is
+recorded as once, the rules API refuses to save an allow rule for `env_setup`
+or for a `bash` pattern that installs packages (`pip install …`, `conda
+install …`, `install.packages(…)`), and the resolver ignores any such allow
+row that already exists (`installs_packages` in `openai4s/storage/permissions.py`).
+A deny rule still applies. It installs into
 the interpreter the session kernel runs, not the daemon's own, and pins every
 package that interpreter already has, so an install can add packages but never
 move an existing one: a resolver conflict is reported as a refused version

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { globalRulesSummary, toolDescription, type PermRule } from "./permissions";
+import { globalRulesSummary, installRule, toolDescription, type PermRule } from "./permissions";
 
 const rule = (tool: string, pattern: string, decision: string): PermRule => ({
   rule_id: tool + pattern,
@@ -44,6 +44,39 @@ describe("globalRulesSummary", () => {
       "package installs, background commands, connectors, skills and credentials need your approval",
     );
     expect(globalRulesSummary([])).toBe("There are no global rules: every tool asks first.");
+  });
+});
+
+describe("package installs (PERM-1)", () => {
+  it("never reads an install allow as running without asking: no rule answers for one", () => {
+    const legacy = seeded.map((r) => (r.tool === "env_setup" ? { ...r, decision: "allow" } : r));
+    expect(globalRulesSummary(legacy)).toMatch(/package installs[^;]* need your approval/);
+    expect(globalRulesSummary([...seeded, rule("*", "*", "allow")])).toMatch(
+      /package installs[^;]* need your approval/,
+    );
+    const denied = seeded.map((r) => (r.tool === "env_setup" ? { ...r, decision: "deny" } : r));
+    expect(globalRulesSummary(denied)).toContain("package installs are refused");
+  });
+
+  it("recognises an install rule the way the server does", () => {
+    for (const [tool, pattern] of [
+      ["env_setup", "*"],
+      ["env_setup", "numpy"],
+      ["bash", "pip install *"],
+      ["bash", "python3 -m pip install x"],
+      ["bash", "conda env create -f env.yml"],
+      ["bash", "Rscript -e 'install.packages(\"x\")'"],
+    ] as const) {
+      expect(installRule(tool, pattern), `${tool} ${pattern}`).toBe(true);
+    }
+    for (const [tool, pattern] of [
+      ["bash", "*"],
+      ["bash", "pip show *"],
+      ["bash", "git add *"],
+      ["web_fetch", "pip install"],
+    ] as const) {
+      expect(installRule(tool, pattern), `${tool} ${pattern}`).toBe(false);
+    }
   });
 });
 

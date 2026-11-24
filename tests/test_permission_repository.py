@@ -190,14 +190,24 @@ def test_scope_projection_and_default_seed_reset_semantics(tmp_path):
 def test_seed_upgrade_adds_defaults_and_revokes_legacy_skill_edit_allow(tmp_path):
     store, repository = _repository(tmp_path)
     for tool, pattern, decision in DEFAULT_PERMISSION_RULES:
-        if tool not in {"mcp_call", "science_search"}:
+        if tool == "env_setup":
+            # v1-v6 shipped package installs as a silent allow. ``set_rule``
+            # refuses to write one now, so the legacy row is written directly.
+            with store._lock:
+                store._conn.execute(
+                    "INSERT INTO permission_rules(rule_id,scope,scope_id,tool,"
+                    "pattern,decision,created_at,updated_at) "
+                    "VALUES('legacy-install','global','',?,?,'allow',1,1)",
+                    (tool, pattern),
+                )
+                store._conn.commit()
+        elif tool not in {"mcp_call", "science_search"}:
             repository.set_rule(
                 scope="global",
                 tool=tool,
                 pattern=pattern,
-                # v1-v3 shipped this executable mutation as a silent allow,
-                # and v1-v6 shipped package installs (env_setup) the same way.
-                decision="allow" if tool in {"skills_edit", "env_setup"} else decision,
+                # v1-v3 shipped this executable mutation as a silent allow.
+                decision="allow" if tool == "skills_edit" else decision,
             )
     store.set_setting("perm_seeded", "1")
 
@@ -207,6 +217,11 @@ def test_seed_upgrade_adds_defaults_and_revokes_legacy_skill_edit_allow(tmp_path
     # v7: a legacy silent install allow becomes ask, so the user sees every
     # package install and which environment it targets.
     assert repository.resolve(tool="env_setup", pattern_input="lifelines") == "ask"
+    assert {
+        (rule["tool"], rule["decision"])
+        for rule in repository.get_rules(scope="global")
+        if rule["tool"] == "env_setup"
+    } == {("env_setup", "ask")}
     assert repository.resolve(tool="skills_edit", pattern_input="QC") == "ask"
     assert repository.resolve(tool="mcp_call", pattern_input="server/tool") == "ask"
     assert (

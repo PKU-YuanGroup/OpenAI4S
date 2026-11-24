@@ -258,6 +258,49 @@ describe("PermissionsTab without a session", () => {
   });
 });
 
+// PERM-1: package installs ask every time, so no allow rule is written for one.
+describe("PermissionsTab and package installs", () => {
+  beforeEach(() => {
+    currentId.value = null;
+    serve(() => Promise.resolve(response({ ok: true })));
+  });
+
+  const addRow = (tree: unknown) => find(tree, (node) => node.props?.class === "perm-rule perm-add")!;
+
+  it("does not save an allow rule for installs, and says why", async () => {
+    render();
+    await settle();
+    let row = addRow(render());
+    const inputs = findAll(row, (node) => node.type === "input");
+    (inputs[0]!.props!.onInput as (e: unknown) => void)({ target: { value: "env_setup" } });
+    row = addRow(render());
+    (find(row, (node) => node.type === "select")!.props!.onChange as (e: unknown) => void)({
+      target: { value: "allow" },
+    });
+    row = addRow(render());
+    // The allow choice is off for an install, with the reason beside it.
+    const allowOption = find(row, (node) => node.type === "option" && node.props?.value === "allow")!;
+    expect(allowOption.props!.disabled).toBe(true);
+    expect(text(row)).toContain("Package installs ask every time");
+    await (find(row, (node) => node.type === "button")!.props!.onClick as () => Promise<void>)();
+    await settle();
+    expect(mocks.fetch.mock.calls.some((call) => (call[1] as RequestInit | undefined)?.method === "POST")).toBe(
+      false,
+    );
+    expect(mocks.hint).toHaveBeenCalledWith(expect.stringContaining("Package installs ask every time"), true);
+  });
+
+  it("locks the allow choice on an install rule", async () => {
+    render();
+    await settle();
+    const selects = findAll(render(), (node) => node.type === "select" && node.props?.class === "perm-dec");
+    const allowDisabled = (select: Node) =>
+      !!find(select, (node) => node.type === "option" && node.props?.value === "allow")!.props!.disabled;
+    // write_file *, env_setup *, then the add row.
+    expect(selects.map(allowDisabled)).toEqual([false, true, false]);
+  });
+});
+
 // TEAM-23: Restore defaults and the global tier answered a member with 403
 // `admin_only` and nothing on screen.
 describe("PermissionsTab for a team member", () => {
