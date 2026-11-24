@@ -40,7 +40,7 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`deleted.ts`](deleted.ts) | SYNC-17：离开在另一个标签页或窗口里被删除的会话。收到 `session_status` `deleted` 目录事件时先从列表里去掉这一行，再重新打开它——此时读取是 404，于是落到「会话不存在」视图，输入框被禁用但内容保留，提示行说明它已在别处删除。`deleteSession` 会标记本标签页自己发起的删除，免得把自己的删除事件说成是别处删的。 |
 | [`deleted.test.ts`](deleted.test.ts) | 当前打开的会话在别处被删除时会带着提示离开；别的会话被删、或本标签页自己删除时不会；用户已切走后不再弹出提示。 |
 | [`load.folders.test.ts`](load.folders.test.ts) | 服务端拒绝的文件夹重命名或删除（通常是 `404`，即文件夹已在另一个标签页被删除）会被报告出来，并且两个列表照样重新读取，让过期的那一行从侧栏消失。此前这个拒绝在重新读取之前就被吞掉，于是那一行一直留着，菜单项点了也没有任何反应。 |
-| [`load.render.test.ts`](load.render.test.ts) | 一次会话读取只重建侧栏两次（加载状态，以及两个列表都就绪之后），不会再因它带动的文件夹读取多重建一次。 |
+| [`load.render.test.ts`](load.render.test.ts) | 一次会话读取只重建侧栏两次（加载状态，以及两个列表都就绪之后），不会再因它带动的文件夹读取多重建一次。打开着一个尚未列出的会话时，空列表说明它会在第一条消息后出现，而不是「还没有会话」（ONB-5）。 |
 | [`load.replace.test.ts`](load.replace.test.ts) | 防抖搜索还在等回复时点击「加载更多」会被拒绝：此前它会拿到更新的代号却带着**旧**查询和旧游标发请求，搜索回复因此被当作过期丢弃，旧筛选的第二页落在了新输入的搜索框下面。 |
 | [`load.projects.test.ts`](load.projects.test.ts) | 项目列表查询串不含 `offset`；合并/去重；空态 / 重试 / 加载更多的视图状态。 |
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / 更早消息条。 |
