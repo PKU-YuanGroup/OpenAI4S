@@ -67,7 +67,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_delegation_persistence.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "315d30c351d1c1a4cf7f7758ddf199c1409a5345e5b1781a7829d54283966c75"
+      "evidence_digest": "684b1ec0022d31d5058b6e85efd5a8afabfb802e989e1daf6e8cd9dfde2dc0e6"
     },
     {
       "source": "R1",
@@ -176,7 +176,7 @@
       "tests": "tests/test_memory_scope_and_budgets.py,tests/test_memory_edit_and_expiry_quota.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "cf3855ad5c7ccc99a6f71dee5eeb3b72ab22bfbe81b23f92f30e1a6641dc92c9"
+      "evidence_digest": "f68f90c78c331592d1ea7a1d645849e327c8c75c924ca39ddc5159a90d5e6e0a"
     },
     {
       "source": "R2",
@@ -190,7 +190,7 @@
       "tests": "tests/test_session_and_message_paging.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "995c9121c2887801cca38028524458291a8da59ec770f7cda451627eada1d846"
+      "evidence_digest": "3ba641d723b3931a4836ad49d51c523fed3898f8f19b1c80c62d5fde85d1b3ea"
     },
     {
       "source": "R2",
