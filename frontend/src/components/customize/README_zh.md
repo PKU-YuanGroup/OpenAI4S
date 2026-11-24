@@ -18,8 +18,8 @@ F-19 Customize 模态。十一个 tab、嵌套编辑层，以及 `vendors/` 卡�
 | [`GeneralTab.test.tsx`](GeneralTab.test.tsx) | 选主题或布局只移动它自己的分段控件，不重新挂载，也不读取任何东西；「通用」页没有更新、实验功能或诊断区块；语言控件提供「跟随系统」，未保存选择时显示它，并把每次选择交给 `setLang`。 |
 | [`UpdateCheck.tsx`](UpdateCheck.tsx) | U2「版本与更新」一行（附录 B.2）：挂载只读本地 `GET /updates/status`；「检查更新」发 `{refresh:false}`、「强制重新检查」发 `{refresh:true}`。显示运行/最新版本、安装渠道、缓存年龄、检查时间、两词信任摘要（作者身份始终「未验证」），`unknown` 时显示原因码与上次已知答案及时间；只有 `up_to_date` 才显示「已是最新版本」。渠道的 refusal 命令仅作可复制文本、绝不执行——无下载、安装、重启、一键升级或轮询。 |
 | [`UpdateCheck.test.tsx`](UpdateCheck.test.tsx) | Vitest（HTTP 替身）：挂载只发一次本地 GET、无 POST；两个按钮分别恰发一次 `{refresh:false}` / `{refresh:true}`；双击只发一次 POST；429 显示有界等待；`unknown` 显示原因与上次答案；`admin_only` 拒绝后隐藏按钮；畸形载荷降级为「无法读取」；refusal 命令可复制且不存在安装/下载/重启动作；卸载后到达的答复被丢弃。 |
-| [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | 被动安全姿态、显式检查、脱敏支持包下载。位于「诊断与更新」页，在更新一行上方。 |
-| [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | 页面加载只发一次 status GET；检查与下载包要等点击；请求 id 在纯 http 下也能复制，没复制成功时如实提示。 |
+| [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | 被动安全姿态、显式检查、脱敏支持包下载。位于「诊断与更新」页，在更新一行上方。安全姿态按 `security.resolved` 用文字说明（沙箱模式、后端与自检、网络出口、凭证存储），原始环境变量放在次要的一行（SET-3）。 |
+| [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | 页面加载只发一次 status GET；检查与下载包要等点击；请求 id 在纯 http 下也能复制，没复制成功时如实提示。中英文的已解析安全姿态行，以及其下的环境变量行。 |
 | [`MemoryTab.tsx`](MemoryTab.tsx) | Memory 开关 / 添加 / 编辑 / 删除，作用域显式发送。团队成员看到的开关是锁定的并写明原因，也没有「所有项目」作用域。 类型按名称列出并附一句用途说明，上下文一行说明新会话会带上什么（M-81）。 |
 | [`MemoryTab.test.tsx`](MemoryTab.test.tsx) | 首次读取同时请求四项数据；写入进行中无论按几次保存，只添加一条记忆。 |
 | [`ModelsTab.tsx`](ModelsTab.tsx) | 添加表单的「模型」输入框可以用「获取模型列表」（`POST /model-profiles/discover`，与向导同一个列表）给出候选，也仍可填写任意 id。配置档、本机扫描、probe、capability-receipt badge。没有激活的配置档时，把 `GET /config/llm` 的在用模型（环境变量或已保存设置）显示为当前行。团队成员只能查看列表（没有添加表单、key 输入框、服务商面板、本机扫描和行内操作，也不显示接口地址），并会看到自己的 key 该放在哪里。 |
