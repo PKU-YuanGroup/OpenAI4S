@@ -43,6 +43,11 @@ export type TimelineSession = {
   name: string;
 } | null;
 
+export type TimelineRestartDecision = {
+  decision: "approved" | "denied" | "resolved";
+  tool: string;
+} | null;
+
 export type TimelineGroup = {
   group_id: string;
   branch_id: string;
@@ -55,6 +60,8 @@ export type TimelineGroup = {
   title: string;
   /** VIEW-1: a tool batch's calls, each in the step card's (English) words. */
   step_titles: string[];
+  /** VIEW-1b: a decision made after a restart, worded by `restartDecisionTitle`. */
+  restart_decision: TimelineRestartDecision;
   status: string;
   owner: string;
   permission: string;

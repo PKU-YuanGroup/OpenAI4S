@@ -146,6 +146,9 @@ class ActionTimelineService:
             # which the client translates the way the chat does; the joined
             # `title` above is the fallback and the search text.
             "step_titles": [_safe_text(title, 160) for title in step_titles],
+            # VIEW-1b: what a person decided after a restart, and for which
+            # tool, so the client words the row in the UI language.
+            "restart_decision": _restart_decision(group, title_events),
             "status": _status(
                 group, events, public_attempts, denied=_denied(raw_events)
             ),
@@ -403,6 +406,27 @@ def _title(group: Mapping[str, Any], events: Sequence[Mapping[str, Any]]) -> str
                 return f"Approval denied after restart: {tool or 'action'}"
         return "Approval resolved after restart"
     return _one_line(group.get("assistant_content")) or kind.replace("_", " ").title()
+
+
+def _restart_decision(
+    group: Mapping[str, Any], events: Sequence[Mapping[str, Any]]
+) -> dict[str, Any] | None:
+    """A restart's approval decision as data, or None for any other row.
+
+    `_title` words it in English ("Approval denied after restart:
+    env_setup"); this is the same reading for the client to word in the UI
+    language, with the permission tool's own name rather than its id.
+    """
+    if str(group.get("kind") or "") != "permission_resolution":
+        return None
+    for event in events:
+        result = event.get("result")
+        if isinstance(result, Mapping):
+            return {
+                "decision": "approved" if result.get("allow") else "denied",
+                "tool": _one_line(result.get("tool"), 80) or None,
+            }
+    return {"decision": "resolved", "tool": None}
 
 
 _MAX_STEP_TITLES = 32

@@ -19806,6 +19806,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         400,
                         "provide exactly one fork source",
                     )
+                # VIEW-2b: the branch ends just before the question, which the
+                # client puts back in the composer to be asked again.
+                before_source = body.get("before_source", False)
+                if not isinstance(before_source, bool):
+                    raise GatewayError(400, "before_source must be a boolean")
+                if before_source and not body.get("from_message_id"):
+                    raise GatewayError(
+                        400, "before_source applies only to from_message_id"
+                    )
                 try:
                     result = runner.mutate_session_domain(
                         fid,
@@ -19818,6 +19827,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             from_message_id=body.get("from_message_id"),
                             branch_id=body.get("branch_id"),
                             name=body.get("name"),
+                            before_source=before_source,
                         ),
                     )
                 except CursorCheckpointUnavailable as error:

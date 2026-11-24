@@ -7,6 +7,7 @@
  * the frozen shell never carried (`computeT`, `ot`, `judgmentT`).
  */
 import { copyLookup, overrideLookup, type CopyTable } from "../../i18n/copy";
+import { toolDescription } from "../customize/permissions";
 
 const COPY: CopyTable = {
   en: {
@@ -327,4 +328,32 @@ export function timelineStatusText(status: string): string {
   const key = "timeline.status." + status;
   const word = timelineStatusLookup(key);
   return word === key ? status : word;
+}
+
+/**
+ * VIEW-1b: a decision a person made on an approval after a daemon restart.
+ * The row read "Approval denied after restart: env_setup" in every UI
+ * language; it now says so in the UI language, with the tool's own name.
+ */
+const RESTART_DECISION: CopyTable = {
+  zh: {
+    "timeline.restart.approved": "重启后已批准：{0}",
+    "timeline.restart.denied": "重启后已拒绝：{0}",
+    "timeline.restart.resolved": "重启后已处理批准请求",
+  },
+  en: {
+    "timeline.restart.approved": "Approved after a restart: {0}",
+    "timeline.restart.denied": "Declined after a restart: {0}",
+    "timeline.restart.resolved": "Approval request settled after a restart",
+  },
+};
+
+const restartDecisionLookup = copyLookup(RESTART_DECISION);
+
+/** The row's title for a restart decision: what was decided, on which tool. */
+export function restartDecisionTitle(decision: string, tool: string): string {
+  const name = tool ? toolDescription(tool) || tool : "";
+  if (!name || (decision !== "approved" && decision !== "denied"))
+    return restartDecisionLookup("timeline.restart.resolved");
+  return restartDecisionLookup("timeline.restart." + decision, name);
 }

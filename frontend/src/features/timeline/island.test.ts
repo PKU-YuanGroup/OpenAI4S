@@ -1570,6 +1570,52 @@ describe("tool rows in the chat's words", () => {
       await setLang(original);
     }
   });
+
+  // VIEW-1b: a decision made after a daemon restart read "Approval denied
+  // after restart: env_setup" in a Chinese UI too.
+  it("words a decision made after a restart in the UI language, with the tool's own name", async () => {
+    const original = LANG;
+    const decided = (id: string, ordinal: number, decision: unknown, title: string) => ({
+      group_id: id,
+      ordinal,
+      turn_id: "permission-" + id,
+      kind: "permission_resolution",
+      status: "denied",
+      title,
+      restart_decision: decision,
+      attempts: [],
+      events: [{ type: "denied", created_at: 1_000 }],
+    });
+    try {
+      await setLang("zh");
+      const doc = mountDocument();
+      stubFrames();
+      stubApi(() => undefined);
+      installTimeline({});
+      showTimeline("frame-r", [
+        decided("g-denied", 1, { decision: "denied", tool: "env_setup" }, "Approval denied after restart: env_setup"),
+        decided("g-approved", 2, { decision: "approved", tool: "web_fetch" }, "Approval recorded after restart: web_fetch"),
+        decided("g-unknown", 3, { decision: "denied", tool: "lab_robot" }, "Approval denied after restart: lab_robot"),
+        decided("g-resolved", 4, { decision: "resolved", tool: null }, "Approval resolved after restart"),
+      ]);
+      renderActionTimeline();
+      const title = (id: string) =>
+        doc.querySelector(`.timeline-ledger-row[data-group-id="${id}"] .timeline-row-button`)?.textContent;
+
+      expect(title("g-denied")).toBe("重启后已拒绝：往内核环境里安装包");
+      expect(title("g-approved")).toBe("重启后已批准：读取网页（模式为域名）");
+      // A tool the permission table does not know keeps its own name.
+      expect(title("g-unknown")).toBe("重启后已拒绝：lab_robot");
+      expect(title("g-resolved")).toBe("重启后已处理批准请求");
+
+      await setLang("en");
+      renderActionTimeline();
+      expect(title("g-denied")).toBe("Declined after a restart: Install packages into the kernel environment");
+      expect(title("g-resolved")).toBe("Approval request settled after a restart");
+    } finally {
+      await setLang(original);
+    }
+  });
 });
 
 // Follow-up A: only the Notebook badge stopped saying "Ended · view only" for
