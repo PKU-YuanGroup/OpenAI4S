@@ -76,7 +76,8 @@ def test_host_only_skill_constraint_never_grants(monkeypatch):
         return domain
 
     monkeypatch.setattr("openai4s.egress.grant_domain", _grant)
-    with frame_scope("frame-egress"):
+    # The limit holds the Skill's own helpers (owner decision 34).
+    with frame_scope("frame-egress", caller_skill="lit"):
         egress.check_url("https://api.openalex.org/works")
         with pytest.raises(egress.EgressBlocked):
             egress.check_url("https://evil.example.com/x")

@@ -30,12 +30,12 @@ const st = copyLookup({
     "skills.searchNone": "没有匹配「{0}」的技能",
     "skills.searchInCollection": "其中 {0} 个在 {1} 合集里",
     "skills.collectionHit": "{0} 合集匹配：共 {1} 个技能，展开即可查看。",
-    "skills.net": "限定联网 · {0} 个域名",
-    "skills.netOff": "加载后关闭联网",
+    "skills.net": "辅助代码限定联网 · {0} 个域名",
+    "skills.netOff": "辅助代码不能联网",
     "skills.netTip":
-      "加载这个技能后，本会话余下的联网只能访问：{0}。访问其他网站的请求会被拒绝，批准也无法放宽；要访问其他网站，请新开一个会话。",
+      "这个技能自带的辅助函数（kernel.py）只能访问：{0}。它们访问其他网站的请求会被拒绝，批准也无法放宽。本会话的其他联网不受影响。",
     "skills.netOffTip":
-      "加载这个技能后，本会话余下的时间里不能再联网：网页检索、网页读取、下载以及 host.bash 命令里的网址都会被拒绝，批准也无法放开。要再联网，请新开一个会话。",
+      "这个技能自带的辅助函数（kernel.py）不能联网，批准也无法放开。本会话的其他联网——智能体自己的单元代码、网页检索、网页读取、host.bash——不受影响。",
     "skills.expand": "展开完整说明",
     "skills.collapse": "收起",
     "skills.needs": "需要：{0}",
@@ -53,12 +53,12 @@ const st = copyLookup({
     "skills.searchNone": "No skill matches “{0}”",
     "skills.searchInCollection": "{0} of them in the {1} collection",
     "skills.collectionHit": "The {0} collection matches: {1}, listed when you show it.",
-    "skills.net": "Limits network · {0}",
-    "skills.netOff": "Turns network off",
+    "skills.net": "Helpers limited · {0}",
+    "skills.netOff": "Helpers have no network",
     "skills.netTip":
-      "Loading this Skill limits network access for the rest of this session to: {0}. Requests to other sites are refused, and approving one cannot widen the limit; start a new session to reach them.",
+      "This Skill's own helper functions (its kernel.py) can reach only: {0}. Their requests to other sites are refused, and approving one cannot widen the limit. The rest of this session's network is unchanged.",
     "skills.netOffTip":
-      "Loading this Skill turns network access off for the rest of this session: web search, web fetch, downloads and URLs in host.bash commands are refused, and approving one cannot lift it. Start a new session to use the network again.",
+      "This Skill's own helper functions (its kernel.py) cannot reach the network, and approving a request cannot lift that. The rest of this session's network is unchanged: the agent's own cells, web search, web fetch and host.bash.",
     "skills.expand": "Show the full description",
     "skills.collapse": "Hide",
     "skills.needs": "Needs: {0}",
@@ -72,7 +72,7 @@ const st = copyLookup({
   },
 });
 
-/** The domains a `host_only` skill narrows a session to, or null. */
+/** The domains a `host_only` skill's own helpers are limited to, or null. */
 export function skillNetworkDomains(s: Skill): string[] | null {
   const caps = s.capabilities && typeof s.capabilities === "object" ? (s.capabilities as Skill) : {};
   const network = caps.network && typeof caps.network === "object" ? (caps.network as Skill) : {};
@@ -81,10 +81,11 @@ export function skillNetworkDomains(s: Skill): string[] | null {
 }
 
 /**
- * SCI-07: what loading a `host_only` skill does to the session, in words. With
- * no declared domain it turns the session's network off, which used to read
- * as "limited to the domains it declares:" followed by nothing. Same wording
- * as the conversation's network notice (`send/skill-network.ts`).
+ * SCI-07: what a `host_only` skill's manifest does, in words. It limits only
+ * the Skill's own helper code (owner decision 34), never the session; with no
+ * declared domain the helpers have no network at all, which used to read as
+ * "limited to the domains it declares:" followed by nothing. Same meaning as
+ * the conversation's network notice (`send/skill-network.ts`).
  */
 export function skillNetworkCopy(domains: string[]): { summary: string; detail: string } {
   if (!domains.length) return { summary: st("skills.netOff"), detail: st("skills.netOffTip") };

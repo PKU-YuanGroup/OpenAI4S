@@ -1285,7 +1285,7 @@ def web_search(
     failed = f" Failed: {'; '.join(failures)}." if failures else ""
     reached = ", ".join(tried) or "none reached"
     # A search no engine could be sent for was refused above; this one reached
-    # at least one engine the session's network allows.
+    # at least one engine the caller's network allows.
     note = (
         f"no results from any engine ({reached}) "
         "— they may be rate-limiting; retry shortly with different "
@@ -1296,7 +1296,7 @@ def web_search(
 
 
 def _skill_declared_domains() -> tuple[str, ...] | None:
-    """Domains a bound ``host_only`` Skill narrows this frame's requests to."""
+    """Domains the calling ``host_only`` Skill's helpers are held to, or None."""
 
     try:
         from openai4s.server.skill_network_admission import active_host_only_domains

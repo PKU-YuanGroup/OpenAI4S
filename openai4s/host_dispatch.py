@@ -2487,14 +2487,19 @@ class HostDispatcher:
         # None-valued keys); decode back to snake_case so handlers are unaware
         # of the wire convention. Top-level keys only — nested user payloads
         # (messages, schemas) are untouched, symmetric with encode_args.
-        from openai4s.sdk.host import decode_args
+        from openai4s.sdk.host import decode_args, split_caller_skill
 
+        # The SDK names the Skill whose helper code made a kernel call; only
+        # such a call is held to that Skill's network manifest (frame_scope).
+        args, caller_skill = split_caller_skill(args)
         args = decode_args(args)
         args = self._canonical_mcp_server(method, args)
         action_context = self._current_action_context()
         from openai4s.server.skill_network_admission import frame_scope
 
-        skill_frame = frame_scope(self.frame_id)
+        skill_frame = frame_scope(
+            self.frame_id, caller_skill=self._caller_skill_name(caller_skill)
+        )
         skill_frame.__enter__()
         try:
             audit_resources = (
@@ -3427,6 +3432,22 @@ class HostDispatcher:
 
         return self._bash_authorization.record_result(spec or {})
 
+    def _caller_skill_name(self, caller: str | None) -> str | None:
+        """The Skill name a call's helper attribution (a directory) refers to.
+
+        Bindings are keyed by the Skill's declared name; the SDK sees the
+        sidecar's directory. An unknown name is kept as given: it matches no
+        binding, so it limits nothing.
+        """
+
+        if not caller:
+            return None
+        try:
+            skill = self._skill_service.loader.get(caller, include_disabled=True)
+        except Exception:  # noqa: BLE001 - attribution only ever narrows
+            skill = None
+        return str(getattr(skill, "name", "") or caller)
+
     def _refusal_before_approval(self, method: str, args: list) -> str | None:
         """The policy refusal a gated call would get, asked before the gate."""
 
@@ -3676,7 +3697,10 @@ class HostDispatcher:
             loaded_dict["action_group_id"] = metadata["action_group_id"]
             loaded_dict["manifest_digest"] = metadata["manifest_digest"]
             loaded_dict["document_digest"] = metadata["document_digest"]
-            session_network = narrowing_summary(self.frame_id)
+            # What this Skill's own helpers may reach. The key predates owner
+            # decision 34 (when the limit was the session's) and is kept for
+            # the step projection; the rest of the session is not limited.
+            session_network = narrowing_summary(self.frame_id, skill=skill.name)
             if session_network is not None and (
                 capability.mode == "host_only" and capability.declaration == "declared"
             ):
@@ -3684,12 +3708,12 @@ class HostDispatcher:
         return None
 
     def _announce_skill_network(self, notice: dict[str, Any]) -> None:
-        """Put "this Skill now narrows the session's network" on the timeline.
+        """Put "this Skill's helpers may reach only N domains" on the timeline.
 
-        A host_only manifest holds every later Host request in the frame to
-        its domains, and nothing told the user: the load card said "loaded"
-        and the first sign was a refused request. Its own card, emitted by
-        every path that binds (native load, a Cell's load, a Skill file read).
+        A host_only manifest holds the requests that Skill's own helper code
+        makes to its domains (owner decision 34), and nothing told the user:
+        the load card said "loaded". Emitted by every path that binds (native
+        load, a Cell's load, a Skill file read).
         """
 
         if self.on_step is None:
@@ -3702,7 +3726,7 @@ class HostDispatcher:
                     "phase": "begin",
                     "step_id": step_id,
                     "kind": "network",
-                    "title": f"{notice.get('skill')} limits this session's network",
+                    "title": f"{notice.get('skill')} limits its own helpers' network",
                     "input": {"skill": notice.get("skill")},
                 }
             )
@@ -3712,7 +3736,7 @@ class HostDispatcher:
                     "step_id": step_id,
                     "status": "done",
                     "output": dict(notice),
-                    "summary": f"limited to {_plural(count, 'domain')}",
+                    "summary": f"helpers limited to {_plural(count, 'domain')}",
                 }
             )
         except Exception:  # noqa: BLE001 - a notice must never break a load

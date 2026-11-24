@@ -17,8 +17,10 @@ capabilities:
       - europepmc.org
       - clinicaltrials.gov
       - api.typesafe.ai
-      # web_search: the hosts of every engine it can be configured to use,
-      # so loading this Skill does not switch web search off. Subdomains
+      # This list limits only this Skill's own helpers (kernel.py); the rest
+      # of the session keeps its network policy. web_search: the hosts of
+      # every engine it can be configured to use, so a search a helper
+      # makes is not refused. Subdomains
       # match by suffix (www.bing.com, html./lite.duckduckgo.com,
       # www.mojeek.com). export.arxiv.org answers arXiv-id queries.
       - ollama.com

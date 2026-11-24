@@ -88,6 +88,67 @@ def decode_args(args: list) -> list:
     return out
 
 
+# --- call attribution: which Skill's helper code made a Host call -----------
+#
+# A host_only Skill's manifest limits the network of that Skill's OWN helper
+# code (its kernel.py sidecar), not the rest of the session. The SDK names the
+# Skill whose sidecar is on the calling stack in a trailing marker the
+# dispatcher strips before anything else reads the arguments. Attribution only
+# ever narrows: a forged marker limits the caller to a Skill's domains, and a
+# missing one leaves the call under the session's ordinary network policy.
+CALLER_SKILL_MARKER = "__openai4s_caller_skill__"
+
+
+def _sidecar_skill(frame: Any) -> str | None:
+    """The Skill directory whose sidecar this stack frame runs, if any."""
+
+    name = frame.f_globals.get("__name__")
+    if isinstance(name, str) and name.endswith(".kernel"):
+        parts = name.split(".")
+        if len(parts) >= 2 and parts[-2]:
+            return parts[-2]
+    filename = getattr(frame.f_code, "co_filename", "")
+    if isinstance(filename, str) and filename.replace("\\", "/").endswith("/kernel.py"):
+        parent = filename.replace("\\", "/").rsplit("/", 2)[-2]
+        return parent or None
+    return None
+
+
+def calling_skill() -> str | None:
+    """The Skill whose sidecar code is on the current call stack, innermost."""
+
+    import sys
+
+    frame = sys._getframe(1)
+    while frame is not None:
+        skill = _sidecar_skill(frame)
+        if skill:
+            return skill
+        frame = frame.f_back
+    return None
+
+
+def attribute_caller(args: list) -> list:
+    """Append the calling Skill's marker to wire-encoded ``args``, if any."""
+
+    skill = calling_skill()
+    if not skill:
+        return args
+    return [*args, {CALLER_SKILL_MARKER: skill}]
+
+
+def split_caller_skill(args: Any) -> tuple[Any, str | None]:
+    """Host side: ``(args without the marker, the Skill it names or None)``."""
+
+    if isinstance(args, list) and args:
+        last = args[-1]
+        if isinstance(last, dict) and len(last) == 1 and CALLER_SKILL_MARKER in last:
+            skill = last[CALLER_SKILL_MARKER]
+            named = skill.strip() if isinstance(skill, str) else ""
+            return args[:-1], (named or None)
+    return args, None
+
+
 # capability gate: the analysis kernel (python/R) is spliced with only the
 # ANALYSIS subset. These control-plane accessors are NOT attached there, so a
 # reference is a genuine AttributeError (symbol absent) — not a runtime if-check.
@@ -579,13 +640,15 @@ class _Host:
         generation: str | None = None,
     ):
         # Wrap the raw RPC so every SDK call encodes its args for the wire
-        # (snake->camel + drop-None) exactly once, transparently to accessors.
+        # (snake->camel + drop-None) exactly once, transparently to accessors,
+        # and names the Skill whose helper code is calling (see
+        # `attribute_caller`), after encoding so the marker key is untouched.
         def _encoded_call(method: str, args: list) -> Any:
-            return host_call(method, encode_args(args))
+            return host_call(method, attribute_caller(encode_args(args)))
 
         def _encoded_bash_authorizer(method: str, args: list) -> Any:
             target = bash_authorizer or host_call
-            return target(method, encode_args(args))
+            return target(method, attribute_caller(encode_args(args)))
 
         # `_denied` is the set of control-plane symbols this kernel was NOT
         # spliced with. Set FIRST so __getattribute__ can consult it
