@@ -183,9 +183,13 @@ export function markCardRunning(card: HTMLElement, event?: WsMessage | null): vo
   const glyph = glyphOf(card);
   if (glyph) paintIcon(glyph, "loader", 16);
   // A recorded Cell replayed into its reopened card counts from when it
-  // really started, not from the replay (NB-4).
+  // really started, not from the replay (NB-4). A Cell still running at the
+  // reopen has no recorded row yet; its start event carries the server's
+  // start time instead.
   const recordedStart = Number(card.dataset.recordedStart);
-  card.dataset.startedAt = String(recordedStart > 0 ? recordedStart : Date.now());
+  const eventStart = Number(event && event.started_at);
+  const started = recordedStart > 0 ? recordedStart : eventStart > 0 ? eventStart : Date.now();
+  card.dataset.startedAt = String(started);
   if (!elapsedTimer && typeof setInterval === "function") elapsedTimer = setInterval(tickElapsed, 1000);
 }
 

@@ -277,6 +277,11 @@ def test_submit_output_does_not_skip_capture_or_execution_log(tmp_path):
         "text_chunk",
         "notebook_cell_finished",
     ]
+    # NB-4: both start events carry the server's start time (epoch ms), so a
+    # client reopening while the cell runs counts from it, not from the reopen.
+    started_at = events[0].pop("started_at")
+    assert isinstance(started_at, int) and started_at > 1_600_000_000_000
+    assert events[1]["started_at"] == started_at
     assert events[0] == {
         "type": "notebook_cell_start",
         "frame_id": "frame-1",

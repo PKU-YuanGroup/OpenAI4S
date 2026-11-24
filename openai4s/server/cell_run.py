@@ -1093,6 +1093,10 @@ class CellExecutionService:
     ) -> _LiveCellStream | None:
         if not request.stream:
             return None
+        # NB-4: when the cell started, on both start events, so a client that
+        # reopens a session while this cell still runs (its execution-log row
+        # does not exist yet) counts from here and not from the reload.
+        started_at = int(time.time() * 1000)
         emit(
             {
                 "type": "notebook_cell_start",
@@ -1108,6 +1112,7 @@ class CellExecutionService:
                 "source": request.code,
                 "title": title,
                 "status": "running",
+                "started_at": started_at,
             }
         )
         # Keep the text activity stream for older clients and for the chat-side
@@ -1123,6 +1128,7 @@ class CellExecutionService:
                 "cell_index": index,
                 "kernel_id": kernel_id,
                 "language": request.language,
+                "started_at": started_at,
             }
         )
         emit(
