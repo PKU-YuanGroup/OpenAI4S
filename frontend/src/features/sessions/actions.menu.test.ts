@@ -251,7 +251,8 @@ describe("the project research Timeline", () => {
       } as never) as unknown as FakeNode;
       expect(card.className).toBe("timeline-card kind-python status-failed");
       expect(card.texts()).toEqual(expect.arrayContaining([
-        t("timeline.kind.python"), "failed", "Fit the dose-response curve", "agent", "compute",
+        // VIEW-1: the status in the UI language, not the server's word.
+        t("timeline.kind.python"), LANG === "zh" ? "失败" : "Failed", "Fit the dose-response curve", "agent", "compute",
         "gpu:0", "fit.png", "gen-7", "2.5 s", "$0.5000", "did not converge",
       ]));
     } finally {
