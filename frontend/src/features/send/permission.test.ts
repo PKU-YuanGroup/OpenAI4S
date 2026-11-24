@@ -532,7 +532,7 @@ describe("what a card says before the user decides", () => {
       expect.stringContaining("your own conda environments"),
     ]);
     setLang("zh");
-    expect(permContext({ ...card, sub_agent_task: "" }).lines[0]).toBe("发起请求的子代理：general");
+    expect(permContext({ ...card, sub_agent_task: "" }).lines[0]).toBe("发起请求的子智能体：general");
     // The main agent's own request carries no such line.
     expect(permContext({ ...card, sub_agent: false }).lines).toHaveLength(1);
   });

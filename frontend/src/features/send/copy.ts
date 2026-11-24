@@ -46,7 +46,7 @@ const COPY: Record<"en" | "zh", Record<SendCopyKey, string>> = {
     modeChipTitle: "{0}已开启，作用于接下来发送的消息：{1}点击关闭。",
     technicalDetails: "技术细节",
     hideTechnicalDetails: "收起技术细节",
-    subagentTask: "子代理 · {0}",
+    subagentTask: "子智能体 · {0}",
     subagentSteps: "内含 {0} 个步骤",
     subagentStep: "内含 1 个步骤",
     stepQuery: "{0}：“{1}”",

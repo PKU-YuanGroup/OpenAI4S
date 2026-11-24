@@ -235,8 +235,8 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     toolDescription: "用途",
     toolCode: "将要运行的代码（{0} 个字符）",
     toolInput: "输入参数结构",
-    subAgentTask: "发起请求的子代理正在做：{0}",
-    subAgentNamed: "发起请求的子代理：{0}",
+    subAgentTask: "发起请求的子智能体正在做：{0}",
+    subAgentNamed: "发起请求的子智能体：{0}",
     envReason: "智能体给出的原因：{0}",
   },
 };

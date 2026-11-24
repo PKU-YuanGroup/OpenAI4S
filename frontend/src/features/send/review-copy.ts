@@ -32,7 +32,7 @@ const COPY: CopyTable = {
   zh: {
     "review.menuLabel": "请求审阅",
     "review.menuDesc": "由另一个模型对照已记录的代码、输出和文件检查最新的回答。调用一次模型，通常不到一分钟。",
-    "review.refused.nothing_to_review": "还没有可审阅的内容：本会话没有消息、代码或文件。请先向代理提问。",
+    "review.refused.nothing_to_review": "还没有可审阅的内容：本会话没有消息、代码或文件。请先向智能体提问。",
     "review.failed.no_model": "审阅模型没有配置 API 密钥。请在「设置 → 模型」中添加，或在会话选项里换一个审阅模型。",
     "review.failed.model_unreachable": "审阅模型没有及时回应或无法连接。请稍后重试，或在会话选项里换一个更快的审阅模型。",
     "review.failed.model_error": "审阅模型返回了错误，详情见下方。请重试，或在会话选项里换一个审阅模型。",

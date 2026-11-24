@@ -58,6 +58,8 @@ const COPY = {
     envPackages: "Packages",
     envPackage: "Package",
     envVersion: "Version",
+    execNote:
+      "Code actually run by this session and its delegated sub-agents — failed and interrupted cells included. This is execution history, not Artifacts / deliverables.",
   },
   zh: {
     invalid: "响应未包含有效的溯源记录。",
@@ -73,7 +75,7 @@ const COPY = {
     unknownEnvironment: "未记录",
     packages: "已记录的包",
     evidenceScope:
-      "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子代理。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子代理完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。",
+      "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子智能体。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子智能体完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。",
     evidenceSummary: "版本与归属已核对 {0} · 证据不足 {1}",
     evidenceUnavailable: "证据不可用",
     evidenceTruncated: "仅显示前 {0} 项 / 共 {1} 项",
@@ -89,14 +91,14 @@ const COPY = {
     evidenceCaptureVersionCreated: "新版本",
     evidenceCaptureSameCell: "同一单元",
     evidenceCaptureReused: "复用已有版本",
-    evidenceReasonOtherFrame: "版本不属于该子代理",
+    evidenceReasonOtherFrame: "版本不属于该子智能体",
     evidenceReasonNoChecksum: "无 sha256 记录",
     evidenceReasonNoSnapshot: "无快照路径",
     evidenceReasonSnapshotMissing: "快照文件不存在",
     evidenceReasonSizeMismatch: "快照大小与记录不符",
     evidenceReasonCellNotRecorded: "未找到生产单元记录",
     evidenceReasonCellFailed: "生产单元未成功",
-    evidenceReasonCellOtherFrame: "生产单元属于其他子代理",
+    evidenceReasonCellOtherFrame: "生产单元属于其他子智能体",
     evidenceReasonNoCellReceipt: "无单元回执",
     downloadTitle: "由下载工具保存，未经过代码",
     downloadUrl: "来源网址",
@@ -114,6 +116,8 @@ const COPY = {
     envPackages: "软件包",
     envPackage: "软件包",
     envVersion: "版本",
+    // I18N-4: the generated dictionary's nb.exec.note says 子代理.
+    execNote: "这是主会话与被委派子智能体实际执行过的代码——含失败与中断的单元。这是执行记录，不是产物或交付物。",
   },
 };
 

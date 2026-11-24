@@ -561,7 +561,7 @@ describe("sub-agents side by side (SCI-22)", () => {
     expect(failed.classes.has("err")).toBe(true);
 
     await setLang("zh");
-    expect(delegate("d-4", "计算 ATGC 的 GC 含量。").querySelector(".s-lbl")!.textContent).toBe("子代理 · 计算 ATGC 的 GC 含量。");
+    expect(delegate("d-4", "计算 ATGC 的 GC 含量。").querySelector(".s-lbl")!.textContent).toBe("子智能体 · 计算 ATGC 的 GC 含量。");
     await setLang("en");
   });
 });

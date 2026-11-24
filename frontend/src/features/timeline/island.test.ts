@@ -1140,7 +1140,7 @@ describe("signal writes publish new objects", () => {
 
 describe("delegation evidence panel", () => {
   const scope =
-    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子代理。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子代理完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
+    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子智能体。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子智能体完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
 
   it("renders both verdicts, truncation, unavailable, and the scope note once", async () => {
     mountDocument();

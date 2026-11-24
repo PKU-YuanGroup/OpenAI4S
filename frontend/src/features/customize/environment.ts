@@ -15,18 +15,18 @@ import { copyLookup } from "../../i18n/copy";
 const readyT = copyLookup({
   zh: {
     "ready.gpu": "需要 NVIDIA GPU，本机没有。",
-    "ready.gpuStill": "开关打开时代理仍可加载它，但其中需要 GPU 的步骤在本机会失败。",
+    "ready.gpuStill": "开关打开时智能体仍可加载它，但其中需要 GPU 的步骤在本机会失败。",
     "ready.gpuRemote": "可以在「计算」里添加远程 GPU，让这些步骤在那里运行。",
     "ready.science":
       "需要科学计算用的 Python 包（numpy、pandas、matplotlib 等），这里无法检查是否已安装。某一步因缺包失败时，可在「计算」里安装，或运行 `openai4s setup`。",
     "ready.missing": "需要 {0}，本机没有。",
     "ready.unknown": "需要 {0}，本机无法检查是否具备。",
-    "ready.raw": "这个版本里代理无法加载这个技能：它需要内核直接联网，而这一点被禁止。",
+    "ready.raw": "这个版本里智能体无法加载这个技能：它需要内核直接联网，而这一点被禁止。",
     "ready.sandbox":
-      "代理在本机无法加载这个技能：它的联网限制要靠内核沙箱执行，而本机没有启用沙箱（OPENAI4S_KERNEL_SANDBOX）。",
+      "智能体在本机无法加载这个技能：它的联网限制要靠内核沙箱执行，而本机没有启用沙箱（OPENAI4S_KERNEL_SANDBOX）。",
     "ready.rawAllowed":
-      "设置了 OPENAI4S_KERNEL_ALLOW_RAW_NETWORK 时代理无法加载这个技能：内核可以绕过它的联网限制。",
-    "ready.blocked": "代理在本机无法加载这个技能（{0}）。",
+      "设置了 OPENAI4S_KERNEL_ALLOW_RAW_NETWORK 时智能体无法加载这个技能：内核可以绕过它的联网限制。",
+    "ready.blocked": "智能体在本机无法加载这个技能（{0}）。",
     "ready.openCompute": "打开「计算」",
   },
   en: {
