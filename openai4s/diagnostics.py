@@ -830,15 +830,10 @@ def _resolved_secret_store(cfg: Any) -> dict[str, Any]:
     except SecretBrokerError:
         mode = "invalid"
     try:
-        from openai4s import store as store_module
+        from openai4s.store import open_store
 
-        with store_module._STORES_LOCK:
-            store = store_module._STORES.get(str(Path(cfg.db_path).resolve()))
-        broker = (
-            getattr(store, "_secret_broker", None)
-            if store is not None and not getattr(store, "_closed", True)
-            else None
-        )
+        store = open_store(Path(cfg.db_path))
+        broker = getattr(store, "_secret_broker", None) if store is not None else None
         posture = broker.posture() if broker is not None else None
     except Exception:  # noqa: BLE001 - a passive read never fails the page
         posture = None

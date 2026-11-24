@@ -31,8 +31,16 @@ _MODULE_REFERENCE = "<module>"
 # Public names currently consumed by the project's own Python sources.  Keep
 # these names importable from the old path even when their implementations move.
 FACADE_EXPORTS: dict[str, frozenset[str]] = {
-    "openai4s.host_dispatch": frozenset({"HostDispatcher", "build_dispatcher"}),
-    "openai4s.store": frozenset({"SECRET_ARG_HOST_CALLS", "Store", "get_store"}),
+    "openai4s.host_dispatch": frozenset(
+        # `step_view`: the chat's step-card wording of a Host call, which the
+        # Action Timeline reuses so both name a call alike (VIEW-1).
+        {"HostDispatcher", "build_dispatcher", "step_view"}
+    ),
+    # `open_store`: the already-open singleton for a path, or None -- for
+    # passive Diagnostics reads that must never open or migrate a Store (SET-3).
+    "openai4s.store": frozenset(
+        {"SECRET_ARG_HOST_CALLS", "Store", "get_store", "open_store"}
+    ),
     "openai4s.llm": frozenset(
         {
             "ARK_PLAN_MODELS",
@@ -59,6 +67,10 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
     "openai4s.webtools": frozenset(
         {
             "NetworkDisabled",
+            # The text window and "where it stopped, how to read on" note a
+            # truncated page carries. The Ollama fetch path returns the same
+            # window as the direct fetch, so both call this one helper (CLI-3).
+            "content_window",
             # Both refusals are part of the public surface because the control
             # tools have to catch them by name: the Host's soft-fail contract
             # turns a single-key {"error": ...} into a RuntimeError the cell can

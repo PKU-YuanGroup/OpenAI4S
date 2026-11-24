@@ -6353,6 +6353,17 @@ def _discard_store(store: Store) -> None:
             _STORES.pop(key, None)
 
 
+def open_store(db_path: Path) -> Store | None:
+    """The process's open Store for this db path, or None -- never opens one.
+
+    For passive reads (Diagnostics) that must not create a Store, run
+    migrations, or open SQLite just to describe the daemon's own state.
+    """
+    with _STORES_LOCK:
+        st = _STORES.get(str(Path(db_path).resolve()))
+    return st if st is not None and not st._closed else None
+
+
 def get_store(db_path: Path) -> Store:
     """Process-wide singleton Store per db path."""
     key = str(Path(db_path).resolve())

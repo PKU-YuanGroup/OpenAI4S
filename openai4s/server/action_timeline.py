@@ -413,13 +413,13 @@ def _step_titles(events: Sequence[Mapping[str, Any]]) -> list[str]:
 
     The chat's step cards say "Installing pydeseq2" / "Listing ." where the
     ledger has `env_create` / `list_dir`: the host words a visible call from
-    its method and arguments (`host_dispatch._step_begin`). The same wording
+    its method and arguments (`host_dispatch.step_view`). The same wording
     is used here, so the Timeline and the chat name one call alike; a call
     with no step card keeps its tool name.
     """
     # Imported here: the gateway has loaded both by then, and this read-only
     # projection keeps no module-level import of the dispatcher.
-    from openai4s.host_dispatch import _step_begin
+    from openai4s.host_dispatch import step_view
     from openai4s.tools.registry import get_tool
 
     titles: list[str] = []
@@ -436,7 +436,7 @@ def _step_titles(events: Sequence[Mapping[str, Any]]) -> list[str]:
         tool = get_tool(name)
         method = (tool.host_method if tool is not None else "") or name
         try:
-            view = _step_begin(
+            view = step_view(
                 method, [dict(arguments) if isinstance(arguments, Mapping) else {}]
             )
         except Exception:  # noqa: BLE001 - a title never breaks the projection

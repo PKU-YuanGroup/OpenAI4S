@@ -218,6 +218,15 @@ def _with_shell_context(
     return (kind, title, {**data, **extra})
 
 
+def step_view(method: str, args: list) -> tuple[str, str, dict] | None:
+    """(kind, title, input) the chat's step card shows for a Host call.
+
+    Public so the Action Timeline words a call exactly as the chat does
+    (VIEW-1) without reaching into this facade's private helpers.
+    """
+    return _step_begin(method, args)
+
+
 def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     """(kind, title, input) for a visible tool call, else None."""
     a = args[0] if args and isinstance(args[0], dict) else {}
