@@ -5,7 +5,6 @@ import { beginNavigation, resetSessionDirectory } from "../sessions/navigation";
  * Recovery is GET-only and reports messages, steps and run state separately.
  */
 
-import { effect, untracked } from "@preact/signals";
 import { isReady } from "../../compat/stub";
 import { LANG, onLanguageChange } from "../../i18n/runtime";
 import { historyT as t } from "./copy";
@@ -565,38 +564,50 @@ export function recoverConversation(fid: string, gen = _openGen.value): Promise<
 let transcriptLanguage: (() => void) | null = null;
 
 /**
+ * I18N-1: a running session in the new language, now. Its live turn is not in
+ * the stored history yet, so a history read cannot repaint it: the view is
+ * rebuilt as a reload builds it -- the transcript from history, the running
+ * turn from its replay from the start, the Notebook, files and timeline from
+ * fresh reads. The composer's draft is left alone and the queue is read again.
+ */
+function reopenInLanguage(fid: string): void {
+  try {
+    unsub(fid);
+  } catch {
+    /* no socket yet */
+  }
+  // `openConversation` rebuilds a view that is not this frame's (`rescoping`).
+  openedFrameId.value = null;
+  void openConversation(fid, project.value || null);
+}
+
+/**
  * SYNC-20: a language switch repaints the open conversation from its stored
  * history. The sidebar, composer and menus followed at once, but every card,
  * status line and button the transcript had drawn ("Reading … · 201 lines",
  * "Stopped by user", "Branch from this question", Continue, the action row)
- * kept the old language until a reload -- which is exactly this read. A turn
- * that is running is repainted when it ends: its live cards are not in the
- * stored history yet. Idempotent; returns the unbinding.
+ * kept the old language until a reload -- which is exactly this read.
+ *
+ * I18N-1: a running session waited for its turn to end, so for minutes the
+ * transcript mixed both languages -- in the tab that switched, and in every
+ * other tab, which follows the pick (`i18n/runtime.ts` storage listener) and
+ * then drew each new card in the new language beside the old ones. A running
+ * session is now rebuilt at once (`reopenInLanguage`). Idempotent; returns the
+ * unbinding.
  */
 export function bindTranscriptLanguage(): () => void {
   if (transcriptLanguage) return transcriptLanguage;
   let painted = LANG;
-  let pending: string | null = null;
-  const repaint = (fid: string): void => {
-    if (currentId.value === fid && openedFrameId.value === fid) void recoverConversation(fid);
-  };
   const stopHook = onLanguageChange((lang) => {
     if (lang === painted) return;
     painted = lang;
     const fid = currentId.value;
     if (!fid || openedFrameId.value !== fid) return;
-    if (running.value) pending = fid;
-    else repaint(fid);
-  });
-  const stopEffect = effect(() => {
-    if (running.value || !pending) return;
-    const fid = pending;
-    pending = null;
-    untracked(() => repaint(fid));
+    if (running.value) reopenInLanguage(fid);
+    else void recoverConversation(fid);
   });
   transcriptLanguage = () => {
     stopHook();
-    stopEffect();
     transcriptLanguage = null;
   };
   return transcriptLanguage;

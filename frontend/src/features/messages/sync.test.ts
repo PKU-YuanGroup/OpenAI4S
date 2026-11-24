@@ -1400,6 +1400,16 @@ describe("the running turn's status row", () => {
     expect(label()).toBe("The model is writing");
   });
 
+  it("says its words again in the language just picked, without waiting for its next tick (I18N-1)", async () => {
+    running.value = true;
+    expect(label()).toBe("Waiting for the model");
+    await setLang("zh");
+    expect(label()).toBe("等待模型响应");
+    expect(detail()).toBe("已 0 秒");
+    await setLang("en");
+    expect(label()).toBe("Waiting for the model");
+  });
+
   it("counts the model wait from the turn's server start and the last recorded cell, not the reload (CHAT-7)", () => {
     const now = Date.now();
     // A turn the server started two minutes ago, reopened now with one cell that ended 30 s ago.

@@ -24,7 +24,7 @@
 
 import { effect, untracked } from "@preact/signals";
 import { isReady } from "../../compat/stub";
-import { LANG, t } from "../../i18n/runtime";
+import { LANG, onLanguageChange, t } from "../../i18n/runtime";
 import { _liveCell } from "../../stores/notebook";
 import { S } from "../timeline/s";
 import { currentId } from "../../stores/session";
@@ -337,6 +337,10 @@ export function bindTurnStatus(): void {
       void currentId.value;
       void liveStream.value;
       untracked(() => syncTurnStatus());
+    }),
+    // I18N-1: its words in the language just applied, at once.
+    onLanguageChange(() => {
+      if (shown) syncTurnStatus();
     }),
   ];
 }
