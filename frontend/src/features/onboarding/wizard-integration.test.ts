@@ -75,6 +75,7 @@ vi.mock("./api", async (importOriginal) => {
 });
 
 import { ReadinessPanel } from "../../components/onboarding/ReadinessPanel";
+import { SearchSetupCard } from "../../components/onboarding/SearchSetupCard";
 import { WizardHost } from "../../components/onboarding/Wizard";
 import { ot } from "./copy";
 import {
@@ -87,7 +88,7 @@ import type { OnboardingStatus } from "./status";
 
 // Slot order in WizardHost: reducer, status, busy, testing, probeRun, alive,
 // savedProfiles, refreshing, refreshedAt, refreshError, refreshRun,
-// readinessEpoch, wasReadinessShown.
+// readinessEpoch, wasReadinessShown, searchPending.
 const REDUCER = 0;
 const STATUS = 1;
 const ALIVE = 5;
@@ -466,5 +467,48 @@ describe("O1 readiness refresh", () => {
     expect(api.fetchOnboarding).toHaveBeenCalledTimes(2);
     expect(hooks.slots[REFRESH_ERROR]).toBe("");
     expect(hooks.slots[REFRESHED_AT]).toBeTypeOf("number");
+  });
+});
+
+// ONB-2: Continue on the readiness step dropped a search choice that was made
+// but not applied, with no message.
+describe("ONB-2 Continue applies the search card's pending choice", () => {
+  beforeEach(() => {
+    hooks.reset();
+    Object.values(api).forEach((spy) => spy.mockReset());
+    render();
+    hooks.slots[REDUCER] = readinessWizard();
+    hooks.slots[STATUS] = status();
+  });
+
+  function pendingRef(tree: unknown): { current: (() => Promise<boolean>) | null } {
+    const card = findVNode(tree, (node) => node.type === SearchSetupCard);
+    expect(card, "search card not rendered").toBeTruthy();
+    return card!.props!.pendingRef as { current: (() => Promise<boolean>) | null };
+  }
+  const next = (tree: unknown) => buttons(tree).find((b) => b.text === ot("onboarding.next"))!;
+
+  it("stays on the step when the card refuses (a missing key, a failed save)", async () => {
+    const tree = render();
+    const apply = vi.fn(async () => false);
+    pendingRef(tree).current = apply;
+    next(tree).onClick();
+    await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(hooks.actions).not.toContain("next");
+    expect((hooks.slots[REDUCER] as WizardState).step).toBe("readiness");
+  });
+
+  it("moves on once the pending choice is applied", async () => {
+    const tree = render();
+    const apply = vi.fn(async () => true);
+    pendingRef(tree).current = apply;
+    next(tree).onClick();
+    await vi.waitFor(() => expect(hooks.actions).toContain("next"));
+    expect(apply).toHaveBeenCalledTimes(1);
+    const after = hooks.slots[REDUCER] as WizardState;
+    expect(after.step).toBe("project");
+    expect(after.decided).toContain("readiness");
   });
 });

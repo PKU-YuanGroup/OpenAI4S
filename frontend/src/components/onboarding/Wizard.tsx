@@ -38,7 +38,7 @@ import { loadProjects } from "../../features/sessions/load";
 import { projects } from "../../stores/session";
 import { CapabilityBadges } from "./CapabilityBadges";
 import { ReadinessPanel } from "./ReadinessPanel";
-import { SearchSetupCard } from "./SearchSetupCard";
+import { SearchSetupCard, type SearchSetupHandle } from "./SearchSetupCard";
 import "./onboarding.css";
 
 type Profile = Record<string, unknown>;
@@ -606,6 +606,8 @@ export function WizardHost() {
   const readinessShown = state.surface === "wizard" && state.step === "readiness";
   if (wasReadinessShown.current && !readinessShown) readinessEpoch.current += 1;
   wasReadinessShown.current = readinessShown;
+  // ONB-2: the search card's pending choice, which Continue applies.
+  const searchPending: SearchSetupHandle = useRef<SearchSetupHandle["current"]>(null);
 
   useEffect(() => {
     alive.current = true;
@@ -910,6 +912,29 @@ export function WizardHost() {
     }
   };
 
+  /** Continue on the Test and readiness steps. */
+  const onContinue = async () => {
+    if (state.step === "test") leaveTest();
+    if (state.step === "readiness") {
+      // ONB-2: a search choice made but not applied used to be dropped here
+      // without a word. Apply it; a refusal (a missing key, a failed save)
+      // is said in the search card and keeps the wizard on this step.
+      const applyPending = searchPending.current;
+      if (applyPending) {
+        setBusy(true);
+        let applied = false;
+        try {
+          applied = await applyPending();
+        } finally {
+          if (alive.current) setBusy(false);
+        }
+        if (!applied || !alive.current) return;
+      }
+      dispatch({ type: "markReadinessSeen" });
+    }
+    dispatch({ type: "next" });
+  };
+
   const onOpenProject = async (id: string) => {
     setBusy(true);
     try {
@@ -1057,7 +1082,7 @@ export function WizardHost() {
                   refreshedAt={refreshedAt}
                   refreshError={refreshError}
                 />
-                <SearchSetupCard />
+                <SearchSetupCard pendingRef={searchPending} />
               </>
             ) : null}
             {state.step === "project" ? (
@@ -1099,11 +1124,7 @@ export function WizardHost() {
               type="button"
               class="solid-btn"
               disabled={busy}
-              onClick={() => {
-                if (state.step === "test") leaveTest();
-                if (state.step === "readiness") dispatch({ type: "markReadinessSeen" });
-                dispatch({ type: "next" });
-              }}
+              onClick={() => void onContinue()}
             >
               {ot("onboarding.next")}
             </button>

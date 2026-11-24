@@ -219,6 +219,13 @@
   gap: 8px;
   margin-top: 12px;
 }
+/* ONB-2: the search card's own buttons (Apply, use the model's key). */
+#onboarding .onb-search-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 #onboarding .onb-actions > .solid-btn {
   margin-left: auto;
 }
