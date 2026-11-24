@@ -938,6 +938,18 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.composer.focused).toBe(1);
   });
 
+  it("the literature starter does not name an internal tool (SET-4)", async () => {
+    for (const lang of ["zh", "en"] as const) {
+      await setLang(lang);
+      doc.messages.children.length = 0;
+      renderEmptySession();
+      const prompts = doc.messages.querySelectorAll(".es-chip-p").map((node) => node.textContent);
+      expect(prompts.some((text) => text.includes("web_search"))).toBe(false);
+      expect(prompts[0]).toBe(historyT("starter.litReview.prompt"));
+      expect(prompts[0]).toMatch(lang === "zh" ? /^在网上检索/ : /^Search the web for/);
+    }
+  });
+
   it("offers no starters under a read-only imported copy's banner (M-66)", () => {
     const banner = new RowEl("div");
     banner.id = "imported-banner";

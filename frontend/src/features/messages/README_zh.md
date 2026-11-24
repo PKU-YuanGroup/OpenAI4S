@@ -18,7 +18,7 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`cardState.ts`](cardState.ts) | 实时活动卡片的状态：新的单元卡片显示进度图标（而非成功对勾）并记录 `producing_cell_id`；`notebook_cell_finished`（由 Notebook 的处理器转发）把该卡片标为失败（x 图标、错误色边条、"失败 · N 行"）、成功或已停止；因 Host 调用被拒绝而结束的单元标为中性的「已拒绝」（锁图标，"你拒绝了 · 未执行"），等待批准时被停止的标为已停止；`turnDone` 把仍在运行的卡片收尾为中性的"已结束"。运行中的卡片显示已运行时间（满两秒起，共用一个 1 秒计时器），结束后保留为该单元的运行时长。单元结束后，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"，单元自带标题保留。功能内文案。生成的运行中标题也按界面语言显示（正在分析 · 单元 N），单元编号记在卡片上。`settleStoredCellCard` 经同一套结果映射，按 execution-log 条目给重开单元的卡片（`cellCard.ts`）画上结果与运行时长。失败卡片的错误若是 R 内核自己的拒绝（没有 R、R 缺 jsonlite：服务端的英文原文），卡片下会多一行界面语言的 `.cell-help` 提示，说明去哪里换一个 R（M-58）。 |
 | [`figures.test.ts`](figures.test.ts) | 只有指向本守护进程、且文件名是图片的制品链接才会附图；数量有上限，同一项不会重复附图。 |
 | [`figures.ts`](figures.ts) | ART-8：消息渲染后，指向本守护进程图像制品（`/api/v1/artifacts/...`）的链接下方会显示该图，每条消息最多三张，让完成总结直接展示关键图，而不只是给链接。 |
-| [`copy.ts`](copy.ts) | 当前UI所属的双语历史恢复、“会话不存在”与反馈文案（评价保存在哪里、点踩原因框）；不改自动提取的语言文件。 |
+| [`copy.ts`](copy.ts) | 当前UI所属的双语历史恢复、“会话不存在”与反馈文案（评价保存在哪里、点踩原因框）；不改自动提取的语言文件。这里的键会覆盖生成词典中的同名条目：文献起始卡片写作「在网上检索…」，不再出现内部工具名 `web_search`（SET-4）。 |
 | [`declined.ts`](declined.ts) | 拒绝不是失败：识别被拒绝的 Host 调用（步骤的 `output.error` "Permission denied: …"，或单元最后抛出的 "bash: / host.X error: Permission denied: …"，从不把系统 `PermissionError` 算进来），区分你拒绝的、规则拒绝的、等待批准时被「停止」取消的和审批超时的，并用界面语言给出状态与原因（功能内文案）。 |
 | [`declined.test.ts`](declined.test.ts) | 步骤与单元的拒绝分类、卡片上填写的原因算作你的拒绝、系统 `PermissionError` 与被捕获后又失败的单元仍算失败、中英文文案。 |
 | [`components.tsx`](components.tsx) | `HistoryLoadStatus`：可访问的历史状态/重试入口，由 Shell 挂在命令式消息宿主之外。 |

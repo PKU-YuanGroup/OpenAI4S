@@ -914,7 +914,8 @@ export function renderEmptySession(host: ParentNode | null = messagesHost()): vo
   wrap.appendChild(el("div", "es-sub", t("empty.sub")));
   const chips = el("div", "es-chips");
   const starters = [
-    { title: t("starter.litReview.title"), prompt: t("starter.litReview.prompt") },
+    // SET-4: worded without the internal tool name (messages/copy.ts).
+    { title: t("starter.litReview.title"), prompt: historyT("starter.litReview.prompt") },
     { title: t("starter.dataAnalysis.title"), prompt: t("starter.dataAnalysis.prompt") },
     { title: t("starter.proteinModel.title"), prompt: t("starter.proteinModel.prompt") },
     { title: t("starter.phylo.title"), prompt: t("starter.phylo.prompt") },

@@ -1,6 +1,11 @@
 import { LANG, t } from "../../i18n/runtime";
 
-/** History-recovery copy belongs to the current UI, outside frozen extracts. */
+/**
+ * History-recovery copy belongs to the current UI, outside frozen extracts.
+ * A key here also overrides the generated dictionaries' entry of that name:
+ * the literature starter told the user to "use web_search", an internal tool
+ * name (SET-4).
+ */
 const COPY: Record<"en" | "zh", Record<string, string>> = {
   "en": {
     "history.renderFailed": "History could not be displayed.",
@@ -35,7 +40,8 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     "history.feedback.reasonPlaceholder": "For example: it used the wrong column",
     "history.feedback.reasonSave": "Save reason",
     "history.feedback.reasonSaved": "Reason saved on this computer",
-    "history.feedback.where": "Ratings and reasons are kept with this session on this computer. They are not sent anywhere."
+    "history.feedback.where": "Ratings and reasons are kept with this session on this computer. They are not sent anywhere.",
+    "starter.litReview.prompt": "Search the web for advances in CRISPR base-editing off-target effects over the past three years, and synthesize a cited Markdown brief."
   },
   "zh": {
     "history.renderFailed": "历史暂时无法显示。",
@@ -70,7 +76,8 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     "history.feedback.reasonPlaceholder": "例如：用错了数据列",
     "history.feedback.reasonSave": "保存原因",
     "history.feedback.reasonSaved": "原因已保存在本机",
-    "history.feedback.where": "评价与原因随本会话保存在这台电脑上，不会发送到任何地方。"
+    "history.feedback.where": "评价与原因随本会话保存在这台电脑上，不会发送到任何地方。",
+    "starter.litReview.prompt": "在网上检索关于 CRISPR 碱基编辑脱靶效应的近三年进展，综合成一份带引用的 Markdown 简报。"
   }
 };
 
