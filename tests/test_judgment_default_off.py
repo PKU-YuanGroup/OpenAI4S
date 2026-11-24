@@ -321,13 +321,19 @@ def test_default_off_snapshots_match_byte_for_byte(tmp_path: Path) -> None:
         assert actual == expected, f"{name} drifted from the default-off snapshot"
 
 
-def test_chinese_skill_search_is_empty(tmp_path: Path) -> None:
+def test_chinese_skill_search_finds_skills_without_the_judgment_layer(
+    tmp_path: Path,
+) -> None:
+    # SKL-3 (2026-11-23): lexical search used to tokenize `[a-z0-9]+` only, so
+    # every Chinese query returned nothing with judgment off. It now maps
+    # common research terms to English and indexes Chinese character pairs, so
+    # each recorded Chinese query finds Skills on the default-off path too.
     data_dir = tmp_path / "openai4s-data"
     data_dir.mkdir()
     snapshots = collect_snapshots(data_dir=data_dir)
     search = snapshots["search.json"]
     for query in _SEARCH_QUERIES_ZH:
-        assert search[query] == [], query
+        assert search[query], query
 
 
 def test_classify_snapshot_covers_three_heuristic_paths() -> None:

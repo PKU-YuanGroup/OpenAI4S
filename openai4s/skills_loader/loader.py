@@ -340,6 +340,92 @@ def _summary_tokens(name: str, description: str) -> frozenset[str]:
 _SUMMARY_BOOST = 1.5
 
 
+#: SKL-3: the bundled Skills are written in English, so a Chinese query's own
+#: character pairs seldom meet the right Skill -- and the few Skills that do
+#: carry Chinese text then win on generic words like 数据. Common research terms
+#: found in a query are also searched as their English words.
+_ZH_TERMS: tuple[tuple[str, str], ...] = (
+    ("单细胞", "single cell"),
+    ("细胞类型", "cell type"),
+    ("注释", "annotation"),
+    ("聚类", "clustering"),
+    ("差异表达", "differential expression"),
+    ("火山图", "volcano plot"),
+    ("热图", "heatmap"),
+    ("富集", "enrichment"),
+    ("通路", "pathway"),
+    ("转录组", "transcriptome rna-seq"),
+    ("测序", "sequencing"),
+    ("基因组", "genome"),
+    ("基因", "gene"),
+    ("突变", "mutation variant"),
+    ("变异", "variant"),
+    ("序列比对", "sequence alignment"),
+    ("比对", "alignment"),
+    ("系统发育", "phylogenetic phylogeny"),
+    ("进化树", "phylogenetic tree"),
+    ("蛋白质", "protein"),
+    ("蛋白", "protein"),
+    ("结构", "structure"),
+    ("预测", "prediction"),
+    ("设计", "design"),
+    ("分子对接", "molecular docking"),
+    ("对接", "docking"),
+    ("分子动力学", "molecular dynamics"),
+    ("化合物", "compound"),
+    ("药物", "drug"),
+    ("配体", "ligand"),
+    ("文献综述", "literature review"),
+    ("文献", "literature"),
+    ("综述", "review"),
+    ("引用", "citation"),
+    ("核验", "verify"),
+    ("质控", "quality control"),
+    ("批次", "batch"),
+    ("回归", "regression"),
+    ("生存分析", "survival analysis"),
+    ("机器学习", "machine learning"),
+    ("可视化", "visualization"),
+    ("作图", "figure plot"),
+    ("绘图", "figure plot"),
+    ("光谱", "spectra spectrum"),
+    ("催化剂", "catalyst"),
+    ("晶体", "crystal"),
+    ("数据集", "dataset"),
+    ("时间序列", "time series"),
+    ("面板数据", "panel data"),
+    ("因果推断", "causal inference"),
+)
+#: Chinese character pairs too common to say what a Skill is about.
+_CJK_STOP = frozenset(
+    {
+        "数据",
+        "分析",
+        "处理",
+        "方法",
+        "结果",
+        "如何",
+        "怎么",
+        "帮我",
+        "这批",
+        "一个",
+        "一篇",
+        "进行",
+        "使用",
+        "流程",
+        "完整",
+        "可以",
+        "需要",
+        "什么",
+        "这个",
+    }
+)
+#: A Skill's Chinese text counts only when it shares at least this many
+#: distinct non-generic character pairs with the query; one shared pair is
+#: usually a homonym (``突变`` in "数据突变").
+_MIN_CJK_MATCHES = 2
+
+
 def _query_tokens(query: str) -> set[str]:
     """The query terms that can carry evidence.
 
@@ -351,6 +437,10 @@ def _query_tokens(query: str) -> set[str]:
     """
 
     tokens = _tokenize(query)
+    lowered = query.lower()
+    for chinese, english in _ZH_TERMS:
+        if chinese in lowered:
+            tokens |= _tokenize(english)
     return {token for token in tokens if len(token) > 1} or tokens
 
 
@@ -1640,6 +1730,7 @@ class SkillLoader:
         weights = [
             (token, index.weight(token)) for token in sorted(_query_tokens(query))
         ]
+        cjk_tokens = frozenset(t for t, _ in weights if _CJK_RUN.fullmatch(t))
         scored: list[tuple[float, Skill]] = []
         for key, s in candidates.items():
             if permits is not None and not permits(s.name):
@@ -1647,8 +1738,24 @@ class SkillLoader:
             summary = index.summary_tokens.get(key)
             if summary is None or index.corpus.get(key) is not s:
                 summary = _summary_tokens(s.name, s.description)
-            body = sum(weight for token, weight in weights if token in s.keywords)
-            boost = sum(weight for token, weight in weights if token in summary)
+            # Chinese pairs are evidence only when several meaningful ones
+            # agree; a generic pair never is (see _CJK_STOP).
+            shared = {
+                t for t in cjk_tokens - _CJK_STOP if t in s.keywords or t in summary
+            }
+            ignored = (
+                cjk_tokens if len(shared) < _MIN_CJK_MATCHES else cjk_tokens & _CJK_STOP
+            )
+            body = sum(
+                weight
+                for token, weight in weights
+                if token in s.keywords and token not in ignored
+            )
+            boost = sum(
+                weight
+                for token, weight in weights
+                if token in summary and token not in ignored
+            )
             score = body + _SUMMARY_BOOST * boost
             if score > 0:
                 scored.append((score, s))

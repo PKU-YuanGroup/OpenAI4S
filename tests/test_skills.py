@@ -252,6 +252,40 @@ def test_search_matches_chinese_queries_by_character_bigrams():
     )
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("帮我对这批单细胞数据做细胞类型注释", "single-cell"),
+        (
+            "蛋白质结构如何预测与设计",
+            "bio-structural-biology-modern-structure-prediction",
+        ),
+        ("写一篇文献综述并核验引用", "literature-review"),
+        ("分子对接怎么做", "diffdock"),
+        ("差异表达分析的完整流程", "bio-differential-expression"),
+    ],
+)
+def test_search_finds_the_right_skill_for_a_chinese_research_question(query, expected):
+    """SKL-3 follow-up: with character pairs alone, the few Skills that carry
+    Chinese text won on generic words -- "单细胞…细胞类型注释" returned
+    panel-data-preprocessing and volcengine-datapro on 数据. Common research
+    terms are also searched in English, and generic pairs never count."""
+
+    loader = SkillLoader()
+    names = [hit["name"] for hit in loader.search(query, limit=5)]
+    assert any(expected in name for name in names), names
+    assert "panel-data-preprocessing" not in names, names
+    assert "volcengine-datapro" not in names, names
+
+
+def test_a_single_shared_chinese_pair_is_not_evidence():
+    """``突变`` alone matched panel-data-preprocessing through "数据突变"."""
+
+    loader = SkillLoader()
+    names = [hit["name"] for hit in loader.search("突变", limit=5)]
+    assert names and "panel-data-preprocessing" not in names, names
+
+
 def test_search_does_not_rank_on_ubiquitous_bundled_tokens():
     """The reproduced release finding, over the pinned bundled corpus.
 
