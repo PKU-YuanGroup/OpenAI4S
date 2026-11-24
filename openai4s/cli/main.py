@@ -2257,10 +2257,27 @@ def cmd_run(args) -> int:
     else:
         print("\n=== stop_reason:", result["stop_reason"], "===")
         if result.get("submitted_output"):
-            print(
-                "submitted_output:",
-                json.dumps(result["submitted_output"], ensure_ascii=False, indent=2),
+            # CLI-1: the answer, rendered as the session stores it, comes
+            # first; a run ended on raw JSON. The JSON stays for `-v` (and
+            # `--json` carries all of it).
+            from openai4s.server.completions import (
+                completion_message,
+                response_language,
             )
+
+            print(
+                completion_message(
+                    result["submitted_output"],
+                    language=response_language(args.task),
+                )
+            )
+            if args.verbose:
+                print(
+                    "submitted_output:",
+                    json.dumps(
+                        result["submitted_output"], ensure_ascii=False, indent=2
+                    ),
+                )
         final = result.get("final_message")
         submitted = result.get("submitted_output")
         output = submitted.get("output") if isinstance(submitted, dict) else None
