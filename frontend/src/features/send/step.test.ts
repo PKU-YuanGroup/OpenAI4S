@@ -11,7 +11,6 @@ import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
 import { startStream } from "../messages/stream";
 import { reviewFailureText, reviewRefusalText } from "./review-copy";
-import { continueInNewSession } from "./skill-network";
 import { addLiveStep, buildStepCard, relabelStepCards, renderStoredStep, updateLiveStep } from "./step";
 
 /** Just enough DOM for step cards (no jsdom here). */
@@ -744,9 +743,9 @@ describe("a loaded Skill's network limit", () => {
   const NOTICE = {
     step_id: "n-1",
     kind: "network",
-    title: "literature-review limits this session's network",
+    title: "literature-review limits its own helpers' network",
     status: "done",
-    summary: "limited to 3 domains",
+    summary: "helpers limited to 3 domains",
     input: { skill: "literature-review" },
     output: {
       notice: "skill_network",
@@ -761,7 +760,7 @@ describe("a loaded Skill's network limit", () => {
     await setLang("zh");
     const card = buildStepCard(NOTICE).card as unknown as El;
     expect(card.querySelector(".s-lbl")!.textContent).toBe(
-      "已加载 literature-review：本会话联网限定为 3 个域名",
+      "已加载 literature-review：它的辅助代码只能访问 3 个域名",
     );
     expect(card.querySelector(".s-meta")!.textContent).toBe("3 个域名");
     expect(card.classes.has("s-net-limited")).toBe(true);
@@ -772,11 +771,11 @@ describe("a loaded Skill's network limit", () => {
     const card = buildStepCard({ ...NOTICE, output: { ...NOTICE.output, domains: ["doi.org"] } })
       .card as unknown as El;
     expect(card.querySelector(".s-lbl")!.textContent).toBe(
-      "Loaded literature-review: this session's network is limited to 1 domain",
+      "Loaded literature-review: its helpers can reach only 1 domain",
     );
   });
 
-  it("the Skill's load card says it narrowed the session, not just loaded", async () => {
+  it("the Skill's load card says its helpers are limited, not just loaded", async () => {
     await setLang("zh");
     const card = buildStepCard({
       step_id: "l-1",
@@ -791,11 +790,11 @@ describe("a loaded Skill's network limit", () => {
         session_network: { skills: ["literature-review"], domains: DOMAINS },
       },
     }).card as unknown as El;
-    expect(card.querySelector(".s-meta")!.textContent).toBe("已加载 · 本会话联网限定为 3 个域名");
+    expect(card.querySelector(".s-meta")!.textContent).toBe("已加载 · 辅助代码联网限定为 3 个域名");
     expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
   });
 
-  it("the load card names the built-in connectors the limit takes away (SCI-14)", async () => {
+  it("the load card says the rest of the session is not limited (SKL-2)", async () => {
     await setLang("en");
     const card = buildStepCard({
       step_id: "l-2",
@@ -807,6 +806,7 @@ describe("a loaded Skill's network limit", () => {
       output: {
         name: "literature-review",
         content: "# Literature review",
+        // An older step still carries the connectors it said were lost.
         session_network: {
           skills: ["literature-review"],
           domains: DOMAINS,
@@ -814,18 +814,16 @@ describe("a loaded Skill's network limit", () => {
         },
       },
     }).card as unknown as El;
-    expect(card.querySelector(".s-net-lost")!.textContent).toBe(
-      "This session can no longer use these built-in connectors: UniProtKB, RCSB Protein Data Bank.",
-    );
-    // An older step with no list says nothing rather than "none".
-    const old = buildStepCard({ ...NOTICE }).card as unknown as El;
-    expect(old.querySelector(".s-net-lost")).toBeNull();
+    const text = card.querySelectorAll(".s-net-text").map((node) => node.textContent).join(" ");
+    expect(text).toContain("Only literature-review's own helper functions");
+    expect(text).toContain("The rest of this session's network is unchanged");
+    expect(text).not.toContain("UniProtKB");
   });
 
-  it("a shell command the limit refused says so instead of a bare failure", async () => {
+  it("a helper's shell command the limit refused says so instead of a bare failure", async () => {
     await setLang("zh");
     const reason =
-      "skill host_only manifest does not declare destination 'eutils.ncbi.nlm.nih.gov': the loaded literature-review Skill limits this session's network to 3 domains";
+      "skill host_only manifest does not declare destination 'eutils.ncbi.nlm.nih.gov': the literature-review Skill's own helper code may only reach 3 domains";
     const card = buildStepCard({
       step_id: "b-1",
       kind: "bash",
@@ -844,16 +842,16 @@ describe("a loaded Skill's network limit", () => {
         },
       },
     }).card as unknown as El;
-    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能的联网限制拦下");
+    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能辅助代码的联网限制拦下");
     const text = card.querySelector(".s-net-text")!.textContent;
-    expect(text).toContain("literature-review 把本会话联网限定为 3 个域名");
+    expect(text).toContain("literature-review 的辅助代码只能访问 3 个域名");
     expect(text).toContain("eutils.ncbi.nlm.nih.gov 不在其中");
+    // SKL-2: the limit is the helpers', so no "start a new session" way out.
+    expect(text).toContain("本会话的其他联网不受影响");
+    expect(card.querySelector(".s-net-new")).toBeNull();
     expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
     // The server's own words stay available below the explanation.
     expect(card.querySelector(".s-net-blocked")!.querySelector("pre")!.textContent).toBe(reason);
-    // SCI-14: and what to do now, with the way out as a button.
-    expect(card.querySelector(".s-net-next")!.querySelector(".s-net-text")!.textContent).toContain("请在新会话中继续");
-    expect(card.querySelector(".s-net-new")!.textContent).toBe("在新会话中继续");
   });
 
   it("an unavailable review says why and what to do, not an empty card (M-75)", async () => {
@@ -886,37 +884,10 @@ describe("a loaded Skill's network limit", () => {
     expect(reviewFailureText("something new")).toBe(reviewFailureText("internal"));
   });
 
-  it("Continue in a new session opens one and carries the last request over (SCI-14)", async () => {
-    const composer = { value: "", focus: vi.fn(), dispatchEvent: vi.fn() };
-    const bubbles = [{ textContent: "find 2 papers" }, { textContent: " re-check crambin on rest.uniprot.org " }];
-    const order: string[] = [];
-    vi.stubGlobal("Event", class { constructor(readonly type: string) {} });
-    vi.stubGlobal("document", {
-      createElement: (tag: string) => new El(tag),
-      getElementById: (id: string) => (id === "composer" ? composer : null),
-      querySelectorAll: (sel: string) => (sel === "#messages .msg.user .bubble" ? bubbles : []),
-    });
-    vi.stubGlobal("newSession", async () => {
-      // The draft is read before the new session replaces the transcript.
-      order.push("new");
-      bubbles.length = 0;
-    });
-    await continueInNewSession();
-    expect(order).toEqual(["new"]);
-    expect(composer.value).toBe("re-check crambin on rest.uniprot.org");
-    expect(composer.focus).toHaveBeenCalled();
-
-    // Something already typed there is the user's, and stays.
-    composer.value = "my own words";
-    bubbles.push({ textContent: "older request" });
-    await continueInNewSession();
-    expect(composer.value).toBe("my own words");
-  });
-
-  it("a search the limit refused reads as blocked, not as 0 results", async () => {
+  it("a helper's search the limit refused reads as blocked, not as 0 results", async () => {
     await setLang("zh");
     const reason =
-      "skill host_only manifest does not declare any enabled search engine (You.com, DuckDuckGo/Bing/Mojeek): the loaded text-features Skill limits this session's network to 1 domain (api.typesafe.ai).";
+      "skill host_only manifest does not declare any enabled search engine (You.com, DuckDuckGo/Bing/Mojeek): the text-features Skill's own helper code may only reach 1 domain (api.typesafe.ai).";
     const card = buildStepCard({
       step_id: "q-1",
       kind: "search",
@@ -935,12 +906,12 @@ describe("a loaded Skill's network limit", () => {
         },
       },
     }).card as unknown as El;
-    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能的联网限制拦下");
+    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能辅助代码的联网限制拦下");
     // A refusal is its own state: neither the red failure nor a neutral done.
     expect(card.classes.has("warn")).toBe(true);
     expect(card.classes.has("err")).toBe(false);
     const text = card.querySelector(".s-net-text")!.textContent;
-    expect(text).toContain("text-features 把本会话联网限定为 1 个域名");
+    expect(text).toContain("text-features 的辅助代码只能访问 1 个域名");
     expect(text).toContain("这次检索没有发出");
     expect(card.querySelector(".s-q")!.textContent).toBe("“GLP-1 Alzheimer”");
   });

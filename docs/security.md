@@ -211,6 +211,19 @@ The refusal names the Skill and the domains it allows, and the Cell receives
 that reason, not a generic "host authorization unavailable". `authorize_bash`
 still runs the same checks at issuance, where they are the boundary.
 
+A `host_only` manifest limits only the requests that Skill's own helper code
+(its `kernel.py` sidecar) makes. The worker-side SDK names the Skill whose
+sidecar is on the calling stack (`attribute_caller` in `openai4s/sdk/host.py`),
+the dispatcher strips that marker before anything else reads the arguments,
+and `skill_network_admission.frame_scope(frame, caller_skill=...)` holds the
+request to that Skill's declared domains. Native tools (`web_fetch`,
+`web_search`, `science_search`), the agent's own Cell code calling `host.*`,
+and its `host.bash` keep the session's ordinary network policy. Attribution
+only ever narrows: a forged marker limits its caller, a missing one leaves the
+call under the session's policy. Loading a `host_only` Skill still requires a
+kernel whose measured sandbox cannot reach the network except through the
+Host, so the helpers cannot bypass their limit with raw sockets.
+
 The model is told the kernel's limits before it meets them. The Web and CLI
 system prompts carry a "Kernel environment" paragraph built from the sandbox
 configuration (`openai4s/kernel/constraints.py`; no worker, no self-test):
@@ -223,7 +236,13 @@ This is guidance, not enforcement: what a Cell can actually read or reach is
 still decided only by the OS sandbox.
 
 That install route asks every time (`env_setup` defaults to `ask`), and the
-card names the packages and the environment they go into. It installs into
+card names the packages and the environment they go into. An install is never
+remembered: its card offers only "once", an allow sent with a wider scope is
+recorded as once, the rules API refuses to save an allow rule for `env_setup`
+or for a `bash` pattern that installs packages (`pip install …`, `conda
+install …`, `install.packages(…)`), and the resolver ignores any such allow
+row that already exists (`installs_packages` in `openai4s/storage/permissions.py`).
+A deny rule still applies. It installs into
 the interpreter the session kernel runs, not the daemon's own, and pins every
 package that interpreter already has, so an install can add packages but never
 move an existing one: a resolver conflict is reported as a refused version

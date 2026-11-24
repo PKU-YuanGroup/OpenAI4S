@@ -129,32 +129,36 @@ describe("a skill's network limit", () => {
   });
 
   // SCI-07: "Limits network · 0 domains" opened onto a sentence ending in a
-  // colon, and one domain read "1 domains".
-  it("says that no declared domain turns the session's network off, and how to get it back", async () => {
+  // colon, and one domain read "1 domains". SKL-2: the limit is the Skill's
+  // helpers', never the session's, so nobody is sent to a new session.
+  it("says that no declared domain takes only the helpers' network away", async () => {
     await setLang("en");
     const off = skillNetworkCopy([]);
-    expect(off.summary).toBe("Turns network off");
-    expect(off.detail).toContain("turns network access off for the rest of this session");
-    expect(off.detail).toContain("Start a new session");
+    expect(off.summary).toBe("Helpers have no network");
+    expect(off.detail).toContain("own helper functions (its kernel.py) cannot reach the network");
+    expect(off.detail).toContain("The rest of this session's network is unchanged");
+    expect(off.detail).not.toContain("new session");
     expect(off.detail).not.toMatch(/:\s*$/);
 
     await setLang("zh");
     const offZh = skillNetworkCopy([]);
-    expect(offZh.summary).toBe("加载后关闭联网");
-    expect(offZh.detail).toContain("请新开一个会话");
+    expect(offZh.summary).toBe("辅助代码不能联网");
+    expect(offZh.detail).toContain("本会话的其他联网");
+    expect(offZh.detail).not.toContain("新开一个会话");
   });
 
-  it("names the domains it keeps, with the count in the right number", async () => {
+  it("names the domains its helpers keep, with the count in the right number", async () => {
     await setLang("en");
-    expect(skillNetworkCopy(["integrate.api.nvidia.com"]).summary).toBe("Limits network · 1 domain");
+    expect(skillNetworkCopy(["integrate.api.nvidia.com"]).summary).toBe("Helpers limited · 1 domain");
     const two = skillNetworkCopy(["api.openalex.org", "doi.org"]);
-    expect(two.summary).toBe("Limits network · 2 domains");
+    expect(two.summary).toBe("Helpers limited · 2 domains");
     expect(two.detail).toContain(
-      "Loading this Skill limits network access for the rest of this session to: api.openalex.org, doi.org.",
+      "This Skill's own helper functions (its kernel.py) can reach only: api.openalex.org, doi.org.",
     );
+    expect(two.detail).toContain("The rest of this session's network is unchanged");
 
     await setLang("zh");
-    expect(skillNetworkCopy(["api.openalex.org", "doi.org"]).summary).toBe("限定联网 · 2 个域名");
+    expect(skillNetworkCopy(["api.openalex.org", "doi.org"]).summary).toBe("辅助代码限定联网 · 2 个域名");
     await setLang("en");
   });
 });

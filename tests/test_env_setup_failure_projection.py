@@ -72,7 +72,7 @@ def test_step_end_falls_back_to_the_log_tail_when_failed_is_empty():
 
 
 @pytest.fixture
-def dispatcher(tmp_path):
+def dispatcher(tmp_path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     cfg = Config(
@@ -80,13 +80,9 @@ def dispatcher(tmp_path):
         llm=LLMConfig(provider="deepseek", api_key="test-key"),
     )
     dispatcher = build_dispatcher(cfg, frame_id="f-env", workspace=workspace)
-    dispatcher.store.set_permission_rule(
-        scope="conversation",
-        scope_id="f-env",
-        tool="env_setup",
-        pattern="*",
-        decision="allow",
-    )
+    # Every install asks and no standing rule answers for one, so the install
+    # is approved the way a headless operator opts in: once per request.
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "allow")
     return dispatcher
 
 

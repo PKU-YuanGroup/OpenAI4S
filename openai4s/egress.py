@@ -327,9 +327,11 @@ def check_url(url: str) -> None:
     ``off`` mode. Called per redirect hop by webtools so a public → blocked
     redirect is still caught.
 
-    When a ``host_only`` Skill is bound to the current frame, the destination
-    must also be in that Skill's declared domain list. The extra constraint
-    only narrows; it never grants a host the allowlist would refuse.
+    When the request being served was made by a bound ``host_only`` Skill's
+    own helper code (``skill_network_admission.frame_scope``), the destination
+    must also be in that Skill's declared domain list. Every other request
+    keeps the session's policy. The extra constraint only narrows; it never
+    grants a host the allowlist would refuse.
     """
     try:
         from openai4s.server.skill_network_admission import constrain_check_url

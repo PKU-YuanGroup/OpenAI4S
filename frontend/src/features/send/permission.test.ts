@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
+import { stepEls } from "../../stores/stream";
 import { renderPermissionCard, resolvePermissionCard } from "./permission";
 
 class El {
@@ -72,6 +73,13 @@ class El {
   remove(): void {
     if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
     this.parent = null;
+  }
+  after(node: El): void {
+    const parent = this.parent;
+    if (!parent) return;
+    node.remove();
+    node.parent = parent;
+    parent.children.splice(parent.children.indexOf(this) + 1, 0, node);
   }
   setAttribute(): void {}
   querySelector(sel: string): El | null {
@@ -307,6 +315,53 @@ describe("what a card remembers", () => {
     expect(seen.bodies[0]).toMatchObject({ scope: "conversation", pattern: "python3 -c *" });
   });
 
+  it("an install offers no remember row: every install asks (PERM-1)", async () => {
+    const seen = captureDecision();
+    renderPermissionCard({
+      decision_id: "d-r3",
+      frame_id: "f-1",
+      tool: "env_setup",
+      target: "pydeseq2",
+      input: { packages: ["pydeseq2"], environment: "base" },
+      scopes: ["once"],
+      suggested_patterns: [],
+    });
+    const { card: node, allow } = card();
+    expect(node.querySelectorAll(".perm-scope")).toHaveLength(0);
+    expect(node.querySelectorAll(".perm-pat")).toHaveLength(0);
+    expect(node.querySelectorAll(".perm-lbl").map((l) => l.textContent)).not.toContain(t("perm.lbl.rememberScope"));
+    expect(node.querySelectorAll(".perm-ctx").map((l) => l.textContent).join("\n")).toContain("Every install asks");
+    allow.onclick!();
+    await settle();
+    expect(seen.bodies[0]).toMatchObject({ scope: "once" });
+    expect(seen.bodies[0]).not.toHaveProperty("pattern");
+  });
+
+  it("a stored install request from before the fix still offers only once", async () => {
+    renderPermissionCard({
+      decision_id: "d-r4",
+      frame_id: "f-1",
+      tool: "env_setup",
+      target: "pydeseq2",
+      input: { packages: ["pydeseq2"] },
+      scopes: ["once", "conversation", "project", "global"],
+    });
+    expect(card().card.querySelectorAll(".perm-scope")).toHaveLength(0);
+  });
+
+  it("a shell install the server marks once-only hides the row too", async () => {
+    renderPermissionCard({
+      decision_id: "d-r5",
+      frame_id: "f-1",
+      tool: "bash",
+      target: "pip install pydeseq2",
+      input: { command: "pip install pydeseq2" },
+      scopes: ["once"],
+      suggested_patterns: [],
+    });
+    expect(card().card.querySelectorAll(".perm-scope")).toHaveLength(0);
+  });
+
   it("falls back to the exact command when the server offers no prefix (a chained command)", async () => {
     const { defaultRememberPattern } = await import("./permission");
     expect(
@@ -316,6 +371,89 @@ describe("what a card remembers", () => {
     expect(
       defaultRememberPattern({ tool: "write_file", target: "out/a.csv", suggested_patterns: ["out/a.csv", "out/*", "*.csv", "*"] }),
     ).toBe("out/a.csv");
+  });
+});
+
+describe("one card per denial (PERM-2)", () => {
+  const INSTALL_VIEW = {
+    kind: "env",
+    title: "Installing pydeseq2 into base",
+    input: { packages: ["pydeseq2"], environment: "base", interpreter: "/env/bin/python" },
+  };
+
+  function stepCard(id: string, step: Record<string, unknown>): El {
+    const node = messages.appendChild(new El("div"));
+    node.className = "step";
+    const reg = (stepEls.value || {}) as Record<string, unknown>;
+    reg[id] = { card: node, step };
+    stepEls.value = reg;
+    return node;
+  }
+
+  function deciding(allow: boolean): void {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ ok: true, allow })),
+      }),
+    );
+  }
+
+  const byId = (id: string): El =>
+    messages.querySelectorAll(".perm-card").find((node) => node.dataset.decisionId === id)!;
+
+  it("a denied request goes inside the step card that already says it was declined", async () => {
+    deciding(false);
+    const step = stepCard("s-1", { ...INSTALL_VIEW, status: "running" });
+    renderPermissionCard({ decision_id: "d-p1", frame_id: "f-1", tool: "env_setup", target: "pydeseq2", ...INSTALL_VIEW });
+    const node = byId("d-p1");
+    node.querySelector(".perm-fb")!.value = "not this one";
+    node.querySelector(".perm-deny")!.onclick!();
+    await settle();
+    expect(node.classes.has("denied")).toBe(true);
+    // Not a second row in the conversation: it sits inside the step card.
+    expect(node.parent!.classes.has("s-children")).toBe(true);
+    expect(node.parent!.parent).toBe(step);
+    expect(step.querySelectorAll(".perm-card")).toEqual([node]);
+    // Said again in the other language, it stays where it was folded.
+    const { relabelPermissionCards } = await import("./permission");
+    await setLang("zh");
+    relabelPermissionCards();
+    expect(node.parent!.parent).toBe(step);
+    await setLang("en");
+  });
+
+  it("an allowed request, or one with no matching step, stays where it is", async () => {
+    const nested = (node: El): boolean => !!node.parent && node.parent.classes.has("s-children");
+    deciding(true);
+    stepCard("s-2", { ...INSTALL_VIEW, status: "running" });
+    renderPermissionCard({ decision_id: "d-p2", frame_id: "f-1", tool: "env_setup", ...INSTALL_VIEW });
+    const allowed = byId("d-p2");
+    allowed.querySelector(".perm-allow")!.onclick!();
+    await settle();
+    expect(allowed.classes.has("allowed")).toBe(true);
+    expect(nested(allowed)).toBe(false);
+
+    deciding(false);
+    resetStoreFields();
+    stepCard("s-3", { ...INSTALL_VIEW, input: { packages: ["numpy"] }, status: "running" });
+    renderPermissionCard({ decision_id: "d-p3", frame_id: "f-1", tool: "env_setup", ...INSTALL_VIEW });
+    const other = byId("d-p3");
+    other.querySelector(".perm-deny")!.onclick!();
+    await settle();
+    expect(other.classes.has("denied")).toBe(true);
+    expect(nested(other)).toBe(false);
+  });
+
+  it("a stored denial is painted inside its step card on reload", async () => {
+    const { renderStoredPermission } = await import("./permission");
+    const step = stepCard("s-4", { ...INSTALL_VIEW, status: "error", output: { error: "Permission denied: no" } });
+    const node = renderStoredPermission(
+      { decision_id: "d-p4", frame_id: "f-1", tool: "env_setup", state: "denied", message: "no", ...INSTALL_VIEW },
+      messages as unknown as ParentNode,
+    ) as unknown as El;
+    expect(node.parent!.parent).toBe(step);
   });
 });
 

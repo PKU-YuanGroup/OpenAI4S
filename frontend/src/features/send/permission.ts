@@ -7,7 +7,7 @@
  */
 
 import { LANG, t } from "../../i18n/runtime";
-import { permCards, running } from "../../stores/stream";
+import { permCards, running, stepEls } from "../../stores/stream";
 import { bytes } from "../artifacts/api";
 import { syncPendingApproval } from "../messages/approval";
 import { el } from "../messages/dom";
@@ -35,6 +35,8 @@ type PermEvent = {
   decision_id?: string;
   frame_id?: string;
   tool?: string;
+  /** The step view the request was asked from: its card's kind, title and input. */
+  kind?: string;
   title?: string;
   target?: string;
   input?: Record<string, unknown>;
@@ -198,6 +200,7 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     installInto: "Installs into: {0}",
     installKeep:
       "Packages already in this environment keep their versions; an install that would change one is refused.",
+    installOnce: "Every install asks; this approval is not remembered.",
     localEnv:
       "This is one of your own conda environments, not one OpenAI4S set up. If you allow it, the following cells run with its interpreter.",
     runsIn: "Runs in the {0} environment (python → {1})",
@@ -220,6 +223,7 @@ const CONTEXT_COPY: Record<"en" | "zh", Record<string, string>> = {
     downloadWhy: "下载会把文件写进这个项目，所以要先询问；读取网页不写文件，不需要询问。",
     installInto: "安装到：{0}",
     installKeep: "这个环境里已安装的包保持原版本；需要改动它们的安装会被拒绝。",
+    installOnce: "每次安装都会询问；这次批准不会被记住。",
     localEnv:
       "这是你本机的 conda 环境，不是 OpenAI4S 自带的环境。允许后，后续单元会用它的解释器运行。",
     runsIn: "运行环境：{0}（python → {1}）",
@@ -278,6 +282,7 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
       lines.push(ctx("installInto", inp.interpreter ? `${env} (${String(inp.interpreter)})` : env));
     }
     lines.push(ctx("installKeep"));
+    lines.push(ctx("installOnce"));
   } else if (m.tool === "env_use") {
     // SCI-21: the reason the model gave for the switch, in its own words.
     const reason = String(inp.reason || "").trim();
@@ -322,6 +327,19 @@ export function permContext(m: PermEvent): { lines: string[]; code: Array<{ labe
  */
 export function defaultRememberScope(_m: PermEvent): string {
   return "once";
+}
+
+const ALL_SCOPES = ["once", "conversation", "project", "global"];
+
+/**
+ * The scopes a card offers. A package install asks every time (owner decision
+ * 1): the server sends only "once" for it and refuses a wider allow. A request
+ * stored before that rule still carries every scope, so an install is held to
+ * "once" here as well.
+ */
+export function rememberScopes(m: PermEvent): string[] {
+  if (m.tool === "env_setup") return ["once"];
+  return m.scopes && m.scopes.length ? m.scopes : ALL_SCOPES;
 }
 
 /**
@@ -469,6 +487,47 @@ function registry(): Record<string, PermHandle> {
   return reg;
 }
 
+type StepTwin = { card: HTMLElement; step: { kind?: unknown; title?: unknown; input?: unknown; status?: unknown } };
+
+/**
+ * The step card this request was asked from: the same view (kind, title and
+ * input) the Host projected both from, newest first, and not one that ran.
+ */
+function stepTwin(request: PermEvent): StepTwin | null {
+  if (!request.kind || !request.title) return null;
+  const input = JSON.stringify(request.input ?? null);
+  const handles = Object.values((stepEls.value || {}) as Record<string, StepTwin | undefined>);
+  for (let i = handles.length - 1; i >= 0; i--) {
+    const handle = handles[i];
+    if (!handle || !handle.card || !handle.step) continue;
+    const step = handle.step;
+    if (step.kind !== request.kind || step.title !== request.title || step.status === "done") continue;
+    if (JSON.stringify(step.input ?? null) === input) return handle;
+  }
+  return null;
+}
+
+/**
+ * PERM-2: a request that was not allowed left two cards saying the same
+ * thing -- its step ("You declined · not run", with the reason) and the
+ * decided approval ("Denied · Reason: …"). The approval goes inside its step
+ * card, one click away, as an allowed download's does (SCI-11). False when no
+ * such step card is on screen: the approval stays where it is.
+ */
+function foldRefusedDecision(card: HTMLElement, request: PermEvent): boolean {
+  const parent = card.parentElement;
+  if (parent && parent.classList.contains("s-children")) return true;
+  const twin = stepTwin(request);
+  if (!twin) return false;
+  let box = (Array.from(twin.card.children) as HTMLElement[]).find((kid) => kid.classList.contains("s-children"));
+  if (!box) {
+    box = el("div", "s-children");
+    twin.card.appendChild(box);
+  }
+  box.appendChild(card);
+  return true;
+}
+
 export function markPermCard(
   id: string,
   allowed: boolean,
@@ -528,6 +587,8 @@ export function markPermCard(
   }
   // SCI-11: an allowed download is shown once, as its download card.
   if (allowed && h.card.isConnected && h.request) foldDownloadDecision(h.card, h.request);
+  // PERM-2: so is a request that was not allowed, as its step card.
+  if (!allowed && h.card.isConnected && h.request) foldRefusedDecision(h.card, h.request);
   // Not while a reopen paints history off-DOM: that registry is not the one
   // on screen until the paint swaps it in (messages/open.ts syncs then).
   if (h.card.isConnected) syncPendingApproval();
@@ -595,6 +656,8 @@ export function renderStoredPermission(
   if (state !== "pending") markPermCard(id, state === "allowed", stored.scope || null, stored);
   // As the live card folded (SCI-11): its download was painted just before it.
   if (state === "allowed" && foldDownloadDecision(handle.card, stored)) return handle.card;
+  // PERM-2: likewise a refusal, inside the step card that says it was refused.
+  if (state !== "pending" && state !== "allowed" && foldRefusedDecision(handle.card, stored)) return handle.card;
   const host = target || (typeof document !== "undefined" ? document.getElementById("messages") : null);
   host?.appendChild(handle.card);
   return handle.card;
@@ -670,11 +733,14 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   }
 
   let scope = defaultRememberScope(m);
-  card.appendChild(labelEl("div", "perm-lbl", "perm.lbl.rememberScope"));
+  const scopes = rememberScopes(m);
+  // With "once" the only choice there is nothing to remember: no row at all.
+  const remember = scopes.length > 1;
+  if (remember) card.appendChild(labelEl("div", "perm-lbl", "perm.lbl.rememberScope"));
   const scRow = el("div", "perm-scope");
   const segs: Record<string, HTMLElement> = {};
   const patWrap = el("div", "perm-pat");
-  (m.scopes || ["once", "conversation", "project", "global"]).forEach((s) => {
+  scopes.forEach((s) => {
     const b = PERM_SCOPE_KEYS[s]
       ? labelEl("button", "perm-seg" + (s === scope ? " active" : ""), PERM_SCOPE_KEYS[s])
       : el("button", "perm-seg" + (s === scope ? " active" : ""), permScopeCn(s));
@@ -687,7 +753,7 @@ function buildPermissionCard(m: PermEvent): PermHandle {
     segs[s] = b;
     scRow.appendChild(b);
   });
-  card.appendChild(scRow);
+  if (remember) card.appendChild(scRow);
   // With choices the remembered rule's pattern IS the choice, so no free text.
   patWrap.style.display = scope === "once" || choices.length ? "none" : "";
 
@@ -725,7 +791,7 @@ function buildPermissionCard(m: PermEvent): PermHandle {
   patIn.oninput = paintRule;
   patWrap.appendChild(note);
   paintRule();
-  card.appendChild(patWrap);
+  if (remember) card.appendChild(patWrap);
 
   const fb = el("input", "perm-fb") as HTMLInputElement;
   fb.type = "text";

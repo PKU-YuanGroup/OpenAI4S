@@ -24,7 +24,7 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`memory.ts`](memory.ts) | Memory 作用域 id 与名称。绝不发送字面 `"default"`。 每种类型都有名称和一句用途说明（`memoryBlockLabel`、`memoryBlockHint`）；`memoryAppliedText` 说明新会话会带上几条记忆，省略/继承/被取代的数量只在不为零时才写出（M-81）。 |
 | [`notebook-sync.ts`](notebook-sync.ts) | SYNC-27：守护进程级的 Notebook 手动单元开关。`announceNotebookSwitch` 立刻通知同一浏览器的其他窗口（BroadcastChannel）；`watchNotebookSwitch`（由 `bootCustomize` 启动）在窗口回到前台时重新读取开关，只有与当前 Notebook 显示不一致时才刷新它（`recheckNotebookSwitch`）。Notebook 模块按需加载。 |
 | [`notebook-sync.test.ts`](notebook-sync.test.ts) | 开关与 Notebook 显示不一致时会让它重新读取；一致或读取失败时什么都不变；变更会发给其他窗口。 |
-| [`permissions.ts`](permissions.ts) | 设置 → 权限 的文案（`permT`）：每个工具名一句说明（`toolDescription`），以及 `globalRulesSummary`——从规则本身读出全局规则的实际效果（读取 / 写入 / 联网 / 装包 / 后台命令 / 连接器 / 技能）。 |
+| [`permissions.ts`](permissions.ts) | 设置 → 权限 的文案（`permT`）：每个工具名一句说明（`toolDescription`），以及 `globalRulesSummary`——从规则本身读出全局规则的实际效果（读取 / 写入 / 联网 / 装包 / 后台命令 / 连接器 / 技能）。`groupRules` / `groupDecision` 把一个作用域的规则归入设置页的类别并说明每类的实际效果（PERM-3）；`installRule` 与服务端「装包每次询问」的判断一致（PERM-1）。 |
 | [`permissions.test.ts`](permissions.test.ts) | 摘要与种子规则一致、随规则变化而变化；没有通配规则的工具按“询问”计；未知工具名没有说明。 |
 | [`runtimes.ts`](runtimes.ts) | 设置 → 计算 的文案（`runtimeT`），以及把环境列表里的 `runtimes` 说成人话：`runtimeSummary`（环境名 · 内置 / 托管 / 本机 · 版本，绝不显示路径）、`rPackagesNote`（R 的关键包能否加载，以及托管 R 环境自带它们）、`rDefaultLabel`（运行环境菜单里 R 的“默认”指的是什么）、`installOutcome`（一次安装做了什么：版本、装到哪个环境、运行中的内核需要做什么）。 |
 | [`runtimes.test.ts`](runtimes.test.ts) | Python、某个环境里的 R、PATH 上的 R 和找不到 R 时的摘要；关键包说明；默认标签；安装结果在带版本、内核已重启、会话运行在别的环境、失败、没有版本这几种情况下的说法。 |
