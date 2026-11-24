@@ -1108,7 +1108,6 @@ body.has-key-banner #sidebar,body.has-key-banner #main,body.has-key-banner #righ
 .step .s-net-head{color:var(--text-400);font-size:12px}
 .step .s-net-doms{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
 .step .s-net-dom{font-family:var(--mono);font-size:11.5px;padding:1px 6px;border-radius:6px;background:var(--bg-000);border:.5px solid var(--border);color:var(--text-300)}
-.step .s-net-next{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
 /* search results */
 .step .s-res{display:flex;flex-direction:column;gap:1px;padding:5px 0;border-top:1px solid var(--border,rgba(18,18,18,.05))}
 .step .s-res:first-child{border-top:none}
@@ -1186,6 +1185,18 @@ body.has-key-banner #sidebar,body.has-key-banner #main,body.has-key-banner #righ
 .perm-dec{border:.5px solid var(--border-btn);border-radius:var(--radius);height:26px;font-size:12px;padding:0 6px;background:var(--bg-000);color:var(--text-000)}
 .perm-add{border-top:1px dashed var(--border)}
 .perm-add .perm-in{flex:1;font-family:var(--sans)}
+/* PERM-3: rules grouped by category; the header says the group's effective decision */
+.perm-grp{border-top:1px solid var(--border)}
+.perm-grp-h{display:flex;align-items:center;gap:4px;padding:7px 0;cursor:pointer;font-size:12.5px;color:var(--text-200);list-style:none}
+.perm-grp-h::-webkit-details-marker{display:none}
+.perm-grp-h::before{content:"\203A";display:inline-block;width:12px;color:var(--text-400);transition:transform .15s}
+.perm-grp[open]>.perm-grp-h::before{transform:rotate(90deg)}
+.perm-grp-name{font-weight:500;color:var(--text-000)}
+.perm-grp-n{color:var(--text-400)}
+.perm-grp[data-decision="deny"] .perm-grp-dec{color:var(--danger)}
+.perm-grp[data-decision="ask"] .perm-grp-dec{color:var(--warn-text)}
+.perm-grp>.perm-rule{padding-left:16px}
+.perm-grp>.perm-rule:first-of-type{border-top:0}
 .cust-note{color:var(--text-400);font-size:12.5px;padding:4px 0}
 .step .s-frow{padding-left:14px;display:flex;gap:2px}
 .step .s-fn{color:var(--text-200)}
