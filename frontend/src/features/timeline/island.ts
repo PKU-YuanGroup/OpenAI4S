@@ -3128,26 +3128,40 @@ async function restoreActivatedBranch(): Promise<void> {
   renderActionTimeline();
 }
 
-export async function activateSessionBranch(branchId: string): Promise<void> {
+/**
+ * Switch the open session to one of its branches. True once the switch
+ * happened. `confirmed`: the caller already asked this confirm (VIEW-2: a
+ * fork from a question asks before the branch exists), and `name` is the
+ * branch's name when the branch list does not have it yet.
+ */
+export async function activateSessionBranch(
+  branchId: string,
+  options: { confirmed?: boolean; name?: string } = {},
+): Promise<boolean> {
   branchId = publicText(branchId, 96);
-  if (!S.currentId || !branchId || !branchCapability("activate") || S._branchActionLoading) return;
+  if (!S.currentId || !branchId || !branchCapability("activate") || S._branchActionLoading) return false;
   const target = ((S.branchState && S.branchState.branches) || []).find(
     (branch: any) => branch && branch.branch_id === branchId,
   );
-  const name = branchDisplayName(target || { branch_id: branchId }, S.currentId);
+  const name =
+    publicText(options && options.name, 120) ||
+    branchDisplayName(target || { branch_id: branchId }, S.currentId);
   // M-73: the kernel stopped and its variables were gone without a word.
   const frameId = S.currentId;
-  if (!(await askConfirm(branchT("branch.activateConfirm", name)))) return;
-  if (S.currentId !== frameId || S._branchActionLoading) return;
+  if (!(options && options.confirmed === true) && !(await askConfirm(branchT("branch.activateConfirm", name))))
+    return false;
+  if (S.currentId !== frameId || S._branchActionLoading) return false;
   S._branchActionLoading = "activate:" + branchId;
   delete S.workbenchErrors.branchAction;
   renderActionTimeline();
+  let switched = false;
   try {
     const result = await api(
       `/frames/${encodeURIComponent(frameId)}/branches/${encodeURIComponent(branchId)}/activate`,
       { method: "POST", body: "{}" },
     );
-    if (S.currentId !== frameId) return;
+    if (S.currentId !== frameId) return false;
+    switched = true;
     invalidateKernelCache();
     S.cells = [];
     S.liveCells = [];
@@ -3168,6 +3182,7 @@ export async function activateSessionBranch(branchId: string): Promise<void> {
       laneCall("renderNotebook");
     }
   }
+  return switched;
 }
 
 async function previewSessionRevert(checkpointId: string): Promise<void> {

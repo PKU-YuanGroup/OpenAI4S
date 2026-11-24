@@ -11,9 +11,10 @@
  */
 
 import { currentId } from "../../stores/session";
-import { workbenchErrors } from "../../stores/timeline";
+import { branchState, workbenchErrors } from "../../stores/timeline";
 import { isReady } from "../../compat/stub";
 import { LANG, t } from "../../i18n/runtime";
+import { askConfirm } from "../chrome/dialog";
 import { historyT } from "../messages/copy";
 import { publicText } from "../scrub/scrub";
 import { api, ApiError } from "./api";
@@ -53,7 +54,7 @@ export async function forkFromCell(frameId: string, cellId: string): Promise<For
 }
 
 export type ForkResult =
-  | { ok: true; branch_id: string; name: string }
+  | { ok: true; branch_id: string; name: string; activated?: true }
   | { ok: false; presentation: ForkPresentation };
 
 /** One in-flight fork per message. A second click must not POST again. */
@@ -106,24 +107,93 @@ function branchLabel(result: unknown): { branch_id: string; name: string } {
   return { branch_id: branchId, name: named || branchId };
 }
 
+/** VIEW-2: how many characters of the question name the branch it opens. */
+export const QUESTION_BRANCH_NAME_CHARS = 20;
+
+/** "RNA-seq 质控与差异表达分析，样本表在…": the question's start, on one line. */
+export function questionBranchName(question: string): string {
+  const text = String(question || "").split(/\s+/).filter(Boolean).join(" ");
+  const chars = Array.from(text);
+  return chars.length <= QUESTION_BRANCH_NAME_CHARS
+    ? text
+    : chars.slice(0, QUESTION_BRANCH_NAME_CHARS).join("").trimEnd() + "…";
+}
+
+type ActivateBranch = (
+  branchId: string,
+  options: { confirmed: true; name: string },
+) => Promise<boolean> | boolean | void;
+
 /**
- * Fork from one stored user message. One POST, body exactly
- * `{from_message_id}`. A 409 is the server's sentence, not a retry and not
- * a fork of the latest state. The new branch stays inactive.
+ * The confirmed activation the sidebar and the branch panel run
+ * (`timeline/island.ts` `activateSessionBranch`, published on the window), or
+ * null when it is not loaded or the session cannot switch branches now.
+ */
+function branchActivation(): ActivateBranch | null {
+  const fn = (globalThis as unknown as { activateSessionBranch?: unknown }).activateSessionBranch;
+  if (!isReady(fn)) return null;
+  const state = branchState.value as { capabilities?: Record<string, unknown> } | null;
+  if (!state || !state.capabilities || !state.capabilities.activate) return null;
+  return fn as ActivateBranch;
+}
+
+/** The question goes back into the composer, ahead of anything already typed there. */
+function prefillQuestion(question: string): void {
+  const doc = (globalThis as { document?: { getElementById?: (id: string) => unknown } }).document;
+  const composer =
+    doc && typeof doc.getElementById === "function"
+      ? (doc.getElementById("composer") as HTMLTextAreaElement | null)
+      : null;
+  if (!composer || !question) return;
+  composer.value = composer.value.trim() ? question + "\n\n" + composer.value : question;
+  composer.dispatchEvent(new Event("input", { bubbles: true }));
+  composer.focus();
+}
+
+export type MessageForkOptions = {
+  /** The question as the bubble shows it: names the branch and is prefilled. */
+  question?: string;
+  /** Called once the request is really going out (after the confirm). */
+  onCreating?: () => void;
+};
+
+/**
+ * Fork from one stored user message. One POST with `{from_message_id}` (and
+ * the branch's `name` when the question is known). A 409 is the server's
+ * sentence, not a retry and not a fork of the latest state.
+ *
+ * VIEW-2 (owner decision 35): where the session can switch branches, one
+ * click asks the switch's own confirm first (the kernel restarts), then
+ * creates the branch, switches to it and puts the question back in the
+ * composer to edit; a cancel creates nothing. Where it cannot switch, the
+ * branch is created and stays inactive, as before.
  */
 export async function forkFromMessage(
   frameId: string,
   messageId: string,
+  options: MessageForkOptions = {},
 ): Promise<ForkResult | null> {
   if (!frameId || !messageId) return null;
   const key = messageForkKey(frameId, messageId);
   if (messageForkInFlight.has(key)) return null;
   messageForkInFlight.add(key);
   try {
+    const question = String(options.question || "").trim();
+    const name = question ? questionBranchName(question) : "";
+    const activate = branchActivation();
+    if (activate) {
+      // The switch's confirm, before anything exists: a cancel sends nothing.
+      if (!(await askConfirm(branchT("branch.activateConfirm", name || historyT("history.forkMessage.label")))))
+        return null;
+      if (!stillOnFrame(frameId)) return null;
+    }
+    if (options.onCreating) options.onCreating();
+    const body: Record<string, string> = { from_message_id: messageId };
+    if (name) body.name = name;
     const attempt = await forkOnce(() =>
       api(`/frames/${encodeURIComponent(frameId)}/branches/fork`, {
         method: "POST",
-        body: JSON.stringify({ from_message_id: messageId }),
+        body: JSON.stringify(body),
       }),
     );
     if (!attempt.ok) {
@@ -134,10 +204,14 @@ export async function forkFromMessage(
       return { ok: false, presentation };
     }
     const created = branchLabel(attempt.result);
-    if (stillOnFrame(frameId)) {
-      hint(historyT("history.forkMessage.created", created.name));
-      refreshAfterMessageFork();
+    if (!stillOnFrame(frameId)) return { ok: true, ...created };
+    refreshAfterMessageFork();
+    if (activate && (await activate(created.branch_id, { confirmed: true, name: created.name })) === true) {
+      if (stillOnFrame(frameId)) prefillQuestion(question);
+      return { ok: true, ...created, activated: true };
     }
+    // Not switched (no activation here, or it was refused): the branch exists.
+    if (stillOnFrame(frameId)) hint(historyT("history.forkMessage.created", created.name));
     return { ok: true, ...created };
   } finally {
     messageForkInFlight.delete(key);

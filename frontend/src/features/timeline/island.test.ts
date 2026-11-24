@@ -27,6 +27,7 @@ import { nbT } from "../notebook/copy";
 import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
 import {
+  activateSessionBranch,
   loadWorkbenchState,
   mergeDelegationChildEvent,
   resetComputeTasks,
@@ -1827,6 +1828,25 @@ describe("switching to another branch", () => {
     });
     expect(renderBranchPanel().querySelector(".branch-kernel-gap")!.textContent).toBe(branchT("branch.restored"));
     expect(button(branchT("branch.restoreKernel"))).toBeNull();
+  });
+
+  it("does not ask twice for a branch its caller already confirmed, and says whether it switched (VIEW-2)", async () => {
+    // A fork from a question asks before the branch exists, then switches
+    // to a branch the list does not hold yet.
+    const { hints, asked } = onRootBranch(false);
+    const calls = stubApi((path, method) =>
+      method === "POST" && path.endsWith("/activate") ? { ok: true, status: "active" } : undefined,
+    );
+    const switched = await activateSessionBranch("br-new", { confirmed: true, name: "RNA-seq 质控…" });
+    expect(switched).toBe(true);
+    expect(asked).toEqual([]);
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual([
+      "/frames/frame-b/branches/br-new/activate",
+    ]);
+    expect(hints.at(-1)).toEqual([branchT("branch.switched", "RNA-seq 质控…"), undefined]);
+    // Without the caller's confirm it still asks, and a no switches nothing.
+    expect(await activateSessionBranch("br-new")).toBe(false);
+    expect(asked).toHaveLength(1);
   });
 });
 
