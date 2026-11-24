@@ -58,7 +58,36 @@ export function setTitle(name: string | null | undefined): void {
   ct.removeAttribute("data-i18n-val");
   const value = name || t("conv.title.default");
   ct.value = value;
-  ct.size = Math.max(6, Math.min(40, value.length + 1));
+  // `size` counts average Latin character widths; a Chinese character is
+  // about two of them, so "询问身份与能力" was cut to "询问身份…" with half the
+  // header free (VIEW-4). The wrap's 520px max-width (style.css) still caps it.
+  ct.size = Math.max(6, Math.min(TITLE_SIZE_CAP, displayWidth(value) + 1));
+}
+
+/** About 520px of 14px header text; the CSS max-width is the real bound. */
+const TITLE_SIZE_CAP = 64;
+
+/** East Asian wide and full-width characters, which take two columns. */
+const WIDE =
+  /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|[\uD840-\uD87F][\uDC00-\uDFFF]/g;
+
+/** The text's width in Latin character columns: a wide character counts as two. */
+export function displayWidth(text: string): number {
+  const wide = text.match(WIDE);
+  const wideUnits = wide ? wide.reduce((n, ch) => n + ch.length, 0) : 0;
+  // A surrogate pair is two code units and one wide character: two columns.
+  return text.length - wideUnits + (wide ? wide.length * 2 : 0);
+}
+
+/**
+ * At most `max` characters of `text` on one line, with "…" when it was cut:
+ * the browser tab's session name, which is the whole first message until the
+ * automatic title arrives (VIEW-4).
+ */
+export function clipTitle(text: string, max = 40): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  const chars = Array.from(flat);
+  return chars.length <= max ? flat : chars.slice(0, max).join("").trimEnd() + "…";
 }
 
 export function enableComposer(on: boolean): void {
