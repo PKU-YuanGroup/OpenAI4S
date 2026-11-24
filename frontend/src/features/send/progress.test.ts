@@ -20,8 +20,21 @@ import {
 } from "./progress";
 
 class Node {
-  textContent = "";
+  private text = "";
+  children: Node[] = [];
+  className = "";
   title = "";
+  get textContent(): string {
+    return this.text + this.children.map((child) => child.textContent).join("");
+  }
+  set textContent(value: string) {
+    this.text = value;
+    this.children = [];
+  }
+  appendChild(child: Node): Node {
+    this.children.push(child);
+    return child;
+  }
   private classes = new Set<string>(["hidden"]);
   classList = {
     add: (name: string) => this.classes.add(name),
@@ -46,6 +59,7 @@ beforeEach(async () => {
   usage = new Node();
   vi.stubGlobal("document", {
     getElementById: (id: string) => (id === "turn-clock" ? clock : id === "session-usage" ? usage : null),
+    createElement: () => new Node(),
     querySelectorAll: () => [],
   });
 });
@@ -171,7 +185,10 @@ describe("turn progress", () => {
     };
     await refreshSessionUsage();
     expect(usage.textContent).toBe("936k token · 本轮 +84k");
-    expect(usage.title).toContain("最近一轮：新输入 12,000 · 缓存输入 70,000 · 输出 2,300。");
+    // CHAT-2: the turn's model calls and how much of its input came from the cache.
+    expect(usage.title).toContain(
+      "最近一轮：2 次模型调用 · 新输入 12,000 · 缓存输入 70,000（占输入的 85%） · 输出 2,300。",
+    );
     // A turn whose start is in an earlier, unloaded page is not summed as a whole turn.
     actionTimeline.value = { ...(actionTimeline.value as object), groups: [row("turn-2", "code", 40_000, 0, 1)] };
     expect(usage.textContent).toBe("936k token · 本轮 +84k");
@@ -217,6 +234,77 @@ describe("turn progress", () => {
     running.value = false;
     paintUsageTitle();
     expect(usage.classList.contains("heavy")).toBe(false);
+  });
+
+  it("says on the chip itself why it is amber, and the tooltip counts the turn's model calls (CHAT-2)", async () => {
+    currentId.value = "f-c";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "f-c", input_tokens: 1_200_000, output_tokens: 20_000 }),
+      })),
+    );
+    const call = (kind: string, input: number, cached: number) => ({
+      turn_id: "turn-1",
+      kind,
+      usage: { input_tokens: input, cache_read: cached, output_tokens: 1_000 },
+    });
+    const rows = [
+      { turn_id: "turn-1", kind: "user" },
+      call("native_tools", 100_000, 60_000),
+      call("code", 150_000, 120_000),
+      call("no_action", 50_000, 45_000),
+      { turn_id: "turn-1", kind: "terminal" },
+    ];
+    actionTimeline.value = { root_frame_id: "f-c", has_earlier: false, groups: rows };
+    running.value = true;
+    await refreshSessionUsage();
+    expect(usage.classList.contains("heavy")).toBe(true);
+    // The numbers, then the reason in its own span beside them.
+    expect(usage.textContent).toBe("1.2M token · 本轮 +303k · 本轮已超过 200k token");
+    expect(usage.children).toHaveLength(1);
+    expect(usage.children[0]?.className).toBe("session-usage-reason");
+    expect(usage.children[0]?.textContent).toBe("本轮已超过 200k token");
+    // Three model calls (a prose-only reply is a call too); 225k of 300k input was cached.
+    expect(usage.title).toContain("最近一轮：3 次模型调用 · 新输入 75,000 · 缓存输入 225,000（占输入的 75%） · 输出 3,000。");
+    // No cost estimate and no budget: the chip states what was used, nothing more.
+    expect(usage.title).not.toMatch(/\$|¥|预算|budget/i);
+
+    await setLang("en");
+    paintUsageTitle();
+    expect(usage.textContent).toBe("1.2M tokens · +303k this turn · over 200k tokens this turn");
+    expect(usage.title).toContain(
+      "The latest turn: 3 model calls · 75,000 new input · 225,000 cached input (75% of its input) · 3,000 output.",
+    );
+
+    // Back under the line, or the turn over: the reason goes with the colour.
+    running.value = false;
+    paintUsageTitle();
+    expect(usage.classList.contains("heavy")).toBe(false);
+    expect(usage.children).toHaveLength(0);
+    expect(usage.textContent).toBe("1.2M tokens · +303k this turn");
+  });
+
+  it("names one model call in the singular and leaves out a cache share it cannot compute (CHAT-2)", async () => {
+    await setLang("en");
+    currentId.value = "f-s";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "f-s", input_tokens: 0, output_tokens: 50 }),
+      })),
+    );
+    actionTimeline.value = {
+      root_frame_id: "f-s",
+      has_earlier: false,
+      groups: [{ turn_id: "turn-1", kind: "user" }, { turn_id: "turn-1", kind: "finalize", usage: { output_tokens: 50 } }],
+    };
+    await refreshSessionUsage();
+    expect(usage.title).toContain("The latest turn: 1 model call · 0 new input · 0 cached input · 50 output.");
   });
 
   it("says the chip again in the new language after a switch (SYNC-20)", async () => {
