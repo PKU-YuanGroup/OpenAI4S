@@ -137,7 +137,8 @@ function summaryPartText(raw: unknown): string | null {
     case "charsRead":
     case "missing":
       return n == null ? null : summaryCopy(key, { n: n.toLocaleString("en-US") });
-    case "networkLimited": {
+    case "networkLimited":
+    case "helpersLimited": {
       const domains = n == null ? null : summaryCount(n, "domain");
       return domains == null ? null : summaryCopy(key, { n: domains });
     }
@@ -218,6 +219,8 @@ export function stepSummaryText(summary: string): string {
   if (read) return `已读取 ${read[1]} 个字符`;
   const limited = /^network limited to ([\d,]+) domains?$/.exec(summary);
   if (limited) return `网络限于 ${limited[1]} 个域名`;
+  const helpers = /^helpers limited to ([\d,]+) domains?$/.exec(summary);
+  if (helpers) return `辅助代码联网限于 ${helpers[1]} 个域名`;
   const use = /^use (.+)$/.exec(summary);
   if (use) return "建议使用 " + use[1];
   const installed = /^installed (.+)$/.exec(summary);

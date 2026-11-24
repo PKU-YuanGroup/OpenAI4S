@@ -56,6 +56,19 @@ def test_a_web_search_keeps_its_source_as_a_verbatim_part():
             [{"key": "loaded"}],
         ),
         (
+            "load_skill",
+            "skill",
+            {
+                "name": "literature-review",
+                "session_network": {
+                    "skills": ["literature-review"],
+                    "domains": ["api.crossref.org", "api.openalex.org"],
+                },
+            },
+            "loaded · helpers limited to 2 domains",
+            [{"key": "loaded"}, {"key": "helpersLimited", "n": 2}],
+        ),
+        (
             "edit_file",
             "edit",
             {"path": "r.md", "replaced": 1},

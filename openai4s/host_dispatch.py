@@ -1318,16 +1318,17 @@ def _step_end_view(
             "description": r.get("description"),
             "content": (r.get("content") or "")[:24000],
         }
-        # A host_only Skill narrows every later Host request in the session;
-        # the card has to say so, not just "loaded".
+        # A host_only Skill limits its own helper code's Host requests to its
+        # declared domains (owner decision 34); the card says so, not just
+        # "loaded".
         session_network = r.get("session_network")
         if isinstance(session_network, dict) and session_network.get("domains"):
             card["session_network"] = session_network
             count = len(session_network["domains"])
             return (
                 card,
-                f"loaded · network limited to {_plural(count, 'domain')}",
-                [{"key": "loaded"}, {"key": "networkLimited", "n": count}],
+                f"loaded · helpers limited to {_plural(count, 'domain')}",
+                [{"key": "loaded"}, {"key": "helpersLimited", "n": count}],
             )
         return (card, "loaded", [{"key": "loaded"}])
     if kind == "env":

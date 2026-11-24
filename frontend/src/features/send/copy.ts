@@ -79,6 +79,7 @@ export type SummaryCopyKey =
   | "charsRead"
   | "loaded"
   | "networkLimited"
+  | "helpersLimited"
   | "switched"
   | "recommend"
   | "missing"
@@ -110,6 +111,7 @@ const SUMMARY_COPY: Record<"en" | "zh", Record<SummaryCopyKey, string>> = {
     charsRead: "{n} chars read",
     loaded: "loaded",
     networkLimited: "network limited to {n}",
+    helpersLimited: "helpers limited to {n}",
     switched: "→ {name}",
     recommend: "use {name}",
     missing: "{n} missing",
@@ -140,6 +142,7 @@ const SUMMARY_COPY: Record<"en" | "zh", Record<SummaryCopyKey, string>> = {
     charsRead: "已读取 {n} 个字符",
     loaded: "已加载",
     networkLimited: "网络限于 {n}",
+    helpersLimited: "辅助代码联网限于 {n}",
     switched: "→ {name}",
     recommend: "建议使用 {name}",
     missing: "缺少 {n} 个软件包",

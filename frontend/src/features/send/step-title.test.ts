@@ -81,6 +81,11 @@ describe("step titles and summaries in the UI language (I18N-1)", () => {
     expect(stepSummaryFromParts([{ key: "loaded" }, { key: "networkLimited", n: 2 }])).toBe(
       "已加载 · 网络限于 2 个域名",
     );
+    // SKL-2: a load stored after owner decision 34 says the limit is its helpers'.
+    expect(stepSummaryFromParts([{ key: "loaded" }, { key: "helpersLimited", n: 18 }])).toBe(
+      "已加载 · 辅助代码联网限于 18 个域名",
+    );
+    expect(stepSummaryText("loaded · helpers limited to 18 domains")).toBe("已加载 · 辅助代码联网限于 18 个域名");
     expect(stepSummaryFromParts([{ key: "count", unit: "byte", n: 5312345 }])).toBe("5,312,345 字节");
     expect(stepSummaryFromParts([{ key: "failed", reason: "no such file" }])).toBe("失败：no such file");
     expect(stepSummaryFromParts([{ key: "delegate", status: "partial" }])).toBe("部分完成");
