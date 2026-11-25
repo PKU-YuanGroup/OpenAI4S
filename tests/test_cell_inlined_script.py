@@ -225,9 +225,6 @@ def test_an_ordinary_cell_carries_no_script(tmp_path):
     store.close()
 
 
-@pytest.mark.skipif(
-    sqlite3.sqlite_version_info < (3, 35, 0), reason="needs ALTER TABLE DROP COLUMN"
-)
 def test_a_schema_43_database_gains_the_column_on_upgrade(tmp_path):
     from openai4s.config import Config
     from openai4s.storage.migrations import SCHEMA_VERSION
@@ -239,7 +236,45 @@ def test_a_schema_43_database_gains_the_column_on_upgrade(tmp_path):
     store.log_cell(frame_id=frame, root_frame_id=frame, code="x = 1", result={})
     store.close()
     with sqlite3.connect(str(db)) as connection:
-        connection.execute("ALTER TABLE execution_log DROP COLUMN inlined_script")
+        # Rebuild instead of relying on ALTER TABLE DROP COLUMN, as the other
+        # pre-upgrade fixtures do. To drop the last column, an older SQLite
+        # (reproduced on 3.38.5; CI's py3.14 is Ubuntu's /usr/bin/python3.14,
+        # linked to the system libsqlite3) walks back to the previous comma --
+        # and finds one inside the v44 comment in the CREATE TABLE text, so it
+        # refuses: "incomplete input".
+        connection.execute("ALTER TABLE execution_log RENAME TO _v44_execution_log")
+        connection.execute("DROP INDEX ix_exec_frame")
+        connection.execute("DROP INDEX ix_exec_root")
+        connection.execute(
+            "CREATE TABLE execution_log ("
+            "producing_cell_id TEXT PRIMARY KEY,frame_id TEXT,root_frame_id TEXT,"
+            "project_id TEXT NOT NULL DEFAULT 'default',cell_seq INTEGER,"
+            "cell_index INTEGER,state_revision INTEGER,kernel_id TEXT,"
+            "language TEXT,status TEXT,origin TEXT,code TEXT NOT NULL,"
+            "code_hash TEXT NOT NULL,visibility TEXT NOT NULL DEFAULT 'scientific' "
+            "CHECK (visibility IN ('scientific','scratch','recovery','system')),"
+            "pin INTEGER NOT NULL DEFAULT 0 CHECK (pin IN (0,1)),"
+            "replay_policy TEXT NOT NULL DEFAULT 'conditional' "
+            "CHECK (replay_policy IN ('safe','conditional','never')),"
+            "variable_reads TEXT NOT NULL DEFAULT '[]',"
+            "variable_writes TEXT NOT NULL DEFAULT '[]',"
+            "variable_deletes TEXT NOT NULL DEFAULT '[]',"
+            "mutation_uncertain INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (mutation_uncertain IN (0,1)),stdout TEXT,stderr TEXT,"
+            "error TEXT,figures TEXT,files_read TEXT,files_written TEXT,"
+            "interrupted INTEGER NOT NULL DEFAULT 0,wall_s REAL,cpu_s REAL,"
+            "peak_rss_kb INTEGER,created_at INTEGER NOT NULL,generation_id TEXT)"
+        )
+        columns = ",".join(
+            row[1] for row in connection.execute("PRAGMA table_info(execution_log)")
+        )
+        connection.execute(
+            f"INSERT INTO execution_log({columns}) "
+            f"SELECT {columns} FROM _v44_execution_log"
+        )
+        connection.execute("DROP TABLE _v44_execution_log")
+        connection.execute("CREATE INDEX ix_exec_frame ON execution_log(frame_id)")
+        connection.execute("CREATE INDEX ix_exec_root ON execution_log(root_frame_id)")
         connection.execute("DELETE FROM schema_migrations WHERE version=44")
         connection.execute("PRAGMA user_version = 43")
 
