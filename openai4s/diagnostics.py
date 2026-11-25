@@ -583,6 +583,22 @@ _REPORT_SCHEMA: dict[str, Any] = {
         "secret_store_mode": _v_posture_mode,
         "egress": _v_posture_mode,
         "structured_logs": _v_posture_mode,
+        # SET-3: what those knobs resolve to (`passive_security_posture`).
+        "resolved": {
+            "kernel_sandbox": {
+                "mode": _v_enum(frozenset({"auto", "enforce", "off", "invalid"})),
+                "backend": _v_enum(frozenset({"seatbelt", "bubblewrap", "none"})),
+                "self_test": _v_enum(frozenset({"not_run", "failed"})),
+            },
+            "egress": {"mode": _v_enum(frozenset({"allowlist", "off"}))},
+            "secret_store": {
+                "mode": _v_enum(
+                    frozenset({"auto", "keychain", "env", "plaintext", "invalid"})
+                ),
+                "backend": _v_enum(_SECRET_BACKENDS | {"not_resolved"}),
+                "secure": _v_bool,
+            },
+        },
     },
     # Counts keyed by the codes themselves, so the schema is the allowlist: a
     # key outside these sets is counted in `fields_omitted`, never rendered.
@@ -748,7 +764,86 @@ def passive_security_posture(cfg: Any) -> dict:
         ("structured_logs", "OPENAI4S_STRUCTURED_LOGS"),
     ):
         report[name] = os.environ.get(env, "(default)")
+    report["resolved"] = {
+        "kernel_sandbox": _resolved_sandbox(),
+        "egress": _resolved_egress(),
+        "secret_store": _resolved_secret_store(cfg),
+    }
     return report
+
+
+def _resolved_sandbox(
+    platform_name: str | None = None, which: Any = None
+) -> dict[str, str]:
+    """SET-3: the kernel sandbox the knob resolves to, without running it.
+
+    The mode as the kernel reads it, and the backend binary it would use
+    (a `which` lookup, no child process). The self-test is the kernel's own
+    and needs a child process, so it is ``not_run`` here -- "Run checks"
+    runs it -- unless this daemon already saw it fail for that backend.
+    """
+    import shutil
+
+    from openai4s.security import sandbox
+
+    mode = (os.environ.get("OPENAI4S_KERNEL_SANDBOX") or "auto").strip().lower()
+    mode = mode or "auto"
+    if mode not in {"auto", "enforce", "off"}:
+        return {"mode": "invalid", "backend": "none", "self_test": "not_run"}
+    if mode == "off":
+        return {"mode": "off", "backend": "none", "self_test": "not_run"}
+    backend, executable, _detail = sandbox._detect_backend(
+        platform_name=platform_name or sys.platform,
+        which=which or shutil.which,
+    )
+    self_test = "not_run"
+    if backend:
+        with sandbox._self_test_lock:
+            failed = any(
+                key[0] == backend and key[1] == executable
+                for key in sandbox._failed_self_tests
+            )
+        if failed:
+            self_test = "failed"
+    return {"mode": mode, "backend": backend or "none", "self_test": self_test}
+
+
+def _resolved_egress() -> dict[str, str]:
+    """SET-3: the egress mode application requests are held to."""
+    from openai4s.egress import egress_mode
+
+    return {"mode": egress_mode()}
+
+
+def _resolved_secret_store(cfg: Any) -> dict[str, Any]:
+    """SET-3: the credential store this daemon resolved, if it has.
+
+    Resolving a broker runs a keychain round trip and needs the Store, so a
+    page-load read does neither: it reads the broker the daemon's own Store
+    already resolved (`Store.secrets`), and says ``not_resolved`` otherwise.
+    """
+    from openai4s.security.secret_broker import SecretBrokerError
+    from openai4s.security.secret_broker import _mode as secret_mode
+
+    try:
+        mode = secret_mode()
+    except SecretBrokerError:
+        mode = "invalid"
+    try:
+        from openai4s.store import open_store
+
+        store = open_store(Path(cfg.db_path))
+        broker = getattr(store, "_secret_broker", None) if store is not None else None
+        posture = broker.posture() if broker is not None else None
+    except Exception:  # noqa: BLE001 - a passive read never fails the page
+        posture = None
+    if not isinstance(posture, Mapping) or not _exact_str(posture.get("backend")):
+        return {"mode": mode, "backend": "not_resolved"}
+    return {
+        "mode": mode,
+        "backend": posture["backend"],
+        "secure": posture.get("secure") is True,
+    }
 
 
 def security_posture(cfg: Any) -> dict:

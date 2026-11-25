@@ -22,7 +22,8 @@ import secrets
 def pdf_sdk():
     """Rebind-proof SDK handle. Sidecars share the kernel's __main__, where
     an agent cell may later do ``host = urlparse(url).hostname`` — the
-    sys.modules registration from sdk/base.py is immune to global rebinds,
+    ``sys.modules["host"]`` registration made by the kernel worker
+    (openai4s/kernel/worker.py:_install_host) is immune to global rebinds,
     so internal SDK calls route through this import instead of the bare
     global. Lazy (inside the body) so the sidecar still loads in the bare
     skeleton env, which has no SDK."""

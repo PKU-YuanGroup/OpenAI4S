@@ -11,7 +11,6 @@ import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
 import { startStream } from "../messages/stream";
 import { reviewFailureText, reviewRefusalText } from "./review-copy";
-import { continueInNewSession } from "./skill-network";
 import { addLiveStep, buildStepCard, relabelStepCards, renderStoredStep, updateLiveStep } from "./step";
 
 /** Just enough DOM for step cards (no jsdom here). */
@@ -83,6 +82,13 @@ class El {
     child.remove();
     child.parent = this;
     this.children.push(child);
+    return child;
+  }
+  insertBefore(child: El, ref: El | null): El {
+    if (!ref) return this.appendChild(child);
+    child.remove();
+    child.parent = this;
+    this.children.splice(this.children.indexOf(ref), 0, child);
     return child;
   }
   remove(): void {
@@ -201,6 +207,81 @@ describe("step card copy follows the UI language", () => {
     await setLang("zh");
     relabelStepCards();
     expect(words(read)).toEqual(["读取项目文件 cohort.csv", "12 条结果"]);
+  });
+
+  it("a step's structured summary is worded in the UI language, its English line kept for the fallback (CHAT-6)", async () => {
+    await setLang("zh");
+    const envs = renderStoredStep({
+      step_id: "e-1",
+      kind: "env",
+      status: "done",
+      title: "Listing runtime environments",
+      summary: "4 envs, 3 missing",
+      output: {
+        environments: [],
+        summary_parts: [
+          { key: "count", unit: "env", n: 4 },
+          { key: "missing", n: 3 },
+        ],
+      },
+    }) as unknown as El;
+    const meta = (card: El) => card.querySelector(".s-meta")!.textContent;
+    expect(meta(envs)).toBe("4 个运行环境 · 缺少 3 个软件包");
+    // A part this build does not know: the English line, translated by pattern.
+    const future = renderStoredStep({
+      step_id: "e-2",
+      kind: "skill",
+      status: "done",
+      title: "Loading figure-style skill guidance",
+      summary: "loaded",
+      output: { summary_parts: [{ key: "somethingNew" }] },
+    }) as unknown as El;
+    expect(meta(future)).toBe("已加载");
+    await setLang("en");
+    relabelStepCards();
+    expect(meta(envs)).toBe("4 envs · 3 missing");
+  });
+
+  it("a search card says what it searched for, truncated, with the whole query in its tooltip (CHAT-5)", async () => {
+    await setLang("zh");
+    const query = "CRISPR base editing off-target effects in primary human T cells 2023";
+    const web = renderStoredStep({
+      step_id: "q-1",
+      kind: "search",
+      status: "done",
+      title: "Searching the web",
+      input: { query },
+      summary: "6 results · you.com",
+    }) as unknown as El;
+    const label = web.querySelector(".s-lbl")!;
+    expect(label.textContent).toBe("搜索网页：“CRISPR base editing off-target effects…”");
+    expect(label.title).toBe(query);
+    const grep = renderStoredStep({
+      step_id: "q-2",
+      kind: "files",
+      status: "done",
+      title: "Searching in files",
+      input: { pattern: "padj < 0.05" },
+      summary: "0 items",
+    }) as unknown as El;
+    expect(grep.querySelector(".s-lbl")!.textContent).toBe("在文件中搜索：“padj < 0.05”");
+    // A running card says it too: the query is on the step's first event.
+    startStream();
+    addLiveStep({ step_id: "q-3", kind: "search", title: "Searching the web", input: { query: "PETase" }, status: "running" });
+    await setLang("en");
+    relabelStepCards();
+    expect(label.textContent).toBe("Searching the web “CRISPR base editing off-target effects…”");
+    // A card with no query keeps its plain title.
+    const read = renderStoredStep({ step_id: "q-4", kind: "read", status: "done", title: "Reading a.csv" }) as unknown as El;
+    expect(read.querySelector(".s-lbl")!.textContent).toBe("Reading a.csv");
+  });
+
+  it("a generic step body does not dump the structured summary", () => {
+    const card = open(
+      buildStepCard({ step_id: "g-1", kind: "tool", status: "done", output: { result: "ok", summary_parts: [{ key: "done" }] } }),
+    );
+    expect(card.querySelector(".s-pre")!.textContent).toContain('"result": "ok"');
+    expect(card.querySelector(".s-pre")!.textContent).not.toContain("summary_parts");
   });
 });
 
@@ -344,6 +425,48 @@ describe("artifact step card", () => {
     expect(figures.querySelectorAll(".s-fig-cap")).toHaveLength(1);
   });
 
+  it("shows the figures a step saved under its head without expanding it; other files stay in the body (CHAT-4)", () => {
+    const step = {
+      step_id: "s-7",
+      kind: "artifact",
+      title: "Saving 3 artifacts",
+      status: "done",
+      summary: "3 artifacts",
+      input: { files: ["pca.png", "volcano.png", "de.csv"] },
+      output: {
+        artifacts: [
+          { filename: "pca.png", artifact_id: "a-1", version_id: "v-1" },
+          { filename: "volcano.png", artifact_id: "a-2", version_id: "v-2", content_type: "image/png" },
+          { filename: "de.csv", artifact_id: "a-3", version_id: "v-3" },
+        ],
+      },
+    };
+    const card = renderStoredStep(step, new El("div") as never) as unknown as El;
+    // Collapsed: the body is not built, the strip is there.
+    expect(card.classes.has("open")).toBe(false);
+    expect(card.querySelectorAll(".s-frow")).toEqual([]);
+    const strip = card.querySelector(".s-thumbs")!;
+    expect(card.children.map((node) => node.className)).toEqual(["s-head", "s-figs s-thumbs", "s-body"]);
+    expect(strip.querySelectorAll(".s-fig-cap").map((node) => node.textContent)).toEqual(["pca.png", "volcano.png"]);
+    expect(String((strip.querySelector("img") as unknown as { src?: string }).src)).toContain("/artifacts/versions/v-1");
+    // Open: the other file is listed once, the figures are not drawn a second time.
+    open({ card: card as unknown as HTMLElement });
+    expect(card.querySelectorAll(".s-fn").map((node) => node.textContent)).toEqual(["de.csv"]);
+    expect(card.querySelectorAll(".s-fig")).toHaveLength(2);
+    // A save with no figure has no strip; a running one has none yet.
+    const csv = renderStoredStep(
+      { step_id: "s-8", kind: "artifact", status: "done", output: { artifacts: [{ filename: "de.csv", artifact_id: "a-3" }] } },
+      new El("div") as never,
+    ) as unknown as El;
+    expect(csv.querySelector(".s-thumbs")).toBeNull();
+    startStream();
+    addLiveStep({ step_id: "s-9", kind: "artifact", title: "Saving pca.png", input: { files: ["pca.png"] }, status: "running" });
+    const live = messages.querySelectorAll(".step").pop()!;
+    expect(live.querySelector(".s-thumbs")).toBeNull();
+    updateLiveStep({ step_id: "s-9", status: "done", output: { artifacts: [{ filename: "pca.png", artifact_id: "a-1" }] } });
+    expect(live.querySelector(".s-thumbs")!.querySelectorAll(".s-fig")).toHaveLength(1);
+  });
+
   it("a Saving step is collapsed, lists files by name and size, and never shows the local path (M-50)", () => {
     const host = new El("div");
     const step = {
@@ -438,7 +561,7 @@ describe("sub-agents side by side (SCI-22)", () => {
     expect(failed.classes.has("err")).toBe(true);
 
     await setLang("zh");
-    expect(delegate("d-4", "计算 ATGC 的 GC 含量。").querySelector(".s-lbl")!.textContent).toBe("子代理 · 计算 ATGC 的 GC 含量。");
+    expect(delegate("d-4", "计算 ATGC 的 GC 含量。").querySelector(".s-lbl")!.textContent).toBe("子智能体 · 计算 ATGC 的 GC 含量。");
     await setLang("en");
   });
 });
@@ -620,9 +743,9 @@ describe("a loaded Skill's network limit", () => {
   const NOTICE = {
     step_id: "n-1",
     kind: "network",
-    title: "literature-review limits this session's network",
+    title: "literature-review limits its own helpers' network",
     status: "done",
-    summary: "limited to 3 domains",
+    summary: "helpers limited to 3 domains",
     input: { skill: "literature-review" },
     output: {
       notice: "skill_network",
@@ -637,7 +760,7 @@ describe("a loaded Skill's network limit", () => {
     await setLang("zh");
     const card = buildStepCard(NOTICE).card as unknown as El;
     expect(card.querySelector(".s-lbl")!.textContent).toBe(
-      "已加载 literature-review：本会话联网限定为 3 个域名",
+      "已加载 literature-review：它的辅助代码只能访问 3 个域名",
     );
     expect(card.querySelector(".s-meta")!.textContent).toBe("3 个域名");
     expect(card.classes.has("s-net-limited")).toBe(true);
@@ -648,11 +771,11 @@ describe("a loaded Skill's network limit", () => {
     const card = buildStepCard({ ...NOTICE, output: { ...NOTICE.output, domains: ["doi.org"] } })
       .card as unknown as El;
     expect(card.querySelector(".s-lbl")!.textContent).toBe(
-      "Loaded literature-review: this session's network is limited to 1 domain",
+      "Loaded literature-review: its helpers can reach only 1 domain",
     );
   });
 
-  it("the Skill's load card says it narrowed the session, not just loaded", async () => {
+  it("the Skill's load card says its helpers are limited, not just loaded", async () => {
     await setLang("zh");
     const card = buildStepCard({
       step_id: "l-1",
@@ -667,11 +790,11 @@ describe("a loaded Skill's network limit", () => {
         session_network: { skills: ["literature-review"], domains: DOMAINS },
       },
     }).card as unknown as El;
-    expect(card.querySelector(".s-meta")!.textContent).toBe("已加载 · 本会话联网限定为 3 个域名");
+    expect(card.querySelector(".s-meta")!.textContent).toBe("已加载 · 辅助代码联网限定为 3 个域名");
     expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
   });
 
-  it("the load card names the built-in connectors the limit takes away (SCI-14)", async () => {
+  it("the load card says the rest of the session is not limited (SKL-2)", async () => {
     await setLang("en");
     const card = buildStepCard({
       step_id: "l-2",
@@ -683,6 +806,7 @@ describe("a loaded Skill's network limit", () => {
       output: {
         name: "literature-review",
         content: "# Literature review",
+        // An older step still carries the connectors it said were lost.
         session_network: {
           skills: ["literature-review"],
           domains: DOMAINS,
@@ -690,18 +814,16 @@ describe("a loaded Skill's network limit", () => {
         },
       },
     }).card as unknown as El;
-    expect(card.querySelector(".s-net-lost")!.textContent).toBe(
-      "This session can no longer use these built-in connectors: UniProtKB, RCSB Protein Data Bank.",
-    );
-    // An older step with no list says nothing rather than "none".
-    const old = buildStepCard({ ...NOTICE }).card as unknown as El;
-    expect(old.querySelector(".s-net-lost")).toBeNull();
+    const text = card.querySelectorAll(".s-net-text").map((node) => node.textContent).join(" ");
+    expect(text).toContain("Only literature-review's own helper functions");
+    expect(text).toContain("The rest of this session's network is unchanged");
+    expect(text).not.toContain("UniProtKB");
   });
 
-  it("a shell command the limit refused says so instead of a bare failure", async () => {
+  it("a helper's shell command the limit refused says so instead of a bare failure", async () => {
     await setLang("zh");
     const reason =
-      "skill host_only manifest does not declare destination 'eutils.ncbi.nlm.nih.gov': the loaded literature-review Skill limits this session's network to 3 domains";
+      "skill host_only manifest does not declare destination 'eutils.ncbi.nlm.nih.gov': the literature-review Skill's own helper code may only reach 3 domains";
     const card = buildStepCard({
       step_id: "b-1",
       kind: "bash",
@@ -720,16 +842,16 @@ describe("a loaded Skill's network limit", () => {
         },
       },
     }).card as unknown as El;
-    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能的联网限制拦下");
+    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能辅助代码的联网限制拦下");
     const text = card.querySelector(".s-net-text")!.textContent;
-    expect(text).toContain("literature-review 把本会话联网限定为 3 个域名");
+    expect(text).toContain("literature-review 的辅助代码只能访问 3 个域名");
     expect(text).toContain("eutils.ncbi.nlm.nih.gov 不在其中");
+    // SKL-2: the limit is the helpers', so no "start a new session" way out.
+    expect(text).toContain("本会话的其他联网不受影响");
+    expect(card.querySelector(".s-net-new")).toBeNull();
     expect(card.querySelectorAll(".s-net-dom")).toHaveLength(3);
     // The server's own words stay available below the explanation.
     expect(card.querySelector(".s-net-blocked")!.querySelector("pre")!.textContent).toBe(reason);
-    // SCI-14: and what to do now, with the way out as a button.
-    expect(card.querySelector(".s-net-next")!.querySelector(".s-net-text")!.textContent).toContain("请在新会话中继续");
-    expect(card.querySelector(".s-net-new")!.textContent).toBe("在新会话中继续");
   });
 
   it("an unavailable review says why and what to do, not an empty card (M-75)", async () => {
@@ -762,37 +884,10 @@ describe("a loaded Skill's network limit", () => {
     expect(reviewFailureText("something new")).toBe(reviewFailureText("internal"));
   });
 
-  it("Continue in a new session opens one and carries the last request over (SCI-14)", async () => {
-    const composer = { value: "", focus: vi.fn(), dispatchEvent: vi.fn() };
-    const bubbles = [{ textContent: "find 2 papers" }, { textContent: " re-check crambin on rest.uniprot.org " }];
-    const order: string[] = [];
-    vi.stubGlobal("Event", class { constructor(readonly type: string) {} });
-    vi.stubGlobal("document", {
-      createElement: (tag: string) => new El(tag),
-      getElementById: (id: string) => (id === "composer" ? composer : null),
-      querySelectorAll: (sel: string) => (sel === "#messages .msg.user .bubble" ? bubbles : []),
-    });
-    vi.stubGlobal("newSession", async () => {
-      // The draft is read before the new session replaces the transcript.
-      order.push("new");
-      bubbles.length = 0;
-    });
-    await continueInNewSession();
-    expect(order).toEqual(["new"]);
-    expect(composer.value).toBe("re-check crambin on rest.uniprot.org");
-    expect(composer.focus).toHaveBeenCalled();
-
-    // Something already typed there is the user's, and stays.
-    composer.value = "my own words";
-    bubbles.push({ textContent: "older request" });
-    await continueInNewSession();
-    expect(composer.value).toBe("my own words");
-  });
-
-  it("a search the limit refused reads as blocked, not as 0 results", async () => {
+  it("a helper's search the limit refused reads as blocked, not as 0 results", async () => {
     await setLang("zh");
     const reason =
-      "skill host_only manifest does not declare any enabled search engine (You.com, DuckDuckGo/Bing/Mojeek): the loaded text-features Skill limits this session's network to 1 domain (api.typesafe.ai).";
+      "skill host_only manifest does not declare any enabled search engine (You.com, DuckDuckGo/Bing/Mojeek): the text-features Skill's own helper code may only reach 1 domain (api.typesafe.ai).";
     const card = buildStepCard({
       step_id: "q-1",
       kind: "search",
@@ -811,12 +906,12 @@ describe("a loaded Skill's network limit", () => {
         },
       },
     }).card as unknown as El;
-    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能的联网限制拦下");
+    expect(card.querySelector(".s-meta")!.textContent).toBe("被技能辅助代码的联网限制拦下");
     // A refusal is its own state: neither the red failure nor a neutral done.
     expect(card.classes.has("warn")).toBe(true);
     expect(card.classes.has("err")).toBe(false);
     const text = card.querySelector(".s-net-text")!.textContent;
-    expect(text).toContain("text-features 把本会话联网限定为 1 个域名");
+    expect(text).toContain("text-features 的辅助代码只能访问 1 个域名");
     expect(text).toContain("这次检索没有发出");
     expect(card.querySelector(".s-q")!.textContent).toBe("“GLP-1 Alzheimer”");
   });

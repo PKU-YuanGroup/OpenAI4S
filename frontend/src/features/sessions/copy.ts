@@ -198,7 +198,8 @@ export function sessionCopy(
     | "sessionsError"
     | "foldersError"
     | "retry"
-    | "exportWebPage",
+    | "exportWebPage"
+    | "emptyOpen",
   value?: string | number,
 ): string {
   const copy = LANG === "en" ? {
@@ -206,11 +207,13 @@ export function sessionCopy(
     foldersError: "Could not load folders.",
     retry: "Retry reading",
     exportWebPage: "Export read-only web page",
+    emptyOpen: "The open session appears here once you send its first message",
   } : {
     sessionsError: "无法读取会话列表，可重试读取。",
     foldersError: "无法读取文件夹。",
     retry: "重试读取",
     exportWebPage: "导出只读网页",
+    emptyOpen: "发出第一条消息后，当前会话会出现在这里",
   };
   return copy[key].replace("{0}", value == null ? "" : String(value));
 }

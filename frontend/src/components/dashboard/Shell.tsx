@@ -4,7 +4,7 @@ import { finishArtifactsBoot } from "../../features/artifacts/boot";
 import { bindWorkbench } from "../../features/sessions/boot";
 import { routesToWorkspace } from "../../features/sessions/dom";
 import { projectFilesCopy } from "../../features/sessions/copy";
-import { browseProjectFolder } from "../../features/sessions/project-files";
+import { browseTypedProjectFolder } from "../../features/sessions/projects";
 import { callLane } from "../../features/send/host";
 import { TeamChip } from "../../features/chrome/team-chip";
 import { a11yT, skipToContent } from "../../features/chrome/a11y-copy";
@@ -204,15 +204,6 @@ export function Shell() {
           </nav>
           <div id="session-list" class="session-list" />
           <div class="side-foot">
-            <button
-              id="settings-gear"
-              class="icon-ghost"
-              data-i18n-title="common.settings"
-              title="设置"
-              data-icon="settings"
-              data-icon-size="20"
-              type="button"
-            />
             <button
               id="ws-theme"
               class="icon-ghost"
@@ -533,7 +524,7 @@ export function Shell() {
                 placeholder={projectFilesCopy("folderPlaceholder")}
                 aria-describedby="pm-folder-help pm-history-help"
               />
-              <button id="pm-browse" class="outline-btn" type="button" onClick={() => { void browseProjectFolder(); }}>
+              <button id="pm-browse" class="outline-btn" type="button" onClick={() => browseTypedProjectFolder()}>
                 {projectFilesCopy("browse")}
               </button>
             </div>

@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { api, apiErrorText } from "../../features/artifacts/api";
 import { filesT } from "../../features/artifacts/copy";
 import { effProject } from "../../features/customize/host";
+import { displayProjectName } from "../../features/sessions/copy";
 import { entryMeta, openProjectFiles } from "../../features/sessions/project-files";
 import { projects } from "../../stores/session";
 
@@ -16,7 +17,9 @@ export function projectFolderOf(pid: string | null): { name: string; folder: str
   if (!pid) return null;
   const row = ((projects.value as ProjectRow[]) || []).find((p) => (p.project_id || p.id) === pid);
   if (!row || !row.folder_path) return null;
-  return { name: String(row.name || pid), folder: String(row.folder_path) };
+  // I18N-2: the seeded example project in the UI language.
+  const name = displayProjectName({ project_id: row.project_id, id: row.id, name: row.name || "" });
+  return { name: name || pid, folder: String(row.folder_path) };
 }
 
 /**

@@ -26,11 +26,11 @@ import { overrideLookup } from "../../../i18n/copy";
 const dataproT = overrideLookup({
   zh: {
     "cust.datapro.desc":
-      "保存 Agent Plan Key 后直接调用 dataPro_search。「模型」页里配置的方舟 Agent Plan 模型会自动共用它的 Key；只通过环境变量提供给模型的 Key 不会自动共用。",
+      "保存 Agent Plan Key 后直接调用 dataPro_search。「模型」页里配置的方舟 Agent Plan 模型会自动共用它的 Key；只通过环境变量提供给模型的 Key 不会自动共用，当前模型是火山方舟模型时，可点「使用当前模型的 Key」共用。",
   },
   en: {
     "cust.datapro.desc":
-      "Save one Agent Plan Key and call dataPro_search directly. An Ark Agent Plan model set up under Models shares its key automatically; a model key given only through environment variables is not shared on its own.",
+      "Save one Agent Plan Key and call dataPro_search directly. An Ark Agent Plan model set up under Models shares its key automatically; a model key given only through environment variables is not shared on its own, but while the model in use is a Volcengine Ark model you can press \"Use the current model's key\" to share it.",
   },
 });
 

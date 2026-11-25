@@ -334,8 +334,6 @@ export function bindWorkbench(): Promise<void> {
   bindModalDismiss($("#proj-modal"), $("#proj-modal-close"), closeProjectModal);
   const pmCreate = $("#pm-create");
   if (pmCreate) pmCreate.onclick = () => void submitProjectModal();
-  const gear = $("#settings-gear");
-  if (gear) gear.onclick = () => callLane("openCust");
 
   window.addEventListener("popstate", () => {
     void routeInitialView().catch(showDashboard);

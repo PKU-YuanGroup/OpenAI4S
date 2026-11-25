@@ -1,9 +1,11 @@
 """What a loaded Skill's network limit looks like to the user and the model.
 
-A ``host_only`` manifest holds every later Host request in the session to its
-declared domains. That is a real change to what the session can do, so it has
-to be said where people and the model look, not discovered one refused
-request at a time.
+A ``host_only`` manifest holds the requests that Skill's OWN helper code (its
+``kernel.py`` sidecar) makes to its declared domains (owner decision 34). The
+rest of the session -- native tools, the agent's own Cell code -- keeps its
+network policy. Both halves have to be said where people and the model look:
+a model told only "limited" spent twenty minutes working around a limit that
+never applied to its own requests.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import re
 import pytest
 
 from openai4s.config import Config
+from openai4s.sdk.host import CALLER_SKILL_MARKER
 from openai4s.server.skill_network_admission import (
     bindings_for,
     domain_in_declared,
@@ -82,30 +85,25 @@ def test_literature_review_declares_the_services_its_recipe_sends_the_model_to()
     assert domain_in_declared("export.arxiv.org", declared)
 
 
-def test_loading_a_host_only_skill_puts_the_limit_on_the_timeline_once(tmp_path):
+def _notices(steps: list[dict]) -> list[dict]:
+    return [
+        step
+        for step in steps
+        if step.get("phase") == "end"
+        and (step.get("output") or {}).get("notice") == "skill_network"
+    ]
+
+
+def test_loading_a_host_only_skill_says_so_on_one_card(tmp_path):
+    """SKL-4: the load card and a notice card used to say the same thing."""
+
     disp, steps = _dispatcher(tmp_path, "frame-notice")
     with disp.bind_sandbox_status(_ENFORCED):
         loaded = disp("load_skill", [{"name": "literature-review"}])
     assert loaded.get("name") == "literature-review", loaded
     domains = list(SkillLoader().get("literature-review").network.domains)
 
-    notices = [
-        step
-        for step in steps
-        if step.get("phase") == "end"
-        and (step.get("output") or {}).get("notice") == "skill_network"
-    ]
-    assert len(notices) == 1
-    notice = notices[0]
-    assert notice["status"] == "done"
-    assert notice["output"]["skill"] == "literature-review"
-    assert notice["output"]["skills"] == ["literature-review"]
-    assert notice["output"]["domains"] == sorted(domains)
-    assert notice["summary"] == f"limited to {len(domains)} domains"
-    begin = next(step for step in steps if step.get("step_id") == notice["step_id"])
-    assert begin["kind"] == "network"
-
-    # The load card itself says what it did to the session.
+    # The load card itself says what the Skill's helpers may reach ...
     load_end = [
         step
         for step in steps
@@ -113,31 +111,52 @@ def test_loading_a_host_only_skill_puts_the_limit_on_the_timeline_once(tmp_path)
         and "session_network" in (step.get("output") or {})
     ]
     assert len(load_end) == 1
-    assert load_end[0]["summary"] == (
-        f"loaded · network limited to {len(domains)} domains"
-    )
-    # SCI-14: and which built-in connectors that takes away. literature-review
-    # declares no UniProt, PDB or EBI host, so a protein lookup is gone.
-    lost = loaded["session_network"]["unavailable_connectors"]
-    assert {"UniProtKB", "RCSB Protein Data Bank", "ChEMBL"} <= set(lost)
-    assert "OpenAlex" not in lost and "arXiv" not in lost
-    assert notice["output"]["unavailable_connectors"] == lost
     assert loaded["session_network"] == {
         "skills": ["literature-review"],
         "domains": sorted(domains),
-        "unavailable_connectors": lost,
     }
+    # ... so no second card repeats it.
+    assert _notices(steps) == []
+    assert not [step for step in steps if step.get("kind") == "network"]
 
     # A second load binds the same manifest again and announces nothing new.
     steps.clear()
     with disp.bind_sandbox_status(_ENFORCED):
         disp("load_skill", [{"name": "literature-review"}])
-    assert not [
-        step
-        for step in steps
-        if (step.get("output") or {}).get("notice") == "skill_network"
-    ]
+    assert _notices(steps) == []
     assert len(bindings_for("frame-notice")) == 2
+    disp.store.close()
+
+
+def test_a_binding_without_a_load_card_puts_the_limit_on_the_timeline_once(
+    tmp_path,
+):
+    """A Skill file read binds the manifest; its card says nothing about it."""
+
+    disp, steps = _dispatcher(tmp_path, "frame-read-notice")
+    with disp.bind_sandbox_status(_ENFORCED):
+        read = disp("skills_read", [{"name": "literature-review"}])
+    assert isinstance(read, str) and "# Literature review" in read
+    domains = list(SkillLoader().get("literature-review").network.domains)
+
+    notices = _notices(steps)
+    assert len(notices) == 1
+    notice = notices[0]
+    assert notice["status"] == "done"
+    assert notice["output"]["skill"] == "literature-review"
+    assert notice["output"]["skills"] == ["literature-review"]
+    assert notice["output"]["domains"] == sorted(domains)
+    assert notice["summary"] == f"helpers limited to {len(domains)} domains"
+    # No built-in connector is "lost": the limit is on the Skill's helpers.
+    assert "unavailable_connectors" not in notice["output"]
+    begin = next(step for step in steps if step.get("step_id") == notice["step_id"])
+    assert begin["kind"] == "network"
+    assert begin["title"] == "literature-review limits its own helpers' network"
+
+    steps.clear()
+    with disp.bind_sandbox_status(_ENFORCED):
+        disp("skills_read", [{"name": "literature-review"}])
+    assert _notices(steps) == []
     disp.store.close()
 
 
@@ -160,9 +179,13 @@ def test_the_model_reads_the_limit_before_the_recipe(tmp_path):
         loaded = disp("load_skill", [{"name": "literature-review"}])
     text = format_tool_result(get_tool("load_skill"), loaded)
     head = text.split("\n\n", 1)[0]
-    assert head.startswith("[Tool: load_skill]\n[network] Loading this Skill limits")
+    assert head.startswith("[Tool: load_skill]\n[network] This Skill's own helpers")
     assert {"eutils.ncbi.nlm.nih.gov"} <= _hosts(head)
-    assert "approving it cannot widen the limit" in head
+    assert "approving it cannot widen that limit" in head
+    # And what is NOT limited, so the model does not work around a limit
+    # that never applied to its own requests.
+    assert "The rest of this session's network is unchanged" in head
+    assert "science_search" in head
     assert "# Literature review" in text
     disp.store.close()
 
@@ -181,7 +204,11 @@ class _RecordingBroker:
         return {"allow": False, "message": "denied in test"}
 
 
-def _lit_session(tmp_path, monkeypatch, frame_id: str):
+def _lit_session(tmp_path, monkeypatch, frame_id: str, *, record: bool = True):
+    """A session with literature-review loaded; ``record`` swaps in a broker
+    that records and refuses every approval (the seeded rules decide when
+    it is off)."""
+
     from openai4s.host_dispatch import build_dispatcher
     from openai4s.store import get_store
 
@@ -193,7 +220,8 @@ def _lit_session(tmp_path, monkeypatch, frame_id: str):
     steps: list[dict] = []
     disp.on_step = steps.append
     recorder = _RecordingBroker()
-    monkeypatch.setattr("openai4s.permissions.broker", lambda: recorder)
+    if record:
+        monkeypatch.setattr("openai4s.permissions.broker", lambda: recorder)
     with disp.bind_sandbox_status(_ENFORCED):
         loaded = disp("load_skill", [{"name": "literature-review"}])
     assert loaded.get("name") == "literature-review", loaded
@@ -211,6 +239,10 @@ def _bash_proposal(command: str) -> dict:
     }
 
 
+#: How a call from literature-review's kernel.py reaches the dispatcher.
+_FROM_LIT_HELPER = {CALLER_SKILL_MARKER: "literature-review"}
+
+
 def test_a_command_the_skill_limit_refuses_never_asks_for_approval(
     tmp_path, monkeypatch
 ):
@@ -220,15 +252,19 @@ def test_a_command_the_skill_limit_refuses_never_asks_for_approval(
     with disp.bind_sandbox_status(_ENFORCED):
         refused = disp(
             "authorize_bash",
-            [_bash_proposal("curl -s https://www.nejm.org/doi/full/10.1056/x")],
+            [
+                _bash_proposal("curl -s https://www.nejm.org/doi/full/10.1056/x"),
+                _FROM_LIT_HELPER,
+            ],
         )
     assert recorder.asked == []
     assert set(refused) == {"error"}
     reason = refused["error"]
     assert "does not declare destination 'www.nejm.org'" in reason
-    assert "literature-review Skill limits this session's network" in reason
+    assert "the literature-review Skill's own helper code may only reach" in reason
     assert {"eutils.ncbi.nlm.nih.gov"} <= _hosts(reason)
     assert "approving it cannot widen" in reason
+    assert "the rest of this session's network is unchanged" in reason
 
     end = next(step for step in steps if step.get("phase") == "end")
     assert end["status"] == "error"
@@ -243,8 +279,26 @@ def test_a_command_the_skill_limit_refuses_never_asks_for_approval(
     with disp.bind_sandbox_status(_ENFORCED):
         asked = disp(
             "authorize_bash",
-            [_bash_proposal("curl -s https://eutils.ncbi.nlm.nih.gov/entrez/x")],
+            [
+                _bash_proposal("curl -s https://eutils.ncbi.nlm.nih.gov/entrez/x"),
+                _FROM_LIT_HELPER,
+            ],
         )
+    assert len(recorder.asked) == 1
+    assert asked == {"error": "Permission denied: denied in test"}
+    disp.store.close()
+
+
+def test_the_agents_own_command_keeps_the_sessions_network(tmp_path, monkeypatch):
+    """Owner decision 34: the Skill's limit is not the session's."""
+
+    disp, _steps, recorder = _lit_session(tmp_path, monkeypatch, "frame-own-bash")
+    with disp.bind_sandbox_status(_ENFORCED):
+        asked = disp(
+            "authorize_bash",
+            [_bash_proposal("curl -s https://data.rcsb.org/rest/v1/core/entry/6EQE")],
+        )
+    # Put to the user as any shell command is, not refused by the Skill.
     assert len(recorder.asked) == 1
     assert asked == {"error": "Permission denied: denied in test"}
     disp.store.close()
@@ -261,10 +315,101 @@ def test_a_network_request_the_skill_limit_refuses_is_not_put_to_the_user(
     tmp_path, monkeypatch, method, spec
 ):
     disp, _steps, recorder = _lit_session(tmp_path, monkeypatch, f"frame-{method}")
-    refused = disp(method, [spec])
+    refused = disp(method, [spec, _FROM_LIT_HELPER])
     assert recorder.asked == []
     assert set(refused) == {"error"}
     assert "does not declare destination 'www.nejm.org'" in refused["error"]
+    # The same request from the agent's own code goes to the user as usual.
+    asked = disp(method, [spec])
+    assert len(recorder.asked) == 1
+    assert asked == {"error": "Permission denied: denied in test"}
+    disp.store.close()
+
+
+def _fetch_through_egress(monkeypatch) -> list[str]:
+    """Stand in for the network: run the egress check, record what passed."""
+
+    from openai4s import egress, webtools
+
+    passed: list[str] = []
+
+    def fetch(url, **_kwargs):
+        egress.check_url(url)
+        passed.append(url)
+        return {"url": url, "content": "{}", "format": "json"}
+
+    monkeypatch.setattr(webtools, "web_fetch", fetch)
+    return passed
+
+
+def test_native_requests_after_loading_the_skill_keep_the_sessions_network(
+    tmp_path, monkeypatch
+):
+    """The review session: literature AND PDB 6EQE in one request (SKL-2)."""
+
+    disp, _steps, _recorder = _lit_session(
+        tmp_path, monkeypatch, "frame-native", record=False
+    )
+    passed = _fetch_through_egress(monkeypatch)
+    entry = "https://data.rcsb.org/rest/v1/core/entry/6EQE"
+    fetched = disp("web_fetch", [{"url": entry, "format": "json"}])
+    assert "does not declare" not in str(fetched)
+    assert entry in passed
+    searched = disp("science_search", [{"database": "pdb", "query": "6EQE"}])
+    assert "does not declare" not in str(searched)
+    assert any("rcsb.org" in url for url in passed if url != entry)
+    disp.store.close()
+
+
+def test_a_helper_call_from_the_skills_kernel_module_is_held_to_its_manifest(
+    tmp_path, monkeypatch
+):
+    """Through the real SDK: the sidecar on the stack is what attributes."""
+
+    import types
+
+    from openai4s.sdk.host import build_host
+
+    disp, _steps, _recorder = _lit_session(
+        tmp_path, monkeypatch, "frame-sidecar", record=False
+    )
+    passed = _fetch_through_egress(monkeypatch)
+    host = build_host(lambda method, args: disp(method, args), mode="python")
+    sidecar = types.ModuleType("literature-review.kernel")
+    exec(  # noqa: S102 - a stand-in for the Skill's kernel.py
+        "def fetch(host, url):\n    return host.web_fetch(url, format='json')\n",
+        sidecar.__dict__,
+    )
+    undeclared = sidecar.fetch(host, "https://data.rcsb.org/rest/v1/core/entry/6EQE")
+    assert set(undeclared) == {"error"}
+    assert "does not declare destination 'data.rcsb.org'" in undeclared["error"]
+    declared = sidecar.fetch(host, "https://api.openalex.org/works/W1")
+    assert "error" not in declared
+    # The agent's own code, through the same host object, is not limited.
+    own = host.web_fetch("https://data.rcsb.org/rest/v1/core/entry/6EQE")
+    assert "error" not in own
+    assert passed == [
+        "https://api.openalex.org/works/W1",
+        "https://data.rcsb.org/rest/v1/core/entry/6EQE",
+    ]
+    disp.store.close()
+
+
+def test_load_still_refuses_a_host_only_skill_on_an_unconfined_kernel(tmp_path):
+    """Owner decision 34 keeps the load-time posture admission as it was."""
+
+    disp, steps = _dispatcher(tmp_path, "frame-unconfined")
+    unconfined = {
+        "enforced": False,
+        "self_test_passed": False,
+        "network_policy": "not_enforced",
+        "backend": None,
+    }
+    with disp.bind_sandbox_status(unconfined):
+        refused = disp("load_skill", [{"name": "literature-review"}])
+    assert set(refused) == {"error"}
+    assert "does not confine the kernel to the Host path" in refused["error"]
+    assert bindings_for("frame-unconfined") == ()
     disp.store.close()
 
 
@@ -273,7 +418,7 @@ def test_the_cell_hears_the_hosts_reason_not_authorization_unavailable():
 
     reason = (
         "skill host_only manifest does not declare destination 'www.nejm.org': "
-        "the loaded literature-review Skill limits this session's network"
+        "the literature-review Skill's own helper code may only reach 18 domains"
     )
 
     def worker_host_call(method, _args):
@@ -346,7 +491,7 @@ def test_a_search_no_engine_can_serve_is_refused_not_empty(monkeypatch):
 
     _no_network(monkeypatch)
     _bind_narrow_skill("frame-search", ["api.typesafe.ai"])
-    with frame_scope("frame-search"):
+    with frame_scope("frame-search", caller_skill="text-features"):
         with pytest.raises(EgressBlocked) as refused:
             webtools.web_search("GLP-1 Alzheimer cognition", engines=("you", "builtin"))
     reason = str(refused.value)
@@ -354,11 +499,25 @@ def test_a_search_no_engine_can_serve_is_refused_not_empty(monkeypatch):
         "skill host_only manifest does not declare any enabled search engine "
         "(You.com, DuckDuckGo/Bing/Mojeek)"
     )
-    assert (
-        "the loaded text-features Skill limits this session's network to 1 domain"
-        in reason
+    assert "the text-features Skill's own helper code may only reach 1 domain" in reason
+    assert "will not help" in reason
+    assert "the web_search tool instead" in reason
+
+
+def test_a_search_from_the_agents_own_code_is_not_limited(monkeypatch):
+    from openai4s import webtools
+    from openai4s.server.skill_network_admission import frame_scope
+
+    _no_network(monkeypatch)
+    _bind_narrow_skill("frame-search-own", ["api.typesafe.ai"])
+    hit = [{"title": "t", "url": "https://example.org/p", "snippet": "s"}]
+    monkeypatch.setattr(
+        webtools, "_builtin_search", lambda *_a, **_k: (hit, "duckduckgo", None)
     )
-    assert "retrying will not help" in reason
+    monkeypatch.setattr(webtools, "_you_search", lambda *_a, **_k: [])
+    with frame_scope("frame-search-own"):
+        result = webtools.web_search("GLP-1 Alzheimer", engines=("you", "builtin"))
+    assert result["count"] == 1
 
 
 def test_engines_a_skill_declares_still_search(monkeypatch):
@@ -375,7 +534,7 @@ def test_engines_a_skill_declares_still_search(monkeypatch):
         webtools, "_builtin_search", lambda *_a, **_k: (hit, "duckduckgo", None)
     )
     monkeypatch.setattr(webtools, "_you_search", lambda *_a, **_k: [])
-    with frame_scope("frame-search-lit"):
+    with frame_scope("frame-search-lit", caller_skill="text-features"):
         result = webtools.web_search("GLP-1 Alzheimer", engines=("you", "builtin"))
     assert result["count"] == 1 and result["source"] == "duckduckgo"
 
@@ -384,7 +543,13 @@ def test_the_refused_search_card_is_marked_blocked(tmp_path, monkeypatch):
     disp, steps = _dispatcher(tmp_path, "frame-search-card")
     _no_network(monkeypatch)
     _bind_narrow_skill("frame-search-card", ["api.typesafe.ai"])
-    result = disp("web_search", [{"query": "GLP-1 Alzheimer cognition"}])
+    result = disp(
+        "web_search",
+        [
+            {"query": "GLP-1 Alzheimer cognition"},
+            {CALLER_SKILL_MARKER: "text-features"},
+        ],
+    )
     assert set(result) == {"error"}
     assert "does not declare any enabled search engine" in result["error"]
     end = next(step for step in steps if step.get("phase") == "end")
@@ -403,28 +568,30 @@ def test_the_refused_search_card_is_marked_blocked(tmp_path, monkeypatch):
     disp.store.close()
 
 
-def test_every_connector_names_the_hosts_its_requests_go_to():
-    """SCI-14: the load card's "connectors this session loses" is computed
-    from `REQUEST_HOSTS`, so a connector missing from it, or a host the
-    connector never calls, would make the card wrong without failing."""
-    from pathlib import Path
+def test_attribution_only_ever_narrows():
+    """A forged or missing marker cannot widen past the session's policy."""
 
-    from openai4s.host import science
-    from openai4s.server.skill_network_admission import unavailable_connectors
+    from openai4s.sdk.host import attribute_caller, split_caller_skill
 
-    assert set(science.REQUEST_HOSTS) == {db.id for db in science.DATABASES}
-    sources = "".join(
-        (Path(science.__file__).parent / name).read_text(encoding="utf-8")
-        for name in ("science.py", "zenodo.py")
+    # No sidecar on the stack: nothing is attached.
+    assert attribute_caller([{"url": "x"}]) == [{"url": "x"}]
+    assert split_caller_skill([{"url": "x"}]) == ([{"url": "x"}], None)
+    # A marker is stripped wherever it came from; a malformed one names nothing.
+    assert split_caller_skill([{"url": "x"}, {CALLER_SKILL_MARKER: 3}]) == (
+        [{"url": "x"}],
+        None,
     )
-    for connector, hosts in science.REQUEST_HOSTS.items():
-        assert hosts, connector
-        for host in hosts:
-            assert f"https://{host}/" in sources, (connector, host)
-    # A limit that declares every host loses nothing; one that declares none
-    # loses every connector.
-    every = [host for hosts in science.REQUEST_HOSTS.values() for host in hosts]
-    assert unavailable_connectors(every) == []
-    assert unavailable_connectors(["example.org"]) == [
-        db.label for db in science.DATABASES
-    ]
+    # A Skill nobody bound limits nothing.
+    _bind_narrow_skill("frame-forged", ["api.typesafe.ai"])
+    from openai4s.server.skill_network_admission import (
+        constrain_check_url,
+        frame_scope,
+    )
+
+    with frame_scope("frame-forged", caller_skill="no-such-skill"):
+        assert constrain_check_url("https://data.rcsb.org/x") is None
+    with frame_scope("frame-forged", caller_skill="text-features"):
+        assert constrain_check_url("https://data.rcsb.org/x") == "data.rcsb.org"
+        # A nested request with no caller is the session's again.
+        with frame_scope("frame-forged"):
+            assert constrain_check_url("https://data.rcsb.org/x") is None

@@ -344,6 +344,55 @@ def test_variable_inspector_hides_the_skill_bootstrap_it_did_not_author(tmp_path
         assert names == ["pp"]
 
 
+def test_skill_sidecar_import_host_reaches_the_injected_host(tmp_path):
+    """`import host` resolves to the kernel's injected host, with no shim.
+
+    Bundled sidecars reach the SDK through `import host` inside a helper
+    (`lr_sdk()` and its siblings). Nothing registered that module, so in a real
+    kernel every `search_openalex` raised `ModuleNotFoundError: No module named
+    'host'` while unit tests -- which replace the helper or prepend
+    `sys.modules['host'] = host` -- stayed green. Driven through the same
+    bootstrap and `importlib.import_module` a session uses; a workspace
+    `host.py` sits on `sys.path` to prove it is not what the import loads.
+    """
+    import json
+
+    from openai4s.server.recovery_runtime import bootstrap_python_generation
+    from openai4s.skills_loader import SkillLoader
+
+    calls = []
+    body = {"results": [{"doi": "https://doi.org/10.1000/x1", "title": "Hit"}]}
+
+    def dispatcher(method, args):
+        calls.append(method)
+        if method == "get_user_email":
+            raise ValueError("no contact email in this test")
+        if method == "web_fetch":
+            return {"content": json.dumps(body), "truncated": False}
+        raise ValueError(f"unknown method {method}")
+
+    (tmp_path / "host.py").write_text(
+        "raise ImportError('the workspace host.py was imported')\n",
+        encoding="utf-8",
+    )
+    with Kernel(dispatcher=dispatcher, cwd=str(tmp_path)) as kernel:
+        metadata = bootstrap_python_generation(
+            kernel, tmp_path, SkillLoader().bootstrap_code()
+        )
+        assert metadata["status"] == "active", metadata
+        result = kernel.execute(
+            "import importlib\n"
+            "import host as imported\n"
+            "lr = importlib.import_module('literature-review.kernel')\n"
+            "hits = lr.search_openalex('PETase', n=1)\n"
+            "print(imported is host, lr.lr_sdk() is host, hits[0]['doi'])\n"
+        )
+
+    assert result["error"] is None, result
+    assert result["stdout"].split() == ["True", "True", "10.1000/x1"]
+    assert "web_fetch" in calls
+
+
 def test_variable_inspector_fails_busy_without_competing_frame_reader():
     with Kernel(dispatcher=_echo_dispatcher) as kernel:
         started = threading.Event()

@@ -36,6 +36,7 @@ import { embedArtifactFigures } from "./figures";
 import { resayProgress } from "./progress";
 import { _messagesFollow } from "../../stores/ui";
 import { dropTurnGroupIfEmpty, openTurnGroup, placeCardInTurn } from "./turnGroup";
+import { noteModelText } from "./turnStatus";
 
 export const TOOL_LABELS: Record<string, string> = {
   run_python: "toolLabel.runPython",
@@ -324,7 +325,9 @@ export function feed(
       const { card, meta, pre, handle } = stored
         ? resetActivityCard(stored, label)
         : buildActivityCard(label, suba);
-      handle.append(raw + "\n");
+      // The header is the card's title, already on its head and in the UI
+      // language there; echoed as the body's first line it read "Running
+      // analysis · cell 2" in English above the code (CHAT-6).
       // Not a success check until the cell says so (cardState.ts).
       if (!suba) markCardRunning(card, event);
       if (!stored || !adoptIntoLiveStream(card)) {
@@ -360,6 +363,8 @@ export function feed(
     // sent, as the stored row does (Copy, the rating key, the reconcile).
     st.text += resayProgress(chunk);
     st.full += chunk;
+    // The status row tells waiting for the model from the model writing (CHAT-7).
+    noteModelText(chunk);
     st.md.classList.add("cursor");
     if (
       event &&

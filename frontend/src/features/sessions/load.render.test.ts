@@ -8,12 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: String }));
 
 import { t } from "../../i18n/runtime";
-import { _sessionScope, project } from "../../stores/session";
+import { _foldersFor, _sessionScope, currentId, folders, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { approvalCopy, approvalPendingFor } from "../messages/approval";
 import { api } from "./api";
-import { dashCopy } from "./copy";
-import { loadSessions, sessionRow } from "./load";
+import { dashCopy, sessionCopy } from "./copy";
+import { loadSessions, renderSessions, sessionRow } from "./load";
 
 class FakeNode {
   tagName = "DIV";
@@ -113,6 +113,32 @@ describe("SCI-17 / SYNC-28: a session row says how its last turn ended", () => {
     ]) {
       expect(badge(sessionRow(row) as unknown as FakeNode)).toBeUndefined();
     }
+  });
+});
+
+// ONB-5: a new project lands in an empty session (the server lists a session
+// only once it has been used), and the sidebar said "No sessions yet" beside it.
+describe("the empty sidebar while a new session is open", () => {
+  /** What one render put in the list (the fake list counts rebuilds instead of clearing). */
+  function label(): string {
+    const list = document.querySelector("#session-list") as unknown as FakeNode;
+    const text = list.children.map((child) => child.textContent).join("|");
+    list.children = [];
+    return text;
+  }
+
+  it("says the open session appears once it has a message, and 'none yet' with nothing open", () => {
+    sessions.value = [];
+    folders.value = [];
+    _foldersFor.value = "P";
+    currentId.value = "f-new";
+    renderSessions();
+    expect(label()).toBe(sessionCopy("emptyOpen"));
+    expect(label()).not.toBe(t("session.empty.label"));
+
+    currentId.value = null;
+    renderSessions();
+    expect(label()).toBe(t("session.empty.label"));
   });
 });
 

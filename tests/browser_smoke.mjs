@@ -452,7 +452,8 @@ async function correctnessScenes(projectId) {
     window.openViewer({ id: a.artifact_id, filename: a.filename, content_type: "text/csv" });
   }, v1);
   assert.equal(await page.locator("#dock-tabs .dock-tab").filter({ hasText: "history.csv" }).count(), 2);
-  await page.locator("#dock-tabs .dock-tab").filter({ hasText: v1.version_id }).click();
+  // VIEW-3: a pinned tab names its version in words; the id is its tooltip.
+  await page.locator(`#dock-tabs .dock-tab[title*="${v1.version_id}"]`).click();
   await page.locator("#dock-viewer table.sheet").waitFor();
   assert.match(await page.locator("#dock-viewer").innerText(), /11/);
   const metadataRequests = [];
@@ -475,7 +476,7 @@ async function correctnessScenes(projectId) {
   assert.match(await page.locator("#dock-viewer").innerText(), /11/);
   assert.doesNotMatch(await page.locator("#dock-viewer table.sheet").innerText(), /22/);
   page.off("request", recordMetadata);
-  const latestTab = page.locator("#dock-tabs .dock-tab").filter({ hasText: "history.csv" }).filter({ hasNotText: v1.version_id });
+  const latestTab = page.locator(`#dock-tabs .dock-tab:not([title*="${v1.version_id}"])`).filter({ hasText: "history.csv" });
   await latestTab.click();
   await waitUntil("latest sheet v2", async () => (await page.locator("#dock-viewer").innerText()).includes("22"));
   // Hide this artifact's separate latest-file thumbnail through the real
@@ -2693,7 +2694,7 @@ try {
       throw new Error(`${selector} renders an empty icon (data-icon=${await page.locator(selector).getAttribute("data-icon")})`);
     }
   }
-  for (const selector of ["#ws-theme", "#sidebar-collapse", "#dock-toggle", "#settings-gear"]) {
+  for (const selector of ["#ws-theme", "#sidebar-collapse", "#dock-toggle"]) {
     await requireDrawnIcon(selector);
   }
   const themeDrawingBefore = await page.locator("#ws-theme svg").innerHTML();

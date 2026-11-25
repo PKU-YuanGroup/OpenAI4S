@@ -444,8 +444,9 @@ class LoadSkillTool(Tool):
         """Lead with what the load changed outside the recipe text.
 
         The default view of a load is the SKILL.md body alone, so a load that
-        narrowed the session's network said nothing about it, and the model
-        learned of the limit one refused request at a time.
+        limited the Skill's helpers' network said nothing about it, and the
+        model learned of the limit one refused request at a time -- then took
+        it for a limit on its own requests too.
         """
 
         if not isinstance(result, dict) or not isinstance(result.get("content"), str):
@@ -470,12 +471,14 @@ def load_notes(result: Any) -> list[str]:
     )
     if isinstance(domains, list) and domains:
         notes.append(
-            "[network] Loading this Skill limits this session's Host network "
-            "requests (web_fetch, web_search, web_download, and URLs in "
-            "host.bash) to these domains: "
+            "[network] This Skill's own helpers (the functions in its kernel.py) "
+            "may only reach these domains: "
             + ", ".join(str(item) for item in domains)
-            + ". A request to any other host is refused before it is sent, "
-            "and approving it cannot widen the limit."
+            + ". A helper's request to any other host is refused before it is "
+            "sent, and approving it cannot widen that limit. The rest of this "
+            "session's network is unchanged: your own cell code and the tools "
+            "(web_fetch, web_search, science_search, web_download, host.bash) "
+            "can still reach any host the session's policy allows."
         )
     import_hint = result.get("import")
     if isinstance(import_hint, str) and import_hint.strip():

@@ -1277,6 +1277,226 @@ def test_wildcard_bash_ask_rule_still_covers_a_chained_command(tmp_path):
     assert resolve("ls -la") == "allow"
 
 
+# --- package installs ask every time (owner decision 1) -------------------
+def test_installs_packages_recognises_install_commands():
+    from openai4s.storage.permissions import installs_packages
+
+    for command in (
+        "pip install pydeseq2",
+        "pip3 install -q numpy",
+        "/usr/bin/pip install x",
+        "python3 -m pip install lifelines",
+        "python -m pip --quiet install x",
+        "uv pip install x",
+        "uv add x",
+        "conda install -y -c bioconda samtools",
+        "conda env create -f env.yml",
+        "mamba create -n x numpy",
+        "npm i left-pad",
+        "cd x && pip install y",
+        "Rscript -e 'install.packages(\"DESeq2\")'",
+        "R -e 'BiocManager::install(\"DESeq2\")'",
+        "pip install *",
+    ):
+        assert installs_packages("bash", command), command
+    for command in (
+        "pip show numpy",
+        "pip uninstall -y x",
+        "git add .",
+        "ls -la",
+        "python3 -c 'print(1)'",
+        "*",
+    ):
+        assert not installs_packages("bash", command), command
+    assert installs_packages("env_setup", "numpy")
+    assert installs_packages("env_setup", "")
+    assert not installs_packages("web_fetch", "pip install x")
+
+
+def test_standing_allow_never_answers_for_a_package_install(tmp_path):
+    st = _store(tmp_path)
+    # A legacy row, or one written before installs became once-only, still
+    # sits in the table: it must not answer for the next install.
+    with st._lock:
+        for scope, scope_id in (("global", ""), ("conversation", "fI")):
+            st._conn.execute(
+                "INSERT INTO permission_rules(rule_id,scope,scope_id,tool,pattern,"
+                "decision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    f"legacy-{scope}",
+                    scope,
+                    scope_id,
+                    "env_setup",
+                    "numpy",
+                    "allow",
+                    1,
+                    1,
+                ),
+            )
+        st._conn.commit()
+    # A wildcard tool rule is still a valid rule; it just cannot answer here.
+    st.set_permission_rule(scope="global", tool="*", pattern="*", decision="allow")
+    st.set_permission_rule(
+        scope="conversation", scope_id="fI", tool="bash", pattern="*", decision="allow"
+    )
+    resolve = lambda tool, target: st.resolve_permission(  # noqa: E731
+        root_frame_id="fI", tool=tool, pattern_input=target
+    )
+    assert resolve("env_setup", "numpy") == "ask"
+    assert resolve("bash", "pip install numpy") == "ask"
+    assert resolve("bash", "ls -la") == "allow"
+    # A deny keeps working.
+    st.set_permission_rule(
+        scope="global", tool="env_setup", pattern="torch", decision="deny"
+    )
+    assert resolve("env_setup", "torch") == "deny"
+
+
+def test_a_standing_allow_rule_for_installs_is_refused(tmp_path):
+    from openai4s.storage.permissions import InstallRuleRefused
+
+    st = _store(tmp_path)
+    for tool, pattern in (
+        ("env_setup", "*"),
+        ("env_setup", "numpy"),
+        ("bash", "pip install *"),
+    ):
+        for scope, scope_id in (
+            ("global", ""),
+            ("project", "p"),
+            ("conversation", "f"),
+        ):
+            with pytest.raises(InstallRuleRefused) as refused:
+                st.set_permission_rule(
+                    scope=scope,
+                    scope_id=scope_id,
+                    tool=tool,
+                    pattern=pattern,
+                    decision="allow",
+                )
+            assert "every time" in str(refused.value)
+    # ask and deny rules for installs are fine, and so is an unrelated allow.
+    st.set_permission_rule(
+        scope="global", tool="env_setup", pattern="*", decision="ask"
+    )
+    st.set_permission_rule(
+        scope="global", tool="env_setup", pattern="x", decision="deny"
+    )
+    st.set_permission_rule(
+        scope="global", tool="bash", pattern="ls *", decision="allow"
+    )
+
+
+def _ask_install(broker_, st, root, method="env_setup", target="pydeseq2"):
+    events: list[dict] = []
+    broker_.register_channel(root, lambda event: events.append(event), store=st)
+    out: dict = {}
+
+    def run():
+        out["res"] = broker_.gate(store=st, frame_id=root, method=method, target=target)
+
+    # Daemon: a failed assertion must not leave the run waiting on a gate.
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    for _ in range(300):
+        if any(e.get("type") == "await_permission" for e in events):
+            break
+        time.sleep(0.01)
+    ask = next(e for e in events if e.get("type") == "await_permission")
+    return ask, thread, out
+
+
+@pytest.mark.parametrize(
+    ("method", "target"),
+    [("env_setup", "pydeseq2"), ("bash", "pip install pydeseq2")],
+)
+def test_install_card_offers_only_once_and_a_wider_allow_stays_once(
+    tmp_path, method, target
+):
+    st = _store(tmp_path)
+    b = PermissionBroker()
+    root = f"root-install-{method}"
+    ask, thread, out = _ask_install(b, st, root, method, target)
+    try:
+        assert ask["scopes"] == ["once"]
+        assert ask["suggested_patterns"] == []
+        decision = b.resolve_result(
+            ask["decision_id"],
+            allow=True,
+            scope="global",
+            pattern="*",
+            store=st,
+            root_frame_id=root,
+        )
+        thread.join(timeout=5)
+    finally:
+        b.cancel_root(root)
+        b.unregister_channel(root)
+    assert decision["ok"] is True and decision["scope"] == "once"
+    assert out["res"]["allow"] is True
+    assert st.get_permission_request(ask["decision_id"])["scope"] == "once"
+    assert not any(
+        rule["tool"] == method and rule["decision"] == "allow"
+        for rules in st.list_permission_rules_for_frame(
+            root_frame_id=root, project_id="default"
+        ).values()
+        for rule in rules
+    )
+    # The next install asks again.
+    assert (
+        st.resolve_permission(root_frame_id=root, tool=method, pattern_input=target)
+        == "ask"
+    )
+
+
+def test_ordinary_card_still_offers_every_scope(tmp_path):
+    st = _store(tmp_path)
+    b = PermissionBroker()
+    ask, thread, _out = _ask_install(b, st, "root-plain", "bash", "pytest -q")
+    try:
+        assert ask["scopes"] == ["once", "conversation", "project", "global"]
+        assert "pytest *" in ask["suggested_patterns"]
+        b.resolve(ask["decision_id"], allow=False, scope="once")
+        thread.join(timeout=5)
+    finally:
+        b.cancel_root("root-plain")
+        b.unregister_channel("root-plain")
+
+
+def test_install_allowed_after_restart_is_once_and_leaves_no_rule(tmp_path):
+    st = _store(tmp_path)
+    st.create_permission_request(
+        decision_id="perm-install-restart",
+        root_frame_id="root-ir",
+        frame_id="root-ir",
+        project_id="science",
+        tool="env_setup",
+        target="pydeseq2",
+        payload={"type": "await_permission", "frame_id": "root-ir"},
+        canonical_arguments=[{"packages": ["pydeseq2"]}],
+    )
+    restarted = PermissionBroker()
+    result = restarted.resolve_result(
+        "perm-install-restart",
+        allow=True,
+        scope="project",
+        pattern="*",
+        store=st,
+        root_frame_id="root-ir",
+    )
+    assert result["ok"] is True and result["scope"] == "once"
+    assert result["continuation_authorization"] == "once"
+    assert (
+        st.resolve_permission(
+            root_frame_id="root-ir",
+            project_id="science",
+            tool="env_setup",
+            pattern_input="pydeseq2",
+        )
+        == "ask"
+    )
+
+
 # --- end-to-end through the real HostDispatcher.__call__ ------------------
 def _dispatcher(tmp_path):
     from openai4s.host_dispatch import build_dispatcher
@@ -2547,3 +2767,56 @@ def test_a_sub_agents_request_names_the_sub_agent_and_its_task(tmp_path):
         )
         t.join(timeout=5)
     assert out["res"]["allow"] is False
+
+
+def test_the_add_rule_route_refuses_a_standing_install_allow_with_its_reason(tmp_path):
+    # PERM-1: installs ask every time; POST /permissions used to let the
+    # storage refusal escape as a 500 instead of saying why.
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+        def has_subscriber(self, root_frame_id):
+            return False
+
+        def drop_frame(self, root_frame_id):
+            return None
+
+    cfg = Config(data_dir=tmp_path, llm=LLMConfig(provider="deepseek", api_key="k"))
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    try:
+        runner.store.seed_default_permission_rules()
+        handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+        replies: list[tuple[int, dict]] = []
+        handler._query = lambda: {}
+        handler._json = lambda value, code=200: replies.append((code, value))
+
+        handler._body = lambda: {
+            "scope": "global",
+            "tool": "env_setup",
+            "pattern": "*",
+            "decision": "allow",
+        }
+        with pytest.raises(gateway_mod.GatewayError) as refused:
+            handler._api("POST", "/permissions")
+        assert refused.value.code == 400
+        assert refused.value.error_code == "install_rule_refused"
+        assert "ask" in refused.value.message
+        assert replies == []
+
+        # An ask (or deny) rule for installs is still accepted.
+        handler._body = lambda: {
+            "scope": "global",
+            "tool": "env_setup",
+            "pattern": "numpy",
+            "decision": "deny",
+        }
+        handler._api("POST", "/permissions")
+        assert replies[-1][0] == 200 and replies[-1][1]["ok"] is True
+    finally:
+        runner.store.close()

@@ -218,6 +218,48 @@ def literal_permission_pattern(text: str) -> str:
     return _GLOB_METACHARACTERS.sub(lambda match: f"[{match.group(0)}]", text)
 
 
+#: Tools whose every call is its own decision: a package install changes an
+#: interpreter other sessions share, so no standing rule answers for the next
+#: one (owner decision 1).
+ONCE_ONLY_TOOLS = frozenset({"env_setup"})
+
+#: A package manager asked to install, anywhere in a shell command (``pip
+#: install``, ``python -m pip install``, ``uv add``, ``conda env create``,
+#: ``npm i`` ...), or R's installers. Over-matching only makes a card ask once
+#: more; it never lets anything through.
+_PACKAGE_INSTALL = re.compile(
+    r"(?:^|[\s;&|()`])(?:\S*/)?(?:python[\d.]*\s+-m\s+)?"
+    r"(?:pip[\d.]*|pipx|uv(?:\s+pip)?|poetry|conda|mamba|micromamba|npm|pnpm|yarn"
+    r"|gem|cargo|apt|apt-get|brew)"
+    r"(?:\s+-\S+)*\s+(?:(?:env|tool)\s+)?(?:install|add|sync|create|ci|i)(?=\s|$)"
+    r"|install\.packages\s*\(|BiocManager::install\s*\(|(?:remotes|devtools)::install_"
+)
+
+INSTALL_RULE_REFUSAL = (
+    "Package installs ask every time, so an 'allow' rule for them is not saved. "
+    "Approve each install on its own card."
+)
+
+
+class InstallRuleRefused(ValueError):
+    """A standing 'allow' for package installs, which always ask instead."""
+
+    code = "install_rule_refused"
+
+
+def installs_packages(tool: str, target: str = "") -> bool:
+    """True when a call (or a rule's pattern) installs packages.
+
+    Such a call asks every time: the approval card offers only "once", no
+    standing allow rule is saved for it, and an existing one is ignored. A
+    deny rule still applies.
+    """
+
+    if tool in ONCE_ONLY_TOOLS:
+        return True
+    return tool == "bash" and bool(_PACKAGE_INSTALL.search(target or ""))
+
+
 # Gentle defaults for the local research daemon.  The kernel can already run
 # arbitrary Python, so routine confined work stays frictionless while genuinely
 # external or irreversible host operations ask an actively watching human.
@@ -238,7 +280,8 @@ DEFAULT_PERMISSION_RULES = (
     ("delegate", "*", "allow"),
     # Installing packages changes an interpreter the user owns (the session's
     # kernel environment). It used to be allowed silently and wrote into the
-    # daemon's own venv; every install is now the user's call.
+    # daemon's own venv; every install is now the user's call, each time
+    # (``installs_packages``: no allow rule answers for one).
     ("env_setup", "*", "ask"),
     # Switching the kernel: OpenAI4S's own environments freely, the user's own
     # conda environments ("local") only with their approval.
@@ -308,8 +351,9 @@ _DEFAULT_PERMISSION_RULE_ADDITIONS = {
 _DEFAULT_PERMISSION_RULE_REPLACEMENTS = {
     4: (("skills_edit", "*", "allow", "ask"),),
     # v7: the shipped ``env_setup * allow`` let the agent install packages
-    # without asking (and, before the same release, into the daemon's venv). An
-    # operator who deliberately wants silent installs can restore the allow.
+    # without asking (and, before the same release, into the daemon's venv).
+    # Installs now ask every time: ``resolve`` ignores any allow row for them
+    # and ``set_rule`` refuses to write one.
     7: (("env_setup", "*", "allow", "ask"),),
 }
 
@@ -351,6 +395,8 @@ class PermissionRuleRepository:
         """Upsert a rule while retaining its identity for the same key."""
         scope_id = scope_id or ""
         pattern = pattern or "*"
+        if decision == "allow" and installs_packages(tool, pattern):
+            raise InstallRuleRefused(INSTALL_RULE_REFUSAL)
         now = self._clock_ms()
         with self._lock:
             row = self._connection.execute(
@@ -441,7 +487,9 @@ class PermissionRuleRepository:
 
         Any matching deny is an absolute veto.  Otherwise the most specific
         tool and target pattern wins, followed by narrower scope and recency.
+        A package install is never answered by an allow rule: it asks.
         """
+        once_only = installs_packages(tool, pattern_input or "")
         candidates = list(self.get_rules(scope="global", scope_id=""))
         if project_id:
             candidates += self.get_rules(scope="project", scope_id=project_id)
@@ -463,6 +511,8 @@ class PermissionRuleRepository:
                 continue
             if rule["decision"] == "deny":
                 return "deny"
+            if rule["decision"] == "allow" and once_only:
+                continue
             # Only a rule that grants is narrowed to simple commands. A wildcard
             # `ask` rule still covers a chain: skipping it let a broad allow
             # (`*`) win for `rm -rf x; echo y` over the user's `rm *` -> ask.

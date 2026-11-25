@@ -129,6 +129,20 @@ nothing. `OPENAI4S_EXPERIMENTAL_JUDGMENT=0` is the kill switch.
 
 GPU/model Skills (`requirements: [gpu]`) run their heavy step on a remote GPU through [`host.compute`](compute.md); everything else runs directly in the kernel.
 
+### Network manifest
+
+A Skill declares its network in frontmatter (`capabilities.network.mode`: `none`,
+`host_only` with a `domains` list, or `raw_required`). A `host_only` list limits
+only the requests the Skill's **own helper code** (its `kernel.py`) makes through
+the Host: a helper's `host.web_fetch` / `host.web_search` / `host.bash` URL /
+`host.request_network_access` outside the list is refused before it is sent,
+and approving it cannot widen the list. The rest of the session is not limited:
+native tools (`web_fetch`, `web_search`, `science_search`), the agent's own Cell
+code and its `host.bash` keep the session's ordinary network policy. Loading a
+`host_only` Skill still needs a kernel whose sandbox blocks raw network, so the
+helpers cannot go around the Host; `raw_required` Skills are refused in this
+version. See [security.md](security.md) for how a call is attributed.
+
 ## Three different things a Skill can give an agent
 
 These look alike in a step card and are mechanically unrelated. Telling them

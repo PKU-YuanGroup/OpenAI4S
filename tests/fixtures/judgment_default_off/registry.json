@@ -408,6 +408,11 @@
           ],
           "type": "string"
         },
+        "offset": {
+          "description": "Start this many characters into the document, to read on from a truncated result's next_offset.",
+          "minimum": 0,
+          "type": "integer"
+        },
         "timeout": {
           "description": "Seconds to wait before giving up (default 30).",
           "maximum": 120,

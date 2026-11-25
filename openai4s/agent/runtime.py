@@ -1356,6 +1356,7 @@ class LocalActionExecutor:
                 action,
                 evidence=execution_evidence(state.metadata),
                 code_evidence=getattr(self.dispatcher, "verify_code_evidence", None),
+                reply_content=reply.content,
             )
         if isinstance(action, NativeToolBatch):
             return self._execute_native(action, state)
@@ -2223,8 +2224,9 @@ def format_observation(result: dict, *, cell_id: str | None = None) -> str:
             error
         ):
             parts.append(
-                "[system] `host` is a pre-injected Python singleton. Use it "
-                "directly; never `import host` or `from host import ...`."
+                "[system] `host` is a pre-injected global in Python cells, and "
+                "`import host` returns that same object. This kernel has no "
+                "host, so `host.*` calls are unavailable here."
             )
     # At most one sandbox hint: the install one is the more specific.
     combined = "\n".join((out, err, str(error or "")))

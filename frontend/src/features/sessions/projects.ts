@@ -31,7 +31,7 @@ import { beginNavigation } from "./navigation";
 import { chooseSessionPackage, downloadArtifactBundle } from "./actions";
 import { recoverConversation } from "../messages/open";
 import { displayProjectName, projectActivityCopy, projectFilesCopy, projectHistoryCopy } from "./copy";
-import { openProjectFiles, projectFolderErrorText, resetProjectFolderPicker } from "./project-files";
+import { browseProjectFolder, openProjectFiles, projectFolderErrorText, resetProjectFolderPicker } from "./project-files";
 import { openProjectHistory } from "./project-history";
 
 type ProjectLike = {
@@ -338,7 +338,7 @@ export function renderProjMenu(): void {
   item(t("proj.menu.allProjects"), "arrow-left", showDashboard);
   (projects.value as ProjectLike[]).forEach((p) => {
     if ((p.project_id || p.id) !== project.value) {
-      item((p.name || t("proj.fallbackName")).slice(0, 26), "box", () => {
+      item((displayProjectName(p) || t("proj.fallbackName")).slice(0, 26), "box", () => {
         void openProject(p.project_id || p.id || "").catch(reportFailure);
       });
     }
@@ -455,6 +455,31 @@ export function closeProjectModal(): void {
 // when it changed, so an unrelated edit never revalidates an unavailable folder.
 let editingFolderPath = "";
 
+// ONB-6: the folder-field value the open picker was last sent to.
+let pickerFollows: string | null = null;
+
+/** Browse: open the folder picker at the path typed in the folder field. */
+export function browseTypedProjectFolder(): void {
+  pickerFollows = (($("#pm-folder") as HTMLInputElement | null)?.value || "").trim();
+  void browseProjectFolder();
+}
+
+/**
+ * ONB-6: a path typed into the folder field moves an open picker there (a
+ * missing folder is said in the picker). Leaving the field moves it only
+ * when the path was edited since, so it never undoes the folders clicked
+ * through meanwhile; Enter always goes to what is typed.
+ */
+function followTypedProjectFolder(force: boolean): void {
+  const picker = $("#pm-folder-picker");
+  const field = $("#pm-folder") as HTMLInputElement | null;
+  if (!picker || !field || picker.classList.contains("hidden")) return;
+  const typed = field.value.trim();
+  if (!typed || (!force && typed === pickerFollows)) return;
+  pickerFollows = typed;
+  void browseProjectFolder(typed);
+}
+
 export function openProjectModal(proj?: ProjectLike | null): void {
   const p = proj || null;
   editingProject.value = p ? p.project_id || p.id : null;
@@ -478,6 +503,16 @@ export function openProjectModal(proj?: ProjectLike | null): void {
   if (desc) desc.value = p ? p.description || "" : "";
   if (ctx) ctx.value = p ? p.context || p.agent_context || "" : "";
   resetProjectFolderPicker(p?.folder_path || "");
+  pickerFollows = null;
+  const folder = $("#pm-folder") as HTMLInputElement | null;
+  if (folder) {
+    folder.onkeydown = (event) => {
+      if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      followTypedProjectFolder(true);
+    };
+    folder.onblur = () => followTypedProjectFolder(false);
+  }
   showProjectModalError("");
   const create = $("#pm-create");
   if (create) create.textContent = t(p ? "common.save" : "projModal.create");

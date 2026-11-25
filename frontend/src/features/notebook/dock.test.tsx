@@ -36,8 +36,10 @@ import {
 } from "./kernel";
 import {
   CellActions,
+  CellIo,
   CellList,
   CellOutput,
+  InlinedScript,
   KernelChips,
   NewCellsPill,
   NotebookDock,
@@ -47,6 +49,7 @@ import {
   kernelStatusLine,
   outputIsLong,
   outputLabel,
+  cellIoFiles,
   writtenImages,
 } from "./Notebook";
 import { nbLabelT, nbT } from "./copy";
@@ -156,6 +159,23 @@ describe("Notebook kernel status line", () => {
     expect(textOf(line())).toBe(ready);
     currentId.value = "frame-2";
     expect(textOf(line())).toBe("…");
+  });
+
+  // NB-2: "运行中 · Python 3.13" sat above "发送消息即可继续…", the idle copy.
+  it("says the agent is running instead of the idle 'send a message' line during a turn", () => {
+    currentId.value = "frame-1";
+    kernelView.value = {
+      sid: "frame-1",
+      st: { alive: true, turn_running: true, env: { python_version: "3.13" } },
+      envs: null,
+      cur: null,
+    };
+    const hint = (): string => textOf(byClass(StatusStrip(), "nb-status-hint"));
+    expect(textOf(byClass(StatusStrip(), "nb-status-line"))).toBe(t("nb.status.live", "Python 3.13"));
+    expect(hint()).toBe(nbT("nb.status.runningHint"));
+    expect(hint()).not.toBe(t("nb.status.hint"));
+    kernelView.value = { sid: "frame-1", st: { alive: true, env: { python_version: "3.13" } }, envs: null, cur: null };
+    expect(hint()).toBe(t("nb.status.hint"));
   });
 
   it("a kernel read that leaves the REPL mode alone does not re-render the whole dock", () => {
@@ -449,6 +469,78 @@ describe("Notebook images a cell wrote", () => {
     expect(writtenImages(cell)).toEqual(["plots/volcano.png", "Rplot_2_01.png"]);
     const many = { files_written: Array.from({ length: 20 }, (_, i) => `p${i}.png`) };
     expect(writtenImages(many)).toHaveLength(8);
+  });
+});
+
+// NB-1: `exec(open("qc_analysis.py").read())` said nothing about what ran, and
+// the file was later deleted.
+describe("Notebook script a cell ran", () => {
+  const script = {
+    path: "qc_analysis.py",
+    content: "import math\nprint(math.sqrt(16))\n",
+    size_bytes: 36,
+    truncated: false,
+  };
+
+  it("folds the recorded script under the cell, named by its file", () => {
+    const tree = InlinedScript({
+      cell: { producing_cell_id: "c-qc", language: "python", inlined_script: script },
+    });
+    expect((tree as VNode).type).toBe("details");
+    const text = textOf(tree);
+    expect(text).toContain(nbT("nb.script.summary", "qc_analysis.py"));
+    expect(text).toContain(nbT("nb.script.note", "qc_analysis.py"));
+    const code = byClass(tree, "nbc-script-src") as VNode;
+    const inner = (code.props?.children as VNode).props?.dangerouslySetInnerHTML as { __html: string };
+    expect(inner.__html).toContain("sqrt");
+  });
+
+  it("says when only the head of a long script was kept", () => {
+    const text = textOf(
+      InlinedScript({
+        cell: {
+          producing_cell_id: "c-long",
+          inlined_script: { ...script, truncated: true, size_bytes: 900 * 1024 },
+        },
+      }),
+    );
+    expect(text).toContain(nbT("nb.script.truncated", "qc_analysis.py", "900.0 KB"));
+  });
+
+  it("shows nothing for a cell that ran no script", () => {
+    expect(InlinedScript({ cell: { producing_cell_id: "c-plain" } })).toBeNull();
+    expect(InlinedScript({ cell: { producing_cell_id: "c-null", inlined_script: null } })).toBeNull();
+  });
+
+  it("names the block in Chinese as 脚本内容", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      expect(nbT("nb.script.summary", "x.py")).toBe("脚本内容 · x.py");
+    } finally {
+      await setLang(original);
+    }
+  });
+});
+
+// NB-3: a cell that redrew volcano.png showed "volcano.png volcano.png".
+describe("Notebook file chips under a cell", () => {
+  it("shows a file the cell read and wrote once, as written", () => {
+    const cell = {
+      producing_cell_id: "c-redraw",
+      files_written: ["volcano.png", "volcano.png"],
+      files_read: ["volcano.png", "counts.csv", "counts.csv"],
+    };
+    const files = cellIoFiles(cell);
+    expect(files.written).toEqual(["volcano.png"]);
+    expect(files.read).toEqual(["counts.csv"]);
+    expect([...files.readAndWritten]).toEqual(["volcano.png"]);
+    const tree = CellIo({ cell });
+    const text = textOf(tree);
+    expect(text.split("volcano.png")).toHaveLength(2);
+    expect(text.split("counts.csv")).toHaveLength(2);
+    expect(byClass(tree, "io-w")?.props?.title).toBe(nbT("nb.io.readAndWritten"));
+    expect(writtenImages(cell)).toEqual(["volcano.png"]);
   });
 });
 

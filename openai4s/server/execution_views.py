@@ -156,6 +156,9 @@ class ExecutionViewService:
                     "figures": cell.get("figures") or [],
                     "files_written": cell.get("files_written") or [],
                     "files_read": cell.get("files_read") or [],
+                    # NB-1: the workspace script a run-this-file Cell ran, as
+                    # it was then (null for every other Cell).
+                    "inlined_script": cell.get("inlined_script"),
                     "cpu_seconds": cell.get("cpu_s"),
                     "peak_rss_kb": cell.get("peak_rss_kb"),
                     # The conversation's card for this Cell (M-69): its title as

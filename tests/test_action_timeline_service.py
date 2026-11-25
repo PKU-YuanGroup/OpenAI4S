@@ -359,3 +359,186 @@ def test_a_plan_mode_user_group_is_titled_by_the_task(tmp_path):
 
     assert [group["title"] for group in groups] == [tasks["en"], tasks["zh"]]
     store.close()
+
+
+def _declined_install(store: Store) -> None:
+    """The shape the ledger recorded for an install the user declined."""
+    store.append_tool_action_group(
+        group_id="group-install",
+        root_frame_id="root",
+        turn_id="turn",
+        assistant_message={"role": "assistant", "content": None},
+        created_at=1_000,
+        events=[
+            {
+                "sequence": 0,
+                "type": "proposed",
+                "tool_call_id": "call-1",
+                "canonical_arguments": {
+                    "name": "env_create",
+                    "arguments": {"name": "deseq", "packages": ["pydeseq2"]},
+                },
+                "created_at": 1_000,
+            },
+            {
+                "sequence": 1,
+                "type": "permission_pending",
+                "result": {"decision_id": "perm-1", "state": "pending"},
+                "created_at": 1_010,
+            },
+            {
+                "sequence": 2,
+                "type": "permission_resolved",
+                "result": {"decision_id": "perm-1", "state": "denied", "scope": "once"},
+                "created_at": 40_000,
+            },
+            {
+                "sequence": 3,
+                "type": "result",
+                "tool_call_id": "call-1",
+                "result": {"role": "tool", "is_error": True, "name": "env_create"},
+                "created_at": 40_200,
+            },
+        ],
+    )
+
+
+def test_a_declined_request_is_denied_not_failed(tmp_path):
+    """VIEW-1. An install the user declined showed a red `failed` badge: the
+    denial reaches the tool as an error result, and the status read only that."""
+    store = Store(tmp_path / "openai4s.db")
+    _declined_install(store)
+
+    group = ActionTimelineService(store).get("root")["groups"][0]
+
+    assert group["status"] == "denied"
+    assert group["permission"]["state"] == "denied"
+    store.close()
+
+
+def test_a_restart_denial_is_denied(tmp_path):
+    store = Store(tmp_path / "openai4s.db")
+    group = store.append_action_group(
+        root_frame_id="root", turn_id="turn", kind="permission_resolution"
+    )
+    store.append_action_event(
+        group_id=group["group_id"],
+        type="denied",
+        result={"status": "denied", "allow": False, "tool": "env_setup"},
+    )
+
+    assert ActionTimelineService(store).get("root")["groups"][0]["status"] == "denied"
+    store.close()
+
+
+def test_a_restart_decision_row_carries_the_decision_and_tool(tmp_path):
+    """VIEW-1b. A decision made after a restart read "Approval denied after
+    restart: env_setup" in every UI language. The row now says what was
+    decided and for which tool, so the client words it in the UI language
+    with the tool's own name; the English `title` stays the fallback."""
+    store = Store(tmp_path / "openai4s.db")
+    for ordinal, (event_type, result) in enumerate(
+        (
+            ("denied", {"status": "denied", "allow": False, "tool": "env_setup"}),
+            (
+                "completed",
+                {"status": "requires_continue", "allow": True, "tool": "web_fetch"},
+            ),
+            (None, None),
+        )
+    ):
+        group = store.append_action_group(
+            root_frame_id="root",
+            turn_id=f"turn-{ordinal}",
+            kind="permission_resolution",
+            ordinal=ordinal,
+        )
+        if event_type:
+            store.append_action_event(
+                group_id=group["group_id"], type=event_type, result=result
+            )
+    store.append_action_group(
+        root_frame_id="root",
+        turn_id="turn-user",
+        kind="user",
+        assistant_message={"role": "user", "content": "hello"},
+    )
+
+    groups = ActionTimelineService(store).get("root")["groups"]
+
+    assert [group["restart_decision"] for group in groups] == [
+        {"decision": "denied", "tool": "env_setup"},
+        {"decision": "approved", "tool": "web_fetch"},
+        {"decision": "resolved", "tool": None},
+        None,
+    ]
+    assert groups[0]["title"] == "Approval denied after restart: env_setup"
+    store.close()
+
+
+def test_native_tool_rows_carry_the_step_titles_the_chat_shows(tmp_path):
+    """VIEW-1. Timeline rows read `env_create`, `list_dir`, `write_file` where
+    the chat's step cards read "Installing pydeseq2", "Listing .", "Writing
+    qc.py". Each call's title is the step card's own wording (the client
+    translates it the way the chat does); the joined title follows it."""
+    store = Store(tmp_path / "openai4s.db")
+    _declined_install(store)
+    store.append_tool_action_group(
+        group_id="group-files",
+        root_frame_id="root",
+        turn_id="turn",
+        assistant_message={"role": "assistant", "content": None},
+        events=[
+            {
+                "sequence": 0,
+                "type": "proposed",
+                "canonical_arguments": {"name": "list_dir", "arguments": {"path": "."}},
+            },
+            {
+                "sequence": 1,
+                "type": "proposed",
+                "canonical_arguments": {
+                    "name": "write_file",
+                    "arguments": {"path": "qc.py", "content": "print(1)"},
+                },
+            },
+            {
+                "sequence": 2,
+                "type": "proposed",
+                "canonical_arguments": {
+                    "name": "content_search",
+                    "arguments": {"pattern": "x"},
+                },
+            },
+            {
+                "sequence": 3,
+                "type": "proposed",
+                "canonical_arguments": {"name": "no_such_tool", "arguments": {}},
+            },
+        ],
+    )
+
+    install, files = ActionTimelineService(store).get("root")["groups"]
+
+    assert install["step_titles"] == ["Installing pydeseq2"]
+    assert install["title"] == "Installing pydeseq2"
+    assert files["step_titles"] == [
+        "Listing .",
+        "Writing qc.py",
+        "Searching in files",
+        "no_such_tool",
+    ]
+    assert (
+        files["title"] == "Listing ., Writing qc.py, Searching in files, no_such_tool"
+    )
+    # The file's content is an argument, never a title.
+    assert "print(1)" not in repr(files)
+    store.close()
+
+
+def test_rows_that_are_not_tool_batches_carry_no_step_titles(tmp_path):
+    store = Store(tmp_path / "openai4s.db")
+    store.append_action_group(root_frame_id="root", turn_id="turn", kind="code")
+
+    assert ActionTimelineService(store).get("root")["groups"][0]["step_titles"] == []
+    store.close()

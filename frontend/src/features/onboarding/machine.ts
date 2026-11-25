@@ -210,11 +210,13 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
         error: null,
       };
     case "startTest":
+      // Not decided yet: the rail's tick waits for a reachable result (or for
+      // Continue). It used to tick here, while "Contacting the endpoint..."
+      // was still on screen.
       return {
         ...state,
         testClicked: true,
         providerRequests: state.providerRequests + 1,
-        decided: withDecided(state, "test"),
         error: null,
         probeDetail: "",
       };
@@ -227,11 +229,15 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
       if (action.profileId !== undefined && action.profileId !== (state.path?.profileId ?? "")) {
         return state;
       }
+      // A failed probe is not a passed test: only a reachable endpoint ticks
+      // the step. Continue still records a user who moves on without one.
       return {
         ...state,
         receipt: action.receipt,
         probeDetail: String(action.detail || ""),
-        decided: withDecided(state, "test"),
+        decided: action.reachable
+          ? withDecided(state, "test")
+          : state.decided.filter((step) => step !== "test"),
       };
     case "fail":
       return {

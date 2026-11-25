@@ -13,6 +13,7 @@ import { cellNode } from "../notebook/Notebook";
 import type { NotebookCell } from "../notebook/types";
 import { publicText } from "../scrub/scrub";
 import { api, apiErrorText } from "./api";
+import { provenanceT } from "./copy";
 import type { ExecFrame, ExecSourcesState } from "./types";
 
 function el(tag: string, cls?: string | null, text?: string | null): HTMLElement {
@@ -159,7 +160,7 @@ export function buildExecutedCodeView(st: ExecSourcesState): HTMLElement {
   const wrap = el("div", "nb-exec");
   const head = el("div", "nb-exec-head");
   head.appendChild(el("span", "nb-exec-title", t("nb.exec.title")));
-  head.appendChild(el("span", "nb-exec-note", t("nb.exec.note")));
+  head.appendChild(el("span", "nb-exec-note", provenanceT("execNote")));
   wrap.appendChild(head);
   if (st.error) wrap.appendChild(el("div", "timeline-error", publicText(st.error, 240)));
   if (!st.data) {

@@ -89,6 +89,13 @@ class CheckpointRequest:
     source_kind: str | None = None
     source_id: str | None = None
     internal: bool = False
+    # VIEW-2b: cursors of a boundary published just before this checkpoint,
+    # from the same state read and workspace capture, as its parent.
+    before_cursors: Mapping[str, int] | None = None
+
+
+# The boundary just before a question's message checkpoint (VIEW-2b).
+BEFORE_SOURCE_REASON_SUFFIX = "_before"
 
 
 class SessionBranchingService:
@@ -134,6 +141,7 @@ class SessionBranchingService:
         source_kind: str | None = None,
         source_id: str | None = None,
         internal: bool = False,
+        before_cursors: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
         branch_id = branch_id or root_frame_id
         request = CheckpointRequest(
@@ -145,8 +153,49 @@ class SessionBranchingService:
             source_kind=source_kind,
             source_id=source_id,
             internal=internal,
+            before_cursors=before_cursors,
         )
         return self._capture_checkpoint(request)
+
+    def before_source(
+        self, root_frame_id: str, checkpoint: Mapping[str, Any], *, message_cursor: int
+    ) -> dict[str, Any] | None:
+        """The boundary just before a question, or None (VIEW-2b).
+
+        A message checkpoint is taken right after the question is stored, so
+        it holds the question. Its parent is the exact boundary before the
+        question only when it is the same branch's plain checkpoint with the
+        same workspace tree and the same action, Cell and Auto Mode cursors,
+        and its message cursor stops at the question: then its projection is
+        the message checkpoint's minus the question. Checked from the rows
+        alone, so an imported Session (whose metadata is not carried over)
+        answers the same way, and an older question without that boundary is
+        refused rather than forked with the question still in it.
+        """
+
+        parent_id = checkpoint.get("parent_checkpoint_id")
+        if not isinstance(parent_id, str) or not parent_id:
+            return None
+        parent = self.repository.get_checkpoint(parent_id)
+        if parent is None or parent.get("root_frame_id") != root_frame_id:
+            return None
+        if parent.get("branch_id") != checkpoint.get("branch_id"):
+            return None
+        metadata = parent.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        if metadata.get("history_projection") or metadata.get("reverted_to"):
+            # A revert checkpoint projects its target, not its own cursors.
+            return None
+        if not parent.get("workspace_tree_id") or parent.get(
+            "workspace_tree_id"
+        ) != checkpoint.get("workspace_tree_id"):
+            return None
+        for key in ("action_cursor", "cell_cursor", "auto_event_cursor"):
+            if parent.get(key) != checkpoint.get(key):
+                return None
+        if parent.get("message_cursor") != message_cursor:
+            return None
+        return parent
 
     def fork(
         self,
@@ -1236,26 +1285,52 @@ class SessionBranchingService:
                 tree_id=tree["tree_id"],
                 artifact_versions=state.get("artifact_versions") or [],
             )
+            fields: dict[str, Any] = {
+                "root_frame_id": request.root_frame_id,
+                "branch_id": request.branch_id,
+                "workspace_tree_id": tree["tree_id"],
+                "action_cursor": state.get("action_cursor"),
+                "message_cursor": state.get("message_cursor"),
+                "cell_cursor": state.get("cell_cursor"),
+                "auto_event_cursor": state.get("auto_event_cursor"),
+                "artifact_versions": state.get("artifact_versions") or [],
+                "environment_pins": state.get("environment_pins") or {},
+                "generation_refs": state.get("generation_refs") or {},
+                "capability_state": state.get("capability_state") or {},
+                "permission_state": state.get("permission_state") or {},
+                "recovery_recipe": recovery_recipe,
+            }
+            expected_head = request.expected_head
+            existing = (
+                self.repository.get_checkpoint_for_source(
+                    request.root_frame_id,
+                    source_kind=request.source_kind,
+                    source_id=request.source_id,
+                )
+                if request.source_kind and request.source_id
+                else None
+            )
+            if request.before_cursors and existing is None:
+                # VIEW-2b: the same moment one source earlier (a message
+                # cursor that stops before the question), published first so
+                # it is this checkpoint's parent on the branch's one linear
+                # chain; a fork from it starts just before the source.
+                self.repository.create_checkpoint(
+                    **{**fields, **dict(request.before_cursors)},
+                    reason=request.reason + BEFORE_SOURCE_REASON_SUFFIX,
+                    metadata={**metadata, "boundary": "before_source"},
+                    internal=request.internal,
+                    expected_head=expected_head,
+                )
+                expected_head = None
             checkpoint = self.repository.create_checkpoint(
-                root_frame_id=request.root_frame_id,
-                branch_id=request.branch_id,
+                **fields,
                 reason=request.reason,
-                workspace_tree_id=tree["tree_id"],
-                action_cursor=state.get("action_cursor"),
-                message_cursor=state.get("message_cursor"),
-                cell_cursor=state.get("cell_cursor"),
-                auto_event_cursor=state.get("auto_event_cursor"),
-                artifact_versions=state.get("artifact_versions") or [],
-                environment_pins=state.get("environment_pins") or {},
-                generation_refs=state.get("generation_refs") or {},
-                capability_state=state.get("capability_state") or {},
-                permission_state=state.get("permission_state") or {},
-                recovery_recipe=recovery_recipe,
                 metadata=metadata,
                 source_kind=request.source_kind,
                 source_id=request.source_id,
                 internal=request.internal,
-                expected_head=request.expected_head,
+                expected_head=expected_head,
             )
         # Cursor checkpoints are implementation history.  Their durable row is
         # the audit proof; emitting one Timeline group per Cell/message would

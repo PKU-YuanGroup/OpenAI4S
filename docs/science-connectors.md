@@ -267,9 +267,10 @@ soft-fail shape at the tool boundary. No connector adds a runtime dependency to
 the stdlib-only core, and all default tests use captured synthetic API payloads
 without network access.
 
-## Doubao Search Custom
+## Doubao Search
 
-Doubao Search Custom is the primary managed web-search option. OpenAI4S calls
+Doubao Search (Volcengine's Doubao Search Custom API, shown as 「豆包搜索」 in the
+workbench) is the primary managed web-search option. OpenAI4S calls
 Volcengine's fixed search API through a stdlib-only client and normalizes web
 hits to the exact `{title,url,snippet}` envelope. It does not
 install the Ark CLI Skills catalog or a local third-party MCP package.

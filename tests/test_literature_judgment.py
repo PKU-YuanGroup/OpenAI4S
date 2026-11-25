@@ -569,9 +569,7 @@ def test_kernel_cell_check_claims_with_fake_endpoint(
         dispatcher = HostDispatcher(cfg, workspace=tmp_path)
         source = "HbA1c fell by 1.1 percentage points versus placebo in adults."
         cell = (
-            "import sys\n"
-            "sys.modules['host'] = host\n"
-            + _KERNEL_PATH.read_text(encoding="utf-8")
+            _KERNEL_PATH.read_text(encoding="utf-8")
             + "\n"
             + "out = check_claims(\n"
             + "    [{'claim_id': 'c1', 'claim': 'HbA1c fell by 1.1 percentage points versus placebo.',"

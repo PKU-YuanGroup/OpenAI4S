@@ -99,6 +99,94 @@ def test_completion_message_deduplicates_existing_closing_prose():
     assert text == ""
 
 
+#: CHAT-1, as recorded: the greeting's reply carried an 819-character answer
+#: and a `finalize_response` whose summary paraphrased it in the third person.
+_GREETING_REPLY = (
+    "你好！我是 **openai4s**，一个自主科学研究助手。我能帮你查资料、跑分析、"
+    "出图表、写报告。\n\n你现在手头有什么任务或数据？告诉我就可以直接开始。"
+)
+_GREETING_COMPLETION = {
+    "output": {
+        "summary": (
+            "向用户介绍了 openai4s 自主科学研究助手的身份与核心能力（生物信息、"
+            "结构生物学、单细胞分析、机器学习、文献检索、化学信息学等），并说明"
+            "使用方式：直接提供任务、数据文件或 accession 编号即可开始真实分析。"
+        )
+    },
+    "completion_bullets": [
+        "介绍了助手身份与运行环境",
+        "梳理了可提供的科研能力范围",
+        "说明了发起任务的方式并邀请用户提出具体需求",
+    ],
+}
+
+
+def test_a_reply_that_answered_is_not_followed_by_its_recap():
+    text = completion_message(
+        _GREETING_COMPLETION,
+        previous_text=_GREETING_REPLY,
+        language="zh",
+        require_fallback=False,
+        answered_in_reply=True,
+    )
+
+    assert text == ""
+    # Without the flag the paraphrase slips past the substring dedupe; this is
+    # the second message the review saw.
+    assert completion_message(
+        _GREETING_COMPLETION,
+        previous_text=_GREETING_REPLY,
+        language="zh",
+        require_fallback=False,
+    ).startswith("向用户介绍了")
+
+
+def test_an_answered_reply_still_gets_its_findings_and_artifacts():
+    with_findings = completion_message(
+        {**_GREETING_COMPLETION, "output": {"summary": "s", "findings": ["F1 holds"]}},
+        previous_text=_GREETING_REPLY,
+        language="zh",
+        answered_in_reply=True,
+    )
+    assert "关键发现：\n- F1 holds" in with_findings
+
+    with_files = completion_message(
+        _GREETING_COMPLETION,
+        [{"artifact_id": "a-1", "filename": "results.csv"}],
+        previous_text=_GREETING_REPLY,
+        language="zh",
+        answered_in_reply=True,
+    )
+    assert f"[results.csv]({API_ROOT}/artifacts/a-1)" in with_files
+
+
+def test_without_removed_files_judges_only_this_workspace(tmp_path):
+    from openai4s.server.completions import without_removed_files
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "kept.csv").write_text("x", encoding="utf-8")
+    paths = {
+        "v-kept": str(workspace / "kept.csv"),
+        "v-deleted": str(workspace / "deleted.csv"),
+        "v-elsewhere": str(tmp_path / "other" / "gone.csv"),
+    }
+    artifacts = [
+        {"artifact_id": "a-1", "latest_version_id": "v-kept"},
+        {"artifact_id": "a-2", "latest_version_id": "v-deleted"},
+        {"artifact_id": "a-3", "version_id": "v-elsewhere"},
+        {"artifact_id": "a-4", "latest_version_id": "v-unknown"},
+        {"artifact_id": "a-5"},
+    ]
+
+    kept = without_removed_files(artifacts, workspace, paths.get)
+    assert [a["artifact_id"] for a in kept] == ["a-1", "a-3", "a-4", "a-5"]
+
+    # A workspace this machine does not have (a remote workload) is not judged.
+    remote = without_removed_files(artifacts, tmp_path / "remote", paths.get)
+    assert remote == artifacts
+
+
 def test_completion_message_has_bounded_json_fallback_and_completion_fallback():
     rendered = completion_message(
         {"output": {"metrics": {"accuracy": 0.93}}}, language="en"
@@ -180,12 +268,16 @@ def test_the_web_prompt_says_to_run_code_as_a_cell_not_a_scratch_script():
     # M-15: qc_run_cell.py (`exec(open(...).read())`), qc_audit2.py, qc_audit.py
     # and qc_deep.py were written one by one, each became a project file, and
     # the Notebook stayed empty for four minutes.
-    assert "Run code AS a cell." in _GATEWAY_PROMPT_EXTRA
-    assert (
-        "Do not write a .py / .R file in order to exec() or source() it from a "
-        "later cell" in _GATEWAY_PROMPT_EXTRA
-    )
-    assert "every file you write appears in the user's files" in _GATEWAY_PROMPT_EXTRA
+    # NB-1: the rule lives in the shared prompt, so the CLI says it too.
+    web = SYSTEM_PROMPT + _GATEWAY_PROMPT_EXTRA
+    for prompt in (SYSTEM_PROMPT, web):
+        assert "Run analysis code AS a cell." in prompt
+        assert (
+            "Do not write a .py / .R file in order to exec(), runpy or source() it "
+            "from a later cell" in prompt
+        )
+        assert "the Notebook records only the code a cell contains" in prompt
+    assert web.count("Run analysis code AS a cell.") == 1
 
 
 def test_the_web_prompt_says_to_run_a_users_cell_as_written():
@@ -441,7 +533,8 @@ def test_agent_prompt_documents_the_delegation_task_status_contract():
 def test_agent_prompt_never_claims_post_fence_prose_runs_after_submit():
     assert "After it succeeds you may add" not in SYSTEM_PROMPT
     assert "Only prose BEFORE the action fence is user-visible" in SYSTEM_PROMPT
-    assert "NEVER `import host`" in SYSTEM_PROMPT
+    assert "`import host` returns the same object" in SYSTEM_PROMPT
+    assert "NEVER `import host`" not in SYSTEM_PROMPT
     assert "A foreground Cell is not a native tool call" in SYSTEM_PROMPT
     assert "`run_python_cell`" in SYSTEM_PROMPT
     assert "exact name present in the current tool declarations" in SYSTEM_PROMPT

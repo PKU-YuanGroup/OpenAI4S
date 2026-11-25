@@ -119,6 +119,7 @@ const EXPORT_COPY = {
     raw: "Raw execution log (every cell, zip)",
     rawPython: "Raw Python execution log (.ipynb)",
     rawR: "Raw R execution log (.ipynb)",
+    sources: "Executed code sources (zip, incl. sub-agents)",
     saved: "Downloaded {0} ({1})",
   },
   zh: {
@@ -128,6 +129,8 @@ const EXPORT_COPY = {
     raw: "原始执行日志（全部单元，打包 .zip）",
     rawPython: "原始 Python 执行日志 (.ipynb)",
     rawR: "原始 R 执行日志 (.ipynb)",
+    // I18N-4: 智能体, not the generated dictionary's 子代理.
+    sources: "下载已执行代码（sources.zip，含子智能体）",
     saved: "已下载 {0}（{1}）",
   },
 } as const;
@@ -147,7 +150,12 @@ export const NOTEBOOK_EXPORTS: NotebookExportOption[] = [
   { language: "python", key: "prov.exec.downloadPython", suffix: "python.ipynb", label: () => exportCopy("rawPython") },
   { language: "r", key: "prov.exec.downloadR", suffix: "r.ipynb", label: () => exportCopy("rawR") },
   { language: "markdown", key: "prov.exec.downloadMarkdown", suffix: "md" },
-  { path: "/execution-sources/export", key: "prov.exec.downloadSources", suffix: "sources.zip" },
+  {
+    path: "/execution-sources/export",
+    key: "prov.exec.downloadSources",
+    suffix: "sources.zip",
+    label: () => exportCopy("sources"),
+  },
 ];
 
 /**
@@ -203,9 +211,14 @@ export function notebookExportHref(frameId: string, option: NotebookExportOption
   return `${base}/notebook/export?language=${option.language}`;
 }
 
-/** The saved name: the server's (the session title) for the clean notebook. */
-function exportDownloadName(frameId: string, option: NotebookExportOption): string {
-  return option.variant === "clean" ? "" : `${frameId}.${option.suffix}`;
+/**
+ * The saved name. CLI-2: every Notebook export takes the server's name, the
+ * session title, as the clean notebook did; the Markdown and raw forms were
+ * forced to `<frame id>.md` here even once the server named them. The
+ * execution-sources archive is another route and keeps the frame-id name.
+ */
+export function exportDownloadName(frameId: string, option: NotebookExportOption): string {
+  return option.path ? `${frameId}.${option.suffix}` : "";
 }
 
 /**

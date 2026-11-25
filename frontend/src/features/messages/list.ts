@@ -15,7 +15,7 @@ import { effect } from "@preact/signals";
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import { artifacts } from "../../stores/artifacts";
-import { currentId, feedback as feedbackSignal } from "../../stores/session";
+import { currentId, feedback as feedbackSignal, project as currentProject } from "../../stores/session";
 import { permCards, running, stepEls, stream as liveStream } from "../../stores/stream";
 import { branchState } from "../../stores/timeline";
 import { stripRefVersions } from "../autocomplete/mentions";
@@ -41,6 +41,7 @@ import { renderSentAttachments } from "./attachments";
 import { renderMemoriesMark } from "./memories";
 import { el, messagesHost } from "./dom";
 import { continueMarker, failureMeta, isContinuePrompt } from "./failure";
+import { EXAMPLE_PROJECT, mountExampleCard } from "./example";
 import { embedArtifactFigures } from "./figures";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
@@ -387,13 +388,21 @@ function forkMessageControl(messageId: string): HTMLElement {
     if (messageForkPending(frameId, messageId)) return;
     const busy = historyT("history.forkMessage.busy");
     const owner = frameId + "\0" + messageId;
-    button.setAttribute("aria-disabled", "true");
-    button.setAttribute("aria-busy", "true");
-    button.textContent = busy;
-    button.title = busy;
-    hint(busy, false, true);
-    busyHintOwner = owner;
-    return forkFromMessage(frameId, messageId).then(
+    // VIEW-2: the question as its bubble shows it names the branch and goes
+    // back into the composer once the branch is open.
+    const wrap = row.parentNode as HTMLElement | null;
+    const shown = wrap && typeof wrap.querySelector === "function" ? wrap.querySelector(".bubble") : null;
+    const question = String((shown && shown.textContent) || (wrap && wrap.dataset && wrap.dataset.sentText) || "");
+    // Busy once the request really goes out: a switch asks its confirm first.
+    const creating = () => {
+      button.setAttribute("aria-disabled", "true");
+      button.setAttribute("aria-busy", "true");
+      button.textContent = busy;
+      button.title = busy;
+      hint(busy, false, true);
+      busyHintOwner = owner;
+    };
+    return forkFromMessage(frameId, messageId, { question, onCreating: creating }).then(
       (result) => {
         settleForkButton(button, frameId, owner, busy, label, result);
         return result;
@@ -912,9 +921,16 @@ export function renderEmptySession(host: ParentNode | null = messagesHost()): vo
   const wrap = el("div", "empty-session");
   wrap.appendChild(el("div", "es-title", t("empty.title")));
   wrap.appendChild(el("div", "es-sub", t("empty.sub")));
+  // ONB-4: 示例项目's empty session offers the example until it has been run.
+  if (currentProject.value === EXAMPLE_PROJECT) {
+    const slot = el("div", "es-example-slot");
+    wrap.appendChild(slot);
+    mountExampleCard(slot);
+  }
   const chips = el("div", "es-chips");
   const starters = [
-    { title: t("starter.litReview.title"), prompt: t("starter.litReview.prompt") },
+    // SET-4: worded without the internal tool name (messages/copy.ts).
+    { title: t("starter.litReview.title"), prompt: historyT("starter.litReview.prompt") },
     { title: t("starter.dataAnalysis.title"), prompt: t("starter.dataAnalysis.prompt") },
     { title: t("starter.proteinModel.title"), prompt: t("starter.proteinModel.prompt") },
     { title: t("starter.phylo.title"), prompt: t("starter.phylo.prompt") },

@@ -29,6 +29,37 @@ _SNIPPET_LEAD = 40
 _SNIPPET_CHARS = 160
 
 
+def _inlined_script_json(value: Any) -> str | None:
+    """NB-1: the stored form of a run-this-file Cell's script, or NULL."""
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError("inlined_script must be a mapping")
+    path, content = value.get("path"), value.get("content")
+    if type(path) is not str or not path or type(content) is not str:
+        raise ValueError("inlined_script needs a path and its content")
+    return json.dumps(dict(value), ensure_ascii=False, sort_keys=True)
+
+
+def _decode_inlined_script(value: Any) -> dict | None:
+    """The recorded script as a mapping; anything else reads as absent."""
+
+    if not value:
+        return None
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not isinstance(decoded, dict)
+        or type(decoded.get("path")) is not str
+        or type(decoded.get("content")) is not str
+    ):
+        return None
+    return decoded
+
+
 def visible_session_clause(
     user_id: str, *, table: str = "frames", session_expr: str | None = None
 ) -> tuple[str, list]:
@@ -1558,8 +1589,10 @@ class FrameRepository:
         files_read: list | None = None,
         files_written: list | None = None,
         generation_id: str | None = None,
+        inlined_script: Mapping[str, Any] | None = None,
     ) -> str:
         cell_id = result.get("id") or f"c-{uuid.uuid4().hex[:12]}"
+        script_json = _inlined_script_json(inlined_script)
         if visibility is None:
             visibility = default_visibility(origin)
         if visibility not in VISIBILITIES:
@@ -1623,8 +1656,8 @@ class FrameRepository:
             "variable_reads,variable_writes,variable_deletes,"
             "mutation_uncertain,stdout,stderr,error,figures,files_read,"
             "files_written,interrupted,wall_s,cpu_s,peak_rss_kb,created_at,"
-            "generation_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "generation_id,inlined_script) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 cell_id,
                 frame_id,
@@ -1658,6 +1691,7 @@ class FrameRepository:
                 usage.get("peak_rss_kb"),
                 self._clock_ms(),
                 generation_id,
+                script_json,
             ),
         )
         return cell_id
@@ -1689,7 +1723,7 @@ class FrameRepository:
                 "e.code_hash,e.visibility,e.pin,e.replay_policy,"
                 "e.variable_reads,e.variable_writes,e.variable_deletes,"
                 "e.mutation_uncertain,e.stderr,e.error,e.figures,e.files_read,e.files_written,"
-                "e.interrupted,"
+                "e.interrupted,e.inlined_script,"
                 "e.cpu_s,e.peak_rss_kb,e.created_at,COALESCE((SELECT a.generation_id "
                 "FROM execution_attempts AS a WHERE a.producing_cell_id="
                 "e.producing_cell_id AND a.generation_id IS NOT NULL "
@@ -1731,6 +1765,7 @@ class FrameRepository:
             cell["pin"] = bool(cell.get("pin"))
             cell["mutation_uncertain"] = bool(cell.get("mutation_uncertain"))
             cell["interrupted"] = bool(cell.get("interrupted"))
+            cell["inlined_script"] = _decode_inlined_script(cell.get("inlined_script"))
             if cell.get("state_revision") is None:
                 cell["state_revision"] = cell.get("cell_index")
             cells.append(cell)
@@ -1802,6 +1837,7 @@ class FrameRepository:
             cell[key] = list(normalize_string_list(cell.get(key)))
         cell["pin"] = bool(cell.get("pin"))
         cell["mutation_uncertain"] = bool(cell.get("mutation_uncertain"))
+        cell["inlined_script"] = _decode_inlined_script(cell.get("inlined_script"))
         if cell.get("state_revision") is None:
             cell["state_revision"] = cell.get("cell_index")
         return cell

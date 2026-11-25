@@ -51,7 +51,7 @@ const computeCopy = copyLookup({
     "compute.gpuNoneSetup": "可在下方添加带 GPU 的 SSH 主机，或使用 NVIDIA NIM。",
     "compute.otherTitle": "其他远程算力",
     "compute.nim":
-      "NVIDIA NIM：代理可以把作业发到 NVIDIA 托管的 NIM 服务，或本机 GPU 上的 NIM 容器。需要 Docker，以及守护进程环境里的 NVIDIA_API_KEY（托管）或 NGC_API_KEY（容器）；此页无需设置。",
+      "NVIDIA NIM：智能体可以把作业发到 NVIDIA 托管的 NIM 服务，或本机 GPU 上的 NIM 容器。需要 Docker，以及守护进程环境里的 NVIDIA_API_KEY（托管）或 NGC_API_KEY（容器）；此页无需设置。",
     "compute.slurm": "Slurm 集群：用 `openai4s cluster` 命令提交并跟踪批处理作业（submit、list、cancel、logs）。",
     "compute.guide": "算力文档（docs/compute.md）",
     // SCI-19: what Add does before it is clicked.
@@ -60,7 +60,7 @@ const computeCopy = copyLookup({
     "remote.addNeeds":
       "主机需要能免密码登录（密钥或 ssh-agent），并有带 nvidia-smi 的 NVIDIA GPU。检查失败的主机仍会列出，标为不可达。",
     "remote.addLater":
-      "模型服务要等任务需要时才部署：代理会在主机上执行可见的 ssh 步骤，每一步都和其他命令一样受你的权限规则约束。主机列表保存在 OpenAI4S 数据目录的 remote_compute.json 中；「移除」只是在这里忘掉该主机，不会改动主机本身。",
+      "模型服务要等任务需要时才部署：智能体会在主机上执行可见的 ssh 步骤，每一步都和其他命令一样受你的权限规则约束。主机列表保存在 OpenAI4S 数据目录的 remote_compute.json 中；「移除」只是在这里忘掉该主机，不会改动主机本身。",
     "remote.addedUnreachable":
       "已添加 {0}，但检查没有拿到 GPU 列表（没有应答、需要输入密码，或没有 nvidia-smi）。它会标为不可达；如果它不是 GPU 主机，可以移除。",
     "remote.host": "<主机>",

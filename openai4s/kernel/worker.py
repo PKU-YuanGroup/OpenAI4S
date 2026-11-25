@@ -970,6 +970,14 @@ def _install_host(ns: dict, *, mode: str) -> None:
         generation = getattr(sys, "_openai4s_remote_generation", None)
         ns["host"] = build_host(host_call, mode=mode, generation=generation)
         ns["openai4s"] = ns["host"]  # openai4s alias
+        # `import host` must resolve to this same object. Skill sidecars reach
+        # the SDK through `import host` inside a function body -- rebind-proof,
+        # because a cell may later reuse the global name `host` -- and nothing
+        # registered the module, so every such helper raised
+        # ModuleNotFoundError in a real kernel (and a workspace `host.py` was
+        # what that import would have loaded). Never reached in Jupyter mode,
+        # which installs no host at all.
+        sys.modules["host"] = ns["host"]
     except Exception as e:  # noqa: BLE001 - keep kernel alive
         _write_frame({"type": "log", "msg": f"host sdk unavailable: {e}"})
         # A marker, but only for a worker that was *supposed* to have a host.
@@ -1002,6 +1010,7 @@ def _install_host(ns: dict, *, mode: str) -> None:
 
             ns["host"] = _HostUnavailable()
             ns["openai4s"] = ns["host"]
+            sys.modules["host"] = ns["host"]
     # provenance: monkeypatch readers/writers to track object-level lineage.
     try:
         from openai4s.kernel import provenance

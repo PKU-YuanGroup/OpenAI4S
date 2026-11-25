@@ -27,6 +27,7 @@ import { nbT } from "../notebook/copy";
 import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
 import {
+  activateSessionBranch,
   loadWorkbenchState,
   mergeDelegationChildEvent,
   resetComputeTasks,
@@ -1139,7 +1140,7 @@ describe("signal writes publish new objects", () => {
 
 describe("delegation evidence panel", () => {
   const scope =
-    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子代理。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子代理完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
+    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子智能体。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子智能体完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
 
   it("renders both verdicts, truncation, unavailable, and the scope note once", async () => {
     mountDocument();
@@ -1484,6 +1485,143 @@ describe("timeline words", () => {
   });
 });
 
+// VIEW-1: an install the user declined read "Permission Pause · failed ·
+// env_create · —", while the chat said "Installing pydeseq2 · declined".
+describe("tool rows in the chat's words", () => {
+  const tool = (id: string, ordinal: number, overrides: Record<string, unknown>) => ({
+    group_id: id,
+    ordinal,
+    turn_id: "turn-1",
+    kind: "native_tools",
+    attempts: [],
+    ...overrides,
+  });
+
+  it("shows a declined request as declined, by its step title, with how long it took", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      const doc = mountDocument();
+      stubFrames();
+      stubApi(() => undefined);
+      installTimeline({});
+      showTimeline("frame-v", [
+        tool("g-install", 1, {
+          title: "Installing pydeseq2",
+          step_titles: ["Installing pydeseq2"],
+          status: "denied",
+          permission: { decision_id: "perm-1", state: "denied", scope: "once" },
+          events: [
+            { type: "proposed", name: "env_create", created_at: 1_000 },
+            { type: "permission_pending", created_at: 1_010 },
+            { type: "permission_resolved", created_at: 40_000 },
+            { type: "result", name: "env_create", is_error: true, outcome: "error", created_at: 40_200 },
+          ],
+        }),
+        tool("g-files", 2, {
+          title: "Listing ., Searching in files",
+          step_titles: ["Listing .", "Searching in files"],
+          status: "completed",
+          events: [
+            { type: "proposed", name: "list_dir", created_at: 50_000 },
+            { type: "proposed", name: "content_search", created_at: 50_000 },
+            { type: "result", name: "list_dir", created_at: 50_120 },
+            { type: "result", name: "content_search", created_at: 50_340 },
+          ],
+        }),
+        tool("g-waiting", 3, {
+          title: "Installing scanpy",
+          step_titles: ["Installing scanpy"],
+          status: "pending",
+          permission: { decision_id: "perm-2", state: "pending" },
+          events: [
+            { type: "proposed", name: "env_create", created_at: 60_000 },
+            { type: "permission_pending", created_at: 60_010 },
+          ],
+        }),
+      ]);
+      renderActionTimeline();
+      const row = (id: string) => doc.querySelector(`.timeline-ledger-row[data-group-id="${id}"]`)!;
+
+      const declined = row("g-install");
+      expect(declined.dataset.actionKind).toBe("native_tool");
+      expect(declined.querySelector(".timeline-kind-label")?.textContent).toBe(timelineT("timeline.kind.native_tool"));
+      expect(declined.querySelector(".timeline-ledger-status")?.textContent).toBe("已拒绝");
+      expect(declined.querySelector(".timeline-row-button")?.textContent).toBe("安装 pydeseq2");
+      // Proposed at 1.0 s, its result at 40.2 s: the wait for the decision.
+      expect(declined.querySelector(".timeline-ledger-duration")?.textContent).toBe("39 s");
+
+      const files = row("g-files");
+      expect(files.querySelector(".timeline-row-button")?.textContent).toBe("列出 . · 在文件中搜索");
+      expect(files.querySelector(".timeline-ledger-duration")?.textContent).toBe("340 ms");
+      expect(files.querySelector(".timeline-ledger-status")).toBeNull();
+
+      // Still waiting: that one is an approval pause, and says so.
+      const waiting = row("g-waiting");
+      expect(waiting.dataset.actionKind).toBe("permission");
+      expect(waiting.querySelector(".timeline-ledger-status")?.textContent).toBe("等待中");
+      expect(waiting.querySelector(".timeline-ledger-duration")?.textContent).toBe("—");
+
+      await setLang("en");
+      renderActionTimeline();
+      expect(row("g-install").querySelector(".timeline-ledger-status")?.textContent).toBe("Declined");
+      expect(row("g-install").querySelector(".timeline-row-button")?.textContent).toBe("Installing pydeseq2");
+    } finally {
+      await setLang(original);
+    }
+  });
+
+  // VIEW-1b: a decision made after a daemon restart read "Approval denied
+  // after restart: env_setup" in a Chinese UI too.
+  it("words a decision made after a restart in the UI language, with the tool's own name", async () => {
+    const original = LANG;
+    const decided = (id: string, ordinal: number, decision: unknown, title: string) => ({
+      group_id: id,
+      ordinal,
+      turn_id: "permission-" + id,
+      kind: "permission_resolution",
+      status: "denied",
+      title,
+      restart_decision: decision,
+      attempts: [],
+      events: [{ type: "denied", created_at: 1_000 }],
+    });
+    try {
+      await setLang("zh");
+      const doc = mountDocument();
+      stubFrames();
+      stubApi(() => undefined);
+      installTimeline({});
+      showTimeline("frame-r", [
+        decided("g-denied", 1, { decision: "denied", tool: "env_setup" }, "Approval denied after restart: env_setup"),
+        decided("g-approved", 2, { decision: "approved", tool: "web_fetch" }, "Approval recorded after restart: web_fetch"),
+        decided("g-unknown", 3, { decision: "denied", tool: "lab_robot" }, "Approval denied after restart: lab_robot"),
+        decided("g-resolved", 4, { decision: "resolved", tool: null }, "Approval resolved after restart"),
+      ]);
+      renderActionTimeline();
+      const title = (id: string) =>
+        doc.querySelector(`.timeline-ledger-row[data-group-id="${id}"] .timeline-row-button`)?.textContent;
+
+      expect(title("g-denied")).toBe("重启后已拒绝：往内核环境里安装包");
+      expect(title("g-approved")).toBe("重启后已批准：读取网页（模式为域名）");
+      // A tool the permission table does not know keeps its own name.
+      expect(title("g-unknown")).toBe("重启后已拒绝：lab_robot");
+      expect(title("g-resolved")).toBe("重启后已处理批准请求");
+      // A decided request is a record, not a pause waiting for approval.
+      const kindLabel = (id: string) =>
+        doc.querySelector(`.timeline-ledger-row[data-group-id="${id}"] .timeline-kind-label`)?.textContent;
+      expect(kindLabel("g-denied")).toBe("审批记录");
+
+      await setLang("en");
+      renderActionTimeline();
+      expect(title("g-denied")).toBe("Declined after a restart: Install packages into the kernel environment");
+      expect(title("g-resolved")).toBe("Approval request settled after a restart");
+    } finally {
+      await setLang(original);
+    }
+  });
+});
+
 // Follow-up A: only the Notebook badge stopped saying "Ended · view only" for
 // a kernel that never started; the Timeline's runtime strip kept it.
 describe("runtime strip", () => {
@@ -1740,6 +1878,25 @@ describe("switching to another branch", () => {
     });
     expect(renderBranchPanel().querySelector(".branch-kernel-gap")!.textContent).toBe(branchT("branch.restored"));
     expect(button(branchT("branch.restoreKernel"))).toBeNull();
+  });
+
+  it("does not ask twice for a branch its caller already confirmed, and says whether it switched (VIEW-2)", async () => {
+    // A fork from a question asks before the branch exists, then switches
+    // to a branch the list does not hold yet.
+    const { hints, asked } = onRootBranch(false);
+    const calls = stubApi((path, method) =>
+      method === "POST" && path.endsWith("/activate") ? { ok: true, status: "active" } : undefined,
+    );
+    const switched = await activateSessionBranch("br-new", { confirmed: true, name: "RNA-seq 质控…" });
+    expect(switched).toBe(true);
+    expect(asked).toEqual([]);
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual([
+      "/frames/frame-b/branches/br-new/activate",
+    ]);
+    expect(hints.at(-1)).toEqual([branchT("branch.switched", "RNA-seq 质控…"), undefined]);
+    // Without the caller's confirm it still asks, and a no switches nothing.
+    expect(await activateSessionBranch("br-new")).toBe(false);
+    expect(asked).toHaveLength(1);
   });
 });
 

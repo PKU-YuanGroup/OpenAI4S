@@ -5,6 +5,19 @@ export type NotebookOutputArtifact = {
   url: string;
 };
 
+/**
+ * NB-1: the workspace script a run-this-file cell (`exec(open("x.py").read())`,
+ * `runpy.run_path`, `%run`, R `source`) ran, recorded as it was just before it
+ * ran. Absent or null for every other cell.
+ */
+export type NotebookInlinedScript = {
+  path: string;
+  content: string;
+  size_bytes?: number;
+  truncated?: boolean;
+  sha256?: string | null;
+};
+
 /** Notebook cell record. Shape matches app.js live/persisted cells. */
 export type NotebookCell = {
   producing_cell_id?: string;
@@ -23,6 +36,7 @@ export type NotebookCell = {
   _artifactBindingsPending?: boolean;
   files_written?: string[];
   files_read?: string[];
+  inlined_script?: NotebookInlinedScript | null;
   complete?: boolean;
   draft?: boolean;
   live?: boolean;

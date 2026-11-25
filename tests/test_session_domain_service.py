@@ -279,6 +279,200 @@ def test_cursor_fork_restores_exact_cell_workspace_and_old_cells_fail_closed(
     store.close()
 
 
+def _question_fork_session(tmp_path):
+    """q1, a1, then q2 with its message checkpoint, then q2's turn."""
+
+    store = Store(tmp_path / "openai4s.db")
+    root = store.new_frame(project_id="default", kind="turn", status="ready")
+    canonical = tmp_path / "canonical"
+    canonical.mkdir()
+    branch_root = tmp_path / "branches"
+    service = SessionDomainService(
+        store,
+        data_dir=tmp_path,
+        workspace=lambda _root, branch: (
+            canonical if branch == root else branch_root / branch
+        ),
+    )
+
+    def say(role, content):
+        return store.add_message(
+            root_frame_id=root, frame_id=root, role=role, content=content
+        )
+
+    q1 = say("user", "first question")
+    service.capture_cursor_checkpoint(
+        root, source_kind="message", source_id=q1["message_id"]
+    )
+    (canonical / "a1.txt").write_text("first answer\n", encoding="utf-8")
+    say("assistant", "first answer")
+    q2 = say("user", "second question")
+    checkpoint = service.capture_cursor_checkpoint(
+        root, source_kind="message", source_id=q2["message_id"]
+    )
+    (canonical / "a2.txt").write_text("second answer\n", encoding="utf-8")
+    say("assistant", "second answer")
+    return store, service, root, branch_root, q2, checkpoint
+
+
+def _contents(store, root, branch_id):
+    return [
+        message["content"]
+        for message in store.list_branch_messages(root, branch_id=branch_id)
+    ]
+
+
+def test_question_branch_starts_before_the_question(tmp_path):
+    """VIEW-2b: "branch from this question" then resends the question, edited.
+
+    The message checkpoint is taken right after the question is stored, so a
+    branch forked from it already held the unanswered question and the resend
+    put a second one after it. `before_source` forks from the boundary just
+    before the question: same workspace and Cells, one message fewer.
+    """
+
+    store, service, root, branch_root, q2, checkpoint = _question_fork_session(tmp_path)
+    try:
+        before = service.fork_branch(
+            root,
+            from_message_id=q2["message_id"],
+            before_source=True,
+            branch_id="br-before",
+        )
+        assert before["source_kind"] == "message"
+        assert before["source_id"] == q2["message_id"]
+        assert before["from_checkpoint_id"] != checkpoint["checkpoint_id"]
+        assert _contents(store, root, "br-before") == [
+            "first question",
+            "first answer",
+        ]
+        boundary = store.get_session_checkpoint(before["from_checkpoint_id"])
+        assert boundary["workspace_tree_id"] == checkpoint["workspace_tree_id"]
+        assert boundary["cell_cursor"] == checkpoint["cell_cursor"]
+        assert boundary["action_cursor"] == checkpoint["action_cursor"]
+        workspace = branch_root / "br-before"
+        assert (workspace / "a1.txt").read_text(encoding="utf-8") == "first answer\n"
+        assert not (workspace / "a2.txt").exists()
+
+        # Without the flag the fork still holds the question, as before.
+        service.fork_branch(root, from_message_id=q2["message_id"], branch_id="br-with")
+        assert _contents(store, root, "br-with") == [
+            "first question",
+            "first answer",
+            "second question",
+        ]
+        # And the line the question was asked on is unchanged.
+        assert _contents(store, root, root) == [
+            "first question",
+            "first answer",
+            "second question",
+            "second answer",
+        ]
+        # A question asked on the new branch follows only what it shows.
+        store.add_message(
+            root_frame_id=root,
+            frame_id=root,
+            branch_id="br-before",
+            role="user",
+            content="second question, edited",
+        )
+        assert _contents(store, root, "br-before") == [
+            "first question",
+            "first answer",
+            "second question, edited",
+        ]
+    finally:
+        store.close()
+
+
+def test_before_source_is_only_for_a_question(tmp_path):
+    store, service, root, _branch_root, _q2, checkpoint = _question_fork_session(
+        tmp_path
+    )
+    try:
+        cell = store.log_cell(
+            frame_id=root,
+            root_frame_id=root,
+            code="x = 1",
+            result={"stdout": "", "stderr": "", "error": None},
+            cell_index=1,
+        )
+        service.capture_cursor_checkpoint(root, source_kind="cell", source_id=cell)
+        with pytest.raises(ValueError, match="before_source"):
+            service.fork_branch(root, from_cell_id=cell, before_source=True)
+        with pytest.raises(ValueError, match="before_source"):
+            service.fork_branch(
+                root,
+                from_checkpoint_id=checkpoint["checkpoint_id"],
+                before_source=True,
+            )
+        branches = {branch["branch_id"] for branch in store.list_session_branches(root)}
+        assert branches == {root}
+    finally:
+        store.close()
+
+
+def test_question_without_a_boundary_before_it_fails_closed(tmp_path):
+    """A question checkpointed without the boundary (an older session) is
+    refused rather than forked with the question still in it."""
+
+    store = Store(tmp_path / "openai4s.db")
+    root = store.new_frame(project_id="default", kind="turn", status="ready")
+    service = SessionDomainService(
+        store,
+        data_dir=tmp_path,
+        workspace=lambda _root, branch: tmp_path / "workspaces" / branch,
+    )
+    (tmp_path / "workspaces" / root).mkdir(parents=True)
+    try:
+        question = store.add_message(
+            root_frame_id=root, frame_id=root, role="user", content="older question"
+        )
+        service.branching.create_checkpoint(
+            root,
+            branch_id=root,
+            reason="cursor_message",
+            metadata={"cursor_checkpoint": True},
+            source_kind="message",
+            source_id=question["message_id"],
+            internal=True,
+        )
+        with pytest.raises(CursorCheckpointUnavailable):
+            service.fork_branch(
+                root, from_message_id=question["message_id"], before_source=True
+            )
+        # The plain fork from the same question still works.
+        assert service.fork_branch(root, from_message_id=question["message_id"])
+    finally:
+        store.close()
+
+
+def test_question_boundary_survives_a_session_package(tmp_path):
+    store, service, root, _branch_root, q2, _checkpoint = _question_fork_session(
+        tmp_path
+    )
+    try:
+        imported = service.session_import(service.session_export(root)["data"])
+        new_root = imported["root_frame_id"]
+        question = next(
+            message
+            for message in store.list_message_boundaries(new_root, limit=None)
+            if message["content"] == "second question"
+        )
+        fork = service.fork_branch(
+            new_root,
+            from_message_id=question["message_id"],
+            before_source=True,
+            branch_id="br-imported",
+        )
+        assert _contents(store, new_root, fork["branch_id"]) == [
+            "first question",
+            "first answer",
+        ]
+    finally:
+        store.close()
+
+
 def test_cursor_checkpoint_failure_is_audited_without_fork_claim(tmp_path):
     store = Store(tmp_path / "openai4s.db")
     root = store.new_frame(project_id="default", kind="turn", status="ready")
@@ -775,3 +969,54 @@ def test_a_long_checkpoint_chain_projects_without_recursing_per_checkpoint():
 
     assert projected == rows
     assert len(reads) == depth
+
+
+def test_first_message_checkpoint_does_not_repeat_the_action_history(tmp_path):
+    # Found while integrating VIEW-2b (2026-11-23): a checkpoint taken before
+    # its branch had any action group (every session's first message) has
+    # action_cursor None, and the projection read None as "no upper bound" --
+    # it took every later group, and the next same-branch checkpoint added
+    # them again. The provider history rebuilt on resume held each group twice.
+    from openai4s.agent.ledger import branch_action_groups
+
+    store = Store(tmp_path / "openai4s.db")
+    root = store.new_frame(project_id="default", kind="turn", status="ready")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = SessionDomainService(
+        store, data_dir=tmp_path, workspace=lambda _root, _branch: workspace
+    )
+    question = store.add_message(
+        root_frame_id=root, frame_id=root, role="user", content="q1"
+    )
+    first = service.capture_cursor_checkpoint(
+        root, source_kind="message", source_id=question["message_id"]
+    )
+    assert first["action_cursor"] is None
+    store.append_action_group(
+        root_frame_id=root,
+        branch_id=root,
+        turn_id="t1",
+        kind="user",
+        assistant_message={"role": "user", "content": "q1"},
+    )
+    store.append_action_group(
+        root_frame_id=root,
+        branch_id=root,
+        turn_id="t1",
+        kind="cell",
+        assistant_content="cell",
+    )
+    cell = store.log_cell(
+        frame_id=root,
+        root_frame_id=root,
+        code="x = 1",
+        result={"stdout": "", "stderr": "", "error": None},
+        cell_index=1,
+        state_revision=1,
+    )
+    service.capture_cursor_checkpoint(root, source_kind="cell", source_id=cell)
+
+    groups = branch_action_groups(store, root, branch_id=root, include_events=False)
+    assert [group["ordinal"] for group in groups] == [0, 1]
+    store.close()

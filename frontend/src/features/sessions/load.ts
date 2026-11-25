@@ -546,7 +546,12 @@ export function renderSessions(): void {
   }
   if (!ss.length && !folderRows.length) {
     if (sessionsLoading.value || foldersLoading.value || sessionsLoadError.value || foldersLoadError.value) return;
-    list.appendChild(el("div", "side-label", t("session.empty.label")));
+    // ONB-5: the server lists a session only once it has been used, so the
+    // one open on screen (a new project lands in one) is not here yet. "No
+    // sessions yet" beside it read as wrong; say when it will appear.
+    list.appendChild(
+      el("div", "side-label", currentId.value ? sessionCopy("emptyOpen") : t("session.empty.label")),
+    );
     return;
   }
   if (!_folderCollapsed.value || typeof _folderCollapsed.value !== "object") {

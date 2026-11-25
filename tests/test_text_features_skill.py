@@ -611,8 +611,7 @@ def test_kernel_cell_featurize_with_fake_endpoint(
         )
         dispatcher = HostDispatcher(cfg, workspace=tmp_path)
         cell = (
-            "import sys, json, math\n"
-            "sys.modules['host'] = host\n"
+            "import json, math\n"
             + _KERNEL_PATH.read_text(encoding="utf-8")
             + "\n"
             + "rows = [\n"

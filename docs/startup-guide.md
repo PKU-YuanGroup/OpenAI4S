@@ -150,7 +150,7 @@ That's it — the workbench now runs on your model.
 > **Cheapest path:** pick **Ark-compatible** and paste a Volcengine Ark key —
 > you get a Claude-Science-class agent for the price of the ¥9.9/month plan.
 
-## 4. Configure web search (Doubao Search Custom)
+## 4. Configure web search (Doubao Search)
 
 Web search lets the agent pull live literature, database records, and data
 packages instead of relying only on its training knowledge. **Doubao Search
@@ -159,7 +159,7 @@ Custom is the primary option** and uses an Ark Agent Plan Key:
 1. Open **Settings → Network** (中文 UI: **设置 → 网络**).
 2. Make sure **Allow network access** is toggled **on** — this master switch
    gates the agent's `web_search` / `web_fetch` / download tools.
-3. Paste your Ark **Agent Plan Key** into the **Doubao Search Custom** card and
+3. Paste your Ark **Agent Plan Key** into the **Doubao Search** card and
    click **Save credential**. The password field is cleared immediately after
    saving and the key is never displayed back. If your model is an Ark
    **Agent Plan** (set up in §3), this step is already done: activating it
@@ -328,7 +328,7 @@ OpenAI4S 只复用 Ark CLI 已选定的 Project，不会假设账号一定存在
 > **最省钱路线：** 选 **ark 兼容协议** 并粘贴一个火山方舟 Key——用 ¥9.9/月 套餐的价钱，
 > 就能得到一个 Claude Science 级的智能体。
 
-## 4. 配置联网搜索（豆包搜索 Custom 版）
+## 4. 配置联网搜索（豆包搜索）
 
 联网搜索让智能体能拉取实时文献、数据库记录和数据包，而不只依赖训练知识。**豆包搜索
 Custom 版是主选项**，使用火山方舟 Agent Plan Key：
@@ -336,7 +336,7 @@ Custom 版是主选项**，使用火山方舟 Agent Plan Key：
 1. 打开 **设置 → 网络**（Settings → Network）。
 2. 确认 **允许联网** 开关处于**打开**状态——这个总开关控制智能体的
    `web_search` / `web_fetch` / 下载工具。
-3. 把火山方舟 **Agent Plan Key** 粘贴到**豆包搜索 Custom 版**卡片，点**保存凭证**。
+3. 把火山方舟 **Agent Plan Key** 粘贴到**豆包搜索**卡片，点**保存凭证**。
    保存后密码输入框立即清空，Key 也不会回显。如果你的模型是火山方舟 **Agent Plan**
    （第 3 节配置的），这一步已经自动完成：启用它时 OpenAI4S 会把同一个 Key 设为豆包搜索
    和 DataPro 的默认凭证，之后换用别的模型也会保留。

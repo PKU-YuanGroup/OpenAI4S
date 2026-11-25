@@ -963,7 +963,8 @@ try {
   // rather than assumed: a daemon with no profiles configured renders an empty
   // panel *correctly*, and a check that passed on whatever the developer's
   // database held would be measuring the database.
-  for (const entry of ["#customize-btn", "#settings-gear"]) {
+  // SET-1: the bottom gear duplicated #customize-btn and was removed.
+  for (const entry of ["#customize-btn"]) {
     await page.locator(entry).click();
     await page.locator("#cust:not(.hidden)").waitFor({ state: "visible" });
     // The rendered heading is the shell-agnostic signal that a renderer ran.
@@ -1280,8 +1281,26 @@ conn.close()
       await route.continue();
     };
     await page.route(forkPattern, holdFork);
+    // VIEW-2 (owner decision 35): one click asks the branch switch's own
+    // confirm first (the kernel restarts) and sends nothing until it is
+    // answered; a cancel creates nothing.
+    const confirmDialog = page.locator(".app-dialog-modal:not(.hidden)");
+    const shortName = "fork this exact ques…";
+    await capableBtn.click();
+    await toBeVisible(confirmDialog.locator(".app-dialog-cancel"));
+    const confirmText = (await confirmDialog.locator(".app-dialog-msg").textContent()) || "";
+    check(
+      "the fork asks the switch's confirm, naming the short branch name",
+      confirmText.includes(shortName) && forkPosts.length === 0,
+      `${confirmText.slice(0, 200)} posts=${forkPosts.length}`,
+    );
+    await confirmDialog.locator(".app-dialog-cancel").click();
+    await toBeHidden(confirmDialog);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    check("a cancelled fork sends nothing", forkPosts.length === 0, JSON.stringify(forkPosts));
     try {
       await capableBtn.click();
+      await confirmDialog.locator(".app-dialog-ok").click();
       await Promise.race([
         forkEnteredPromise,
         new Promise((_, reject) => setTimeout(
@@ -1303,12 +1322,16 @@ conn.close()
       );
       await capableBtn.click({ force: true });
       await new Promise((resolve) => setTimeout(resolve, 250));
+      // VIEW-2b: the question goes back into the composer, so the branch
+      // ends just before it (`before_source`) instead of already holding it.
       check(
-        "one fork POST, body exactly {from_message_id}",
+        "one fork POST, body exactly {before_source, from_message_id, name} with the short name",
         forkPosts.length === 1 &&
           forkPosts[0] &&
-          Object.keys(forkPosts[0]).length === 1 &&
-          forkPosts[0].from_message_id === capableMessageId,
+          Object.keys(forkPosts[0]).sort().join(",") === "before_source,from_message_id,name" &&
+          forkPosts[0].before_source === true &&
+          forkPosts[0].from_message_id === capableMessageId &&
+          forkPosts[0].name === shortName,
         JSON.stringify(forkPosts),
       );
       if (forkPosts.length !== 1) {
@@ -1317,46 +1340,64 @@ conn.close()
     } finally {
       releaseFork();
     }
-    await waitUntil(
-      "the fork POST to finish",
-      () => capableBtn.getAttribute("aria-busy").then((value) => value !== "true" ? true : null),
-      15000,
-    );
-    check("still one fork POST after it settled", forkPosts.length === 1, JSON.stringify(forkPosts));
-    await page.unroute(forkPattern, holdFork);
-
+    // The switch reloads the conversation, so the button that was clicked
+    // may be gone; the branch itself is the evidence.
     const created = await waitUntil(
-      "a new inactive branch",
+      "the new branch, created and switched to",
       async () => {
         const projection = await api(`/frames/${encodeURIComponent(capableId)}/branches`);
         const added = (projection.branches || []).filter((branch) => !branchIdsBefore.has(branch.branch_id));
-        if (added.length !== 1 || added[0].active !== false) return null;
+        if (added.length !== 1 || added[0].active !== true) return null;
         return added[0];
       },
       15000,
     );
+    check("still one fork POST after it settled", forkPosts.length === 1, JSON.stringify(forkPosts));
+    await page.unroute(forkPattern, holdFork);
     check(
-      "the new branch is inactive and view-only",
-      created.view_only === true && created.active === false,
+      "the new branch is the active one, named with the question's start",
+      created.active === true && created.name === shortName,
       JSON.stringify(created),
+    );
+    await waitUntil(
+      "the question back in the composer",
+      () => page.locator("#composer").inputValue().then((value) => value === capableText ? value : null),
+      15000,
+    );
+    const branchConversation = await api(`/frames/${encodeURIComponent(capableId)}/messages`);
+    check(
+      "the new branch's conversation does not already hold the question",
+      !(branchConversation.messages || []).some((message) => message.content === capableText),
+      JSON.stringify((branchConversation.messages || []).map((message) => message.content)),
     );
     await page.evaluate(() => {
       setActiveTab("timeline");
       renderActionTimeline();
     });
     await waitUntil(
-      "an inactive branch row",
+      "the new branch as the current row",
       async () => {
-        const count = await page.locator("#dock-timeline .branch-row:not(.current)").count();
-        return count >= 1 ? count : null;
+        const text = await page.locator("#dock-timeline .branch-row.current").first().innerText().catch(() => "");
+        return text.includes(shortName) ? text : null;
       },
       15000,
     );
-    const inactiveText = await page.locator("#dock-timeline .branch-row:not(.current)").last().innerText();
-    check(
-      "the branch list shows the new branch as view-only",
-      inactiveText.includes("inactive · view only") || inactiveText.includes("未激活 · 仅查看"),
-      inactiveText.slice(0, 200),
+    // The composer is this session's draft now; leave it empty for the scenes below.
+    await page.locator("#composer").fill("");
+    // VIEW-2b: the session now sits on the new branch, which ends just before
+    // the question. Put it back on its main line so the capability scenes below
+    // find the question (and its fork button) where they left it.
+    await api(
+      `/frames/${encodeURIComponent(capableId)}/branches/${encodeURIComponent(capableId)}/activate`,
+      { method: "POST", data: {} },
+    );
+    await waitUntil(
+      "the capable session back on its main line",
+      async () => {
+        const projection = await api(`/frames/${encodeURIComponent(capableId)}/branches`);
+        return projection.current_branch_id === capableId ? true : null;
+      },
+      15000,
     );
 
     const blocked = await api("/frames", { method: "POST", data: { project_id: projectId } });

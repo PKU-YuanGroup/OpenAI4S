@@ -32,6 +32,7 @@ import type {
   TimelineAttempt,
   TimelineEvent,
   TimelineGroup,
+  TimelineRestartDecision,
 } from "./types";
 
 export function publicList(
@@ -107,6 +108,14 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/** VIEW-1b: a restart decision row's decision and tool, or null for any other row. */
+function restartDecision(value: unknown): TimelineRestartDecision {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = asRecord(value);
+  const decision = raw.decision === "approved" || raw.decision === "denied" ? raw.decision : "resolved";
+  return { decision, tool: publicText(raw.tool, 80) };
 }
 
 export function sanitizeActionTimeline(payload: unknown): ActionTimeline {
@@ -199,6 +208,9 @@ export function sanitizeActionTimeline(payload: unknown): ActionTimeline {
         provider: publicText(group.provider, 48),
         model: publicText(group.model, 96),
         title: publicText(group.title, 260),
+        // VIEW-1: each tool call in the step card's words (`stepTitleText`).
+        step_titles: publicList(group.step_titles, 32, 160),
+        restart_decision: restartDecision(group.restart_decision),
         status: publicText(group.status, 32),
         owner: publicText(group.owner || group.owner_kind, 80),
         permission: permission(group.permission || group.permission_state),
