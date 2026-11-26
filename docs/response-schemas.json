@@ -41423,6 +41423,9 @@
               "null"
             ]
           },
+          "reason": {
+            "type": "string"
+          },
           "refusal": {
             "properties": {
               "code": {
@@ -41443,9 +41446,6 @@
           },
           "replayed": {
             "type": "boolean"
-          },
-          "reason": {
-            "type": "string"
           },
           "request_id": {
             "type": [

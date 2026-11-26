@@ -245,7 +245,9 @@ def test_a_schema_43_database_gains_the_column_on_upgrade(tmp_path):
 
     upgraded = get_store(db)
     try:
-        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 44
+        # Migration 44 adds the column; later migrations (45: message
+        # receipts) run in the same open, so the version is this tree's.
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION >= 44
         # A Cell recorded before the upgrade has no script: what its file
         # held then is not known now.
         [old] = upgraded.list_cells(frame)

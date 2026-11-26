@@ -1258,7 +1258,7 @@ describe("NV-05 a model failure's fix entry, live and on reopen", () => {
   it("an unknown upstream failure gets no settings button, live or on reopen", () => {
     const row = renderFirstPage({
       role: "assistant",
-      content: "**The LLM call failed.** Check the model and API key in Customize → Models, then try again.",
+      content: "**The LLM call failed.** Check the model and API key in Settings → Models, then try again.",
       failure: { code: "internal_error", request_id: "web-unknown" },
     }) as unknown as RowEl;
     expect(row.querySelector(".msg-failure-meta")!.querySelector(".turn-open-models")).toBeNull();
