@@ -114,6 +114,8 @@ export type SearchEngine = {
   needsKey: boolean;
   acceptsKey: boolean;
   keyConfigured: boolean;
+  /** A clear would leave this key; it comes from the server's environment. */
+  keyFromEnv: boolean;
   usable: boolean;
 };
 
@@ -141,6 +143,7 @@ export function readSearchConfig(raw: unknown): SearchConfig {
       needsKey: e.needs_key === true,
       acceptsKey: e.accepts_key === true,
       keyConfigured: e.api_key_configured === true,
+      keyFromEnv: e.api_key_from_env === true,
       usable: e.usable === true,
     });
   }
@@ -155,11 +158,14 @@ export function canSwitchOff(config: SearchConfig, id: SearchEngineId): boolean 
 /**
  * Whether ``id``'s saved key may be removed. The server holds a removal to the
  * rule switching off obeys: not while the engine needs its key and nothing
- * else is usable.
+ * else is usable. A key the server's environment still holds survives the
+ * clear, so that removal is allowed — it changes nothing, and the notice says
+ * the key has to be changed on the server.
  */
 export function canRemoveKey(config: SearchConfig, id: SearchEngineId): boolean {
   const engine = config.engines.find((e) => e.id === id);
   if (!engine?.keyConfigured) return false;
+  if (engine.keyFromEnv) return true;
   return !(engine.needsKey && engine.usable) || canSwitchOff(config, id);
 }
 

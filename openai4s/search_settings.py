@@ -10,7 +10,8 @@ One rule is enforced here and in the UI alike: at least one engine must stay
 *usable*, meaning on and able to answer. Tavily counts only with a key; the
 other engines need none. Without the rule a user could switch every engine off and
 every search would come back empty with no hint why. Removing a key is held to
-the same rule as switching its engine off.
+the same rule as switching its engine off. A key the server's environment still
+holds is not removed, so that clear does not count as emptying the chain.
 
 The stored setting is a JSON object under ``search_engines``. An install that
 never saved one gets the default order with the legacy engines on — the same chain
@@ -93,6 +94,66 @@ def load(store) -> dict[str, Any]:
     return {"order": order, "enabled": enabled}
 
 
+def _read_secret(store, setting: str) -> str:
+    try:
+        return (store.get_secret_setting(setting) or "").strip()
+    except Exception:  # noqa: BLE001 - an unreadable broker is not a key
+        return ""
+
+
+def _env_value(env: str) -> str:
+    return (os.environ.get(env) or "").strip()
+
+
+def _injected_secret(store, setting: str) -> str:
+    """What a clear leaves behind when the env broker owns the credential.
+
+    ``set_secret_setting(setting, "")`` deletes a stored secret and clears the
+    row. On a read-only broker that delete is a no-op, and the next read
+    resolves the operator's variable with no row at all. A writable broker's
+    empty row is the app's own answer, so this is empty there.
+    """
+
+    try:
+        broker = store.secrets
+    except Exception:  # noqa: BLE001 - an unreadable broker holds nothing
+        return ""
+    if not getattr(broker, "read_only", False):
+        return ""
+    from openai4s.security.secret_broker import make_ref
+    from openai4s.security.secret_migration import scope_for_setting
+
+    scope = scope_for_setting(setting)
+    if not scope:
+        return ""
+    try:
+        return (broker.get(make_ref(scope, setting, broker.namespace)) or "").strip()
+    except Exception:  # noqa: BLE001 - an unreadable variable is not a key
+        return ""
+
+
+def _key_after_clear(store, engine: str) -> str:
+    """The key `has_key` would still see after clearing ``engine``.
+
+    Empty when the clear removes every copy. The mirror of a stored secret
+    goes with it. Two copies do not: a value already in
+    ``OPENAI4S_TAVILY_API_KEY`` / ``YDC_API_KEY`` that is not that stored
+    secret (an operator export; `load_keys_into_env` leaves it alone), and a
+    secret the env broker keeps because its delete does nothing. When the
+    variable holds exactly the stored secret, it is the mirror.
+    """
+
+    names = ENGINE_KEYS.get(engine)
+    if names is None:
+        return ""
+    setting, env = names
+    stored = _read_secret(store, setting)
+    exported = _env_value(env)
+    if exported and exported != stored:
+        return exported
+    return _injected_secret(store, setting)
+
+
 def has_key(store, engine: str) -> bool:
     """Whether a credential for ``engine`` is set (environment or broker)."""
 
@@ -100,12 +161,9 @@ def has_key(store, engine: str) -> bool:
     if names is None:
         return False
     setting, env = names
-    if (os.environ.get(env) or "").strip():
+    if _env_value(env):
         return True
-    try:
-        return bool((store.get_secret_setting(setting) or "").strip())
-    except Exception:  # noqa: BLE001 - an unreadable broker is not a key
-        return False
+    return bool(_read_secret(store, setting))
 
 
 def usable(store, engine: str, enabled: dict[str, bool], has=None) -> bool:
@@ -219,7 +277,8 @@ def update(
     removal is refused and the user switches another engine on first. The
     alternatives were worse: an empty chain that answers every search with
     "none reached", or switching on engines the user had turned off, which
-    would send the query to providers they did not choose.
+    would send the query to providers they did not choose. A key the clear
+    cannot unset still counts, so that refusal does not block a no-op.
     """
 
     if engine not in ENGINE_KEYS:
@@ -239,6 +298,11 @@ def update(
     changes_key = clear_api_key or bool(key)
 
     def has(store_, other: str) -> bool:
+        # A clear of a key the environment keeps does not make the engine
+        # keyless; predicting that it does refuses a removal that changes
+        # nothing when this engine is the last usable one.
+        if other == engine and clear_api_key and _key_after_clear(store_, other):
+            return True
         return bool(key) if other == engine else has_key(store_, other)
 
     check = has if changes_key else None
@@ -294,14 +358,26 @@ def apply_setup_choice(store, choice: str, key: str = "") -> dict[str, Any]:
 
 def set_key(store, engine: str, key: str) -> None:
     """Store (or, with an empty ``key``, clear) an engine's credential and
-    mirror it into the environment variable `webtools` reads."""
+    mirror it into the environment variable `webtools` reads.
+
+    A clear removes the stored secret and the mirror of that secret. It does
+    not unset an operator export of the variable, or a secret the env broker
+    still holds: both belong to the server's environment and can only be
+    changed there.
+    """
 
     setting, env = ENGINE_KEYS[engine]
     key = (key or "").strip()
     with _KEY_LOCK:
-        store.set_secret_setting(setting, key, scope=SECRET_SCOPE)
         if key:
+            store.set_secret_setting(setting, key, scope=SECRET_SCOPE)
             os.environ[env] = key
+            return
+        kept = _key_after_clear(store, engine)
+        store.set_secret_setting(setting, "", scope=SECRET_SCOPE)
+        if kept:
+            if _env_value(env) != kept:
+                os.environ[env] = kept
         else:
             os.environ.pop(env, None)
 
@@ -351,6 +427,7 @@ def project(store) -> dict[str, Any]:
                 "needs_key": engine == "tavily",
                 "accepts_key": engine in ENGINE_KEYS,
                 "api_key_configured": has_key(store, engine),
+                "api_key_from_env": bool(_key_after_clear(store, engine)),
                 "usable": usable(store, engine, config["enabled"]),
                 "endpoint": (
                     _YOU_KEYED_ENDPOINT

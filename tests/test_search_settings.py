@@ -439,6 +439,80 @@ def test_a_stored_key_reaches_a_process_that_never_mirrored_it(tmp_path, monkeyp
     assert result["source"] == "tavily"
 
 
+def test_a_clear_removes_a_saved_key_and_its_mirror(tmp_path):
+    import os
+
+    st = _store(tmp_path)
+    search_settings.set_key(st, "tavily", "tvly-saved")
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert "OPENAI4S_TAVILY_API_KEY" not in os.environ
+    assert search_settings.has_key(st, "tavily") is False
+    assert search_settings.project(st)["engines"][0]["api_key_from_env"] is False
+
+
+@pytest.mark.parametrize(
+    "engine, env, value",
+    [
+        ("tavily", "OPENAI4S_TAVILY_API_KEY", "tvly-exported"),
+        ("you", "YDC_API_KEY", "ydc-exported"),
+    ],
+)
+def test_a_clear_does_not_unset_an_exported_key(
+    tmp_path, monkeypatch, engine, env, value
+):
+    # The variable is the operator's, not a mirror of a stored secret. Popping
+    # it dropped the key for the rest of the process and the UI reported a
+    # normal removal.
+    import os
+
+    st = _store(tmp_path)
+    monkeypatch.setenv(env, value)
+    search_settings.update(st, engine=engine, clear_api_key=True)
+    assert os.environ[env] == value
+    assert search_settings.has_key(st, engine) is True
+    row = next(e for e in search_settings.project(st)["engines"] if e["id"] == engine)
+    assert row["api_key_configured"] is True
+    assert row["api_key_from_env"] is True
+
+
+def test_a_clear_keeps_an_export_and_drops_a_different_stored_key(
+    tmp_path, monkeypatch
+):
+    import os
+
+    st = _store(tmp_path)
+    search_settings.set_key(st, "tavily", "tvly-saved")
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", "tvly-exported")
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-exported"
+    assert (st.get_secret_setting("tavily_api_key") or "") == ""
+    assert search_settings.has_key(st, "tavily") is True
+
+
+def test_clearing_an_injected_key_is_allowed_when_it_is_the_only_engine(
+    tmp_path, monkeypatch
+):
+    # The one-usable-engine rule predicted the clear would make Tavily keyless.
+    # Env-broker delete is a no-op, so Tavily would have stayed usable and the
+    # refusal hid the "change it on the server" result.
+    import os
+
+    from openai4s.security.secret_broker import EnvInjectionBackend, SecretBroker
+
+    monkeypatch.setenv("OPENAI4S_SECRET_ENV", "1")
+    monkeypatch.setenv("OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY", "tvly-injected")
+    st = _store(tmp_path)
+    st._secret_broker = SecretBroker(st, mode="env", backends=[EnvInjectionBackend()])
+    search_settings.load_keys_into_env(st)
+    search_settings.save(
+        st, order=list(webtools.AVAILABLE_SEARCH_ENGINES), enabled=_ONLY_TAVILY
+    )
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-injected"
+    assert search_settings.has_key(st, "tavily") is True
+    assert search_settings.engine_chain(st) == ("tavily",)
+
+
 def test_an_injected_key_a_clear_cannot_unset_keeps_running(tmp_path, monkeypatch):
     # A clear cannot unset an operator-injected credential (see
     # `Store.set_secret_setting`), so `has_key` keeps finding it; the next
@@ -590,6 +664,20 @@ def test_route_primary_is_the_setup_choice(route):
 
 
 _ORDER = ["tavily", "you", "builtin", "parallel"]
+
+
+def test_route_an_exported_last_key_is_not_a_refused_removal(route, monkeypatch):
+    import os
+
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", "tvly-exported")
+    status, _ = route("PUT", {"order": _ORDER, "enabled": _ONLY_TAVILY})
+    assert status == 200
+    status, body = route("POST", {"engine": "tavily", "clear_api_key": True})
+    assert status == 200
+    tavily = next(e for e in body["engines"] if e["id"] == "tavily")
+    assert tavily["api_key_configured"] is True
+    assert tavily["api_key_from_env"] is True
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-exported"
 
 
 def test_route_refuses_removing_the_key_the_last_usable_engine_needs(route):

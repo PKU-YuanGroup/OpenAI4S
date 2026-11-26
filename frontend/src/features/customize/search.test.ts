@@ -105,6 +105,26 @@ describe("removing a saved key", () => {
     expect(canRemoveKey(onlyYou, "tavily")).toBe(false);
   });
 
+  it("allows removing an environment-owned key even when it is the last usable engine", () => {
+    const fromEnv = readSearchConfig({
+      engines: [
+        {
+          id: "tavily",
+          enabled: true,
+          needs_key: true,
+          accepts_key: true,
+          api_key_configured: true,
+          api_key_from_env: true,
+          usable: true,
+        },
+        { id: "you", enabled: false, usable: false },
+        { id: "builtin", enabled: false, usable: false },
+      ],
+    });
+    expect(fromEnv.engines[0].keyFromEnv).toBe(true);
+    expect(canRemoveKey(fromEnv, "tavily")).toBe(true);
+  });
+
   it("says when the server's environment still supplies the key", () => {
     const gone = keyed({ enabled: false, usable: false, api_key_configured: false }, true);
     expect(keyRemovalNote(gone, "tavily")).toEqual({ text: searchT("search.keyRemoved"), warn: false });
