@@ -225,9 +225,6 @@ def test_an_ordinary_cell_carries_no_script(tmp_path):
     store.close()
 
 
-@pytest.mark.skipif(
-    sqlite3.sqlite_version_info < (3, 35, 0), reason="needs ALTER TABLE DROP COLUMN"
-)
 def test_a_schema_43_database_gains_the_column_on_upgrade(tmp_path):
     from openai4s.config import Config
     from openai4s.storage.migrations import SCHEMA_VERSION
@@ -239,7 +236,36 @@ def test_a_schema_43_database_gains_the_column_on_upgrade(tmp_path):
     store.log_cell(frame_id=frame, root_frame_id=frame, code="x = 1", result={})
     store.close()
     with sqlite3.connect(str(db)) as connection:
-        connection.execute("ALTER TABLE execution_log DROP COLUMN inlined_script")
+        # Rebuild instead of ALTER TABLE DROP COLUMN: dropping the last column
+        # makes an older SQLite walk back to the nearest comma, which here
+        # sits inside the v44 comment, so the rewritten table no longer
+        # parses (3.40.1 on Debian 12, and the CI runner's system Python 3.14).
+        (ddl,) = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='execution_log'"
+        ).fetchone()
+        indexes = [
+            sql
+            for (sql,) in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='execution_log' AND sql IS NOT NULL"
+            )
+        ]
+        columns = ",".join(
+            row[1]
+            for row in connection.execute("PRAGMA table_info(execution_log)")
+            if row[1] != "inlined_script"
+        )
+        v43 = ddl[: ddl.index(",\n    -- v44:")] + "\n)"
+        connection.execute(v43.replace("execution_log", "_v43_execution_log", 1))
+        connection.execute(
+            f"INSERT INTO _v43_execution_log({columns}) "
+            f"SELECT {columns} FROM execution_log"
+        )
+        connection.execute("DROP TABLE execution_log")
+        connection.execute("ALTER TABLE _v43_execution_log RENAME TO execution_log")
+        for sql in indexes:
+            connection.execute(sql)
         connection.execute("DELETE FROM schema_migrations WHERE version=44")
         connection.execute("PRAGMA user_version = 43")
 
