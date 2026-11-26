@@ -2,10 +2,12 @@ import { useState } from "preact/hooks";
 import { api, apiErrorText } from "../../features/customize/api";
 import { hint } from "../../features/customize/host";
 import {
+  canRemoveKey,
   canSwitchOff,
   engineConfigBody,
   engineDescription,
   engineLabel,
+  keyRemovalNote,
   moved,
   readSearchConfig,
   searchT,
@@ -20,8 +22,9 @@ import { useAlive } from "./use-timer-lease";
 /**
  * The search-engine list on Settings → Network: Doubao pinned on top, the
  * backup engines below it reorderable (drag, or the arrow buttons) and
- * switchable. Every change is one `POST /search/config`; the server re-checks
- * the "one usable engine stays on" rule this list already enforces.
+ * switchable, and a keyed engine's key can be saved or removed. Every change is
+ * one `POST /search/config`; the server re-checks the "one usable engine stays
+ * on" rule this list already enforces, key removals included.
  */
 export function SearchEngines({
   raw,
@@ -38,13 +41,17 @@ export function SearchEngines({
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState<SearchEngineId | null>(null);
 
-  const send = async (body: Record<string, unknown>, done: string) => {
+  const send = async (
+    body: Record<string, unknown>,
+    done: string | ((next: SearchConfig) => { text: string; warn: boolean }),
+  ) => {
     setBusy(true);
     try {
       // POST, the verb Customize's config-write list (`api.ts`) already knows.
       const next = await api("/search/config", { method: "POST", body: JSON.stringify(body) });
       onSaved(next);
-      hint(done);
+      const note = typeof done === "string" ? { text: done, warn: false } : done(readSearchConfig(next));
+      hint(note.text, note.warn);
       return true;
     } catch (e) {
       hint(apiErrorText(e), true);
@@ -92,6 +99,11 @@ export function SearchEngines({
           onSaveKey={(key) =>
             send({ engine: engine.id, api_key: key }, searchT("search.keySaved"))
           }
+          onRemoveKey={() =>
+            void send({ engine: engine.id, clear_api_key: true }, (next) =>
+              keyRemovalNote(next, engine.id),
+            )
+          }
           onDragStart={() => setDragging(engine.id)}
           onDragEnd={() => setDragging(null)}
           onDrop={() => {
@@ -117,6 +129,7 @@ function EngineRow({
   onMove,
   onToggle,
   onSaveKey,
+  onRemoveKey,
   onDragStart,
   onDragEnd,
   onDrop,
@@ -131,12 +144,14 @@ function EngineRow({
   onMove: (delta: number) => void;
   onToggle: () => void;
   onSaveKey: (key: string) => Promise<boolean>;
+  onRemoveKey: () => void;
   onDragStart: () => void;
   onDragEnd: () => void;
   onDrop: () => void;
 }) {
   const [key, setKey] = useState("");
   const locked = engine.enabled && !canSwitchOff(config, engine.id);
+  const removable = canRemoveKey(config, engine.id);
   const saveKey = async () => {
     const value = key.trim();
     if (!value) return;
@@ -191,6 +206,18 @@ function EngineRow({
             >
               {searchT("search.saveKey")}
             </button>
+            {engine.keyConfigured ? (
+              <button
+                type="button"
+                class="outline-btn small"
+                data-action="search-engine-remove-key"
+                disabled={busy || !removable}
+                title={searchT(removable ? "search.removeKey" : "search.lastKey")}
+                onClick={onRemoveKey}
+              >
+                {searchT("search.removeKey")}
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
