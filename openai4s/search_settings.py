@@ -31,6 +31,12 @@ from openai4s.webtools import SEARCH_ENGINES as DEFAULT_SEARCH_ENGINES
 #: Serializes a key write with the mirror into the environment: a search that
 #: read a key just before it was cleared must not put it back afterwards.
 _KEY_LOCK = threading.Lock()
+#: Each key variable this process wrote: (what the server's environment had
+#: there before, what was written). A clear tells its own mirror from an
+#: operator export by this record, never by comparing the variable with the
+#: stored secret: that read can fail (a locked keychain), and an export can
+#: equal the stored key.
+_MIRRORED: dict[str, tuple[str, str]] = {}
 
 SETTING_KEY = "search_engines"
 SECRET_SCOPE = "search"
@@ -105,6 +111,28 @@ def _env_value(env: str) -> str:
     return (os.environ.get(env) or "").strip()
 
 
+def _mirror(env: str, value: str) -> None:
+    """Write ``value`` into ``env`` and record it. The caller holds `_KEY_LOCK`."""
+
+    before, written = _MIRRORED.get(env, ("", ""))
+    current = _env_value(env)
+    if current != written:
+        # Not this process's value (never written, or replaced since): it is
+        # what the server's environment gave, and what a clear puts back.
+        before = current
+    os.environ[env] = value
+    _MIRRORED[env] = (before, value)
+
+
+def _env_after_clear(env: str) -> str:
+    """What ``env`` holds once a clear takes back this process's own writes:
+    the server's own value, as a restart would find it."""
+
+    current = _env_value(env)
+    before, written = _MIRRORED.get(env, ("", ""))
+    return before if current and current == written else current
+
+
 def _injected_secret(store, setting: str) -> str:
     """What a clear leaves behind when the env broker owns the credential.
 
@@ -135,23 +163,18 @@ def _injected_secret(store, setting: str) -> str:
 def _key_after_clear(store, engine: str) -> str:
     """The key `has_key` would still see after clearing ``engine``.
 
-    Empty when the clear removes every copy. The mirror of a stored secret
-    goes with it. Two copies do not: a value already in
-    ``OPENAI4S_TAVILY_API_KEY`` / ``YDC_API_KEY`` that is not that stored
-    secret (an operator export; `load_keys_into_env` leaves it alone), and a
-    secret the env broker keeps because its delete does nothing. When the
-    variable holds exactly the stored secret, it is the mirror.
+    Empty when the clear removes every copy. This process's mirror goes with
+    it. Two copies do not: an operator export of ``OPENAI4S_TAVILY_API_KEY`` /
+    ``YDC_API_KEY`` (`load_keys_into_env` leaves it alone, and a saved key
+    only overrode it), and a secret the env broker keeps because its delete
+    does nothing.
     """
 
     names = ENGINE_KEYS.get(engine)
     if names is None:
         return ""
     setting, env = names
-    stored = _read_secret(store, setting)
-    exported = _env_value(env)
-    if exported and exported != stored:
-        return exported
-    return _injected_secret(store, setting)
+    return _env_after_clear(env) or _injected_secret(store, setting)
 
 
 def has_key(store, engine: str) -> bool:
@@ -360,10 +383,10 @@ def set_key(store, engine: str, key: str) -> None:
     """Store (or, with an empty ``key``, clear) an engine's credential and
     mirror it into the environment variable `webtools` reads.
 
-    A clear removes the stored secret and the mirror of that secret. It does
-    not unset an operator export of the variable, or a secret the env broker
-    still holds: both belong to the server's environment and can only be
-    changed there.
+    A clear removes the stored secret and this process's mirror, leaving the
+    variable as a restart would find it. It does not unset an operator export
+    of the variable, or a secret the env broker still holds: both belong to
+    the server's environment and can only be changed there.
     """
 
     setting, env = ENGINE_KEYS[engine]
@@ -371,15 +394,15 @@ def set_key(store, engine: str, key: str) -> None:
     with _KEY_LOCK:
         if key:
             store.set_secret_setting(setting, key, scope=SECRET_SCOPE)
-            os.environ[env] = key
+            _mirror(env, key)
             return
         kept = _key_after_clear(store, engine)
         store.set_secret_setting(setting, "", scope=SECRET_SCOPE)
-        if kept:
-            if _env_value(env) != kept:
-                os.environ[env] = kept
-        else:
+        _MIRRORED.pop(env, None)
+        if not kept:
             os.environ.pop(env, None)
+        elif _env_value(env) != kept:
+            os.environ[env] = kept
 
 
 def load_keys_into_env(store) -> None:
@@ -404,7 +427,7 @@ def load_keys_into_env(store) -> None:
             except Exception:  # noqa: BLE001 - a search must not fail on one key
                 value = ""
             if value:
-                os.environ[env] = value
+                _mirror(env, value)
 
 
 def project(store) -> dict[str, Any]:

@@ -31,6 +31,8 @@ def _clean_search_env(monkeypatch):
     for name in _KEY_ENVS:
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
+    # Nor may one test's record of what it mirrored decide another's clear.
+    monkeypatch.setattr(search_settings, "_MIRRORED", {}, raising=False)
 
 
 def _store(tmp_path):
@@ -487,6 +489,56 @@ def test_a_clear_keeps_an_export_and_drops_a_different_stored_key(
     assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-exported"
     assert (st.get_secret_setting("tavily_api_key") or "") == ""
     assert search_settings.has_key(st, "tavily") is True
+
+
+def test_a_clear_drops_its_mirror_even_when_the_store_cannot_be_read(
+    tmp_path, monkeypatch
+):
+    # Told apart by comparing the variable with the stored key, the mirror
+    # passed for an export whenever that read failed (a locked keychain): the
+    # removed key kept being sent, and Settings blamed the server's environment.
+    import os
+
+    st = _store(tmp_path)
+    search_settings.set_key(st, "tavily", "tvly-saved")
+
+    def unreadable(*_args, **_kwargs):
+        raise RuntimeError("keychain locked")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(st, "get_secret_setting", unreadable)
+        search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert "OPENAI4S_TAVILY_API_KEY" not in os.environ
+    assert search_settings.has_key(st, "tavily") is False
+    assert search_settings.project(st)["engines"][0]["api_key_from_env"] is False
+
+
+def test_a_clear_puts_back_an_export_a_saved_key_overrode(tmp_path, monkeypatch):
+    # A saved key overrides an export only until a restart, where the export
+    # wins again; a clear leaves what that restart would find.
+    import os
+
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", "tvly-exported")
+    st = _store(tmp_path)
+    search_settings.set_key(st, "tavily", "tvly-saved")
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-saved"
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-exported"
+    tavily = search_settings.project(st)["engines"][0]
+    assert tavily["api_key_configured"] is True
+    assert tavily["api_key_from_env"] is True
+
+
+def test_a_clear_keeps_an_export_equal_to_the_stored_key(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", "tvly-same")
+    st = _store(tmp_path)
+    st.set_secret_setting("tavily_api_key", "tvly-same", scope="search")
+    search_settings.load_keys_into_env(st)  # the export wins: nothing mirrored
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-same"
+    assert (st.get_secret_setting("tavily_api_key") or "") == ""
 
 
 def test_clearing_an_injected_key_is_allowed_when_it_is_the_only_engine(
