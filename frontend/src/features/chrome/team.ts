@@ -10,6 +10,7 @@
 import { LANG } from "../../i18n/runtime";
 import type { MenuItem } from "../sessions/chrome";
 import { displayProjectName } from "../sessions/copy";
+import { clearResumeMarker } from "../onboarding/machine";
 import { API } from "./api";
 import { byId, el, iconEl } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
@@ -222,6 +223,8 @@ export function teamUserName(user: TeamUser): string {
 /** Ends the login session, then shows the login page whatever the server said. */
 export function signOut(): void {
   const leave = () => pageLocation().replace("/login");
+  // The first-run wizard's resume marker belongs to this sign-in (NV-04).
+  clearResumeMarker();
   fetch(API + "/auth/logout", { method: "POST" }).then(leave, leave);
 }
 

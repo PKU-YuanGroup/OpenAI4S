@@ -73,6 +73,40 @@ wrong one is refused, so the checks are testable without a Linux host.
 ``--artifact`` is an optional companion to ``--python``: the wheel file the
 interpreter was installed from. Without it a wheel report cannot name the wheel
 digest; the release pipeline passes it so the smoke step records one.
+
+Upgrade readback (bundle mode only). ``--baseline-bundle <tar.gz>
+--baseline-sha256 <hex>`` adds a second scenario after the fresh-install one,
+and its result is the report's ``upgrade_readback`` field:
+
+    baseline_digest: the previous stable bundle is copied into this run's own
+    temporary directory and its SHA-256 must equal the pin before anything is
+    unpacked. A missing file is ``baseline_unavailable`` and a wrong digest is
+    ``baseline_digest_mismatch``; neither unpacks or runs anything.
+    baseline_seed: the previous bundle, unpacked into its own directory, starts
+    on an empty isolated data directory and creates a project, a session, three
+    Cells and two versions of one CSV through its own runtime.
+    baseline_stop: it stops through its own CLI and its process group is gone.
+    backup: the whole data directory is copied while nothing runs. The copy is
+    never opened by a daemon; its manifest digest is recorded.
+    schema_before: ``preflight_schema`` (each bundle's own ``migrations.py``)
+    reads the schema the previous bundle wrote.
+    candidate_takeover: the candidate, unpacked into a second directory, starts
+    on the same data directory path, which migrates it.
+    schema_after: ``preflight_schema`` reads the candidate's schema.
+    project_session / cell_records / csv_versions: the project and session ids,
+    every Cell record, and both CSV versions byte for byte are what the previous
+    bundle recorded.
+    candidate_restart: the candidate restarts on the same path and reports the
+    same execution history, the same Cell records and the same bytes.
+    restore_backup: after the candidate stops, the working copy is replaced by
+    the pre-migration copy at the same path, and its manifest must match.
+    baseline_readback: the previous bundle reads the restored copy (schema,
+    project, session, Cells, both CSV versions); the copy itself is unchanged.
+    clean_exit: no process from this scenario survives and its temporary
+    directory is removed.
+
+The fresh-install scenario and its report fields are unchanged. The process
+exits non-zero when either scenario does not pass.
 """
 
 from __future__ import annotations
@@ -145,6 +179,67 @@ BUNDLE_DIRNAME = re.compile(
 )
 ARCH_ALIASES = {"amd64": "x86_64", "arm64": "aarch64"}
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+# --------------------------------------------------------------------------- #
+# Upgrade readback: the previous stable bundle's data, opened by the candidate
+# --------------------------------------------------------------------------- #
+UPGRADE_SCENARIO_VERSION = 1
+
+#: The upgrade scenario's check list, in execution order. Like ``CHECKS``, a
+#: report always carries all of them.
+UPGRADE_CHECKS = (
+    "baseline_digest",
+    "baseline_seed",
+    "baseline_stop",
+    "backup",
+    "schema_before",
+    "candidate_takeover",
+    "schema_after",
+    "project_session",
+    "cell_records",
+    "csv_versions",
+    "candidate_restart",
+    "restore_backup",
+    "baseline_readback",
+    "clean_exit",
+)
+
+#: Two refusals that happen before anything is unpacked, recorded as their own
+#: statuses so a receipt can say which one blocked the release.
+BASELINE_UNAVAILABLE = "baseline_unavailable"
+BASELINE_DIGEST_MISMATCH = "baseline_digest_mismatch"
+UPGRADE_STATUSES = frozenset(
+    {PASSED, FAILED, NOT_RUN, BASELINE_UNAVAILABLE, BASELINE_DIGEST_MISMATCH}
+)
+
+#: Four daemon starts, three Cells and two copies of the data directory. Each
+#: step keeps F16's own budget; only the total is the upgrade scenario's.
+UPGRADE_TOTAL_S = 600.0
+UPGRADE_CSV = "upgrade.csv"
+UPGRADE_PROJECT_NAME = "installed runtime upgrade"
+DATABASE_FILENAME = "openai4s.db"
+BUNDLE_TARBALL = re.compile(
+    r"^OpenAI4S-(?P<version>[^-]+)-linux-(?P<arch>x86_64|aarch64)\.tar\.gz$"
+)
+
+#: Runs inside a bundle's embedded interpreter. It loads that bundle's own
+#: ``migrations.py`` by path, so the schema is read by the code that ships with
+#: the bundle and nothing else in its package is imported, and it opens the
+#: database read-only through ``preflight_schema``.
+SCHEMA_PROBE = """\
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("openai4s_schema_probe", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+answer = {"supported": module.SCHEMA_VERSION}
+try:
+    answer["schema"] = module.preflight_schema(Path(sys.argv[2]))
+except module.FutureSchemaError as error:
+    answer.update(schema=None, error="future_schema", actual=error.actual_version)
+print(json.dumps(answer))
+"""
 
 
 class SmokeFailure(Exception):
@@ -331,9 +426,19 @@ def interpreter_version(interpreter: Path) -> str:
 class Budget:
     """F16's overall and per-step limits, both enforced."""
 
-    def __init__(self, total_s: float = BUDGETS["total"]) -> None:
+    def __init__(
+        self,
+        total_s: float = BUDGETS["total"],
+        *,
+        stated_total_s: float | None = None,
+    ) -> None:
         self.started = time.monotonic()
         self.deadline = self.started + float(total_s)
+        # The limit a diagnostic names: the scenario's frozen total, even when a
+        # test shortens the real deadline.
+        self.stated_total_s = float(
+            BUDGETS["total"] if stated_total_s is None else stated_total_s
+        )
 
     def elapsed(self) -> float:
         return time.monotonic() - self.started
@@ -346,7 +451,7 @@ class Budget:
         if left <= 0:
             raise SmokeFailure(
                 name,
-                f"the overall {BUDGETS['total']:.0f}s budget expired before {name}",
+                f"the overall {self.stated_total_s:.0f}s budget expired before {name}",
             )
         return max(0.5, min(float(BUDGETS[name]), left))
 
@@ -458,10 +563,12 @@ class Runtime:
         self.cwd = Path(cwd)
 
 
-def _unpack_bundle(tarball: Path, work_root: Path) -> Path:
+def _unpack_bundle(tarball: Path, work_root: Path, dirname: str = "unpacked") -> Path:
     if not tarfile.is_tarfile(tarball):
         raise SmokeFailure("serve", f"not a tar archive: {tarball.name}")
-    scratch = work_root / "unpacked"
+    # The upgrade scenario unpacks two bundles; each gets its own new, empty
+    # directory, so neither can see or overwrite the other's files.
+    scratch = work_root / dirname
     scratch.mkdir()
     with tarfile.open(tarball, "r:gz") as archive:
         # `data` refuses absolute paths, parent escapes and links that point
@@ -477,8 +584,10 @@ def _unpack_bundle(tarball: Path, work_root: Path) -> Path:
     return roots[0]
 
 
-def runtime_for_bundle(tarball: Path, work_root: Path) -> Runtime:
-    app = _unpack_bundle(tarball, work_root)
+def runtime_for_bundle(
+    tarball: Path, work_root: Path, *, unpack_dirname: str = "unpacked"
+) -> Runtime:
+    app = _unpack_bundle(tarball, work_root, unpack_dirname)
     arch = bundle_arch_from_name(app.name)
     launcher = app / "bin" / "openai4s"
     runtime = app / "runtime" / "bin" / "python3"
@@ -1000,6 +1109,329 @@ def check_clean_exit(*, daemon_gone: bool, work_root_gone: bool) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Upgrade decision checks
+# --------------------------------------------------------------------------- #
+class BaselineRefusal(SmokeFailure):
+    """The previous stable bundle cannot be used; nothing was unpacked."""
+
+    def __init__(self, status: str, detail: str, *, actual_sha256: str = "") -> None:
+        super().__init__("baseline_digest", detail)
+        self.status = status
+        self.actual_sha256 = actual_sha256
+
+
+def tarball_version(name: str) -> str:
+    """The version an ``OpenAI4S-<version>-linux-<arch>.tar.gz`` name carries."""
+    matched = BUNDLE_TARBALL.match(Path(str(name)).name)
+    return matched.group("version") if matched else ""
+
+
+def take_baseline(source: Path, private: Path, expected_sha256: str) -> str:
+    """Copy the previous bundle into this run's directory, then check the pin.
+
+    The digest is taken of the private copy, and only that copy is unpacked, so
+    the bytes that run are the bytes that were checked.
+    """
+    expected = str(expected_sha256 or "").lower()
+    if not Path(source).is_file():
+        raise BaselineRefusal(
+            BASELINE_UNAVAILABLE,
+            f"the previous stable bundle is not available: {Path(source).name}",
+        )
+    private.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copyfile(source, private)
+    except OSError as error:
+        raise BaselineRefusal(
+            BASELINE_UNAVAILABLE,
+            f"the previous stable bundle could not be read: {type(error).__name__}",
+        ) from None
+    actual = sha256_file(private)
+    if actual != expected:
+        private.unlink()
+        raise BaselineRefusal(
+            BASELINE_DIGEST_MISMATCH,
+            f"the previous stable bundle {Path(source).name} has SHA-256 "
+            f"{actual[:12]}, not the pinned {expected[:12]}; it was not unpacked",
+            actual_sha256=actual,
+        )
+    return actual
+
+
+def check_schema_probe(probe: Any, *, check: str, label: str) -> tuple[int, int]:
+    """One ``preflight_schema`` answer: (schema read, schema the code supports)."""
+    if not isinstance(probe, Mapping):
+        raise SmokeFailure(check, f"the {label} schema probe returned no object")
+    supported = probe.get("supported")
+    if not isinstance(supported, int) or isinstance(supported, bool) or supported < 1:
+        raise SmokeFailure(check, f"the {label} schema probe names no SCHEMA_VERSION")
+    if probe.get("error") == "future_schema":
+        raise SmokeFailure(
+            check,
+            f"the {label} refuses the database as a future schema "
+            f"({probe.get('actual')!r} > {supported})",
+        )
+    schema = probe.get("schema")
+    if schema is None:
+        raise SmokeFailure(
+            check,
+            f"the {label} could not read the schema without writing "
+            "(a missing database or a hot journal)",
+        )
+    if not isinstance(schema, int) or isinstance(schema, bool) or schema < 1:
+        raise SmokeFailure(check, f"the {label} read schema {schema!r}")
+    return schema, supported
+
+
+def check_schema_before(baseline_probe: Any, candidate_probe: Any) -> tuple[int, int]:
+    """The previous bundle wrote its own schema, and the candidate reads it.
+
+    Returns (the schema on disk, the schema the candidate migrates to).
+    """
+    before, baseline_supported = check_schema_probe(
+        baseline_probe, check="schema_before", label="previous bundle"
+    )
+    if before != baseline_supported:
+        raise SmokeFailure(
+            "schema_before",
+            f"the previous bundle left schema {before}, not its own "
+            f"SCHEMA_VERSION {baseline_supported}",
+        )
+    seen, candidate_supported = check_schema_probe(
+        candidate_probe, check="schema_before", label="candidate"
+    )
+    if seen != before:
+        raise SmokeFailure(
+            "schema_before",
+            f"the candidate reads schema {seen} where the previous bundle reads {before}",
+        )
+    if candidate_supported < before:
+        raise SmokeFailure(
+            "schema_before",
+            f"the candidate supports schema {candidate_supported}, older than the "
+            f"previous bundle's {before}",
+        )
+    return before, candidate_supported
+
+
+def check_schema_after(probe: Any, *, before: int, supported: int) -> int:
+    """After the candidate opened the data directory it is at its own schema."""
+    after, candidate_supported = check_schema_probe(
+        probe, check="schema_after", label="candidate"
+    )
+    if candidate_supported != supported or after != supported:
+        raise SmokeFailure(
+            "schema_after",
+            f"after the candidate opened the database it is at schema {after}, "
+            f"not the candidate's SCHEMA_VERSION {supported}",
+        )
+    if after < before:
+        raise SmokeFailure(
+            "schema_after", f"the schema went backwards: {before} → {after}"
+        )
+    return after
+
+
+def check_restored_schema(probe: Any, *, before: int) -> None:
+    """The restored copy is the previous bundle's schema, read by its own code."""
+    restored, _supported = check_schema_probe(
+        probe, check="restore_backup", label="previous bundle"
+    )
+    if restored != before:
+        raise SmokeFailure(
+            "restore_backup",
+            f"the restored copy is at schema {restored}, not the pre-migration {before}",
+        )
+
+
+def cell_records(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The stored facts of each Cell, in history order.
+
+    Projection details such as staleness or attempt grouping are left out: they
+    are computed when the history is read, and a newer release may compute them
+    differently without losing anything that was recorded.
+    """
+    records = []
+    for entry in entries:
+        outputs = sorted(
+            [
+                str(row.get("filename") or ""),
+                str(row.get("artifact_id") or ""),
+                str(row.get("version_id") or ""),
+            ]
+            for row in (entry.get("output_artifacts") or [])
+            if isinstance(row, Mapping)
+        )
+        records.append(
+            {
+                "producing_cell_id": str(entry.get("producing_cell_id") or ""),
+                "code_hash": str(entry.get("code_hash") or ""),
+                "source_sha256": sha256_bytes(
+                    str(entry.get("source") or "").encode("utf-8")
+                ),
+                "status": str(entry.get("status") or ""),
+                "outputs": outputs,
+            }
+        )
+    return records
+
+
+def check_cell_records(
+    expected: Sequence[Mapping[str, Any]],
+    actual: Sequence[Mapping[str, Any]],
+    *,
+    check: str,
+) -> None:
+    if not expected or not all(row.get("producing_cell_id") for row in expected):
+        raise SmokeFailure(check, "the previous bundle recorded no Cell identities")
+    if len(actual) != len(expected):
+        raise SmokeFailure(
+            check,
+            f"the session lists {len(actual)} Cell record(s); the previous bundle "
+            f"recorded {len(expected)}",
+        )
+    for index, (want, got) in enumerate(zip(expected, actual), start=1):
+        for field in ("producing_cell_id", "code_hash", "source_sha256", "status"):
+            if got.get(field) != want.get(field):
+                raise SmokeFailure(
+                    check,
+                    f"Cell {index} ({want.get('producing_cell_id')}) changed its "
+                    f"{field}",
+                )
+        if list(got.get("outputs") or []) != list(want.get("outputs") or []):
+            raise SmokeFailure(
+                check,
+                f"Cell {index} ({want.get('producing_cell_id')}) no longer names the "
+                "Artifact versions it wrote",
+            )
+
+
+def check_project_session(
+    project: Any,
+    frame: Any,
+    *,
+    project_id: str,
+    project_name: str,
+    frame_id: str,
+    check: str,
+) -> None:
+    if not isinstance(project, Mapping) or project.get("project_id") != project_id:
+        raise SmokeFailure(check, f"project {project_id} is not there any more")
+    if str(project.get("name") or "") != project_name:
+        raise SmokeFailure(check, f"project {project_id} changed its name")
+    if not isinstance(frame, Mapping):
+        raise SmokeFailure(check, f"session {frame_id} is not there any more")
+    found = str(frame.get("id") or frame.get("frame_id") or "")
+    if found != frame_id:
+        raise SmokeFailure(check, f"session {frame_id} is not there any more")
+    if str(frame.get("project_id") or "") != project_id:
+        raise SmokeFailure(
+            check, f"session {frame_id} no longer belongs to project {project_id}"
+        )
+
+
+def check_csv_versions(
+    listed: Mapping[str, Mapping[str, Any]],
+    bodies: Mapping[str, bytes],
+    expected: Sequence[Mapping[str, Any]],
+    *,
+    check: str,
+) -> None:
+    """Every recorded version is listed with its digest and serves its bytes."""
+    if len(expected) != 2:
+        raise SmokeFailure(
+            check, f"{len(expected)} CSV version(s) were recorded, expected 2"
+        )
+    for number, want in enumerate(expected, start=1):
+        version_id = str(want.get("version_id") or "")
+        row = listed.get(version_id)
+        if row is None:
+            raise SmokeFailure(
+                check,
+                f"the Artifact no longer lists CSV version {number} of 2 ({version_id})",
+            )
+        if str(row.get("checksum") or "") != want.get("sha256"):
+            raise SmokeFailure(
+                check, f"CSV version {number} ({version_id}) lists another SHA-256"
+            )
+        if int(row.get("size_bytes") or -1) != int(want.get("size_bytes") or -2):
+            raise SmokeFailure(
+                check, f"CSV version {number} ({version_id}) lists another size"
+            )
+        body = bodies.get(version_id)
+        if body is None:
+            raise SmokeFailure(
+                check, f"CSV version {number} ({version_id}) served no bytes"
+            )
+        if sha256_bytes(body) != want.get("sha256") or body != want.get("content"):
+            raise SmokeFailure(
+                check,
+                f"CSV version {number} ({version_id}) serves different bytes: "
+                f"{bounded(body.decode('utf-8', 'replace'), 120)!r}",
+            )
+
+
+def check_history_count(*, expected: int, actual: int, check: str) -> None:
+    if actual != expected:
+        raise SmokeFailure(
+            check,
+            f"the execution history has {actual} entries; the previous bundle "
+            f"recorded {expected}",
+        )
+
+
+def tree_manifest(root: Path) -> dict[str, Any]:
+    """One digest over every path, link target and file byte under ``root``."""
+    root = Path(root)
+    hasher = hashlib.sha256()
+    files = 0
+    size = 0
+    found: list[Path] = []
+    # os.walk, not rglob: a link to a directory is recorded as a link and never
+    # followed, on every interpreter this script runs under.
+    for current, dirnames, filenames in os.walk(root, followlinks=False):
+        found.extend(Path(current) / name for name in (*dirnames, *filenames))
+    for path in sorted(found, key=lambda item: item.relative_to(root).parts):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            hasher.update(f"l {relative} {os.readlink(path)}\n".encode("utf-8"))
+        elif path.is_dir():
+            hasher.update(f"d {relative}\n".encode("utf-8"))
+        elif path.is_file():
+            length = path.stat().st_size
+            hasher.update(f"f {relative} {length} {sha256_file(path)}\n".encode())
+            files += 1
+            size += length
+        else:
+            hasher.update(f"o {relative}\n".encode("utf-8"))
+    return {"sha256": hasher.hexdigest(), "files": files, "bytes": size}
+
+
+def check_manifest(
+    expected: Mapping[str, Any], actual: Mapping[str, Any], *, check: str, what: str
+) -> None:
+    if not _SHA256.match(str(expected.get("sha256") or "")):
+        raise SmokeFailure(check, "no manifest was recorded for the copy")
+    if dict(actual) != dict(expected):
+        raise SmokeFailure(
+            check,
+            f"{what} does not match the pre-migration copy "
+            f"({actual.get('files')} files / {actual.get('bytes')} bytes, expected "
+            f"{expected.get('files')} / {expected.get('bytes')})",
+        )
+
+
+def copy_data_dir(source: Path, destination: Path, *, check: str) -> None:
+    """A whole-directory copy, links kept as links, made while nothing runs."""
+    try:
+        shutil.copytree(source, destination, symlinks=True)
+    except (OSError, shutil.Error) as error:
+        raise SmokeFailure(
+            check, f"the data directory could not be copied: {bounded(error, 400)}"
+        ) from None
+
+
+# --------------------------------------------------------------------------- #
 # Report
 # --------------------------------------------------------------------------- #
 #: The result each check may carry in a passing report. ``figure`` is bundle
@@ -1092,6 +1524,84 @@ def build_report(
     }
 
 
+def _bundle_identity(raw: Mapping[str, Any] | None, *, baseline: bool) -> dict:
+    raw = raw or {}
+    schema = raw.get("schema")
+    identity: dict[str, Any] = {
+        "name": str(raw.get("name") or ""),
+        "version": str(raw.get("version") or ""),
+        "sha256": str(raw.get("sha256") or "").lower(),
+        "schema": schema if isinstance(schema, int) and schema > 0 else None,
+    }
+    if baseline:
+        identity["expected_sha256"] = str(raw.get("expected_sha256") or "").lower()
+    return identity
+
+
+def build_upgrade_report(
+    *,
+    baseline: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    checks: Mapping[str, str],
+    records: Mapping[str, Any] | None,
+    duration_s: float,
+    status: str | None = None,
+    failure: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The ``upgrade_readback`` document. Its verdict is derived, never asserted.
+
+    ``status`` is passed only for the outcomes decided before the scenario ran
+    (``baseline_unavailable``, ``baseline_digest_mismatch``, ``not_run``), so a
+    receipt can name which one blocked the release. Otherwise the verdict is
+    ``passed`` only when every check passed, both bundle digests are recorded,
+    the previous bundle's digest is the pin, and both schemas were read.
+    """
+    normalized: dict[str, str] = {}
+    for name in UPGRADE_CHECKS:
+        value = str(checks.get(name) or NOT_RUN)
+        if value not in {PASSED, FAILED, NOT_RUN}:
+            raise ValueError(f"upgrade check {name!r} has an unknown result {value!r}")
+        normalized[name] = value
+    before = _bundle_identity(baseline, baseline=True)
+    after = _bundle_identity(candidate, baseline=False)
+    if status is not None and status not in {
+        BASELINE_UNAVAILABLE,
+        BASELINE_DIGEST_MISMATCH,
+        NOT_RUN,
+    }:
+        raise ValueError(f"an upgrade report cannot be declared {status!r}")
+    verdict = status or PASSED
+    if verdict == PASSED and (
+        failure is not None
+        or any(value != PASSED for value in normalized.values())
+        or not _SHA256.match(before["sha256"])
+        or before["sha256"] != before["expected_sha256"]
+        or not _SHA256.match(after["sha256"])
+        or before["sha256"] == after["sha256"]
+        or before["schema"] is None
+        or after["schema"] is None
+    ):
+        verdict = FAILED
+    if verdict == PASSED:
+        failure = None
+    else:
+        recorded = failure if isinstance(failure, Mapping) else {}
+        failure = {
+            "check": str(recorded.get("check") or "scenario"),
+            "detail": bounded(redact(recorded.get("detail") or ""), DETAIL_LIMIT),
+        }
+    return {
+        "scenario_version": UPGRADE_SCENARIO_VERSION,
+        "status": verdict,
+        "baseline": before,
+        "candidate": after,
+        "checks": normalized,
+        "records": dict(records or {}),
+        "duration_s": round(float(duration_s), 3),
+        "failure": failure,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # The scenario
 # --------------------------------------------------------------------------- #
@@ -1149,10 +1659,10 @@ class Scenario:
             port=port,
         )
 
-    def _start_daemon(self) -> Daemon:
+    def _start_daemon(self, runtime: Runtime | None = None) -> Daemon:
         port = free_loopback_port()
         daemon = Daemon(
-            runtime=self.runtime,
+            runtime=runtime or self.runtime,
             env=self._env(port),
             log_path=self.logs / f"daemon-{len(self.daemons) + 1}.log",
         )
@@ -1579,6 +2089,461 @@ class Scenario:
                     pass
         if self.work_root.exists():
             shutil.rmtree(self.work_root, ignore_errors=True)
+
+
+class UpgradeScenario(Scenario):
+    """The previous stable bundle writes data; the candidate must read it back.
+
+    Both runtimes share this run's isolated HOME, environment and data
+    directory *path*: an upgrade in place is the case a user meets, and it is
+    the case where absolute paths stored by the previous bundle would surface.
+    Each runtime was unpacked into its own directory. The pre-migration copy
+    lives beside the working copy and no daemon is ever pointed at it.
+    """
+
+    STEPS = (
+        ("baseline_seed", "step_baseline_seed"),
+        ("baseline_stop", "step_baseline_stop"),
+        ("backup", "step_backup"),
+        ("schema_before", "step_schema_before"),
+        ("candidate_takeover", "step_candidate_takeover"),
+        ("schema_after", "step_schema_after"),
+        ("project_session", "step_project_session"),
+        ("cell_records", "step_cell_records"),
+        ("csv_versions", "step_csv_versions"),
+        ("candidate_restart", "step_candidate_restart"),
+        ("restore_backup", "step_restore_backup"),
+        ("baseline_readback", "step_baseline_readback"),
+        ("clean_exit", "step_clean_exit"),
+    )
+
+    def __init__(
+        self,
+        *,
+        baseline: Runtime,
+        candidate: Runtime,
+        work_root: Path,
+        baseline_identity: Mapping[str, Any],
+        candidate_identity: Mapping[str, Any],
+        env_base: Mapping[str, str] | None = None,
+    ) -> None:
+        super().__init__(
+            runtime=candidate, work_root=work_root, browser=False, env_base=env_base
+        )
+        self.baseline = baseline
+        self.candidate = candidate
+        self.budget = Budget(UPGRADE_TOTAL_S, stated_total_s=UPGRADE_TOTAL_S)
+        self.checks = {name: NOT_RUN for name in UPGRADE_CHECKS}
+        # Verified by `take_baseline` before either bundle was unpacked.
+        self.checks["baseline_digest"] = PASSED
+        self.baseline_identity = dict(baseline_identity)
+        self.candidate_identity = dict(candidate_identity)
+        self.backup_dir = work_root / "data-before-upgrade"
+        self.backup_manifest: dict[str, Any] = {}
+        self.project_name = UPGRADE_PROJECT_NAME
+        self.seed_records: list[dict[str, Any]] = []
+        self.history_entries = 0
+        self.versions: list[dict[str, Any]] = []
+        self.schema_before: int | None = None
+        self.schema_after: int | None = None
+        self.candidate_supported = 0
+
+    # -- helpers -----------------------------------------------------------
+    def _stop(self) -> None:
+        assert self.daemon is not None
+        self.daemon.stop(self.budget.for_step("cleanup"))
+
+    def _probe(self, runtime: Runtime) -> Any:
+        """``preflight_schema`` on the working copy, by ``runtime``'s own code."""
+        interpreter = runtime.origin_root / "runtime" / "bin" / "python3"
+        module = runtime.origin_root / "src" / "openai4s" / "storage" / "migrations.py"
+        if not module.is_file():
+            raise SmokeFailure("schema", f"the bundle ships no {module.name}")
+        try:
+            completed = subprocess.run(
+                [
+                    str(interpreter),
+                    "-I",
+                    "-c",
+                    SCHEMA_PROBE,
+                    str(module),
+                    str(self.data_dir / DATABASE_FILENAME),
+                ],
+                cwd=str(self.work_root),
+                env=self._env(0),
+                capture_output=True,
+                text=True,
+                timeout=self.budget.for_step("cell"),
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise SmokeFailure(
+                "schema", f"the schema probe could not run: {type(error).__name__}"
+            ) from None
+        if completed.returncode != 0:
+            raise SmokeFailure(
+                "schema",
+                "the schema probe failed: "
+                + bounded((completed.stderr or completed.stdout).strip(), 600),
+            )
+        try:
+            return json.loads((completed.stdout or "").strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            raise SmokeFailure("schema", "the schema probe printed no JSON") from None
+
+    def _read_back(self, check: str) -> None:
+        """Project, session, Cells and both CSV versions, as the baseline left them."""
+        self._check_project_session(check)
+        self._check_cells(check)
+        self._check_versions(check)
+
+    def _check_project_session(self, check: str) -> None:
+        api = self._api()
+        project = api.json(
+            "GET",
+            f"/api/v1/projects/{urllib.parse.quote(self.project_id, safe='')}",
+            check=check,
+        )
+        frame = api.json(
+            "GET",
+            f"/api/v1/frames/{urllib.parse.quote(self.frame_id, safe='')}",
+            check=check,
+        )
+        check_project_session(
+            project,
+            frame,
+            project_id=self.project_id,
+            project_name=self.project_name,
+            frame_id=self.frame_id,
+            check=check,
+        )
+
+    def _check_cells(self, check: str) -> None:
+        entries = self._entries()
+        check_history_count(
+            expected=self.history_entries, actual=len(entries), check=check
+        )
+        check_cell_records(self.seed_records, cell_records(entries), check=check)
+
+    def _check_versions(self, check: str) -> None:
+        api = self._api()
+        quoted = urllib.parse.quote(self.csv_artifact_id, safe="")
+        listing = api.json("GET", f"/api/v1/artifacts/{quoted}/versions", check=check)
+        rows = listing.get("versions") if isinstance(listing, Mapping) else None
+        listed = {
+            str(row.get("version_id")): row
+            for row in (rows or [])
+            if isinstance(row, Mapping)
+        }
+        bodies = {
+            str(want["version_id"]): self._version_bytes(
+                str(want["version_id"]), check=check
+            )
+            for want in self.versions
+            if str(want["version_id"]) in listed
+        }
+        check_csv_versions(listed, bodies, self.versions, check=check)
+
+    def records(self) -> dict[str, Any]:
+        """The ids and raw digests the acceptance record keeps."""
+        return {
+            "project_id": self.project_id,
+            "frame_id": self.frame_id,
+            "artifact_id": self.csv_artifact_id,
+            "cell_ids": [row["producing_cell_id"] for row in self.seed_records],
+            "history_entries": self.history_entries,
+            "csv_versions": [
+                {
+                    "version_id": str(row["version_id"]),
+                    "sha256": str(row["sha256"]),
+                    "size_bytes": int(row["size_bytes"]),
+                }
+                for row in self.versions
+            ],
+            "backup_manifest_sha256": str(self.backup_manifest.get("sha256") or ""),
+        }
+
+    # -- steps -------------------------------------------------------------
+    def step_baseline_seed(self) -> None:
+        self._prepare_dirs()
+        self.daemon = self._start_daemon(self.baseline)
+        api = self._api()
+        project = api.json("POST", "/api/v1/projects", {"name": self.project_name})
+        self.project_id = str(
+            (project or {}).get("project_id") or (project or {}).get("id") or ""
+        )
+        if not self.project_id:
+            raise SmokeFailure("baseline_seed", "the previous bundle made no project")
+        frame = api.json("POST", "/api/v1/frames", {"project_id": self.project_id})
+        self.frame_id = str(
+            (frame or {}).get("id") or (frame or {}).get("frame_id") or ""
+        )
+        if not self.frame_id:
+            raise SmokeFailure("baseline_seed", "the previous bundle made no session")
+        self._execute("x = 41\nprint('upgrade cell one')\n", check="baseline_seed")
+        self._execute(
+            "from pathlib import Path\n"
+            f"Path({UPGRADE_CSV!r}).write_text(f'a,b\\n1,{{x + 1}}\\n', "
+            "encoding='utf-8')\n"
+            "print('upgrade cell two')\n",
+            check="baseline_seed",
+        )
+        self._execute(
+            "from pathlib import Path\n"
+            f"Path({UPGRADE_CSV!r}).write_text('a,b\\n2,84\\n', encoding='utf-8')\n"
+            "print('upgrade cell three')\n",
+            check="baseline_seed",
+        )
+        entries = self._entries()
+        rows = [
+            binding_for(
+                self._entry_for(entries, marker, check="baseline_seed"),
+                UPGRADE_CSV,
+                check="baseline_seed",
+            )
+            for marker in ("upgrade cell two", "upgrade cell three")
+        ]
+        if rows[0]["artifact_id"] != rows[1]["artifact_id"]:
+            raise SmokeFailure(
+                "baseline_seed", "rewriting the CSV minted a different Artifact"
+            )
+        if rows[0]["version_id"] == rows[1]["version_id"]:
+            raise SmokeFailure(
+                "baseline_seed", "rewriting the CSV did not mint a second version"
+            )
+        self.csv_artifact_id = str(rows[0]["artifact_id"])
+        for row, content in zip(rows, (CSV_FIRST, CSV_SECOND)):
+            version_id = str(row["version_id"])
+            version_row = self._version_row(
+                self.csv_artifact_id, version_id, check="baseline_seed"
+            )
+            body = self._version_bytes(version_id, check="baseline_seed")
+            digest = check_version_bytes(
+                body, version_row, expected=content, check="baseline_seed"
+            )
+            self.versions.append(
+                {
+                    "version_id": version_id,
+                    "sha256": digest,
+                    "size_bytes": len(body),
+                    "content": content,
+                }
+            )
+        self.seed_records = cell_records(entries)
+        self.history_entries = len(entries)
+        if self.history_entries != 3 or not all(
+            row["producing_cell_id"] for row in self.seed_records
+        ):
+            raise SmokeFailure(
+                "baseline_seed",
+                f"the previous bundle recorded {self.history_entries} Cell(s), "
+                "expected 3 with identities",
+            )
+
+    def step_baseline_stop(self) -> None:
+        self._stop()
+
+    def step_backup(self) -> None:
+        if not (self.data_dir / DATABASE_FILENAME).is_file():
+            raise SmokeFailure("backup", "the previous bundle left no database")
+        copy_data_dir(self.data_dir, self.backup_dir, check="backup")
+        self.backup_manifest = tree_manifest(self.backup_dir)
+        check_manifest(
+            self.backup_manifest,
+            tree_manifest(self.data_dir),
+            check="backup",
+            what="the working copy",
+        )
+
+    def step_schema_before(self) -> None:
+        self.schema_before, self.candidate_supported = check_schema_before(
+            self._probe(self.baseline), self._probe(self.candidate)
+        )
+        self.baseline_identity["schema"] = self.schema_before
+
+    def step_candidate_takeover(self) -> None:
+        self.daemon = self._start_daemon(self.candidate)
+
+    def step_schema_after(self) -> None:
+        assert self.schema_before is not None
+        self.schema_after = check_schema_after(
+            self._probe(self.candidate),
+            before=self.schema_before,
+            supported=self.candidate_supported,
+        )
+        self.candidate_identity["schema"] = self.schema_after
+
+    def step_project_session(self) -> None:
+        self._check_project_session("project_session")
+
+    def step_cell_records(self) -> None:
+        self._check_cells("cell_records")
+
+    def step_csv_versions(self) -> None:
+        self._check_versions("csv_versions")
+
+    def step_candidate_restart(self) -> None:
+        self._stop()
+        self.daemon = self._start_daemon(self.candidate)
+        self._read_back("candidate_restart")
+        self._stop()
+
+    def step_restore_backup(self) -> None:
+        assert self.schema_before is not None
+        if self.daemon is not None and self.daemon.alive():
+            raise SmokeFailure("restore_backup", "a daemon still holds the data")
+        shutil.rmtree(self.data_dir)
+        copy_data_dir(self.backup_dir, self.data_dir, check="restore_backup")
+        check_manifest(
+            self.backup_manifest,
+            tree_manifest(self.data_dir),
+            check="restore_backup",
+            what="the restored data directory",
+        )
+        check_restored_schema(self._probe(self.baseline), before=self.schema_before)
+
+    def step_baseline_readback(self) -> None:
+        self.daemon = self._start_daemon(self.baseline)
+        self._read_back("baseline_readback")
+        # No daemon was ever pointed at the copy; it must still be what it was.
+        check_manifest(
+            self.backup_manifest,
+            tree_manifest(self.backup_dir),
+            check="baseline_readback",
+            what="the kept pre-migration copy",
+        )
+
+    # step_clean_exit is the fresh scenario's: stop the last daemon, prove its
+    # process group is gone, remove the work root and prove it is gone.
+
+    def run(self) -> dict[str, Any]:
+        failure: dict[str, str] | None = None
+        try:
+            for name, method in self.STEPS:
+                try:
+                    getattr(self, method)()
+                except SmokeFailure as error:
+                    # The step that was running is what failed, whichever helper
+                    # (a daemon start, an HTTP read, a stop) raised it.
+                    self.checks[name] = FAILED
+                    failure = {
+                        "check": name,
+                        "detail": bounded(redact(error.detail), DETAIL_LIMIT),
+                    }
+                    break
+                self.checks[name] = PASSED
+        finally:
+            self._cleanup()
+        return build_upgrade_report(
+            baseline=self.baseline_identity,
+            candidate=self.candidate_identity,
+            checks=self.checks,
+            records=self.records(),
+            duration_s=self.budget.elapsed(),
+            failure=failure,
+        )
+
+
+def run_upgrade_readback(
+    *,
+    baseline_tarball: Path,
+    baseline_sha256: str,
+    candidate_tarball: Path,
+    fresh_passed: bool,
+    env_base: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Verify the previous bundle, unpack both, and run the upgrade scenario.
+
+    The pin is checked first, so a missing or wrong previous bundle is recorded
+    as such even when the fresh-install scenario already failed. The scenario
+    itself starts only after the fresh one passed: a candidate that cannot run
+    a Cell on an empty data directory tells nothing more on an old one.
+    """
+    started = time.monotonic()
+    baseline: dict[str, Any] = {
+        "name": Path(baseline_tarball).name,
+        "version": tarball_version(Path(baseline_tarball).name),
+        "sha256": "",
+        "expected_sha256": str(baseline_sha256 or "").lower(),
+        "schema": None,
+    }
+    candidate: dict[str, Any] = {
+        "name": Path(candidate_tarball).name,
+        "version": tarball_version(Path(candidate_tarball).name),
+        "sha256": "",
+        "schema": None,
+    }
+    checks = {name: NOT_RUN for name in UPGRADE_CHECKS}
+
+    def report(**fields: Any) -> dict[str, Any]:
+        return build_upgrade_report(
+            baseline=baseline,
+            candidate=candidate,
+            checks=checks,
+            records=None,
+            duration_s=time.monotonic() - started,
+            **fields,
+        )
+
+    work_root = Path(tempfile.mkdtemp(prefix="openai4s upgrade smoke "))
+    try:
+        private = work_root / "previous-bundle" / Path(baseline_tarball).name
+        try:
+            baseline["sha256"] = take_baseline(
+                Path(baseline_tarball), private, baseline["expected_sha256"]
+            )
+        except BaselineRefusal as refusal:
+            baseline["sha256"] = refusal.actual_sha256
+            checks["baseline_digest"] = FAILED
+            return report(
+                status=refusal.status,
+                failure={"check": "baseline_digest", "detail": refusal.detail},
+            )
+        checks["baseline_digest"] = PASSED
+        if not fresh_passed:
+            return report(
+                status=NOT_RUN,
+                failure={
+                    "check": "baseline_seed",
+                    "detail": "the fresh-install scenario did not pass, so the "
+                    "upgrade scenario was not started",
+                },
+            )
+        try:
+            candidate["sha256"] = sha256_file(Path(candidate_tarball))
+        except OSError as error:
+            checks["candidate_takeover"] = FAILED
+            return report(
+                failure={
+                    "check": "candidate_takeover",
+                    "detail": f"the candidate bundle could not be read: {error}",
+                }
+            )
+        prepared: dict[str, Runtime] = {}
+        for role, tarball, check in (
+            ("baseline", private, "baseline_seed"),
+            ("candidate", Path(candidate_tarball), "candidate_takeover"),
+        ):
+            try:
+                prepared[role] = runtime_for_bundle(
+                    tarball, work_root, unpack_dirname=role
+                )
+            except SmokeFailure as error:
+                checks[check] = FAILED
+                return report(failure={"check": check, "detail": error.detail})
+        for role, identity in (("baseline", baseline), ("candidate", candidate)):
+            matched = BUNDLE_DIRNAME.match(prepared[role].origin_root.name)
+            if matched:
+                identity["version"] = matched.group("version")
+        return UpgradeScenario(
+            baseline=prepared["baseline"],
+            candidate=prepared["candidate"],
+            work_root=work_root,
+            baseline_identity=baseline,
+            candidate_identity=candidate,
+            env_base=env_base,
+        ).run()
+    finally:
+        shutil.rmtree(work_root, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -2102,6 +3067,294 @@ def run_self_test(stream: Any = None) -> int:
 
     case("artifact digest matches the input bytes", digest_binds)
 
+    # -- upgrade readback ----------------------------------------------------
+    previous = fixture_root / "OpenAI4S-1.0.1-linux-x86_64.tar.gz"
+    previous.write_bytes(b"previous-bundle-bytes")
+    pinned = sha256_bytes(b"previous-bundle-bytes")
+    private = fixture_root / "private" / previous.name
+
+    def baseline_pinned() -> None:
+        assert take_baseline(previous, private, pinned) == pinned
+        assert private.read_bytes() == b"previous-bundle-bytes"
+
+    case("baseline accepts the pinned bytes", baseline_pinned)
+
+    def baseline_refused(path: Path, expected: str, status: str) -> None:
+        try:
+            take_baseline(path, fixture_root / "refused" / path.name, expected)
+        except BaselineRefusal as refusal:
+            assert refusal.status == status, refusal.status
+            assert refusal.check == "baseline_digest"
+            assert not (fixture_root / "refused" / path.name).exists()
+            return
+        raise AssertionError(f"{status}: the baseline was accepted")
+
+    case(
+        "baseline refuses a missing bundle as unavailable",
+        lambda: baseline_refused(
+            fixture_root / "missing.tar.gz", pinned, BASELINE_UNAVAILABLE
+        ),
+    )
+    case(
+        "baseline refuses a wrong digest before unpacking",
+        lambda: baseline_refused(previous, "e" * 64, BASELINE_DIGEST_MISMATCH),
+    )
+    case(
+        "schema_before accepts an upgrade 43 → 44",
+        lambda: check_schema_before(
+            {"supported": 43, "schema": 43}, {"supported": 44, "schema": 43}
+        ),
+    )
+    case(
+        "schema_before refuses a schema the previous bundle does not own",
+        lambda: _expect_failure(
+            "schema_before",
+            lambda: check_schema_before(
+                {"supported": 43, "schema": 42}, {"supported": 44, "schema": 42}
+            ),
+        ),
+    )
+    case(
+        "schema_before refuses an unreadable schema",
+        lambda: _expect_failure(
+            "schema_before",
+            lambda: check_schema_before(
+                {"supported": 43, "schema": None}, {"supported": 44, "schema": 43}
+            ),
+        ),
+    )
+    case(
+        "schema_before refuses a candidate older than the data",
+        lambda: _expect_failure(
+            "schema_before",
+            lambda: check_schema_before(
+                {"supported": 43, "schema": 43},
+                {"supported": 42, "error": "future_schema", "actual": 43},
+            ),
+        ),
+    )
+    case(
+        "schema_after accepts the candidate's schema",
+        lambda: check_schema_after(
+            {"supported": 44, "schema": 44}, before=43, supported=44
+        ),
+    )
+    case(
+        "schema_after refuses a database the candidate did not migrate",
+        lambda: _expect_failure(
+            "schema_after",
+            lambda: check_schema_after(
+                {"supported": 44, "schema": 43}, before=43, supported=44
+            ),
+        ),
+    )
+    case(
+        "restore refuses a copy that is not pre-migration",
+        lambda: _expect_failure(
+            "restore_backup",
+            lambda: check_restored_schema(
+                {"supported": 43, "error": "future_schema", "actual": 44}, before=43
+            ),
+        ),
+    )
+    seeded = [
+        {
+            "producing_cell_id": f"c{index}",
+            "code_hash": f"h{index}",
+            "source": f"print({index})",
+            "status": "ok",
+            "output_artifacts": (
+                [
+                    {
+                        "filename": UPGRADE_CSV,
+                        "artifact_id": "a-upgrade",
+                        "version_id": f"v{index}",
+                    }
+                ]
+                if index
+                else []
+            ),
+        }
+        for index in range(3)
+    ]
+    expected_cells = cell_records(seeded)
+    case(
+        "cell_records accepts the same history",
+        lambda: check_cell_records(
+            expected_cells, cell_records(seeded), check="cell_records"
+        ),
+    )
+    case(
+        "cell_records refuses a lost Cell",
+        lambda: _expect_failure(
+            "cell_records",
+            lambda: check_cell_records(
+                expected_cells, cell_records(seeded[:2]), check="cell_records"
+            ),
+        ),
+    )
+    rebound = json.loads(json.dumps(seeded))
+    rebound[2]["output_artifacts"][0]["version_id"] = "v1"
+    case(
+        "cell_records refuses a Cell pointing at another version",
+        lambda: _expect_failure(
+            "cell_records",
+            lambda: check_cell_records(
+                expected_cells, cell_records(rebound), check="cell_records"
+            ),
+        ),
+    )
+    case(
+        "project_session accepts the same ids",
+        lambda: check_project_session(
+            {"project_id": "p", "name": "n"},
+            {"id": "f", "project_id": "p"},
+            project_id="p",
+            project_name="n",
+            frame_id="f",
+            check="project_session",
+        ),
+    )
+    case(
+        "project_session refuses a missing project",
+        lambda: _expect_failure(
+            "project_session",
+            lambda: check_project_session(
+                {},
+                {"id": "f", "project_id": "p"},
+                project_id="p",
+                project_name="n",
+                frame_id="f",
+                check="project_session",
+            ),
+        ),
+    )
+    upgrade_versions = [
+        {
+            "version_id": f"v{number}",
+            "sha256": sha256_bytes(content),
+            "size_bytes": len(content),
+            "content": content,
+        }
+        for number, content in ((1, CSV_FIRST), (2, CSV_SECOND))
+    ]
+    listed_versions = {
+        row["version_id"]: {"checksum": row["sha256"], "size_bytes": row["size_bytes"]}
+        for row in upgrade_versions
+    }
+    served = {"v1": CSV_FIRST, "v2": CSV_SECOND}
+    case(
+        "csv_versions accepts both exact versions",
+        lambda: check_csv_versions(
+            listed_versions, served, upgrade_versions, check="csv_versions"
+        ),
+    )
+    case(
+        "csv_versions refuses a lost history version",
+        lambda: _expect_failure(
+            "csv_versions",
+            lambda: check_csv_versions(
+                {"v2": listed_versions["v2"]},
+                {"v2": CSV_SECOND},
+                upgrade_versions,
+                check="csv_versions",
+            ),
+        ),
+    )
+    case(
+        "csv_versions refuses changed bytes",
+        lambda: _expect_failure(
+            "csv_versions",
+            lambda: check_csv_versions(
+                listed_versions,
+                {"v1": CSV_SECOND, "v2": CSV_SECOND},
+                upgrade_versions,
+                check="csv_versions",
+            ),
+        ),
+    )
+    case(
+        "candidate_restart refuses a different execution count",
+        lambda: _expect_failure(
+            "candidate_restart",
+            lambda: check_history_count(
+                expected=3, actual=2, check="candidate_restart"
+            ),
+        ),
+    )
+    tree = fixture_root / "tree"
+    (tree / "artifacts").mkdir(parents=True)
+    (tree / "openai4s.db").write_bytes(b"db")
+    (tree / "artifacts" / "one").write_bytes(b"one")
+
+    def manifest_detects_a_change() -> None:
+        copy = fixture_root / "tree-copy"
+        copy_data_dir(tree, copy, check="backup")
+        recorded = tree_manifest(tree)
+        check_manifest(recorded, tree_manifest(copy), check="backup", what="copy")
+        (copy / "artifacts" / "one").write_bytes(b"ONE")
+        _expect_failure(
+            "restore_backup",
+            lambda: check_manifest(
+                recorded, tree_manifest(copy), check="restore_backup", what="copy"
+            ),
+        )
+
+    case(
+        "manifest accepts a copy and refuses one changed byte",
+        manifest_detects_a_change,
+    )
+    upgrade_identity = {
+        "name": previous.name,
+        "version": "1.0.1",
+        "sha256": pinned,
+        "expected_sha256": pinned,
+        "schema": 43,
+    }
+    candidate_identity = {
+        "name": "OpenAI4S-1.1.0-linux-x86_64.tar.gz",
+        "version": "1.1.0",
+        "sha256": "c" * 64,
+        "schema": 44,
+    }
+    all_passed = {name: PASSED for name in UPGRADE_CHECKS}
+
+    def upgrade_report(**overrides: Any) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            "baseline": upgrade_identity,
+            "candidate": candidate_identity,
+            "checks": all_passed,
+            "records": {},
+            "duration_s": 1.0,
+        }
+        fields.update(overrides)
+        return build_upgrade_report(**fields)
+
+    def upgrade_verdicts() -> None:
+        assert upgrade_report()["status"] == PASSED
+        assert upgrade_report()["failure"] is None
+        failed = upgrade_report(
+            checks={**all_passed, "csv_versions": FAILED},
+            failure={"check": "csv_versions", "detail": "lost"},
+        )
+        assert failed["status"] == FAILED
+        assert failed["failure"]["check"] == "csv_versions"
+        skipped = upgrade_report(checks={**all_passed, "restore_backup": NOT_RUN})
+        assert skipped["status"] == FAILED
+        borrowed = upgrade_report(
+            baseline={**upgrade_identity, "expected_sha256": "e" * 64}
+        )
+        assert borrowed["status"] == FAILED
+        for status in (BASELINE_UNAVAILABLE, BASELINE_DIGEST_MISMATCH, NOT_RUN):
+            declared = upgrade_report(
+                status=status, failure={"check": "baseline_digest", "detail": "x"}
+            )
+            assert declared["status"] == status
+            assert declared["failure"]["check"] == "baseline_digest"
+        assert _raises_value_error(lambda: upgrade_report(status=PASSED))
+
+    case("upgrade report derives its verdict", upgrade_verdicts)
+
     failures = 0
     for name, action in cases:
         try:
@@ -2175,6 +3428,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run the R2 browser layer against the captured artifacts",
     )
     parser.add_argument(
+        "--baseline-bundle",
+        type=Path,
+        default=None,
+        help=(
+            "with --bundle: the previous stable Linux .tar.gz; its data is then "
+            "upgraded by the candidate and read back (report field upgrade_readback)"
+        ),
+    )
+    parser.add_argument(
+        "--baseline-sha256",
+        default=None,
+        help="with --baseline-bundle: the pinned SHA-256 it must have before unpacking",
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="drive every decision check with synthetic responses (no daemon)",
@@ -2230,6 +3497,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _usage(parser, "--report is required")
     if options.browser and options.bundle is None:
         return _usage(parser, "--browser applies to the bundle mode")
+    if (options.baseline_bundle is None) != (options.baseline_sha256 is None):
+        return _usage(parser, "pass --baseline-bundle and --baseline-sha256 together")
+    if options.baseline_bundle is not None and options.bundle is None:
+        return _usage(parser, "--baseline-bundle applies to the bundle mode")
+    if options.baseline_sha256 is not None and not _SHA256.match(
+        str(options.baseline_sha256).lower()
+    ):
+        return _usage(parser, "--baseline-sha256 must be a 64-digit hex SHA-256")
 
     started = time.monotonic()
     work_root = Path(tempfile.mkdtemp(prefix="openai4s runtime smoke "))
@@ -2284,20 +3559,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         shutil.rmtree(work_root, ignore_errors=True)
     report["duration_s"] = round(time.monotonic() - started, 3)
 
+    upgrade: dict[str, Any] | None = None
+    if options.baseline_bundle is not None:
+        # After the fresh-install report is final, so its fields and its
+        # duration are exactly what they were without the upgrade scenario.
+        upgrade = run_upgrade_readback(
+            baseline_tarball=Path(options.baseline_bundle),
+            baseline_sha256=str(options.baseline_sha256),
+            candidate_tarball=Path(options.bundle),
+            fresh_passed=report["status"] == PASSED,
+        )
+        report["upgrade_readback"] = upgrade
+
     _write_report(Path(options.report), report)
-    if report["status"] == PASSED:
+    ok = report["status"] == PASSED
+    if ok:
         print(
             "installed runtime smoke: passed — "
             f"{report['target']} {report['artifact_sha256'][:12]} "
             f"({report['duration_s']}s)"
         )
+    else:
+        failure = report.get("failure") or {}
+        print(
+            "installed runtime smoke: FAILED — "
+            f"{failure.get('check', 'scenario')}: {failure.get('detail', '')}",
+            file=sys.stderr,
+        )
+    if upgrade is not None:
+        if upgrade["status"] == PASSED:
+            print(
+                "upgrade readback: passed — "
+                f"{upgrade['baseline']['name']} (schema {upgrade['baseline']['schema']}) "
+                f"→ {upgrade['candidate']['name']} "
+                f"(schema {upgrade['candidate']['schema']}) "
+                f"({upgrade['duration_s']}s)"
+            )
+        else:
+            ok = False
+            failure = upgrade.get("failure") or {}
+            print(
+                f"upgrade readback: {upgrade['status'].upper()} — "
+                f"{failure.get('check', 'scenario')}: {failure.get('detail', '')}",
+                file=sys.stderr,
+            )
+    if ok:
         return 0
-    failure = report.get("failure") or {}
-    print(
-        "installed runtime smoke: FAILED — "
-        f"{failure.get('check', 'scenario')}: {failure.get('detail', '')}",
-        file=sys.stderr,
-    )
     print(f"report: {Path(options.report)}", file=sys.stderr)
     return 1
 

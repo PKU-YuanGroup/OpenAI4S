@@ -46,6 +46,15 @@ class ArtifactRestoreDenied(ArtifactRestoreRefused, PermissionError):
     """
 
 
+class ArtifactSnapshotTooLarge(ArtifactRestoreRefused):
+    """The snapshot holds more bytes than the caller agreed to read.
+
+    Raised for the optional ``max_bytes`` of `verified_snapshot_bytes`, so a
+    caller that embeds bounded bytes (a promoted Cell's figures) can tell an
+    over-budget figure from one whose snapshot is gone or fails verification.
+    """
+
+
 class ArtifactRestoreStore(Protocol):
     """Persistence surface required by :class:`ArtifactRestoreService`."""
 
@@ -109,8 +118,17 @@ class ArtifactRestoreService:
         )
         self.resolve_live_path = resolve_live_path
 
-    def verified_snapshot_bytes(self, version: dict) -> tuple[Path, bytes]:
-        """Read one immutable snapshot only after root, hash, and size checks."""
+    def verified_snapshot_bytes(
+        self, version: dict, *, max_bytes: int | None = None
+    ) -> tuple[Path, bytes]:
+        """Read one immutable snapshot only after root, hash, and size checks.
+
+        ``max_bytes`` bounds the read. A descriptor that reports more is refused
+        before anything is read, and at most ``max_bytes + 1`` bytes are read
+        either way, so a file that grows between the check and the read is
+        refused rather than loaded. What is read is still verified against the
+        trusted roots, the recorded checksum and the recorded size.
+        """
         raw_path = version.get("snapshot_path")
         if not raw_path:
             raise ArtifactRestoreRefused(
@@ -142,12 +160,24 @@ class ArtifactRestoreService:
                 raise ArtifactRestoreRefused(
                     "artifact snapshot is not a private regular file"
                 )
+            if max_bytes is not None and int(before.st_size) > max_bytes:
+                raise ArtifactSnapshotTooLarge(
+                    "artifact snapshot exceeds the read limit"
+                )
+            limit = None if max_bytes is None else max_bytes + 1
             chunks: list[bytes] = []
-            while True:
-                chunk = os.read(descriptor, 1024 * 1024)
+            total = 0
+            while limit is None or total < limit:
+                want = 1024 * 1024 if limit is None else min(1024 * 1024, limit - total)
+                chunk = os.read(descriptor, want)
                 if not chunk:
                     break
                 chunks.append(chunk)
+                total += len(chunk)
+            if max_bytes is not None and total > max_bytes:
+                raise ArtifactSnapshotTooLarge(
+                    "artifact snapshot exceeds the read limit"
+                )
             after = os.fstat(descriptor)
             named = os.stat(path, follow_symlinks=False)
             before_state = (

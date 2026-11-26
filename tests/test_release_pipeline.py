@@ -275,7 +275,7 @@ def _matching_pypi(assets: Path):
     return digests
 
 
-def _pipeline(assets, **kw):
+def _pipeline(assets, version="0.2.0", **kw):
     kw.setdefault("runner", _git_aware())
     kw.setdefault("gh", lambda argv: _completed(0, b'{"assets": [], "isDraft": true}'))
     kw.setdefault("smoke", lambda wheel: "smoke injected")
@@ -287,7 +287,7 @@ def _pipeline(assets, **kw):
     # Tests that exercise the build/test steps themselves pass from_artifacts
     # explicitly.
     kw.setdefault("from_artifacts", True)
-    return Pipeline("0.2.0", assets_dir=assets, **kw)
+    return Pipeline(version, assets_dir=assets, **kw)
 
 
 #: Local build evidence read from disk, never uploaded as release assets — so a
@@ -3611,3 +3611,187 @@ def test_the_verify_step_records_the_runtime_smoke_in_its_facts(assets):
     assert (
         summary["scenario_version"] == release_receipts.RUNTIME_SMOKE_SCENARIO_VERSION
     )
+
+
+# --------------------------------------------------------------------------
+# upgrade readback: every Linux release after 1.0.1 carries it through staging
+#
+# The previous stable bundle (pinned in release.yml) wrote data that this
+# tarball migrated and read back, and the pre-migration copy reopened in the
+# previous bundle. Staging re-checks it against the tarball on disk and the
+# pin, and the sealed evidence names both bundles and what was read back.
+# --------------------------------------------------------------------------
+
+_NEXT = "1.1.0"
+
+
+def _next_release_assets(tmp_path, *, upgrade=True):
+    """A 1.1.0 staging directory: wheel, sdist, Linux tarball, Windows zip."""
+    import zipfile
+
+    from tests._runtime_smoke import upgraded_report
+
+    directory = tmp_path / "dist-next"
+    directory.mkdir()
+    (directory / f"openai4s-{_NEXT}-py3-none-any.whl").write_bytes(b"wheel-bytes")
+    (directory / f"openai4s-{_NEXT}.tar.gz").write_bytes(b"sdist-bytes")
+    _write_receipt(directory)
+    _receipt_dist(directory)
+    linux = directory / f"OpenAI4S-{_NEXT}-linux-x86_64.tar.gz"
+    linux.write_bytes(b"next-linux-bundle")
+    windows = directory / f"OpenAI4S-{_NEXT}-windows-x86_64.zip"
+    with zipfile.ZipFile(windows, "w") as archive:
+        archive.writestr(f"{windows.stem}/payload/{linux.name}", b"next-linux-bundle")
+    report = upgraded_report(
+        artifact_name=linux.name, artifact_sha256=sha256_file(linux)
+    )
+    _write_build_receipt(directory, "linux", [linux], runtime_smoke=report)
+    _write_build_receipt(directory, "windows", [windows])
+    if not upgrade:
+        receipt = directory / "build-receipt-linux.json"
+        document = json.loads(receipt.read_text("utf-8"))
+        document["runtime_smoke"].pop("upgrade_readback")
+        receipt.write_text(json.dumps(document), encoding="utf-8")
+    return directory, linux
+
+
+def _verify_next(directory):
+    report = _pipeline(
+        directory,
+        version=_NEXT,
+        pypi_digests=lambda _project, _version: {
+            path.name: sha256_file(path)
+            for path in directory.glob("openai4s-*")
+            if path.suffix in {".whl", ".gz"}
+        },
+        stop_after="verify",
+    ).run()
+    return report, next(step for step in report["steps"] if step["step"] == "verify")
+
+
+def test_a_release_after_101_seals_its_upgrade_readback(tmp_path):
+    from scripts import release_receipts
+
+    directory, linux = _next_release_assets(tmp_path)
+    report, step = _verify_next(directory)
+    assert report["ok"], step
+    summary = step["facts"]["runtime_smoke"]["linux"]["upgrade_readback"]
+    pin = release_receipts.pinned_upgrade_baseline()
+    assert summary["status"] == "passed"
+    assert {key: summary["baseline"][key] for key in pin} == pin
+    assert summary["candidate"]["sha256"] == sha256_file(linux)
+    assert summary["candidate"]["name"] == linux.name
+    assert summary["baseline"]["schema"] <= summary["candidate"]["schema"]
+    assert set(summary["checks"]) == set(release_receipts.UPGRADE_READBACK_CHECKS)
+    versions = summary["records"]["csv_versions"]
+    assert len(versions) == 2 and versions[0]["sha256"] != versions[1]["sha256"]
+    assert summary["records"]["project_id"] and summary["records"]["frame_id"]
+
+
+def test_a_staged_release_after_101_without_upgrade_readback_is_refused(tmp_path):
+    directory, _linux = _next_release_assets(tmp_path, upgrade=False)
+    report, step = _verify_next(directory)
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    assert "carries no upgrade_readback" in step["detail"], step["detail"]
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        pytest.param(
+            lambda upgrade: upgrade["baseline"].update(sha256="f" * 64),
+            "not the pinned",
+            id="wrong-baseline-digest",
+        ),
+        pytest.param(
+            lambda upgrade: upgrade["candidate"].update(sha256="e" * 64),
+            "not the tarball being released",
+            id="wrong-candidate-digest",
+        ),
+        pytest.param(
+            lambda upgrade: upgrade["checks"].update(csv_versions="failed"),
+            "csv_versions",
+            id="failed-check",
+        ),
+        pytest.param(
+            lambda upgrade: upgrade["records"]["csv_versions"].pop(),
+            "1 CSV version",
+            id="lost-history-version",
+        ),
+        pytest.param(
+            lambda upgrade: upgrade.update(
+                status="baseline_unavailable",
+                failure={"check": "baseline_digest", "detail": "no file"},
+            ),
+            "was unavailable",
+            id="baseline-unavailable",
+        ),
+    ],
+)
+def test_a_staged_upgrade_readback_that_proves_nothing_is_refused(
+    tmp_path, edit, message
+):
+    """The receipt is uploaded bytes; staging re-checks what it claims."""
+    directory, _linux = _next_release_assets(tmp_path)
+    receipt = directory / "build-receipt-linux.json"
+    document = json.loads(receipt.read_text("utf-8"))
+    edit(document["runtime_smoke"]["upgrade_readback"])
+    receipt.write_text(json.dumps(document), encoding="utf-8")
+
+    report, step = _verify_next(directory)
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    assert message in step["detail"], step["detail"]
+
+
+def test_the_linux_receipt_for_a_later_release_refuses_a_report_without_it(tmp_path):
+    """The receipt step itself refuses, so the job that ran the smoke fails."""
+    from scripts import release_receipts
+
+    directory = tmp_path / "out"
+    directory.mkdir()
+    linux = directory / f"OpenAI4S-{_NEXT}-linux-x86_64.tar.gz"
+    linux.write_bytes(b"next-linux-bundle")
+    report_path = tmp_path / "runtime-smoke-linux.json"
+    report_path.write_text(
+        json.dumps(_runtime_smoke_report(artifact_sha256=sha256_file(linux))),
+        encoding="utf-8",
+    )
+    argv = [
+        "--kind",
+        "linux",
+        "--source-sha",
+        FAKE_HEAD,
+        "--workflow-run-id",
+        "7100",
+        "--runtime-smoke",
+        str(report_path),
+        "--output-dir",
+        str(directory),
+        str(linux),
+    ]
+    assert release_receipts.main(argv) == 2
+    assert not (directory / "build-receipt-linux.json").exists()
+
+    from tests._runtime_smoke import upgraded_report
+
+    report_path.write_text(
+        json.dumps(
+            upgraded_report(
+                artifact_name=linux.name, artifact_sha256=sha256_file(linux)
+            )
+        ),
+        encoding="utf-8",
+    )
+    assert release_receipts.main(argv) == 0
+    document = json.loads((directory / "build-receipt-linux.json").read_text("utf-8"))
+    assert document["schema_version"] == 3
+    upgrade = document["runtime_smoke"]["upgrade_readback"]
+    assert upgrade["candidate"]["sha256"] == sha256_file(linux)
+    assert upgrade["baseline"]["sha256"] == (
+        release_receipts.pinned_upgrade_baseline()["sha256"]
+    )
+    # Canonical: the run's own `expected_sha256` and any extra keys stay out.
+    assert set(upgrade["baseline"]) == {"name", "version", "sha256", "schema"}

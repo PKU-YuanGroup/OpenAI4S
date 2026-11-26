@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.artifacts import ArtifactManager
@@ -18,6 +20,7 @@ from openai4s.server.notebook_lineage import (
     bind_cell_lineage,
     official_notebook_enabled,
 )
+from openai4s.storage.snapshots import WorkspaceCAS
 from openai4s.store import get_store
 
 
@@ -417,3 +420,391 @@ def test_cell_lineage_is_recorded_without_the_stage8_flag(tmp_path):
         }
     finally:
         runner.close()
+
+
+# ---------------------------------------------------------------------------
+# NV-07 · Notebook lineage when a Cell rewrites an Artifact with identical bytes
+# ---------------------------------------------------------------------------
+#
+# Sample: Artifact ``a.csv`` already has V1 (cell-1) and V2 (cell-2).  A Cell
+# reads ``a.csv``, writes the same bytes back, and also writes ``b.csv`` (VB).
+# Every case below runs the real capture path (``ArtifactManager.capture`` ->
+# ``register_file`` -> ``record_cell_artifact``) and then ``bind_cell_lineage``
+# exactly as ``CellRunService`` orders them: capture first, bind after.
+#
+# Reproduced on main@53e161b0:
+#
+# * Trusted capture (Stage 1), same bytes: ``record_cell_artifact`` reuses V2
+#   (``head_checksum_reused``), but ``register_file`` returns only the version
+#   id, so the binder counts V2 as this Cell's output, excludes it from read
+#   resolution and falls back to the next-newest version.  Result: VB <- V1
+#   (wrong) and a new V1 -> V2 edge from this Cell on a historical version.
+# * Restore V1 as V3, then the same bytes: V3 is reused and excluded the same
+#   way; the fallback lands on V2, whose bytes were not on disk.  Result:
+#   VB <- V2 and the restored V3 gains a second input V2 beside its restore
+#   edge from V1.
+# * Checkpoint revert to V1's bytes (the head stays V2), then the same bytes:
+#   a new V3 is created; the fallback again picks V2.  Result: VB <- V2 and
+#   V3 <- V2 although the Cell read V1's bytes.
+# * Already right: a different-content overwrite (V3 <- V2, VB <- V2), a
+#   same-Cell merge (the merged version is this Cell's own, so the fallback to
+#   the pre-Cell head is the correct input), and untrusted capture (identical
+#   bytes become a new version, VB <- V2).
+#
+# The wrong cases are pinned below with ``xfail(strict=True)`` asserting the
+# correct expectation; when they start passing, strict mode fails the run so
+# the marker is removed in the same change.
+#
+# Acceptance design for the future fix (no API, schema or new file needed):
+#
+# 1. Hand the capture kind from capture to binding.  ``record_cell_artifact``
+#    already returns ``capture_kind`` (``version_created`` /
+#    ``same_cell_merge`` / ``head_checksum_reused``) and ``version_created``;
+#    ``register_file`` must carry them into each ``CaptureResult.artifacts``
+#    entry, and ``bind_cell_lineage`` must read them.
+# 2. Only versions this Cell created (``version_created``, ``same_cell_merge``)
+#    are outputs: they are excluded from read resolution and receive input
+#    edges.  A ``head_checksum_reused`` version is history: it is not excluded
+#    from read resolution and receives no new lineage edge (the Cell's own
+#    facts live in its capture observation, which already exists).
+# 3. A read links to the Artifact's head at Cell start only when the bytes the
+#    Cell started from are verifiably that version's (for example a digest
+#    taken at Cell start equals its checksum).  Today's "next-newest version
+#    not in the outputs" only coincides with that head when rules 1-2 hold and
+#    the workspace was not reverted underneath it.  When the read cannot be
+#    proven -- a path can be rewritten mid-Cell, so a filename alone cannot pin
+#    the bytes -- the read stays in ``files_read`` and no edge is recorded
+#    (shown as unlinked).  The pre-Cell snapshot carries no digest outside
+#    WSL/overlay filesystems, so rule 3 needs new evidence at Cell start; that
+#    is why this item is preparation only.
+#
+# Acceptance bar: every NV-07 xfail below passes with its marker removed; the
+# passing NV-07 cases (and ``test_overwrite_maps_to_the_previous_version``)
+# stay green; no historical version gains a self-loop or a new edge; nothing
+# falls back to an older version by guess; existing version rows are not
+# rewritten.  Rules 1-2 alone turn the capture-kind, same-content and restore
+# xfails green; the revert xfail also needs rule 3.
+
+_NV07_A1 = "v\n1\n"
+_NV07_A2 = "v\n1\n2\n"
+
+
+@pytest.fixture
+def nv07_world(tmp_path):
+    """Build one session world per call: store, real ArtifactManager, workspace."""
+
+    opened = []
+
+    def make(*, trusted: bool = True):
+        base = (tmp_path / f"world-{len(opened)}").resolve()
+        cfg = Config(data_dir=base / "data")
+        store = get_store(cfg.db_path)
+        root = store.new_frame(kind="turn", project_id="default", status="ready")
+        # The managed workspace root, so ArtifactManager.restore accepts the path.
+        workspace = cfg.data_dir / "agent-workspaces" / root
+        workspace.mkdir(parents=True)
+        manager = ArtifactManager(
+            data_dir=cfg.data_dir,
+            store=store,
+            workspace_for=lambda _frame: workspace,
+            broadcast=lambda *_args: None,
+            guess_content_type=lambda _name: "text/csv",
+            checksum=lambda path: hashlib.sha256(path.read_bytes()).hexdigest(),
+            trusted_delivery=trusted,
+        )
+        _generation(store, root, "python", sys.executable, "base")
+        world = SimpleNamespace(
+            store=store,
+            manager=manager,
+            workspace=workspace,
+            root=root,
+            session=SimpleNamespace(
+                root_frame_id=root, project_id="default", workspace=workspace
+            ),
+        )
+        opened.append(world)
+        return world
+
+    yield make
+    for world in opened:
+        world.store.close()
+
+
+def _nv07_cell(world, index, cell_id, writes, reads=(), *, capture_passes=1):
+    """One Cell: write files, capture them, then bind the observed reads."""
+
+    before = world.manager.snapshot(world.workspace)
+    for name, text in writes.items():
+        (world.workspace / name).write_text(text, encoding="utf-8")
+    artifacts = []
+    for _ in range(capture_passes):
+        artifacts += world.manager.capture(
+            world.session, index, cell_id, before, lambda event: None
+        ).artifacts
+    files_read = bind_cell_lineage(
+        world.store,
+        workspace=world.workspace,
+        artifacts=artifacts,
+        root_frame_id=world.root,
+        project_id="default",
+        producing_cell_id=cell_id,
+        observed_reads=list(reads),
+    )
+    return {item["filename"]: item for item in artifacts}, files_read
+
+
+def _nv07_a_with_two_versions(world):
+    first, _ = _nv07_cell(world, 1, "cell-1", {"a.csv": _NV07_A1})
+    second, _ = _nv07_cell(world, 2, "cell-2", {"a.csv": _NV07_A2})
+    return first["a.csv"]["version_id"], second["a.csv"]["version_id"]
+
+
+def _nv07_inputs(store, version_id, **kwargs):
+    return {item["version_id"] for item in store.lineage_inputs(version_id, **kwargs)}
+
+
+def test_nv07_trusted_same_content_rewrite_reuses_v2_without_touching_it(
+    nv07_world,
+):
+    """The capture half of the sample, right today: an observation on V2."""
+
+    world = nv07_world()
+    v1, v2 = _nv07_a_with_two_versions(world)
+    v2_row = world.store.version_meta(v2)
+
+    out, files_read = _nv07_cell(
+        world, 3, "cell-3", {"a.csv": _NV07_A2, "b.csv": "n\n2\n"}, ["a.csv"]
+    )
+
+    artifact_id = out["a.csv"]["artifact_id"]
+    assert out["a.csv"]["version_id"] == v2
+    assert out["b.csv"]["version_id"] not in {v1, v2}
+    assert files_read == ["a.csv"]
+    assert [row["version_id"] for row in world.store.list_versions(artifact_id)] == [
+        v2,
+        v1,
+    ]
+    assert world.store.version_meta(v2) == v2_row
+    observed = world.store.list_artifact_capture_observations(artifact_id=artifact_id)
+    assert [
+        (row["producing_cell_id"], row["capture_kind"], row["version_id"])
+        for row in observed
+    ] == [
+        ("cell-1", "version_created", v1),
+        ("cell-2", "version_created", v2),
+        ("cell-3", "head_checksum_reused", v2),
+    ]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="NV-07: register_file does not hand capture_kind to the capture result",
+)
+def test_nv07_capture_result_says_which_version_was_reused(nv07_world):
+    world = nv07_world()
+    _nv07_a_with_two_versions(world)
+
+    out, _ = _nv07_cell(
+        world, 3, "cell-3", {"a.csv": _NV07_A2, "b.csv": "n\n2\n"}, ["a.csv"]
+    )
+
+    assert out["a.csv"].get("capture_kind") == "head_checksum_reused"
+    assert out["b.csv"].get("capture_kind") == "version_created"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="NV-07: a reused V2 is excluded as this Cell's output; the read falls back to V1",
+)
+def test_nv07_same_content_rewrite_links_b_to_the_version_read(nv07_world):
+    world = nv07_world()
+    v1, v2 = _nv07_a_with_two_versions(world)
+    v2_inputs = world.store.lineage_inputs(v2)
+
+    out, files_read = _nv07_cell(
+        world, 3, "cell-3", {"a.csv": _NV07_A2, "b.csv": "n\n2\n"}, ["a.csv"]
+    )
+
+    b = out["b.csv"]["version_id"]
+    assert files_read == ["a.csv"]
+    # V2 (the head the Cell started from) when provable, otherwise unlinked.
+    assert _nv07_inputs(world.store, b) <= {v2}
+    assert v1 not in _nv07_inputs(world.store, b)
+    # V2 is history: no new edge from this Cell, no V2 -> V2 self-loop.
+    assert world.store.lineage_inputs(v2, producing_cell_id="cell-3") == []
+    assert world.store.lineage_inputs(v2) == v2_inputs
+
+
+def test_nv07_different_content_overwrite_links_both_outputs_to_v2(nv07_world):
+    world = nv07_world()
+    v1, v2 = _nv07_a_with_two_versions(world)
+
+    out, files_read = _nv07_cell(
+        world, 3, "cell-3", {"a.csv": "v\n1\n2\n3\n", "b.csv": "n\n3\n"}, ["a.csv"]
+    )
+
+    v3, b = out["a.csv"]["version_id"], out["b.csv"]["version_id"]
+    assert v3 not in {v1, v2}
+    assert files_read == ["a.csv"]
+    assert _nv07_inputs(world.store, v3) == {v2}
+    assert _nv07_inputs(world.store, b) == {v2}
+    assert world.store.lineage_inputs(v2) == []
+
+
+def test_nv07_same_cell_merge_keeps_the_pre_cell_head_as_input(nv07_world):
+    """The fallback is right here: the merged version is this Cell's own."""
+
+    world = nv07_world()
+    v1, v2 = _nv07_a_with_two_versions(world)
+
+    out, files_read = _nv07_cell(
+        world,
+        3,
+        "cell-3",
+        {"a.csv": "v\n1\n2\n3\n", "b.csv": "n\n3\n"},
+        ["a.csv"],
+        capture_passes=2,
+    )
+
+    v3, b = out["a.csv"]["version_id"], out["b.csv"]["version_id"]
+    assert v3 not in {v1, v2}
+    assert len(world.store.list_versions(out["a.csv"]["artifact_id"])) == 3
+    observed = world.store.list_artifact_capture_observations(version_id=v3)
+    assert [(row["producing_cell_id"], row["capture_kind"]) for row in observed] == [
+        ("cell-3", "same_cell_merge")
+    ]
+    assert files_read == ["a.csv"]
+    assert _nv07_inputs(world.store, v3) == {v2}
+    assert _nv07_inputs(world.store, b) == {v2}
+    assert world.store.lineage_inputs(v2) == []
+
+
+def test_nv07_untrusted_same_content_rewrite_is_a_new_version_linked_to_v2(
+    nv07_world,
+):
+    world = nv07_world(trusted=False)
+    v1, v2 = _nv07_a_with_two_versions(world)
+
+    out, files_read = _nv07_cell(
+        world, 3, "cell-3", {"a.csv": _NV07_A2, "b.csv": "n\n2\n"}, ["a.csv"]
+    )
+
+    v3, b = out["a.csv"]["version_id"], out["b.csv"]["version_id"]
+    assert v3 not in {v1, v2}
+    assert files_read == ["a.csv"]
+    assert _nv07_inputs(world.store, v3) == {v2}
+    assert _nv07_inputs(world.store, b) == {v2}
+
+
+def _nv07_restore_v1(world):
+    v1, v2 = _nv07_a_with_two_versions(world)
+    artifact_id = world.store.version_meta(v1)["artifact_id"]
+    restored = world.manager.restore(artifact_id, v1)
+    return v1, v2, restored["version_id"]
+
+
+def test_nv07_restore_then_same_content_rewrite_reuses_the_restored_head(
+    nv07_world,
+):
+    world = nv07_world()
+    v1, v2, v3 = _nv07_restore_v1(world)
+    assert v3 not in {v1, v2}
+    assert (world.workspace / "a.csv").read_text(encoding="utf-8") == _NV07_A1
+    assert _nv07_inputs(world.store, v3) == {v1}
+
+    out, _ = _nv07_cell(
+        world, 4, "cell-4", {"a.csv": _NV07_A1, "b.csv": "n\n1\n"}, ["a.csv"]
+    )
+
+    assert out["a.csv"]["version_id"] == v3
+    observed = world.store.list_artifact_capture_observations(version_id=v3)
+    assert [(row["producing_cell_id"], row["capture_kind"]) for row in observed] == [
+        ("cell-4", "head_checksum_reused")
+    ]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="NV-07: the reused restored head is excluded; the read falls back to V2",
+)
+def test_nv07_restore_then_same_content_rewrite_links_b_to_the_restored_head(
+    nv07_world,
+):
+    world = nv07_world()
+    _v1, v2, v3 = _nv07_restore_v1(world)
+    v3_inputs = world.store.lineage_inputs(v3)
+
+    out, files_read = _nv07_cell(
+        world, 4, "cell-4", {"a.csv": _NV07_A1, "b.csv": "n\n1\n"}, ["a.csv"]
+    )
+
+    b = out["b.csv"]["version_id"]
+    assert files_read == ["a.csv"]
+    # V2's bytes were never on disk during this Cell.
+    assert _nv07_inputs(world.store, b) <= {v3}
+    assert v2 not in _nv07_inputs(world.store, b)
+    # The restored version keeps exactly its restore edge from V1.
+    assert world.store.lineage_inputs(v3) == v3_inputs
+
+
+def _nv07_revert_to_v1(world, cas_root):
+    """Two versions, then the workspace transition a checkpoint revert applies.
+
+    ``SessionBranching.revert_and_continue`` restores workspace bytes through
+    ``WorkspaceCAS.restore``; it does not move Artifact heads, so ``a.csv``
+    holds V1's bytes while its head stays V2.
+    """
+
+    cas = WorkspaceCAS(cas_root)
+    first, _ = _nv07_cell(world, 1, "cell-1", {"a.csv": _NV07_A1})
+    tree_v1 = cas.capture(world.workspace)["tree_id"]
+    second, _ = _nv07_cell(world, 2, "cell-2", {"a.csv": _NV07_A2})
+    tree_v2 = cas.capture(world.workspace)["tree_id"]
+    applied = cas.restore(tree_v1, world.workspace, baseline_tree_id=tree_v2)
+    return first["a.csv"]["version_id"], second["a.csv"]["version_id"], applied
+
+
+def test_nv07_revert_keeps_the_head_and_the_rewrite_is_a_new_version(
+    nv07_world, tmp_path
+):
+    world = nv07_world()
+    v1, v2, applied = _nv07_revert_to_v1(world, tmp_path / "cas")
+    assert applied["applied"] is True
+    assert (world.workspace / "a.csv").read_text(encoding="utf-8") == _NV07_A1
+    artifact_id = world.store.version_meta(v1)["artifact_id"]
+    assert world.store.get_artifact(artifact_id)["latest_version_id"] == v2
+
+    out, _ = _nv07_cell(
+        world, 3, "cell-3", {"a.csv": _NV07_A1, "b.csv": "n\n1\n"}, ["a.csv"]
+    )
+
+    v3 = out["a.csv"]["version_id"]
+    assert v3 not in {v1, v2}
+    assert (
+        world.store.version_meta(v3)["checksum"]
+        == world.store.version_meta(v1)["checksum"]
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="NV-07: after a revert the bytes read are V1's, but the read falls back to V2",
+)
+def test_nv07_revert_then_rewrite_never_links_to_the_unread_head(nv07_world, tmp_path):
+    world = nv07_world()
+    v1, v2, _applied = _nv07_revert_to_v1(world, tmp_path / "cas")
+
+    out, files_read = _nv07_cell(
+        world, 3, "cell-3", {"a.csv": _NV07_A1, "b.csv": "n\n1\n"}, ["a.csv"]
+    )
+
+    v3, b = out["a.csv"]["version_id"], out["b.csv"]["version_id"]
+    assert files_read == ["a.csv"]
+    # The Cell read V1's bytes: V1 when provable, otherwise unlinked, never V2.
+    assert v2 not in _nv07_inputs(world.store, b)
+    assert _nv07_inputs(world.store, b) <= {v1}
+    assert _nv07_inputs(world.store, v3) <= {v1}

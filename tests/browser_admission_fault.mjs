@@ -710,6 +710,182 @@ try {
     "Delete is withheld exactly for held and unknown pins",
     JSON.stringify(deleteState),
   );
+
+  // --- NV-01: a plain message's submission receipt -------------------------
+  //
+  // The same fault on a send with no pins. The POST reaches the daemon and is
+  // accepted; the answer, and the page's first question about it, are both
+  // destroyed. The page must say it does not know -- not "failed", and not
+  // resend -- and a reload must find the original turn from the receipt.
+  const receiptFrame = (
+    await api("/api/v1/frames", { method: "POST", data: { project_id: projectId } })
+  ).body;
+  const receiptFid = receiptFrame && (receiptFrame.id || receiptFrame.frame_id);
+  note(!!receiptFid, "created a session for the receipt case", String(receiptFid));
+  const receiptKeys = (fid) =>
+    page.evaluate((f) => {
+      const prefix = "openai4s.message-receipt." + f + ".";
+      const out = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(prefix)) out.push(key.slice(prefix.length));
+      }
+      return out;
+    }, fid);
+
+  let receiptPosts = 0;
+  let keyBeforeAnswer = null;
+  let postedId = null;
+  await page.route(`**/api/v1/frames/${receiptFid}/message`, async (route) => {
+    receiptPosts += 1;
+    postedId = (route.request().postDataJSON() || {}).client_request_id || null;
+    await route.fetch();
+    keyBeforeAnswer = await receiptKeys(receiptFid);
+    await route.abort("connectionfailed");
+  });
+  await page.route(`**/api/v1/frames/${receiptFid}/message-admissions/**`, (route) =>
+    route.abort("connectionfailed"),
+  );
+
+  await page.goto(baseUrl);
+  await page.waitForTimeout(1200);
+  await page.evaluate(async (fid) => {
+    if (typeof openConversation === "function") await openConversation(fid);
+  }, receiptFid);
+  await page.waitForTimeout(1500);
+  await page.evaluate(async () => {
+    try { await send("receipt me"); } catch {}
+  });
+  await page.waitForTimeout(1500);
+
+  note(receiptPosts === 1, "the plain send was dispatched exactly once", `posts=${receiptPosts}`);
+  note(
+    typeof postedId === "string" && /^[0-9a-f]{32}$/.test(postedId),
+    "it carried a 32-hex client_request_id",
+    String(postedId),
+  );
+  note(
+    Array.isArray(keyBeforeAnswer) && keyBeforeAnswer.length === 1 && keyBeforeAnswer[0] === postedId,
+    "the receipt id was durable BEFORE the answer came back",
+    JSON.stringify(keyBeforeAnswer),
+  );
+  const unconfirmed = await page.evaluate(() => {
+    const notice = document.querySelector("#messages .msg-receipt");
+    const composer = document.querySelector("#composer");
+    return {
+      text: notice ? notice.textContent : null,
+      button: !!(notice && notice.querySelector("button.msg-receipt-check")),
+      composerEnabled: !!(composer && !composer.disabled),
+    };
+  });
+  note(
+    !!unconfirmed.text &&
+      /Submission pending confirmation|提交待确认/.test(unconfirmed.text) &&
+      unconfirmed.button,
+    "an unanswerable receipt says so, with Check again",
+    JSON.stringify(unconfirmed),
+  );
+  note(unconfirmed.composerEnabled, "the composer is not left locked", JSON.stringify(unconfirmed));
+
+  await page.unroute(`**/api/v1/frames/${receiptFid}/message`);
+  await page.unroute(`**/api/v1/frames/${receiptFid}/message-admissions/**`);
+  let receiptResent = 0;
+  await page.route(`**/api/v1/frames/${receiptFid}/message`, async (route) => {
+    receiptResent += 1;
+    await route.continue();
+  });
+  const receiptAnswers = [];
+  page.on("response", async (response) => {
+    if (!/\/message-admissions\//.test(response.url())) return;
+    receiptAnswers.push([response.status(), await response.json().catch(() => null)]);
+  });
+
+  await page.goto(baseUrl);
+  await page.waitForTimeout(1200);
+  await page.evaluate(async (fid) => {
+    if (typeof openConversation === "function") await openConversation(fid);
+  }, receiptFid);
+  await page.waitForTimeout(3000);
+
+  note(receiptResent === 0, "the reloaded page did not resend the plain turn", `resent=${receiptResent}`);
+  const settledAnswer = receiptAnswers.find((pair) => pair[0] === 200);
+  note(
+    !!settledAnswer && settledAnswer[1] && settledAnswer[1].admission_state === "accepted",
+    "the PAGE asked the receipt and was told the original turn was accepted",
+    JSON.stringify(receiptAnswers),
+  );
+  const stillHeld = await receiptKeys(receiptFid);
+  note(stillHeld.length === 0, "an accepted receipt is cleared from storage", JSON.stringify(stillHeld));
+  const receiptFromApi = (
+    await api(`/api/v1/frames/${receiptFid}/message-admissions/${postedId}`)
+  ).body;
+  note(
+    !!receiptFromApi &&
+      !!settledAnswer &&
+      receiptFromApi.execution_id === (settledAnswer[1] || {}).execution_id &&
+      !!receiptFromApi.execution_id,
+    "the receipt names one execution, the one the page was told about",
+    JSON.stringify(receiptFromApi),
+  );
+  const receiptHistory = (await api(`/api/v1/frames/${receiptFid}/messages`)).body;
+  const userRows = ((receiptHistory && receiptHistory.messages) || []).filter(
+    (m) => m.role === "user" && m.content === "receipt me",
+  );
+  note(userRows.length === 1, "the turn ran exactly once", `rows=${userRows.length}`);
+
+  // A proxy's 502 for a POST that never reached the daemon: the receipt is
+  // 404, which is still "pending confirmation", and Check again asks again
+  // without resending.
+  const proxyFrame = (
+    await api("/api/v1/frames", { method: "POST", data: { project_id: projectId } })
+  ).body;
+  const proxyFid = proxyFrame && (proxyFrame.id || proxyFrame.frame_id);
+  let proxyPosts = 0;
+  await page.route(`**/api/v1/frames/${proxyFid}/message`, async (route) => {
+    proxyPosts += 1;
+    await route.fulfill({ status: 502, contentType: "application/json", body: '{"error":"bad gateway"}' });
+  });
+  const proxyAsks = [];
+  page.on("response", (response) => {
+    if (response.url().includes(`/frames/${proxyFid}/message-admissions/`)) {
+      proxyAsks.push(response.status());
+    }
+  });
+  await page.evaluate(async (fid) => {
+    if (typeof openConversation === "function") await openConversation(fid);
+  }, proxyFid);
+  await page.waitForTimeout(1500);
+  await page.evaluate(async () => {
+    try { await send("never arrived"); } catch {}
+  });
+  await page.waitForTimeout(1200);
+  const proxyNotice = await page.evaluate(() => {
+    const notice = document.querySelector("#messages .msg-receipt");
+    return notice ? notice.textContent : null;
+  });
+  note(
+    !!proxyNotice && /Submission pending confirmation|提交待确认/.test(proxyNotice),
+    "a 502 whose receipt is 404 reads as pending confirmation",
+    String(proxyNotice),
+  );
+  await page.evaluate(() => {
+    const again = document.querySelector("#messages .msg-receipt button.msg-receipt-check");
+    if (again) again.click();
+  });
+  await page.waitForTimeout(1200);
+  note(
+    proxyAsks.length >= 2 && proxyAsks.every((s) => s === 404),
+    "Check again asked the receipt again",
+    JSON.stringify(proxyAsks),
+  );
+  note(proxyPosts === 1, "and nothing was resent", `posts=${proxyPosts}`);
+  const proxyHistory = (await api(`/api/v1/frames/${proxyFid}/messages`)).body;
+  note(
+    ((proxyHistory && proxyHistory.messages) || []).length === 0,
+    "the daemon never saw that message",
+    JSON.stringify(proxyHistory),
+  );
+  await page.unroute(`**/api/v1/frames/${proxyFid}/message`);
 } finally {
   await browser.close();
 }

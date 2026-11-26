@@ -12,12 +12,12 @@
  */
 
 import { effect } from "@preact/signals";
-import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
-import { artifacts } from "../../stores/artifacts";
 import { currentId, feedback as feedbackSignal, project as currentProject } from "../../stores/session";
 import { permCards, running, stepEls, stream as liveStream } from "../../stores/stream";
 import { branchState } from "../../stores/timeline";
+import { filesT } from "../artifacts/copy";
+import { applyArtifactDeepLink, dockOpen } from "../artifacts/ui";
 import { stripRefVersions } from "../autocomplete/mentions";
 import { copyFailedText, copyText } from "../chrome/clipboard";
 import {
@@ -31,7 +31,7 @@ import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
 import { api } from "../sessions/api";
-import { hint } from "../sessions/chrome";
+import { hint, reportFailure } from "../sessions/chrome";
 import { grow } from "../sessions/dom";
 import { iconEl } from "../sessions/icon";
 import { teamT } from "../chrome/team-copy";
@@ -123,12 +123,6 @@ export function nextBatchEnd(
   batch = INITIAL_RENDER_BATCH,
 ): number {
   return Math.min(start + batch, total);
-}
-
-function callWindow(name: string, ...args: unknown[]): void {
-  const fn = (globalThis as Record<string, unknown>)[name];
-  if (!isReady(fn)) return;
-  (fn as (...a: unknown[]) => unknown)(...args);
 }
 
 function fbKey(text: string): string {
@@ -540,7 +534,17 @@ export function renderProjectRefChips(host: HTMLElement, text: string): void {
   }
 }
 
-/** app.js:7766-7787. The @-refs a user message pinned, as chips under its bubble. */
+/**
+ * app.js:7766-7787. The @-refs a user message pinned, as chips under its bubble.
+ *
+ * NV-02: a chip opens the version the message recorded, by its own
+ * `artifact_id` + `version_id`. It used to look the file up in this session's
+ * list and open that row, i.e. whatever the head was now, and a file from
+ * another session was not in the list at all. The server decides what the
+ * reader may see; `source_session` is provenance only (a copied-in file's
+ * recorded ids are the local copy's). A ref with no recorded version says so
+ * rather than opening the head.
+ */
 export function renderMessageRefChips(host: HTMLElement, refs: unknown): void {
   if (!Array.isArray(refs) || !refs.length) return;
   const row = el("div", "msg-refs");
@@ -551,16 +555,21 @@ export function renderMessageRefChips(host: HTMLElement, refs: unknown): void {
     const chip = el("span", "msg-ref-chip");
     chip.appendChild(iconEl("file-text", 11));
     chip.appendChild(el("span", null, publicText(name, 60)));
-    const parts = [String(r.version_id || "")];
+    const artifactId = typeof r.artifact_id === "string" ? r.artifact_id : "";
+    const versionId = typeof r.version_id === "string" ? r.version_id : "";
+    const parts = [versionId || filesT("files.version.unrecorded")];
     if (r.sha256) parts.push("sha256:" + String(r.sha256).slice(0, 12));
     if (r.materialized_target) parts.push("↗ " + String(r.source_session || "").slice(0, 12));
     chip.title = parts.filter(Boolean).join(" · ");
-    const pool = (artifacts.value || []) as Array<Record<string, unknown>>;
-    const full = pool.find((x) => (x.artifact_id || x.id) === r.artifact_id);
-    if (full) {
+    if (artifactId) {
       chip.classList.add("clickable");
       chip.onclick = () => {
-        callWindow("openViewer", full);
+        if (!versionId) {
+          hint(filesT("files.version.unrecorded"));
+          return;
+        }
+        dockOpen();
+        void applyArtifactDeepLink({ artifactId, versionId }).catch(reportFailure);
       };
     }
     row.appendChild(chip);

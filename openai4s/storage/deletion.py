@@ -536,6 +536,15 @@ class SessionDeletionRepository:
                 f"root_frame_id IN {self._marks(roots)}",
                 roots,
             )
+            # Submission receipts live exactly as long as their session: the
+            # route keys them on the canonical root and refuses a sub-frame,
+            # so the roots are the whole scope.
+            self._delete_counted(
+                deleted_rows,
+                "message_admissions",
+                f"root_frame_id IN {self._marks(roots)}",
+                roots,
+            )
         if frames:
             frame_where = f"frame_id IN {self._marks(frames)}"
             for table in (
